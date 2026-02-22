@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="OpenCode Codex OAuth">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1f2937" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#22d3ee" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="300" rx="28" fill="url(#bg)" />
+  <g opacity="0.12">
+    <circle cx="1020" cy="70" r="120" fill="#38bdf8" />
+    <circle cx="150" cy="260" r="140" fill="#22d3ee" />
+  </g>
+  <g fill="none" stroke="url(#accent)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M160 95 L100 150 L160 205" />
+    <path d="M280 95 L340 150 L280 205" />
+    <path d="M205 80 L235 220" />
+  </g>
+  <text x="420" y="120" fill="#e2e8f0" font-size="42" font-family="'IBM Plex Sans','Segoe UI',Arial,sans-serif" font-weight="600">
+    OpenCode Codex OAuth
+  </text>
+  <text x="420" y="170" fill="#cbd5f5" font-size="24" font-family="'IBM Plex Sans','Segoe UI',Arial,sans-serif">
+    ChatGPT Plus/Pro auth for GPT-5.2 and Codex models
+  </text>
+  <text x="420" y="220" fill="#7dd3fc" font-size="18" font-family="'IBM Plex Sans','Segoe UI',Arial,sans-serif">
+    One-command install, modern variants, full tool support
+  </text>
+</svg>

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: OpenAI Support
+    url: https://help.openai.com/
+    about: For ChatGPT account or subscription issues, contact OpenAI directly
+  - name: OpenAI Terms of Service
+    url: https://openai.com/policies/terms-of-use/
+    about: Review OpenAI's Terms of Service for compliance questions
+  - name: Discussions
+    url: https://github.com/numman-ali/opencode-openai-codex-auth/discussions
+    about: Ask questions or discuss the plugin with the community

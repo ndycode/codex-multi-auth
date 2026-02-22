@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndycode.github.io/codex-multi-auth/bench/format-benchmark/schema/summary.schema.json",
+  "title": "Code Edit Format Benchmark Summary",
+  "type": "object",
+  "required": ["meta", "rows", "runs"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["generatedAt", "preset", "models", "tasks", "modes"],
+      "properties": {
+        "generatedAt": { "type": "string" },
+        "preset": { "type": "string" },
+        "label": { "type": ["string", "null"] },
+        "models": { "type": "array", "items": { "type": "string" } },
+        "tasks": { "type": "array", "items": { "type": "string" } },
+        "modes": { "type": "array", "items": { "type": "string" } },
+        "agent": { "type": ["string", "null"] },
+        "variant": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["modelId", "mode", "taskId", "phase", "reason"],
+        "properties": {
+          "modelId": { "type": "string" },
+          "mode": { "type": "string" },
+          "taskId": { "type": "string" },
+          "phase": { "type": "string" },
+          "reason": { "type": "string" },
+          "failureType": { "type": ["string", "null"] },
+          "supported": { "type": ["boolean", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["modelId", "displayName", "modes"],
+        "properties": {
+          "modelId": { "type": "string" },
+          "displayName": { "type": "string" },
+          "modes": { "type": "object", "additionalProperties": true },
+          "deltas": { "type": "object", "additionalProperties": true }
+        },
+        "additionalProperties": true
+      }
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "modelId", "mode", "taskId", "phase", "pass"],
+        "properties": {
+          "id": { "type": "string" },
+          "modelId": { "type": "string" },
+          "mode": { "type": "string" },
+          "taskId": { "type": "string" },
+          "phase": { "type": "string" },
+          "pass": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "warmupRuns": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  },
+  "additionalProperties": true
+}

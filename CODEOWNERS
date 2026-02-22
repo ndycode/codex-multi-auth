@@ -1,0 +1,14 @@
+# Default owner for everything
+* @ndycode
+
+# Core library code
+/lib/ @ndycode
+
+# Authentication
+/lib/auth/ @ndycode
+
+# Tests
+/test/ @ndycode
+
+# CI/CD and configuration
+/.github/ @ndycode

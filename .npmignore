@@ -1,0 +1,14 @@
+.git
+.gitignore
+.DS_Store
+node_modules/
+bun.lockb
+pnpm-lock.yaml
+package-lock.json
+opencode.json
+test-*.mjs
+*.log
+.vscode/
+.idea/
+docs/
+.github/

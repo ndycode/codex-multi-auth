@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "activeIndex": 0,
+  "accounts": [
+    {
+      "accountId": "acct1",
+      "refreshToken": "token1",
+      "addedAt": 1000,
+      "lastUsed": 2000
+    }
+  ]
+}
