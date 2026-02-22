@@ -31,7 +31,29 @@ Start here if you are implementing or auditing changes:
 - [Configuration Guide](docs/configuration.md) - all runtime options
 - [Testing Guide](docs/development/TESTING.md) - test coverage and verification workflow
 
-Quick structure:
+### Scope ownership (high level)
+
+| Path | Responsibility |
+| --- | --- |
+| `index.ts` | Plugin entry, request orchestration, tool registration |
+| `lib/auth/` | OAuth login, callback handling, token lifecycle |
+| `lib/request/` | Request normalization, backend fetch behavior, SSE response handling |
+| `lib/prompts/` | Codex/OpenCode prompt bridge and prompt sync logic |
+| `lib/storage/` | Account persistence paths and migrations |
+| `lib/codex-cli/` | Codex CLI account/state synchronization |
+| `test/` | Unit, integration, and property tests |
+| `scripts/` | Build and install helper scripts |
+| `config/` | User config templates (modern/legacy/minimal) |
+| `docs/` | User and developer documentation |
+| `dist/` | Generated build output (do not edit by hand) |
+
+### AGENTS hierarchy
+
+- `AGENTS.md` applies repository-wide.
+- `lib/AGENTS.md` applies to `lib/**`.
+- `test/AGENTS.md` applies to `test/**`.
+
+### Quick tree
 
 ```text
 .
