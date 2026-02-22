@@ -758,6 +758,6 @@ describe('filterInput', () => {
 
 ## See Also
 
-- [IMPLEMENTATION_SUMMARY.md](./IMPLEMENTATION_SUMMARY.md) - Complete summary
+- [ARCHITECTURE.md](./ARCHITECTURE.md) - Complete architecture and request pipeline summary
 - [CONFIG_FIELDS.md](./CONFIG_FIELDS.md) - Field usage guide
-- [BUGS_FIXED.md](./BUGS_FIXED.md) - Bug analysis
+- [CONFIG_FLOW.md](./CONFIG_FLOW.md) - Configuration loading and merge flow

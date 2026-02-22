@@ -36,7 +36,7 @@ This plugin bridges two different systems with careful engineering:
 6. **Fast Session Mode** - Optional low-latency tuning (clamps reasoning/verbosity on trivial turns) without changing defaults
 7. **Entitlement-Aware Fallback Flow** - Unsupported models try remaining accounts/workspaces first, then optional fallback chain if enabled
 
-**Testing**: 1500+ tests (80% coverage threshold) plus integration coverage
+**Testing**: large Vitest suite with enforced 80% coverage threshold plus integration coverage
 
 ---
 

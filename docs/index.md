@@ -69,7 +69,7 @@ For detailed setup, see [Getting Started](getting-started.md).
 | Feature | Description |
 |---------|-------------|
 | **OAuth Authentication** | Secure ChatGPT Plus/Pro login |
-| **22 Template Presets** | GPT-5.2, 5.3-Codex, 5.1-Codex-Max, 5.1-Codex, 5.1-Codex-Mini, 5.1 (plus optional manual Spark IDs) |
+| **27 Template Presets** | GPT-5.2, 5.3-Codex, 5.1-Codex-Max, 5.1-Codex, 5.1-Codex-Mini, 5.1 (plus optional manual Spark IDs) |
 | **Variant System** | Works with OpenCode v1.0.210+ variants and legacy presets |
 | **Multi-Account** | Auto-rotation when rate-limited |
 | **Per-Model Config** | Different reasoning effort per model |
