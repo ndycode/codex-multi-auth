@@ -21,6 +21,28 @@ OAuth plugin for OpenCode that lets you use ChatGPT Plus/Pro rate limits with mo
 - **Usage-aware errors** — Friendly messages with rate limit reset timing
 - **Plugin compatible** — Works alongside other OpenCode plugins (oh-my-opencode, dcp, etc.)
 
+## Documentation & Repository Map
+
+Start here if you are implementing or auditing changes:
+
+- [Docs Portal](docs/README.md) - central navigation
+- [Repository Scope Map](docs/development/REPOSITORY_SCOPE.md) - canonical ownership and extension points
+- [Architecture](docs/development/ARCHITECTURE.md) - request pipeline and protocol behavior
+- [Configuration Guide](docs/configuration.md) - all runtime options
+- [Testing Guide](docs/development/TESTING.md) - test coverage and verification workflow
+
+Quick structure:
+
+```text
+.
+|-- index.ts
+|-- lib/
+|-- test/
+|-- scripts/
+|-- config/
+|-- docs/
+`-- dist/ (generated)
+```
 ---
 
 <details open>
@@ -828,47 +850,6 @@ CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=60000 opencode # Override SSE stall timeout
 For all options, see [docs/configuration.md](docs/configuration.md).
 
 ---
-
-## Repository Scope & Structure
-
-This repository has explicit ownership boundaries so feature work lands in the right place.
-
-```text
-.
-|-- index.ts                 # plugin entrypoint (request pipeline + tool registration)
-|-- lib/                     # runtime implementation
-|   |-- auth/                # OAuth login/callback/refresh
-|   |-- request/             # request transform + backend fetch helpers + SSE handling
-|   |-- prompts/             # Codex/OpenCode bridge prompts
-|   |-- storage/             # persistence paths + migrations
-|   |-- recovery/            # conversation/session recovery
-|   |-- codex-cli/           # Codex CLI sync/interop
-|   |-- tools/               # plugin command surface
-|   `-- ui/                  # TUI/formatting helpers
-|-- test/                    # unit/integration/property tests
-|-- scripts/                 # build/install utilities
-|-- config/                  # copy-paste config templates
-|-- docs/                    # user + developer docs
-`-- dist/                    # generated build output (do not edit)
-```
-
-### Where to implement changes
-
-- Plugin orchestration and tool registration: `index.ts`
-- OAuth and token lifecycle: `lib/auth/`
-- Model mapping and payload normalization: `lib/request/request-transformer.ts`, `lib/request/helpers/model-map.ts`
-- Multi-account rotation and health: `lib/accounts.ts`, `lib/rotation.ts`, `lib/health.ts`, `lib/circuit-breaker.ts`
-- Storage format and migration behavior: `lib/storage.ts`, `lib/storage/migrations.ts`, `lib/storage/paths.ts`
-- User-facing tools and display output: `lib/tools/hashline-tools.ts`, `lib/table-formatter.ts`
-- Tests for all behavior changes: `test/`
-
-### AGENTS Scope Hierarchy
-
-- `AGENTS.md` applies to the entire repo.
-- `lib/AGENTS.md` applies to `lib/**`.
-- `test/AGENTS.md` applies to `test/**`.
-
-Full ownership map: [docs/development/REPOSITORY_SCOPE.md](docs/development/REPOSITORY_SCOPE.md)
 
 ---
 
