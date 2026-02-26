@@ -7,6 +7,7 @@ Start here for all project docs.
 | Need | Read |
 | --- | --- |
 | First-time setup | [getting-started.md](getting-started.md) |
+| Upgrade from older flows | [upgrade.md](upgrade.md) |
 | Config and environment variables | [configuration.md](configuration.md) |
 | Fix login/rate-limit/account issues | [troubleshooting.md](troubleshooting.md) |
 | Privacy and local files | [privacy.md](privacy.md) |
@@ -18,6 +19,7 @@ Start here for all project docs.
 | --- | --- | --- |
 | [index.md](index.md) | Simple docs landing page | Everyone |
 | [getting-started.md](getting-started.md) | Beginner onboarding | Beginner |
+| [upgrade.md](upgrade.md) | Migration and changed workflow notes | Beginner to Intermediate |
 | [configuration.md](configuration.md) | Runtime config and env controls | Beginner to Intermediate |
 | [troubleshooting.md](troubleshooting.md) | Symptom-to-fix playbook | Beginner to Intermediate |
 | [privacy.md](privacy.md) | Data handling and file locations | Everyone |

@@ -11,8 +11,15 @@ Beginner setup for Codex multi-account OAuth.
 ## Install
 
 ```bash
-npm install -g @openai/codex codex-multi-auth
+npm install -g @openai/codex
+git clone https://github.com/ndycode/codex-multi-auth.git
+cd codex-multi-auth
+npm install
+npm run build
+npm link
 ```
+
+`codex-multi-auth` is currently installed from source in this workflow.
 
 ## Login Your First Account
 
@@ -46,7 +53,7 @@ codex auth list
 Auto-install config:
 
 ```bash
-codex-multi-auth-opencode-install --modern
+codex-multi-auth --modern
 ```
 
 Manual `~/.config/opencode/opencode.json`:
@@ -54,7 +61,7 @@ Manual `~/.config/opencode/opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["codex-multi-auth@latest"]
+  "plugin": ["codex-multi-auth"]
 }
 ```
 
@@ -88,3 +95,4 @@ codex auth list
 - [configuration.md](configuration.md)
 - [troubleshooting.md](troubleshooting.md)
 - [privacy.md](privacy.md)
+- [upgrade.md](upgrade.md)

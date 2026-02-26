@@ -37,7 +37,7 @@ Each row should show:
 
 ## Keyboard Behavior
 
-Global:
+Global (auth dashboard):
 
 - `Up/Down`: move
 - `Enter`: confirm
@@ -46,7 +46,7 @@ Global:
 - `/`: search prompt
 - `1-9`: set selected account as current directly
 
-Action hotkeys:
+Action hotkeys (auth dashboard):
 
 - `A`: add account
 - `C`: quick check
@@ -55,11 +55,11 @@ Action hotkeys:
 - `V`: verify all
 - `G` or `F`: verify flagged
 
-Account detail hotkeys:
+Account detail hotkeys (account screen):
 
 - `S`: set current
 - `R`: refresh account
-- `E` (or `X`): enable/disable
+- `E`: enable/disable
 - `D`: delete account
 
 ## Safety and Confirmation

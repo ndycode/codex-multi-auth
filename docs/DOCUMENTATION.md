@@ -10,6 +10,7 @@ This file defines how documentation is organized and maintained.
 | Docs portal | `docs/README.md` | All users |
 | Docs landing | `docs/index.md` | All users |
 | Setup | `docs/getting-started.md` | Beginners |
+| Upgrade and migration | `docs/upgrade.md` | Beginners to operators |
 | Runtime configuration | `docs/configuration.md` | Users and operators |
 | Troubleshooting | `docs/troubleshooting.md` | Users and operators |
 | Privacy/data | `docs/privacy.md` | All users |
@@ -49,7 +50,7 @@ When behavior changes:
 ## Documentation QA Checklist
 
 - Commands copied from docs execute without edits.
-- Paths match `lib/runtime-paths.ts`, `lib/config.ts`, and `lib/storage.ts`.
+- Paths match `lib/config.ts` and `lib/storage.ts`.
 - New config keys appear in both user and development references.
 - New CLI flags appear in troubleshooting/examples where relevant.
 

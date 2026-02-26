@@ -1,83 +1,162 @@
 # OpenCode Upstream Proposal: Merge Auth Methods Across Plugins
 
-This document proposes an OpenCode core change so multiple plugins can contribute auth methods for the same provider.
+This proposal requests an OpenCode core change so multiple plugins can contribute auth methods for the same provider.
 
 ## Problem
 
-Current OpenCode auth provider matching uses first-hit behavior (single plugin selected). When internal plugin auth exists for a provider (for example `openai`), external plugin auth methods for that provider are hidden.
+Current provider auth matching is first-hit only (`find(...)`). If a built-in plugin already owns a provider (for example `openai`), external plugin auth methods for that same provider are hidden.
 
 Impact:
 
-- External plugins cannot add alternate auth flows for built-in providers.
-- Users do not see all available auth methods in one menu.
+- external plugins cannot extend provider auth menu options
+- users cannot choose between built-in and external auth variants in one place
 
 ## Desired Behavior
 
 For a selected provider:
 
-1. Collect all plugins that declare `auth.provider === <provider>`.
-2. Merge all `auth.methods` arrays.
-3. Keep existing loader precedence (first plugin remains primary loader unless OpenCode adds a stricter policy).
+1. collect all plugins where `plugin.auth?.provider === provider`
+2. sort deterministically before selecting primary
+3. merge and dedupe `auth.methods`
+4. call `handlePluginAuth(...)` once with merged methods and deterministic primary loader
+
+## Proposed Runtime Helpers
+
+Introduce helper functions in OpenCode auth discovery path:
+
+- `collectAuthPluginsForProvider(provider)`
+- `mergeAuthMethods(plugins)`
+- `choosePrimaryAuthPlugin(plugins)`
+
+These keep behavior explicit and testable.
 
 ## Proposed Code Pattern
 
-Current behavior (single match):
+Current behavior:
 
 ```ts
 const plugin = await Plugin.list().then((x) => x.find((x) => x.auth?.provider === provider));
+if (plugin?.auth) {
+  const handled = await handlePluginAuth({ auth: plugin.auth }, provider);
+  if (handled) return;
+}
 ```
 
-Proposed behavior (multi-merge):
+Proposed deterministic merge behavior:
 
 ```ts
-const matchingPlugins = await Plugin.list().then((x) =>
-  x.filter((p) => p.auth?.provider === provider)
-);
+const matchingPlugins = await Plugin.list()
+  .then((plugins) =>
+    plugins
+      .filter((p) => p.auth?.provider === provider)
+      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", undefined, { sensitivity: "base" })),
+  );
 
-if (matchingPlugins.length > 0) {
-  const mergedMethods = matchingPlugins.flatMap((p) => p.auth?.methods ?? []);
-  const primary = matchingPlugins[0];
+if (matchingPlugins.length === 0) {
+  // fall through to existing built-in/default provider flow
+  return;
+}
 
+const primary = matchingPlugins[0];
+if (!primary?.auth) {
+  return;
+}
+
+const mergedMethods = matchingPlugins
+  .flatMap((p) => p.auth?.methods ?? [])
+  .filter(Boolean)
+  .filter((method, index, arr) => {
+    const key = `${method.id ?? ""}::${method.label ?? ""}`.toLowerCase();
+    return arr.findIndex((m) => `${m.id ?? ""}::${m.label ?? ""}`.toLowerCase() === key) === index;
+  });
+
+if (mergedMethods.length === 0) {
+  // no valid methods after merge/dedupe
+  return;
+}
+
+try {
   const handled = await handlePluginAuth(
     {
       auth: {
-        ...primary.auth!,
+        ...primary.auth,
         methods: mergedMethods,
       },
     },
     provider,
   );
-
   if (handled) return;
+} catch (error) {
+  // log and continue fallback behavior safely
 }
 ```
 
-Apply equivalent logic in both default-provider and custom-provider auth paths.
+Apply the same helper logic to both default-provider and custom-provider auth paths.
 
-## Compatibility
+## Deterministic Precedence Policy
+
+Proposed policy for `codex-multi-auth` coexistence:
+
+- sort plugins alphabetically by `plugin.name` (case-insensitive)
+- `plugins[0]` is primary loader
+- merged methods are deduped by `id + label`
+
+If OpenCode later introduces explicit plugin priority metadata, these helpers are the place to switch policy.
+
+## Compatibility Matrix
 
 | Case | Result |
 | --- | --- |
-| One plugin for provider | No behavior change |
-| Multiple plugins for provider | Methods become visible in one merged menu |
-| Existing loader assumptions | Preserved by keeping first plugin as primary |
+| Zero plugins for provider | Fall through to OpenCode built-in/default behavior or explicit provider-not-configured error |
+| One plugin for provider | Same behavior as today |
+| Multiple plugins for provider | Merged/deduped auth methods shown in one menu |
+| Duplicate method ids/labels across plugins | Dedupe keeps first method in deterministic sorted order |
+| Conflicting loader implementations | First plugin after deterministic sort is primary loader |
+| Windows vs Unix plugin ordering | Case-insensitive `localeCompare` keeps stable ordering across platforms |
 
 ## Acceptance Tests
 
-1. Install OpenCode with built-in OpenAI auth only.
-   - Expected: unchanged behavior.
-2. Add external plugin with additional OpenAI auth method.
-   - Expected: both built-in and external methods appear.
-3. Select each method and verify auth flow still completes.
+1. Built-in-only scenario:
+   - one plugin for `openai`
+   - behavior unchanged
+2. Built-in + external scenario:
+   - two plugins for `openai`
+   - both methods visible after dedupe
+3. Method selection scenario:
+   - each method completes auth flow successfully
+4. Empty/invalid methods scenario:
+   - null/undefined/empty methods filtered safely
+5. Duplicate methods scenario:
+   - duplicate `id/label` entries deduped deterministically
+6. Platform ordering scenario:
+   - plugin names with path/case differences produce same effective ordering on Windows and Unix
+7. Parallel auth-flow scenario:
+   - concurrent auth attempts do not race/crash during method merge path
+
+## Test Plan (Concrete)
+
+Add tests in OpenCode auth/plugin tests (example targets):
+
+- `test/index.test.ts` for plugin discovery merge path
+- `test/auth.test.ts` for method selection and handler delegation
+
+Required checks:
+
+- deterministic sorting
+- dedupe behavior
+- `mergedMethods.length === 0` guard
+- `primary.auth` null guard
+- `handlePluginAuth` try/catch fallback path
 
 ## Risks and Mitigations
 
 | Risk | Mitigation |
 | --- | --- |
-| Duplicate method labels | OpenCode can dedupe by id/label in a later patch |
-| Conflicting loaders | Keep current first-plugin precedence for initial rollout |
-| Unexpected plugin ordering | Document deterministic ordering or sort policy |
+| Duplicate methods create ambiguous menu entries | Implement immediate dedupe in `mergeAuthMethods()` by `id+label` |
+| Nondeterministic primary selection | Enforce deterministic sort in `collectAuthPluginsForProvider()` and select first in `choosePrimaryAuthPlugin()` |
+| Loader conflicts between plugins | Keep one authoritative primary loader and document precedence policy |
+| Drift between runtime and docs | Document sort/dedupe policy in `docs/configuration.md` and this proposal |
 
 ## Why This Matters for `codex-multi-auth`
 
-`codex-multi-auth` extends account workflows for OpenAI/Codex use cases. Without merged auth methods, users must use awkward workarounds instead of seeing all provider auth options in one place.
+`codex-multi-auth` extends OpenAI auth workflows with multi-account operations. Without provider-level auth method merging, users cannot discover the external method naturally in the same provider login flow.

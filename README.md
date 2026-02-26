@@ -5,15 +5,27 @@
 
 Codex CLI-first multi-account OAuth for ChatGPT accounts, with OpenCode plugin routing.
 
-## Quick Start (3 Commands)
+## Quick Start (Source Install)
 
 ```bash
-npm install -g @openai/codex codex-multi-auth
+npm install -g @openai/codex
+git clone https://github.com/ndycode/codex-multi-auth.git
+cd codex-multi-auth && npm install && npm run build && npm link
 codex auth login
 codex auth list
 ```
 
 If `codex auth login` opens browser: that is expected. Finish OAuth in browser, then return to the same terminal.
+
+`codex-multi-auth` is currently used from source in this repo workflow (not from npm registry).
+
+## Upgrade Notes
+
+If you are upgrading from older OpenCode-first docs/flows, read:
+
+- [docs/upgrade.md](docs/upgrade.md)
+
+It covers command changes, path migration (`~/.opencode/*` to `~/.codex/multi-auth/*`), and the recommended migration sequence.
 
 ## What This Project Adds
 
@@ -68,7 +80,7 @@ Account detail menu keys:
 Fast path:
 
 ```bash
-codex-multi-auth-opencode-install --modern
+codex-multi-auth --modern
 ```
 
 Manual path: create/update `~/.config/opencode/opencode.json`:
@@ -76,7 +88,7 @@ Manual path: create/update `~/.config/opencode/opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["codex-multi-auth@latest"]
+  "plugin": ["codex-multi-auth"]
 }
 ```
 
@@ -131,6 +143,7 @@ codex auth login
 | TUI parity checklist | [docs/development/TUI_PARITY_CHECKLIST.md](docs/development/TUI_PARITY_CHECKLIST.md) |
 | OpenCode upstream proposal | [docs/OPENCODE_PR_PROPOSAL.md](docs/OPENCODE_PR_PROPOSAL.md) |
 | Benchmark usage | [docs/benchmarks/code-edit-format-benchmark.md](docs/benchmarks/code-edit-format-benchmark.md) |
+| Migration and upgrade path | [docs/upgrade.md](docs/upgrade.md) |
 
 ## Development
 

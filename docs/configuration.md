@@ -21,7 +21,7 @@ Legacy plugin config fallback paths still load if present:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["codex-multi-auth@latest"],
+  "plugin": ["codex-multi-auth"],
   "provider": {
     "openai": {
       "options": {
@@ -82,11 +82,11 @@ Legacy plugin config fallback paths still load if present:
 | --- | --- |
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
-| `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
-| `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |
+| `CODEX_TUI_COLOR_PROFILE=truecolor&#124;ansi256&#124;ansi16` | TUI color profile |
+| `CODEX_TUI_GLYPHS=ascii&#124;unicode&#124;auto` | TUI glyph style |
 | `CODEX_AUTH_FAST_SESSION=0/1` | Fast-session toggle |
-| `CODEX_AUTH_FAST_SESSION_STRATEGY=hybrid|always` | Fast-session policy |
-| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=strict|fallback` | Unsupported model policy |
+| `CODEX_AUTH_FAST_SESSION_STRATEGY=hybrid&#124;always` | Fast-session policy |
+| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=strict&#124;fallback` | Unsupported model policy |
 | `CODEX_MULTI_AUTH_SYNC_CODEX_CLI=0/1` | Disable/enable Codex CLI state sync |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Fetch timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
@@ -111,6 +111,14 @@ codex auth list
 codex auth report --json
 codex auth doctor --fix --dry-run
 ```
+
+## Upstream Auth-Merge Note
+
+The OpenCode upstream proposal in [OPENCODE_PR_PROPOSAL.md](OPENCODE_PR_PROPOSAL.md) recommends this policy when multiple plugins register auth methods for the same provider:
+
+- deterministic plugin order by plugin name (case-insensitive sort)
+- primary loader from sorted index `0`
+- merged auth method list deduped by `id + label`
 
 ## Related
 

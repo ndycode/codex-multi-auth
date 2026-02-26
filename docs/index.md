@@ -25,6 +25,7 @@ codex auth doctor --fix
 | Topic | Link |
 | --- | --- |
 | Full docs portal | [README.md](README.md) |
+| Upgrade notes | [upgrade.md](upgrade.md) |
 | Configuration | [configuration.md](configuration.md) |
 | Troubleshooting | [troubleshooting.md](troubleshooting.md) |
 | Privacy | [privacy.md](privacy.md) |
