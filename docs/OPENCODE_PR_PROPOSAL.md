@@ -1,96 +1,83 @@
-# OpenCode PR: Merge Auth Methods from Multiple Plugins
+# OpenCode Upstream Proposal: Merge Auth Methods Across Plugins
+
+This document proposes an OpenCode core change so multiple plugins can contribute auth methods for the same provider.
 
 ## Problem
 
-When multiple plugins register for the same provider (e.g., `openai`), only the first plugin's auth methods are shown. This is because `auth.ts:310` uses `.find()` which returns the first match:
+Current OpenCode auth provider matching uses first-hit behavior (single plugin selected). When internal plugin auth exists for a provider (for example `openai`), external plugin auth methods for that provider are hidden.
 
-```typescript
-const plugin = await Plugin.list().then((x) => x.find((x) => x.auth?.provider === provider))
+Impact:
+
+- External plugins cannot add alternate auth flows for built-in providers.
+- Users do not see all available auth methods in one menu.
+
+## Desired Behavior
+
+For a selected provider:
+
+1. Collect all plugins that declare `auth.provider === <provider>`.
+2. Merge all `auth.methods` arrays.
+3. Keep existing loader precedence (first plugin remains primary loader unless OpenCode adds a stricter policy).
+
+## Proposed Code Pattern
+
+Current behavior (single match):
+
+```ts
+const plugin = await Plugin.list().then((x) => x.find((x) => x.auth?.provider === provider));
 ```
 
-Since internal plugins (like `CodexAuthPlugin`) load before external plugins, external plugins can never add auth methods to providers that have internal plugins.
+Proposed behavior (multi-merge):
 
-## Use Case
-
-Multi-account authentication plugins need to add their auth methods alongside built-in options. For example:
-- Built-in: "ChatGPT Pro/Plus" 
-- External: "ChatGPT Pro/Plus (Multi-Account)"
-
-Users should see both options when selecting OpenAI provider.
-
-## Proposed Solution
-
-Change `auth.ts` to collect and merge auth methods from ALL plugins that register for the same provider:
-
-### Current Code (auth.ts lines 310-314)
-
-```typescript
-const plugin = await Plugin.list().then((x) => x.find((x) => x.auth?.provider === provider))
-if (plugin && plugin.auth) {
-  const handled = await handlePluginAuth({ auth: plugin.auth }, provider)
-  if (handled) return
-}
-```
-
-### Proposed Code
-
-```typescript
-// Collect auth methods from ALL plugins that register for this provider
-const matchingPlugins = await Plugin.list().then((x) => 
-  x.filter((x) => x.auth?.provider === provider)
-)
+```ts
+const matchingPlugins = await Plugin.list().then((x) =>
+  x.filter((p) => p.auth?.provider === provider)
+);
 
 if (matchingPlugins.length > 0) {
-  // Merge methods from all matching plugins
-  const mergedMethods = matchingPlugins.flatMap((p) => p.auth?.methods ?? [])
-  
-  // Use the first plugin's loader (internal plugins take precedence)
-  const primaryPlugin = matchingPlugins[0]
-  
+  const mergedMethods = matchingPlugins.flatMap((p) => p.auth?.methods ?? []);
+  const primary = matchingPlugins[0];
+
   const handled = await handlePluginAuth(
-    { 
+    {
       auth: {
-        ...primaryPlugin.auth!,
+        ...primary.auth!,
         methods: mergedMethods,
-      }
-    }, 
-    provider
-  )
-  if (handled) return
+      },
+    },
+    provider,
+  );
+
+  if (handled) return;
 }
 ```
 
-### Also update lines 326-330 (custom provider handling)
+Apply equivalent logic in both default-provider and custom-provider auth paths.
 
-```typescript
-// Same pattern for custom providers
-const customPlugins = await Plugin.list().then((x) => 
-  x.filter((x) => x.auth?.provider === provider)
-)
-if (customPlugins.length > 0) {
-  const mergedMethods = customPlugins.flatMap((p) => p.auth?.methods ?? [])
-  const primaryPlugin = customPlugins[0]
-  const handled = await handlePluginAuth(
-    { auth: { ...primaryPlugin.auth!, methods: mergedMethods } }, 
-    provider
-  )
-  if (handled) return
-}
-```
+## Compatibility
 
-## Benefits
+| Case | Result |
+| --- | --- |
+| One plugin for provider | No behavior change |
+| Multiple plugins for provider | Methods become visible in one merged menu |
+| Existing loader assumptions | Preserved by keeping first plugin as primary |
 
-1. **Backward Compatible**: Existing behavior unchanged for providers with single plugin
-2. **Extensible**: External plugins can add auth methods to any provider
-3. **Priority Preserved**: Internal plugins' loaders still take precedence
-4. **Minimal Change**: ~10 lines changed, no new dependencies
+## Acceptance Tests
 
-## Testing
+1. Install OpenCode with built-in OpenAI auth only.
+   - Expected: unchanged behavior.
+2. Add external plugin with additional OpenAI auth method.
+   - Expected: both built-in and external methods appear.
+3. Select each method and verify auth flow still completes.
 
-1. Install an external plugin that registers for `openai` provider
-2. Run `opencode auth login` → select "OpenAI"
-3. Verify both internal and external auth methods appear in the list
+## Risks and Mitigations
 
-## Alternative Considered
+| Risk | Mitigation |
+| --- | --- |
+| Duplicate method labels | OpenCode can dedupe by id/label in a later patch |
+| Conflicting loaders | Keep current first-plugin precedence for initial rollout |
+| Unexpected plugin ordering | Document deterministic ordering or sort policy |
 
-Have external plugins use different provider IDs (e.g., `openai-multi`), but this requires users to manually type the provider ID via "Other", which is poor UX.
+## Why This Matters for `codex-multi-auth`
+
+`codex-multi-auth` extends account workflows for OpenAI/Codex use cases. Without merged auth methods, users must use awkward workarounds instead of seeing all provider auth options in one place.

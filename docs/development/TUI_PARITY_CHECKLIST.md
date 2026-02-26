@@ -1,104 +1,93 @@
-# TUI Parity Checklist (Codex Multi-Auth)
+# TUI Parity Checklist
 
-Use this checklist to keep `codex-multi-auth` aligned with the Antigravity-style auth TUI pattern, while preserving Codex-specific logic and storage behavior.
+Checklist for auth dashboard behavior and keyboard ergonomics.
 
-## Scope
+## Target UX
 
-- Match interaction shape and operator experience.
-- Do not copy provider-specific business logic from Antigravity.
-- Keep Codex storage/auth semantics as source of truth.
+`codex auth login` should open one interactive dashboard with clear sections and beginner defaults.
 
-## Menu Structure Parity
+## Menu Structure
 
-- `opencode auth login` -> provider -> login method -> account dashboard.
-- Dashboard sections exist in this order:
-  - `Actions`
-  - `Accounts`
-  - `Danger zone`
-- Core actions visible:
-  - `Add account`
-  - `Check quotas`
-  - `Deep probe accounts`
-  - `Verify flagged accounts`
-  - `Start fresh`
-  - `Delete all accounts`
-- Account row format includes:
-  - numeric index
-  - account label/email
-  - state badges (`[current]`, `[active]`, `[ok]`, `[rate-limited]`, `[disabled]`, `[flagged]`)
-  - usage hint (`used today`, `used yesterday`, etc.)
+Expected top-level sections in order:
 
-## Keyboard and Navigation Parity
+1. `Quick Start`
+2. `Advanced Checks`
+3. `Accounts`
+4. `Danger zone`
 
-- `Up/Down` moves selection.
-- `Enter` confirms selected item.
-- `Esc` returns/back/cancel.
-- Ctrl+C exits gracefully without corrupting terminal state.
-- Cursor visibility restored on exit from menu.
+Expected core actions:
 
-## Account Detail Menu Parity
+- `Add account (OAuth login)`
+- `Quick check account health (recommended)`
+- `Forecast best account`
+- `Auto-fix common issues (safe mode)`
+- `Verify all accounts (full refresh test)`
+- `Verify flagged accounts`
+- `Delete all accounts`
 
-- Selecting an account opens account detail actions:
-  - `Enable/Disable account`
-  - `Refresh account` (re-auth that account)
-  - `Delete this account`
-  - `Back`
-- Destructive actions require confirmation.
-- `Delete all accounts` requires explicit typed confirmation (`DELETE`).
+## Account Row Expectations
 
-## Health/Quota Check Parity
+Each row should show:
 
-- `Check quotas` scans all active accounts and prints per-account results.
-- `Deep probe` performs stricter validation and surfaces richer diagnostic output.
-- Output includes index progress (`[i/N]`) and per-account status (`OK`, `ERROR`, `DISABLED`).
-- Summary line always shown at end (`ok/error/disabled` counts).
+- numeric index
+- account email/label
+- optional `[current]`
+- status badge (`active`, `ok`, `rate-limited`, `cooldown`, `disabled`, `flagged`, `error`, `unknown`)
+- usage hint (`used today`, `used yesterday`, etc.)
 
-## Flagged/Disabled State Parity
+## Keyboard Behavior
 
-- Invalid-refresh accounts are moved to flagged storage.
-- `Verify flagged accounts` can restore accounts that refresh successfully.
-- Disabled accounts remain visible but are skipped from active rotation and health execution paths.
-- Account manager never selects disabled accounts as current/next candidate.
+Global:
 
-## Persistence and Cache Behavior
+- `Up/Down`: move
+- `Enter`: confirm
+- `Esc`/`Q`: cancel/back
+- `H`/`?`: toggle help text
+- `/`: search prompt
+- `1-9`: set selected account as current directly
 
-- Storage writes occur after:
-  - account add/update/delete
-  - enable/disable toggle
-  - flagged pool migration/restore
-- In-memory account manager caches are invalidated after any account pool mutation.
-- Import flow invalidates both cached manager object and pending manager promise.
+Action hotkeys:
 
-## V2 Rollout Controls
+- `A`: add account
+- `C`: quick check
+- `P`: forecast
+- `X`: auto-fix
+- `V`: verify all
+- `G` or `F`: verify flagged
 
-- Default behavior: Codex-style TUI is enabled.
-- Opt-out is supported through config/env:
-  - `codexTuiV2: false`
-  - `CODEX_TUI_V2=0`
-- Visual controls:
-  - `codexTuiColorProfile`: `truecolor` / `ansi256` / `ansi16`
-  - `codexTuiGlyphMode`: `ascii` / `unicode` / `auto`
+Account detail hotkeys:
 
-## Tooling Parity
+- `S`: set current
+- `R`: refresh account
+- `E` (or `X`): enable/disable
+- `D`: delete account
 
-- `codex-list` reflects account states and active selection.
-- `codex-status` shows per-family active index and account-level state details.
-- `codex-import` and `codex-export` remain compatible with multi-account storage.
+## Safety and Confirmation
 
-## Verification Checklist (Before Release)
+- Deleting one account requires confirm.
+- Refreshing one account requires confirm.
+- `Delete all accounts` requires typed confirmation: `DELETE`.
+- Ctrl+C should exit cleanly and restore terminal state.
 
-- `npm run -s typecheck` passes.
-- `npm test` passes.
-- Manual smoke run:
-  - login -> dashboard appears
-  - add account works
-  - check quotas runs and summarizes
-  - disable account prevents rotation to it
-  - verify flagged restores a recoverable account
-  - delete-all requires typed confirmation and clears active + flagged pools
+## Data and Runtime Parity
+
+- Any account mutation writes storage immediately.
+- Active index and per-family indices stay valid after changes.
+- Cache/manager reload occurs after storage mutation.
+- Live account sync should keep long-running sessions updated.
+
+## Release Checklist
+
+- `npm run typecheck`
+- `npm test`
+- Manual smoke:
+  - login/add account
+  - set current via number hotkey
+  - run check/forecast/fix from hotkeys
+  - enable/disable and verify rotation impact
+  - delete-all confirmation gate works
 
 ## Non-Goals
 
-- Replicating Antigravity Google token semantics.
-- Sharing storage files with unrelated plugins.
-- Editing Antigravity repo files as part of Codex plugin maintenance.
+- Reintroducing provider-specific OpenCode auth menus.
+- Vim-style keybinding complexity.

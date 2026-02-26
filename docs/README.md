@@ -1,43 +1,37 @@
-# Documentation
+# Documentation Portal
 
-Welcome to the OpenCode OpenAI Codex Auth Plugin documentation!
+Start here for all project docs.
 
-## For Users
+## Fast Paths
 
-- **[Getting Started](getting-started.md)** - Installation, configuration, and quick start
-- **[Configuration Guide](configuration.md)** - Complete config reference
-- **[Troubleshooting](troubleshooting.md)** - Common issues and debugging
-- **[Changelog](../CHANGELOG.md)** - Version history and release notes
+| Need | Read |
+| --- | --- |
+| First-time setup | [getting-started.md](getting-started.md) |
+| Config and environment variables | [configuration.md](configuration.md) |
+| Fix login/rate-limit/account issues | [troubleshooting.md](troubleshooting.md) |
+| Privacy and local files | [privacy.md](privacy.md) |
+| Full documentation architecture | [DOCUMENTATION.md](DOCUMENTATION.md) |
 
-## For Developers
+## Full Chart
 
-Explore the engineering depth behind this plugin:
+| File | Purpose | Audience |
+| --- | --- | --- |
+| [index.md](index.md) | Simple docs landing page | Everyone |
+| [getting-started.md](getting-started.md) | Beginner onboarding | Beginner |
+| [configuration.md](configuration.md) | Runtime config and env controls | Beginner to Intermediate |
+| [troubleshooting.md](troubleshooting.md) | Symptom-to-fix playbook | Beginner to Intermediate |
+| [privacy.md](privacy.md) | Data handling and file locations | Everyone |
+| [DOCUMENTATION.md](DOCUMENTATION.md) | Documentation system and maintenance rules | Maintainers |
+| [development/ARCHITECTURE.md](development/ARCHITECTURE.md) | Runtime architecture and request pipeline | Advanced |
+| [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Config keys and defaults reference | Advanced |
+| [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Config resolution flow and precedence | Advanced |
+| [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by path | Advanced |
+| [development/TESTING.md](development/TESTING.md) | Test strategy and release checks | Advanced |
+| [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Auth dashboard parity checklist | Advanced |
+| [OPENCODE_PR_PROPOSAL.md](OPENCODE_PR_PROPOSAL.md) | Upstream OpenCode proposal | Maintainers |
+| [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark execution guide | Maintainers |
 
-- **[Repository Scope Map](development/REPOSITORY_SCOPE.md)** - Canonical path ownership and extension points
-- **[Architecture](development/ARCHITECTURE.md)** - Technical design, request pipeline, AI SDK compatibility
-- **[Configuration System](development/CONFIG_FLOW.md)** - How config loading and merging works
-- **[Config Fields Guide](development/CONFIG_FIELDS.md)** - Understanding config keys, `id`, and `name`
-- **[Testing Guide](development/TESTING.md)** - Test scenarios, verification procedures, integration testing
-- **[TUI Parity Checklist](development/TUI_PARITY_CHECKLIST.md)** - Auth dashboard/UI parity requirements for future changes
+## Related
 
-## Documentation Meta
-
-- **[Documentation Structure](DOCUMENTATION.md)** - How docs are organized in this repository
-
-## Key Architectural Decisions
-
-This plugin bridges two different systems with careful engineering:
-
-1. **AI SDK Compatibility** - Filters `item_reference` (AI SDK construct) for Codex API compatibility
-2. **Stateless Operation** - ChatGPT backend requires `store: false`, verified via testing
-3. **Full Context Preservation** - Sends complete message history (IDs stripped) for LLM context (with optional fast-session trimming)
-4. **Stale-While-Revalidate Caching** - Keeps prompt/instruction fetches fast while avoiding GitHub rate limits; optional startup prewarm for first-turn latency
-5. **Per-Model Configuration** - Enables quality presets with quick switching
-6. **Fast Session Mode** - Optional low-latency tuning (clamps reasoning/verbosity on trivial turns) without changing defaults
-7. **Entitlement-Aware Fallback Flow** - Unsupported models try remaining accounts/workspaces first, then optional fallback chain if enabled
-
-**Testing**: large Vitest suite with enforced 80% coverage threshold plus integration coverage
-
----
-
-**Quick Links**: [GitHub](https://github.com/ndycode/codex-multi-auth) | [npm](https://www.npmjs.com/package/codex-multi-auth) | [Issues](https://github.com/ndycode/codex-multi-auth/issues)
+- Project README: [../README.md](../README.md)
+- Security policy: [../SECURITY.md](../SECURITY.md)

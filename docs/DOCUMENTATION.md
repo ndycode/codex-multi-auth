@@ -1,47 +1,59 @@
-# Documentation Structure
+# Documentation Architecture
 
-This file describes how docs are organized in this repository.
+This file defines how documentation is organized and maintained.
 
-## Repository-level docs
+## Master Documentation Chart
 
-- `README.md` - Main entry point for users
-- `CHANGELOG.md` - Release history
-- `CONTRIBUTING.md` - Contribution workflow
-- `SECURITY.md` - Security reporting policy
-- `AGENTS.md` - AI agent instructions for this codebase
+| Scope | File | Primary audience |
+| --- | --- | --- |
+| Project entry | `README.md` | New users |
+| Docs portal | `docs/README.md` | All users |
+| Docs landing | `docs/index.md` | All users |
+| Setup | `docs/getting-started.md` | Beginners |
+| Runtime configuration | `docs/configuration.md` | Users and operators |
+| Troubleshooting | `docs/troubleshooting.md` | Users and operators |
+| Privacy/data | `docs/privacy.md` | All users |
+| Architecture internals | `docs/development/ARCHITECTURE.md` | Maintainers |
+| Config keys reference | `docs/development/CONFIG_FIELDS.md` | Maintainers |
+| Config resolution flow | `docs/development/CONFIG_FLOW.md` | Maintainers |
+| Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` | Maintainers |
+| Testing and release checks | `docs/development/TESTING.md` | Maintainers |
+| TUI parity checklist | `docs/development/TUI_PARITY_CHECKLIST.md` | Maintainers |
+| Upstream proposal | `docs/OPENCODE_PR_PROPOSAL.md` | Maintainers |
+| Benchmark guide | `docs/benchmarks/code-edit-format-benchmark.md` | Maintainers |
 
-## docs/ (site + user/developer guides)
+## Documentation Layers
 
-```text
-docs/
-  index.md                     # documentation landing page
-  README.md                    # docs portal / navigation
-  getting-started.md           # install + first-run guide
-  configuration.md             # full config reference
-  troubleshooting.md           # operational debugging guide
-  privacy.md                   # data handling notes
-  development/
-    REPOSITORY_SCOPE.md        # canonical path ownership + extension points
-    ARCHITECTURE.md            # technical design
-    CONFIG_FLOW.md             # config resolution internals
-    CONFIG_FIELDS.md           # config field semantics
-    TESTING.md                 # testing strategy and commands
-    TUI_PARITY_CHECKLIST.md    # auth dashboard UI parity checks
-```
+| Layer | Goal | Style |
+| --- | --- | --- |
+| Beginner | First successful login/use | command-first and short |
+| Intermediate | Safe operations and tuning | tables, defaults, examples |
+| Advanced | Maintenance and architecture | subsystem maps and invariants |
 
-## config/ (copy-paste templates)
+## Update Rules
 
-- `config/opencode-modern.json` - OpenCode v1.0.210+ variant-based template
-- `config/opencode-legacy.json` - OpenCode v1.0.209 and below template
-- `config/minimal-opencode.json` - minimal debug template
-- `config/README.md` - template-selection guide
+When behavior changes:
 
-## Notes
+1. Update `README.md` and `docs/getting-started.md` first.
+2. Update `docs/configuration.md` and `docs/troubleshooting.md` for operator impact.
+3. Update development docs for internal changes.
+4. Keep commands and file paths synchronized with code.
 
-- AGENTS hierarchy for source edits:
-  - `AGENTS.md` applies repository-wide.
-  - `lib/AGENTS.md` applies to `lib/**`.
-  - `test/AGENTS.md` applies to `test/**`.
-- `dist/` is build output and not a documentation source of truth.
-- `tmp*` files are release scratch artifacts and not part of user docs.
-- For user-facing guidance, start with `README.md` or `docs/getting-started.md`.
+## Consistency Rules
+
+- Prefer `codex auth ...` command examples for account workflows.
+- Use real runtime paths (`~/.codex/multi-auth/...`) for plugin internals.
+- Mark legacy paths as compatibility-only.
+- Keep JSON snippets minimal and runnable.
+
+## Documentation QA Checklist
+
+- Commands copied from docs execute without edits.
+- Paths match `lib/runtime-paths.ts`, `lib/config.ts`, and `lib/storage.ts`.
+- New config keys appear in both user and development references.
+- New CLI flags appear in troubleshooting/examples where relevant.
+
+## Related
+
+- [README.md](../README.md)
+- [README.md](README.md)

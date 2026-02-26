@@ -1,70 +1,83 @@
 # Code Edit Format Benchmark
 
-This benchmark compares code edit formats across Codex models using the same task corpus and validators.
+Benchmark guide for edit format quality and reliability.
 
-Formats:
+## Purpose
+
+Compare edit formats across Codex-family models using the same tasks and validators.
+
+Formats tested:
+
 - `patch`
 - `replace`
 - `hashline`
-- `hashline_v2` (benchmark-only experimental mode based on the PinEdit-style workflow)
+- `hashline_v2` (benchmark-only experimental mode)
 
-Default model preset:
-- `codex-core` (stable named `openai/*codex*` models discovered from local `opencode models`)
+## Output Layout
 
-## Outputs
+Each run writes to `.tmp-bench/<label>/`:
 
-Each run writes artifacts under `.tmp-bench/<label>/`:
-- `results/summary.json`
-- `results/report.md`
-- `results/dashboard.html`
-- `logs/*.ndjson` (measured runs and failures by default)
-- `workspaces/*` (per-run temp workspaces)
+| Path | Content |
+| --- | --- |
+| `results/summary.json` | Structured metrics |
+| `results/report.md` | Markdown summary |
+| `results/dashboard.html` | Visual dashboard |
+| `logs/*.ndjson` | Per-run logs and failures |
+| `workspaces/*` | Temporary run workspaces |
 
-This keeps benchmark artifacts easy to delete later.
+## Quick Start
 
-## Quick start
-
-Smoke run (few tasks, 1 measured run, no warmup):
+Smoke test:
 
 ```bash
 node scripts/benchmark-edit-formats.mjs --smoke --models=openai/gpt-5-codex
 ```
 
-Fuller run on Codex core preset:
+Preset run:
 
 ```bash
 node scripts/benchmark-edit-formats.mjs --preset=codex-core --warmup-runs=1 --measured-runs=5
 ```
 
-Use your existing provider config/home when required:
+Use explicit home path if needed:
 
 ```bash
-node scripts/benchmark-edit-formats.mjs --home="C:\\Users\\Administrator"
+node scripts/benchmark-edit-formats.mjs --home="C:\\Users\\<you>"
 ```
 
-## Re-render dashboard from summary
+## Dashboard Re-Render
 
 ```bash
 node scripts/benchmark-render-dashboard.mjs --input=.tmp-bench/<label>/results/summary.json
 ```
 
-## Notes on mode behavior
+## Format Semantics
 
-- `patch` mode expects filesystem patch/edit tools (for example `filesystem_edit_file`). If the model uses another tool family, the run is marked unsupported for patch-mode scoring.
-- `replace` mode expects plugin edit payloads with `oldString/newString`.
-- `hashline` mode expects `hashline_read` followed by a hash-anchored edit (`lineRef`).
-- `hashline_v2` expects no tools and a single JSON edit call response in the benchmark-only PinEdit-style schema.
+| Mode | Expected behavior |
+| --- | --- |
+| `patch` | diff/patch-style tool usage |
+| `replace` | deterministic `oldString/newString` edits |
+| `hashline` | hashline anchored edit workflow |
+| `hashline_v2` | single structured JSON edit output |
+
+If a model/tooling combination cannot satisfy a mode, run is marked unsupported for that mode.
 
 ## Cleanup
 
-Delete all benchmark artifacts:
+Linux/macOS:
 
 ```bash
 rm -rf .tmp-bench
 ```
 
-PowerShell:
+Windows PowerShell:
 
 ```powershell
 Remove-Item -Recurse -Force .tmp-bench
 ```
+
+## Related
+
+- Script entrypoint: `scripts/benchmark-edit-formats.mjs`
+- Dashboard renderer: `scripts/benchmark-render-dashboard.mjs`
+- Task corpus helpers: `scripts/bench-format/`
