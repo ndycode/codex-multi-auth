@@ -8,12 +8,10 @@ This page covers both OpenCode config and plugin runtime config.
 | --- | --- | --- |
 | OpenCode global config | `~/.config/opencode/opencode.json` | Plugin registration and provider options |
 | OpenCode project override | `<project>/.opencode/opencode.json` | Per-project model behavior |
-| Plugin runtime config | `~/.codex/multi-auth/config.json` | Account rotation, TUI, resilience tuning |
+| Plugin runtime config | `~/.opencode/codex-multi-auth-config.json` | Account rotation, TUI, resilience tuning |
 
-Legacy plugin config fallback paths still load if present:
+Legacy plugin config fallback path still loads if present:
 
-- `~/.codex/codex-multi-auth-config.json`
-- `~/.opencode/codex-multi-auth-config.json`
 - `~/.opencode/openai-codex-auth-config.json`
 
 ## Minimal OpenCode Config
@@ -38,7 +36,7 @@ Legacy plugin config fallback paths still load if present:
 
 ## Recommended Plugin Runtime Config
 
-`~/.codex/multi-auth/config.json`:
+`~/.opencode/codex-multi-auth-config.json`:
 
 ```json
 {
@@ -98,11 +96,11 @@ Legacy plugin config fallback paths still load if present:
 
 | Data | Path |
 | --- | --- |
-| Accounts (global) | `~/.codex/multi-auth/openai-codex-accounts.json` |
-| Accounts (per-project) | `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json` |
-| Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
-| Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
-| Cache | `~/.codex/multi-auth/cache/` |
+| Accounts (global) | `~/.opencode/openai-codex-accounts.json` |
+| Accounts (per-project) | `~/.opencode/projects/<project-key>/openai-codex-accounts.json` |
+| Flagged accounts | `~/.opencode/openai-codex-flagged-accounts.json` |
+| Logs | `~/.opencode/logs/codex-plugin/` |
+| Cache | `~/.opencode/cache/` |
 
 ## Validation Commands
 
@@ -125,3 +123,4 @@ The OpenCode upstream proposal in [OPENCODE_PR_PROPOSAL.md](OPENCODE_PR_PROPOSAL
 - [getting-started.md](getting-started.md)
 - [troubleshooting.md](troubleshooting.md)
 - [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
+

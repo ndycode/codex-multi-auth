@@ -7,11 +7,9 @@ How configuration is resolved from files and environment variables into effectiv
 `loadPluginConfig()` resolves config in this order:
 
 1. `CODEX_MULTI_AUTH_CONFIG_PATH`
-2. `~/.codex/multi-auth/config.json`
-3. `~/.codex/codex-multi-auth-config.json` (legacy)
-4. `~/.opencode/codex-multi-auth-config.json` (legacy)
-5. `~/.opencode/openai-codex-auth-config.json` (legacy)
-6. Built-in defaults
+2. `~/.opencode/codex-multi-auth-config.json`
+3. `~/.opencode/openai-codex-auth-config.json` (legacy)
+4. Built-in defaults
 
 Later sources in this list are only used if earlier ones are missing.
 
@@ -64,9 +62,9 @@ Optional fast-session mode can trim histories and lower reasoning/verbosity.
 ## 6) Account Storage Path Flow
 
 - If project root is detected and `perProjectAccounts=true`:
-  - `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`
+  - `~/.opencode/projects/<project-key>/openai-codex-accounts.json`
 - Otherwise:
-  - `~/.codex/multi-auth/openai-codex-accounts.json`
+  - `~/.opencode/openai-codex-accounts.json`
 
 Storage writes are atomic and protected by lock + backup + WAL recovery.
 
@@ -111,3 +109,4 @@ DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1
 
 - [CONFIG_FIELDS.md](CONFIG_FIELDS.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
+

@@ -13,12 +13,12 @@ The plugin does not run a custom analytics pipeline.
 
 | Data | Path | Notes |
 | --- | --- | --- |
-| Plugin config | `~/.codex/multi-auth/config.json` | Runtime behavior toggles |
-| Global accounts | `~/.codex/multi-auth/openai-codex-accounts.json` | Main account pool |
-| Per-project accounts | `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json` | Optional project isolation |
-| Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` | Accounts with hard failures |
-| Logs | `~/.codex/multi-auth/logs/codex-plugin/` | Created when logging is enabled |
-| Prompt cache | `~/.codex/multi-auth/cache/` | Cached instructions and metadata |
+| Plugin config | `~/.opencode/codex-multi-auth-config.json` | Runtime behavior toggles |
+| Global accounts | `~/.opencode/openai-codex-accounts.json` | Main account pool |
+| Per-project accounts | `~/.opencode/projects/<project-key>/openai-codex-accounts.json` | Optional project isolation |
+| Flagged accounts | `~/.opencode/openai-codex-flagged-accounts.json` | Accounts with hard failures |
+| Logs | `~/.opencode/logs/codex-plugin/` | Created when logging is enabled |
+| Prompt cache | `~/.opencode/cache/` | Cached instructions and metadata |
 | Codex CLI account state | `~/.codex/accounts.json` and `~/.codex/auth.json` | Read/sync integration paths |
 
 ## Network Destinations
@@ -44,13 +44,19 @@ prompt/response payload content may be written to local logs. Treat logs as sens
 Linux/macOS:
 
 ```bash
-rm -rf ~/.codex/multi-auth
+rm -f ~/.opencode/codex-multi-auth-config.json
+rm -f ~/.opencode/openai-codex-accounts.json ~/.opencode/openai-codex-flagged-accounts.json ~/.opencode/openai-codex-auth-config.json
+find ~/.opencode/projects -name openai-codex-accounts.json -delete 2>/dev/null
+rm -rf ~/.opencode/logs/codex-plugin
 ```
 
 Windows PowerShell:
 
 ```powershell
-Remove-Item "$HOME\.codex\multi-auth" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\\.opencode\\codex-multi-auth-config.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\\.opencode\\openai-codex-accounts.json","$HOME\\.opencode\\openai-codex-flagged-accounts.json","$HOME\\.opencode\\openai-codex-auth-config.json" -Force -ErrorAction SilentlyContinue
+Get-ChildItem "$HOME\\.opencode\\projects" -Filter "openai-codex-accounts.json" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\\.opencode\\logs\\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
 ## Policy Responsibility
@@ -64,3 +70,4 @@ Usage must follow OpenAI policy documents:
 
 - [configuration.md](configuration.md)
 - [troubleshooting.md](troubleshooting.md)
+

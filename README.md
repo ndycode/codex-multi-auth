@@ -25,7 +25,7 @@ If you are upgrading from older OpenCode-first docs/flows, read:
 
 - [docs/upgrade.md](docs/upgrade.md)
 
-It covers command changes, path migration (`~/.opencode/*` to `~/.codex/multi-auth/*`), and the recommended migration sequence.
+It covers command changes, legacy path compatibility, and the recommended migration sequence.
 
 ## What This Project Adds
 
@@ -95,18 +95,18 @@ Manual path: create/update `~/.config/opencode/opencode.json`:
 Run a quick test:
 
 ```bash
-opencode run "hello" --model=openai/gpt-5.2 --variant=medium
+opencode run "hello" --model=openai/gpt-5.1 --variant=medium
 ```
 
 ## File Locations
 
 | Data | Path |
 | --- | --- |
-| Plugin config | `~/.codex/multi-auth/config.json` |
-| Account storage (global) | `~/.codex/multi-auth/openai-codex-accounts.json` |
-| Account storage (per-project) | `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json` |
-| Plugin logs | `~/.codex/multi-auth/logs/codex-plugin/` |
-| Prompt cache | `~/.codex/multi-auth/cache/` |
+| Plugin config | `~/.opencode/codex-multi-auth-config.json` |
+| Account storage (global) | `~/.opencode/openai-codex-accounts.json` |
+| Account storage (per-project) | `~/.opencode/projects/<project-key>/openai-codex-accounts.json` |
+| Plugin logs | `~/.opencode/logs/codex-plugin/` |
+| Prompt cache | `~/.opencode/cache/` |
 | Codex CLI account state | `~/.codex/accounts.json` |
 | OpenCode config | `~/.config/opencode/opencode.json` |
 
@@ -164,3 +164,4 @@ This tool is for personal development workflows. You are responsible for OpenAI 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+

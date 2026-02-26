@@ -6,7 +6,7 @@ Complete reference for plugin runtime configuration and OpenCode provider option
 
 Primary file:
 
-- `~/.codex/multi-auth/config.json`
+- `~/.opencode/codex-multi-auth-config.json`
 
 Override file path with:
 
@@ -117,3 +117,4 @@ Override file path with:
 - [CONFIG_FLOW.md](CONFIG_FLOW.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [../configuration.md](../configuration.md)
+

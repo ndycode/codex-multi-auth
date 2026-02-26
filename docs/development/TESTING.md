@@ -68,7 +68,7 @@ codex auth report --live --json
 ## OpenCode Plugin Smoke
 
 ```bash
-opencode run "hello" --model=openai/gpt-5.2 --variant=medium
+opencode run "hello" --model=openai/gpt-5.1 --variant=medium
 ```
 
 Validate:
@@ -97,3 +97,4 @@ Code edit format benchmark docs:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [CONFIG_FLOW.md](CONFIG_FLOW.md)
+

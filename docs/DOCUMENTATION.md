@@ -36,14 +36,14 @@ This file defines how documentation is organized and maintained.
 When behavior changes:
 
 1. Update `README.md` and `docs/getting-started.md` first.
-2. Update `docs/configuration.md` and `docs/troubleshooting.md` for operator impact.
-3. Update development docs for internal changes.
+2. Revise `docs/configuration.md` and `docs/troubleshooting.md` for operator impact.
+3. Refresh development docs for internal changes.
 4. Keep commands and file paths synchronized with code.
 
 ## Consistency Rules
 
 - Prefer `codex auth ...` command examples for account workflows.
-- Use real runtime paths (`~/.codex/multi-auth/...`) for plugin internals.
+- Use real runtime paths (`~/.opencode/...`) for plugin internals.
 - Mark legacy paths as compatibility-only.
 - Keep JSON snippets minimal and runnable.
 

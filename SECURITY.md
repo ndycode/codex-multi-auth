@@ -26,7 +26,7 @@ This plugin handles sensitive OAuth tokens. To protect your security:
 - Never share your `~/.codex/` directory
 - Do not commit OAuth tokens to version control
 - Regularly review authorized apps at [ChatGPT Settings](https://chatgpt.com/settings/apps)
-- Remove local auth files when done on shared systems (`~/.codex/multi-auth/*`)
+- Remove local plugin auth files when done on shared systems (`~/.opencode/openai-codex-*.json`)
 - Enable debug logging (`ENABLE_PLUGIN_REQUEST_LOGGING=1`) only when troubleshooting
 
 ### Reporting a Vulnerability

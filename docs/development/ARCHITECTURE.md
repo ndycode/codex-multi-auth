@@ -22,7 +22,7 @@ scripts/codex.js (CLI shim)
   v
 lib/codex-manager.ts
   |- OAuth flow + account menu + fix/doctor/report
-  |- writes ~/.codex/multi-auth/openai-codex-accounts.json
+  |- writes ~/.opencode/openai-codex-accounts.json
   |- syncs active account to ~/.codex/accounts.json
 
 OpenCode runtime (optional)
@@ -81,11 +81,11 @@ OpenAI Codex/ChatGPT backend
 
 | File | Purpose |
 | --- | --- |
-| `~/.codex/multi-auth/openai-codex-accounts.json` | Primary account storage (v3) |
-| `~/.codex/multi-auth/openai-codex-accounts.json.bak` | Last backup |
-| `~/.codex/multi-auth/openai-codex-accounts.json.wal` | Recovery journal |
-| `~/.codex/multi-auth/openai-codex-flagged-accounts.json` | Flagged account pool |
-| `~/.codex/multi-auth/projects/<project-key>/...` | Project-scoped storage |
+| `~/.opencode/openai-codex-accounts.json` | Primary account storage (v3) |
+| `~/.opencode/openai-codex-accounts.json.bak` | Last backup |
+| `~/.opencode/openai-codex-accounts.json.wal` | Recovery journal |
+| `~/.opencode/openai-codex-flagged-accounts.json` | Flagged account pool |
+| `~/.opencode/projects/<project-key>/...` | Project-scoped storage |
 
 ## TUI Runtime Notes
 
@@ -105,3 +105,4 @@ OpenAI Codex/ChatGPT backend
 - [CONFIG_FIELDS.md](CONFIG_FIELDS.md)
 - [CONFIG_FLOW.md](CONFIG_FLOW.md)
 - [REPOSITORY_SCOPE.md](REPOSITORY_SCOPE.md)
+

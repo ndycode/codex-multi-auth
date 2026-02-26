@@ -20,6 +20,8 @@ npm link
 ```
 
 `codex-multi-auth` is currently installed from source in this workflow.
+`npm link` creates a global symlink for local development and contributor workflows; it is not required for normal npm users.
+If this install flow changes (`npm run build`, `npm link`, or published package install), update [upgrade.md](upgrade.md) and command docs in [../README.md](../README.md).
 
 ## Login Your First Account
 
@@ -68,7 +70,7 @@ Manual `~/.config/opencode/opencode.json`:
 Test:
 
 ```bash
-opencode run "hello" --model=openai/gpt-5.2 --variant=medium
+opencode run "hello" --model=openai/gpt-5.1 --variant=medium
 ```
 
 ## First-Day Commands
@@ -96,3 +98,4 @@ codex auth list
 - [troubleshooting.md](troubleshooting.md)
 - [privacy.md](privacy.md)
 - [upgrade.md](upgrade.md)
+

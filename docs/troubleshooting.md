@@ -43,7 +43,7 @@ codex auth report --live --json
 POSIX shell:
 
 ```bash
-DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 opencode run "test" --model=openai/gpt-5.2
+DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 opencode run "test" --model=openai/gpt-5.1
 ```
 
 PowerShell:
@@ -52,7 +52,7 @@ PowerShell:
 $env:DEBUG_CODEX_PLUGIN='1'
 $env:ENABLE_PLUGIN_REQUEST_LOGGING='1'
 $env:CODEX_PLUGIN_LOG_BODIES='1'
-opencode run "test" --model=openai/gpt-5.2
+opencode run "test" --model=openai/gpt-5.1
 ```
 
 Command Prompt (`cmd.exe`):
@@ -61,16 +61,16 @@ Command Prompt (`cmd.exe`):
 set DEBUG_CODEX_PLUGIN=1
 set ENABLE_PLUGIN_REQUEST_LOGGING=1
 set CODEX_PLUGIN_LOG_BODIES=1
-opencode run "test" --model=openai/gpt-5.2
+opencode run "test" --model=openai/gpt-5.1
 ```
 
 Logs:
 
-`~/.codex/multi-auth/logs/codex-plugin/`
+`~/.opencode/logs/codex-plugin/`
 
 ## Soft Reset
 
-1. Backup and remove `~/.codex/multi-auth/openai-codex-accounts.json`.
+1. Backup and remove `~/.opencode/openai-codex-accounts.json`.
 2. Run `codex auth login`.
 3. Verify with `codex auth list`.
 
@@ -83,3 +83,4 @@ Include:
 - plugin version (`npm ls -g codex-multi-auth`)
 - codex version (`codex --version`)
 - exact failing command and full error text
+

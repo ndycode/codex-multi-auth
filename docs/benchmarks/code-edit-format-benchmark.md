@@ -30,7 +30,7 @@ Each run writes to `.tmp-bench/<label>/`:
 Smoke test:
 
 ```bash
-node scripts/benchmark-edit-formats.mjs --smoke --models=openai/gpt-5-codex
+node scripts/benchmark-edit-formats.mjs --smoke --models=openai/gpt-5.1
 ```
 
 Preset run:
@@ -81,3 +81,4 @@ Remove-Item -Recurse -Force .tmp-bench
 - Script entrypoint: `scripts/benchmark-edit-formats.mjs`
 - Dashboard renderer: `scripts/benchmark-render-dashboard.mjs`
 - Task corpus helpers: `scripts/bench-format/`
+

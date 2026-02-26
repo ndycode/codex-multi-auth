@@ -29,6 +29,7 @@ Introduce helper functions in OpenCode auth discovery path:
 - `choosePrimaryAuthPlugin(plugins)`
 
 These keep behavior explicit and testable.
+Status: proposal only, pending OpenCode acceptance and implementation. These helpers do not exist in this repository today.
 
 ## Proposed Code Pattern
 
@@ -114,7 +115,7 @@ If OpenCode later introduces explicit plugin priority metadata, these helpers ar
 | Conflicting loader implementations | First plugin after deterministic sort is primary loader |
 | Windows vs Unix plugin ordering | Case-insensitive `localeCompare` keeps stable ordering across platforms |
 
-## Acceptance Tests
+## Acceptance Tests (Proposed For OpenCode)
 
 1. Built-in-only scenario:
    - one plugin for `openai`
@@ -135,7 +136,7 @@ If OpenCode later introduces explicit plugin priority metadata, these helpers ar
 
 ## Test Plan (Concrete)
 
-Add tests in OpenCode auth/plugin tests (example targets):
+Add tests in OpenCode auth/plugin tests after proposal acceptance (example targets):
 
 - `test/index.test.ts` for plugin discovery merge path
 - `test/auth.test.ts` for method selection and handler delegation
@@ -147,6 +148,10 @@ Required checks:
 - `mergedMethods.length === 0` guard
 - `primary.auth` null guard
 - `handlePluginAuth` try/catch fallback path
+- parallel auth safety with `Promise.all(...)` over repeated provider auth calls
+- simulated `handlePluginAuth` throws are isolated per call and do not mutate shared `mergedMethods` state
+
+Note: this `codex-multi-auth` PR is documentation-only; no runtime helper code or OpenCode test files are changed here.
 
 ## Risks and Mitigations
 
