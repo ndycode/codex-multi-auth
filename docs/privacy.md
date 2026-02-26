@@ -53,10 +53,10 @@ rm -rf ~/.opencode/logs/codex-plugin
 Windows PowerShell:
 
 ```powershell
-Remove-Item "$HOME\\.opencode\\codex-multi-auth-config.json" -Force -ErrorAction SilentlyContinue
-Remove-Item "$HOME\\.opencode\\openai-codex-accounts.json","$HOME\\.opencode\\openai-codex-flagged-accounts.json","$HOME\\.opencode\\openai-codex-auth-config.json" -Force -ErrorAction SilentlyContinue
-Get-ChildItem "$HOME\\.opencode\\projects" -Filter "openai-codex-accounts.json" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-Remove-Item "$HOME\\.opencode\\logs\\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.opencode\codex-multi-auth-config.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.opencode\openai-codex-accounts.json","$HOME\.opencode\openai-codex-flagged-accounts.json","$HOME\.opencode\openai-codex-auth-config.json" -Force -ErrorAction SilentlyContinue
+Get-ChildItem "$HOME\.opencode\projects" -Filter "openai-codex-accounts.json" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.opencode\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
 ## Policy Responsibility
