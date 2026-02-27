@@ -279,25 +279,25 @@ describe("CLI Module", () => {
 			expect(isNonInteractiveMode()).toBe(false);
 		});
 
-		it("returns true when OPENCODE_TUI is set", async () => {
+		it("returns true when CODEX_TUI is set", async () => {
 			delete process.env.FORCE_INTERACTIVE_MODE;
-			process.env.OPENCODE_TUI = "1";
+			process.env.CODEX_TUI = "1";
 			const { isNonInteractiveMode } = await import("../lib/cli.js");
 			expect(isNonInteractiveMode()).toBe(true);
-			delete process.env.OPENCODE_TUI;
+			delete process.env.CODEX_TUI;
 		});
 
-		it("returns true when OPENCODE_DESKTOP is set", async () => {
+		it("returns true when CODEX_DESKTOP is set", async () => {
 			delete process.env.FORCE_INTERACTIVE_MODE;
-			process.env.OPENCODE_DESKTOP = "1";
+			process.env.CODEX_DESKTOP = "1";
 			const { isNonInteractiveMode } = await import("../lib/cli.js");
 			expect(isNonInteractiveMode()).toBe(true);
-			delete process.env.OPENCODE_DESKTOP;
+			delete process.env.CODEX_DESKTOP;
 		});
 
-		it("returns true when TERM_PROGRAM is opencode", async () => {
+		it("returns true when TERM_PROGRAM is Codex", async () => {
 			delete process.env.FORCE_INTERACTIVE_MODE;
-			process.env.TERM_PROGRAM = "opencode";
+			process.env.TERM_PROGRAM = "Codex";
 			const { isNonInteractiveMode } = await import("../lib/cli.js");
 			expect(isNonInteractiveMode()).toBe(true);
 			delete process.env.TERM_PROGRAM;
@@ -313,8 +313,8 @@ describe("CLI Module", () => {
 
 		it("returns false when TTY is true and no env vars are set", async () => {
 			delete process.env.FORCE_INTERACTIVE_MODE;
-			delete process.env.OPENCODE_TUI;
-			delete process.env.OPENCODE_DESKTOP;
+			delete process.env.CODEX_TUI;
+			delete process.env.CODEX_DESKTOP;
 			delete process.env.TERM_PROGRAM;
 			delete process.env.ELECTRON_RUN_AS_NODE;
 
@@ -460,11 +460,11 @@ describe("CLI Module", () => {
 	describe("non-interactive mode behavior", () => {
 		beforeEach(() => {
 			delete process.env.FORCE_INTERACTIVE_MODE;
-			process.env.OPENCODE_TUI = "1";
+			process.env.CODEX_TUI = "1";
 		});
 
 		afterEach(() => {
-			delete process.env.OPENCODE_TUI;
+			delete process.env.CODEX_TUI;
 		});
 
 		it("promptAddAnotherAccount returns false in non-interactive mode", async () => {
@@ -490,3 +490,4 @@ describe("CLI Module", () => {
 		});
 	});
 });
+

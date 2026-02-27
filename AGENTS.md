@@ -5,7 +5,7 @@ Commit: 461ea2b
 Branch: main
 
 ## OVERVIEW
-OpenCode plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backend with multi-account OAuth rotation.
+Codex plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backend with multi-account OAuth rotation.
 
 ## STRUCTURE
 ```
@@ -14,7 +14,7 @@ OpenCode plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backe
 ├── lib/                  # core logic (see lib/AGENTS.md)
 ├── test/                 # vitest suites (see test/AGENTS.md)
 ├── scripts/              # install + build helpers
-├── config/               # opencode.json examples (legacy/modern)
+├── config/               # Codex.json examples (legacy/modern)
 ├── docs/                 # architecture + user docs
 ├── assets/               # static assets
 └── dist/                 # build output (generated, do not edit)
@@ -64,8 +64,8 @@ npm run lint        # eslint
 ## NOTES
 - OAuth callback: `http://127.0.0.1:1455/auth/callback`.
 - ChatGPT backend requires `store: false`, include `reasoning.encrypted_content`.
-- Per-project accounts: `~/.opencode/projects/<project-key>/openai-codex-accounts.json` (walks up to find project root).
-- Global accounts: `~/.opencode/openai-codex-accounts.json`.
+- Per-project accounts: `~/.codex/projects/<project-key>/openai-codex-accounts.json` (walks up to find project root).
+- Global accounts: `~/.codex/openai-codex-accounts.json`.
 - Prompt templates synced from Codex CLI GitHub releases with ETag caching.
 - 5xx server errors trigger account rotation and health penalty (same as network errors).
 - API deprecation/sunset headers (RFC 8594) are logged as warnings.
@@ -83,7 +83,7 @@ Skills to load when delegating tasks in this codebase.
 | `typescript-senior` | Strict mode, template literal types (`QuotaKey`), discriminated unions (`TokenResult`), Zod inference |
 | `node-backend` | ESM-first, `node:crypto`, Buffer API, async patterns |
 | `testing-js` | Vitest with 80% coverage threshold, `vi.mock`, `vi.useFakeTimers` |
-| `mcp-builder` | Uses `@opencode-ai/plugin/tool` pattern for tool registration |
+| `mcp-builder` | Uses `@codex-ai/plugin/tool` pattern for tool registration |
 
 ### Domain-Specific Skills (load when touching these areas)
 
@@ -121,3 +121,4 @@ delegate_task(category="...", load_skills=["typescript-senior", "node-backend", 
 // Git/GitHub operations
 delegate_task(category="quick", load_skills=["git-master", "github"])
 ```
+

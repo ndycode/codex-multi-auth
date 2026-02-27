@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { resolveOpencodeExecutable } from "./opencode.mjs";
+import { resolveCodexExecutable } from "./Codex.mjs";
 
 const FALLBACK_OPENAI_CODEX_STABLE = [
   "openai/gpt-5-codex",
@@ -47,8 +47,8 @@ export function isStableOpenAiCodexModel(modelId) {
   return true;
 }
 
-export function listOpencodeModels() {
-  const executable = resolveOpencodeExecutable();
+export function listCodexModels() {
+  const executable = resolveCodexExecutable();
   const child = spawnSync(executable.command, ["models"], {
     encoding: "utf8",
     windowsHide: true,
@@ -57,7 +57,7 @@ export function listOpencodeModels() {
   });
   const text = `${child.stdout ?? ""}\n${child.stderr ?? ""}`;
   if ((child.status ?? 1) !== 0) {
-    throw new Error(`Failed to list OpenCode models (exit=${child.status ?? 1})`);
+    throw new Error(`Failed to list Codex models (exit=${child.status ?? 1})`);
   }
   return text
     .split(/\r?\n/)
@@ -93,7 +93,7 @@ export function resolveModelPreset(presetName, explicitModels) {
   }
 
   try {
-    const models = dedupeCodexModels(listOpencodeModels().filter(isStableOpenAiCodexModel));
+    const models = dedupeCodexModels(listCodexModels().filter(isStableOpenAiCodexModel));
     if (models.length > 0) {
       return models;
     }
@@ -103,3 +103,4 @@ export function resolveModelPreset(presetName, explicitModels) {
 
   return [...FALLBACK_OPENAI_CODEX_STABLE];
 }
+

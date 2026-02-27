@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS = "1";
 
-vi.mock("@opencode-ai/plugin/tool", () => {
+vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
 		describe: () => makeSchema(),
@@ -1754,4 +1754,5 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		});
 	});
 });
+
 

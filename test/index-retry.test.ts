@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS = "1";
 
-vi.mock("@opencode-ai/plugin/tool", () => {
+vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
 		describe: () => makeSchema(),
@@ -214,3 +214,4 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(response.status).toBe(200);
 	});
 });
+

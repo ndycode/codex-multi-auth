@@ -11,7 +11,7 @@ import {
 	extractRequestUrl,
 	rewriteUrlForCodex,
 } from "../../lib/request/fetch-helpers.js";
-import type { Auth } from "@opencode-ai/sdk";
+import type { Auth } from "@codex-ai/sdk";
 
 describe("CircuitBreaker - State Machine Properties", () => {
 	beforeEach(() => {
@@ -560,3 +560,4 @@ describe("CircuitBreaker - Invariants", () => {
 		);
 	});
 });
+

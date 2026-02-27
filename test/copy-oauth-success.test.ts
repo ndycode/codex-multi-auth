@@ -12,7 +12,7 @@ describe("copy-oauth-success script", () => {
   it("copies oauth-success.html to the requested destination", async () => {
     const mod = await import("../scripts/copy-oauth-success.js");
 
-    const root = await mkdtemp(join(tmpdir(), "opencode-oauth-success-"));
+    const root = await mkdtemp(join(tmpdir(), "Codex-oauth-success-"));
     const src = join(root, "oauth-success.html");
     const dest = join(root, "dist", "lib", "oauth-success.html");
 
@@ -29,3 +29,4 @@ describe("copy-oauth-success script", () => {
     }
   });
 });
+

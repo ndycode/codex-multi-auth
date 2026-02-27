@@ -9,28 +9,28 @@ import process from "node:process";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
-const localConfigPaths = [join(repoRoot, ".opencode.json"), join(repoRoot, "opencode.json")];
+const localConfigPaths = [join(repoRoot, ".codex.json"), join(repoRoot, "Codex.json")];
 const scenarioTemplates = {
-	legacy: join(repoRoot, "config", "opencode-legacy.json"),
-	modern: join(repoRoot, "config", "opencode-modern.json"),
+	legacy: join(repoRoot, "config", "Codex-legacy.json"),
+	modern: join(repoRoot, "config", "Codex-modern.json"),
 };
 
 const defaultPromptPrefix = "Reply exactly:";
 const modelProviderId = "openai";
 const pluginPackageName = "codex-multi-auth";
 
-function resolveOpencodeExecutable() {
-	const envOverride = process.env.OPENCODE_BIN;
+function resolveCodexExecutable() {
+	const envOverride = process.env.CODEX_BIN;
 	if (envOverride && envOverride.trim().length > 0) {
 		const command = envOverride.trim();
 		return { command, shell: /\.cmd$/i.test(command) };
 	}
 
 	if (process.platform !== "win32") {
-		return { command: "opencode", shell: false };
+		return { command: "Codex", shell: false };
 	}
 
-	const whereResult = spawnSync("where", ["opencode"], {
+	const whereResult = spawnSync("where", ["Codex"], {
 		encoding: "utf8",
 		windowsHide: true,
 	});
@@ -40,18 +40,18 @@ function resolveOpencodeExecutable() {
 		.filter(Boolean);
 
 	if (candidates.length === 0) {
-		return { command: "opencode", shell: false };
+		return { command: "Codex", shell: false };
 	}
 
 	const exactExe = candidates.find((candidate) =>
-		/npm\\opencode\.exe$/i.test(candidate),
+		/npm\\Codex\.exe$/i.test(candidate),
 	);
 	if (exactExe) {
 		return { command: exactExe, shell: false };
 	}
 
 	const exactCmd = candidates.find((candidate) =>
-		/npm\\opencode\.cmd$/i.test(candidate),
+		/npm\\Codex\.cmd$/i.test(candidate),
 	);
 	if (exactCmd) {
 		return { command: exactCmd, shell: true };
@@ -65,7 +65,7 @@ function resolveOpencodeExecutable() {
 	return { command: candidates[0], shell: false };
 }
 
-const opencodeExecutable = resolveOpencodeExecutable();
+const CodexExecutable = resolveCodexExecutable();
 
 function printUsage() {
 	console.log(
@@ -113,11 +113,11 @@ function runQuiet(command, commandArgs) {
 	}
 }
 
-function stopOpencodeServers() {
+function stopCodexServers() {
 	if (process.platform === "win32") {
-		runQuiet("taskkill", ["/F", "/IM", "opencode.exe"]);
+		runQuiet("taskkill", ["/F", "/IM", "Codex.exe"]);
 	}
-	runQuiet("pkill", ["-f", "opencode"]);
+	runQuiet("pkill", ["-f", "Codex"]);
 }
 
 function normalizePluginList(value, pluginRef) {
@@ -198,11 +198,11 @@ function executeModelCase(caseInfo, index, port) {
 		args.push("--variant", caseInfo.variant);
 	}
 
-	const finalized = spawnSync(opencodeExecutable.command, args, {
+	const finalized = spawnSync(CodexExecutable.command, args, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		windowsHide: true,
-		shell: opencodeExecutable.shell,
+		shell: CodexExecutable.shell,
 		env: {
 			...process.env,
 			ENABLE_PLUGIN_REQUEST_LOGGING: "0",
@@ -351,19 +351,19 @@ async function main() {
 	const scenarios =
 		scenarioValue === "all" ? ["legacy", "modern"] : [scenarioValue];
 
-	console.log("OpenCode Model Matrix Audit");
+	console.log("Codex Model Matrix Audit");
 	console.log(`Repo: ${repoRoot}`);
 	console.log(`Scenarios: ${scenarios.join(", ")}`);
 	console.log(`Mode: ${smoke ? "smoke" : "full"}`);
 	console.log(`Plugin: ${pluginRef}`);
-	console.log(`OpenCode command: ${opencodeExecutable.command}`);
+	console.log(`Codex command: ${CodexExecutable.command}`);
 
 	const backups = await backupLocalConfigs();
 	const allResults = [];
 	try {
 		for (let i = 0; i < scenarios.length; i += 1) {
 			const scenario = scenarios[i];
-			stopOpencodeServers();
+			stopCodexServers();
 			const scenarioResults = await runScenario(scenario, {
 				smoke,
 				maxCases,
@@ -392,7 +392,7 @@ async function main() {
 			scenarios,
 			mode: smoke ? "smoke" : "full",
 			plugin: pluginRef,
-			opencodeCommand: opencodeExecutable.command,
+			CodexCommand: CodexExecutable.command,
 			totals: {
 				total: allResults.length,
 				passed,
@@ -421,4 +421,5 @@ main().catch((error) => {
 	);
 	process.exit(1);
 });
+
 

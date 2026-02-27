@@ -243,11 +243,11 @@ describe("Tool Output Normalization", () => {
 
 	describe("isHostSystemPrompt with cached prompt", () => {
 		it("returns true when content starts with cached prompt", () => {
-			const cachedPrompt = "You are OpenCode, an agent";
+			const cachedPrompt = "You are Codex, an agent";
 			const item: InputItem = {
 				type: "message",
 				role: "system",
-				content: "You are OpenCode, an agent with additional context appended here",
+				content: "You are Codex, an agent with additional context appended here",
 			};
 			expect(isHostSystemPrompt(item, cachedPrompt)).toBe(true);
 		});
@@ -264,17 +264,17 @@ describe("Tool Output Normalization", () => {
 		});
 
 		it("returns false for non-system roles even with matching content", () => {
-			const cachedPrompt = "You are OpenCode, an agent";
+			const cachedPrompt = "You are Codex, an agent";
 			const item: InputItem = {
 				type: "message",
 				role: "user",
-				content: "You are OpenCode, an agent",
+				content: "You are Codex, an agent",
 			};
 			expect(isHostSystemPrompt(item, cachedPrompt)).toBe(false);
 		});
 
 		it("returns false when content is empty", () => {
-			const cachedPrompt = "You are OpenCode, an agent";
+			const cachedPrompt = "You are Codex, an agent";
 			const item: InputItem = {
 				type: "message",
 				role: "system",
@@ -287,7 +287,7 @@ describe("Tool Output Normalization", () => {
 			const item: InputItem = {
 				type: "message",
 				role: "developer",
-				content: "You are OpenCode, an interactive CLI agent that does stuff",
+				content: "You are Codex, an interactive CLI agent that does stuff",
 			};
 			expect(isHostSystemPrompt(item, null)).toBe(true);
 		});
@@ -308,7 +308,7 @@ describe("Tool Output Normalization", () => {
 
 		it("filters out host system prompt without context", () => {
 			const input: InputItem[] = [
-				{ type: "message", role: "system", content: "You are OpenCode, an agent doing things" },
+				{ type: "message", role: "system", content: "You are Codex, an agent doing things" },
 			];
 			const result = filterHostSystemPromptsWithCachedPrompt(input, null);
 			expect(result).toHaveLength(0);
@@ -319,7 +319,7 @@ describe("Tool Output Normalization", () => {
 				{
 					type: "message",
 					role: "system",
-					content: "You are OpenCode, an agent\n\nHere is some useful information about the environment you are running in:\n<env>test</env>",
+					content: "You are Codex, an agent\n\nHere is some useful information about the environment you are running in:\n<env>test</env>",
 				},
 			];
 			const result = filterHostSystemPromptsWithCachedPrompt(input, null);
@@ -333,7 +333,7 @@ describe("Tool Output Normalization", () => {
 					type: "message",
 					role: "system",
 					content: [
-						{ type: "input_text", text: "You are OpenCode, an agent\n\n<instructions>\nDo things</instructions>" },
+						{ type: "input_text", text: "You are Codex, an agent\n\n<instructions>\nDo things</instructions>" },
 					],
 				},
 			];
@@ -358,5 +358,6 @@ describe("Tool Output Normalization", () => {
 		});
 	});
 });
+
 
 

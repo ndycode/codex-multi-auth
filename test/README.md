@@ -201,7 +201,8 @@ When adding new functionality:
 ## Example Configurations
 
 See the `config/` directory for working configuration examples:
-- `opencode-legacy.json`: Legacy complete example with all model variants
-- `opencode-modern.json`: Variant-based example for host runtime v1.0.210+
+- `Codex-legacy.json`: Legacy complete example with all model variants
+- `Codex-modern.json`: Variant-based example for host runtime v1.0.210+
+
 
 

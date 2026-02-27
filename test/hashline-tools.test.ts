@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ToolContext } from "@opencode-ai/plugin/tool";
+import type { ToolContext } from "@codex-ai/plugin/tool";
 import {
 	applyHashlineEdit,
 	applyLegacyEdit,
@@ -197,3 +197,4 @@ describe("hashline tools", () => {
 		}
 	});
 });
+

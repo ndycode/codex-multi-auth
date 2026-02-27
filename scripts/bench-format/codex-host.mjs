@@ -9,18 +9,18 @@ export function getRepoRoot() {
   return repoRoot;
 }
 
-export function resolveOpencodeExecutable() {
-  const envOverride = process.env.OPENCODE_BIN;
+export function resolveCodexExecutable() {
+  const envOverride = process.env.CODEX_BIN;
   if (envOverride && envOverride.trim().length > 0) {
     const command = envOverride.trim();
     return { command, shell: /\.cmd$/i.test(command) };
   }
 
   if (process.platform !== "win32") {
-    return { command: "opencode", shell: false };
+    return { command: "Codex", shell: false };
   }
 
-  const whereResult = spawnSync("where", ["opencode"], {
+  const whereResult = spawnSync("where", ["Codex"], {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -30,15 +30,15 @@ export function resolveOpencodeExecutable() {
     .filter(Boolean);
 
   if (candidates.length === 0) {
-    return { command: "opencode", shell: false };
+    return { command: "Codex", shell: false };
   }
 
-  const exactExe = candidates.find((candidate) => /npm\\opencode\.exe$/i.test(candidate));
+  const exactExe = candidates.find((candidate) => /npm\\Codex\.exe$/i.test(candidate));
   if (exactExe) {
     return { command: exactExe, shell: false };
   }
 
-  const exactCmd = candidates.find((candidate) => /npm\\opencode\.cmd$/i.test(candidate));
+  const exactCmd = candidates.find((candidate) => /npm\\Codex\.cmd$/i.test(candidate));
   if (exactCmd) {
     return { command: exactCmd, shell: true };
   }
@@ -145,7 +145,7 @@ export function getEventError(events) {
   };
 }
 
-export function runOpencodeJson({
+export function runCodexJson({
   executable,
   prompt,
   model,
@@ -203,3 +203,4 @@ export function runOpencodeJson({
     modelNotFound,
   };
 }
+

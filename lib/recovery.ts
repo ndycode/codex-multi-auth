@@ -1,4 +1,4 @@
-import type { PluginInput } from "@opencode-ai/plugin";
+import type { PluginInput } from "@codex-ai/plugin";
 import { createLogger } from "./logger.js";
 import type { PluginConfig } from "./types.js";
 import {
@@ -21,7 +21,6 @@ import type {
 export type { RecoveryErrorType, MessageInfo, MessageData, ResumeConfig };
 
 type PluginClient = PluginInput["client"];
-type SessionPromptArgs = Parameters<PluginClient["session"]["prompt"]>[0];
 
 const RECOVERY_RESUME_TEXT = "[session recovered - continuing previous task]";
 
@@ -106,13 +105,9 @@ async function sendToolResultsForRecovery(
   sessionID: string,
   toolResultParts: ToolResultPart[],
 ): Promise<void> {
-  const bodyWithParts = {
-    parts: toolResultParts,
-  } as SessionPromptArgs["body"] & { parts: ToolResultPart[] };
-
   await client.session.prompt({
     path: { id: sessionID },
-    body: bodyWithParts as SessionPromptArgs["body"],
+    body: { parts: toolResultParts },
   });
 }
 
@@ -429,3 +424,5 @@ export function createSessionRecoveryHook(
     setOnRecoveryCompleteCallback,
   };
 }
+
+

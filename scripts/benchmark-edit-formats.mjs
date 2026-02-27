@@ -10,10 +10,10 @@ import {
   getTextOutput,
   getTokenTotals,
   getToolEvents,
-  resolveOpencodeExecutable,
-  runOpencodeJson,
-} from "./bench-format/opencode.mjs";
-import { aliasCandidatesForCodexModel, listOpencodeModels, resolveModelPreset } from "./bench-format/models.mjs";
+  resolveCodexExecutable,
+  runCodexJson,
+} from "./bench-format/Codex.mjs";
+import { aliasCandidatesForCodexModel, listCodexModels, resolveModelPreset } from "./bench-format/models.mjs";
 import {
   applyHashlineV2Edits,
   autocorrectHashlineV2Call,
@@ -48,7 +48,7 @@ function printUsage() {
     "  --modes=patch,replace,hashline,hashline_v2",
     "  --tasks=T01,T02                  Restrict to task IDs",
     "  --max-tasks=N                    Cap number of tasks after filtering",
-    "  --agent=build|default            OpenCode agent (default: build)",
+    "  --agent=build|default            Codex agent (default: build)",
     "  --v2-agent=default|build         Agent used for hashline_v2 mode (default: default)",
     "  --variant=low|medium|high|none   Model variant (default: low)",
     "  --warmup-runs=N                  Warmup repeats per model/task/mode (default: 1)",
@@ -119,16 +119,16 @@ function modelDisplayName(modelId) {
 
 function classifyFailureReason(run, mode) {
   if (run.timedOut) {
-    return { type: "timeout", reason: "OpenCode run timed out" };
+    return { type: "timeout", reason: "Codex run timed out" };
   }
   if (run.modelNotFound) {
-    return { type: "model_not_found", reason: "Model not found in current OpenCode provider config" };
+    return { type: "model_not_found", reason: "Model not found in current Codex provider config" };
   }
   if (run.status !== 0 && run.eventError) {
-    return { type: "opencode_error", reason: run.eventError.message };
+    return { type: "CODEX_error", reason: run.eventError.message };
   }
   if (run.status !== 0) {
-    return { type: "nonzero_exit", reason: `OpenCode exited with status ${run.status}` };
+    return { type: "nonzero_exit", reason: `Codex exited with status ${run.status}` };
   }
   if (mode === "hashline_v2") {
     return { type: "v2_no_json", reason: "No valid hashline_v2 JSON response found" };
@@ -153,7 +153,7 @@ function isTransientNonzeroExit(run) {
   return noEvents || noOutput || providerRefreshNoise;
 }
 
-async function runOpencodeWithResilience({
+async function runCodexWithResilience({
   executable,
   prompt,
   requestedModel,
@@ -178,7 +178,7 @@ async function runOpencodeWithResilience({
   for (const candidateModel of candidates) {
     const maxAttempts = transientRetries + 1;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const run = runOpencodeJson({
+      const run = runCodexJson({
         executable,
         prompt,
         model: candidateModel,
@@ -213,7 +213,7 @@ async function runOpencodeWithResilience({
   return {
     run:
       lastRun ??
-      runOpencodeJson({
+      runCodexJson({
         executable,
         prompt,
         model: requestedModel,
@@ -470,7 +470,7 @@ async function ensureWorkspace(workspaceDir, fixtureContent) {
   const workspaceConfig = {
     plugin: [toFileUri(DIST_PLUGIN_DIR)],
   };
-  await writeFile(join(workspaceDir, "opencode.json"), `${JSON.stringify(workspaceConfig, null, 2)}\n`, "utf8");
+  await writeFile(join(workspaceDir, "Codex.json"), `${JSON.stringify(workspaceConfig, null, 2)}\n`, "utf8");
 }
 
 async function readWorkspaceFixture(workspaceDir) {
@@ -591,8 +591,8 @@ function aggregateSummary({ options, runRecords, failures, startTime, endTime, e
       outputRoot: options.outputRoot,
       runDir: options.runDir,
       homeDir: options.homeDir || null,
-      opencodeCommand: executable.command,
-      opencodeUsesShell: executable.shell,
+      CodexCommand: executable.command,
+      CodexUsesShell: executable.shell,
       keepRawLogs: options.keepRawLogs,
       runCount: measuredRuns.length,
       warmupCount: warmupRuns.length,
@@ -661,7 +661,7 @@ async function runToolMode({ mode, modelId, task, phase, repeatIndex, options, e
   await ensureWorkspace(workspaceDir, fixtureContent);
 
   const prompt = buildToolPrompt(mode, task);
-  const { run, actualModel, attempts, aliasUsed } = await runOpencodeWithResilience({
+  const { run, actualModel, attempts, aliasUsed } = await runCodexWithResilience({
     executable,
     prompt,
     requestedModel: modelId,
@@ -736,7 +736,7 @@ async function runHashlineV2Mode({ modelId, task, phase, repeatIndex, options, e
 
   const taggedContent = formatFileForHashlineV2(BENCHMARK_FIXTURE.relativePath, fixtureContent);
   const prompt = buildHashlineV2Prompt(v2Prompt, task, taggedContent);
-  const { run, actualModel, attempts, aliasUsed } = await runOpencodeWithResilience({
+  const { run, actualModel, attempts, aliasUsed } = await runCodexWithResilience({
     executable,
     prompt,
     requestedModel: modelId,
@@ -793,7 +793,7 @@ async function runHashlineV2Mode({ modelId, task, phase, repeatIndex, options, e
 
   if (!jsonText) {
     const repairPrompt = buildHashlineV2RepairPrompt(v2Prompt, task, taggedContent, textOutput);
-    const repair = await runOpencodeWithResilience({
+    const repair = await runCodexWithResilience({
       executable,
       prompt: repairPrompt,
       requestedModel: modelId,
@@ -936,7 +936,7 @@ async function parseOptions() {
   }
   let availableModels = [];
   try {
-    availableModels = listOpencodeModels();
+    availableModels = listCodexModels();
   } catch {
     availableModels = [];
   }
@@ -1006,7 +1006,7 @@ async function writeOutputs(options, summary) {
 
 async function main() {
   const options = await parseOptions();
-  const executable = resolveOpencodeExecutable();
+  const executable = resolveCodexExecutable();
   const startTime = new Date().toISOString();
 
   if (!existsSync(FIXTURE_SOURCE_PATH)) {
@@ -1036,7 +1036,7 @@ async function main() {
   console.log(`V2 Agent: ${options.v2Agent}`);
   console.log(`Variant: ${options.variant || "(none)"}`);
   console.log(`Output: ${options.runDir}`);
-  console.log(`OpenCode: ${executable.command}`);
+  console.log(`Codex: ${executable.command}`);
   console.log("");
 
   const runRecords = [];
@@ -1159,3 +1159,4 @@ main().catch((error) => {
   console.error(`Benchmark failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });
+

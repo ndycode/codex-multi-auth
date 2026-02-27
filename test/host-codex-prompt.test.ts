@@ -133,11 +133,11 @@ describe("host-codex-prompt", () => {
       expect(writeFile).toHaveBeenCalledTimes(2);
     });
 
-    it("uses OPENCODE_CODEX_PROMPT_URL override before default sources", async () => {
+    it("uses CODEX_CODEX_PROMPT_URL override before default sources", async () => {
       const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
 
       vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
-      vi.stubEnv("OPENCODE_CODEX_PROMPT_URL", "https://example.com/custom-codex.txt");
+      vi.stubEnv("CODEX_CODEX_PROMPT_URL", "https://example.com/custom-codex.txt");
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -312,5 +312,6 @@ describe("host-codex-prompt", () => {
     });
   });
 });
+
 
 

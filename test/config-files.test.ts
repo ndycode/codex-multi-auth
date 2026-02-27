@@ -210,8 +210,8 @@ describe('Configuration Files', () => {
 
 			// Should ignore codex-specific directories or files
 			const hasCodexIgnores =
-				content.includes('opencode.json') ||
-				content.includes('.opencode') ||
+				content.includes('Codex.json') ||
+				content.includes('.codex') ||
 				content.includes('.codex');
 			expect(hasCodexIgnores).toBe(true);
 		});

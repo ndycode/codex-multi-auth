@@ -296,7 +296,7 @@ describe("storage", () => {
     });
 
     describe("formatStorageErrorHint", () => {
-      const testPath = "/home/user/.opencode/accounts.json";
+      const testPath = "/home/user/.codex/accounts.json";
 
       it("should return permission hint for EACCES on Windows", () => {
         const originalPlatform = process.platform;
@@ -1217,3 +1217,4 @@ describe("storage", () => {
     });
   });
 });
+

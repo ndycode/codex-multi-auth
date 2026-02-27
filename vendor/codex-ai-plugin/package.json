@@ -1,0 +1,9 @@
+{
+  "name": "@codex-ai/plugin",
+  "version": "1.2.10-codex.1",
+  "type": "module",
+  "exports": {
+    ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" },
+    "./tool": { "import": "./dist/tool.js", "types": "./dist/tool.d.ts" }
+  }
+}

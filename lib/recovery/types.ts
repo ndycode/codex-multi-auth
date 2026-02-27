@@ -1,7 +1,7 @@
 /**
  * Types for session recovery.
  *
- * Based on opencode-antigravity-auth recovery module.
+ * Based on Codex-antigravity-auth recovery module.
  */
 
 // =============================================================================
@@ -148,3 +148,4 @@ export interface ToolResultPart {
   tool_use_id: string;
   content: string;
 }
+

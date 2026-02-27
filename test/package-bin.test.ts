@@ -9,6 +9,7 @@ describe("package bin entries", () => {
 		expect(pkg.bin).toBeDefined();
 		expect(pkg.bin?.codex).toBe("scripts/codex.js");
 		expect(pkg.bin?.["codex-multi-auth"]).toBe("scripts/codex-multi-auth.js");
-		expect(pkg.bin?.["codex-multi-auth-opencode-install"]).toBeUndefined();
+		expect(pkg.bin?.["codex-multi-auth-Codex-install"]).toBeUndefined();
 	});
 });
+

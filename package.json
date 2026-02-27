@@ -82,7 +82,7 @@
   },
   "devDependencies": {
     "@fast-check/vitest": "^0.2.4",
-    "@opencode-ai/sdk": "^1.2.10",
+    "@codex-ai/sdk": "file:vendor/codex-ai-sdk",
     "@types/node": "^25.3.0",
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",
@@ -98,7 +98,7 @@
   },
   "dependencies": {
     "@openauthjs/openauth": "^0.4.3",
-    "@opencode-ai/plugin": "^1.2.10",
+    "@codex-ai/plugin": "file:vendor/codex-ai-plugin",
     "hono": "^4.12.0",
     "zod": "^4.3.6"
   },
@@ -110,4 +110,3 @@
     }
   }
 }
-

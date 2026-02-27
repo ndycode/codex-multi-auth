@@ -14,9 +14,9 @@ These files are example model/provider templates for `codex-multi-auth`.
 
 The old filenames are still shipped for backward compatibility:
 
-- `opencode-modern.json`
-- `opencode-legacy.json`
-- `minimal-opencode.json`
+- `Codex-modern.json`
+- `Codex-legacy.json`
+- `minimal-Codex.json`
 
 ## Notes
 
@@ -35,3 +35,4 @@ The old filenames are still shipped for backward compatibility:
 - [`../docs/configuration.md`](../docs/configuration.md)
 - [`../docs/getting-started.md`](../docs/getting-started.md)
 - [`../docs/reference/settings.md`](../docs/reference/settings.md)
+

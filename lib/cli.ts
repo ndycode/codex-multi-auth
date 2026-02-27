@@ -17,9 +17,9 @@ import { UI_COPY } from "./ui/copy.js";
 export function isNonInteractiveMode(): boolean {
 	if (process.env.FORCE_INTERACTIVE_MODE === "1") return false;
 	if (!input.isTTY || !output.isTTY) return true;
-	if (process.env.OPENCODE_TUI === "1") return true;
-	if (process.env.OPENCODE_DESKTOP === "1") return true;
-	if (process.env.TERM_PROGRAM === "opencode") return true;
+	if (process.env.CODEX_TUI === "1") return true;
+	if (process.env.CODEX_DESKTOP === "1") return true;
+	if (process.env.TERM_PROGRAM === "codex") return true;
 	if (process.env.ELECTRON_RUN_AS_NODE === "1") return true;
 	return false;
 }
@@ -348,3 +348,5 @@ export async function promptAccountSelection(
 
 export { isTTY };
 export type { AccountStatus };
+
+

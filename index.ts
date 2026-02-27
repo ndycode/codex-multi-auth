@@ -23,9 +23,9 @@
 
  */
 
-import { tool } from "@opencode-ai/plugin/tool";
-import type { Plugin, PluginInput } from "@opencode-ai/plugin";
-import type { Auth } from "@opencode-ai/sdk";
+import { tool } from "@codex-ai/plugin/tool";
+import type { Plugin, PluginInput } from "@codex-ai/plugin";
+import type { Auth } from "@codex-ai/sdk";
 import {
         createAuthorizationFlow,
         exchangeAuthorizationCode,
@@ -659,7 +659,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 const skipHydrate =
                         process.env.VITEST_WORKER_ID !== undefined ||
                         process.env.NODE_ENV === "test" ||
-                        process.env.OPENCODE_SKIP_EMAIL_HYDRATE === "1";
+                        process.env.CODEX_SKIP_EMAIL_HYDRATE === "1";
                 if (skipHydrate) return storage;
 
                 const accountsCopy = storage.accounts.map((account) =>
@@ -4117,4 +4117,5 @@ while (attempted.size < Math.max(1, accountCount)) {
 export const OpenAIAuthPlugin = OpenAIOAuthPlugin;
 
 export default OpenAIOAuthPlugin;
+
 

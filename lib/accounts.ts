@@ -1,4 +1,4 @@
-import type { Auth } from "@opencode-ai/sdk";
+import type { Auth } from "@codex-ai/sdk";
 import { createLogger } from "./logger.js";
 import {
 	loadAccounts,
@@ -825,3 +825,4 @@ export function formatCooldown(
 	const reason = account.cooldownReason ? ` (${account.cooldownReason})` : "";
 	return `${formatWaitTime(remaining)}${reason}`;
 }
+

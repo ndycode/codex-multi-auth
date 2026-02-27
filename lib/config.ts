@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import type { PluginConfig } from "./types.js";
 import { logWarn } from "./logger.js";
 import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
-import { getCodexHomeDir, getCodexMultiAuthDir, getLegacyOpenCodeDir } from "./runtime-paths.js";
+import { getCodexHomeDir, getCodexMultiAuthDir, getLegacyCodexDir } from "./runtime-paths.js";
 import {
 	getUnifiedSettingsPath,
 	loadUnifiedPluginConfigSync,
@@ -12,13 +12,13 @@ import {
 
 const CONFIG_DIR = getCodexMultiAuthDir();
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
-const LEGACY_CODEX_CONFIG_PATH = join(getCodexHomeDir(), "codex-multi-auth-config.json");
-const LEGACY_OPENCODE_CONFIG_PATH = join(
-	getLegacyOpenCodeDir(),
+const LEGACY_CODEX_HOME_CONFIG_PATH = join(getCodexHomeDir(), "codex-multi-auth-config.json");
+const LEGACY_CODEX_CONFIG_PATH = join(
+	getLegacyCodexDir(),
 	"codex-multi-auth-config.json",
 );
-const LEGACY_OPENCODE_AUTH_CONFIG_PATH = join(
-	getLegacyOpenCodeDir(),
+const LEGACY_CODEX_AUTH_CONFIG_PATH = join(
+	getLegacyCodexDir(),
 	"openai-codex-auth-config.json",
 );
 const TUI_COLOR_PROFILES = new Set(["truecolor", "ansi16", "ansi256"]);
@@ -68,6 +68,14 @@ function resolvePluginConfigPath(): string | null {
 		return CONFIG_PATH;
 	}
 
+	if (existsSync(LEGACY_CODEX_HOME_CONFIG_PATH)) {
+		logConfigWarnOnce(
+			`Using legacy config path ${LEGACY_CODEX_HOME_CONFIG_PATH}. ` +
+				`Please migrate to ${CONFIG_PATH}.`,
+		);
+		return LEGACY_CODEX_HOME_CONFIG_PATH;
+	}
+
 	if (existsSync(LEGACY_CODEX_CONFIG_PATH)) {
 		logConfigWarnOnce(
 			`Using legacy config path ${LEGACY_CODEX_CONFIG_PATH}. ` +
@@ -76,20 +84,12 @@ function resolvePluginConfigPath(): string | null {
 		return LEGACY_CODEX_CONFIG_PATH;
 	}
 
-	if (existsSync(LEGACY_OPENCODE_CONFIG_PATH)) {
+	if (existsSync(LEGACY_CODEX_AUTH_CONFIG_PATH)) {
 		logConfigWarnOnce(
-			`Using legacy config path ${LEGACY_OPENCODE_CONFIG_PATH}. ` +
+			`Using legacy config path ${LEGACY_CODEX_AUTH_CONFIG_PATH}. ` +
 				`Please migrate to ${CONFIG_PATH}.`,
 		);
-		return LEGACY_OPENCODE_CONFIG_PATH;
-	}
-
-	if (existsSync(LEGACY_OPENCODE_AUTH_CONFIG_PATH)) {
-		logConfigWarnOnce(
-			`Using legacy config path ${LEGACY_OPENCODE_AUTH_CONFIG_PATH}. ` +
-				`Please migrate to ${CONFIG_PATH}.`,
-		);
-		return LEGACY_OPENCODE_AUTH_CONFIG_PATH;
+		return LEGACY_CODEX_AUTH_CONFIG_PATH;
 	}
 
 	return null;
@@ -1089,3 +1089,10 @@ export function getPreemptiveQuotaMaxDeferralMs(pluginConfig: PluginConfig): num
 		{ min: 1_000 },
 	);
 }
+
+
+
+
+
+
+

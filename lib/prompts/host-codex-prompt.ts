@@ -12,17 +12,17 @@ import { getCodexCacheDir } from "../runtime-paths.js";
 import { sleep } from "../utils.js";
 
 const DEFAULT_HOST_CODEX_PROMPT_URLS = [
-	"https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/opencode/src/session/prompt/codex.txt",
-	"https://raw.githubusercontent.com/sst/opencode/dev/packages/opencode/src/session/prompt/codex.txt",
-	"https://raw.githubusercontent.com/anomalyco/opencode/main/packages/opencode/src/session/prompt/codex.txt",
-	"https://raw.githubusercontent.com/sst/opencode/main/packages/opencode/src/session/prompt/codex.txt",
-	"https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/opencode/src/session/prompt/codex.md",
-	"https://raw.githubusercontent.com/sst/opencode/dev/packages/opencode/src/session/prompt/codex.md",
-	"https://raw.githubusercontent.com/anomalyco/opencode/main/packages/opencode/src/session/prompt/codex.md",
-	"https://raw.githubusercontent.com/sst/opencode/main/packages/opencode/src/session/prompt/codex.md",
+	"https://raw.githubusercontent.com/anomalyco/Codex/dev/packages/Codex/src/session/prompt/codex.txt",
+	"https://raw.githubusercontent.com/sst/Codex/dev/packages/Codex/src/session/prompt/codex.txt",
+	"https://raw.githubusercontent.com/anomalyco/Codex/main/packages/Codex/src/session/prompt/codex.txt",
+	"https://raw.githubusercontent.com/sst/Codex/main/packages/Codex/src/session/prompt/codex.txt",
+	"https://raw.githubusercontent.com/anomalyco/Codex/dev/packages/Codex/src/session/prompt/codex.md",
+	"https://raw.githubusercontent.com/sst/Codex/dev/packages/Codex/src/session/prompt/codex.md",
+	"https://raw.githubusercontent.com/anomalyco/Codex/main/packages/Codex/src/session/prompt/codex.md",
+	"https://raw.githubusercontent.com/sst/Codex/main/packages/Codex/src/session/prompt/codex.md",
 ] as const;
 const CODEX_PROMPT_URL_OVERRIDE_ENV = "CODEX_PROMPT_SOURCE_URL";
-const LEGACY_HOST_CODEX_URL_OVERRIDE_ENV = "OPENCODE_CODEX_PROMPT_URL";
+const LEGACY_HOST_CODEX_URL_OVERRIDE_ENV = "CODEX_CODEX_PROMPT_URL";
 const CACHE_DIR = getCodexCacheDir();
 const CACHE_FILE = join(CACHE_DIR, "host-codex-prompt.txt");
 const CACHE_META_FILE = join(CACHE_DIR, "host-codex-prompt-meta.json");
@@ -307,5 +307,6 @@ export function prewarmHostCodexPrompt(): void {
 		logDebug("Codex prompt prewarm failed", { error: String(error) });
 	});
 }
+
 
 

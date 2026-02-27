@@ -7,11 +7,11 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     exclude: [
       'node_modules/**',
-      '.opencode/**',
+      '.codex/**',
       'dist/**',
       'tmp/**',
       '**/node_modules/**',
-      '**/.opencode/**',
+      '**/.codex/**',
       '**/dist/**',
       '**/tmp/**',
     ],
@@ -37,3 +37,4 @@ export default defineConfig({
     },
   },
 });
+

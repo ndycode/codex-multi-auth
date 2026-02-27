@@ -13,15 +13,15 @@ const args = new Set(process.argv.slice(2));
 if (args.has("--help") || args.has("-h")) {
 	console.log(`Usage: ${PLUGIN_NAME} [--modern|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
 		"Default behavior:\n" +
-		"  - Installs/updates global config at ~/.config/opencode/opencode.json\n" +
+		"  - Installs/updates global config at ~/.config/Codex/Codex.json\n" +
 		"  - Uses modern config (variants) by default\n" +
 		"  - Ensures plugin is unpinned (latest)\n" +
-		"  - Clears OpenCode plugin cache\n\n" +
+		"  - Clears Codex plugin cache\n\n" +
 		"Options:\n" +
 		"  --modern           Force modern config (default)\n" +
-		"  --legacy           Use legacy config (older OpenCode versions)\n" +
+		"  --legacy           Use legacy config (older Codex versions)\n" +
 		"  --dry-run          Show actions without writing\n" +
-		"  --no-cache-clear   Skip clearing OpenCode cache\n"
+		"  --no-cache-clear   Skip clearing Codex cache\n"
 	);
 	process.exit(0);
 }
@@ -36,12 +36,12 @@ const repoRoot = resolve(scriptDir, "..");
 const templatePath = join(
 	repoRoot,
 	"config",
-	useLegacy ? "opencode-legacy.json" : "opencode-modern.json"
+	useLegacy ? "Codex-legacy.json" : "Codex-modern.json"
 );
 
-const configDir = join(homedir(), ".config", "opencode");
-const configPath = join(configDir, "opencode.json");
-const cacheDir = join(homedir(), ".cache", "opencode");
+const configDir = join(homedir(), ".config", "Codex");
+const configPath = join(configDir, "Codex.json");
+const cacheDir = join(homedir(), ".cache", "Codex");
 const cacheNodeModules = join(cacheDir, "node_modules", PLUGIN_NAME);
 const cacheBunLock = join(cacheDir, "bun.lock");
 const cachePackageJson = join(cacheDir, "package.json");
@@ -180,10 +180,10 @@ async function main() {
 
 	await clearCache();
 
-	log("\nDone. Restart OpenCode to (re)install the plugin.");
-	log("Example: opencode");
+	log("\nDone. Restart Codex to (re)install the plugin.");
+	log("Example: Codex");
 	if (useLegacy) {
-		log("Note: Legacy config requires OpenCode v1.0.209 or older.");
+		log("Note: Legacy config requires Codex v1.0.209 or older.");
 	}
 }
 
@@ -191,3 +191,4 @@ main().catch((error) => {
 	console.error(`Installer failed: ${error instanceof Error ? error.message : error}`);
 	process.exit(1);
 });
+

@@ -1,4 +1,4 @@
-import type { Auth, Provider, Model } from "@opencode-ai/sdk";
+import type { Auth, Provider, Model } from "@codex-ai/sdk";
 
 export type {
 	PluginConfigFromSchema as PluginConfig,
@@ -143,3 +143,4 @@ export interface GitHubRelease {
 export type { Auth, Provider, Model };
 
 export type OAuthAuthDetails = Extract<Auth, { type: "oauth" }>;
+

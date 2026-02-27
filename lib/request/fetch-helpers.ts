@@ -3,7 +3,7 @@
  * These functions break down the complex fetch logic into manageable, testable units
  */
 
-import type { Auth, OpencodeClient } from "@opencode-ai/sdk";
+import type { Auth, CodexClient } from "@codex-ai/sdk";
 import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
@@ -22,6 +22,20 @@ import {
         LOG_STAGES,
 } from "../constants.js";
 
+interface CodexAuthSetter {
+	auth: {
+		set(args: {
+			path: { id: string };
+			body: {
+				type: "oauth";
+				access: string;
+				refresh: string;
+				expires: number;
+				multiAccount: boolean;
+			};
+		}): Promise<unknown>;
+	};
+}
 export interface RateLimitInfo {
         retryAfterMs: number;
         code?: string;
@@ -308,12 +322,12 @@ export function shouldRefreshToken(auth: Auth, skewMs = 0): boolean {
 /**
  * Refreshes the OAuth token and updates stored credentials
  * @param currentAuth - Current auth state
- * @param client - Opencode client for updating stored credentials
+ * @param client - Codex client for updating stored credentials
  * @returns Updated auth (throws on failure)
  */
 export async function refreshAndUpdateToken(
 	currentAuth: Auth,
-	client: OpencodeClient,
+	client: CodexClient,
 ): Promise<Auth> {
 	const refreshToken = currentAuth.type === "oauth" ? currentAuth.refresh : "";
 	const refreshResult = await queuedRefresh(refreshToken);
@@ -322,7 +336,7 @@ export async function refreshAndUpdateToken(
 		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: false });
 	}
 
-	await client.auth.set({
+	await (client as unknown as CodexAuthSetter).auth.set({
 		path: { id: "openai" },
 		body: {
 			type: "oauth",
@@ -330,7 +344,7 @@ export async function refreshAndUpdateToken(
 			refresh: refreshResult.refresh,
 			expires: refreshResult.expires,
 			multiAccount: true,
-		} as Parameters<typeof client.auth.set>[0]["body"],
+		},
 	});
 
 	// Update current auth reference if it's OAuth type
@@ -924,3 +938,5 @@ function extractErrorDiagnostics(
 
         return Object.keys(diagnostics).length > 0 ? diagnostics : undefined;
 }
+
+

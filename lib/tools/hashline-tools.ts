@@ -5,7 +5,7 @@ import {
 	tool,
 	type ToolContext,
 	type ToolDefinition,
-} from "@opencode-ai/plugin/tool";
+} from "@codex-ai/plugin/tool";
 
 const HASHLINE_REF_REGEX = /^L([1-9]\d*)#([a-f0-9]{8})$/i;
 const DEFAULT_WINDOW_LINES = 120;
@@ -626,3 +626,4 @@ export function createHashlineEditTool(): ToolDefinition {
 		},
 	});
 }
+

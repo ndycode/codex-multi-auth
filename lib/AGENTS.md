@@ -33,7 +33,7 @@ lib/
 ├── prompts/
 │   ├── codex.ts          # model-family prompts, GitHub ETag cache
 │   ├── codex-host-bridge.ts  # tool remapping instructions
-│   └── host-codex-prompt.ts # OpenCode-specific prompts
+│   └── host-codex-prompt.ts # Codex-specific prompts
 ├── recovery.ts           # session recovery
 ├── recovery/
 │   ├── constants.ts
@@ -98,4 +98,5 @@ lib/
 - Never import from `dist/`; use source paths.
 - Never suppress type errors.
 - Never hardcode OAuth ports (use `REDIRECT_URI` constant).
+
 

@@ -1,11 +1,11 @@
 import type { InputItem } from "../../types.js";
 
 const HOST_PROMPT_SIGNATURES = [
-	"you are a coding agent running in the opencode",
-	"you are opencode, an agent",
-	"you are opencode, an interactive cli agent",
-	"you are opencode, an interactive cli tool",
-	"you are opencode, the best coding agent on the planet",
+	"you are a coding agent running in the Codex",
+	"you are Codex, an agent",
+	"you are Codex, an interactive cli agent",
+	"you are Codex, an interactive cli tool",
+	"you are Codex, the best coding agent on the planet",
 ].map((signature) => signature.toLowerCase());
 
 const HOST_CONTEXT_MARKERS = [
@@ -259,4 +259,5 @@ export const injectMissingToolOutputs = (input: InputItem[]): InputItem[] => {
 
 	return result;
 };
+
 

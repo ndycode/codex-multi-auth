@@ -1,7 +1,7 @@
 /**
  * Storage utilities for reading host runtime session data.
  *
- * Based on opencode-antigravity-auth recovery module.
+ * Based on Codex-antigravity-auth recovery module.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -405,3 +405,4 @@ export function findMessagesWithEmptyTextParts(sessionID: string): string[] {
 
   return result;
 }
+
