@@ -183,7 +183,7 @@ Used in plugin-host runtime configuration.
 
 * * *
 
-## Environment Overrides
+## Stable Environment Overrides
 
 ### Stable (User-Facing)
 

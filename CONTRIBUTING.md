@@ -38,7 +38,7 @@ All contributions MUST:
 - **TypeScript:** All code must be TypeScript with strict type checking
 - **Testing:** Include tests for new functionality and keep coverage gate healthy (80% threshold)
 - **Documentation:** Update README.md for user-facing changes
-- **Validation gate:** Run `npm run typecheck`, `npm run lint`, and `npm test` before opening a PR
+- **Validation gate:** Run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` before opening a PR
 - **Dependencies:** Minimize new dependencies and justify them in the PR
 
 ## Pull Request Process

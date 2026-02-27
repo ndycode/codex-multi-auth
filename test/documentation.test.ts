@@ -28,6 +28,7 @@ const scopedLegacyAllowedFiles = new Set([
   'docs/releases/v0.1.0.md',
   'docs/releases/v0.1.0-beta.0.md',
 ]);
+const pinnedChangelogPatchOrder = ['4.9.7', '4.9.6', '4.9.5'];
 
 function read(filePath: string): string {
   return readFileSync(join(projectRoot, filePath), 'utf-8');
@@ -145,7 +146,12 @@ describe('Documentation Integrity', () => {
   it('documents stable overrides separately from advanced/internal overrides', () => {
     const configGuide = read('docs/configuration.md');
     const settingsRef = read('docs/reference/settings.md');
-    const fieldInventory = read('docs/development/CONFIG_FIELDS.md');
+    const fieldInventoryPath = 'docs/development/CONFIG_FIELDS.md';
+    expect(
+      existsSync(join(projectRoot, fieldInventoryPath)),
+      `${fieldInventoryPath} should exist`,
+    ).toBe(true);
+    const fieldInventory = read(fieldInventoryPath);
 
     expect(configGuide).toContain('## Stable Environment Overrides');
     expect(configGuide).toContain('## Advanced/Internal Overrides');
@@ -160,14 +166,15 @@ describe('Documentation Integrity', () => {
     const changelog = read('CHANGELOG.md');
     expect(changelog.startsWith('# Changelog')).toBe(true);
 
-    const idx497 = changelog.indexOf('## [4.9.7]');
-    const idx496 = changelog.indexOf('## [4.9.6]');
-    const idx495 = changelog.indexOf('## [4.9.5]');
-    expect(idx497).toBeGreaterThan(-1);
-    expect(idx496).toBeGreaterThan(-1);
-    expect(idx495).toBeGreaterThan(-1);
-    expect(idx497).toBeLessThan(idx496);
-    expect(idx496).toBeLessThan(idx495);
+    const positions = pinnedChangelogPatchOrder.map((version) =>
+      changelog.indexOf(`## [${version}]`),
+    );
+    for (const position of positions) {
+      expect(position).toBeGreaterThan(-1);
+    }
+    for (let index = 0; index < positions.length - 1; index += 1) {
+      expect(positions[index]).toBeLessThan(positions[index + 1]);
+    }
     expect(changelog).toContain('legacy package');
   });
 

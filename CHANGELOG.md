@@ -382,7 +382,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.6...v4.
 
 ### Changelog
 
-Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v5.0.0...v4.9.6
+Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.5...v4.9.6
 
 ## [4.9.5] - 2026-01-28
 
