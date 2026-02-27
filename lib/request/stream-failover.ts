@@ -13,6 +13,15 @@ const DEFAULT_STALL_TIMEOUT_MS = 45_000;
 const DEFAULT_SOFT_TIMEOUT_MS = 15_000;
 const MAX_REQUEST_INSTANCE_ID_LENGTH = 64;
 
+class StallTimeoutError extends Error {
+	readonly isStallTimeout = true;
+
+	constructor(timeoutMs: number) {
+		super(`SSE stream stalled for ${timeoutMs}ms`);
+		this.name = "StallTimeoutError";
+	}
+}
+
 /**
  * Read a single chunk from `reader`, rejecting if no chunk is produced within `timeoutMs`.
  *
@@ -32,7 +41,7 @@ async function readChunkWithTimeout(
 			readPromise,
 			new Promise<never>((_, reject) => {
 				timeoutId = setTimeout(() => {
-					reject(new Error(`SSE stream stalled for ${timeoutMs}ms`));
+					reject(new StallTimeoutError(timeoutMs));
 				}, timeoutMs);
 			}),
 		]);
@@ -52,8 +61,11 @@ async function readChunkWithTimeout(
  * @returns `true` if `error` is an `Error` whose message contains "SSE stream stalled for", `false` otherwise.
  */
 function isStallTimeoutError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	return error.message.includes("SSE stream stalled for");
+	if (error instanceof StallTimeoutError) return true;
+	if (!error || typeof error !== "object") return false;
+	const candidate = error as { isStallTimeout?: unknown };
+	if (candidate.isStallTimeout === true) return true;
+	return false;
 }
 
 /**
@@ -184,7 +196,15 @@ export function withStreamingFailover(
 							controller.enqueue(result.value);
 						}
 					} catch (error) {
-						const switched = await tryFailover();
+						let switched = false;
+						try {
+							switched = await tryFailover();
+						} catch (failoverError) {
+							closed = true;
+							await releaseCurrentReader();
+							controller.error(failoverError);
+							return;
+						}
 						if (switched) {
 							continue;
 						}

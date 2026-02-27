@@ -221,6 +221,60 @@ describe("forecast helpers", () => {
 		expect(result.reasons.some((reason) => reason.includes("live probe returned 429"))).toBe(true);
 	});
 
+	it("does not delay healthy accounts only because quota reset headers exist", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 2,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-3",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+			},
+			liveQuota: {
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 20,
+					windowMinutes: 300,
+					resetAtMs: now + 120_000,
+				},
+				secondary: {
+					usedPercent: 10,
+					windowMinutes: 10080,
+					resetAtMs: now + 180_000,
+				},
+			},
+		});
+
+		expect(result.availability).toBe("ready");
+		expect(result.waitMs).toBe(0);
+	});
+
+	it("prefers refresh failure reason code over raw message text", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-1",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+			},
+			refreshFailure: {
+				type: "failed",
+				reason: "http_error",
+				statusCode: 400,
+				message: "invalid for user@example.com",
+			},
+		});
+
+		expect(result.reasons.join(" ")).toContain("http_error (400)");
+		expect(result.reasons.join(" ")).not.toContain("user@example.com");
+	});
+
 	it("applies higher risk at higher quota usage thresholds", () => {
 		const now = 1_700_000_000_000;
 		const scoreAt70 = evaluateForecastAccount({

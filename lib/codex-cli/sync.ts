@@ -319,7 +319,15 @@ export async function syncAccountStorageFromCodexCli(
 				changed = true;
 			}
 		} else {
+			const previousActive = next.activeIndex;
+			const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
 			normalizeStoredFamilyIndexes(next);
+			if (previousActive !== next.activeIndex) {
+				changed = true;
+			}
+			if (previousFamilies !== JSON.stringify(next.activeIndexByFamily ?? {})) {
+				changed = true;
+			}
 			log.debug("Skipped Codex CLI active selection overwrite due to newer local state", {
 				operation: "reconcile-storage",
 				outcome: "local-newer",

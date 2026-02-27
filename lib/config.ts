@@ -8,7 +8,6 @@ import {
 	getUnifiedSettingsPath,
 	loadUnifiedPluginConfigSync,
 	saveUnifiedPluginConfig,
-	saveUnifiedPluginConfigSync,
 } from "./unified-settings.js";
 
 const CONFIG_DIR = getCodexMultiAuthDir();
@@ -26,6 +25,8 @@ const TUI_COLOR_PROFILES = new Set(["truecolor", "ansi16", "ansi256"]);
 const TUI_GLYPH_MODES = new Set(["ascii", "unicode", "auto"]);
 const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
+const configSaveQueues = new Map<string, Promise<void>>();
+const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -212,15 +213,9 @@ export function loadPluginConfig(): PluginConfig {
 			isRecord(userConfig) &&
 			(process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim().length === 0
 		) {
-			try {
-				saveUnifiedPluginConfigSync(userConfig);
-			} catch (error) {
-				logConfigWarnOnce(
-					`Failed to migrate plugin config into ${getUnifiedSettingsPath()}: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-				);
-			}
+			logConfigWarnOnce(
+				`Legacy config file is still in use; settings will migrate to ${getUnifiedSettingsPath()} on next save.`,
+			);
 		}
 
 		return {
@@ -255,7 +250,61 @@ function stripUtf8Bom(content: string): string {
  * @returns `true` if `value` is a non-null object and can be treated as `Record<string, unknown>`, `false` otherwise.
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object";
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRetryableFsError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function writeJsonFileAtomicWithRetry(
+	filePath: string,
+	payload: Record<string, unknown>,
+): Promise<void> {
+	const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	await fs.mkdir(dirname(filePath), { recursive: true });
+	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	let renamed = false;
+	try {
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			try {
+				await fs.rename(tempPath, filePath);
+				renamed = true;
+				return;
+			} catch (error) {
+				if (!isRetryableFsError(error) || attempt >= 4) {
+					throw error;
+				}
+				await sleep(10 * 2 ** attempt);
+			}
+		}
+	} finally {
+		if (!renamed) {
+			try {
+				await fs.unlink(tempPath);
+			} catch {
+				// Best-effort temp cleanup.
+			}
+		}
+	}
+}
+
+async function withConfigSaveLock(path: string, task: () => Promise<void>): Promise<void> {
+	const previous = configSaveQueues.get(path) ?? Promise.resolve();
+	const queued = previous.catch(() => {}).then(task);
+	configSaveQueues.set(path, queued);
+	try {
+		await queued;
+	} finally {
+		if (configSaveQueues.get(path) === queued) {
+			configSaveQueues.delete(path);
+		}
+	}
 }
 
 /**
@@ -326,22 +375,26 @@ export async function savePluginConfig(configPatch: Partial<PluginConfig>): Prom
 	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
 
 	if (envPath.length > 0) {
-		const merged = {
-			...(readConfigRecordFromPath(envPath) ?? {}),
-			...sanitizedPatch,
-		};
-		await fs.mkdir(dirname(envPath), { recursive: true });
-		await fs.writeFile(envPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+		await withConfigSaveLock(envPath, async () => {
+			const merged = {
+				...(readConfigRecordFromPath(envPath) ?? {}),
+				...sanitizedPatch,
+			};
+			await writeJsonFileAtomicWithRetry(envPath, merged);
+		});
 		return;
 	}
 
-	const unifiedConfig = loadUnifiedPluginConfigSync();
-	const legacyPath = unifiedConfig ? null : resolvePluginConfigPath();
-	const merged = {
-		...(unifiedConfig ?? (legacyPath ? readConfigRecordFromPath(legacyPath) : null) ?? {}),
-		...sanitizedPatch,
-	};
-	await saveUnifiedPluginConfig(merged);
+	const unifiedPath = getUnifiedSettingsPath();
+	await withConfigSaveLock(unifiedPath, async () => {
+		const unifiedConfig = loadUnifiedPluginConfigSync();
+		const legacyPath = unifiedConfig ? null : resolvePluginConfigPath();
+		const merged = {
+			...(unifiedConfig ?? (legacyPath ? readConfigRecordFromPath(legacyPath) : null) ?? {}),
+			...sanitizedPatch,
+		};
+		await saveUnifiedPluginConfig(merged);
+	});
 }
 
 /**

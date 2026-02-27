@@ -83,4 +83,16 @@ describe("stream failover", () => {
 
 		await expect(response.text()).rejects.toThrow("SSE stream stalled");
 	});
+
+	it("propagates fallback provider exceptions deterministically", async () => {
+		const response = withStreamingFailover(
+			makeStallingResponse(),
+			async () => {
+				throw new Error("fallback exploded");
+			},
+			{ maxFailovers: 1, stallTimeoutMs: 10 },
+		);
+
+		await expect(response.text()).rejects.toThrow("fallback exploded");
+	});
 });

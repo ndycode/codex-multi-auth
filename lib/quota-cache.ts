@@ -30,6 +30,16 @@ interface QuotaCacheFile {
 }
 
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
+const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+
+function isRetryableFsError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Type guard that narrows a value to a non-null object with string keys.
@@ -41,7 +51,7 @@ const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
  * @returns `true` if `value` is a non-null object (narrowed to `Record<string, unknown>`), `false` otherwise.
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object";
+	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
@@ -213,7 +223,29 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 
 	try {
 		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
-		await fs.writeFile(QUOTA_CACHE_PATH, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+		const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+		let renamed = false;
+		try {
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rename(tempPath, QUOTA_CACHE_PATH);
+					renamed = true;
+					break;
+				} catch (error) {
+					if (!isRetryableFsError(error) || attempt >= 4) throw error;
+					await sleep(10 * 2 ** attempt);
+				}
+			}
+		} finally {
+			if (!renamed) {
+				try {
+					await fs.unlink(tempPath);
+				} catch {
+					// Best effort temp cleanup.
+				}
+			}
+		}
 	} catch (error) {
 		logWarn(
 			`Failed to save quota cache to ${QUOTA_CACHE_PATH}: ${

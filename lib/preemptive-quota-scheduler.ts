@@ -83,10 +83,10 @@ function parseFiniteIntHeader(headers: Headers, name: string): number | undefine
  * @param prefix - Header name prefix (for example `"x-rate-limit"` to read `"x-rate-limit-reset-at"` or `"x-rate-limit-reset-after-seconds"`).
  * @returns The reset time in milliseconds since epoch, or `undefined` if no valid value is found.
  */
-function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
+function parseResetAtMs(headers: Headers, prefix: string, now: number): number | undefined {
 	const resetAfterSeconds = parseFiniteIntHeader(headers, `${prefix}-reset-after-seconds`);
 	if (typeof resetAfterSeconds === "number" && resetAfterSeconds > 0) {
-		return Date.now() + resetAfterSeconds * 1000;
+		return now + resetAfterSeconds * 1000;
 	}
 	const resetAtRaw = headers.get(`${prefix}-reset-at`);
 	if (!resetAtRaw) return undefined;
@@ -120,8 +120,8 @@ export function readQuotaSchedulerSnapshot(headers: Headers, status: number, now
 	const secondaryPrefix = "x-codex-secondary";
 	const primaryUsed = parseFiniteNumberHeader(headers, `${primaryPrefix}-used-percent`);
 	const secondaryUsed = parseFiniteNumberHeader(headers, `${secondaryPrefix}-used-percent`);
-	const primaryResetAt = parseResetAtMs(headers, primaryPrefix);
-	const secondaryResetAt = parseResetAtMs(headers, secondaryPrefix);
+	const primaryResetAt = parseResetAtMs(headers, primaryPrefix, now);
+	const secondaryResetAt = parseResetAtMs(headers, secondaryPrefix, now);
 
 	const hasSignal =
 		typeof primaryUsed === "number" ||
@@ -211,7 +211,7 @@ export class PreemptiveQuotaScheduler {
 
 	markRateLimited(key: string, retryAfterMs: number, now = Date.now()): void {
 		if (!key) return;
-		const waitMs = Math.max(0, Math.floor(retryAfterMs));
+		const waitMs = Number.isFinite(retryAfterMs) ? Math.max(0, Math.floor(retryAfterMs)) : 0;
 		this.snapshots.set(key, {
 			status: 429,
 			primary: {

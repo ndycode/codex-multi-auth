@@ -108,4 +108,51 @@ describe("dashboard settings", () => {
 		expect(content).toContain("\"codexMode\": false");
 		expect(content).toContain("\"dashboardDisplaySettings\"");
 	});
+
+	it("migrates legacy dashboard-settings.json into unified settings", async () => {
+		const {
+			loadDashboardDisplaySettings,
+			getDashboardSettingsPath,
+		} = await import("../lib/dashboard-settings.js");
+
+		const legacyPath = join(tempDir, "dashboard-settings.json");
+		await fs.writeFile(
+			legacyPath,
+			JSON.stringify({
+				settings: {
+					showPerAccountRows: false,
+					showQuotaDetails: false,
+					menuShowQuotaSummary: false,
+					menuLayoutMode: "expanded-rows",
+				},
+			}),
+			"utf-8",
+		);
+
+		const migrated = await loadDashboardDisplaySettings();
+		expect(migrated.showPerAccountRows).toBe(false);
+		expect(migrated.showQuotaDetails).toBe(false);
+		expect(migrated.menuShowQuotaSummary).toBe(false);
+		expect(migrated.menuLayoutMode).toBe("expanded-rows");
+
+		const unifiedContent = await fs.readFile(getDashboardSettingsPath(), "utf8");
+		expect(unifiedContent).toContain("\"dashboardDisplaySettings\"");
+		expect(unifiedContent).toContain("\"showPerAccountRows\": false");
+	});
+
+	it("falls back to defaults when legacy file read fails", async () => {
+		const { loadDashboardDisplaySettings, DEFAULT_DASHBOARD_DISPLAY_SETTINGS } = await import(
+			"../lib/dashboard-settings.js"
+		);
+
+		const legacyPath = join(tempDir, "dashboard-settings.json");
+		await fs.writeFile(legacyPath, JSON.stringify({ settings: { showPerAccountRows: false } }), "utf8");
+
+		const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
+		const readSpy = vi.spyOn(fs, "readFile").mockRejectedValueOnce(error);
+
+		const loaded = await loadDashboardDisplaySettings();
+		expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+		readSpy.mockRestore();
+	});
 });

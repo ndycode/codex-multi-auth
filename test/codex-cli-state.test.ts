@@ -137,6 +137,33 @@ describe("codex-cli state", () => {
 		expect(lookup?.accountId).toBe("acc_auth");
 	});
 
+	it("falls back to auth.json when accounts.json is malformed", async () => {
+		await writeFile(accountsPath, "{ malformed json", "utf-8");
+		await writeFile(
+			authPath,
+			JSON.stringify(
+				{
+					auth_mode: "chatgpt",
+					OPENAI_API_KEY: null,
+					tokens: {
+						access_token:
+							"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X2FjY291bnRfaWQiOiJhY2NfYXV0aCJ9LCJlbWFpbCI6ImF1dGhAZXhhbXBsZS5jb20ifQ.",
+						refresh_token: "refresh-auth",
+						account_id: "acc_auth",
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const state = await loadCodexCliState({ forceRefresh: true });
+		expect(state?.path).toBe(authPath);
+		expect(state?.activeAccountId).toBe("acc_auth");
+		expect(state?.accounts.length).toBe(1);
+	});
+
 	it("derives active selection from per-account active flag", async () => {
 		await writeFile(
 			accountsPath,
@@ -570,8 +597,60 @@ describe("codex-cli state", () => {
 		};
 		expect(writtenAuth.email).toBe("b@example.com");
 		expect(writtenAuth.tokens?.access_token).toBe("fresh-access");
-		expect(writtenAuth.tokens?.id_token).toBe("fresh-access");
+		expect(writtenAuth.tokens?.id_token).toBe("old-id-token");
 		expect(writtenAuth.tokens?.refresh_token).toBe("fresh-refresh");
+	});
+
+	it("does not update auth.json when no account match and selection lacks tokens", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		await writeFile(
+			authPath,
+			JSON.stringify(
+				{
+					auth_mode: "chatgpt",
+					OPENAI_API_KEY: null,
+					tokens: {
+						access_token: "old-access",
+						id_token: "old-id-token",
+						refresh_token: "old-refresh",
+						account_id: "old-account",
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const before = await readFile(authPath, "utf-8");
+		const updated = await setCodexCliActiveSelection({
+			accountId: "missing-account",
+			email: "b@example.com",
+		});
+		expect(updated).toBe(false);
+		const after = await readFile(authPath, "utf-8");
+		expect(after).toBe(before);
 	});
 
 	it("returns false when writer sync is disabled", async () => {
@@ -663,7 +742,7 @@ describe("codex-cli state", () => {
 			};
 		};
 		expect(written.tokens?.access_token).toBe("new.access.token");
-		expect(written.tokens?.id_token).toBe("new.access.token");
+		expect(written.tokens?.id_token).toBe("old.id.token");
 		expect(written.tokens?.refresh_token).toBe("new-refresh-token");
 		expect(written.tokens?.account_id).toBe("acc_new");
 	});

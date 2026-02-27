@@ -125,7 +125,7 @@ describe("auto-update-checker", () => {
 			expect(result.hasUpdate).toBe(true);
 		});
 
-		it("treats shorter prerelease as newer than longer current prerelease", async () => {
+		it("treats shorter prerelease as older than longer current prerelease", async () => {
 			mockPackageJson.version = "1.2.3-beta.1";
 			vi.mocked(globalThis.fetch).mockResolvedValue({
 				ok: true,
@@ -379,14 +379,16 @@ describe("auto-update-checker", () => {
 			});
 		});
 
-		it("retries cache writes when filesystem is busy", async () => {
+		it.each(["EBUSY", "EPERM"] as const)(
+			"retries cache writes when filesystem is transiently locked (%s)",
+			async (code) => {
 			let attempts = 0;
 			vi.mocked(fs.writeFileSync).mockClear();
 			vi.mocked(fs.writeFileSync).mockImplementation(() => {
 				attempts += 1;
 				if (attempts < 3) {
 					const error = new Error("busy") as NodeJS.ErrnoException;
-					error.code = "EBUSY";
+					error.code = code;
 					throw error;
 				}
 				return undefined;
@@ -399,7 +401,8 @@ describe("auto-update-checker", () => {
 			await checkForUpdates(true);
 
 			expect(fs.writeFileSync).toHaveBeenCalledTimes(3);
-		});
+			},
+		);
 
 		it("includes updateCommand in result", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({
@@ -466,6 +469,11 @@ describe("auto-update-checker", () => {
 			const showToast = vi.fn().mockRejectedValue(new Error("toast failed"));
 
 			await expect(checkAndNotify(showToast)).resolves.toBeUndefined();
+			expect(showToast).toHaveBeenCalledTimes(1);
+			expect(showToast).toHaveBeenCalledWith(
+				expect.stringContaining("v5.0.0"),
+				"info",
+			);
 		});
 	});
 

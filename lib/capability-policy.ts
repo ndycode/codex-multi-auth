@@ -1,3 +1,5 @@
+import { getNormalizedModel } from "./request/helpers/model-map.js";
+
 export interface CapabilityPolicySnapshot {
 	successes: number;
 	failures: number;
@@ -26,10 +28,15 @@ const PASSIVE_RECOVERY_PER_MIN = 0.5;
  */
 function normalizeModel(model: string | undefined): string | null {
 	if (!model) return null;
-	const trimmed = model.trim().toLowerCase();
+	const trimmedInput = model.trim();
+	if (!trimmedInput) return null;
+	const withoutProvider = trimmedInput.includes("/")
+		? (trimmedInput.split("/").pop() ?? trimmedInput)
+		: trimmedInput;
+	const mapped = getNormalizedModel(withoutProvider) ?? withoutProvider;
+	const trimmed = mapped.trim().toLowerCase();
 	if (!trimmed) return null;
-	const stripped = trimmed.includes("/") ? (trimmed.split("/").pop() ?? trimmed) : trimmed;
-	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+	return trimmed.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
 }
 
 /**

@@ -2123,6 +2123,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 												);
 											}
 											if (!fallbackResponse.ok) {
+												try {
+													await fallbackResponse.body?.cancel();
+												} catch {
+													// Best effort cleanup before trying next fallback account.
+												}
 												if (fallbackResponse.status === 429) {
 													const retryAfterRaw = fallbackResponse.headers
 														.get("retry-after")

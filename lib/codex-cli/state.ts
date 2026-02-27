@@ -371,67 +371,85 @@ export async function loadCodexCliState(
 
 	try {
 		if (hasAccountsPath) {
-			const raw = await fs.readFile(accountsPath, "utf-8");
-			const parsed = JSON.parse(raw) as unknown;
-			let sourceUpdatedAtMs: number | undefined;
 			try {
-				sourceUpdatedAtMs = (await fs.stat(accountsPath)).mtimeMs;
-			} catch {
-				sourceUpdatedAtMs = undefined;
-			}
-			const state = parseCodexCliState(accountsPath, parsed, sourceUpdatedAtMs);
-			if (state) {
-				incrementCodexCliMetric("readSuccesses");
-				log.debug("Loaded Codex CLI state", {
+				const raw = await fs.readFile(accountsPath, "utf-8");
+				const parsed = JSON.parse(raw) as unknown;
+				let sourceUpdatedAtMs: number | undefined;
+				try {
+					sourceUpdatedAtMs = (await fs.stat(accountsPath)).mtimeMs;
+				} catch {
+					sourceUpdatedAtMs = undefined;
+				}
+				const state = parseCodexCliState(accountsPath, parsed, sourceUpdatedAtMs);
+				if (state) {
+					incrementCodexCliMetric("readSuccesses");
+					log.debug("Loaded Codex CLI state", {
+						operation: "read-state",
+						outcome: "success",
+						path: accountsPath,
+						accountCount: state.accounts.length,
+						activeAccountRef: makeAccountFingerprint({
+							accountId: state.activeAccountId,
+							email: state.activeEmail,
+						}),
+					});
+					cache = state;
+					return state;
+				}
+				log.warn("Codex CLI accounts payload is malformed", {
 					operation: "read-state",
-					outcome: "success",
+					outcome: "malformed",
 					path: accountsPath,
-					accountCount: state.accounts.length,
-					activeAccountRef: makeAccountFingerprint({
-						accountId: state.activeAccountId,
-						email: state.activeEmail,
-					}),
 				});
-				cache = state;
-				return state;
+			} catch (accountsError) {
+				log.warn("Failed to read Codex CLI accounts state", {
+					operation: "read-state",
+					outcome: "accounts-read-error",
+					path: accountsPath,
+					error: String(accountsError),
+				});
 			}
-			log.warn("Codex CLI accounts payload is malformed", {
-				operation: "read-state",
-				outcome: "malformed",
-				path: accountsPath,
-			});
 		}
 
 		if (hasAuthPath) {
-			const raw = await fs.readFile(authPath, "utf-8");
-			const parsed = JSON.parse(raw) as unknown;
-			let sourceUpdatedAtMs: number | undefined;
 			try {
-				sourceUpdatedAtMs = (await fs.stat(authPath)).mtimeMs;
-			} catch {
-				sourceUpdatedAtMs = undefined;
-			}
-			const state = parseCodexCliAuthState(authPath, parsed, sourceUpdatedAtMs);
-			if (state) {
-				incrementCodexCliMetric("readSuccesses");
-				log.debug("Loaded Codex CLI auth state", {
+				const raw = await fs.readFile(authPath, "utf-8");
+				const parsed = JSON.parse(raw) as unknown;
+				let sourceUpdatedAtMs: number | undefined;
+				try {
+					sourceUpdatedAtMs = (await fs.stat(authPath)).mtimeMs;
+				} catch {
+					sourceUpdatedAtMs = undefined;
+				}
+				const state = parseCodexCliAuthState(authPath, parsed, sourceUpdatedAtMs);
+				if (state) {
+					incrementCodexCliMetric("readSuccesses");
+					log.debug("Loaded Codex CLI auth state", {
+						operation: "read-state",
+						outcome: "success",
+						path: authPath,
+						accountCount: state.accounts.length,
+						activeAccountRef: makeAccountFingerprint({
+							accountId: state.activeAccountId,
+							email: state.activeEmail,
+						}),
+					});
+					cache = state;
+					return state;
+				}
+				log.warn("Codex CLI auth payload is malformed", {
 					operation: "read-state",
-					outcome: "success",
+					outcome: "malformed",
 					path: authPath,
-					accountCount: state.accounts.length,
-					activeAccountRef: makeAccountFingerprint({
-						accountId: state.activeAccountId,
-						email: state.activeEmail,
-					}),
 				});
-				cache = state;
-				return state;
+			} catch (authError) {
+				log.warn("Failed to read Codex CLI auth state", {
+					operation: "read-state",
+					outcome: "auth-read-error",
+					path: authPath,
+					error: String(authError),
+				});
 			}
-			log.warn("Codex CLI auth payload is malformed", {
-				operation: "read-state",
-				outcome: "malformed",
-				path: authPath,
-			});
 		}
 
 		incrementCodexCliMetric("readFailures");

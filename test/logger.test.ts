@@ -800,6 +800,53 @@ describe('Logger Module', () => {
 				expect.stringContaining('Failed to write log'),
 			);
 		});
+
+		it("retries log directory creation for transient EBUSY/EPERM errors", async () => {
+			const transientBusy = Object.assign(new Error("busy"), { code: "EBUSY" });
+			const transientPerm = Object.assign(new Error("perm"), { code: "EPERM" });
+			mockExistsSync.mockReturnValue(false);
+			mockMkdirSync
+				.mockImplementationOnce(() => {
+					throw transientBusy;
+				})
+				.mockImplementationOnce(() => {
+					throw transientPerm;
+				})
+				.mockImplementationOnce(() => {});
+
+			const { logRequest: logRequestEnabled } = await loadLoggerModule({
+				ENABLE_PLUGIN_REQUEST_LOGGING: "1",
+				CODEX_CONSOLE_LOG: "1",
+			});
+
+			logRequestEnabled("retry-dir", { ok: true });
+
+			expect(mockMkdirSync).toHaveBeenCalledTimes(3);
+			expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
+		});
+
+		it("skips write when directory creation fails with non-retryable error", async () => {
+			const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			mockExistsSync.mockReturnValue(false);
+			mockMkdirSync.mockImplementation(() => {
+				throw Object.assign(new Error("denied"), { code: "EACCES" });
+			});
+
+			const { logRequest: logRequestEnabled } = await loadLoggerModule({
+				ENABLE_PLUGIN_REQUEST_LOGGING: "1",
+				CODEX_CONSOLE_LOG: "1",
+			});
+			consoleWarn.mockClear();
+
+			logRequestEnabled("mkdir-failed", { ok: false });
+
+			expect(mockMkdirSync).toHaveBeenCalledTimes(1);
+			expect(mockWriteFileSync).not.toHaveBeenCalled();
+			expect(consoleWarn).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to ensure log directory"),
+				expect.objectContaining({ path: expect.any(String) }),
+			);
+		});
 	});
 
 	describe('scoped logger when debug is enabled', () => {

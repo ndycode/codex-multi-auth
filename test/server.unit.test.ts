@@ -192,6 +192,21 @@ describe('OAuth Server Unit Tests', () => {
 			expect(mockServer._lastCode).toBe('captured-code');
 		});
 
+		it('should keep the first code when duplicate callbacks arrive', () => {
+			const firstReq = createMockRequest('/auth/callback?code=first-code&state=test-state');
+			const secondReq = createMockRequest('/auth/callback?code=second-code&state=test-state');
+			const firstRes = createMockResponse();
+			const secondRes = createMockResponse();
+
+			requestHandler(firstReq, firstRes);
+			requestHandler(secondReq, secondRes);
+
+			expect(mockServer._lastCode).toBe('first-code');
+			expect(logWarn).toHaveBeenCalledWith(
+				expect.stringContaining('Duplicate OAuth callback received'),
+			);
+		});
+
 		it('should handle request handler errors gracefully', () => {
 			const req = createMockRequest('/auth/callback?code=test&state=test-state');
 			const res = createMockResponse();

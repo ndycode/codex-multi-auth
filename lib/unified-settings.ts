@@ -1,7 +1,9 @@
 import {
 	existsSync,
 	mkdirSync,
+	renameSync,
 	readFileSync,
+	unlinkSync,
 	writeFileSync,
 	promises as fs,
 } from "node:fs";
@@ -13,6 +15,16 @@ type JsonRecord = Record<string, unknown>;
 export const UNIFIED_SETTINGS_VERSION = 1 as const;
 
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
+const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+
+function isRetryableFsError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Determines whether a value is a non-null object suitable for use as a JsonRecord.
@@ -21,7 +33,7 @@ const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
  * @returns `true` if `value` is an object and not `null`, `false` otherwise
  */
 function isRecord(value: unknown): value is JsonRecord {
-	return value !== null && typeof value === "object";
+	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
@@ -113,7 +125,32 @@ function normalizeForWrite(record: JsonRecord): JsonRecord {
 function writeSettingsRecordSync(record: JsonRecord): void {
 	mkdirSync(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
-	writeFileSync(UNIFIED_SETTINGS_PATH, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	const data = `${JSON.stringify(payload, null, 2)}\n`;
+	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
+	writeFileSync(tempPath, data, "utf8");
+	let moved = false;
+	try {
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			try {
+				renameSync(tempPath, UNIFIED_SETTINGS_PATH);
+				moved = true;
+				return;
+			} catch (error) {
+				if (!isRetryableFsError(error) || attempt >= 4) {
+					throw error;
+				}
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+			}
+		}
+	} finally {
+		if (!moved) {
+			try {
+				unlinkSync(tempPath);
+			} catch {
+				// Best-effort temp cleanup.
+			}
+		}
+	}
 }
 
 /**
@@ -139,7 +176,32 @@ function writeSettingsRecordSync(record: JsonRecord): void {
 async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
 	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
-	await fs.writeFile(UNIFIED_SETTINGS_PATH, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	const data = `${JSON.stringify(payload, null, 2)}\n`;
+	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	await fs.writeFile(tempPath, data, "utf8");
+	let moved = false;
+	try {
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			try {
+				await fs.rename(tempPath, UNIFIED_SETTINGS_PATH);
+				moved = true;
+				return;
+			} catch (error) {
+				if (!isRetryableFsError(error) || attempt >= 4) {
+					throw error;
+				}
+				await sleep(10 * 2 ** attempt);
+			}
+		}
+	} finally {
+		if (!moved) {
+			try {
+				await fs.unlink(tempPath);
+			} catch {
+				// Best-effort temp cleanup.
+			}
+		}
+	}
 }
 
 /**

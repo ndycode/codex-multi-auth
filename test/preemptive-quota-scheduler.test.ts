@@ -19,6 +19,14 @@ describe("preemptive quota scheduler", () => {
 		expect(snapshot?.primary.resetAtMs).toBeGreaterThan(1_000);
 	});
 
+	it("uses provided now when parsing reset-after seconds", () => {
+		const headers = new Headers({
+			"x-codex-primary-reset-after-seconds": "120",
+		});
+		const snapshot = readQuotaSchedulerSnapshot(headers, 200, 5_000);
+		expect(snapshot?.primary.resetAtMs).toBe(125_000);
+	});
+
 	it("defers requests for known 429 window", () => {
 		const scheduler = new PreemptiveQuotaScheduler();
 		scheduler.markRateLimited("acc:model", 30_000, 1_000);
@@ -27,6 +35,21 @@ describe("preemptive quota scheduler", () => {
 		expect(decision.defer).toBe(true);
 		expect(decision.reason).toBe("rate-limit");
 		expect(decision.waitMs).toBeGreaterThan(0);
+	});
+
+	it("sanitizes non-finite retry-after values", () => {
+		const scheduler = new PreemptiveQuotaScheduler();
+		scheduler.markRateLimited("acc:model", Number.NaN, 1_000);
+		const nanDecision = scheduler.getDeferral("acc:model", 1_000);
+		expect(nanDecision.defer).toBe(false);
+
+		scheduler.markRateLimited("acc:model", Number.POSITIVE_INFINITY, 2_000);
+		const infDecision = scheduler.getDeferral("acc:model", 2_000);
+		expect(infDecision.defer).toBe(false);
+
+		scheduler.markRateLimited("acc:model", -1234, 3_000);
+		const negativeDecision = scheduler.getDeferral("acc:model", 3_000);
+		expect(negativeDecision.defer).toBe(false);
 	});
 
 	it("defers when usage is near exhaustion and reset is pending", () => {

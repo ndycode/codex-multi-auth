@@ -58,12 +58,17 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 				"default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 			);
 			res.end(successHtml);
-			(server as http.Server & { _lastCode?: string })._lastCode = code;
-	} catch (err) {
-		logError(`Request handler error: ${(err as Error)?.message ?? String(err)}`);
-		res.statusCode = 500;
-		res.end("Internal error");
-	}
+			const trackedServer = server as http.Server & { _lastCode?: string };
+			if (trackedServer._lastCode) {
+				logWarn("Duplicate OAuth callback received; preserving first authorization code");
+				return;
+			}
+			trackedServer._lastCode = code;
+		} catch (err) {
+			logError(`Request handler error: ${(err as Error)?.message ?? String(err)}`);
+			res.statusCode = 500;
+			res.end("Internal error");
+		}
 	});
 
 	server.unref();
@@ -78,20 +83,20 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 						pollAborted = true;
 						server.close();
 					},
-				waitForCode: async () => {
-					const POLL_INTERVAL_MS = 100;
-					const TIMEOUT_MS = 5 * 60 * 1000;
-					const maxIterations = Math.floor(TIMEOUT_MS / POLL_INTERVAL_MS);
-					const poll = () => new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
-					for (let i = 0; i < maxIterations; i++) {
-						if (pollAborted) return null;
-						const lastCode = (server as http.Server & { _lastCode?: string })._lastCode;
-						if (lastCode) return { code: lastCode };
-						await poll();
-					}
-					logWarn("OAuth poll timeout after 5 minutes");
-					return null;
-				},
+					waitForCode: async () => {
+						const POLL_INTERVAL_MS = 100;
+						const TIMEOUT_MS = 5 * 60 * 1000;
+						const maxIterations = Math.floor(TIMEOUT_MS / POLL_INTERVAL_MS);
+						const poll = () => new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+						for (let i = 0; i < maxIterations; i++) {
+							if (pollAborted) return null;
+							const lastCode = (server as http.Server & { _lastCode?: string })._lastCode;
+							if (lastCode) return { code: lastCode };
+							await poll();
+						}
+						logWarn("OAuth poll timeout after 5 minutes");
+						return null;
+					},
 				});
 			})
 			.on("error", (err: NodeJS.ErrnoException) => {
@@ -101,14 +106,16 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 				resolve({
 					port: 1455,
 					ready: false,
-				close: () => {
-					pollAborted = true;
-					try {
-						server.close();
-					} catch (err) {
-					logError(`Failed to close OAuth server: ${(err as Error)?.message ?? String(err)}`);
-					}
-				},
+					close: () => {
+						pollAborted = true;
+						try {
+							server.close();
+						} catch (closeErr) {
+							logError(
+								`Failed to close OAuth server: ${(closeErr as Error)?.message ?? String(closeErr)}`,
+							);
+						}
+					},
 					waitForCode: () => Promise.resolve(null),
 				});
 			});

@@ -67,4 +67,66 @@ describe("failure policy", () => {
 		expect(decision.rotateAccount).toBe(true);
 		expect(decision.handoffStrategy).toBe("soft");
 	});
+
+	it.each([
+		["aggressive", false, undefined],
+		["balanced", true, 250],
+		["conservative", true, 900],
+	] as const)(
+		"applies network mode matrix for %s",
+		(mode, retrySameAccount, retryDelayMs) => {
+			const decision = evaluateFailurePolicy({
+				kind: "network",
+				failoverMode: mode,
+			});
+
+			expect(decision.retrySameAccount).toBe(retrySameAccount);
+			expect(decision.retryDelayMs).toBe(retryDelayMs);
+			expect(decision.rotateAccount).toBe(!retrySameAccount);
+			expect(decision.handoffStrategy).toBe("soft");
+		},
+	);
+
+	it("retries same account for conservative server mode without retry-after", () => {
+		const decision = evaluateFailurePolicy({
+			kind: "server",
+			failoverMode: "conservative",
+			serverRetryAfterMs: 0,
+		});
+
+		expect(decision.retrySameAccount).toBe(true);
+		expect(decision.retryDelayMs).toBe(500);
+		expect(decision.rotateAccount).toBe(false);
+	});
+
+	it("rotates on server failures when retry-after is provided", () => {
+		const decision = evaluateFailurePolicy({
+			kind: "server",
+			failoverMode: "conservative",
+			serverRetryAfterMs: 3_000,
+		});
+
+		expect(decision.retrySameAccount).toBe(false);
+		expect(decision.rotateAccount).toBe(true);
+		expect(decision.cooldownMs).toBe(3_000);
+	});
+
+	it.each([
+		["aggressive", false, undefined],
+		["balanced", true, 200],
+		["conservative", true, 600],
+	] as const)(
+		"applies empty-response mode matrix for %s",
+		(mode, retrySameAccount, retryDelayMs) => {
+			const decision = evaluateFailurePolicy({
+				kind: "empty-response",
+				failoverMode: mode,
+			});
+
+			expect(decision.retrySameAccount).toBe(retrySameAccount);
+			expect(decision.retryDelayMs).toBe(retryDelayMs);
+			expect(decision.rotateAccount).toBe(!retrySameAccount);
+			expect(decision.handoffStrategy).toBe("soft");
+		},
+	);
 });

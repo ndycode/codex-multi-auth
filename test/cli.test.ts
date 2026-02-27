@@ -178,6 +178,22 @@ describe("CLI Module", () => {
       expect(result).toEqual({ mode: "verify-flagged" });
     });
 
+    it("accepts uppercase quick shortcuts for advanced actions", async () => {
+      const { promptLoginMode } = await import("../lib/cli.js");
+
+      mockRl.question.mockResolvedValueOnce("P");
+      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "forecast" });
+
+      mockRl.question.mockResolvedValueOnce("X");
+      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "fix" });
+
+      mockRl.question.mockResolvedValueOnce("S");
+      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "settings" });
+
+      mockRl.question.mockResolvedValueOnce("G");
+      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "verify-flagged" });
+    });
+
     it("is case insensitive", async () => {
       mockRl.question.mockResolvedValueOnce("A");
       

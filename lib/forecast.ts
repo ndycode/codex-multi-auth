@@ -72,6 +72,16 @@ function redactSensitiveReason(value: string): string {
 	);
 }
 
+function summarizeRefreshFailure(failure: TokenFailure): string {
+	const reasonCode = failure.reason?.trim();
+	if (reasonCode && reasonCode.length > 0) {
+		const statusCode = typeof failure.statusCode === "number" ? ` (${failure.statusCode})` : "";
+		return `${reasonCode}${statusCode}`;
+	}
+	const fallback = failure.message?.trim() || "refresh failed";
+	return redactSensitiveReason(fallback).slice(0, 160);
+}
+
 function getRiskLevel(score: number): ForecastRiskLevel {
 	if (score >= 75) return "high";
 	if (score >= 40) return "medium";
@@ -151,9 +161,7 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 	if (input.refreshFailure) {
 		const hard = isHardRefreshFailure(input.refreshFailure);
 		hardFailure = hard;
-		const detail = redactSensitiveReason(
-			input.refreshFailure.message ?? input.refreshFailure.reason ?? "refresh failed",
-		);
+		const detail = summarizeRefreshFailure(input.refreshFailure);
 		if (hard) {
 			availability = "unavailable";
 			riskScore += 90;
@@ -183,12 +191,16 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 
 	const quota = input.liveQuota;
 	if (quota) {
+		const primaryUsed = quota.primary.usedPercent ?? 0;
+		const secondaryUsed = quota.secondary.usedPercent ?? 0;
+		const quotaPressure = quota.status === 429 || primaryUsed >= 90 || secondaryUsed >= 90;
+
 		if (quota.status === 429) {
 			availability = availability === "unavailable" ? "unavailable" : "delayed";
 			riskScore += 35;
 			reasons.push("live probe returned 429");
 		}
-		const liveWait = getLiveQuotaWaitMs(quota, now);
+		const liveWait = quotaPressure ? getLiveQuotaWaitMs(quota, now) : 0;
 		waitMs = Math.max(waitMs, liveWait);
 		if (liveWait > 0 && availability === "ready") {
 			availability = "delayed";
@@ -199,8 +211,6 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 		const secondaryUsage = describeQuotaUsage("secondary", quota.secondary.usedPercent);
 		if (secondaryUsage) reasons.push(secondaryUsage);
 
-		const primaryUsed = quota.primary.usedPercent ?? 0;
-		const secondaryUsed = quota.secondary.usedPercent ?? 0;
 		if (primaryUsed >= 98 || secondaryUsed >= 98) {
 			riskScore += 55;
 		} else if (primaryUsed >= 90 || secondaryUsed >= 90) {

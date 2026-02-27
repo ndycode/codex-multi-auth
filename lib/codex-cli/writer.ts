@@ -225,8 +225,10 @@ async function writeCodexAuthState(
 	nextTokens.refresh_token = refreshToken;
 	const resolvedIdToken =
 		readTrimmedString(selection.idToken) ??
-		accessToken;
-	nextTokens.id_token = resolvedIdToken;
+		(typeof existingTokens.id_token === "string" ? existingTokens.id_token : undefined);
+	if (resolvedIdToken) {
+		nextTokens.id_token = resolvedIdToken;
+	}
 	if (selection.accountId?.trim()) {
 		nextTokens.account_id = selection.accountId.trim();
 	}
@@ -235,7 +237,7 @@ async function writeCodexAuthState(
 	next.codexMultiAuthSyncVersion = syncVersion;
 
 	await atomicWriteJson(path, next);
-	lastCodexCliSelectionWriteAt = syncVersion;
+	lastCodexCliSelectionWriteAt = Math.max(lastCodexCliSelectionWriteAt, syncVersion);
 	return true;
 }
 
@@ -272,6 +274,11 @@ export async function setCodexCliActiveSelection(
 			} else {
 				const matchIndex = resolveMatchIndex(parsed.accounts, selection);
 				if (matchIndex < 0) {
+					const hasSelectionTokens =
+						typeof selection.accessToken === "string" &&
+						selection.accessToken.trim().length > 0 &&
+						typeof selection.refreshToken === "string" &&
+						selection.refreshToken.trim().length > 0;
 					log.warn("Failed to persist Codex CLI active selection", {
 						operation: "write-active-selection",
 						outcome: "no-match",
@@ -281,7 +288,7 @@ export async function setCodexCliActiveSelection(
 							email: selection.email,
 						}),
 					});
-					if (!hasAuthPath) {
+					if (!hasAuthPath || !hasSelectionTokens) {
 						incrementCodexCliMetric("writeFailures");
 						return false;
 					}
@@ -334,7 +341,7 @@ export async function setCodexCliActiveSelection(
 						next.codexMultiAuthSyncVersion = syncVersion;
 
 						await atomicWriteJson(accountsPath, next);
-						lastCodexCliSelectionWriteAt = syncVersion;
+						lastCodexCliSelectionWriteAt = Math.max(lastCodexCliSelectionWriteAt, syncVersion);
 						wroteAccounts = true;
 						log.debug("Persisted Codex CLI accounts selection", {
 							operation: "write-active-selection",

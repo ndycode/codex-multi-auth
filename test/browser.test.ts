@@ -95,6 +95,25 @@ describe("auth browser utilities", () => {
 
 			expect(openBrowserUrl("https://example.com")).toBe(false);
 		});
+
+		it("uses open on darwin when available", () => {
+			Object.defineProperty(process, "platform", { value: "darwin" });
+			process.env.PATH = "/usr/bin";
+			mockedExistsSync.mockImplementation(
+				(candidate) => typeof candidate === "string" && candidate.endsWith("open"),
+			);
+			mockedStatSync.mockReturnValue({
+				isFile: () => true,
+				mode: 0o755,
+			} as unknown as ReturnType<typeof fs.statSync>);
+
+			expect(openBrowserUrl("https://example.com")).toBe(true);
+			expect(mockedSpawn).toHaveBeenCalledWith(
+				"open",
+				["https://example.com"],
+				{ stdio: "ignore", shell: false },
+			);
+		});
 	});
 
 	describe("copyTextToClipboard", () => {

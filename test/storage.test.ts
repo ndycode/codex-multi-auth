@@ -1149,6 +1149,30 @@ describe("storage", () => {
   });
 
   describe("clearAccounts edge cases", () => {
+    it("removes primary, backup, and wal artifacts", async () => {
+      const now = Date.now();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      };
+
+      const storagePath = getStoragePath();
+      await saveAccounts(storage);
+      await fs.writeFile(`${storagePath}.bak`, JSON.stringify(storage), "utf-8");
+      await fs.writeFile(`${storagePath}.wal`, JSON.stringify(storage), "utf-8");
+
+      expect(existsSync(storagePath)).toBe(true);
+      expect(existsSync(`${storagePath}.bak`)).toBe(true);
+      expect(existsSync(`${storagePath}.wal`)).toBe(true);
+
+      await clearAccounts();
+
+      expect(existsSync(storagePath)).toBe(false);
+      expect(existsSync(`${storagePath}.bak`)).toBe(false);
+      expect(existsSync(`${storagePath}.wal`)).toBe(false);
+    });
+
     it("logs error for non-ENOENT errors during clear", async () => {
       const unlinkSpy = vi.spyOn(fs, "unlink").mockRejectedValue(
         Object.assign(new Error("EACCES error"), { code: "EACCES" })

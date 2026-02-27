@@ -37,4 +37,11 @@ describe("capability policy store", () => {
 		expect(store.getSnapshot("id:acc_a", "gpt-5-codex")).toBeNull();
 		expect(store.getSnapshot("id:acc_b", "gpt-5-codex")).not.toBeNull();
 	});
+
+	it("uses canonical model normalization across aliases", () => {
+		const store = new CapabilityPolicyStore();
+		store.recordSuccess("id:acc_alias", "gpt-5.3-codex", 1_000);
+		const boostFromCanonical = store.getBoost("id:acc_alias", "gpt-5-codex", 1_500);
+		expect(boostFromCanonical).toBeGreaterThan(0);
+	});
 });

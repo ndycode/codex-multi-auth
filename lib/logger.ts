@@ -122,6 +122,8 @@ export const DEBUG_ENABLED = process.env.DEBUG_CODEX_PLUGIN === "1" || LOGGING_E
 export const LOG_LEVEL = parseLogLevel(process.env.CODEX_PLUGIN_LOG_LEVEL);
 const CONSOLE_LOG_ENABLED = process.env.CODEX_CONSOLE_LOG === "1";
 const LOG_DIR = join(getCodexLogDir(), "codex-plugin");
+const LOG_DIR_RETRYABLE_ERRORS = new Set(["EBUSY", "EPERM"]);
+const LOG_DIR_MAX_ATTEMPTS = 3;
 
 let client: LogClient | null = null;
 let currentCorrelationId: string | null = null;
@@ -251,18 +253,33 @@ function formatDuration(ms: number): string {
 	return `${minutes}m ${seconds}s`;
 }
 
+function ensureLogDir(path: string): boolean {
+	for (let attempt = 0; attempt < LOG_DIR_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			if (!existsSync(path)) {
+				mkdirSync(path, { recursive: true, mode: 0o700 });
+			}
+			return true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code ?? "";
+			const canRetry = LOG_DIR_RETRYABLE_ERRORS.has(code);
+			if (canRetry && attempt + 1 < LOG_DIR_MAX_ATTEMPTS) {
+				continue;
+			}
+			logToConsole("warn", `[${PLUGIN_NAME}] Failed to ensure log directory`, {
+				path,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return false;
+		}
+	}
+	return false;
+}
+
 export function logRequest(stage: string, data: Record<string, unknown>): void {
 	if (!LOGGING_ENABLED) return;
 
-	try {
-		if (!existsSync(LOG_DIR)) {
-			mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
-		}
-	} catch (error) {
-		logToConsole("warn", `[${PLUGIN_NAME}] Failed to ensure log directory`, {
-			path: LOG_DIR,
-			error: error instanceof Error ? error.message : String(error),
-		});
+	if (!ensureLogDir(LOG_DIR)) {
 		return;
 	}
 

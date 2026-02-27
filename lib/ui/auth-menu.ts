@@ -70,6 +70,14 @@ export type AuthMenuAction =
 
 export type AccountAction = "back" | "delete" | "refresh" | "toggle" | "set-current" | "cancel";
 
+function sanitizeTerminalText(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	return value
+		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/[\u0000-\u001f\u007f]/g, "")
+		.trim();
+}
+
 function formatRelativeTime(timestamp: number | undefined): string {
 	if (!timestamp) return "never";
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
@@ -143,18 +151,18 @@ function statusBadge(status: AccountStatus | undefined): string {
 function accountTitle(account: AccountInfo): string {
 	const accountNumber = account.quickSwitchNumber ?? (account.index + 1);
 	const base =
-		account.email?.trim() ||
-		account.accountLabel?.trim() ||
-		account.accountId?.trim() ||
+		sanitizeTerminalText(account.email) ||
+		sanitizeTerminalText(account.accountLabel) ||
+		sanitizeTerminalText(account.accountId) ||
 		`Account ${accountNumber}`;
 	return `${accountNumber}. ${base}`;
 }
 
 function accountSearchText(account: AccountInfo): string {
 	return [
-		account.email,
-		account.accountLabel,
-		account.accountId,
+		sanitizeTerminalText(account.email),
+		sanitizeTerminalText(account.accountLabel),
+		sanitizeTerminalText(account.accountId),
 		String(account.quickSwitchNumber ?? (account.index + 1)),
 	]
 		.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -432,8 +440,13 @@ export async function showAuthMenu(
 			? accounts.filter((account) => accountSearchText(account).includes(normalizedSearch))
 			: accounts;
 		const visibleByNumber = new Map<number, AccountInfo>();
+		const duplicateQuickSwitchNumbers = new Set<number>();
 		for (const account of visibleAccounts) {
 			const quickSwitchNumber = account.quickSwitchNumber ?? (account.index + 1);
+			if (visibleByNumber.has(quickSwitchNumber)) {
+				duplicateQuickSwitchNumbers.add(quickSwitchNumber);
+				continue;
+			}
 			visibleByNumber.set(quickSwitchNumber, account);
 		}
 
@@ -547,6 +560,9 @@ export async function showAuthMenu(
 				}
 				const parsed = Number.parseInt(input, 10);
 				if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 9) {
+					if (duplicateQuickSwitchNumbers.has(parsed)) {
+						return undefined;
+					}
 					const direct = visibleByNumber.get(parsed);
 					if (direct) {
 						return { type: "set-current-account" as const, account: direct };
