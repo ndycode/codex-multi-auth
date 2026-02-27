@@ -398,7 +398,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 validate: (input: string): string | undefined => {
                         const parsed = parseAuthorizationInput(input);
                         if (!parsed.code) {
-                                return "No authorization code found. Paste the full callback URL (e.g., http://localhost:1455/auth/callback?code=...)";
+                                return "No authorization code found. Paste the full callback URL (e.g., http://127.0.0.1:1455/auth/callback?code=...)";
                         }
                         if (!parsed.state) {
                                 return "Missing OAuth state. Paste the full callback URL including both code and state parameters.";
