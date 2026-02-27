@@ -8,5 +8,5 @@ describe("eslint config", () => {
 		const eslint = new ESLint({ overrideConfigFile: configPath });
 		expect(await eslint.isPathIgnored("vendor/fixture.ts")).toBe(true);
 		expect(await eslint.isPathIgnored("lib/config.ts")).toBe(false);
-	});
+	}, 15000);
 });

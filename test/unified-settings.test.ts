@@ -65,6 +65,79 @@ describe("unified settings", () => {
 		expect(await loadUnifiedDashboardSettings()).toBeNull();
 	});
 
+	it("returns null when dashboard settings file is missing", async () => {
+		const { loadUnifiedDashboardSettings } = await import("../lib/unified-settings.js");
+		expect(await loadUnifiedDashboardSettings()).toBeNull();
+	});
+
+	it("supports sync plugin-config save and load", async () => {
+		const {
+			saveUnifiedPluginConfigSync,
+			loadUnifiedPluginConfigSync,
+			getUnifiedSettingsPath,
+		} = await import("../lib/unified-settings.js");
+
+		saveUnifiedPluginConfigSync({ codexMode: true, retries: 4 });
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 4 });
+		const fileContent = await fs.readFile(getUnifiedSettingsPath(), "utf8");
+		expect(fileContent).toContain("\"version\": 1");
+	});
+
+	it("returns null for missing pluginConfig section", async () => {
+		const { getUnifiedSettingsPath, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+		await fs.writeFile(getUnifiedSettingsPath(), JSON.stringify({ version: 1 }), "utf8");
+		expect(loadUnifiedPluginConfigSync()).toBeNull();
+	});
+
+	it("returns null sections when settings root is not an object", async () => {
+		const { getUnifiedSettingsPath, loadUnifiedPluginConfigSync, loadUnifiedDashboardSettings } = await import(
+			"../lib/unified-settings.js"
+		);
+		await fs.writeFile(getUnifiedSettingsPath(), JSON.stringify([]), "utf8");
+		expect(loadUnifiedPluginConfigSync()).toBeNull();
+		expect(await loadUnifiedDashboardSettings()).toBeNull();
+	});
+
+	it("retries async rename on retryable fs errors", async () => {
+		const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+		const renameSpy = vi.spyOn(fs, "rename");
+		renameSpy.mockImplementationOnce(async () => {
+			const error = new Error("busy") as NodeJS.ErrnoException;
+			error.code = "EBUSY";
+			throw error;
+		});
+
+		await saveUnifiedPluginConfig({ codexMode: true, retries: 1 });
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 1 });
+		renameSpy.mockRestore();
+	});
+
+	it("cleans async temp file when rename fails with non-retryable code", async () => {
+		const { saveUnifiedPluginConfig, getUnifiedSettingsPath } = await import(
+			"../lib/unified-settings.js"
+		);
+		const renameSpy = vi.spyOn(fs, "rename");
+		renameSpy.mockImplementationOnce(async () => {
+			const error = new Error("denied") as NodeJS.ErrnoException;
+			error.code = "EACCES";
+			throw error;
+		});
+
+		await expect(saveUnifiedPluginConfig({ codexMode: true })).rejects.toThrow();
+		renameSpy.mockRestore();
+
+		const dir = tempDir;
+		const entries = await fs.readdir(dir);
+		const leakedTemps = entries.filter((entry) => entry.includes("settings.json.") && entry.endsWith(".tmp"));
+		expect(leakedTemps).toEqual([]);
+		expect(await fs.readFile(getUnifiedSettingsPath(), "utf8").catch(() => "")).toBe("");
+	});
+
 	it("serializes concurrent plugin config writes to avoid race corruption", async () => {
 		const {
 			saveUnifiedPluginConfig,
