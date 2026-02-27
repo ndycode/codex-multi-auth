@@ -1093,7 +1093,7 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 	{ id: 28, name: "Failure policy evaluation module" },
 	{ id: 29, name: "Streaming failover pipeline" },
 	{ id: 30, name: "Rate-limit backoff and cooldown handling" },
-	{ id: 31, name: "OpenCode request transformer bridge" },
+	{ id: 31, name: "Host request transformer bridge" },
 	{ id: 32, name: "Prompt template sync with cache" },
 	{ id: 33, name: "Codex CLI active-account state sync" },
 	{ id: 34, name: "TUI quick-switch hotkeys (1-9)" },

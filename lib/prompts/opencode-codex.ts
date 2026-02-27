@@ -1,7 +1,7 @@
 /**
- * OpenCode Codex Prompt Fetcher
+ * Codex Prompt Fetcher
  *
- * Fetches and caches the codex.txt system prompt from OpenCode's GitHub repository.
+ * Fetches and caches the codex.txt system prompt from upstream GitHub sources.
  * Uses ETag-based caching to efficiently track updates.
  */
 
@@ -67,14 +67,14 @@ function parseSourceUrl(source: string | undefined): string | undefined {
 	try {
 		const parsed = new URL(trimmed);
 		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-			logDebug("Ignoring OpenCode codex prompt source override due to protocol", {
+			logDebug("Ignoring codex prompt source override due to protocol", {
 				source: redactSourceForLog(trimmed),
 			});
 			return undefined;
 		}
 		return trimmed;
 	} catch {
-		logDebug("Ignoring invalid OpenCode codex prompt source override", {
+		logDebug("Ignoring invalid codex prompt source override", {
 			source: redactSourceForLog(trimmed),
 		});
 		return undefined;
@@ -190,7 +190,7 @@ async function refreshPrompt(
 			response = await fetch(sourceUrl, { headers });
 		} catch (error) {
 			lastFailure = `${redactSourceForLog(sourceUrl)}: ${String(error)}`;
-			logDebug("OpenCode prompt source fetch failed", {
+			logDebug("Codex prompt source fetch failed", {
 				sourceUrl: redactSourceForLog(sourceUrl),
 				error: String(error),
 			});
@@ -212,7 +212,7 @@ async function refreshPrompt(
 
 		if (!response.ok) {
 			lastFailure = `${redactSourceForLog(sourceUrl)}: HTTP ${response.status}`;
-			logDebug("OpenCode prompt source returned non-OK response", {
+			logDebug("Codex prompt source returned non-OK response", {
 				sourceUrl: redactSourceForLog(sourceUrl),
 				status: response.status,
 			});
@@ -227,7 +227,7 @@ async function refreshPrompt(
 	}
 
 	throw new Error(
-		`Failed to fetch OpenCode codex prompt from all sources${lastFailure ? ` (${lastFailure})` : ""}`,
+		`Failed to fetch codex prompt from all sources${lastFailure ? ` (${lastFailure})` : ""}`,
 	);
 }
 
@@ -236,7 +236,7 @@ function scheduleRefresh(cachedMeta: CacheMeta | null, cachedContent: string | n
 	refreshPromise = refreshPrompt(cachedMeta, cachedContent)
 		.then(() => undefined)
 		.catch((error) => {
-			logDebug("OpenCode prompt background refresh failed", {
+			logDebug("Codex prompt background refresh failed", {
 				error: String(error),
 			});
 		})
@@ -246,7 +246,7 @@ function scheduleRefresh(cachedMeta: CacheMeta | null, cachedContent: string | n
 }
 
 /**
- * Fetch OpenCode's codex.txt prompt with ETag-based caching
+ * Fetch codex.txt prompt with ETag-based caching
  * Uses HTTP conditional requests to efficiently check for updates
  *
  * Rate limit protection: Only checks GitHub if cache is older than 15 minutes
@@ -280,13 +280,13 @@ export async function getOpenCodeCodexPrompt(): Promise<string> {
 			return staleContent;
 		}
 		throw new Error(
-			`Failed to fetch OpenCode codex.txt and no cache available: ${error}`,
+			`Failed to fetch codex.txt and no cache available: ${error}`,
 		);
 	}
 }
 
 /**
- * Get first N characters of the cached OpenCode prompt for verification
+ * Get first N characters of the cached prompt for verification
  * @param chars Number of characters to get (default: 50)
  * @returns First N characters or null if not cached
  */
@@ -300,10 +300,10 @@ export async function getCachedPromptPrefix(chars = 50): Promise<string | null> 
 }
 
 /**
- * Prewarm the OpenCode prompt cache without blocking startup.
+ * Prewarm the prompt cache without blocking startup.
  */
 export function prewarmOpenCodeCodexPrompt(): void {
 	void getOpenCodeCodexPrompt().catch((error) => {
-		logDebug("OpenCode prompt prewarm failed", { error: String(error) });
+		logDebug("Codex prompt prewarm failed", { error: String(error) });
 	});
 }

@@ -21,13 +21,13 @@ What should happen.
 What actually happens.
 
 **Environment**
-- opencode version:
+- codex version:
 - Plugin version:
 - Operating System:
 - Node.js version:
 
 **Logs**
-If applicable, attach logs from `~/.opencode/logs/codex-plugin/` (enable with `ENABLE_PLUGIN_REQUEST_LOGGING=1`)
+If applicable, attach logs from `~/.codex/multi-auth/logs/codex-plugin/` (enable with `ENABLE_PLUGIN_REQUEST_LOGGING=1`)
 
 **Compliance Checklist**
 Please confirm:

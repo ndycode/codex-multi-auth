@@ -5,17 +5,17 @@ all notable changes to this project. dates are ISO format (YYYY-MM-DD).
 ## [unreleased]
 
 ### New Features
-- Added a plugin-owned true hashline engine for plain OpenCode by overriding the `edit` tool.
+- Added a plugin-owned true hashline engine for plain host runtime by overriding the `edit` tool.
 - Added `hashline_read` to emit deterministic `L<line>#<hash>` references for edit targeting.
 
 ### Improvements
 - Bridge/remap prompt guidance now prefers hashline workflow (`hashline_read` -> `edit` with `lineRef`).
-- README and configuration docs now include standard hashline usage for plain OpenCode users.
+- README and configuration docs now include standard hashline usage for plain host runtime users.
 
 ## [5.2.3] - 2026-02-21
 
 ### Improvements
-- Defaulted request transform mode to `native` so runtime tool schemas/payload shapes are preserved in current OpenCode flows.
+- Defaulted request transform mode to `native` so runtime tool schemas/payload shapes are preserved in current host runtime flows.
 - Scoped bridge-style Codex remapping to explicit `legacy` mode only, reducing tool-name drift and invalid alias rewrites.
 - Added config/env control for transform behavior: `requestTransformMode` and `CODEX_AUTH_REQUEST_TRANSFORM_MODE`.
 - Updated bridge guidance to anchor on runtime tool manifests and avoid inventing/translating unavailable tool names.
@@ -25,8 +25,8 @@ all notable changes to this project. dates are ISO format (YYYY-MM-DD).
 - Validation: npm run lint
 - Validation: npm test
 - Validation: npm run build
-- Validation: OpenCode runtime smoke test (real auth state): successful file write/read tool flow (`filesystem_write_file`, `filesystem_read_text_file`)
-- Validation: OpenCode runtime targeted `apply_patch` test: completed successfully (`apply_patch` tool part confirmed)
+- Validation: host runtime smoke test (real auth state): successful file write/read tool flow (`filesystem_write_file`, `filesystem_read_text_file`)
+- Validation: host runtime targeted `apply_patch` test: completed successfully (`apply_patch` tool part confirmed)
 
 ### Changelog
 
@@ -37,7 +37,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v5.2.2...v5.
 ## [5.2.2] - 2026-02-20
 
 ### Improvements
-- Added stricter tool-call guardrails in OpenCode bridge/remap prompts so the model only calls tools that actually exist in the active schema.
+- Added stricter tool-call guardrails in host runtime bridge/remap prompts so the model only calls tools that actually exist in the active schema.
 - Removed cross-environment path/tool assumptions that could trigger invalid tool calls.
 - Hardened SSE response handling to convert terminal stream errors into structured JSON errors (`error`, `response.error`, `response.failed`, `response.incomplete`, and `data:` line variants).
 - Prevented transformed non-OK responses from being counted/treated as successful turns.
@@ -58,12 +58,12 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v5.2.1...v5.
 ## [5.2.1] - 2026-02-20
 
 ### Improvements
-- prompt fetch configurability: added `OPENCODE_CODEX_PROMPT_URL` override support and source-aware cache metadata so ETag conditional requests stay bound to the same source.
+- prompt fetch configurability: added `CODEX_PROMPT_SOURCE_URL` override support and source-aware cache metadata so ETag conditional requests stay bound to the same source.
 - regression coverage + docs wording: updated prompt assertions/tests for the new `patch`+`edit` policy and refreshed architecture documentation text to match.
 
 ### Bug Fixes
 - tool mapping conflicts in codex bridge/remap prompts: removed contradictory guidance that treated `patch` as forbidden and aligned instructions so `apply_patch` intent maps to `patch` (preferred) or `edit` for targeted replacements.
-- OpenCode codex prompt source brittleness: prompt fetch now retries across multiple upstream source URLs instead of relying on a single path that could return 404.
+- host runtime codex prompt source brittleness: prompt fetch now retries across multiple upstream source URLs instead of relying on a single path that could return 404.
 
 ### Changelog
 
@@ -112,7 +112,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.6...v5.
 ## [5.0.0] - 2026-02-08
 
 ### Breaking Changes
-- auth login interaction redesigned: `opencode auth login` now defaults to the Codex-style dashboard flow (actions/accounts/danger zone) instead of the legacy add/fresh-only prompt.
+- auth login interaction redesigned: `codex auth login` now defaults to the Codex-style dashboard flow (actions/accounts/danger zone) instead of the legacy add/fresh-only prompt.
 - styled codex tool output default: `codex-list`, `codex-status`, `codex-health`, `codex-switch`, `codex-remove`, `codex-refresh`, `codex-export`, and `codex-import` now default to the new Codex TUI formatting; scripts parsing legacy plain output should update or set `codexTuiV2: false`.
 
 ### New Features
@@ -148,7 +148,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.14.1...v4
 - fast session mode: optional low-latency tuning (`fastSession`) with `hybrid`/`always` strategies and configurable history window (`fastSessionMaxInputItems`).
 
 ### Improvements
-- prompt caching: codex + opencode bridge prompts now use stale-while-revalidate + in-memory caching; startup prewarms instruction caches to reduce first-turn latency.
+- prompt caching: codex + host runtime bridge prompts now use stale-while-revalidate + in-memory caching; startup prewarms instruction caches to reduce first-turn latency.
 - request parsing: fetch pipeline now normalizes `Request` inputs and supports non-string bodies (Uint8Array/ArrayBuffer/Blob) without failing request transformations.
 
 ### Bug Fixes
@@ -197,10 +197,10 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.12.5...v4
 ## [4.12.5] - 2026-02-04
 
 ### New Features
-- legacy migration: when the new project-scoped path is empty, the plugin now auto-migrates legacy `<project>/.opencode/openai-codex-accounts.json` data on first load.
+- legacy migration: when the new project-scoped path is empty, the plugin now auto-migrates legacy `<project>/.host runtime/openai-codex-accounts.json` data on first load.
 
 ### Improvements
-- per-project storage location: project-scoped account files now live under `~/.opencode/projects/<project-key>/openai-codex-accounts.json` instead of writing into `<project>/.opencode/`.
+- per-project storage location: project-scoped account files now live under `~/.host runtime/projects/<project-key>/openai-codex-accounts.json` instead of writing into `<project>/.host runtime/`.
 
 ### Changelog
 
@@ -210,7 +210,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.12.4...v4
 
 ### New Features
 - Empty response retry - Automatically retries when the API returns empty/malformed responses. Configurable via `emptyResponseMaxRetries` (default: 2) and `emptyResponseRetryDelayMs` (default: 1000ms)
-- PID offset for parallel agents - When multiple OpenCode instances run in parallel, each process now gets a deterministic offset for account selection, reducing contention. Enable with `pidOffsetEnabled: true`
+- PID offset for parallel agents - When multiple host runtime instances run in parallel, each process now gets a deterministic offset for account selection, reducing contention. Enable with `pidOffsetEnabled: true`
 
 ### Improvements
 - Environment variables:
@@ -345,7 +345,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.10.0...v4
 ### Improvements
 - account limit bumped to 20: was 10, now 20. add more accounts if you need them.
 - per-project accounts default on: `perProjectAccounts` defaults to `true` now. disable with `perProjectAccounts: false` in config if you want the old global behavior.
-- new options in `~/.opencode/codex-multi-auth-config.json`:
+- new options in `~/.host runtime/codex-multi-auth-config.json`:
 - env vars:
 - `CODEX_AUTH_PER_PROJECT_ACCOUNTS=1` - enable per-project accounts
 - `CODEX_AUTH_TOAST_DURATION_MS=8000` - set toast duration in ms
@@ -390,7 +390,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.4...v4.
 ## [4.9.6] - 2026-02-08
 
 ### Improvements
-- tui auth gating: non-tty/ui auth attempts now return a clear instruction to run `opencode auth login` in a terminal shell.
+- tui auth gating: non-tty/ui auth attempts now return a clear instruction to run `codex auth login` in a terminal shell.
 - error-mapping simplification: consolidated entitlement/rate-limit mapping in fetch helpers for a single handling path.
 
 ### Changelog
@@ -400,7 +400,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v5.0.0...v4.
 ## [4.9.4] - 2026-01-27
 
 ### New Features
-- TUI auth flow disabled - We now strictly enforce using `opencode auth login` in the terminal for authentication. The UI-based 'Connect' flow is disabled with a clear message to prevent issues with non-interactive environments.
+- TUI auth flow disabled - We now strictly enforce using `codex auth login` in the terminal for authentication. The UI-based 'Connect' flow is disabled with a clear message to prevent issues with non-interactive environments.
 
 ### Improvements
 - Strict tool schema validation - Added filtering of required fields, flattening enums for compatibility with strict models like Claude/Gemini
@@ -450,7 +450,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.1...v4.
 ## [4.9.1] - 2026-01-26
 
 ### Improvements
-- When `opencode auth login` called the authorize function, `inputs` was `undefined`. The code had a conditional check that only entered the multi-account while loop if `inputs` existed with keys. This caused only single-account flow to run.
+- When `codex auth login` called the authorize function, `inputs` was `undefined`. The code had a conditional check that only entered the multi-account while loop if `inputs` existed with keys. This caused only single-account flow to run.
 
 ### Bug Fixes
 - Multi-account flow always runs - authorize() now always uses multi-account flow regardless of inputs parameter. (#12)
@@ -463,15 +463,15 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.0...v4.
 ## [4.9.0] - 2026-01-26
 
 ### Improvements
-- breaking: package renamed from `opencode-openai-codex-auth-multi` to `codex-multi-auth`
-- package renamed to bypass opencode's plugin blocking. opencode skips any plugin with `opencode-openai-codex-auth` in the name. the new name `codex-multi-auth` works correctly.
+- breaking: package renamed from `host runtime-openai-codex-auth-multi` to `codex-multi-auth`
+- package renamed to bypass host runtime's plugin blocking. host runtime skips any plugin with `host runtime-openai-codex-auth` in the name. the new name `codex-multi-auth` works correctly.
 - updated all documentation, configs, and references to use new package name.
-- added `multiAccount` flag check in loader to coexist with opencode's built-in auth.
-- fix node esm plugin load by importing tool from `@opencode-ai/plugin/tool` and ensuring runtime dependency is installed.
+- added `multiAccount` flag check in loader to coexist with host runtime's built-in auth.
+- fix node esm plugin load by importing tool from `@host runtime-ai/plugin/tool` and ensuring runtime dependency is installed.
 - correct package metadata (repository links, update-check package name) and add troubleshooting guidance for plugin install/load.
-- update your `~/.config/opencode/opencode.json`:
+- update your `~/.config/host runtime/host runtime.json`:
 - ## Legacy 4.8.2 (Package-Only) - 2026-01-25
-- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
+- npm package line: published under `host runtime-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
 
 ### Bug Fixes
 - removed debug console.log statements from loader.
@@ -491,7 +491,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.7.0...v4.
 - new recovery module (`lib/recovery/`):
 - `types.ts` - type definitions for stored messages, parts, and recovery
 - `constants.ts` - storage paths (xdg-compliant) and type sets
-- `storage.ts` - filesystem operations for reading/writing opencode session data
+- `storage.ts` - filesystem operations for reading/writing host runtime session data
 - `index.ts` - module re-exports
 - main recovery logic (`lib/recovery.ts`):
 - `detectErrorType()` - identifies recoverable error patterns from api responses
@@ -505,11 +505,11 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.7.0...v4.
 - 26 new unit tests for recovery system
 
 ### Improvements
-- feature release: full session recovery system ported from opencode-antigravity-auth.
+- feature release: full session recovery system ported from host runtime-antigravity-auth.
 - account label format: changed from `Account N (email)` to `N. email` for cleaner display
 - error response handling: `handleErrorResponse()` now returns `errorBody` for recovery detection
 - enhanced error logging with recoverable error detection in fetch flow
-- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
+- npm package line: published under `host runtime-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
 
 ### Changelog
 
@@ -521,7 +521,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.6.0...v4.
 - context overflow handler: gracefully handles "prompt too long" / context length exceeded errors:
 - returns synthetic sse response with helpful instructions instead of raw 400 error
 - suggests `/compact`, `/clear`, or `/undo` commands to reduce context size
-- prevents opencode session from getting locked on context overflow
+- prevents host runtime session from getting locked on context overflow
 - new module: `lib/context-overflow.ts`
 - missing tool result injection: automatically handles cancelled tool calls (esc mid-execution):
 - detects orphaned `function_call` items (calls without matching outputs)
@@ -532,7 +532,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.6.0...v4.
 
 ### Improvements
 - feature release: context overflow handling and missing tool result injection.
-- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
+- npm package line: published under `host runtime-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
 
 ### Changelog
 
@@ -551,7 +551,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.5.0...v4.
 ### Improvements
 - health-aware account rotation with automatic failover
 - hybrid selection prefers healthy accounts with available tokens
-- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
+- npm package line: published under `host runtime-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
 - ## Legacy 4.4.0 (Package-Only) - 2026-01-23
 - npm publish status: not published on npm (tag/release only).
 - new retry options:
@@ -571,14 +571,16 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.3.1...v4.
 ### Improvements
 - Account labels - Now prefer email and show ID suffix when available; list/status outputs are columnized for readability
 - Email normalization - Stored account emails are trimmed/lowercased when present
-- @opencode-ai plugin/sdk 1.1.34
+- @host runtime-ai plugin/sdk 1.1.34
 - hono 4.11.5
 - vitest 4.0.18
 - @types/node 25.0.10
 - @typescript-eslint 8.53.1
 - @andremxmx for reporting the multi-account ID issue (#4)
-- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
+- npm package line: published under `host runtime-openai-codex-auth-multi` (legacy package), not `codex-multi-auth`.
 
 ### Changelog
 
 Full Changelog: https://github.com/ndycode/codex-multi-auth/commits/v4.3.1
+
+

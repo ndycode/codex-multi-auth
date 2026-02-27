@@ -1,7 +1,7 @@
 {
   "name": "codex-multi-auth",
   "version": "0.1.0",
-  "description": "Codex CLI-first multi-account OAuth rotation plugin for OpenCode",
+  "description": "Codex CLI-first multi-account OAuth rotation plugin",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
@@ -12,7 +12,6 @@
     "url": "git+https://github.com/ndycode/codex-multi-auth.git"
   },
   "keywords": [
-    "opencode",
     "openai",
     "codex",
     "chatgpt",
@@ -57,8 +56,7 @@
   },
   "bin": {
     "codex": "scripts/codex.js",
-    "codex-multi-auth": "scripts/codex-multi-auth.js",
-    "codex-multi-auth-opencode-install": "scripts/install-opencode-codex-auth.js"
+    "codex-multi-auth": "scripts/codex-multi-auth.js"
   },
   "files": [
     "dist/",

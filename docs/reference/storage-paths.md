@@ -55,8 +55,8 @@ These paths are migration-only and are not canonical for new setup.
 
 Examples from older installs:
 
-- `~/.opencode/`
 - `~/DevTools/config/codex/`
+- other pre-`~/.codex/multi-auth` custom roots
 
 ---
 

@@ -158,15 +158,15 @@ export function getCodexLogDir(): string {
 }
 
 /**
- * Resolve the legacy OpenCode home directory path.
+ * Resolve the legacy host home directory path.
  *
- * The returned path points to the per-user legacy OpenCode folder (typically `<home>/.opencode`).
+ * The returned path points to the per-user legacy folder (typically `<home>/.opencode`).
  *
  * Concurrency: no atomicity guarantees — callers must handle concurrent filesystem access.
  * Windows: path comparisons may be case-insensitive on Windows filesystems.
  * Security: do not embed or log secrets/tokens in this path; redact any tokens before logging or telemetry.
  *
- * @returns The filesystem path for the legacy OpenCode directory (e.g. `/home/alice/.opencode`).
+ * @returns The filesystem path for the legacy directory (e.g. `/home/alice/.opencode`).
  */
 export function getLegacyOpenCodeDir(): string {
 	return join(homedir(), ".opencode");

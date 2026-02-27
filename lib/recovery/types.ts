@@ -5,7 +5,7 @@
  */
 
 // =============================================================================
-// Storage Types (for reading from OpenCode's filesystem)
+// Storage Types (for reading from host runtime filesystem)
 // =============================================================================
 
 export type ThinkingPartType = "thinking" | "redacted_thinking" | "reasoning";
@@ -78,7 +78,7 @@ export type StoredPart =
     };
 
 // =============================================================================
-// API Types (for working with OpenCode SDK responses)
+// API Types (for working with host SDK responses)
 // =============================================================================
 
 export interface MessagePart {

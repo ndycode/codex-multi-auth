@@ -29,11 +29,6 @@ const scopedLegacyAllowedFiles = new Set([
   'docs/releases/v0.1.0-beta.0.md',
 ]);
 
-const opencodeLegacyAllowedFiles = new Set([
-  'docs/upgrade.md',
-  'docs/reference/storage-paths.md',
-]);
-
 function read(filePath: string): string {
   return readFileSync(join(projectRoot, filePath), 'utf-8');
 }
@@ -96,16 +91,11 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('contains opencode legacy path mentions only in upgrade/storage reference docs', () => {
+  it('does not include opencode wording in user docs', () => {
     for (const filePath of userDocs) {
       const content = read(filePath).toLowerCase();
       const hasOpencode = content.includes('opencode');
-      if (hasOpencode) {
-        expect(
-          opencodeLegacyAllowedFiles.has(filePath),
-          `${filePath} should not include opencode references`,
-        ).toBe(true);
-      }
+      expect(hasOpencode, `${filePath} should not include opencode references`).toBe(false);
     }
   });
 

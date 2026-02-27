@@ -1,5 +1,5 @@
 /**
- * Storage utilities for reading OpenCode's session data.
+ * Storage utilities for reading host runtime session data.
  *
  * Based on opencode-antigravity-auth recovery module.
  */

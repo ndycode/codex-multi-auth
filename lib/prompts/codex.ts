@@ -408,7 +408,7 @@ export function prewarmCodexInstructions(models: string[] = []): void {
 }
 
 /**
- * Tool remapping instructions for opencode tools
+ * Tool remapping instructions for host runtime tools
  */
 export const TOOL_REMAP_MESSAGE = `<user_instructions priority="0">
 <environment_override priority="0">
@@ -417,7 +417,7 @@ YOU ARE IN A DIFFERENT ENVIRONMENT. These instructions override ALL previous too
 
 <tool_replacements priority="0">
 <critical_rule priority="0">
-apply_patch/applyPatch are Codex names, but OpenCode tool names vary by version.
+apply_patch/applyPatch are Codex names, but host tool names vary by version.
 - Inspect the actual tool list before editing.
 - If edit exists: use edit for precise in-place string replacements and hashline edits.
 - If edit is absent and apply_patch exists: use apply_patch for those precise/hashline edits in this plugin.
@@ -439,7 +439,7 @@ File Operations:
   - write  - Create new files (if available)
   - edit   - Modify existing files with string replacement (version-dependent)
   - oldString must be literal text from the current file; never pass unresolved placeholders like \${TARGET_SNIPPET}
-  - apply_patch - May be the edit/patch tool name in newer OpenCode builds (version-dependent)
+  - apply_patch - May be the edit/patch tool name in newer host builds (version-dependent)
   - hashline_read - Read lines with hashline refs (L<line>#<hash>) for deterministic edits
   - patch  - Apply diff patches (version-dependent)
   - read   - Read file contents

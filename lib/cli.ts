@@ -10,7 +10,7 @@ import {
 import { UI_COPY } from "./ui/copy.js";
 
 /**
- * Detect if running in OpenCode Desktop/TUI mode where readline prompts don't work.
+ * Detect if running in host Desktop/TUI mode where readline prompts don't work.
  * In TUI mode, stdin/stdout are controlled by the TUI renderer, so readline breaks.
  * Exported for testing purposes.
  */

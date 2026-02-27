@@ -378,7 +378,7 @@ function sanitizePlanOnlyTools(tools: unknown, mode: CollaborationMode): unknown
 /**
  * Configure reasoning parameters based on model variant and user config
  *
- * NOTE: This plugin follows Codex CLI defaults instead of opencode defaults because:
+ * NOTE: This plugin follows Codex CLI defaults instead of host defaults because:
  * - We're accessing the ChatGPT backend API (not OpenAI Platform API)
  * - opencode explicitly excludes gpt-5-codex from automatic reasoning configuration
  * - Codex CLI has been thoroughly tested against this backend
@@ -538,7 +538,7 @@ function sanitizeReasoningSummary(
  * - Full message history (without IDs)
  * - reasoning.encrypted_content (for reasoning continuity)
  *
- * @param input - Original input array from OpenCode/AI SDK
+ * @param input - Original input array from host/AI SDK
  * @returns Filtered input array compatible with Codex API
  */
 export function filterInput(
@@ -731,17 +731,17 @@ function compactInstructionsForFastSession(
 }
 
 /**
- * Filter out OpenCode system prompts from input
- * Used in CODEX_MODE to replace OpenCode prompts with Codex-OpenCode bridge
+ * Filter out host system prompts from input
+ * Used in CODEX_MODE to replace host prompts with Codex bridge guidance
  * @param input - Input array
- * @returns Input array without OpenCode system prompts
+ * @returns Input array without host system prompts
  */
 export async function filterOpenCodeSystemPrompts(
 	input: InputItem[] | undefined,
 ): Promise<InputItem[] | undefined> {
 	if (!Array.isArray(input)) return input;
 
-	// Fetch cached OpenCode prompt for verification
+	// Fetch cached host prompt for verification
 	let cachedPrompt: string | null = null;
 	try {
 		cachedPrompt = await getOpenCodeCodexPrompt();
@@ -754,7 +754,7 @@ export async function filterOpenCodeSystemPrompts(
 }
 
 /**
- * Add Codex-OpenCode bridge message to input if tools are present
+ * Add Codex bridge message to input if tools are present
  * @param input - Input array
  * @param hasTools - Whether tools are present in request
  * @returns Input array with bridge message prepended if needed
@@ -808,9 +808,9 @@ export function addToolRemapMessage(
 /**
  * Transform request body for Codex API
  *
- * NOTE: Configuration follows Codex CLI patterns instead of opencode defaults:
- * - opencode sets textVerbosity="low" for gpt-5, but Codex CLI uses "medium"
- * - opencode excludes gpt-5-codex from reasoning configuration
+ * NOTE: Configuration follows Codex CLI patterns instead of host defaults:
+ * - host may set textVerbosity="low" for gpt-5, but Codex CLI uses "medium"
+ * - host may exclude gpt-5-codex from reasoning configuration
  * - This plugin uses store=false (stateless), requiring encrypted reasoning content
  *
  * @param body - Original request body
@@ -890,7 +890,7 @@ export async function transformRequestBody(
 		: codexInstructions;
 
 	// Prompt caching relies on the host providing a stable prompt_cache_key
-	// (OpenCode passes its session identifier). We no longer synthesize one here.
+	// Host passes its session identifier. We no longer synthesize one here.
 
 	// Filter and transform input
 	if (body.input && Array.isArray(body.input)) {
@@ -932,7 +932,7 @@ export async function transformRequestBody(
 		}
 
 		if (codexMode) {
-			// CODEX_MODE: Remove OpenCode system prompt, add bridge prompt
+			// CODEX_MODE: Remove host system prompt, add bridge prompt
 			body.input = await filterOpenCodeSystemPrompts(body.input);
 			body.input = addCodexBridgeMessage(body.input, !!body.tools);
 		} else {

@@ -57,7 +57,7 @@ When reporting issues, please:
 
 - **Check existing issues** to avoid duplicates
 - **Provide clear reproduction steps**
-- **Include version information** (`opencode --version`, plugin version)
+- **Include version information** (`codex --version`, plugin version)
 - **Confirm compliance:** Verify you're using the plugin for personal use with your own subscription
 - **Attach logs** (if using `ENABLE_PLUGIN_REQUEST_LOGGING=1`)
 
@@ -80,7 +80,7 @@ Please include:
 [What actually happens]
 
 **Environment:**
-- opencode version:
+- codex version:
 - Plugin version:
 - OS:
 - Node version:

@@ -1,5 +1,5 @@
 /**
- * OpenAI ChatGPT (Codex) OAuth Authentication Plugin for opencode
+ * OpenAI ChatGPT (Codex) OAuth Authentication Plugin for Codex CLI host runtime
  *
  * COMPLIANCE NOTICE:
  * This plugin uses OpenAI's official OAuth authentication flow (the same method
@@ -203,9 +203,9 @@ import {
 import { registerCleanup } from "./lib/shutdown.js";
 
 /**
- * OpenAI Codex OAuth authentication plugin for opencode
+ * OpenAI Codex OAuth authentication plugin for Codex CLI host runtime
  *
- * This plugin enables opencode to use OpenAI's Codex backend via ChatGPT Plus/Pro
+ * This plugin enables the host runtime to use OpenAI's Codex backend via ChatGPT Plus/Pro
  * OAuth authentication, allowing users to leverage their ChatGPT subscription
  * instead of OpenAI Platform API credits.
  *
@@ -999,12 +999,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			 * This function:
                          * 1. Validates OAuth authentication
                          * 2. Loads multi-account pool from disk (fallback to current auth)
-                         * 3. Loads user configuration from opencode.json
+                         * 3. Loads user configuration from runtime model config
                          * 4. Fetches Codex system instructions from GitHub (cached)
                          * 5. Returns SDK configuration with custom fetch implementation
 			 *
 			 * @param getAuth - Function to retrieve current auth state
-			 * @param provider - Provider configuration from opencode.json
+			 * @param provider - Provider configuration from runtime model config
 			 * @returns SDK configuration object or empty object for non-OAuth auth
 			 */
 		async loader(getAuth: () => Promise<Auth>, provider: unknown) {
@@ -1022,7 +1022,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 
 			// Prefer multi-account auth metadata when available, but still handle
-			// plain OAuth credentials (for OpenCode versions that inject internal
+			// plain OAuth credentials (for legacy runtime versions that inject internal
 			// Codex auth first and omit the multiAccount marker).
 			const authWithMulti = auth as typeof auth & { multiAccount?: boolean };
 			if (!authWithMulti.multiAccount) {
@@ -3354,7 +3354,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                 },
                 tool: {
                         edit: createHashlineEditTool(),
-                        // OpenCode v1.2.x exposes apply_patch (not edit) to the model.
+                        // Legacy runtime v1.2.x exposes apply_patch (not edit) to the model.
                         // Register the same hashline-capable implementation under both names.
                         apply_patch: createHashlineEditTool(),
                         hashline_read: createHashlineReadTool(),

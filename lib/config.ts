@@ -48,7 +48,7 @@ export function __resetConfigWarningCacheForTests(): void {
  * The lookup order is:
  * 1. `CODEX_MULTI_AUTH_CONFIG_PATH` environment variable (if set and non-empty)
  * 2. current CONFIG_PATH
- * 3. legacy Codex/OpenCode config locations (with a one-time migration warning)
+ * 3. legacy config locations (with a one-time migration warning)
  *
  * Concurrency: the function is synchronous and relies on the filesystem state at call time; callers should handle concurrent config writes externally.
  *
@@ -78,7 +78,7 @@ function resolvePluginConfigPath(): string | null {
 
 	if (existsSync(LEGACY_OPENCODE_CONFIG_PATH)) {
 		logConfigWarnOnce(
-			`Using legacy OpenCode config path ${LEGACY_OPENCODE_CONFIG_PATH}. ` +
+			`Using legacy config path ${LEGACY_OPENCODE_CONFIG_PATH}. ` +
 				`Please migrate to ${CONFIG_PATH}.`,
 		);
 		return LEGACY_OPENCODE_CONFIG_PATH;
@@ -86,7 +86,7 @@ function resolvePluginConfigPath(): string | null {
 
 	if (existsSync(LEGACY_OPENCODE_AUTH_CONFIG_PATH)) {
 		logConfigWarnOnce(
-			`Using legacy OpenCode config path ${LEGACY_OPENCODE_AUTH_CONFIG_PATH}. ` +
+			`Using legacy config path ${LEGACY_OPENCODE_AUTH_CONFIG_PATH}. ` +
 				`Please migrate to ${CONFIG_PATH}.`,
 		);
 		return LEGACY_OPENCODE_AUTH_CONFIG_PATH;

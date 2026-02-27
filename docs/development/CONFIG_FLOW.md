@@ -55,11 +55,11 @@ For dashboard display values:
 
 ## 5) Command Routing Flow
 
-1. Wrapper receives `codex`, `codex-multi-auth`, or `codex-multi-auth-opencode-install`.
+1. Wrapper receives `codex` or `codex-multi-auth`.
 2. Normalize alias args (`multi auth`, `multi-auth`, `multiauth`).
 3. If command belongs to auth manager scope, run local manager.
 4. Otherwise forward invocation to official Codex CLI binary.
-5. Direct `codex-multi-auth ...` and install wrapper invocations route through the same routing entrypoint.
+5. Direct `codex-multi-auth ...` invocations route through the same routing entrypoint.
 
 * * *
 

@@ -3,7 +3,7 @@
  * 
  * Handles "Prompt too long" / context length exceeded errors by returning
  * a synthetic SSE response that advises the user to use /compact or /clear.
- * This prevents the OpenCode session from getting locked on 400 errors.
+ * This prevents the host session from getting locked on 400 errors.
  */
 
 import { logDebug } from "./logger.js";

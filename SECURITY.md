@@ -72,7 +72,7 @@ The following are **not** security vulnerabilities:
 ### Third-Party Dependencies
 
 This plugin minimizes dependencies for security:
-- Runtime dependencies include: `@openauthjs/openauth`, `@opencode-ai/plugin`, `hono`, and `zod`
+- Runtime dependencies include OAuth/auth libraries, plugin host SDK dependencies, `hono`, and `zod`
 - Regular dependency updates for security patches
 - No telemetry or analytics dependencies
 - CI/local guardrail: run `npm run audit:ci` before release or after dependency updates

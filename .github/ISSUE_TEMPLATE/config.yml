@@ -7,5 +7,5 @@ contact_links:
     url: https://openai.com/policies/terms-of-use/
     about: Review OpenAI's Terms of Service for compliance questions
   - name: Discussions
-    url: https://github.com/numman-ali/opencode-openai-codex-auth/discussions
+    url: https://github.com/ndycode/codex-multi-auth/discussions
     about: Ask questions or discuss the plugin with the community

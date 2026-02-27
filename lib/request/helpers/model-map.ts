@@ -2,13 +2,13 @@
  * Model Configuration Map
  *
  * Maps model config IDs to their normalized API model names.
- * Only includes exact config IDs that OpenCode will pass to the plugin.
+ * Only includes exact config IDs that the host runtime will pass to the plugin.
  */
 
 /**
  * Map of config model IDs to normalized API model names
  *
- * Key: The model ID as specified in opencode.json config
+ * Key: The model ID as specified in runtime model config
  * Value: The normalized model name to send to the API
  */
 export const MODEL_MAP: Record<string, string> = {
