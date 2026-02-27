@@ -388,10 +388,12 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.5...v4.
 ## [4.9.5] - 2026-01-28
 
 ### Improvements
+
 - When your ChatGPT subscription didn't include Codex access, the plugin kept rotating through all accounts and retrying forever because it thought it was a temporary rate limit.
 - You get an immediate, clear error: "This model is not included in your ChatGPT subscription."
 
 ### Bug Fixes
+
 - Account error handling - Fixes infinite retry loop when account doesn't have access to Codex models. `usage_not_included` errors now return 403 Forbidden instead of being treated as rate limits. Clear error message explaining the subscription issue. Prevents pointless account rotation for non-recoverable errors. (#16, thanks @rainmeter33-jpg!)
 
 ### Changelog

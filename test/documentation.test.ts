@@ -120,7 +120,9 @@ describe('Documentation Integrity', () => {
   it('keeps fix flag docs aligned across README, command reference, and CLI usage text', () => {
     const readme = read('README.md');
     const commandRef = read('docs/reference/commands.md');
-    const manager = read('lib/codex-manager.ts');
+    const managerPath = 'lib/codex-manager.ts';
+    expect(existsSync(join(projectRoot, managerPath)), `${managerPath} should exist`).toBe(true);
+    const manager = read(managerPath);
 
     expect(readme).toContain('codex auth fix --live --model gpt-5-codex');
     expect(commandRef).toContain('| `--live` | forecast/report/fix |');
@@ -166,6 +168,8 @@ describe('Documentation Integrity', () => {
     expect(fieldInventory).toContain('EBUSY');
     expect(fieldInventory).toContain('refresh lease');
     expect(fieldInventory).toContain('Cross-process');
+    expect(fieldInventory).toContain('Refresh token skew window');
+    expect(fieldInventory.toLowerCase()).toContain('refresh token');
   });
 
   it('keeps changelog casing and patch-line ordering intact', () => {
