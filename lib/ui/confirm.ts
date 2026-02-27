@@ -2,9 +2,9 @@ import { select } from "./select.js";
 import { getUiRuntimeOptions } from "./runtime.js";
 
 /**
- * Prompt the user with a Yes/No choice and return the selected boolean.
+ * Prompt the user with a Yes/No choice.
  *
- * Assumes a single interactive UI context (concurrent prompts may interleave). This function does not access the filesystem (no Windows-specific filesystem effects). Callers should redact any sensitive tokens from `message` before passing it to this prompt.
+ * Assumes a single interactive UI context; concurrent prompts may interleave. Does not access the filesystem (no Windows-specific filesystem effects). Callers should redact sensitive tokens from `message` before passing it to this prompt.
  *
  * @param message - The prompt text shown to the user
  * @param defaultYes - If true, "Yes" is presented first and treated as the default ordering

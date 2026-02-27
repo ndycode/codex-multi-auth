@@ -90,26 +90,17 @@ function getFallbackCodexHomeDirs(): string[] {
 }
 
 /**
- * Resolve the directory to use for Codex multi-auth data.
+ * Determine the directory to use for Codex multi-auth data, preferring an explicit override
+ * or existing storage locations and falling back to the primary Codex location.
  *
- * The resolution prefers an explicit CODEX_MULTI_AUTH_DIR environment override. If that is not set,
- * it probes the primary multi-auth location under the user's Codex home and returns it if that
- * location contains existing storage indicators (signal files or a projects directory). If the
- * primary location does not appear to contain storage, the function iterates a deduplicated list of
- * fallback candidates (including legacy and alternate user config locations) and returns the first
- * candidate that contains storage signals. If no existing storage is found, the primary location is
- * returned.
+ * @returns The resolved multi-auth directory path.
  *
- * Concurrency: safe to call concurrently from multiple processes or threads; the function only
- * performs read checks and does not create or mutate directories.
+ * @remarks
+ * Concurrency: safe to call concurrently; the function only inspects filesystem state and does not create or mutate directories.
  *
- * Windows behavior: fallback deduplication and existence checks are performed with case-insensitive
- * comparison on Windows; returned paths preserve the platform-native casing.
+ * Windows: deduplication and existence checks treat paths case-insensitively on Windows; returned paths preserve platform-native casing.
  *
- * Logging and secrets: returned paths may include user-specific data; callers should redact or avoid
- * logging full paths if they can reveal sensitive tokens or identifiers.
- *
- * @returns The resolved multi-auth directory path to use for Codex data
+ * Security: returned paths may contain user-specific or sensitive data; callers should redact or avoid logging full paths. 
  */
 export function getCodexMultiAuthDir(): string {
 	const fromEnv = (process.env.CODEX_MULTI_AUTH_DIR ?? "").trim();
@@ -155,12 +146,10 @@ export function getCodexCacheDir(): string {
 /**
  * Resolve the filesystem path for Codex log files.
  *
- * This returns the `logs` subdirectory within the resolved multi-auth directory.
- * Callers may need to create the directory before writing logs; this function only computes the path.
- *
- * Concurrency: safe to call concurrently; it does not perform IO or creation.
- * Windows: other helpers perform case-insensitive deduplication on Windows; this function returns a path using the platform path separator.
- * Secrets: treat the returned path as sensitive if it may contain tokens or credentials and redact it before logging or diagnostics.
+ * Returns the `logs` subdirectory within the resolved multi-auth directory.
+ * Concurrency: safe to call concurrently; this function performs no I/O or directory creation.
+ * Windows: path comparisons elsewhere are case-insensitive on Windows; this function returns a path using the platform separator.
+ * Security: the returned path may contain sensitive artifacts (tokens/credentials); redact before logging or diagnostics.
  *
  * @returns The path to the Codex `logs` directory (i.e., `<multi-auth-dir>/logs`)
  */

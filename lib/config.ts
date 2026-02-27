@@ -145,27 +145,23 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 };
 
 /**
- * Get a shallow copy of the default plugin configuration.
+ * Return a shallow copy of the default plugin configuration.
  *
- * This function performs no I/O and is safe to call concurrently. It does not interact with
- * the filesystem (so it has no Windows path/atomicity implications). The returned object
- * contains default settings and may include placeholder fields for secrets or tokens; callers
- * must redact sensitive values before logging or persisting.
+ * Safe to call concurrently; performs no I/O and has no filesystem or Windows atomicity implications.
+ * The returned object may include placeholder fields for secrets or tokens — callers must redact sensitive values before logging or persisting.
  *
- * @returns A shallow copy of `DEFAULT_PLUGIN_CONFIG`
+ * @returns A shallow copy of DEFAULT_PLUGIN_CONFIG
  */
 export function getDefaultPluginConfig(): PluginConfig {
 	return { ...DEFAULT_PLUGIN_CONFIG };
 }
 
 /**
- * Load the plugin configuration, applying defaults and compatibility fallbacks for legacy locations.
+ * Load the plugin configuration, merging validated user settings with defaults and applying legacy fallbacks.
  *
- * Attempts to read unified settings first, falls back to legacy per-user config files (with UTF‑8 BOM handling),
- * validates and warns on schema issues, and migrates legacy file-backed configs into the unified settings when appropriate.
- * Callers should avoid concurrent writers to the config paths (this function performs filesystem reads and may perform a migration write).
- * On Windows legacy path semantics are respected; BOMs are stripped before JSON parsing.
- * Logged warnings are produced for validation or migration failures and avoid exposing sensitive tokens.
+ * Attempts to read unified settings first; if absent, falls back to legacy per-user JSON files (UTF-8 BOM is stripped on Windows before parsing).
+ * Emits one-time warnings for validation or migration issues and avoids exposing sensitive tokens in logged messages.
+ * This function performs filesystem reads and may write a migrated unified config; callers should avoid concurrent writers to the same config paths.
  *
  * @returns The effective PluginConfig: a shallow merge of DEFAULT_PLUGIN_CONFIG with any validated user-provided settings
  */
@@ -240,6 +236,14 @@ export function loadPluginConfig(): PluginConfig {
 	}
 }
 
+/**
+ * Remove a leading UTF‑8 byte order mark (BOM) from the given string if present.
+ *
+ * This is a pure, idempotent operation with no side effects. It is commonly used to normalize text read from files (including Windows-generated files) before JSON parsing or token redaction.
+ *
+ * @param content - The string to normalize
+ * @returns The input string without a leading UTF‑8 BOM; returns the original string if no BOM is present
+ */
 function stripUtf8Bom(content: string): string {
 	return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
 }
@@ -255,10 +259,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Reads and parses a JSON configuration file into a plain record if present and valid.
+ * Read and parse a JSON configuration file and return its top-level object when present and valid.
+ *
+ * This function tolerates transient read/parse failures caused by concurrent writers; callers should handle a `null` return as "unavailable". Log messages include the file path and error message — callers should avoid logging or displaying raw paths that may contain sensitive tokens without redaction. On Windows, path casing or exclusive file locks can make existing files temporarily unreadable.
  *
  * @param configPath - Filesystem path to the JSON config file. Concurrent writes may cause transient read/parse failures; callers should tolerate `null`. On Windows, path casing and exclusive locks can affect readability.
- * @returns The parsed object as a Record<string, unknown> when the file exists and contains a top-level JSON object, or `null` if the file is missing, malformed, or could not be read.
+ * @returns The parsed top-level JSON object as a Record<string, unknown> when the file exists and contains an object, or `null` if the file is missing, malformed, or could not be read.
  */
 function readConfigRecordFromPath(configPath: string): Record<string, unknown> | null {
 	if (!existsSync(configPath)) return null;
@@ -363,6 +369,19 @@ function parseStringEnv(value: string | undefined): string | undefined {
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * Resolves a boolean configuration value, preferring an explicit environment variable.
+ *
+ * Checks the environment variable named by `envName` first (using the module's boolean parsing rules);
+ * if present, that value is returned. Otherwise returns `configValue` when defined, or `defaultValue`.
+ *
+ * This function is synchronous, has no filesystem interactions, and does not log or expose token values.
+ *
+ * @param envName - Name of the environment variable to check (e.g., "CODEX_FEATURE_FLAG")
+ * @param configValue - Value from the plugin configuration, used when the env var is not set
+ * @param defaultValue - Fallback value used when neither env nor config provide a value
+ * @returns `true` or `false` according to the resolution order: environment → config → default
+ */
 function resolveBooleanSetting(
 	envName: string,
 	configValue: boolean | undefined,
@@ -374,15 +393,15 @@ function resolveBooleanSetting(
 }
 
 /**
- * Resolve a numeric setting by preferring an environment variable, then a config value, then a default, and clamp the result within optional bounds.
+ * Resolve a numeric setting using an environment override, then a config value, then a default, and clamp the result to optional bounds.
  *
- * This function reads the numeric value of the environment variable named by `envName` (if present), falls back to `configValue`, then to `defaultValue`, and returns the final value constrained to `options.min`/`options.max` when provided. It has no side effects and is safe to call concurrently; it only reads process.env. Environment parsing follows platform semantics for process.env (no filesystem interactions). No secrets or tokens are produced or logged by this function.
+ * This function prefers a numeric value from the environment variable named by `envName`, falls back to `configValue`, then to `defaultValue`, and enforces inclusive `options.min`/`options.max` when provided. It is safe to call concurrently (reads only from `process.env`), performs no filesystem I/O (including on Windows), and does not emit or log secrets or tokens; callers should handle any redaction of sensitive values before logging.
  *
- * @param envName - The environment variable name to check for an override
- * @param configValue - The numeric value from configuration, used if the environment variable is absent
- * @param defaultValue - The fallback numeric value if neither environment nor config provide one
- * @param options - Optional bounds; `min` and `max` (inclusive) to clamp the resolved value
- * @returns The resolved number, clamped to the provided `min`/`max` if specified
+ * @param envName - Environment variable name to check for an override
+ * @param configValue - Configuration-provided numeric value to use if the environment variable is absent
+ * @param defaultValue - Fallback numeric value used when neither env nor config provide one
+ * @param options - Optional inclusive `min` and `max` bounds to clamp the resolved value
+ * @returns The resolved number, clamped to `options.min`/`options.max` when specified
  */
 function resolveNumberSetting(
 	envName: string,
@@ -398,17 +417,16 @@ function resolveNumberSetting(
 }
 
 /**
- * Selects an effective string setting from the environment, the provided config value, or a fallback default while enforcing allowed values.
+ * Choose the effective string value from an environment variable, a config value, or a default while enforcing a whitelist.
  *
- * @param envName - Environment variable name to consult first; its value is used if present in `allowedValues`.
- * @param configValue - Configuration-provided value used if the environment variable is absent or not allowed.
- * @param defaultValue - Value returned when neither environment nor config provide an allowed value.
- * @param allowedValues - Set of permitted values; only values contained in this set will be accepted.
- * @returns The resolved value, guaranteed to be one of the `allowedValues`.
+ * This reads the environment variable named by `envName` once and prefers it if its trimmed/lowercased value is in `allowedValues`; otherwise it falls back to `configValue` if allowed, then to `defaultValue`. Concurrency: concurrent mutations to `process.env` may change the outcome. Filesystem: performs no filesystem I/O and has no platform-specific behavior (including Windows). Secrets: the function does not redact or log values; callers are responsible for handling sensitive values.
  *
- * Concurrency: this function reads `process.env` once; concurrent mutations to environment variables may change outcome.
- * Filesystem: this function performs no filesystem operations (no platform-specific behavior).
- * Secrets: the function does not log or redact values; callers must handle any sensitive values appropriately. */
+ * @param envName - Name of the environment variable to consult first
+ * @param configValue - Configuration-provided value to use if the environment value is absent or not allowed
+ * @param defaultValue - Fallback value used when neither environment nor config provide an allowed value
+ * @param allowedValues - Set of permitted values; only values in this set will be accepted
+ * @returns The resolved value, guaranteed to be one of the values in `allowedValues`
+ */
 function resolveStringSetting<T extends string>(
 	envName: string,
 	configValue: T | undefined,
@@ -678,6 +696,14 @@ export function getPidOffsetEnabled(pluginConfig: PluginConfig): boolean {
 	);
 }
 
+/**
+ * Resolve the HTTP fetch timeout to use for account/token requests.
+ *
+ * Concurrency: value is read-only and safe to use concurrently; callers must enforce timeout usage in their request code. On Windows, filesystem-derived overrides (via env or config file) are subject to typical path encoding and newline semantics. Configuration values may contain sensitive tokens elsewhere; this function only returns a numeric timeout and does not expose or log secrets.
+ *
+ * @param pluginConfig - Plugin configuration object to read the `fetchTimeoutMs` fallback from
+ * @returns The resolved fetch timeout in milliseconds (at least 1000)
+ */
 export function getFetchTimeoutMs(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_FETCH_TIMEOUT_MS",
@@ -688,12 +714,12 @@ export function getFetchTimeoutMs(pluginConfig: PluginConfig): number {
 }
 
 /**
- * Determine the configured stream stall timeout in milliseconds.
+ * Compute the effective stream stall timeout used to detect stalled streams.
  *
- * This value is used to detect stalled streams across concurrent operations; the function performs no filesystem I/O (no special Windows behavior) and does not expose or redact tokens.
+ * This value applies across concurrent operations and should be treated as a global per-process timeout; callers may use it from multiple async contexts without additional synchronization. The function performs no filesystem I/O and has no special Windows filesystem behavior. Returned values do not contain or reveal any tokens and no redaction is performed by this function.
  *
  * @param pluginConfig - Plugin configuration that may contain a `streamStallTimeoutMs` override
- * @returns The effective stream stall timeout in milliseconds (minimum 1000 ms, default 45000 ms)
+ * @returns The effective stream stall timeout in milliseconds; at least 1000 ms, defaults to 45000 ms
  */
 export function getStreamStallTimeoutMs(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(
@@ -705,12 +731,13 @@ export function getStreamStallTimeoutMs(pluginConfig: PluginConfig): number {
 }
 
 /**
- * Determines whether live account synchronization is enabled.
+ * Determine whether live account synchronization is enabled.
  *
- * This value respects the environment override `CODEX_AUTH_LIVE_ACCOUNT_SYNC`, falls back to
- * `pluginConfig.liveAccountSync` when present, and defaults to `true`. Callers are responsible for
- * handling concurrent use; this accessor performs no filesystem operations and does not mutate or
- * log token or credential material (tokens must be redacted by higher-level code if surfaced).
+ * Respects the environment override `CODEX_AUTH_LIVE_ACCOUNT_SYNC`, falls back to
+ * `pluginConfig.liveAccountSync` when present, and defaults to `true`. This accessor performs no
+ * filesystem operations (behaves the same on Windows paths) and does not mutate or log token or
+ * credential material; callers are responsible for concurrency and must redact tokens before
+ * logging or persisting them.
  *
  * @param pluginConfig - The plugin configuration object used as the non-environment fallback
  * @returns `true` if live account synchronization is enabled, `false` otherwise
@@ -763,12 +790,11 @@ export function getLiveAccountSyncPollMs(pluginConfig: PluginConfig): number {
 }
 
 /**
- * Determines whether session affinity is enabled.
+ * Indicates whether session affinity is enabled.
  *
- * Reads the `sessionAffinity` setting from `pluginConfig` with an environment override
- * via `CODEX_AUTH_SESSION_AFFINITY`. Defaults to `true`. This function performs no I/O,
- * is safe for concurrent reads, is unaffected by Windows filesystem semantics, and
- * does not expose or log authentication tokens.
+ * Reads the `sessionAffinity` value from `pluginConfig` and allows an environment
+ * override via `CODEX_AUTH_SESSION_AFFINITY`. Safe for concurrent reads, unaffected
+ * by Windows filesystem semantics, and does not expose or log authentication tokens.
  *
  * @param pluginConfig - The plugin configuration to consult for the setting
  * @returns `true` if session affinity is enabled, `false` otherwise
@@ -782,9 +808,15 @@ export function getSessionAffinity(pluginConfig: PluginConfig): boolean {
 }
 
 /**
- * Determines the session-affinity time-to-live in milliseconds.
+ * Get the session-affinity time-to-live in milliseconds.
  *
- * Reads the value from the environment variable `CODEX_AUTH_SESSION_AFFINITY_TTL_MS` if present, otherwise uses `pluginConfig.sessionAffinityTtlMs`, falling back to 20 minutes. This function performs no filesystem I/O, is safe for concurrent callers, and does not log or expose secrets (no token material is read or emitted).
+ * Reads CODEX_AUTH_SESSION_AFFINITY_TTL_MS from the environment if present, otherwise uses
+ * `pluginConfig.sessionAffinityTtlMs`, falling back to 20 minutes. The returned value is
+ * clamped to a minimum of 1000 ms.
+ *
+ * This function performs no filesystem I/O, is safe for concurrent callers, and does not
+ * read or emit any token or secret material (suitable for logging without redaction).
+ * Because it does no file operations, there are no Windows filesystem semantics to consider.
  *
  * @param pluginConfig - The plugin configuration to read the setting from
  * @returns The effective session-affinity TTL in milliseconds (minimum 1000)
@@ -860,14 +892,13 @@ export function getProactiveRefreshIntervalMs(pluginConfig: PluginConfig): numbe
 /**
  * Get the proactive refresh guardian buffer interval in milliseconds.
  *
- * The value can be overridden by the `CODEX_AUTH_PROACTIVE_GUARDIAN_BUFFER_MS` environment variable.
+ * @param pluginConfig - Plugin configuration object; `proactiveRefreshBufferMs` may override the default
+ * @returns The buffer interval in milliseconds: at least 30000, default 300000
  *
- * @param pluginConfig - Plugin configuration object containing `proactiveRefreshBufferMs`
- * @returns The buffer interval in milliseconds (at least 30000, default 300000)
- *
- * Concurrency: this value is applied across concurrent proactive-refresh workers and should be treated as a shared timing configuration.
- * Windows filesystem: unrelated to filesystem behavior.
- * Token redaction: environment values and config contents may be redacted in logs and diagnostics. */
+ * Concurrency: this value is shared across concurrent proactive-refresh workers and should be treated as a global timing setting.
+ * Windows filesystem: not related to filesystem behavior.
+ * Token redaction: environment values and config contents may be redacted in logs and diagnostics.
+ */
 export function getProactiveRefreshBufferMs(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_PROACTIVE_GUARDIAN_BUFFER_MS",
@@ -899,8 +930,12 @@ export function getNetworkErrorCooldownMs(pluginConfig: PluginConfig): number {
 /**
  * Get the cooldown duration in milliseconds to apply after a server error.
  *
- * @param pluginConfig - Plugin configuration object used to resolve the setting; callers may invoke this concurrently and the returned value is read-only and safe for concurrent use. This function performs no filesystem access and is unaffected by Windows path semantics. It does not log or expose secrets—environment-derived values are treated as configuration and not token data.
- * @returns The cooldown in milliseconds to use after a server error (minimum 0, default 4000). Environment override: `CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS`.
+ * Callers may invoke this concurrently; the returned value is read-only and safe for concurrent use.
+ * This function performs no filesystem access and is unaffected by Windows path semantics.
+ * It does not log or expose secrets — environment-derived values are treated as configuration, not token data.
+ *
+ * @param pluginConfig - Plugin configuration used to resolve the setting
+ * @returns The cooldown in milliseconds to use after a server error (minimum 0, default 4000)
  */
 export function getServerErrorCooldownMs(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(
@@ -945,9 +980,9 @@ export function getPreemptiveQuotaEnabled(pluginConfig: PluginConfig): boolean {
 }
 
 /**
- * Determines the configured preemptive quota remaining percentage for 5-hour windows.
+ * Get the configured preemptive-quota remaining percentage for 5-hour windows.
  *
- * @param pluginConfig - Plugin configuration to read the setting from; can be overridden by the CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT environment variable. Reading this value is safe to perform concurrently; environment override semantics apply on Windows as on other platforms. Returned values are numeric and do not contain sensitive tokens.
+ * @param pluginConfig - Plugin configuration to read the setting from. The value may be overridden by the CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT environment variable; environment override semantics are the same on Windows. Safe to call concurrently. The returned value does not contain sensitive tokens and requires no redaction.
  * @returns The percentage (0–100) used as the preemptive quota threshold for 5-hour intervals.
  */
 export function getPreemptiveQuotaRemainingPercent5h(pluginConfig: PluginConfig): number {
@@ -960,15 +995,17 @@ export function getPreemptiveQuotaRemainingPercent5h(pluginConfig: PluginConfig)
 }
 
 /**
- * Determines the percentage of quota to reserve preemptively for the 7-day window.
+ * Determine the percentage of quota to reserve for the 7-day window.
  *
  * Resolves the effective value from the environment variable `CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT`,
- * then from `pluginConfig.preemptiveQuotaRemainingPercent7d`, falling back to 5 if unset; the result is constrained
- * to the inclusive range 0–100. Safe for concurrent reads. Not affected by Windows filesystem semantics. Contains no
- * sensitive token data.
+ * then from `pluginConfig.preemptiveQuotaRemainingPercent7d`, falling back to `5` if unset, and clamps the result
+ * to the inclusive range `0`–`100`.
+ *
+ * Concurrent reads are safe. Behavior is independent of Windows filesystem semantics. No sensitive tokens are included
+ * or returned by this function.
  *
  * @param pluginConfig - Plugin configuration object used as a fallback when the environment variable is not set
- * @returns The reserved quota percentage for the 7-day window, an integer between 0 and 100
+ * @returns The reserved quota percentage for the 7-day window, an integer between `0` and `100`
  */
 export function getPreemptiveQuotaRemainingPercent7d(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(

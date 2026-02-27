@@ -138,6 +138,22 @@ function extractAccountSnapshot(raw: unknown): CodexCliAccountSnapshot | null {
 	};
 }
 
+/**
+ * Determines whether Codex CLI sync is enabled based on environment variables.
+ *
+ * Checks CODEX_MULTI_AUTH_SYNC_CODEX_CLI first (explicit "1" enables, "0" disables),
+ * then falls back to the legacy CODEX_AUTH_SYNC_CODEX_CLI (also "1"/"0"). If the
+ * legacy variable is used, a single warning is emitted and a metric is incremented.
+ *
+ * Concurrency: the function may perform a one-time side effect (emitting a legacy-use
+ * warning and incrementing a metric); that side effect is guarded to run at most once
+ * per process and is safe to call from concurrent contexts.
+ *
+ * Filesystem and tokens: this function does not access the filesystem and does not
+ * read or log any tokens (no token redaction is required here).
+ *
+ * @returns `true` if sync is enabled, `false` otherwise.
+ */
 export function isCodexCliSyncEnabled(): boolean {
 	const override = (process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI ?? "").trim();
 	if (override === "0") return false;
@@ -190,16 +206,14 @@ export function getCodexCliAuthPath(): string {
 }
 
 /**
- * Parses a Codex CLI accounts JSON payload and converts it into a CodexCliState snapshot.
+ * Convert a parsed Codex CLI accounts JSON payload into a CodexCliState snapshot.
  *
- * @param path - Filesystem path of the source payload (used in the returned state). May be a Unix or Windows path; this function does not alter or normalize path separators.
+ * Parses the provided JSON object expected to contain an `accounts` array and optional metadata, producing a state object that includes accounts, active account/email if present, `syncVersion`, and the optional `sourceUpdatedAtMs`. The supplied `path` is recorded as-is and is not normalized (may be a Unix or Windows path). This function performs no synchronization or locking and may produce stale results relative to on-disk changes. Tokens are copied verbatim from the payload and are not redacted; callers must redact sensitive values before logging or exposing the returned state.
+ *
+ * @param path - Filesystem path of the source payload; path separators are preserved and not normalized.
  * @param parsed - The already-parsed JSON value expected to contain an `accounts` array and optional metadata.
- * @param sourceUpdatedAtMs - Optional source modification timestamp (ms) to attach to the returned state.
- * @returns A populated `CodexCliState` when `parsed` contains a valid accounts array, or `null` when the payload is not in the expected shape.
- *
- * Notes:
- * - This function performs no synchronization or locking; callers are responsible for concurrency control and should assume the returned state can be stale relative to on-disk changes.
- * - Tokens are preserved as found in the payload; this function does not redact sensitive values — callers must redact tokens before logging or exposing the returned state.
+ * @param sourceUpdatedAtMs - Optional source modification timestamp (milliseconds) to attach to the returned state.
+ * @returns A populated `CodexCliState` when `parsed` contains a valid `accounts` array, or `null` when the payload is not in the expected shape.
  */
 function parseCodexCliState(
 	path: string,

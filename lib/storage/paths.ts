@@ -56,6 +56,18 @@ function normalizeProjectPath(projectPath: string): string {
 		: normalizedSeparators;
 }
 
+/**
+ * Produce a filesystem-safe project name derived from a project path.
+ *
+ * The returned name contains only letters, digits, dots, underscores, and hyphens,
+ * has no leading or trailing hyphens, and is never empty (falls back to `"project"`).
+ * This function is pure and safe to call concurrently. It does not perform any
+ * secret/token redaction and does not depend on platform-specific case normalization;
+ * additional normalization for Windows filenames should be applied by the caller if needed.
+ *
+ * @param projectPath - Path to the project (used only to derive the basename)
+ * @returns A sanitized project name suitable for use in filenames and identifiers
+ */
 function sanitizeProjectName(projectPath: string): string {
 	const name = basename(projectPath);
 	const sanitized = name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -63,12 +75,12 @@ function sanitizeProjectName(projectPath: string): string {
 }
 
 /**
- * Produce a deterministic storage key for a project path by combining a sanitized project name and a fixed-length path hash.
+ * Create a deterministic, filesystem-safe storage key for a project path.
  *
- * The resulting key has the form `<sanitized-name>-<truncated-hex>` where the name is derived from the project's basename (disallowed characters replaced and trimmed) and the hex segment is a truncated hash of the normalized path. On Windows the path is normalized to lowercase before hashing to ensure case-insensitive equivalence. The function is pure and safe for concurrent use.
+ * The key is "<sanitized-name>-<truncated-hex>" where the sanitized name is derived from the project's basename (disallowed characters replaced, trimmed, and truncated to 40 characters) and the hex segment is the first 12 characters of a SHA-256 hash of the normalized path. On Windows the path is normalized to lowercase before hashing to ensure case-insensitive equivalence. The function is pure and safe for concurrent use; it produces the same output for equivalent paths and does not perform I/O. The key does not include the raw project path, so tokens or secrets embedded in the original path are not directly exposed.
  *
- * @param projectPath - Path to the project (any form accepted; will be normalized before key generation)
- * @returns A storage key string suitable for use as a per-project directory/name (sanitized name up to 40 chars, a dash, then a fixed-length hex hash)
+ * @param projectPath - Project path in any form; it will be normalized (expanded, resolved, and platform-normalized) before key generation
+ * @returns A filesystem-safe storage key string composed of a sanitized project name (up to 40 chars), a dash, and a 12-character hex hash
  */
 export function getProjectStorageKey(projectPath: string): string {
 	const normalizedPath = normalizeProjectPath(projectPath);

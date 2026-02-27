@@ -70,10 +70,16 @@ function normalizeWindow(value: unknown): QuotaCacheWindow {
 }
 
 /**
- * Validates and normalizes an arbitrary value into a QuotaCacheEntry.
+ * Normalize and validate a raw parsed value into a quota cache entry.
  *
- * @param value - The input to validate and normalize; typically parsed JSON.
- * @returns A normalized `QuotaCacheEntry` with trimmed `model`, optional `planType`, and normalized `primary`/`secondary` windows if `value` contains valid `updatedAt`, `status`, and `model`; `null` otherwise.
+ * Produces a QuotaCacheEntry with a trimmed `model`, optional `planType`, and normalized
+ * `primary`/`secondary` windows when `updatedAt`, `status`, and `model` are present and valid;
+ * returns `null` for any invalid input. This helper is pure (no I/O), safe to call concurrently,
+ * and platform-agnostic (works with data read from files on Windows or POSIX). It does not perform
+ * token redaction — callers must redact sensitive fields before persisting or logging.
+ *
+ * @param value - The arbitrary input (typically parsed JSON) to validate and normalize
+ * @returns A normalized `QuotaCacheEntry` if validation succeeds, `null` otherwise
  */
 function normalizeEntry(value: unknown): QuotaCacheEntry | null {
 	if (!isRecord(value)) return null;
@@ -119,12 +125,12 @@ function normalizeEntryMap(value: unknown): Record<string, QuotaCacheEntry> {
 }
 
 /**
- * Returns the filesystem path to the quota cache JSON file.
+ * Get the absolute filesystem path to the quota-cache.json file.
  *
- * This is the resolved path to "quota-cache.json" inside the Codex multi-auth directory.
- * Callers should treat the file according to normal filesystem concurrency semantics (no internal locking is provided here),
- * and be aware of platform path implications (Windows path may reside under AppData). The file can contain sensitive values;
- * redact tokens or secrets before logging or exposing its contents.
+ * The resolved path points to quota-cache.json inside the Codex multi-auth directory.
+ * Callers must observe normal filesystem concurrency semantics (no internal locking is provided),
+ * and handle platform-specific path behavior (for example, on Windows the file may reside under %APPDATA%).
+ * The file can contain sensitive values; redact tokens or secrets before logging or exposing its contents.
  *
  * @returns The absolute path to the quota-cache.json file
  */

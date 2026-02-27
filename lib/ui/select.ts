@@ -51,6 +51,19 @@ function stripAnsi(input: string): string {
 	return input.replace(ANSI_REGEX, "");
 }
 
+/**
+ * Truncates a string to at most a given number of visible characters while preserving ANSI SGR sequences.
+ *
+ * Preserves ANSI color/formatting codes in the returned string and appends "..." (or "." / shorter sequences)
+ * as a visible truncation suffix when the visible length exceeds `maxVisibleChars`.
+ *
+ * Concurrency: function is pure and safe for concurrent use. Filesystem: behavior is independent of OS (including Windows).
+ * Token handling: this function does not redact or interpret token semantics; it only preserves ANSI escape sequences.
+ *
+ * @param input - The input string which may contain ANSI SGR escape sequences.
+ * @param maxVisibleChars - Maximum number of visible (non-ANSI) characters to keep; values <= 0 yield an empty string.
+ * @returns The input string truncated so its visible character count does not exceed `maxVisibleChars`, with ANSI codes preserved and a truncation suffix appended when truncation occurred.
+ */
 function truncateAnsi(input: string, maxVisibleChars: number): string {
 	if (maxVisibleChars <= 0) return "";
 	const visible = stripAnsi(input);
@@ -80,11 +93,11 @@ function truncateAnsi(input: string, maxVisibleChars: number): string {
 }
 
 /**
- * Return the ANSI color code string for a menu item color.
+ * Map a MenuItem color to its ANSI SGR color code.
  *
- * No concurrency effects; does not access the filesystem and performs no token redaction.
+ * No concurrency effects; does not access the filesystem on Windows or other platforms; performs no token redaction.
  *
- * @param color - One of `"red"`, `"green"`, `"yellow"`, `"cyan"`, or undefined/other for no color
+ * @param color - The menu item color ("red", "green", "yellow", "cyan") or undefined/other for no color
  * @returns The ANSI SGR code for `color`, or an empty string if no color is specified
  */
 function colorCode(color: MenuItem["color"]): string {
@@ -103,12 +116,12 @@ function colorCode(color: MenuItem["color"]): string {
 }
 
 /**
- * Decodes a raw stdin Buffer into a single "hotkey" character or returns `null` when none found.
+ * Decode a raw stdin buffer into a single printable "hotkey" character or `null` when none is available.
  *
- * This recognizes common VT-style numpad/keypad escape sequences and, if none match, returns the first printable ASCII character from the input. Safe to call concurrently; it does not access filesystem or external state. Control and non-printable bytes are never returned (they are treated as absent), which prevents leaking raw control sequences.
+ * Recognizes common VT-style numpad/keypad escape sequences and otherwise yields the first printable ASCII character in the input. Safe to call concurrently; it performs no filesystem or external I/O and behaves the same on Windows. This function never returns control or non-printable bytes, reducing the risk of leaking raw control sequences or sensitive tokens.
  *
  * @param data - Raw input buffer from stdin (may contain escape sequences or control bytes)
- * @returns The decoded single-character hotkey (e.g., `"0"`, `"a"`, `"+"`) or `null` if no printable character is present
+ * @returns The decoded single-character hotkey (for example, `"0"`, `"a"`, `"+"`) or `null` if no printable character is present
  */
 function decodeHotkeyInput(data: Buffer): string | null {
 	const input = data.toString("utf8");
@@ -142,26 +155,26 @@ function decodeHotkeyInput(data: Buffer): string | null {
 }
 
 /**
- * Display an interactive terminal menu, allow the user to navigate and choose an item.
+ * Present an interactive TTY menu, let the user navigate and choose an item.
  *
- * Renders a TTY interactive selection UI to stdout, reads raw input from stdin, and resolves
- * when the user confirms a choice or cancels. This function mutates terminal state (raw mode,
- * cursor visibility) and is not safe to run concurrently with other code that expects normal
- * stdin/stdout terminal state.
+ * Mutates terminal state (raw mode, cursor visibility) and drives stdin/stdout until the
+ * prompt finishes. Emits ANSI control sequences; on Windows the result depends on the
+ * host terminal's ANSI support. Callers must not run this concurrently with other code
+ * that expects normal terminal stdin/stdout state and must redact any sensitive tokens
+ * in item labels/hints before calling.
  *
- * Note on platforms and terminals: the UI emits ANSI control sequences; behavior on Windows
- * depends on the host terminal's ANSI support. The function does not perform any automatic
- * redaction of item labels or hints — callers must avoid passing sensitive tokens or redact them
- * before calling.
- *
- * @param items - Array of menu items to display. Items that are disabled, separators, or have
- *                 kind === "heading" are treated as non-selectable. If exactly one selectable
- *                 item exists it will be returned immediately.
- * @param options - Configuration for the prompt (message, subtitle/dynamicSubtitle, theme,
- *                  focusStyle, initialCursor, allowEscape, onCursorChange, onInput, refreshIntervalMs, etc.).
- *                  Use `onInput` to handle hotkey input and optionally return a value to finish early;
- *                  use `onCursorChange` to be notified when the highlighted cursor changes.
+ * @param items - Menu items to display. Items with `disabled`, `separator`, or `kind === "heading"`
+ *                are non-selectable. If exactly one selectable item exists its `value` is returned
+ *                immediately.
+ * @param options - Configuration for the prompt (message, subtitle or `dynamicSubtitle`, theme,
+ *                  `focusStyle`, `initialCursor`, `allowEscape`, `onCursorChange`, `onInput`,
+ *                  `refreshIntervalMs`, `help`, `clearScreen`, and related display behavior).
+ *                  - `onInput` receives decoded hotkey input and may return a `T` to finish early
+ *                    or `undefined` to continue; it may call `requestRerender` via the provided context.
+ *                  - `onCursorChange` is invoked when the highlighted cursor changes and may request rerender.
  * @returns The selected item's `value`, or `null` if the prompt was cancelled or could not be started.
+ *
+ * @throws If not running on a TTY, if `items` is empty, or if all menu items are non-selectable.
  */
 export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>): Promise<T | null> {
 	if (!isTTY()) {

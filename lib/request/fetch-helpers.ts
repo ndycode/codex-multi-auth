@@ -222,11 +222,14 @@ export function shouldFallbackToGpt52OnUnsupportedGpt53(
 }
 
 /**
- * Checks if an error code indicates an entitlement/subscription issue
- * These errors should NOT be treated as rate limits because:
- * 1. They won't resolve by waiting
- * 2. They won't resolve by switching accounts (all accounts likely have same issue)
- * 3. User needs to upgrade their subscription
+ * Detects whether an error code or response body indicates an entitlement/subscription issue for Codex models.
+ *
+ * Entitlement errors signal that the requested feature is not included in the user's plan and should not be treated as rate limits.
+ * This function is pure and safe to call concurrently; it performs no filesystem access (including on Windows) and does not read or redact tokens — callers must avoid passing sensitive credentials in `code` or `bodyText`.
+ *
+ * @param code - The error code string returned by the service
+ * @param bodyText - The response body text to inspect for entitlement-related phrases
+ * @returns `true` if the combined `code` or `bodyText` indicates an entitlement/subscription issue, `false` otherwise
  */
 export function isEntitlementError(code: string, bodyText: string): boolean {
         const haystack = `${code} ${bodyText}`.toLowerCase();

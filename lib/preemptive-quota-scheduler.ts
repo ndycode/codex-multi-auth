@@ -70,15 +70,18 @@ function parseFiniteIntHeader(headers: Headers, name: string): number | undefine
 }
 
 /**
- * Parse a reset timestamp header for the given prefix and return it as milliseconds since the epoch.
+ * Parse a reset timestamp header for the given prefix and normalize it to milliseconds since the epoch.
  *
- * This reads either `<prefix>-reset-after-seconds` (relative seconds) or `<prefix>-reset-at` (absolute seconds or HTTP-date)
- * and normalizes the result to a millisecond UNIX timestamp. Concurrency: callers should treat headers as immutable snapshots.
- * Filesystem: behavior is independent of Windows filesystem semantics. Sensitive header values (tokens) are not logged or persisted by this function.
+ * Interprets `<prefix>-reset-after-seconds` as a relative seconds offset from now, and `<prefix>-reset-at` as
+ * either an absolute epoch seconds value or an HTTP-date; returns the corresponding millisecond timestamp or
+ * `undefined` when no valid value is present.
+ *
+ * Concurrency: callers should treat `headers` as an immutable snapshot. Behavior is independent of Windows
+ * filesystem semantics. Sensitive header values (tokens) are not logged or persisted by this function.
  *
  * @param headers - The Headers object to read values from.
- * @param prefix - Header name prefix (for example `"x-rate-limit"` to read `"x-rate-limit-reset-at"`).
- * @returns The reset time in milliseconds since epoch, or `undefined` if no valid value is present.
+ * @param prefix - Header name prefix (for example `"x-rate-limit"` to read `"x-rate-limit-reset-at"` or `"x-rate-limit-reset-after-seconds"`).
+ * @returns The reset time in milliseconds since epoch, or `undefined` if no valid value is found.
  */
 function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
 	const resetAfterSeconds = parseFiniteIntHeader(headers, `${prefix}-reset-after-seconds`);
@@ -99,19 +102,18 @@ function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
 }
 
 /**
- * Builds a quota snapshot from HTTP headers when quota signals are present.
+ * Create a quota snapshot from HTTP headers when quota signals are present.
  *
- * Parses primary/secondary used-percent and reset timestamps from headers and returns a snapshot
- * containing those values and the provided status and timestamp; returns `null` if no quota signals are found.
+ * Parses primary and secondary used-percent and reset timestamps and produces a snapshot; returns `null` if no quota signals are present.
+ *
+ * Concurrency: pure and safe for concurrent calls.
+ * Filesystem: does not access the filesystem (no Windows-specific behavior).
+ * Token handling: does not log or persist header values; callers should redact sensitive headers before logging or storing.
  *
  * @param headers - HTTP headers to read quota signals from; may contain sensitive values
  * @param status - HTTP status code associated with the snapshot
  * @param now - Millisecond epoch used as the snapshot's `updatedAt` timestamp
  * @returns A QuotaSchedulerSnapshot built from available header values, or `null` when no signals are present
- *
- * Concurrency: pure and has no side effects; safe to call concurrently.
- * Filesystem: does not access the filesystem (no Windows-specific behavior).
- * Token handling: does not log or persist header contents; callers should redact sensitive header values before logging or storing.
  */
 export function readQuotaSchedulerSnapshot(headers: Headers, status: number, now = Date.now()): QuotaSchedulerSnapshot | null {
 	const primaryPrefix = "x-codex-primary";

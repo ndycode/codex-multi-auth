@@ -44,10 +44,11 @@ async function readChunkWithTimeout(
 }
 
 /**
- * Detects whether an error represents an SSE stream stall timeout.
+ * Determines whether an error indicates an SSE stream stall timeout.
  *
- * Concurrency: safe to call from multiple async contexts. Windows filesystem: N/A. Token redaction: does not inspect or log sensitive tokens.
+ * Concurrency: safe to call from multiple async contexts. Windows filesystem: not applicable. Token redaction: this function only inspects the error message and does not log or expose sensitive tokens.
  *
+ * @param error - The value to inspect for a stall-timeout error
  * @returns `true` if `error` is an `Error` whose message contains "SSE stream stalled for", `false` otherwise.
  */
 function isStallTimeoutError(error: unknown): boolean {

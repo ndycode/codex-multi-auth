@@ -33,9 +33,11 @@ function normalizeFsWatchFilename(filename: string | Buffer | null): string | nu
 /**
  * Read the file modification time (mtime) for a given filesystem path in milliseconds.
  *
- * Note: the returned mtime is a point-in-time observation and may change immediately after reading.
- * On some platforms (notably Windows) timestamp resolution can be coarse; callers should account for that.
- * Treat `path` as sensitive when logging and redact any tokens before emitting it.
+ * This is a point-in-time snapshot — the value may change immediately due to concurrent writes and callers
+ * should not assume stability across subsequent operations. On some platforms (notably Windows) timestamp
+ * resolution can be coarse; callers should account for that when comparing mtime values.
+ *
+ * Treat `path` as sensitive when logging: redact any tokens or secrets before emitting it.
  *
  * @param path - Filesystem path to inspect
  * @returns The file's mtime in milliseconds, or `null` if the path does not exist or the mtime is not finite

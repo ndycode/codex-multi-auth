@@ -57,120 +57,28 @@ export class StorageError extends Error {
 }
 
 /**
- * Produce a platform-aware, user-facing troubleshooting hint for a storage write failure.
+ * Produce a platform-aware troubleshooting hint for a filesystem write failure.
  *
- * @param error - The original filesystem error (may be any value); its platform-specific `code` is used to select a hint.
- * @param path - The filesystem path involved in the error; callers should redact any secrets/tokens before passing this value.
- * @returns A short, actionable hint string tailored to common Node filesystem error codes and the current OS.
+ * Uses the error's platform-specific `code` and the current OS to choose a concise, actionable hint.
  *
- * Concurrency: this function is pure and safe to call from multiple concurrent contexts.
- * Notes: hints vary for Windows vs. POSIX and are intended for end-user troubleshooting only.
-export function formatStorageErrorHint(error: unknown, path: string): string {
-  const err = error as NodeJS.ErrnoException;
-  const code = err?.code || "UNKNOWN";
-  const isWindows = process.platform === "win32";
-
-  switch (code) {
-    case "EACCES":
-    case "EPERM":
-      return isWindows
-        ? `Permission denied writing to ${path}. Check antivirus exclusions for this folder. Ensure you have write permissions.`
-        : `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.codex`;
-    case "EBUSY":
-      return `File is locked at ${path}. The file may be open in another program. Close any editors or processes accessing it.`;
-    case "ENOSPC":
-      return `Disk is full. Free up space and try again. Path: ${path}`;
-    case "EEMPTY":
-      return `File written but is empty. This may indicate a disk or filesystem issue. Path: ${path}`;
-    default:
-      return isWindows
-        ? `Failed to write to ${path}. Check folder permissions and ensure path contains no special characters.`
-        : `Failed to write to ${path}. Check folder permissions and disk space.`;
-  }
-}
-
-let storageMutex: Promise<void> = Promise.resolve();
-
-function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
-  const previousMutex = storageMutex;
-  let releaseLock: () => void;
-  storageMutex = new Promise<void>((resolve) => {
-    releaseLock = resolve;
-  });
-  return previousMutex.then(fn).finally(() => releaseLock());
-}
-
-type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
-
-type AccountLike = {
-  accountId?: string;
-  email?: string;
-  refreshToken: string;
-  addedAt?: number;
-  lastUsed?: number;
-};
-
-/**
- * Ensures the project's top-level .gitignore contains an entry to exclude the local Codex storage directory (`.codex/`).
- *
- * @param storagePath - Path to the storage file (used to infer the project root when a root was not previously recorded).
- * @remarks
- * - Side effects: may create or modify the project's `.gitignore` to add the `.codex/` entry.
- * - Concurrency: no external lock is used; concurrent callers or other processes may race when updating the same `.gitignore`.
- * - Platform notes: filesystem locking/EPERM/EBUSY on Windows may cause the update to fail; failures are logged and treated as non-fatal.
- * - Security: this function only adds the `.codex/` ignore entry and does not read or write any authentication tokens or other secrets.
-async function ensureGitignore(storagePath: string): Promise<void> {
-  if (!currentStoragePath) return;
-
-  const configDir = dirname(storagePath);
-  const inferredProjectRoot = dirname(configDir);
-  const candidateRoots = [currentProjectRoot, inferredProjectRoot].filter(
-    (root): root is string => typeof root === "string" && root.length > 0,
-  );
-  const projectRoot = candidateRoots.find((root) => existsSync(join(root, ".git")));
-  if (!projectRoot) return;
-  const gitignorePath = join(projectRoot, ".gitignore");
-
-  try {
-    let content = "";
-    if (existsSync(gitignorePath)) {
-      content = await fs.readFile(gitignorePath, "utf-8");
-      const lines = content.split("\n").map((l) => l.trim());
-      if (lines.includes(".codex") || lines.includes(".codex/") || lines.includes("/.codex") || lines.includes("/.codex/")) {
-        return;
-      }
-    }
-
-    const newContent = content.endsWith("\n") || content === "" ? content : content + "\n";
-    await fs.writeFile(gitignorePath, newContent + ".codex/\n", "utf-8");
-    log.debug("Added .codex to .gitignore", { path: gitignorePath });
-  } catch (error) {
-    log.warn("Failed to update .gitignore", { error: String(error) });
-  }
-}
-
-let currentStoragePath: string | null = null;
-let currentLegacyProjectStoragePath: string | null = null;
-let currentProjectRoot: string | null = null;
-
-/**
- * Enable or disable creation of backup files for account storage operations.
- *
- * @param enabled - `true` to enable writing a .backup copy before replacing the main storage file, `false` to disable
+ * @param error - The original filesystem error; its `code` (if present) is used to select the hint.
+ * @param path - The filesystem path involved in the error. Callers should redact any secrets or tokens before passing this value.
+ * @returns A short, user-facing hint string tailored to common Node filesystem error codes and the current platform.
  *
  * @remarks
- * - Concurrency: this flag affects subsequent save operations but does not itself perform I/O; callers should rely on the storage transaction APIs (which use an internal mutex) for atomic read/modify/write sequences.
- * - Windows: backup behavior may interact with Windows file-locking (EPERM/EBUSY) during saves and recoveries.
- * - Security: backups may contain sensitive tokens; apply the same token-redaction and handling policies to backup files as to primary storage files.
- */
+ * - Concurrency: pure and safe to call from multiple concurrent contexts.
+ * - Platform: hints differ for Windows vs POSIX (e.g., permission/locking guidance).
+ * - Security: path should not contain unredacted sensitive tokens.
 export function setStorageBackupEnabled(enabled: boolean): void {
 	storageBackupEnabled = enabled;
 }
 
 /**
- * Compute the backup file path for a given accounts storage path.
+ * Compute the on-disk backup path for an accounts storage file.
  *
- * This appends the configured accounts backup suffix to `path`. The result is intended for on-disk backups and may be used in save/recovery flows; callers should handle concurrent access and platform-specific filesystem semantics (Windows EPERM/EBUSY) when reading or writing the resulting file.
+ * The returned path is the provided base path with the configured accounts backup suffix appended.
+ * Callers should treat the resulting file as containing sensitive account data (redact tokens in logs),
+ * and must handle concurrent access and platform-specific filesystem semantics (notably Windows EPERM/EBUSY) when reading or writing it.
  *
  * @param path - The base accounts storage file path
  * @returns The backup file path (base path with the accounts backup suffix appended)
@@ -180,13 +88,14 @@ function getAccountsBackupPath(path: string): string {
 }
 
 /**
- * Produces the write-ahead-log (WAL) journal file path for a given account storage file path.
+ * Compute the write-ahead log (WAL) journal path for a given account storage file.
  *
- * This path is used by concurrent save/recovery flows; callers should handle concurrent create/remove races
- * and platform-specific filesystem errors (e.g., EPERM/EBUSY on Windows) when operating on the WAL file.
+ * Callers should treat WAL operations as racy (concurrent create/remove) and handle platform-specific
+ * filesystem errors (notably EPERM/EBUSY on Windows) and retry semantics. WAL contents may include
+ * sensitive tokens; callers must redact secrets before logging or exposure.
  *
  * @param path - The base account storage file path (absolute or relative)
- * @returns The corresponding WAL journal file path
+ * @returns The WAL journal file path derived from `path`
  */
 function getAccountsWalPath(path: string): string {
 	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
@@ -222,18 +131,20 @@ export function getLastAccountsSaveTimestamp(): number {
 }
 
 /**
- * Configures module-level account storage paths and the associated project root based on the given project path.
+ * Set or clear the module's project-scoped storage paths and project root based on the provided project path.
  *
- * If `projectPath` is `null`, clears any previously configured project root and storage paths.
+ * When `projectPath` is `null`, any previously configured project root and storage paths are cleared.
  *
- * This function mutates shared module state (currentStoragePath, currentLegacyProjectStoragePath, currentProjectRoot);
- * callers must synchronize access if invoked concurrently from multiple contexts.
+ * This function mutates module-level state (currentStoragePath, currentLegacyProjectStoragePath, currentProjectRoot);
+ * callers must serialize concurrent calls (e.g., via withStorageLock) to avoid race conditions.
  *
- * Notes:
- * - Path selection may differ on case-insensitive filesystems (e.g., Windows); this function does not perform filesystem permission checks.
- * - This function does not modify or redact any sensitive tokens or credentials that may exist in the resolved paths.
+ * On case-insensitive filesystems (such as Windows) resolved paths may differ in case from the original input;
+ * this function does not perform filesystem permission checks and does not attempt to create directories.
  *
- * @param projectPath - Absolute or relative path to a project directory, or `null` to unset the configured project storage
+ * Resolved paths may contain sensitive fragments (for example, tokens embedded in directory names); this function
+ * does not redact or modify such content — callers are responsible for treating returned/recorded paths as sensitive.
+ *
+ * @param projectPath - Path to a project directory (absolute or relative), or `null` to unset the configured project storage
  */
 export function setStoragePath(projectPath: string | null): void {
   if (!projectPath) {
@@ -483,10 +394,22 @@ function extractActiveKey(accounts: unknown[], activeIndex: number): string | un
 }
 
 /**
- * Normalizes and validates account storage data, migrating from v1 to v3 if needed.
- * Handles deduplication, index clamping, and per-family active index mapping.
- * @param data - Raw storage data (unknown format)
- * @returns Normalized AccountStorageV3 or null if invalid
+ * Validate and convert raw account storage into a normalized AccountStorageV3.
+ *
+ * Migrates v1 data to v3 when present, filters out entries missing a valid
+ * refreshToken, deduplicates accounts by key and by email (preferring newest),
+ * and computes a clamped global active index and per-model-family active indices.
+ *
+ * This is a pure in-memory normalization routine (no I/O) and is safe to call
+ * without acquiring the storage mutex; it does not perform any disk operations
+ * and is therefore unaffected by platform-specific filesystem semantics
+ * (Windows EPERM/EBUSY rename behavior is not applicable here).
+ *
+ * Note: sensitive fields such as `refreshToken` are preserved by this function
+ * and should be treated as secrets by callers; no redaction is performed.
+ *
+ * @param data - Raw storage input (expected shape: v1 or v3 storage object); may be any value
+ * @returns Normalized AccountStorageV3 when `data` is a valid v1/v3 storage object, or `null` if `data` is invalid
  */
 export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null {
   if (!isRecord(data)) {
@@ -593,18 +516,16 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
 }
 
 /**
- * Validates raw storage data and returns a normalized v3 storage object along with validation metadata.
+ * Validate parsed storage data and produce a normalized AccountStorageV3 plus validation metadata.
  *
- * @param data - Raw parsed storage (e.g., JSON.parse result) to validate and normalize
- * @returns An object containing:
- *   - `normalized`: an AccountStorageV3 instance when normalization succeeds, or `null` when input is invalid
- *   - `storedVersion`: the original `version` value extracted from the raw input (may be `undefined` or any type)
- *   - `schemaErrors`: an array of human-readable schema validation error messages
+ * This function is pure, performs no I/O, is safe to call concurrently, and does not perform any filesystem-specific behavior (including Windows-specific handling).
+ * Normalization may migrate legacy v1 shapes to v3 and will drop invalid account entries; refresh tokens from the input are preserved (no redaction or masking is performed).
  *
- * Notes:
- * - This function is pure and performs no I/O; it is safe to call concurrently.
- * - Normalization may migrate legacy shapes to v3 and will filter out invalid account entries; it does not perform token redaction or masking — refresh tokens present in the input will be preserved in the returned `normalized` value.
- * - Behavior is platform-independent; no filesystem-specific considerations (including Windows) apply here.
+ * @param data - Raw parsed storage (for example, the result of JSON.parse) to validate and normalize
+ * @returns An object with:
+ *   - `normalized` — the normalized AccountStorageV3 when input is valid, or `null` when invalid
+ *   - `storedVersion` — the raw `version` value extracted from the input (may be `undefined` or any type)
+ *   - `schemaErrors` — an array of human-readable schema validation error messages
  */
 function parseAndNormalizeStorage(data: unknown): {
 	normalized: AccountStorageV3 | null;
@@ -769,18 +690,18 @@ async function loadAccountsInternal(
 }
 
 /**
- * Atomically persists account storage to disk with WAL journaling, optional backup, and Windows-safe rename retries.
+ * Persist normalized account storage atomically using a WAL journal and an atomic rename (with Windows-safe retry).
  *
- * Creates parent directories and a .gitignore entry if needed, writes a write-ahead journal and a temp file, verifies the temp file is non-empty, then renames the temp file into place with retries for EPERM/EBUSY. On success it updates the internal save timestamp and attempts best-effort WAL cleanup; on failure it removes the temp file (best-effort) and throws a StorageError with a platform-aware hint.
+ * Writes a write-ahead journal, optionally creates a backup copy, writes the storage to a temporary file, verifies the temp file is non-empty, then renames the temp file into place. On success updates the internal save timestamp and best-effort removes the WAL; on failure it best-effort cleans up the temp file and raises a StorageError with a platform-aware hint.
  *
- * Concurrency: callers must not assume isolation beyond the mutex held by withStorageLock; this function expects to be invoked while holding the storage lock.
+ * Concurrency: must be called while holding the storage mutex provided by withStorageLock; callers should not rely on any additional isolation guarantees.
  *
- * Windows behavior: rename may be retried with exponential backoff to work around EPERM/EBUSY filesystem semantics.
+ * Windows behavior: rename is retried with exponential backoff to mitigate transient EPERM/EBUSY filesystem semantics.
  *
- * Token handling: saved `storage` may contain sensitive tokens (e.g., `refreshToken`) — callers are responsible for redaction before calling if tokens must not be persisted in plain form.
+ * Token handling: the provided `storage` may contain sensitive tokens (e.g., `refreshToken`); callers are responsible for redaction before calling if tokens must not be persisted in plain form.
  *
- * @param storage - Normalized AccountStorageV3 to persist; must be valid and include any desired activeIndex/activeIndexByFamily values.
- * @returns Nothing.
+ * @param storage - A validated, normalized AccountStorageV3 object to persist; must include any desired activeIndex/activeIndexByFamily values.
+ * @throws StorageError - If writing, verification, or finalization fails; the error includes a platform-aware hint and the underlying cause when available.
  */
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   const path = getStoragePath();

@@ -10,10 +10,13 @@ import {
 import { UI_COPY } from "./ui/copy.js";
 
 /**
- * Detect if running in OpenCode Desktop/TUI mode where readline prompts don't work.
- * In TUI mode, stdin/stdout are controlled by the TUI renderer, so readline breaks.
- * Exported for testing purposes.
- */
+ * Determines whether the environment should be treated as non-interactive (disable readline prompts).
+ *
+ * @returns `true` if interactive prompts are unreliable or controlled by an external TUI/desktop runtime, `false` otherwise.
+ *
+ * @remarks
+ * - Safe for concurrent use; has no side effects and performs no filesystem I/O.
+ * - Does not read or expose any sensitive tokens.
 export function isNonInteractiveMode(): boolean {
 	if (process.env.FORCE_INTERACTIVE_MODE === "1") return false;
 	if (!input.isTTY || !output.isTTY) return true;
@@ -25,9 +28,7 @@ export function isNonInteractiveMode(): boolean {
 }
 
 /**
- * Prompts the user whether to add another account and returns whether they answered affirmatively.
- *
- * Reads a single line from stdin and treats "y" or "yes" (case-insensitive) as confirmation.
+ * Ask the user whether to add another account.
  *
  * @param currentCount - The current number of accounts; used to format the prompt message.
  * @returns `true` if the user responded with "y" or "yes", `false` otherwise.
@@ -140,11 +141,11 @@ function formatAccountLabel(account: ExistingAccountInfo, index: number): string
 }
 
 /**
- * Resolve the effective source index for an account, preferring `sourceIndex` when present.
+ * Determine the effective source index for an account.
  *
- * Returns `account.sourceIndex` when it is a number; otherwise falls back to `account.index`.
- *
- * This function is pure and safe to call concurrently; it performs no filesystem I/O (no Windows-specific behavior) and does not expose or redact tokens or sensitive fields.
+ * Prefers `account.sourceIndex` when it is a number; otherwise uses `account.index`.
+ * This function is pure, safe to call concurrently, performs no filesystem I/O (no Windows-specific behavior),
+ * and does not expose or redact tokens or other sensitive fields.
  *
  * @param account - Account metadata object which may include `sourceIndex` and `index`
  * @returns The numeric source index to use for account operations
@@ -173,10 +174,12 @@ async function promptDeleteAllTypedConfirm(): Promise<boolean> {
 }
 
 /**
- * Presents a non-TTY fallback prompt to let the user choose a login mode when interactive menus are unavailable.
+ * Present a non-TTY fallback prompt that asks the user to choose a login mode when interactive menus are unavailable.
  *
- * @param existingAccounts - List of saved account metadata; if non-empty the accounts are printed with formatted labels.
- * @returns The selected LoginMenuResult describing the chosen mode and any associated action indices.
+ * Prints saved accounts (using formatted labels) when `existingAccounts` is non-empty, then repeatedly prompts until a valid mode is entered.
+ *
+ * @param existingAccounts - Saved account metadata to display as a numbered list when present
+ * @returns The chosen LoginMenuResult describing the selected mode and any associated action indices (e.g., deleteAll or account indices)
  *
  * Concurrency: prompts are sequential and must not be invoked concurrently in the same process.
  * Windows behavior: prompt I/O uses the process stdio and is expected to behave consistently on Windows consoles.

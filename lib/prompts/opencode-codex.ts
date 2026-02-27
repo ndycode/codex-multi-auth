@@ -46,6 +46,19 @@ function isFresh(lastChecked: number): boolean {
 	return Date.now() - lastChecked < CACHE_TTL_MS;
 }
 
+/**
+ * Validates and normalizes a candidate prompt source URL.
+ *
+ * Returns the trimmed input string if it is a syntactically valid URL using the `http:` or `https:` protocol; returns `undefined` for missing, empty, invalid, or unsupported-protocol inputs.
+ *
+ * Notes:
+ * - This function never throws; it catches URL parsing errors and returns `undefined`.
+ * - It is pure and safe to call concurrently.
+ * - It logs debug entries containing the trimmed `source` when the input is invalid or uses an unsupported protocol; callers should avoid passing secrets or tokens in `source` because those values will appear in logs.
+ *
+ * @param source - The candidate URL string to validate and normalize
+ * @returns The trimmed URL string if valid and using HTTP(S), or `undefined` otherwise
+ */
 function parseSourceUrl(source: string | undefined): string | undefined {
 	if (!source) return undefined;
 	const trimmed = source.trim();
