@@ -1,7 +1,7 @@
 # codex-multi-auth
 
-[![npm version](https://img.shields.io/npm/v/%40ndycode%2Fcodex-multi-auth.svg)](https://www.npmjs.com/package/@ndycode/codex-multi-auth)
-[![npm downloads](https://img.shields.io/npm/dw/%40ndycode%2Fcodex-multi-auth.svg)](https://www.npmjs.com/package/@ndycode/codex-multi-auth)
+[![npm version](https://img.shields.io/npm/v/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
+[![npm downloads](https://img.shields.io/npm/dw/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
 
 Codex CLI-first multi-account OAuth manager for the official Codex CLI.
 
@@ -159,3 +159,4 @@ This project is for personal development workflows. You are responsible for comp
 
 - Security policy: [SECURITY.md](SECURITY.md)
 - License: [LICENSE](LICENSE)
+
