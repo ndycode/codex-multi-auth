@@ -26,7 +26,7 @@ This plugin handles sensitive OAuth tokens. To protect your security:
 - Never share your `~/.codex/` directory
 - Do not commit OAuth tokens to version control
 - Regularly review authorized apps at [ChatGPT Settings](https://chatgpt.com/settings/apps)
-- Remove local plugin auth files when done on shared systems (`~/.codex/multi-auth/openai-codex-*.json`)
+- Remove local plugin auth files when done on shared systems (default: `~/.codex/multi-auth/openai-codex-*.json`; use `CODEX_MULTI_AUTH_DIR` if overridden)
 - Enable debug logging (`ENABLE_PLUGIN_REQUEST_LOGGING=1`) only when troubleshooting
 
 ### Reporting a Vulnerability
@@ -75,6 +75,7 @@ This plugin minimizes dependencies for security:
 - Runtime dependencies include: `@openauthjs/openauth`, `@opencode-ai/plugin`, `hono`, and `zod`
 - Regular dependency updates for security patches
 - No telemetry or analytics dependencies
+- CI/local guardrail: run `npm run audit:ci` before release or after dependency updates
 
 ## Questions?
 

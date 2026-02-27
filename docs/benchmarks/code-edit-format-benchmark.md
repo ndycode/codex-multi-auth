@@ -34,8 +34,8 @@ npm run bench:edit-formats:render
 
 | Output | Location |
 | --- | --- |
-| Benchmark report JSON | `.tmp/` benchmark output paths |
-| Render preview artifacts | benchmark render output paths |
+| Benchmark report JSON | `.tmp/edit-format-benchmark-*.json` |
+| Render preview artifacts | `.tmp/edit-format-benchmark-render-*.txt` |
 
 (Temporary benchmark artifacts are not source files.)
 

@@ -39,6 +39,7 @@ vi.mock("../lib/auth/auth.js", () => ({
 			state: stateMatch?.[1],
 		};
 	}),
+	redactOAuthUrlForLog: vi.fn((url: string) => url.replace(/state=[^&]+/, "state=%3Credacted%3E")),
 	REDIRECT_URI: "http://127.0.0.1:1455/auth/callback",
 }));
 
@@ -502,6 +503,37 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("invalid_response");
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("redacts oauth state from logged oauth URL", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const loggerModule = await import("../lib/logger.js");
+			const browserModule = await import("../lib/auth/browser.js");
+			const serverModule = await import("../lib/auth/server.js");
+			const flow: Awaited<ReturnType<typeof authModule.createAuthorizationFlow>> = {
+				pkce: { verifier: "v", challenge: "c" },
+				state: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				url: "https://auth.openai.com/oauth/authorize?state=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&response_type=code&client_id=test",
+			};
+			vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue(flow);
+			vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+			vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+				ready: true,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+			});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize();
+
+			expect(vi.mocked(loggerModule.logInfo)).toHaveBeenCalledWith(
+				expect.stringContaining("state=%3Credacted%3E"),
+			);
+			expect(vi.mocked(loggerModule.logInfo)).not.toHaveBeenCalledWith(
+				expect.stringContaining("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+			);
 		});
 	});
 

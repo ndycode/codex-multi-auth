@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
+import { sleep } from "../utils.js";
 
 const DEFAULT_OPENCODE_CODEX_URLS = [
 	"https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/opencode/src/session/prompt/codex.txt",
@@ -26,12 +27,16 @@ const CACHE_DIR = getCodexCacheDir();
 const CACHE_FILE = join(CACHE_DIR, "opencode-codex.txt");
 const CACHE_META_FILE = join(CACHE_DIR, "opencode-codex-meta.json");
 const CACHE_TTL_MS = 15 * 60 * 1000;
+const RETRYABLE_FS_ERROR_CODES = new Set(["EBUSY", "EPERM"]);
+const WRITE_RETRY_ATTEMPTS = 5;
+const WRITE_RETRY_BASE_DELAY_MS = 10;
 
 interface CacheMeta {
 	etag: string;
 	lastFetch?: string; // Legacy field for backwards compatibility
 	lastChecked: number; // Timestamp for rate limit protection
-	sourceUrl?: string;
+	sourceKey?: string;
+	sourceUrl?: string; // Legacy field kept for compatibility reads.
 }
 
 interface CacheSnapshot {
@@ -76,7 +81,38 @@ function parseSourceUrl(source: string | undefined): string | undefined {
 	}
 }
 
-function resolvePromptSources(cachedMeta: CacheMeta | null): string[] {
+function sourceCacheKey(source: string): string {
+	try {
+		const parsed = new URL(source);
+		return `${parsed.origin}${parsed.pathname}`;
+	} catch {
+		return source.trim();
+	}
+}
+
+function isRetryableFsError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_FS_ERROR_CODES.has(code);
+}
+
+async function writeFileWithRetry(filePath: string, content: string): Promise<void> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < WRITE_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await writeFile(filePath, content, "utf-8");
+			return;
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt + 1 >= WRITE_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			lastError = error;
+			await sleep(WRITE_RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error("Failed to write prompt cache file");
+}
+
+function resolvePromptSources(): string[] {
 	const sources: string[] = [];
 	const seen = new Set<string>();
 
@@ -89,7 +125,6 @@ function resolvePromptSources(cachedMeta: CacheMeta | null): string[] {
 
 	add(process.env[CODEX_PROMPT_URL_OVERRIDE_ENV]);
 	add(process.env[LEGACY_OPENCODE_CODEX_URL_OVERRIDE_ENV]);
-	add(cachedMeta?.sourceUrl);
 	for (const source of DEFAULT_OPENCODE_CODEX_URLS) {
 		add(source);
 	}
@@ -122,11 +157,11 @@ async function saveDiskCache(
 		etag,
 		lastFetch: new Date().toISOString(),
 		lastChecked: Date.now(),
-		sourceUrl,
+		sourceKey: sourceCacheKey(sourceUrl),
 	};
 	await Promise.all([
-		writeFile(CACHE_FILE, content, "utf-8"),
-		writeFile(CACHE_META_FILE, JSON.stringify(meta, null, 2), "utf-8"),
+		writeFileWithRetry(CACHE_FILE, content),
+		writeFileWithRetry(CACHE_META_FILE, JSON.stringify(meta, null, 2)),
 	]);
 	return meta;
 }
@@ -135,14 +170,17 @@ async function refreshPrompt(
 	cachedMeta: CacheMeta | null,
 	cachedContent: string | null,
 ): Promise<string> {
-	const sources = resolvePromptSources(cachedMeta);
+	const sources = resolvePromptSources();
 	let lastFailure: string | null = null;
 
 	for (const sourceUrl of sources) {
 		const headers: Record<string, string> = {};
+		const currentSourceKey = sourceCacheKey(sourceUrl);
+		const cachedSourceKey = cachedMeta?.sourceKey ??
+			(cachedMeta?.sourceUrl ? sourceCacheKey(cachedMeta.sourceUrl) : undefined);
 		const canUseConditionalRequest =
 			!!cachedMeta?.etag &&
-			(!cachedMeta.sourceUrl || cachedMeta.sourceUrl === sourceUrl);
+			(!cachedSourceKey || cachedSourceKey === currentSourceKey);
 		if (canUseConditionalRequest) {
 			headers["If-None-Match"] = cachedMeta.etag;
 		}
@@ -164,15 +202,11 @@ async function refreshPrompt(
 				etag: cachedMeta?.etag ?? "",
 				lastFetch: cachedMeta?.lastFetch ?? new Date().toISOString(),
 				lastChecked: Date.now(),
-				sourceUrl,
+				sourceKey: currentSourceKey,
 			};
 			memoryCache = { content: cachedContent, meta: refreshedMeta };
 			await mkdir(CACHE_DIR, { recursive: true });
-			await writeFile(
-				CACHE_META_FILE,
-				JSON.stringify(refreshedMeta, null, 2),
-				"utf-8",
-			);
+			await writeFileWithRetry(CACHE_META_FILE, JSON.stringify(refreshedMeta, null, 2));
 			return cachedContent;
 		}
 

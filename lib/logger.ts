@@ -124,6 +124,7 @@ const CONSOLE_LOG_ENABLED = process.env.CODEX_CONSOLE_LOG === "1";
 const LOG_DIR = join(getCodexLogDir(), "codex-plugin");
 const LOG_DIR_RETRYABLE_ERRORS = new Set(["EBUSY", "EPERM"]);
 const LOG_DIR_MAX_ATTEMPTS = 3;
+const LOG_DIR_RETRY_BASE_DELAY_MS = 10;
 
 let client: LogClient | null = null;
 let currentCorrelationId: string | null = null;
@@ -264,6 +265,12 @@ function ensureLogDir(path: string): boolean {
 			const code = (error as NodeJS.ErrnoException).code ?? "";
 			const canRetry = LOG_DIR_RETRYABLE_ERRORS.has(code);
 			if (canRetry && attempt + 1 < LOG_DIR_MAX_ATTEMPTS) {
+				Atomics.wait(
+					new Int32Array(new SharedArrayBuffer(4)),
+					0,
+					0,
+					LOG_DIR_RETRY_BASE_DELAY_MS * 2 ** attempt,
+				);
 				continue;
 			}
 			logToConsole("warn", `[${PLUGIN_NAME}] Failed to ensure log directory`, {

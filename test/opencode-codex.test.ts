@@ -83,7 +83,7 @@ describe("opencode-codex", () => {
       );
     });
 
-    it("sends conditional request to cached source when sourceUrl is known", async () => {
+    it("does not trust cached sourceUrl for refetch ordering", async () => {
       const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
 
       vi.mocked(readFile)
@@ -103,12 +103,9 @@ describe("opencode-codex", () => {
       const result = await getOpenCodeCodexPrompt();
 
       expect(result).toBe("Cached content");
-      expect(mockFetch).toHaveBeenCalledWith(
-        "https://example.com/prompt.txt",
-        expect.objectContaining({
-          headers: { "If-None-Match": '"old-etag"' },
-        }),
-      );
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(String(mockFetch.mock.calls[0]?.[0])).toContain("raw.githubusercontent.com");
+      expect(mockFetch.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ headers: {} }));
     });
 
     it("falls back to next source when first source returns 404", async () => {
@@ -153,6 +150,32 @@ describe("opencode-codex", () => {
       expect(result).toBe("Prompt from env override");
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(mockFetch.mock.calls[0]?.[0]).toBe("https://example.com/custom-codex.txt");
+    });
+
+    it("does not persist raw override URL query parameters in cache metadata", async () => {
+      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+
+      vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
+      vi.stubEnv(
+        "CODEX_PROMPT_SOURCE_URL",
+        "https://example.com/custom-codex.txt?token=secret123&state=abc",
+      );
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve("Prompt from env override"),
+        headers: new Map([["etag", '"env-etag"']]),
+      });
+
+      await getOpenCodeCodexPrompt();
+
+      const metaCall = vi.mocked(writeFile).mock.calls.find((call) =>
+        typeof call[0] === "string" && call[0].includes("opencode-codex-meta.json")
+      );
+      const metaText = String(metaCall?.[1] ?? "");
+      expect(metaText).toContain("\"sourceKey\": \"https://example.com/custom-codex.txt\"");
+      expect(metaText).not.toContain("token=secret123");
+      expect(metaText).not.toContain("state=abc");
     });
 
     it("serves stale content immediately and refreshes cache in background", async () => {
@@ -212,6 +235,26 @@ describe("opencode-codex", () => {
         "Failed to fetch OpenCode codex.txt and no cache available"
       );
       expect(mockFetch.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it("retries transient EBUSY cache write errors and succeeds", async () => {
+      const { getOpenCodeCodexPrompt } = await import("../lib/prompts/opencode-codex.js");
+
+      vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
+      const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+      vi.mocked(writeFile)
+        .mockRejectedValueOnce(busy)
+        .mockResolvedValue(undefined);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve("Fresh prompt content"),
+        headers: new Map([["etag", '"abc123"']]),
+      });
+
+      const result = await getOpenCodeCodexPrompt();
+      expect(result).toBe("Fresh prompt content");
+      expect(writeFile).toHaveBeenCalled();
     });
 
     it("falls back to cache on non-OK response", async () => {

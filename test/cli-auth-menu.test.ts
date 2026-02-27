@@ -143,4 +143,50 @@ describe("CLI auth menu shortcuts", () => {
 
 		expect(result).toEqual({ mode: "manage", deleteAccountIndex: 0 });
 	});
+
+	it("returns deep-check mode when auth menu requests deep-check", async () => {
+		showAuthMenu.mockResolvedValueOnce({ type: "deep-check" });
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0 }]);
+
+		expect(result).toEqual({ mode: "deep-check" });
+	});
+
+	it("returns verify-flagged mode when auth menu requests verify-flagged", async () => {
+		showAuthMenu.mockResolvedValueOnce({ type: "verify-flagged" });
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0 }]);
+
+		expect(result).toEqual({ mode: "verify-flagged" });
+	});
+
+	it("returns cancel mode when auth menu requests cancel", async () => {
+		showAuthMenu.mockResolvedValueOnce({ type: "cancel" });
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0 }]);
+
+		expect(result).toEqual({ mode: "cancel" });
+	});
+
+	it("shows feedback when account action cannot resolve a valid source index", async () => {
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		showAuthMenu
+			.mockResolvedValueOnce({
+				type: "set-current-account",
+				account: { index: Number.NaN, email: "broken@example.com" },
+			})
+			.mockResolvedValueOnce({ type: "cancel" });
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0 }]);
+
+		expect(result).toEqual({ mode: "cancel" });
+		expect(consoleSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Unable to resolve saved account for action"),
+		);
+		consoleSpy.mockRestore();
+	});
 });

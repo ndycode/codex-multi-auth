@@ -24,6 +24,8 @@ const FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-flagged-accounts.json";
 const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
 const ACCOUNTS_BACKUP_SUFFIX = ".bak";
 const ACCOUNTS_WAL_SUFFIX = ".wal";
+const BACKUP_COPY_MAX_ATTEMPTS = 5;
+const BACKUP_COPY_BASE_DELAY_MS = 10;
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -667,7 +669,23 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	if (storageBackupEnabled && existsSync(path)) {
 		const backupPath = getAccountsBackupPath(path);
 		try {
-			await fs.copyFile(path, backupPath);
+			for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
+				try {
+					await fs.copyFile(path, backupPath);
+					break;
+				} catch (backupError) {
+					const code = (backupError as NodeJS.ErrnoException).code;
+					const canRetry = (code === "EPERM" || code === "EBUSY") &&
+						attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+					if (canRetry) {
+						await new Promise((resolve) =>
+							setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt)
+						);
+						continue;
+					}
+					throw backupError;
+				}
+			}
 		} catch (backupError) {
 			log.warn("Failed to create account storage backup", {
 				path,

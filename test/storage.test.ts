@@ -1146,6 +1146,38 @@ describe("storage", () => {
 
       statSpy.mockRestore();
     });
+
+    it("retries backup copyFile on transient EBUSY and succeeds", async () => {
+      const now = Date.now();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+      };
+
+      // Seed a primary file so backup creation path runs on next save.
+      await saveAccounts(storage);
+
+      const originalCopy = fs.copyFile.bind(fs);
+      let copyAttempts = 0;
+      const copySpy = vi.spyOn(fs, "copyFile").mockImplementation(async (src, dest) => {
+        copyAttempts += 1;
+        if (copyAttempts === 1) {
+          const err = new Error("EBUSY copy") as NodeJS.ErrnoException;
+          err.code = "EBUSY";
+          throw err;
+        }
+        return originalCopy(src as string, dest as string);
+      });
+
+      await saveAccounts({
+        ...storage,
+        accounts: [{ refreshToken: "token-next", addedAt: now, lastUsed: now }],
+      });
+
+      expect(copyAttempts).toBe(2);
+      copySpy.mockRestore();
+    });
   });
 
   describe("clearAccounts edge cases", () => {

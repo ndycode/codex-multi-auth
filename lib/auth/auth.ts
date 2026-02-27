@@ -11,6 +11,31 @@ export const TOKEN_URL = "https://auth.openai.com/oauth/token";
 export const REDIRECT_URI = "http://localhost:1455/auth/callback";
 export const SCOPE = "openid profile email offline_access";
 
+const OAUTH_SENSITIVE_QUERY_PARAMS = [
+	"state",
+	"code",
+	"code_challenge",
+	"code_verifier",
+] as const;
+
+/**
+ * Redacts sensitive OAuth query parameters for safe logging.
+ * Returns the original string when parsing fails.
+ */
+export function redactOAuthUrlForLog(rawUrl: string): string {
+	try {
+		const parsed = new URL(rawUrl);
+		for (const key of OAUTH_SENSITIVE_QUERY_PARAMS) {
+			if (parsed.searchParams.has(key)) {
+				parsed.searchParams.set(key, "<redacted>");
+			}
+		}
+		return parsed.toString();
+	} catch {
+		return rawUrl;
+	}
+}
+
 /**
  * Generate a random state value for OAuth flow
  * @returns Random hex string

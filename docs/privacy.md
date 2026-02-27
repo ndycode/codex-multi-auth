@@ -25,6 +25,7 @@
 | Codex CLI auth state | `~/.codex/accounts.json`, `~/.codex/auth.json` | Official Codex CLI account/auth files |
 
 Legacy compatibility files from older versions may still be read during migration-only compatibility checks.
+If `CODEX_MULTI_AUTH_DIR` or `CODEX_MULTI_AUTH_CONFIG_PATH` is set, these locations move to the configured override path.
 
 * * *
 
