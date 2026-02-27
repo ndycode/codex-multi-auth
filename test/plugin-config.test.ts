@@ -326,6 +326,82 @@ describe('Plugin Configuration', () => {
 			);
 		});
 
+		it('prefers primary CONFIG_PATH over CODEX_HOME legacy path when both exist', async () => {
+			const runWithCodexHome = async (codexHomePath: string) => {
+				vi.resetModules();
+				process.env.CODEX_HOME = codexHomePath;
+				const expectedLegacyPath = path.join(codexHomePath, 'codex-multi-auth-config.json');
+				const isWindowsStyle = codexHomePath.includes('\\');
+
+				const existsSyncMock = vi.fn((candidate: unknown) => {
+					if (typeof candidate !== 'string') return false;
+					const normalized = candidate.replace(/\\/g, '/');
+					return (
+						normalized.endsWith('/multi-auth/config.json') ||
+						candidate === expectedLegacyPath
+					);
+				});
+				const readFileSyncMock = vi.fn((filePath: unknown) => {
+					if (typeof filePath !== 'string') throw new Error('ENOENT');
+					const normalized = filePath.replace(/\\/g, '/');
+					if (normalized.endsWith('/multi-auth/config.json')) {
+						return JSON.stringify({ codexMode: true });
+					}
+					if (filePath === expectedLegacyPath) {
+						return JSON.stringify({ codexMode: false });
+					}
+					throw new Error('ENOENT');
+				});
+				const logWarnMock = vi.fn();
+
+				vi.doMock('node:fs', async () => {
+					const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+					return {
+						...actual,
+						existsSync: existsSyncMock,
+						readFileSync: readFileSyncMock,
+					};
+				});
+				vi.doMock('../lib/logger.js', async () => {
+					const actual = await vi.importActual<typeof import('../lib/logger.js')>('../lib/logger.js');
+					return {
+						...actual,
+						logWarn: logWarnMock,
+					};
+				});
+
+				try {
+					const cfg = await import('../lib/config.js');
+					const config = cfg.loadPluginConfig();
+					return { config, expectedLegacyPath, readFileSyncMock, logWarnMock, isWindowsStyle };
+				} finally {
+					vi.doUnmock('node:fs');
+					vi.doUnmock('../lib/logger.js');
+				}
+			};
+
+			const posixResult = await runWithCodexHome(path.join(process.cwd(), '.tmp-codex-home'));
+			expect(posixResult.config.codexMode).toBe(true);
+			expect(posixResult.readFileSyncMock).toHaveBeenCalledWith(
+				expect.stringMatching(/multi-auth[\\/]config\.json$/),
+				'utf-8',
+			);
+			expect(posixResult.logWarnMock).not.toHaveBeenCalledWith(
+				expect.stringContaining(posixResult.expectedLegacyPath),
+			);
+
+			const windowsResult = await runWithCodexHome(String.raw`C:\Users\test\.codex-home`);
+			expect(windowsResult.isWindowsStyle).toBe(true);
+			expect(windowsResult.config.codexMode).toBe(true);
+			expect(windowsResult.readFileSyncMock).toHaveBeenCalledWith(
+				expect.stringMatching(/multi-auth[\\/]config\.json$/),
+				'utf-8',
+			);
+			expect(windowsResult.logWarnMock).not.toHaveBeenCalledWith(
+				expect.stringContaining(windowsResult.expectedLegacyPath),
+			);
+		});
+
 		it('should merge user config with defaults', () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue(JSON.stringify({}));

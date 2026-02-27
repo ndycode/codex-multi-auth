@@ -87,6 +87,7 @@ describe("Storage Paths Module", () => {
 		it("prefers Windows fallback with accounts when primary only has non-account signals", () => {
 			const originalHome = process.env.HOME;
 			const originalUserProfile = process.env.USERPROFILE;
+			const originalCodexHome = process.env.CODEX_HOME;
 			process.env.HOME = "C:\\Users\\test";
 			process.env.USERPROFILE = "C:\\Users\\test";
 			process.env.CODEX_HOME = "C:\\Users\\test\\.codex";
@@ -114,6 +115,8 @@ describe("Storage Paths Module", () => {
 				else process.env.HOME = originalHome;
 				if (originalUserProfile === undefined) delete process.env.USERPROFILE;
 				else process.env.USERPROFILE = originalUserProfile;
+				if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+				else process.env.CODEX_HOME = originalCodexHome;
 			}
 		});
 
