@@ -42,6 +42,8 @@
     "test:model-matrix": "node scripts/test-model-matrix.js",
     "test:model-matrix:smoke": "node scripts/test-model-matrix.js --smoke",
     "test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
+    "clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
+    "clean:repo:check": "node scripts/repo-hygiene.js check",
     "bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
     "bench:edit-formats:smoke": "node scripts/benchmark-edit-formats.mjs --smoke --preset=codex-core",
     "bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
