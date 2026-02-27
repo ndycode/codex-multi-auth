@@ -1,93 +1,122 @@
 # TUI Parity Checklist
 
-Checklist for auth dashboard behavior and keyboard ergonomics.
+Checklist for keeping the auth dashboard consistent, beginner-friendly, and predictable.
 
-## Target UX
+* * *
 
-`codex auth login` should open one interactive dashboard with clear sections and beginner defaults.
+## UX Target
 
-## Menu Structure
+1. New users can complete add/check/switch without docs.
+2. Focus and key behavior are stable across all menus.
+3. Action feedback is clear and non-duplicative.
+4. Colors and labels are consistent across screens.
 
-Expected top-level sections in order:
+* * *
 
-1. `Quick Start`
-2. `Advanced Checks`
-3. `Accounts`
-4. `Danger zone`
+## Main Dashboard Structure
 
-Expected core actions:
+Required sections:
 
-- `Add account (OAuth login)`
-- `Quick check account health (recommended)`
-- `Forecast best account`
-- `Auto-fix common issues (safe mode)`
-- `Verify all accounts (full refresh test)`
-- `Verify flagged accounts`
-- `Delete all accounts`
+1. Quick Actions
+2. Advanced Checks
+3. Saved Accounts
+4. Danger Zone
 
-## Account Row Expectations
+Required action set:
 
-Each row should show:
+- Add New Account
+- Run Health Check
+- Pick Best Account
+- Auto-Repair Issues
+- Settings
+- Refresh/Verify problem accounts
 
-- numeric index
-- account email/label
-- optional `[current]`
-- status badge (`active`, `ok`, `rate-limited`, `cooldown`, `disabled`, `flagged`, `error`, `unknown`)
-- usage hint (`used today`, `used yesterday`, etc.)
+* * *
+
+## Account Row Behavior
+
+Each row should support:
+
+- account identity (email/name)
+- optional status/current badges
+- last-used summary
+- quota summary bars (5h/7d)
+- optional cooldown text
+- clear selected-row highlight
+
+No duplicate focus indicators should be rendered.
+
+* * *
 
 ## Keyboard Behavior
 
-Global (auth dashboard):
+Main menu minimum:
 
-- `Up/Down`: move
-- `Enter`: confirm
-- `Esc`/`Q`: cancel/back
-- `H`/`?`: toggle help text
-- `/`: search prompt
-- `1-9`: set selected account as current directly
+- `Up/Down`
+- `Enter`
+- `Q`
+- `/` search
+- `?` or `H` help
+- `1-9` quick switch
 
-Action hotkeys (auth dashboard):
+Account detail minimum:
 
-- `A`: add account
-- `C`: quick check
-- `P`: forecast
-- `X`: auto-fix
-- `V`: verify all
-- `G` or `F`: verify flagged
+- `S` set current
+- `R` refresh login
+- `E` enable/disable
+- `D` delete
+- `Q` back
 
-Account detail hotkeys (account screen):
+Settings screens:
 
-- `S`: set current
-- `R`: refresh account
-- `E`: enable/disable
-- `D`: delete account
+- stable focus after toggle
+- no cursor reset on simple update
+- save/back behavior deterministic
 
-## Safety and Confirmation
+* * *
 
-- Deleting one account requires confirm.
-- Refreshing one account requires confirm.
-- `Delete all accounts` requires typed confirmation: `DELETE`.
-- Ctrl+C should exit cleanly and restore terminal state.
+## Auth Flow Parity
 
-## Data and Runtime Parity
+Add-account flow must support:
 
-- Any account mutation writes storage immediately.
-- Active index and per-family indices stay valid after changes.
-- Cache/manager reload occurs after storage mutation.
-- Live account sync should keep long-running sessions updated.
+1. Browser-first OAuth.
+2. Manual/incognito callback paste flow.
+3. Safe cancel path returning to menu.
+4. No unhandled abort/CTRL+C stack traces in normal cancel behavior.
+
+* * *
+
+## Result Screen Quality
+
+1. No duplicated "Press Enter" lines.
+2. No stale text remnants after transitions.
+3. Auto-return messaging should not block user control.
+4. Errors should be normalized and readable.
+
+* * *
+
+## Data/Runtime Parity
+
+1. Displayed account state matches storage and active selection.
+2. Smart sort matches configured mode.
+3. Quick-switch follows configured row-index policy.
+4. Auto-fetch status is visible when running.
+
+* * *
 
 ## Release Checklist
 
-- `npm run typecheck`
-- `npm test`
-- Manual smoke:
-  - login/add account
-  - set current via number hotkey
-  - run check/forecast/fix from hotkeys
-  - enable/disable and verify rotation impact
-  - delete-all confirmation gate works
+Before release:
+
+1. Walk all menu paths manually.
+2. Verify hotkeys in terminal variants.
+3. Verify color/focus consistency across all result screens.
+4. Verify settings persist and reload correctly.
+5. Verify command aliases still route correctly.
+
+* * *
 
 ## Non-Goals
 
-- Reintroducing provider-specific OpenCode auth menus.
-- Vim-style keybinding complexity.
+- Perfect clone of official Codex UI internals.
+- Terminal feature parity beyond supported input/color modes.

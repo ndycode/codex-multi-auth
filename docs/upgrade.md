@@ -1,86 +1,103 @@
 # Upgrade Guide
 
-Migration notes for users moving from older OpenCode-first flows to the current Codex CLI workflow.
+Migrate safely from older command/path layouts to the current Codex-first workflow.
+
+* * *
 
 ## What Changed
 
-| Area | Old | New |
+| Area | Older flow | Current flow |
 | --- | --- | --- |
-| Primary auth workflow | `opencode auth login` | `codex auth login` |
-| Account listing | mixed OpenCode/plugin menu flows | `codex auth list` |
-| Active account switch | manual or mixed | `codex auth switch <index>` |
-| Plugin runtime path | `~/.opencode/openai-codex-auth-config.json` (legacy) | `~/.opencode/codex-multi-auth-config.json` |
-| Account storage path | legacy mixed OpenCode/plugin files | `~/.opencode/openai-codex-accounts.json` |
+| Primary auth command | mixed legacy command forms | `codex auth ...` |
+| Main account menu | mixed command/UI paths | `codex auth login` dashboard |
+| Settings location | split config files | unified `~/.codex/multi-auth/settings.json` |
+| Canonical accounts path | mixed legacy storage | `~/.codex/multi-auth/openai-codex-accounts.json` |
 
-## Path Migration
+Compatibility note:
 
-New primary paths:
+- Legacy files are still read when discovered for migration compatibility.
 
-- `~/.opencode/codex-multi-auth-config.json`
-- `~/.opencode/openai-codex-accounts.json`
-- `~/.opencode/projects/<project-key>/openai-codex-accounts.json`
+* * *
 
-Legacy paths are still checked for compatibility during migration:
+## Current Canonical Paths
 
-- `~/.opencode/openai-codex-auth-config.json`
+- `~/.codex/multi-auth/settings.json`
+- `~/.codex/multi-auth/openai-codex-accounts.json`
+- `~/.codex/multi-auth/openai-codex-flagged-accounts.json`
+- `~/.codex/multi-auth/quota-cache.json`
+
+Legacy compatibility paths may still appear in older environments and are migrated automatically.
+
+* * *
 
 ## Recommended Migration Sequence
 
-1. Install/refresh Codex CLI:
+1. Refresh Codex CLI and this project:
 
 ```bash
 npm install -g @openai/codex
-```
-
-1. From repository source, rebuild and link latest plugin CLI:
-
-```bash
 npm install
 npm run build
 npm link
 ```
 
-1. Re-authenticate account pool:
+2. Confirm command routing:
+
+```bash
+codex --version
+codex auth status
+```
+
+3. Re-login and rebuild account pool:
 
 ```bash
 codex auth login
+codex auth check
 ```
 
-1. Validate state:
+4. Validate active behavior:
 
 ```bash
 codex auth list
-codex auth doctor --fix
+codex auth forecast --live
 ```
 
-1. Refresh OpenCode config with current template:
+5. (Optional) refresh plugin-host config:
 
 ```bash
 codex-multi-auth --modern
 ```
 
-## OpenCode Config Check
-
-Expected plugin entry in `~/.config/opencode/opencode.json`:
-
-```json
-{
-  "plugin": ["codex-multi-auth"]
-}
-```
+* * *
 
 ## Post-Upgrade Verification
 
 ```bash
-codex auth forecast --live
-codex auth report --json
-opencode run "hello" --model=openai/gpt-5.1 --variant=medium
+codex auth report --live --json
+codex auth doctor --fix --dry-run
 ```
 
-## Troubleshooting
+Optional plugin-host smoke test (only if you use host mode):
 
-If migration looks inconsistent:
+```bash
+<run your plugin-host smoke command in your host environment>
+```
 
-- run `codex auth doctor --json`
-- compare with [troubleshooting.md](troubleshooting.md)
+* * *
 
+## Common Upgrade Problems
+
+| Problem | Action |
+| --- | --- |
+| `codex auth` not found | `where codex`, ensure wrapper path is active |
+| Old command habits | Use `codex auth ...` as canonical workflow |
+| Accounts look stale | `codex auth doctor --fix` then re-login impacted accounts |
+| Mixed path confusion | Check [reference/storage-paths.md](reference/storage-paths.md) |
+
+* * *
+
+## Related
+
+- [getting-started.md](getting-started.md)
+- [troubleshooting.md](troubleshooting.md)
+- [reference/storage-paths.md](reference/storage-paths.md)

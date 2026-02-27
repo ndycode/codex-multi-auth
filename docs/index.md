@@ -1,37 +1,49 @@
 # codex-multi-auth Docs
 
-Codex CLI-first multi-account OAuth documentation.
+Codex CLI-first multi-account OAuth docs in one place.
 
-## Start Here
+* * *
 
-1. [getting-started.md](getting-started.md)
-2. Run `codex auth login`
-3. Verify with `codex auth list`
-4. Continue with [configuration.md](configuration.md)
-
-## Quick Commands
+## Quick Start
 
 ```bash
 codex auth login
 codex auth list
-codex auth switch 2
+codex auth check
+```
+
+Then continue with:
+
+- [Getting Started](getting-started.md)
+- [Configuration](configuration.md)
+- [Troubleshooting](troubleshooting.md)
+
+* * *
+
+## Quick Commands
+
+```bash
 codex auth forecast --live
 codex auth fix --dry-run
 codex auth doctor --fix
+codex auth report --live --json
 ```
 
-## Docs Chart
+* * *
 
-| Topic | Link |
-| --- | --- |
-| Full docs portal | [README.md](README.md) |
-| Upgrade notes | [upgrade.md](upgrade.md) |
-| Configuration | [configuration.md](configuration.md) |
-| Troubleshooting | [troubleshooting.md](troubleshooting.md) |
-| Privacy | [privacy.md](privacy.md) |
-| Development internals | [development/](development/) |
+## Documentation Sections
+
+- User guides: [README.md](README.md)
+- Full features list: [features.md](features.md)
+- Command reference: [reference/commands.md](reference/commands.md)
+- Settings reference: [reference/settings.md](reference/settings.md)
+- Storage paths: [reference/storage-paths.md](reference/storage-paths.md)
+- Development internals: [development/](development/)
+
+* * *
 
 ## Notes
 
-- Browser pop-up during `codex auth login` is expected.
-- `codex` forwards non-`auth` commands to the official `@openai/codex` CLI.
+- `codex auth ...` is the canonical account-management flow.
+- Legacy path/command notes live in [upgrade.md](upgrade.md).
+- Non-auth `codex` commands are forwarded to the official `@openai/codex` CLI by the wrapper.

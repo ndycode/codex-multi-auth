@@ -1,126 +1,153 @@
 # Configuration
 
-This page covers both OpenCode config and plugin runtime config.
+Configure behavior from one settings root and optional environment overrides.
+
+* * *
 
 ## Config Files
 
 | Layer | Path | Purpose |
 | --- | --- | --- |
-| OpenCode global config | `~/.config/opencode/opencode.json` | Plugin registration and provider options |
-| OpenCode project override | `<project>/.opencode/opencode.json` | Per-project model behavior |
-| Plugin runtime config | `~/.opencode/codex-multi-auth-config.json` | Account rotation, TUI, resilience tuning |
+| Unified settings | `~/.codex/multi-auth/settings.json` | Dashboard display + backend `pluginConfig` |
+| Optional config override file | `CODEX_MULTI_AUTH_CONFIG_PATH=<path>` | External config input compatibility |
 
-Legacy plugin config fallback path still loads if present:
+If `CODEX_MULTI_AUTH_DIR` is set, replace `~/.codex/multi-auth` with that custom root.
 
-- `~/.opencode/openai-codex-auth-config.json`
+* * *
 
-## Minimal OpenCode Config
+## Unified Settings Structure
+
+`settings.json` stores two top-level blocks:
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["codex-multi-auth"],
-  "provider": {
-    "openai": {
-      "options": {
-        "store": false,
-        "reasoningEffort": "medium",
-        "reasoningSummary": "auto",
-        "textVerbosity": "medium",
-        "include": ["reasoning.encrypted_content"]
-      }
-    }
+  "version": 1,
+  "dashboardDisplaySettings": {
+    "menuAutoFetchLimits": true,
+    "menuSortEnabled": true,
+    "menuSortMode": "ready-first",
+    "menuShowQuotaSummary": true,
+    "menuShowQuotaCooldown": true,
+    "menuLayoutMode": "compact-details"
+  },
+  "pluginConfig": {
+    "codexMode": true,
+    "liveAccountSync": true,
+    "sessionAffinity": true,
+    "proactiveRefreshGuardian": true,
+    "preemptiveQuotaEnabled": true,
+    "fetchTimeoutMs": 60000,
+    "streamStallTimeoutMs": 45000
   }
 }
 ```
 
-## Recommended Plugin Runtime Config
+* * *
 
-`~/.opencode/codex-multi-auth-config.json`:
+## Recommended Presets
+
+### Stable Default
 
 ```json
 {
-  "codexMode": true,
-  "codexTuiV2": true,
-  "codexTuiColorProfile": "truecolor",
-  "codexTuiGlyphMode": "ascii",
-  "fastSession": false,
-  "fastSessionStrategy": "hybrid",
-  "retryAllAccountsRateLimited": true,
-  "unsupportedCodexPolicy": "strict",
-  "perProjectAccounts": true,
-  "liveAccountSync": true,
-  "sessionAffinity": true,
-  "proactiveRefreshGuardian": true,
-  "fetchTimeoutMs": 60000,
-  "streamStallTimeoutMs": 45000
+  "pluginConfig": {
+    "liveAccountSync": true,
+    "sessionAffinity": true,
+    "proactiveRefreshGuardian": true,
+    "preemptiveQuotaEnabled": true,
+    "preemptiveQuotaRemainingPercent5h": 5,
+    "preemptiveQuotaRemainingPercent7d": 5,
+    "preemptiveQuotaMaxDeferralMs": 7200000,
+    "fetchTimeoutMs": 60000,
+    "streamStallTimeoutMs": 45000,
+    "networkErrorCooldownMs": 6000,
+    "serverErrorCooldownMs": 4000
+  }
 }
 ```
+
+### More Conservative
+
+```json
+{
+  "pluginConfig": {
+    "preemptiveQuotaRemainingPercent5h": 10,
+    "preemptiveQuotaRemainingPercent7d": 10,
+    "fetchTimeoutMs": 90000,
+    "streamStallTimeoutMs": 60000,
+    "networkErrorCooldownMs": 8000,
+    "serverErrorCooldownMs": 6000
+  }
+}
+```
+
+### More Aggressive
+
+```json
+{
+  "pluginConfig": {
+    "sessionAffinity": false,
+    "preemptiveQuotaRemainingPercent5h": 3,
+    "preemptiveQuotaRemainingPercent7d": 3,
+    "preemptiveQuotaMaxDeferralMs": 1800000,
+    "fetchTimeoutMs": 45000,
+    "streamStallTimeoutMs": 25000,
+    "networkErrorCooldownMs": 3000,
+    "serverErrorCooldownMs": 2000
+  }
+}
+```
+
+* * *
 
 ## High-Impact Keys
 
 | Key | Default | Why it matters |
 | --- | --- | --- |
-| `codexMode` | `true` | Replaces generic system prompts with Codex bridge prompts |
-| `codexTuiV2` | `true` | Enables highlighted auth dashboard UI |
-| `fastSession` | `false` | Reduces latency by trimming stateless payloads |
-| `fastSessionStrategy` | `hybrid` | `hybrid` keeps safer behavior than `always` |
-| `retryAllAccountsRateLimited` | `true` | Automatically rotates/waits across account pool |
-| `unsupportedCodexPolicy` | `strict` | `fallback` enables model downgrade chain |
-| `perProjectAccounts` | `true` | Per-project account isolation |
-| `liveAccountSync` | `true` | Reloads account manager without restart on file changes |
-| `sessionAffinity` | `true` | Keeps sessions on stable account when possible |
-| `proactiveRefreshGuardian` | `true` | Background token refresh before expiry |
-| `fetchTimeoutMs` | `60000` | Network hard timeout |
-| `streamStallTimeoutMs` | `45000` | Stream inactivity timeout |
+| `menuAutoFetchLimits` | `true` | Refreshes quota limits in menu automatically |
+| `menuSortEnabled` | `true` | Enables readiness-based account ordering |
+| `menuSortMode` | `ready-first` | Puts more available accounts higher |
+| `liveAccountSync` | `true` | Picks up account file updates without restart |
+| `sessionAffinity` | `true` | Keeps same conversation on same account when healthy |
+| `proactiveRefreshGuardian` | `true` | Refreshes expiring tokens in background |
+| `preemptiveQuotaEnabled` | `true` | Defers before quota hard exhaustion |
+| `parallelProbing` | `false` | Enables parallel health probes |
+| `fetchTimeoutMs` | `60000` | Total request timeout |
+| `streamStallTimeoutMs` | `45000` | Stream inactivity failover trigger |
+
+* * *
 
 ## Environment Variable Overrides
 
 | Variable | Effect |
 | --- | --- |
+| `CODEX_MULTI_AUTH_DIR` | Override settings/accounts root directory |
+| `CODEX_MULTI_AUTH_CONFIG_PATH` | Read config from alternate file |
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
-| `CODEX_TUI_COLOR_PROFILE=truecolor&#124;ansi256&#124;ansi16` | TUI color profile |
-| `CODEX_TUI_GLYPHS=ascii&#124;unicode&#124;auto` | TUI glyph style |
-| `CODEX_AUTH_FAST_SESSION=0/1` | Fast-session toggle |
-| `CODEX_AUTH_FAST_SESSION_STRATEGY=hybrid&#124;always` | Fast-session policy |
-| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=strict&#124;fallback` | Unsupported model policy |
-| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI=0/1` | Disable/enable Codex CLI state sync |
-| `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Fetch timeout override |
-| `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
-| `DEBUG_CODEX_PLUGIN=1` | Debug logs |
-| `ENABLE_PLUGIN_REQUEST_LOGGING=1` | Request logging |
-| `CODEX_PLUGIN_LOG_BODIES=1` | Raw payload logging (sensitive) |
+| `CODEX_TUI_COLOR_PROFILE=truecolor\|ansi256\|ansi16` | TUI color profile |
+| `CODEX_TUI_GLYPHS=ascii\|unicode\|auto` | TUI glyph style |
+| `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Override request timeout |
+| `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Override stream stall timeout |
+| `DEBUG_CODEX_PLUGIN=1` | Enable debug logging |
+| `ENABLE_PLUGIN_REQUEST_LOGGING=1` | Enable request metadata logs |
+| `CODEX_PLUGIN_LOG_BODIES=1` | Log raw payload bodies (sensitive) |
 
-## Storage Paths
+* * *
 
-| Data | Path |
-| --- | --- |
-| Accounts (global) | `~/.opencode/openai-codex-accounts.json` |
-| Accounts (per-project) | `~/.opencode/projects/<project-key>/openai-codex-accounts.json` |
-| Flagged accounts | `~/.opencode/openai-codex-flagged-accounts.json` |
-| Logs | `~/.opencode/logs/codex-plugin/` |
-| Cache | `~/.opencode/cache/` |
-
-## Validation Commands
+## Validate Current Configuration
 
 ```bash
+codex auth status
 codex auth list
 codex auth report --json
-codex auth doctor --fix --dry-run
 ```
 
-## Upstream Auth-Merge Note
-
-The OpenCode upstream proposal in [OPENCODE_PR_PROPOSAL.md](OPENCODE_PR_PROPOSAL.md) recommends this policy when multiple plugins register auth methods for the same provider:
-
-- deterministic plugin order by plugin name (case-insensitive sort)
-- primary loader from sorted index `0`
-- merged auth method list deduped by `id + label`
+* * *
 
 ## Related
 
-- [getting-started.md](getting-started.md)
-- [troubleshooting.md](troubleshooting.md)
+- [reference/settings.md](reference/settings.md)
+- [reference/storage-paths.md](reference/storage-paths.md)
 - [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
-
+- [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md)

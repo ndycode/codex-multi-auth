@@ -1,33 +1,42 @@
 # Privacy and Data Handling
 
-`codex-multi-auth` is local-first by design.
+`codex-multi-auth` is local-first: account/session data is stored on your machine.
+
+* * *
 
 ## Telemetry
 
-The plugin does not run a custom analytics pipeline.
+- No custom hosted analytics pipeline in this project.
+- No project-owned remote database.
+- Network calls only go to required OAuth/backend/update endpoints.
 
-- No external telemetry service owned by this project.
-- No project-hosted remote database.
+* * *
 
-## Local Files
+## Local Files (Current Canonical)
 
-| Data | Path | Notes |
+| Data | Path | Why it exists |
 | --- | --- | --- |
-| Plugin config | `~/.opencode/codex-multi-auth-config.json` | Runtime behavior toggles |
-| Global accounts | `~/.opencode/openai-codex-accounts.json` | Main account pool |
-| Per-project accounts | `~/.opencode/projects/<project-key>/openai-codex-accounts.json` | Optional project isolation |
-| Flagged accounts | `~/.opencode/openai-codex-flagged-accounts.json` | Accounts with hard failures |
-| Logs | `~/.opencode/logs/codex-plugin/` | Created when logging is enabled |
-| Prompt cache | `~/.opencode/cache/` | Cached instructions and metadata |
-| Codex CLI account state | `~/.codex/accounts.json` and `~/.codex/auth.json` | Read/sync integration paths |
+| Unified settings | `~/.codex/multi-auth/settings.json` | Dashboard + backend behavior settings |
+| Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` | Saved account pool |
+| Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` | Accounts with hard auth failures |
+| Quota cache | `~/.codex/multi-auth/quota-cache.json` | Cached 5h/7d limit snapshots |
+| Logs | `~/.codex/multi-auth/logs/codex-plugin/` | Optional diagnostic logs |
+| Prompt/cache files | `~/.codex/multi-auth/cache/` | Cached prompt/template metadata |
+| Codex CLI auth state | `~/.codex/accounts.json`, `~/.codex/auth.json` | Official Codex CLI account/auth files |
+
+Legacy compatibility files from older versions may still be read during migration-only compatibility checks.
+
+* * *
 
 ## Network Destinations
 
-This plugin communicates with:
+This project communicates with:
 
 - OpenAI OAuth endpoints (`auth.openai.com`)
-- Codex/ChatGPT backend endpoints (OpenAI APIs)
-- GitHub releases/raw endpoints for prompt template cache refresh
+- OpenAI Codex/ChatGPT backend endpoints
+- GitHub raw/releases endpoints for prompt-template sync cache
+
+* * *
 
 ## Sensitive Logging Warning
 
@@ -37,37 +46,47 @@ If you enable raw body logging:
 CODEX_PLUGIN_LOG_BODIES=1
 ```
 
-prompt/response payload content may be written to local logs. Treat logs as sensitive data.
+prompt/response payload text can be written to local logs. Treat those logs as sensitive.
+
+* * *
 
 ## Data Cleanup
 
-Linux/macOS:
+Bash:
 
 ```bash
-rm -f ~/.opencode/codex-multi-auth-config.json
-rm -f ~/.opencode/openai-codex-accounts.json ~/.opencode/openai-codex-flagged-accounts.json ~/.opencode/openai-codex-auth-config.json
-find ~/.opencode/projects -name openai-codex-accounts.json -delete 2>/dev/null
-rm -rf ~/.opencode/logs/codex-plugin
+rm -f ~/.codex/multi-auth/settings.json
+rm -f ~/.codex/multi-auth/openai-codex-accounts.json
+rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
+rm -f ~/.codex/multi-auth/quota-cache.json
+rm -rf ~/.codex/multi-auth/logs/codex-plugin
+rm -rf ~/.codex/multi-auth/cache
 ```
 
-Windows PowerShell:
+PowerShell:
 
 ```powershell
-Remove-Item "$HOME\.opencode\codex-multi-auth-config.json" -Force -ErrorAction SilentlyContinue
-Remove-Item "$HOME\.opencode\openai-codex-accounts.json","$HOME\.opencode\openai-codex-flagged-accounts.json","$HOME\.opencode\openai-codex-auth-config.json" -Force -ErrorAction SilentlyContinue
-Get-ChildItem "$HOME\.opencode\projects" -Filter "openai-codex-accounts.json" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-Remove-Item "$HOME\.opencode\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\settings.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
 ```
+
+* * *
 
 ## Policy Responsibility
 
-Usage must follow OpenAI policy documents:
+Usage must comply with OpenAI policy documents:
 
 - https://openai.com/policies/terms-of-use/
 - https://openai.com/policies/privacy-policy/
+
+* * *
 
 ## Related
 
 - [configuration.md](configuration.md)
 - [troubleshooting.md](troubleshooting.md)
-
+- [reference/storage-paths.md](reference/storage-paths.md)

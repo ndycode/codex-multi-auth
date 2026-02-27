@@ -1,13 +1,17 @@
 # Architecture
 
-Technical architecture for `codex-multi-auth`.
+Runtime architecture for Codex CLI-first multi-account OAuth with optional plugin-host integration.
+
+* * *
 
 ## Design Goals
 
-- Codex CLI-first user experience (`codex auth ...`).
-- Multi-account OAuth with safe rotation and recovery.
-- OpenCode compatibility without changing OpenCode core.
-- Stateless Codex backend request handling (`store: false`).
+1. Keep account management simple for end users (`codex auth ...`).
+2. Preserve resilient request routing across multiple accounts.
+3. Support plugin-host request flow without patching host core.
+4. Keep stateless backend request compatibility (`store: false`).
+
+* * *
 
 ## System Diagram
 
@@ -16,93 +20,99 @@ Terminal user
   |
   | codex auth ...
   v
-scripts/codex.js (CLI shim)
-  |- handles supported auth subcommands locally
+scripts/codex.js
+  |- handles auth subcommands locally (codex-manager)
   |- forwards all other codex commands to @openai/codex
   v
 lib/codex-manager.ts
-  |- OAuth flow + account menu + fix/doctor/report
-  |- writes ~/.opencode/openai-codex-accounts.json
-  |- syncs active account to ~/.codex/accounts.json
+  |- oauth login flow + dashboard + check/forecast/fix/doctor/report
+  |- reads/writes ~/.codex/multi-auth/*
+  |- syncs active account to Codex CLI state files
 
-OpenCode runtime (optional)
+Plugin-host runtime (optional)
   |
   v
 index.ts (plugin entry)
-  |- loader(auth + provider config)
-  |- request transform + retry + rotation
-  |- live account sync + session affinity + refresh guardian
+  |- account loading + live sync + session affinity + proactive refresh
+  |- request transformation + retry + rotation + failover
   v
-OpenAI Codex/ChatGPT backend
+OpenAI OAuth + Codex/ChatGPT backend
 ```
+
+* * *
 
 ## Core Subsystems
 
-| Subsystem | Files | Responsibility |
+| Subsystem | Key files | Responsibility |
 | --- | --- | --- |
-| CLI wrapper | `scripts/codex.js`, `scripts/codex-multi-auth.js` | Route auth commands to plugin CLI, forward others to official Codex CLI |
-| Auth and OAuth | `lib/auth/auth.ts`, `lib/auth/server.ts` | PKCE flow, callback server on `localhost:1455`, token exchange/refresh |
-| Account storage | `lib/storage.ts`, `lib/storage/paths.ts` | Atomic write, backup/WAL recovery, dedupe, project-scoped paths |
-| Account selection | `lib/accounts.ts`, `lib/rotation.ts`, `lib/forecast.ts` | Health-aware selection, cooldowns, forecast scoring |
-| Request transform | `lib/request/request-transformer.ts` | Model normalization, OpenCode prompt bridge, ID filtering, fast-session tuning |
-| Fetch and retry | `lib/request/fetch-helpers.ts`, `lib/request/rate-limit-backoff.ts` | Header shaping, error mapping, account retry policies |
-| Runtime resilience | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts` | No-restart storage reloads, sticky sessions, proactive token refresh |
-| TUI/auth menu | `lib/ui/*`, `lib/cli.ts` | Beginner-focused interactive auth dashboard and shortcuts |
+| CLI wrapper | `scripts/codex.js`, `scripts/codex-multi-auth.js` | Command routing and alias normalization |
+| Auth flow | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts` | PKCE OAuth flow, callback handling, browser/manual auth path |
+| Account manager | `lib/codex-manager.ts`, `lib/accounts.ts` | Dashboard actions, account selection, health operations |
+| Storage/runtime paths | `lib/storage.ts`, `lib/storage/paths.ts`, `lib/runtime-paths.ts` | Account/settings persistence, migration, path resolution |
+| Unified settings | `lib/unified-settings.ts`, `lib/dashboard-settings.ts`, `lib/config.ts` | Shared settings persistence + runtime config defaults/overrides |
+| Forecast + quota | `lib/forecast.ts`, `lib/quota-probe.ts`, `lib/quota-cache.ts` | Readiness scoring, live quota probe, cached quota view |
+| Resilience runtime | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts`, `lib/refresh-lease.ts` | No-restart sync, sticky sessions, proactive refresh, cross-process refresh dedupe |
+| Failure handling | `lib/request/failure-policy.ts`, `lib/request/stream-failover.ts`, `lib/request/rate-limit-backoff.ts` | Controlled retry, stream failover, cooldown/backoff |
+| Capability/entitlement | `lib/capability-policy.ts`, `lib/entitlement-cache.ts`, `lib/preemptive-quota-scheduler.ts` | Unsupported-model suppression, policy scoring, quota deferral |
+| Plugin-host request bridge | `index.ts`, `lib/request/fetch-helpers.ts`, `lib/request/request-transformer.ts` | Request shaping, headers, response handling, retry/rotation |
 
-## Request Pipeline (OpenCode)
+* * *
 
-`index.ts` delegates request shaping to `transformRequestBody()`.
+## Request Pipeline (Plugin Host)
 
-1. Read provider config and plugin config.
-2. Normalize model aliases to canonical API model.
-3. Merge global + model + variant options.
-4. Force Codex backend invariants:
-   - `store: false`
+High-level flow:
+
+1. Load runtime config and account manager.
+2. Normalize incoming model/provider request shape.
+3. Enforce Codex backend invariants:
    - `stream: true`
-5. Remove unsupported `item_reference` input items.
-6. Strip all input IDs (stateless mode).
-7. Apply Codex bridge prompts when `codexMode=true`.
-8. Normalize orphan tool outputs to avoid API errors.
-9. Inject `reasoning.encrypted_content` include by default.
-10. Send transformed payload to Codex backend.
+   - `store: false`
+   - include `reasoning.encrypted_content`
+4. Strip unsupported payload forms for stateless behavior.
+5. Select candidate account with health + quota + affinity logic.
+6. Execute request with timeout/retry/failover policy.
+7. Update cooldown/rate-limit/session-affinity state.
+8. Persist updated account/cache state.
 
-## Account Runtime Flow
-
-| Event | Behavior |
-| --- | --- |
-| Login | Add/update account by token/account/email keys |
-| Switch | Set global and per-family active indices |
-| Rate limit | Penalize account, may rotate or wait per policy |
-| Hard refresh failure | Account may be disabled by fix/doctor logic |
-| Storage file change | Live account sync reloads manager without restart |
-| Session reuse | Session affinity tries to keep stable account choice |
+* * *
 
 ## Storage Model
 
+Canonical root: `~/.codex/multi-auth`.
+
 | File | Purpose |
 | --- | --- |
-| `~/.opencode/openai-codex-accounts.json` | Primary account storage (v3) |
-| `~/.opencode/openai-codex-accounts.json.bak` | Last backup |
-| `~/.opencode/openai-codex-accounts.json.wal` | Recovery journal |
-| `~/.opencode/openai-codex-flagged-accounts.json` | Flagged account pool |
-| `~/.opencode/projects/<project-key>/...` | Project-scoped storage |
+| `settings.json` | Unified dashboard + plugin config |
+| `openai-codex-accounts.json` | Main account pool |
+| `openai-codex-accounts.json.bak` / `.wal` | Backup and recovery journal |
+| `openai-codex-flagged-accounts.json` | Flagged account pool |
+| `quota-cache.json` | Cached quota snapshots |
+| `logs/` | Plugin logs when logging enabled |
+| `cache/` | Prompt/cache artifacts |
+
+* * *
 
 ## TUI Runtime Notes
 
-- V2 UI is enabled by default.
-- Color profile: `truecolor|ansi256|ansi16`.
-- Glyph mode: `ascii|unicode|auto`.
-- Auth menu hotkeys include account quick-set (`1-9`) and search (`/`).
+- TUI v2 is default.
+- Palette and accent are configurable.
+- Account rows support compact + details views.
+- Hotkeys support quick-switch/search/help and per-account actions.
+
+* * *
 
 ## Invariants
 
-- OAuth callback port remains `1455`.
-- Stateless request mode stays enabled for ChatGPT backend compatibility.
-- `dist/` is generated output and not source of truth.
+1. OAuth callback port remains `1455`.
+2. Dist folder is generated output only.
+3. Non-auth `codex` commands are always forwarded to official Codex CLI.
+4. Canonical account-management commands remain `codex auth ...`.
+
+* * *
 
 ## Related
 
 - [CONFIG_FIELDS.md](CONFIG_FIELDS.md)
 - [CONFIG_FLOW.md](CONFIG_FLOW.md)
-- [REPOSITORY_SCOPE.md](REPOSITORY_SCOPE.md)
-
+- [TESTING.md](TESTING.md)
+- [../features.md](../features.md)

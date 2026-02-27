@@ -2,6 +2,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { decodeJWT } from "../auth/auth.js";
+import { extractAccountEmail, extractAccountId } from "../auth/token-utils.js";
 import { createLogger } from "../logger.js";
 import {
 	incrementCodexCliMetric,
@@ -28,6 +29,8 @@ export interface CodexCliState {
 	accounts: CodexCliAccountSnapshot[];
 	activeAccountId?: string;
 	activeEmail?: string;
+	syncVersion?: number;
+	sourceUpdatedAtMs?: number;
 }
 
 let cache: CodexCliState | null = null;
@@ -159,7 +162,17 @@ export function getCodexCliAccountsPath(): string {
 	return join(homedir(), ".codex", "accounts.json");
 }
 
-function parseCodexCliState(path: string, parsed: unknown): CodexCliState | null {
+export function getCodexCliAuthPath(): string {
+	const override = (process.env.CODEX_CLI_AUTH_PATH ?? "").trim();
+	if (override.length > 0) return override;
+	return join(homedir(), ".codex", "auth.json");
+}
+
+function parseCodexCliState(
+	path: string,
+	parsed: unknown,
+	sourceUpdatedAtMs?: number,
+): CodexCliState | null {
 	if (!isRecord(parsed) || !Array.isArray(parsed.accounts)) {
 		return null;
 	}
@@ -188,6 +201,58 @@ function parseCodexCliState(path: string, parsed: unknown): CodexCliState | null
 		accounts,
 		activeAccountId,
 		activeEmail,
+		syncVersion: readNumber(parsed.codexMultiAuthSyncVersion),
+		sourceUpdatedAtMs,
+	};
+}
+
+function parseCodexCliAuthState(
+	path: string,
+	parsed: unknown,
+	sourceUpdatedAtMs?: number,
+): CodexCliState | null {
+	if (!isRecord(parsed)) return null;
+	const tokens = isRecord(parsed.tokens) ? parsed.tokens : null;
+	if (!tokens) return null;
+
+	const accessToken = extractTokenFromRecord(tokens, ["access_token", "accessToken"]);
+	const refreshToken = extractTokenFromRecord(tokens, ["refresh_token", "refreshToken"]);
+	if (!accessToken && !refreshToken) return null;
+
+	const idToken = extractTokenFromRecord(tokens, ["id_token", "idToken"]);
+	const accountId =
+		readTrimmedString(tokens.account_id) ??
+		readTrimmedString(tokens.accountId) ??
+		(accessToken ? extractAccountId(accessToken) : undefined);
+	const email =
+		(accessToken ? extractAccountEmail(accessToken, idToken) : undefined) ??
+		normalizeEmail(parsed.email);
+
+	let expiresAt: number | undefined = undefined;
+	if (accessToken) {
+		const decoded = decodeJWT(accessToken);
+		const exp = decoded?.exp;
+		if (typeof exp === "number" && Number.isFinite(exp)) {
+			expiresAt = exp * 1000;
+		}
+	}
+
+	const snapshot: CodexCliAccountSnapshot = {
+		accountId,
+		email,
+		accessToken: accessToken ?? "",
+		refreshToken,
+		expiresAt,
+		isActive: true,
+	};
+
+	return {
+		path,
+		accounts: [snapshot],
+		activeAccountId: accountId,
+		activeEmail: email,
+		syncVersion: readNumber(parsed.codexMultiAuthSyncVersion),
+		sourceUpdatedAtMs,
 	};
 }
 
@@ -203,49 +268,93 @@ export async function loadCodexCliState(
 		return cache;
 	}
 
-	const path = getCodexCliAccountsPath();
+	const accountsPath = getCodexCliAccountsPath();
+	const authPath = getCodexCliAuthPath();
 	incrementCodexCliMetric("readAttempts");
 	cacheLoadedAt = now;
 
-	if (!existsSync(path)) {
+	const hasAccountsPath = existsSync(accountsPath);
+	const hasAuthPath = existsSync(authPath);
+	if (!hasAccountsPath && !hasAuthPath) {
 		incrementCodexCliMetric("readMisses");
 		cache = null;
 		return null;
 	}
 
 	try {
-		const raw = await fs.readFile(path, "utf-8");
-		const parsed = JSON.parse(raw) as unknown;
-		const state = parseCodexCliState(path, parsed);
-		if (!state) {
-			incrementCodexCliMetric("readFailures");
+		if (hasAccountsPath) {
+			const raw = await fs.readFile(accountsPath, "utf-8");
+			const parsed = JSON.parse(raw) as unknown;
+			let sourceUpdatedAtMs: number | undefined;
+			try {
+				sourceUpdatedAtMs = (await fs.stat(accountsPath)).mtimeMs;
+			} catch {
+				sourceUpdatedAtMs = undefined;
+			}
+			const state = parseCodexCliState(accountsPath, parsed, sourceUpdatedAtMs);
+			if (state) {
+				incrementCodexCliMetric("readSuccesses");
+				log.debug("Loaded Codex CLI state", {
+					operation: "read-state",
+					outcome: "success",
+					path: accountsPath,
+					accountCount: state.accounts.length,
+					activeAccountRef: makeAccountFingerprint({
+						accountId: state.activeAccountId,
+						email: state.activeEmail,
+					}),
+				});
+				cache = state;
+				return state;
+			}
 			log.warn("Codex CLI accounts payload is malformed", {
 				operation: "read-state",
 				outcome: "malformed",
-				path,
+				path: accountsPath,
 			});
-			cache = null;
-			return null;
 		}
-		incrementCodexCliMetric("readSuccesses");
-		log.debug("Loaded Codex CLI state", {
-			operation: "read-state",
-			outcome: "success",
-			path,
-			accountCount: state.accounts.length,
-			activeAccountRef: makeAccountFingerprint({
-				accountId: state.activeAccountId,
-				email: state.activeEmail,
-			}),
-		});
-		cache = state;
-		return state;
+
+		if (hasAuthPath) {
+			const raw = await fs.readFile(authPath, "utf-8");
+			const parsed = JSON.parse(raw) as unknown;
+			let sourceUpdatedAtMs: number | undefined;
+			try {
+				sourceUpdatedAtMs = (await fs.stat(authPath)).mtimeMs;
+			} catch {
+				sourceUpdatedAtMs = undefined;
+			}
+			const state = parseCodexCliAuthState(authPath, parsed, sourceUpdatedAtMs);
+			if (state) {
+				incrementCodexCliMetric("readSuccesses");
+				log.debug("Loaded Codex CLI auth state", {
+					operation: "read-state",
+					outcome: "success",
+					path: authPath,
+					accountCount: state.accounts.length,
+					activeAccountRef: makeAccountFingerprint({
+						accountId: state.activeAccountId,
+						email: state.activeEmail,
+					}),
+				});
+				cache = state;
+				return state;
+			}
+			log.warn("Codex CLI auth payload is malformed", {
+				operation: "read-state",
+				outcome: "malformed",
+				path: authPath,
+			});
+		}
+
+		incrementCodexCliMetric("readFailures");
+		cache = null;
+		return null;
 	} catch (error) {
 		incrementCodexCliMetric("readFailures");
 		log.warn("Failed to read Codex CLI state", {
 			operation: "read-state",
 			outcome: "error",
-			path,
+			path: hasAccountsPath ? accountsPath : authPath,
 			error: String(error),
 		});
 		cache = null;

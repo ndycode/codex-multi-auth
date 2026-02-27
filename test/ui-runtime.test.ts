@@ -15,6 +15,8 @@ describe("UI runtime options", () => {
 		expect(ui.v2Enabled).toBe(true);
 		expect(ui.colorProfile).toBe("truecolor");
 		expect(ui.glyphMode).toBe("ascii");
+		expect(ui.palette).toBe("green");
+		expect(ui.accent).toBe("green");
 	});
 
 	it("updates runtime options and rebuilds theme", () => {
@@ -22,11 +24,15 @@ describe("UI runtime options", () => {
 			v2Enabled: false,
 			colorProfile: "ansi16",
 			glyphMode: "unicode",
+			palette: "blue",
+			accent: "cyan",
 		});
 
 		expect(updated.v2Enabled).toBe(false);
 		expect(updated.colorProfile).toBe("ansi16");
 		expect(updated.glyphMode).toBe("unicode");
+		expect(updated.palette).toBe("blue");
+		expect(updated.accent).toBe("cyan");
 		expect(updated.theme.profile).toBe("ansi16");
 		expect(updated.theme.glyphMode).toBe("unicode");
 	});
@@ -37,6 +43,7 @@ describe("UI runtime options", () => {
 		expect(ui.v2Enabled).toBe(false);
 		expect(ui.colorProfile).toBe("truecolor");
 		expect(ui.glyphMode).toBe("ascii");
+		expect(ui.palette).toBe("green");
+		expect(ui.accent).toBe("green");
 	});
 });
-

@@ -1,63 +1,79 @@
 # Repository Scope Map
 
-Canonical path ownership and where to add new work.
+Ownership map for source paths and documentation paths.
+
+* * *
 
 ## Top-Level Map
 
-| Path | Purpose | Edit policy |
-| --- | --- | --- |
-| `index.ts` | Plugin entrypoint and orchestration | Source of truth |
-| `lib/` | Runtime modules (auth, storage, rotation, request pipeline, UI) | Source of truth |
-| `scripts/` | CLI wrappers, installers, benchmark scripts | Source of truth |
-| `test/` | Vitest unit/integration tests | Source of truth |
-| `config/` | Example OpenCode config templates | Source of truth |
-| `docs/` | User + maintainer docs | Source of truth |
-| `assets/` | Static assets | Source of truth |
-| `dist/` | Compiled output | Generated, do not edit |
+| Path | Purpose |
+| --- | --- |
+| `index.ts` | Plugin-host runtime entry |
+| `lib/` | Core runtime, auth, storage, UI, policies |
+| `scripts/` | CLI wrappers and helper scripts |
+| `docs/` | User docs + references + maintainer docs |
+| `test/` | Unit/integration/property tests |
+| `config/` | Plugin-host config examples |
+| `assets/` | Static project assets |
+| `dist/` | Generated build output (do not edit directly) |
+
+* * *
 
 ## Core Runtime Ownership
 
-| Concern | Files |
+| Area | Primary files |
 | --- | --- |
-| CLI command handling | `scripts/codex.js`, `lib/codex-manager.ts` |
-| OAuth | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts` |
-| Storage and migration | `lib/storage.ts`, `lib/storage/paths.ts`, `lib/storage/migrations.ts` |
-| Rotation/forecast/health | `lib/accounts.ts`, `lib/rotation.ts`, `lib/forecast.ts`, `lib/health.ts` |
-| Request transform/fetch | `lib/request/request-transformer.ts`, `lib/request/fetch-helpers.ts` |
-| Rate-limit retry logic | `lib/request/rate-limit-backoff.ts`, `lib/accounts/rate-limits.ts` |
-| Live sync/affinity/guardian | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts` |
-| UI/TUI | `lib/ui/*`, `lib/cli.ts` |
-| Prompt and model families | `lib/prompts/*`, `lib/request/helpers/model-map.ts` |
+| CLI auth manager | `lib/codex-manager.ts` |
+| OAuth flow/server | `lib/auth/*` |
+| Storage and paths | `lib/storage.ts`, `lib/storage/paths.ts`, `lib/runtime-paths.ts` |
+| Unified settings | `lib/unified-settings.ts`, `lib/dashboard-settings.ts`, `lib/config.ts` |
+| Account runtime | `lib/accounts.ts`, `lib/rotation.ts`, `lib/forecast.ts` |
+| Quota runtime | `lib/quota-probe.ts`, `lib/quota-cache.ts`, `lib/preemptive-quota-scheduler.ts` |
+| Resilience | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts`, `lib/refresh-lease.ts` |
+| Request pipeline | `lib/request/*`, `index.ts` |
+| UI system | `lib/ui/*` |
+
+* * *
+
+## Documentation Ownership
+
+| Area | Files |
+| --- | --- |
+| User docs | `docs/getting-started.md`, `docs/configuration.md`, `docs/troubleshooting.md`, `docs/features.md`, `docs/upgrade.md`, `docs/privacy.md` |
+| Reference docs | `docs/reference/*` |
+| Maintainer docs | `docs/development/*`, `docs/DOCUMENTATION.md` |
+| Style and consistency | `docs/STYLE_GUIDE.md` |
+
+* * *
 
 ## AGENTS Scope Hierarchy
 
-| File | Scope |
-| --- | --- |
-| `AGENTS.md` | Entire repository |
-| `lib/AGENTS.md` | `lib/**` |
-| `test/AGENTS.md` | `test/**` |
+Within this repo:
 
-## Generated/Local Artifacts (Not Source)
+1. `AGENTS.md` (root scope)
+2. `lib/AGENTS.md` for `lib/**`
+3. `test/AGENTS.md` for `test/**`
 
-| Pattern | Notes |
-| --- | --- |
-| `dist/**` | Build output |
-| `node_modules/**` | Dependency installation |
-| `coverage/**` | Coverage artifacts |
-| `.tmp*`, `tmp*` | Scratch and temporary files |
-| `.omx/**`, `.sisyphus/**` | Local agent/runtime state |
+Deeper AGENTS files override higher-level guidance for their subtree.
+
+* * *
+
+## Generated or Local Artifacts (Not Source)
+
+- `dist/`
+- `.tmp*` directories
+- local caches/logs under runtime roots
+
+Do not treat these as primary implementation sources.
+
+* * *
 
 ## Feature Placement Checklist
 
-For new runtime behavior:
+When adding a new feature:
 
-1. Add logic in `lib/` modules.
-2. Wire entrypoints in `index.ts` or `lib/codex-manager.ts`.
-3. Add/update config fields in `lib/schemas.ts` + `lib/config.ts`.
-4. Add tests in `test/`.
-5. Update docs in `README.md` and relevant `docs/*` pages.
-
-## Related
-
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [TESTING.md](TESTING.md)
+1. Implement runtime/module code in `lib/`.
+2. Add/extend tests in `test/`.
+3. Update user docs (`docs/features.md` + relevant guides).
+4. Update references if command/setting/path changed.
+5. Update architecture/config flow docs for cross-cutting behavior.

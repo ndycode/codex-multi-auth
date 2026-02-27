@@ -11,6 +11,7 @@
 import { refreshAccessToken } from "./auth/auth.js";
 import type { TokenResult } from "./types.js";
 import { createLogger } from "./logger.js";
+import { RefreshLeaseCoordinator } from "./refresh-lease.js";
 
 const log = createLogger("refresh-queue");
 
@@ -55,6 +56,7 @@ interface RefreshEntry {
  */
 export class RefreshQueue {
   private pending: Map<string, RefreshEntry> = new Map();
+  private readonly leaseCoordinator: RefreshLeaseCoordinator;
   
   /**
    * Maps old refresh tokens to new tokens after rotation.
@@ -74,8 +76,12 @@ export class RefreshQueue {
    * Create a new RefreshQueue instance.
    * @param maxEntryAgeMs - Maximum age for pending entries before cleanup (default: 30s)
    */
-  constructor(maxEntryAgeMs: number = 30_000) {
+  constructor(
+    maxEntryAgeMs: number = 30_000,
+    leaseCoordinator: RefreshLeaseCoordinator = RefreshLeaseCoordinator.fromEnvironment(),
+  ) {
     this.maxEntryAgeMs = maxEntryAgeMs;
+    this.leaseCoordinator = leaseCoordinator;
   }
 
   /**
@@ -115,10 +121,26 @@ export class RefreshQueue {
       }
     }
 
-    // Start a new refresh
+    // Start a new refresh immediately so local state reflects "in-flight"
+    // without waiting on cross-process lease checks.
     const startedAt = Date.now();
-    const promise = this.executeRefreshWithRotationTracking(refreshToken);
+    const promise = (async (): Promise<TokenResult> => {
+      const lease = await this.leaseCoordinator.acquire(refreshToken);
+      if (lease.role === "follower" && lease.result) {
+        log.info("Using refresh result from cross-process lease", {
+          tokenSuffix: refreshToken.slice(-6),
+        });
+        return lease.result;
+      }
 
+      try {
+        const result = await this.executeRefreshWithRotationTracking(refreshToken);
+        await lease.release(result);
+        return result;
+      } finally {
+        await lease.release();
+      }
+    })();
     this.pending.set(refreshToken, { promise, startedAt });
 
     try {

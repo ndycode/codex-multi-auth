@@ -1,37 +1,57 @@
 # Documentation Portal
 
-Start here for all project docs.
+Use this portal to navigate user docs, references, and maintainer docs.
 
-## Fast Paths
+* * *
 
-| Need | Read |
+## Start Here
+
+1. [Getting Started](getting-started.md)
+2. [Features](features.md)
+3. [Configuration](configuration.md)
+4. [Troubleshooting](troubleshooting.md)
+
+* * *
+
+## User Guides
+
+| Page | What it answers |
 | --- | --- |
-| First-time setup | [getting-started.md](getting-started.md) |
-| Upgrade from older flows | [upgrade.md](upgrade.md) |
-| Config and environment variables | [configuration.md](configuration.md) |
-| Fix login/rate-limit/account issues | [troubleshooting.md](troubleshooting.md) |
-| Privacy and local files | [privacy.md](privacy.md) |
-| Full documentation architecture | [DOCUMENTATION.md](DOCUMENTATION.md) |
+| [index.md](index.md) | Fast docs landing page |
+| [getting-started.md](getting-started.md) | How to install, login, add accounts, and run first checks |
+| [features.md](features.md) | What all implemented features do |
+| [configuration.md](configuration.md) | How to configure behavior and reliability settings |
+| [troubleshooting.md](troubleshooting.md) | What to do when login/switch/limits fail |
+| [privacy.md](privacy.md) | Where data is stored and what is sent over network |
+| [upgrade.md](upgrade.md) | How to migrate from older flows and legacy paths |
 
-## Full Chart
+* * *
 
-| File | Purpose | Audience |
-| --- | --- | --- |
-| [index.md](index.md) | Simple docs landing page | Everyone |
-| [getting-started.md](getting-started.md) | Beginner onboarding | Beginner |
-| [upgrade.md](upgrade.md) | Migration and changed workflow notes | Beginner to Intermediate |
-| [configuration.md](configuration.md) | Runtime config and env controls | Beginner to Intermediate |
-| [troubleshooting.md](troubleshooting.md) | Symptom-to-fix playbook | Beginner to Intermediate |
-| [privacy.md](privacy.md) | Data handling and file locations | Everyone |
-| [DOCUMENTATION.md](DOCUMENTATION.md) | Documentation system and maintenance rules | Maintainers |
-| [development/ARCHITECTURE.md](development/ARCHITECTURE.md) | Runtime architecture and request pipeline | Advanced |
-| [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Config keys and defaults reference | Advanced |
-| [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Config resolution flow and precedence | Advanced |
-| [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by path | Advanced |
-| [development/TESTING.md](development/TESTING.md) | Test strategy and release checks | Advanced |
-| [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Auth dashboard parity checklist | Advanced |
-| [OPENCODE_PR_PROPOSAL.md](OPENCODE_PR_PROPOSAL.md) | Upstream OpenCode proposal | Maintainers |
-| [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark execution guide | Maintainers |
+## Reference
+
+| Page | What it answers |
+| --- | --- |
+| [reference/commands.md](reference/commands.md) | Full command and hotkey reference |
+| [reference/settings.md](reference/settings.md) | Dashboard/backend settings reference |
+| [reference/storage-paths.md](reference/storage-paths.md) | Current and legacy file path matrix |
+| [STYLE_GUIDE.md](STYLE_GUIDE.md) | Documentation tone and formatting rules |
+
+* * *
+
+## Maintainer Docs
+
+| Page | What it answers |
+| --- | --- |
+| [DOCUMENTATION.md](DOCUMENTATION.md) | How docs are structured and maintained |
+| [development/ARCHITECTURE.md](development/ARCHITECTURE.md) | Runtime architecture and request/account flow |
+| [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Full config field inventory |
+| [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Resolution and precedence flow |
+| [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map for repo paths |
+| [development/TESTING.md](development/TESTING.md) | Test matrix and release gate |
+| [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | TUI quality checklist |
+| [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark guide |
+
+* * *
 
 ## Related
 

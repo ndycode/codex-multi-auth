@@ -1,60 +1,102 @@
 # Documentation Architecture
 
-This file defines how documentation is organized and maintained.
+This file defines the canonical documentation system for `codex-multi-auth`.
 
-## Master Documentation Chart
-
-| Scope | File | Primary audience |
-| --- | --- | --- |
-| Project entry | `README.md` | New users |
-| Docs portal | `docs/README.md` | All users |
-| Docs landing | `docs/index.md` | All users |
-| Setup | `docs/getting-started.md` | Beginners |
-| Upgrade and migration | `docs/upgrade.md` | Beginners to operators |
-| Runtime configuration | `docs/configuration.md` | Users and operators |
-| Troubleshooting | `docs/troubleshooting.md` | Users and operators |
-| Privacy/data | `docs/privacy.md` | All users |
-| Architecture internals | `docs/development/ARCHITECTURE.md` | Maintainers |
-| Config keys reference | `docs/development/CONFIG_FIELDS.md` | Maintainers |
-| Config resolution flow | `docs/development/CONFIG_FLOW.md` | Maintainers |
-| Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` | Maintainers |
-| Testing and release checks | `docs/development/TESTING.md` | Maintainers |
-| TUI parity checklist | `docs/development/TUI_PARITY_CHECKLIST.md` | Maintainers |
-| Upstream proposal | `docs/OPENCODE_PR_PROPOSAL.md` | Maintainers |
-| Benchmark guide | `docs/benchmarks/code-edit-format-benchmark.md` | Maintainers |
+* * *
 
 ## Documentation Layers
 
-| Layer | Goal | Style |
+| Layer | Audience | Goal |
 | --- | --- | --- |
-| Beginner | First successful login/use | command-first and short |
-| Intermediate | Safe operations and tuning | tables, defaults, examples |
-| Advanced | Maintenance and architecture | subsystem maps and invariants |
+| Product entry | New users | Install quickly and run first successful login/check |
+| User operations | Users/operators | Configure, operate, troubleshoot safely |
+| Reference | Power users/maintainers | Exact command/setting/path lookup |
+| Development | Maintainers/contributors | Internal architecture, flow, tests, ownership |
+
+* * *
+
+## Master Chart
+
+| Scope | File |
+| --- | --- |
+| Project entry | `README.md` |
+| Docs portal | `docs/README.md` |
+| Docs landing | `docs/index.md` |
+| Beginner setup | `docs/getting-started.md` |
+| Feature matrix | `docs/features.md` |
+| Configuration guide | `docs/configuration.md` |
+| Troubleshooting guide | `docs/troubleshooting.md` |
+| Privacy/data handling | `docs/privacy.md` |
+| Upgrade/migration | `docs/upgrade.md` |
+| Command reference | `docs/reference/commands.md` |
+| Settings reference | `docs/reference/settings.md` |
+| Storage path reference | `docs/reference/storage-paths.md` |
+| Documentation style rules | `docs/STYLE_GUIDE.md` |
+| Docs governance (this file) | `docs/DOCUMENTATION.md` |
+| Architecture internals | `docs/development/ARCHITECTURE.md` |
+| Config fields internals | `docs/development/CONFIG_FIELDS.md` |
+| Config flow internals | `docs/development/CONFIG_FLOW.md` |
+| Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` |
+| Testing guide | `docs/development/TESTING.md` |
+| TUI parity checklist | `docs/development/TUI_PARITY_CHECKLIST.md` |
+| Benchmarks | `docs/benchmarks/code-edit-format-benchmark.md` |
+
+* * *
+
+## Tone and Formatting Contract
+
+All user-facing docs must follow `docs/STYLE_GUIDE.md`:
+
+1. Beginner-first language.
+2. Short lead sentence.
+3. Quick path before deep details.
+4. Command-first examples.
+5. Clear next steps/related links.
+
+Codex CLI-first style is the baseline:
+
+- concise sections
+- operational clarity
+- progressive disclosure
+
+* * *
+
+## Canonical Command and Path Policy
+
+1. Canonical account workflow command family: `codex auth ...`.
+2. Canonical runtime storage root: `~/.codex/multi-auth`.
+3. Legacy paths/flows are documented only in migration/compat sections.
+4. Do not present legacy flows as the default workflow.
+
+* * *
 
 ## Update Rules
 
-When behavior changes:
+When runtime behavior changes:
 
 1. Update `README.md` and `docs/getting-started.md` first.
-2. Revise `docs/configuration.md` and `docs/troubleshooting.md` for operator impact.
-3. Refresh development docs for internal changes.
-4. Keep commands and file paths synchronized with code.
+2. Update `docs/features.md` for feature coverage changes.
+3. Update command/settings/path references if any CLI/config/storage behavior changed.
+4. Update `docs/troubleshooting.md` with new failure signatures.
+5. Update development docs when architecture/config flow changed.
 
-## Consistency Rules
-
-- Prefer `codex auth ...` command examples for account workflows.
-- Use real runtime paths (`~/.opencode/...`) for plugin internals.
-- Mark legacy paths as compatibility-only.
-- Keep JSON snippets minimal and runnable.
+* * *
 
 ## Documentation QA Checklist
 
-- Commands copied from docs execute without edits.
-- Paths match `lib/config.ts` and `lib/storage.ts`.
-- New config keys appear in both user and development references.
-- New CLI flags appear in troubleshooting/examples where relevant.
+Before merge:
+
+1. Every documented command executes as written.
+2. Paths match runtime code (`lib/runtime-paths.ts`, `lib/storage.ts`, `lib/config.ts`).
+3. Feature matrix covers all implemented features.
+4. Internal links are valid.
+5. Cross-platform examples are present for OS-sensitive flows.
+6. No conflicting duplicate guidance across pages.
+
+* * *
 
 ## Related
 
 - [README.md](../README.md)
 - [README.md](README.md)
+- [STYLE_GUIDE.md](STYLE_GUIDE.md)

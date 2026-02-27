@@ -1,120 +1,208 @@
 # Config Fields Reference
 
-Complete reference for plugin runtime configuration and OpenCode provider options.
+Complete field inventory for runtime configuration and display settings.
 
-## Runtime Config File
+* * *
 
-Primary file:
+## Canonical Settings File
 
-- `~/.opencode/codex-multi-auth-config.json`
+Primary settings file:
 
-Override file path with:
+- `~/.codex/multi-auth/settings.json`
 
-- `CODEX_MULTI_AUTH_CONFIG_PATH=<absolute-path>`
+Top-level shape:
 
-## OpenCode Provider Options (passed via `provider.openai.options`)
+```json
+{
+  "version": 1,
+  "dashboardDisplaySettings": { "...": "..." },
+  "pluginConfig": { "...": "..." }
+}
+```
+
+* * *
+
+## Plugin-Host Provider Options (`provider.openai.options`)
+
+Used only for host plugin mode through the host runtime config file.
 
 | Key | Type | Common values | Effect |
 | --- | --- | --- | --- |
-| `reasoningEffort` | string | `none|minimal|low|medium|high|xhigh` | Reasoning intensity hint |
-| `reasoningSummary` | string | `auto|concise|detailed` | Reasoning summary detail |
-| `textVerbosity` | string | `low|medium|high` | Text length/verbosity target |
-| `include` | string[] | `reasoning.encrypted_content` | Include extra encrypted reasoning payload |
-| `store` | boolean | `false` | Required for stateless ChatGPT backend mode |
+| `reasoningEffort` | string | `none|minimal|low|medium|high|xhigh` | Reasoning effort hint |
+| `reasoningSummary` | string | `auto|concise|detailed` | Summary detail hint |
+| `textVerbosity` | string | `low|medium|high` | Text verbosity target |
+| `include` | string[] | `reasoning.encrypted_content` | Extra payload include |
+| `store` | boolean | `false` | Required for stateless backend mode |
 
-## Plugin Runtime Fields
+* * *
 
-### UI and Interaction
+## `pluginConfig` Fields
 
-| Key | Default | Env override | Notes |
-| --- | --- | --- | --- |
-| `codexMode` | `true` | `CODEX_MODE` | Enables Codex bridge prompt mode |
-| `codexTuiV2` | `true` | `CODEX_TUI_V2` | Enables highlighted auth dashboard |
-| `codexTuiColorProfile` | `truecolor` | `CODEX_TUI_COLOR_PROFILE` | `truecolor|ansi256|ansi16` |
-| `codexTuiGlyphMode` | `ascii` | `CODEX_TUI_GLYPHS` | `ascii|unicode|auto` |
+### Core UX
 
-### Fast Session Controls
+| Key | Default |
+| --- | --- |
+| `codexMode` | `true` |
+| `codexTuiV2` | `true` |
+| `codexTuiColorProfile` | `truecolor` |
+| `codexTuiGlyphMode` | `ascii` |
 
-| Key | Default | Env override | Notes |
-| --- | --- | --- | --- |
-| `fastSession` | `false` | `CODEX_AUTH_FAST_SESSION` | Low-latency mode |
-| `fastSessionStrategy` | `hybrid` | `CODEX_AUTH_FAST_SESSION_STRATEGY` | `hybrid|always` |
-| `fastSessionMaxInputItems` | `30` | `CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS` | Stateless history trim cap |
+### Fast Session
 
-### Rotation, Retry, Fallback
+| Key | Default |
+| --- | --- |
+| `fastSession` | `false` |
+| `fastSessionStrategy` | `hybrid` |
+| `fastSessionMaxInputItems` | `30` |
 
-| Key | Default | Env override | Notes |
-| --- | --- | --- | --- |
-| `retryAllAccountsRateLimited` | `true` | `CODEX_AUTH_RETRY_ALL_RATE_LIMITED` | Rotate/wait across account pool |
-| `retryAllAccountsMaxWaitMs` | `0` | `CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS` | `0` means no extra cap |
-| `retryAllAccountsMaxRetries` | `Infinity` | `CODEX_AUTH_RETRY_ALL_MAX_RETRIES` | Total retry cap |
-| `unsupportedCodexPolicy` | `strict` | `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY` | `strict|fallback` |
-| `fallbackOnUnsupportedCodexModel` | `false` | `CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL` | Legacy fallback toggle |
-| `fallbackToGpt52OnUnsupportedGpt53` | `true` | `CODEX_AUTH_FALLBACK_GPT53_TO_GPT52` | Legacy compatibility behavior |
-| `unsupportedCodexFallbackChain` | `{}` | none | Custom fallback chain map |
+### Retry / Fallback / Rotation
 
-### Tokens and Session Recovery
+| Key | Default |
+| --- | --- |
+| `retryAllAccountsRateLimited` | `true` |
+| `retryAllAccountsMaxWaitMs` | `0` |
+| `retryAllAccountsMaxRetries` | `Infinity` |
+| `unsupportedCodexPolicy` | `strict` |
+| `fallbackOnUnsupportedCodexModel` | `false` |
+| `fallbackToGpt52OnUnsupportedGpt53` | `true` |
+| `unsupportedCodexFallbackChain` | `{}` |
 
-| Key | Default | Env override | Notes |
-| --- | --- | --- | --- |
-| `tokenRefreshSkewMs` | `60000` | `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` | Refresh early window |
-| `sessionRecovery` | `true` | `CODEX_AUTH_SESSION_RECOVERY` | Session recovery feature toggle |
-| `autoResume` | `true` | `CODEX_AUTH_AUTO_RESUME` | Auto-resume behavior |
-| `proactiveRefreshGuardian` | `true` | `CODEX_AUTH_PROACTIVE_GUARDIAN` | Background refresh watcher |
-| `proactiveRefreshIntervalMs` | `60000` | `CODEX_AUTH_PROACTIVE_GUARDIAN_INTERVAL_MS` | Guardian poll interval |
-| `proactiveRefreshBufferMs` | `300000` | `CODEX_AUTH_PROACTIVE_GUARDIAN_BUFFER_MS` | Expiry buffer before refresh |
+### Token / Recovery
 
-### Storage and Account Scope
+| Key | Default |
+| --- | --- |
+| `tokenRefreshSkewMs` | `60000` |
+| `sessionRecovery` | `true` |
+| `autoResume` | `true` |
+| `proactiveRefreshGuardian` | `true` |
+| `proactiveRefreshIntervalMs` | `60000` |
+| `proactiveRefreshBufferMs` | `300000` |
 
-| Key | Default | Env override | Notes |
-| --- | --- | --- | --- |
-| `perProjectAccounts` | `true` | `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | Project-scoped account pools |
-| `storageBackupEnabled` | `true` | `CODEX_AUTH_STORAGE_BACKUP_ENABLED` | Backup file writes |
-| `liveAccountSync` | `true` | `CODEX_AUTH_LIVE_ACCOUNT_SYNC` | No-restart account reload |
-| `liveAccountSyncDebounceMs` | `250` | `CODEX_AUTH_LIVE_ACCOUNT_SYNC_DEBOUNCE_MS` | Reload debounce |
-| `liveAccountSyncPollMs` | `2000` | `CODEX_AUTH_LIVE_ACCOUNT_SYNC_POLL_MS` | Poll fallback interval |
+### Storage / Sync
+
+| Key | Default |
+| --- | --- |
+| `perProjectAccounts` | `true` |
+| `storageBackupEnabled` | `true` |
+| `liveAccountSync` | `true` |
+| `liveAccountSyncDebounceMs` | `250` |
+| `liveAccountSyncPollMs` | `2000` |
 
 ### Session Affinity
 
-| Key | Default | Env override | Notes |
-| --- | --- | --- | --- |
-| `sessionAffinity` | `true` | `CODEX_AUTH_SESSION_AFFINITY` | Sticky account selection by session |
-| `sessionAffinityTtlMs` | `1200000` | `CODEX_AUTH_SESSION_AFFINITY_TTL_MS` | Entry lifetime |
-| `sessionAffinityMaxEntries` | `512` | `CODEX_AUTH_SESSION_AFFINITY_MAX_ENTRIES` | Cache bound |
+| Key | Default |
+| --- | --- |
+| `sessionAffinity` | `true` |
+| `sessionAffinityTtlMs` | `1200000` |
+| `sessionAffinityMaxEntries` | `512` |
 
-### Reliability and Timeouts
+### Reliability / Timeout / Probe
 
-| Key | Default | Env override | Notes |
-| --- | --- | --- | --- |
-| `parallelProbing` | `false` | `CODEX_AUTH_PARALLEL_PROBING` | Parallel account probes |
-| `parallelProbingMaxConcurrency` | `2` | `CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY` | Probe fan-out cap |
-| `emptyResponseMaxRetries` | `2` | `CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES` | Retry empty responses |
-| `emptyResponseRetryDelayMs` | `1000` | `CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS` | Delay between empty retries |
-| `pidOffsetEnabled` | `false` | `CODEX_AUTH_PID_OFFSET_ENABLED` | PID-based offset mode |
-| `fetchTimeoutMs` | `60000` | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout |
-| `streamStallTimeoutMs` | `45000` | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stall timeout for streams |
-| `networkErrorCooldownMs` | `6000` | `CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS` | Cooldown after network errors |
-| `serverErrorCooldownMs` | `4000` | `CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS` | Cooldown after 5xx errors |
+| Key | Default |
+| --- | --- |
+| `parallelProbing` | `false` |
+| `parallelProbingMaxConcurrency` | `2` |
+| `emptyResponseMaxRetries` | `2` |
+| `emptyResponseRetryDelayMs` | `1000` |
+| `pidOffsetEnabled` | `false` |
+| `fetchTimeoutMs` | `60000` |
+| `streamStallTimeoutMs` | `45000` |
+| `networkErrorCooldownMs` | `6000` |
+| `serverErrorCooldownMs` | `4000` |
 
-### Notification Controls
+### Quota Deferral
 
-| Key | Default | Env override | Notes |
-| --- | --- | --- | --- |
-| `rateLimitToastDebounceMs` | `60000` | `CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS` | Rate-limit toast debounce |
-| `toastDurationMs` | `5000` | `CODEX_AUTH_TOAST_DURATION_MS` | Toast duration |
+| Key | Default |
+| --- | --- |
+| `preemptiveQuotaEnabled` | `true` |
+| `preemptiveQuotaRemainingPercent5h` | `5` |
+| `preemptiveQuotaRemainingPercent7d` | `5` |
+| `preemptiveQuotaMaxDeferralMs` | `7200000` |
 
-## Additional Runtime Env Controls
+### Notifications
+
+| Key | Default |
+| --- | --- |
+| `rateLimitToastDebounceMs` | `60000` |
+| `toastDurationMs` | `5000` |
+
+* * *
+
+## `dashboardDisplaySettings` Fields
+
+### General Display
+
+| Key | Default |
+| --- | --- |
+| `showPerAccountRows` | `true` |
+| `showQuotaDetails` | `true` |
+| `showForecastReasons` | `true` |
+| `showRecommendations` | `true` |
+| `showLiveProbeNotes` | `true` |
+
+### Result Screen Behavior
+
+| Key | Default |
+| --- | --- |
+| `actionAutoReturnMs` | `2000` |
+| `actionPauseOnKey` | `true` |
+
+### Dashboard Fetch and Sort
+
+| Key | Default |
+| --- | --- |
+| `menuAutoFetchLimits` | `true` |
+| `menuQuotaTtlMs` | `300000` |
+| `menuSortEnabled` | `true` |
+| `menuSortMode` | `ready-first` |
+| `menuSortPinCurrent` | `false` |
+| `menuSortQuickSwitchVisibleRow` | `true` |
+
+### Account Row Content
+
+| Key | Default |
+| --- | --- |
+| `menuShowStatusBadge` | `true` |
+| `menuShowCurrentBadge` | `true` |
+| `menuShowLastUsed` | `true` |
+| `menuShowQuotaSummary` | `true` |
+| `menuShowQuotaCooldown` | `true` |
+| `menuShowFetchStatus` | `true` |
+| `menuShowDetailsForUnselectedRows` | `false` |
+| `menuStatuslineFields` | `last-used, limits, status` |
+
+### Visual Style
+
+| Key | Default |
+| --- | --- |
+| `uiThemePreset` | `green` |
+| `uiAccentColor` | `green` |
+| `menuLayoutMode` | `compact-details` |
+| `menuFocusStyle` | `row-invert` |
+| `menuHighlightCurrentRow` | `true` |
+
+* * *
+
+## Environment Overrides
 
 | Variable | Purpose |
 | --- | --- |
-| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI=0/1` | Disable/enable sync with Codex CLI account state |
-| `CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS=1` | Expose advanced maintenance tools |
-| `CODEX_MULTI_AUTH_REAL_CODEX_BIN=<path>` | Force explicit official Codex CLI binary path |
-| `CODEX_MULTI_AUTH_BYPASS=1` | Bypass local auth handling and forward to official CLI |
+| `CODEX_MULTI_AUTH_DIR` | Custom root for settings/accounts/cache/logs |
+| `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file input |
+| `CODEX_MODE` | Toggle Codex mode |
+| `CODEX_TUI_V2` | Toggle TUI v2 |
+| `CODEX_TUI_COLOR_PROFILE` | TUI color profile |
+| `CODEX_TUI_GLYPHS` | TUI glyph mode |
+| `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
+| `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
+| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |
+| `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force official Codex binary path |
+| `CODEX_MULTI_AUTH_BYPASS` | Bypass local auth handling |
+
+* * *
 
 ## Related
 
 - [CONFIG_FLOW.md](CONFIG_FLOW.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
-- [../configuration.md](../configuration.md)
-
+- [../reference/settings.md](../reference/settings.md)

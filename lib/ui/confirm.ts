@@ -15,7 +15,6 @@ export async function confirm(message: string, defaultYes = false): Promise<bool
 
 	const result = await select(items, {
 		message,
-		variant: ui.v2Enabled ? "codex" : "legacy",
 		theme: ui.theme,
 	});
 	return result ?? false;

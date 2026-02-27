@@ -1,112 +1,112 @@
 # Configuration Flow
 
-How configuration is resolved from files and environment variables into effective runtime behavior.
+How configuration is resolved at runtime from files, env, and defaults.
 
-## 1) Plugin Runtime Config Path Resolution
+* * *
 
-`loadPluginConfig()` resolves config in this order:
+## 1) Root Directory Resolution
 
-1. `CODEX_MULTI_AUTH_CONFIG_PATH`
-2. `~/.opencode/codex-multi-auth-config.json`
-3. `~/.opencode/openai-codex-auth-config.json` (legacy)
-4. Built-in defaults
+Runtime root priority:
 
-Later sources in this list are only used if earlier ones are missing.
+1. `CODEX_MULTI_AUTH_DIR`
+2. `CODEX_HOME/multi-auth`
+3. Detected fallback roots with existing storage signals
+4. Legacy path fallback only when signals exist
 
-## 2) Runtime Value Precedence
+Canonical target is `~/.codex/multi-auth` when no override is set.
 
-For each setting:
+* * *
 
-1. Environment variable override (highest)
-2. Config file value
-3. Default from `DEFAULT_CONFIG`
+## 2) Unified Settings Resolution
 
-## 3) OpenCode Provider Config Flow
+`settings.json` is read for:
 
-OpenCode passes provider data into plugin loader:
+- `dashboardDisplaySettings`
+- `pluginConfig`
 
-```text
-provider.openai.options  -> userConfig.global
-provider.openai.models   -> userConfig.models
-```
+If legacy config exists, compatibility load and migration path still apply.
 
-Request-time merge:
+* * *
 
-1. Start with `userConfig.global`
-2. Overlay model-specific options by selected model key
-3. Overlay request body/providerOptions values
+## 3) Runtime Value Precedence
 
-## 4) Model Resolution Flow
+For plugin runtime values:
 
-```text
-Incoming model id (e.g. gpt-5-codex-high)
-  -> lookup MODEL_MAP exact/case-insensitive aliases
-  -> fallback string-pattern normalization
-  -> canonical backend model (e.g. gpt-5-codex)
-```
+1. Environment override
+2. Unified/compat config value
+3. Hardcoded default in `DEFAULT_PLUGIN_CONFIG`
 
-Per-model config lookup uses original model key; backend call uses normalized model.
+For dashboard display values:
 
-## 5) Request Transformation Invariants
+1. Persisted `dashboardDisplaySettings`
+2. Normalization + fallback defaults
 
-`transformRequestBody()` enforces:
+* * *
 
-- `store = false`
-- `stream = true`
-- strip all input item IDs
-- remove `item_reference` items
-- include `reasoning.encrypted_content` unless overridden
+## 4) Account Storage Path Flow
 
-Optional fast-session mode can trim histories and lower reasoning/verbosity.
+1. Resolve root directory.
+2. Use global accounts file by default.
+3. If project-scoped mode is active, use project namespaced path under root.
+4. Attempt legacy project-file migration when applicable.
 
-## 6) Account Storage Path Flow
+* * *
 
-- If project root is detected and `perProjectAccounts=true`:
-  - `~/.opencode/projects/<project-key>/openai-codex-accounts.json`
-- Otherwise:
-  - `~/.opencode/openai-codex-accounts.json`
+## 5) Command Routing Flow
 
-Storage writes are atomic and protected by lock + backup + WAL recovery.
+1. Wrapper receives `codex` invocation.
+2. Normalize alias args (`multi auth`, `multi-auth`, `multiauth`).
+3. If command belongs to auth manager scope, run local manager.
+4. Otherwise forward invocation to official Codex CLI binary.
 
-## 7) Unsupported Model Handling Flow
+* * *
 
-Policy selection order:
+## 6) Request Handling Flow (Plugin)
 
-1. `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY`
-2. `unsupportedCodexPolicy`
-3. Legacy fallback toggles
-4. Default `strict`
+1. Transform request for Codex backend compatibility.
+2. Resolve account candidate set (health, cooldown, quota, affinity).
+3. Execute request with timeout/retry policy.
+4. Apply failover/rotation/cooldown decisions.
+5. Persist account/cache/session updates.
 
-If effective policy is `fallback`, fallback chain is resolved from:
+* * *
 
-1. `unsupportedCodexFallbackChain` custom map
-2. built-in fallback chain
+## 7) Unsupported Model / Entitlement Flow
 
-## 8) Session-Time Dynamic Flows
+1. Detect unsupported model or entitlement failures.
+2. Record in entitlement cache.
+3. Apply capability penalties for account/model pair.
+4. Use fallback model policy if enabled.
+5. Re-evaluate account scoring and retry path.
 
-- Live account sync watches storage changes and reloads manager state.
-- Session affinity keeps the same account for a session when healthy.
-- Refresh guardian refreshes near-expiry tokens in background.
+* * *
 
-These mechanisms reduce manual restarts and account churn.
+## 8) Live Runtime Sync Flow
+
+1. File watcher detects account-file updates.
+2. Debounce and reload in-memory account manager.
+3. Session affinity and guardian processes continue with updated state.
+
+* * *
 
 ## 9) Debugging Effective Config
 
-Recommended commands:
+Use:
 
 ```bash
+codex auth status
 codex auth report --json
-codex auth doctor --json
 ```
 
-Optional verbose logging:
+Check files:
 
-```bash
-DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1
-```
+- `~/.codex/multi-auth/settings.json`
+- `~/.codex/multi-auth/openai-codex-accounts.json`
+
+* * *
 
 ## Related
 
 - [CONFIG_FIELDS.md](CONFIG_FIELDS.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
-
+- [../configuration.md](../configuration.md)

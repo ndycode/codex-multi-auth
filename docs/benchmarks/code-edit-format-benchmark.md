@@ -1,84 +1,82 @@
 # Code Edit Format Benchmark
 
-Benchmark guide for edit format quality and reliability.
+Benchmark guide for comparing edit format performance and render behavior.
+
+* * *
 
 ## Purpose
 
-Compare edit formats across Codex-family models using the same tasks and validators.
+Use this benchmark to compare edit-format throughput and output quality for Codex-focused editing workloads.
 
-Formats tested:
-
-- `patch`
-- `replace`
-- `hashline`
-- `hashline_v2` (benchmark-only experimental mode)
-
-## Output Layout
-
-Each run writes to `.tmp-bench/<label>/`:
-
-| Path | Content |
-| --- | --- |
-| `results/summary.json` | Structured metrics |
-| `results/report.md` | Markdown summary |
-| `results/dashboard.html` | Visual dashboard |
-| `logs/*.ndjson` | Per-run logs and failures |
-| `workspaces/*` | Temporary run workspaces |
+* * *
 
 ## Quick Start
 
-Smoke test:
-
 ```bash
-node scripts/benchmark-edit-formats.mjs --smoke --models=openai/gpt-5.1
+npm run bench:edit-formats
 ```
 
-Preset run:
+Smoke run:
 
 ```bash
-node scripts/benchmark-edit-formats.mjs --preset=codex-core --warmup-runs=1 --measured-runs=5
+npm run bench:edit-formats:smoke
 ```
 
-Use explicit home path if needed:
+Render dashboard output:
 
 ```bash
-node scripts/benchmark-edit-formats.mjs --home="C:\\Users\\<you>"
+npm run bench:edit-formats:render
 ```
 
-## Dashboard Re-Render
+* * *
 
-```bash
-node scripts/benchmark-render-dashboard.mjs --input=.tmp-bench/<label>/results/summary.json
-```
+## Output Files
 
-## Format Semantics
-
-| Mode | Expected behavior |
+| Output | Location |
 | --- | --- |
-| `patch` | diff/patch-style tool usage |
-| `replace` | deterministic `oldString/newString` edits |
-| `hashline` | hashline anchored edit workflow |
-| `hashline_v2` | single structured JSON edit output |
+| Benchmark report JSON | `.tmp/` benchmark output paths |
+| Render preview artifacts | benchmark render output paths |
 
-If a model/tooling combination cannot satisfy a mode, run is marked unsupported for that mode.
+(Temporary benchmark artifacts are not source files.)
+
+* * *
+
+## Common Presets
+
+| Preset | Goal |
+| --- | --- |
+| `codex-core` | Baseline Codex-oriented evaluation |
+| `smoke` | Fast sanity check for CI/local validation |
+
+* * *
+
+## Interpretation Checklist
+
+1. Compare latency per format.
+2. Compare token/size overhead.
+3. Compare success/error rates.
+4. Validate output consistency.
+5. Confirm no regressions in editing fidelity.
+
+* * *
 
 ## Cleanup
 
-Linux/macOS:
+Bash:
 
 ```bash
-rm -rf .tmp-bench
+rm -rf .tmp
 ```
 
-Windows PowerShell:
+PowerShell:
 
 ```powershell
-Remove-Item -Recurse -Force .tmp-bench
+Remove-Item ".tmp" -Recurse -Force -ErrorAction SilentlyContinue
 ```
+
+* * *
 
 ## Related
 
-- Script entrypoint: `scripts/benchmark-edit-formats.mjs`
-- Dashboard renderer: `scripts/benchmark-render-dashboard.mjs`
-- Task corpus helpers: `scripts/bench-format/`
-
+- [../development/TESTING.md](../development/TESTING.md)
+- [../development/ARCHITECTURE.md](../development/ARCHITECTURE.md)

@@ -1,6 +1,8 @@
 # Testing Guide
 
-Testing strategy and release checks for `codex-multi-auth`.
+Testing strategy and release gate for runtime, CLI, and docs consistency.
+
+* * *
 
 ## Test Stack
 
@@ -8,15 +10,12 @@ Testing strategy and release checks for `codex-multi-auth`.
 | --- | --- |
 | Unit/integration tests | Vitest (`test/**/*.test.ts`) |
 | Type checks | TypeScript (`tsc --noEmit`) |
-| Linting | ESLint flat config |
-| Coverage | V8 coverage via Vitest |
+| Linting | ESLint |
+| Coverage | Vitest V8 coverage |
 
-Coverage thresholds configured in `vitest.config.ts`:
+Coverage thresholds in `vitest.config.ts`: statements/branches/functions/lines >= `80`.
 
-- statements: 80
-- branches: 80
-- functions: 80
-- lines: 80
+* * *
 
 ## Core Commands
 
@@ -36,65 +35,76 @@ npm run test:model-matrix:smoke
 npm run bench:edit-formats:smoke
 ```
 
+* * *
+
 ## Recommended Local Gate Before PR
 
 1. `npm run typecheck`
 2. `npm run lint`
 3. `npm test`
 4. `npm run build`
+5. run docs command checks for newly documented command paths
 
-## What To Test For Auth/Account Changes
+* * *
+
+## Auth/Account Change Test Matrix
 
 | Area | Minimum checks |
 | --- | --- |
-| Login flow | `codex auth login` completes OAuth and stores real account |
-| Listing/switching | `codex auth list` and `codex auth switch <index>` behave correctly |
-| Health commands | `codex auth check`, `forecast`, `fix`, `doctor`, `report` output sane results |
-| Storage durability | corrupted/partial write recovery still works (backup/WAL path) |
-| Sync behavior | active account sync to Codex CLI state |
-| No-restart updates | live account sync reacts to storage mutations |
+| Login flow | `codex auth login` completes and stores real account data |
+| Switching flow | `codex auth switch <index>` updates active account behavior |
+| Health operations | `check`, `forecast`, `fix`, `doctor`, `report` produce sane output |
+| Storage durability | backup/WAL recovery remains valid |
+| CLI state sync | active account sync with Codex CLI files |
+| Live updates | account changes picked up without restart |
 
-## Manual Smoke Script
+* * *
+
+## Manual Smoke Pack
 
 ```bash
 codex auth login
 codex auth list
+codex auth check
 codex auth forecast --live
 codex auth fix --dry-run
 codex auth doctor --fix --dry-run
 codex auth report --live --json
 ```
 
-## OpenCode Plugin Smoke
+Optional plugin-host smoke:
 
 ```bash
-opencode run "hello" --model=openai/gpt-5.1 --variant=medium
+<run-your-host-runtime-smoke-command>
 ```
 
-Validate:
+* * *
 
-- request succeeds
-- no ID-related stateless errors
-- fallback/rotation behavior looks correct when induced
-
-## Failure-Mode Test Ideas
+## Failure-Mode Scenarios
 
 | Scenario | Expected behavior |
 | --- | --- |
-| OAuth callback port in use | clear error path, no crash |
-| Invalid refresh token | account marked unhealthy; fix/doctor reports it |
-| All accounts rate-limited | forecast/report reflect wait and recommendation |
-| Storage write failure | `StorageError` includes path/code/hint |
-| Unsupported model | strict/fallback policy applied per config |
+| OAuth callback port conflict | clean error and retry path |
+| Invalid/expired refresh token | account flagged/disabled by policy tools |
+| All accounts rate-limited | forecast/report show wait and recommendation |
+| Storage write error | `StorageError` has actionable hint |
+| Unsupported model | policy fallback or strict failure as configured |
+| Stream stalls | stream failover logic engages by policy |
 
-## Benchmark Notes
+* * *
 
-Code edit format benchmark docs:
+## Docs QA (when docs change)
 
-- [../benchmarks/code-edit-format-benchmark.md](../benchmarks/code-edit-format-benchmark.md)
+1. Verify every command snippet is runnable.
+2. Verify path references against runtime modules.
+3. Verify cross-links are valid.
+4. Verify feature matrix stays in sync with implemented features.
+
+* * *
 
 ## Related
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
-- [CONFIG_FLOW.md](CONFIG_FLOW.md)
-
+- [CONFIG_FIELDS.md](CONFIG_FIELDS.md)
+- [../DOCUMENTATION.md](../DOCUMENTATION.md)
+- [../benchmarks/code-edit-format-benchmark.md](../benchmarks/code-edit-format-benchmark.md)

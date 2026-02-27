@@ -242,7 +242,7 @@ export function createEntitlementErrorResponse(_bodyText: string): Response {
         const message = 
                 "This model is not included in your ChatGPT subscription. " +
                 "Please check that your account or workspace has access to Codex models (Plus/Pro/Business/Enterprise). " +
-                "If you recently subscribed or switched workspaces, try logging out and back in with `opencode auth login`.";
+                "If you recently subscribed or switched workspaces, try logging out and back in with `codex login`.";
         
         const payload = {
                 error: {
@@ -729,7 +729,7 @@ function normalizeErrorPayload(
                                 payload.error.diagnostics = diagnostics;
                         }
                         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                                payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
                         }
                         return payload;
                 }
@@ -740,7 +740,7 @@ function normalizeErrorPayload(
                                 payload.error.diagnostics = diagnostics;
                         }
                         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                                payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
                         }
                         return payload;
                 }
@@ -753,7 +753,7 @@ function normalizeErrorPayload(
                         payload.error.diagnostics = diagnostics;
                 }
                 if (status === HTTP_STATUS.UNAUTHORIZED) {
-                        payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                        payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
                 }
                 return payload;
         }
@@ -764,7 +764,7 @@ function normalizeErrorPayload(
                         payload.error.diagnostics = diagnostics;
                 }
                 if (status === HTTP_STATUS.UNAUTHORIZED) {
-                        payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                        payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
                 }
                 return payload;
         }
@@ -774,7 +774,7 @@ function normalizeErrorPayload(
                 payload.error.diagnostics = diagnostics;
         }
         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
         }
         return payload;
 }
