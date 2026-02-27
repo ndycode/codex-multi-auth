@@ -1,6 +1,6 @@
 # CLI/UI Deepsearch Audit
 
-Date: 2026-02-28  
+Date: 2026-02-27  
 Scope: `index.ts`, `lib/**`, `test/**`, `docs/**` (excluding `dist/**`)
 
 ## Objective
@@ -39,6 +39,17 @@ Capture a comprehensive map of implemented CLI/UI behavior, highlight useful adv
 - Draft-saving side effects on each toggle were removed from settings loops.
 - Theme preview keeps live feedback while restoring baseline theme on cancel.
 - Help copy and command reference were updated to match the new `Q` semantics.
+
+## Upgrade Notes
+
+- User-visible change: `Q` in settings sub-panels is now `cancel/back` and does not save draft changes.
+- Migration/update action: users who previously relied on `Q` to save must use `S` to save before exiting each settings panel.
+- Regression reference: the no-save-on-cancel contract is covered in `test/codex-manager-cli.test.ts` (cancel-path regression test).
+
+## NPM Scripts Impact
+
+- None. No new npm scripts were added, removed, or renamed.
+- Existing validation flow remains unchanged: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`.
 
 ## Test Coverage Notes
 

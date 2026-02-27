@@ -11,7 +11,9 @@ import {
   type DashboardStatuslineField,
 } from "../dashboard-settings.js";
 import { getDefaultPluginConfig, loadPluginConfig, savePluginConfig } from "../config.js";
+import { getUnifiedSettingsPath } from "../unified-settings.js";
 import type { PluginConfig } from "../types.js";
+import { sleep } from "../utils.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
@@ -513,6 +515,196 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 	},
 ];
 
+type DashboardSettingKey = keyof DashboardDisplaySettings;
+
+const RETRYABLE_SETTINGS_WRITE_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
+const SETTINGS_WRITE_BASE_DELAY_MS = 20;
+const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
+const settingsWriteQueues = new Map<string, Promise<void>>();
+
+const ACCOUNT_LIST_PANEL_KEYS = [
+	"menuShowStatusBadge",
+	"menuShowCurrentBadge",
+	"menuShowLastUsed",
+	"menuShowQuotaSummary",
+	"menuShowQuotaCooldown",
+	"menuShowFetchStatus",
+	"menuShowDetailsForUnselectedRows",
+	"menuHighlightCurrentRow",
+	"menuSortEnabled",
+	"menuSortMode",
+	"menuSortPinCurrent",
+	"menuSortQuickSwitchVisibleRow",
+	"menuLayoutMode",
+] as const satisfies readonly DashboardSettingKey[];
+
+const STATUSLINE_PANEL_KEYS = ["menuStatuslineFields"] as const satisfies readonly DashboardSettingKey[];
+const BEHAVIOR_PANEL_KEYS = [
+	"actionAutoReturnMs",
+	"actionPauseOnKey",
+	"menuAutoFetchLimits",
+	"menuShowFetchStatus",
+	"menuQuotaTtlMs",
+] as const satisfies readonly DashboardSettingKey[];
+const THEME_PANEL_KEYS = ["uiThemePreset", "uiAccentColor"] as const satisfies readonly DashboardSettingKey[];
+
+function readErrorNumber(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value === "string" && value.trim().length > 0) {
+		const parsed = Number.parseInt(value, 10);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return undefined;
+}
+
+function getErrorStatusCode(error: unknown): number | undefined {
+	if (!error || typeof error !== "object") return undefined;
+	const record = error as Record<string, unknown>;
+	return readErrorNumber(record.status) ?? readErrorNumber(record.statusCode);
+}
+
+function getRetryAfterMs(error: unknown): number | undefined {
+	if (!error || typeof error !== "object") return undefined;
+	const record = error as Record<string, unknown>;
+	return (
+		readErrorNumber(record.retryAfterMs) ??
+		readErrorNumber(record.retry_after_ms) ??
+		readErrorNumber(record.retryAfter) ??
+		readErrorNumber(record.retry_after)
+	);
+}
+
+function isRetryableSettingsWriteError(error: unknown): boolean {
+	const statusCode = getErrorStatusCode(error);
+	if (statusCode === 429) return true;
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_SETTINGS_WRITE_CODES.has(code);
+}
+
+function resolveRetryDelayMs(error: unknown, attempt: number): number {
+	const retryAfterMs = getRetryAfterMs(error);
+	if (typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+		const normalized = retryAfterMs <= 60 ? retryAfterMs * 1_000 : retryAfterMs;
+		return Math.max(10, Math.min(SETTINGS_WRITE_MAX_DELAY_MS, Math.round(normalized)));
+	}
+	return Math.min(SETTINGS_WRITE_MAX_DELAY_MS, SETTINGS_WRITE_BASE_DELAY_MS * 2 ** attempt);
+}
+
+async function enqueueSettingsWrite<T>(pathKey: string, task: () => Promise<T>): Promise<T> {
+	const previous = settingsWriteQueues.get(pathKey) ?? Promise.resolve();
+	const queued = previous.catch(() => {}).then(task);
+	const queueTail = queued.then(
+		() => undefined,
+		() => undefined,
+	);
+	settingsWriteQueues.set(pathKey, queueTail);
+	try {
+		return await queued;
+	} finally {
+		if (settingsWriteQueues.get(pathKey) === queueTail) {
+			settingsWriteQueues.delete(pathKey);
+		}
+	}
+}
+
+async function withQueuedRetry<T>(pathKey: string, task: () => Promise<T>): Promise<T> {
+	return enqueueSettingsWrite(pathKey, async () => {
+		let lastError: unknown;
+		for (let attempt = 0; attempt < SETTINGS_WRITE_MAX_ATTEMPTS; attempt += 1) {
+			try {
+				return await task();
+			} catch (error) {
+				lastError = error;
+				if (!isRetryableSettingsWriteError(error) || attempt + 1 >= SETTINGS_WRITE_MAX_ATTEMPTS) {
+					throw error;
+				}
+				await sleep(resolveRetryDelayMs(error, attempt));
+			}
+		}
+		throw lastError instanceof Error ? lastError : new Error("settings save retry exhausted");
+	});
+}
+
+function copyDashboardSettingValue(
+	target: DashboardDisplaySettings,
+	source: DashboardDisplaySettings,
+	key: DashboardSettingKey,
+): void {
+	const value = source[key];
+	(target as unknown as Record<string, unknown>)[key] = Array.isArray(value) ? [...value] : value;
+}
+
+function applyDashboardDefaultsForKeys(
+	draft: DashboardDisplaySettings,
+	keys: readonly DashboardSettingKey[],
+): DashboardDisplaySettings {
+	const next = cloneDashboardSettings(draft);
+	const defaults = cloneDashboardSettings(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+	for (const key of keys) {
+		copyDashboardSettingValue(next, defaults, key);
+	}
+	return next;
+}
+
+function mergeDashboardSettingsForKeys(
+	base: DashboardDisplaySettings,
+	selected: DashboardDisplaySettings,
+	keys: readonly DashboardSettingKey[],
+): DashboardDisplaySettings {
+	const next = cloneDashboardSettings(base);
+	for (const key of keys) {
+		copyDashboardSettingValue(next, selected, key);
+	}
+	return cloneDashboardSettings(next);
+}
+
+function resolvePluginConfigSavePathKey(): string {
+	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
+	return envPath.length > 0 ? envPath : getUnifiedSettingsPath();
+}
+
+function formatPersistError(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	return String(error);
+}
+
+function warnPersistFailure(scope: string, error: unknown): void {
+	console.warn(`Settings save failed (${scope}) after retries: ${formatPersistError(error)}`);
+}
+
+async function persistDashboardSettingsSelection(
+	selected: DashboardDisplaySettings,
+	keys: readonly DashboardSettingKey[],
+	scope: string,
+): Promise<DashboardDisplaySettings> {
+	const fallback = cloneDashboardSettings(selected);
+	try {
+		return await withQueuedRetry(getDashboardSettingsPath(), async () => {
+			const latest = cloneDashboardSettings(await loadDashboardDisplaySettings());
+			const merged = mergeDashboardSettingsForKeys(latest, selected, keys);
+			await saveDashboardDisplaySettings(merged);
+			return merged;
+		});
+	} catch (error) {
+		warnPersistFailure(scope, error);
+		return fallback;
+	}
+}
+
+async function persistBackendConfigSelection(selected: PluginConfig, scope: string): Promise<PluginConfig> {
+	const fallback = cloneBackendPluginConfig(selected);
+	try {
+		await withQueuedRetry(resolvePluginConfigSavePathKey(), async () => {
+			await savePluginConfig(buildBackendConfigPatch(selected));
+		});
+		return fallback;
+	} catch (error) {
+		warnPersistFailure(scope, error);
+		return fallback;
+	}
+}
+
 function normalizeStatuslineFields(
 	fields: DashboardStatuslineField[] | undefined,
 ): DashboardStatuslineField[] {
@@ -1004,7 +1196,7 @@ async function promptDashboardDisplaySettings(
 			return draft;
 		}
 		if (result.type === "reset") {
-			draft = cloneDashboardSettings(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+			draft = applyDashboardDefaultsForKeys(draft, ACCOUNT_LIST_PANEL_KEYS);
 			focusKey = DASHBOARD_DISPLAY_OPTIONS[0]?.key ?? focusKey;
 			continue;
 		}
@@ -1056,9 +1248,9 @@ async function configureDashboardDisplaySettings(
 	if (!selected) return current;
 	if (dashboardSettingsEqual(current, selected)) return current;
 
-	await saveDashboardDisplaySettings(selected);
-	applyUiThemeFromDashboardSettings(selected);
-	return selected;
+	const merged = await persistDashboardSettingsSelection(selected, ACCOUNT_LIST_PANEL_KEYS, "account-list");
+	applyUiThemeFromDashboardSettings(merged);
+	return merged;
 }
 
 function reorderField(
@@ -1188,7 +1380,7 @@ async function promptStatuslineSettings(
 			return draft;
 		}
 		if (result.type === "reset") {
-			draft = cloneDashboardSettings(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+			draft = applyDashboardDefaultsForKeys(draft, STATUSLINE_PANEL_KEYS);
 			focusKey = draft.menuStatuslineFields?.[0] ?? "last-used";
 			continue;
 		}
@@ -1249,9 +1441,9 @@ async function configureStatuslineSettings(
 	if (!selected) return current;
 	if (dashboardSettingsEqual(current, selected)) return current;
 
-	await saveDashboardDisplaySettings(selected);
-	applyUiThemeFromDashboardSettings(selected);
-	return selected;
+	const merged = await persistDashboardSettingsSelection(selected, STATUSLINE_PANEL_KEYS, "summary-fields");
+	applyUiThemeFromDashboardSettings(merged);
+	return merged;
 }
 
 function formatDelayLabel(delayMs: number): string {
@@ -1367,7 +1559,7 @@ async function promptBehaviorSettings(
 		if (!result || result.type === "cancel") return null;
 		if (result.type === "save") return draft;
 		if (result.type === "reset") {
-			draft = cloneDashboardSettings(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+			draft = applyDashboardDefaultsForKeys(draft, BEHAVIOR_PANEL_KEYS);
 			focus = { type: "set-delay", delayMs: draft.actionAutoReturnMs ?? 2_000 };
 			continue;
 		}
@@ -1499,7 +1691,7 @@ async function promptThemeSettings(
 		}
 		if (result.type === "save") return draft;
 		if (result.type === "reset") {
-			draft = cloneDashboardSettings(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+			draft = applyDashboardDefaultsForKeys(draft, THEME_PANEL_KEYS);
 			focus = { type: "set-palette", palette: draft.uiThemePreset ?? "green" };
 			applyUiThemeFromDashboardSettings(draft);
 			continue;
@@ -1822,8 +2014,7 @@ async function configureBackendSettings(
 	if (!selected) return current;
 	if (backendSettingsEqual(current, selected)) return current;
 
-	await savePluginConfig(buildBackendConfigPatch(selected));
-	return selected;
+	return persistBackendConfigSelection(selected, "backend");
 }
 
 async function promptSettingsHub(
@@ -1888,16 +2079,14 @@ async function configureUnifiedSettings(
 		if (action.type === "behavior") {
 			const selected = await promptBehaviorSettings(current);
 			if (selected && !dashboardSettingsEqual(current, selected)) {
-				current = selected;
-				await saveDashboardDisplaySettings(current);
+				current = await persistDashboardSettingsSelection(selected, BEHAVIOR_PANEL_KEYS, "behavior");
 			}
 			continue;
 		}
 		if (action.type === "theme") {
 			const selected = await promptThemeSettings(current);
 			if (selected && !dashboardSettingsEqual(current, selected)) {
-				current = selected;
-				await saveDashboardDisplaySettings(current);
+				current = await persistDashboardSettingsSelection(selected, THEME_PANEL_KEYS, "theme");
 				applyUiThemeFromDashboardSettings(current);
 			}
 			continue;
