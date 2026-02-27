@@ -135,5 +135,6 @@ Include:
 - `codex auth report --json`
 - `codex auth doctor --json`
 - `codex --version`
-- `npm ls -g @ndycode/codex-multi-auth`
+- `npm ls -g codex-multi-auth`
 - failing command and full output
+
