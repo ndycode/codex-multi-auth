@@ -34,6 +34,12 @@ describe('Auth Module', () => {
 			expect(result).toEqual({ code: 'abc123', state: 'xyz789' });
 		});
 
+		it('should parse localhost callback URL for backward compatibility', () => {
+			const input = 'http://localhost:1455/auth/callback?code=abc123&state=xyz789';
+			const result = parseAuthorizationInput(input);
+			expect(result).toEqual({ code: 'abc123', state: 'xyz789' });
+		});
+
 		it('should parse code#state format', () => {
 			const input = 'abc123#xyz789';
 			const result = parseAuthorizationInput(input);

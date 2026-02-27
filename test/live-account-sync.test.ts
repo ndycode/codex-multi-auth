@@ -74,5 +74,41 @@ describe("live-account-sync", () => {
 		expect(reload).not.toHaveBeenCalled();
 		expect(sync.getSnapshot().running).toBe(false);
 	});
+
+	it("counts poll errors when stat throws non-retryable errors", async () => {
+		const reload = vi.fn(async () => undefined);
+		const sync = new LiveAccountSync(reload, { pollIntervalMs: 500, debounceMs: 50 });
+
+		await sync.syncToPath(storagePath);
+		const statSpy = vi.spyOn(fs, "stat");
+		statSpy.mockRejectedValueOnce(Object.assign(new Error("disk fault"), { code: "EIO" }));
+
+		await vi.advanceTimersByTimeAsync(600);
+
+		expect(sync.getSnapshot().errorCount).toBeGreaterThan(0);
+		statSpy.mockRestore();
+		sync.stop();
+	});
+
+	it("coalesces overlapping reload attempts into a single in-flight reload", async () => {
+		let resolveReload: (() => void) | undefined;
+		const reloadStarted = new Promise<void>((resolve) => {
+			resolveReload = resolve;
+		});
+		const reload = vi.fn(async () => reloadStarted);
+		const sync = new LiveAccountSync(reload, { pollIntervalMs: 500, debounceMs: 50 });
+		await sync.syncToPath(storagePath);
+
+		const runReload = Reflect.get(sync, "runReload") as (reason: "watch" | "poll") => Promise<void>;
+		const invoke = (reason: "watch" | "poll") =>
+			Reflect.apply(runReload as (...args: unknown[]) => unknown, sync as object, [reason]) as Promise<void>;
+		const first = invoke("poll");
+		const second = invoke("watch");
+		resolveReload?.();
+		await Promise.all([first, second]);
+
+		expect(reload).toHaveBeenCalledTimes(1);
+		sync.stop();
+	});
 });
 
