@@ -1,6 +1,6 @@
 {
   "name": "codex-multi-auth",
-  "version": "0.1.0-beta.0",
+  "version": "0.1.0",
   "description": "Codex CLI-first multi-account OAuth rotation plugin for OpenCode",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
