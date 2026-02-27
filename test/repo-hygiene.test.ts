@@ -127,4 +127,18 @@ describe("repo-hygiene script", () => {
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("task_plan.md");
 	});
+
+	it("fails check when git is unavailable for ls-files", async () => {
+		fixtureRoot = makeRepoFixture();
+		const root = fixtureRoot;
+		await fs.writeFile(path.join(root, ".gitignore"), requiredGitignore);
+
+		const originalPath = process.env.PATH ?? "";
+		process.env.PATH = "";
+		const result = runRepoHygiene(["check", "--root", root]);
+		process.env.PATH = originalPath;
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("git ls-files failed in getTrackedPaths");
+	});
 });

@@ -134,7 +134,7 @@ function isDeepTempCandidate(name, isDirectory) {
 	return false;
 }
 
-async function collectNestedTempCandidates(rootPath, dirPath, candidates) {
+async function collectNestedTempCandidates(rootPath, dirPath, addCandidate) {
 	const entries = await fs.readdir(dirPath, { withFileTypes: true });
 	for (const entry of entries) {
 		const entryPath = path.join(dirPath, entry.name);
@@ -142,17 +142,17 @@ async function collectNestedTempCandidates(rootPath, dirPath, candidates) {
 			continue;
 		}
 		if (isDeepTempCandidate(entry.name, entry.isDirectory())) {
-			candidates.push({
-				name: path.relative(rootPath, entryPath).replaceAll("\\", "/"),
-				path: entryPath,
-				isDirectory: entry.isDirectory(),
-			});
+			addCandidate(
+				path.relative(rootPath, entryPath).replaceAll("\\", "/"),
+				entryPath,
+				entry.isDirectory(),
+			);
 			if (entry.isDirectory()) {
 				continue;
 			}
 		}
 		if (entry.isDirectory()) {
-			await collectNestedTempCandidates(rootPath, entryPath, candidates);
+			await collectNestedTempCandidates(rootPath, entryPath, addCandidate);
 		}
 	}
 }
@@ -178,7 +178,7 @@ async function collectCandidates(rootPath) {
 		addCandidate(entry.name, path.join(rootPath, entry.name), entry.isDirectory());
 	}
 
-	await collectNestedTempCandidates(rootPath, rootPath, candidates);
+	await collectNestedTempCandidates(rootPath, rootPath, addCandidate);
 	return candidates;
 }
 
@@ -213,10 +213,9 @@ function getTrackedPaths(rootPath) {
 		});
 		return output.split(/\r?\n/).filter(Boolean);
 	} catch (error) {
-		console.warn(
-			`repo-hygiene warning: git ls-files failed in getTrackedPaths: ${error instanceof Error ? error.message : String(error)}`,
+		throw new Error(
+			`git ls-files failed in getTrackedPaths: ${error instanceof Error ? error.message : String(error)}`,
 		);
-		return [];
 	}
 }
 
