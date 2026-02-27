@@ -20,6 +20,17 @@ const TRACKED_SCRATCH_FILES = new Set([
 	"progress.md",
 	"test-results.md",
 ]);
+const TRAVERSAL_SKIP_DIRS = new Set([
+	".git",
+	"node_modules",
+	"dist",
+	"coverage",
+	"vendor",
+	".omx",
+	".opencode",
+	".sisyphus",
+	".history",
+]);
 const REQUIRED_GITIGNORE_PATTERNS = [
 	"tmp",
 	".tmp",
@@ -105,22 +116,61 @@ function isProtectedName(name) {
 	].includes(name);
 }
 
-async function collectCandidates(rootPath) {
-	const entries = await fs.readdir(rootPath, { withFileTypes: true });
-	const candidates = [];
+function isDeepTempCandidate(name, isDirectory) {
+	if (isDirectory && (name === "tmp" || ROOT_TEMP_PATTERN.test(name))) {
+		return true;
+	}
+	if (!isDirectory && (name.startsWith(".tmp") || name.endsWith(".tmp"))) {
+		return true;
+	}
+	return false;
+}
+
+async function collectNestedTempCandidates(rootPath, dirPath, candidates) {
+	const entries = await fs.readdir(dirPath, { withFileTypes: true });
 	for (const entry of entries) {
+		const entryPath = path.join(dirPath, entry.name);
+		if (entry.isDirectory() && TRAVERSAL_SKIP_DIRS.has(entry.name)) {
+			continue;
+		}
+		if (isDeepTempCandidate(entry.name, entry.isDirectory())) {
+			candidates.push({
+				name: path.relative(rootPath, entryPath).replaceAll("\\", "/"),
+				path: entryPath,
+				isDirectory: entry.isDirectory(),
+			});
+			if (entry.isDirectory()) {
+				continue;
+			}
+		}
+		if (entry.isDirectory()) {
+			await collectNestedTempCandidates(rootPath, entryPath, candidates);
+		}
+	}
+}
+
+async function collectCandidates(rootPath) {
+	const rootEntries = await fs.readdir(rootPath, { withFileTypes: true });
+	const candidates = [];
+	const candidatePaths = new Set();
+	const addCandidate = (name, candidatePath, isDirectory) => {
+		if (candidatePaths.has(candidatePath)) {
+			return;
+		}
+		candidatePaths.add(candidatePath);
+		candidates.push({ name, path: candidatePath, isDirectory });
+	};
+	for (const entry of rootEntries) {
 		if (isProtectedName(entry.name)) {
 			continue;
 		}
 		if (!isDeletionCandidate(entry.name, entry.isDirectory())) {
 			continue;
 		}
-		candidates.push({
-			name: entry.name,
-			path: path.join(rootPath, entry.name),
-			isDirectory: entry.isDirectory(),
-		});
+		addCandidate(entry.name, path.join(rootPath, entry.name), entry.isDirectory());
 	}
+
+	await collectNestedTempCandidates(rootPath, rootPath, candidates);
 	return candidates;
 }
 

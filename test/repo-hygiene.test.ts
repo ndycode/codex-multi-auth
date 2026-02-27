@@ -53,6 +53,8 @@ describe("repo-hygiene script", () => {
 		await fs.writeFile(path.join(root, ".gitignore"), requiredGitignore);
 		await fs.mkdir(path.join(root, "lib"), { recursive: true });
 		await fs.writeFile(path.join(root, "lib", "keep.ts"), "export const keep = true;\n");
+		await fs.mkdir(path.join(root, "test", "tmp"), { recursive: true });
+		await fs.writeFile(path.join(root, "test", "tmp", "dummy.json"), "{}");
 		await fs.mkdir(path.join(root, "coverage"), { recursive: true });
 		await fs.writeFile(path.join(root, "coverage", "index.html"), "coverage");
 		await fs.writeFile(path.join(root, "tmp-pr4-unresolved-audit.txt"), "trash");
@@ -63,6 +65,7 @@ describe("repo-hygiene script", () => {
 		await expect(fs.stat(path.join(root, "lib", "keep.ts"))).resolves.toBeDefined();
 		await expect(fs.stat(path.join(root, "coverage"))).rejects.toThrow();
 		await expect(fs.stat(path.join(root, "tmp-pr4-unresolved-audit.txt"))).rejects.toThrow();
+		await expect(fs.stat(path.join(root, "test", "tmp"))).rejects.toThrow();
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
