@@ -1,7 +1,8 @@
 import { existsSync, promises as fs } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
+import { isRecord, sleep } from "./utils.js";
 
 export interface QuotaCacheWindow {
 	usedPercent?: number;
@@ -30,28 +31,12 @@ interface QuotaCacheFile {
 }
 
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
+const QUOTA_CACHE_LABEL = basename(QUOTA_CACHE_PATH);
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Type guard that narrows a value to a non-null object with string keys.
- *
- * This predicate treats arrays and other non-primitive objects as objects (they will pass).
- * Concurrent-safe; performs no filesystem I/O; does not perform any token redaction.
- *
- * @param value - The value to test
- * @returns `true` if `value` is a non-null object (narrowed to `Record<string, unknown>`), `false` otherwise.
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
@@ -134,6 +119,22 @@ function normalizeEntryMap(value: unknown): Record<string, QuotaCacheEntry> {
 	return entries;
 }
 
+async function readCacheFileWithRetry(path: string): Promise<string> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await fs.readFile(path, "utf8");
+		} catch (error) {
+			lastError = error;
+			if (!isRetryableFsError(error) || attempt >= 4) {
+				throw error;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error("quota cache read retry exhausted");
+}
+
 /**
  * Get the absolute filesystem path to the quota-cache.json file.
  *
@@ -172,7 +173,7 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 	}
 
 	try {
-		const content = await fs.readFile(QUOTA_CACHE_PATH, "utf8");
+		const content = await readCacheFileWithRetry(QUOTA_CACHE_PATH);
 		const parsed = JSON.parse(content) as unknown;
 		if (!isRecord(parsed)) {
 			return { byAccountId: {}, byEmail: {} };
@@ -188,7 +189,7 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 		};
 	} catch (error) {
 		logWarn(
-			`Failed to load quota cache from ${QUOTA_CACHE_PATH}: ${
+			`Failed to load quota cache from ${QUOTA_CACHE_LABEL}: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
@@ -252,7 +253,7 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 		}
 	} catch (error) {
 		logWarn(
-			`Failed to save quota cache to ${QUOTA_CACHE_PATH}: ${
+			`Failed to save quota cache to ${QUOTA_CACHE_LABEL}: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { promises as fsPromises } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__resetCodexCliWarningCacheForTests,
 	clearCodexCliStateCache,
@@ -144,6 +144,72 @@ describe("codex-cli state", () => {
 			expect(accountReads.length).toBe(1);
 		} finally {
 			readSpy.mockRestore();
+		}
+	});
+
+	it("retries transient read/stat lock errors before failing", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "a.b.c",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		clearCodexCliStateCache();
+
+		const realReadFile = fsPromises.readFile.bind(fsPromises);
+		const realStat = fsPromises.stat.bind(fsPromises);
+		let accountsReadAttempts = 0;
+		let accountsStatAttempts = 0;
+		const readSpy = vi.spyOn(fsPromises, "readFile");
+		const statSpy = vi.spyOn(fsPromises, "stat");
+		readSpy.mockImplementation(async (...args) => {
+			if (String(args[0]) === accountsPath) {
+				accountsReadAttempts += 1;
+				if (accountsReadAttempts === 1) {
+					const error = new Error("locked") as NodeJS.ErrnoException;
+					error.code = "EPERM";
+					throw error;
+				}
+			}
+			return realReadFile(...args);
+		});
+		statSpy.mockImplementation(async (...args) => {
+			if (String(args[0]) === accountsPath) {
+				accountsStatAttempts += 1;
+				if (accountsStatAttempts === 1) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+			}
+			return realStat(...args);
+		});
+
+		try {
+			const state = await loadCodexCliState({ forceRefresh: true });
+			expect(state?.activeAccountId).toBe("acc_a");
+			expect(accountsReadAttempts).toBe(2);
+			expect(accountsStatAttempts).toBe(2);
+		} finally {
+			readSpy.mockRestore();
+			statSpy.mockRestore();
 		}
 	});
 

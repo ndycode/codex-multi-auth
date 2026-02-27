@@ -2,6 +2,24 @@ import { describe, expect, it } from "vitest";
 import { evaluateFailurePolicy } from "../lib/request/failure-policy.js";
 
 describe("failure policy", () => {
+	it.each([
+		[0, false],
+		[2, false],
+		[3, true],
+	] as const)(
+		"handles auth-refresh removal boundary for failures=%s",
+		(consecutiveAuthFailures, removeAccount) => {
+			const decision = evaluateFailurePolicy({
+				kind: "auth-refresh",
+				consecutiveAuthFailures,
+				maxAuthFailuresBeforeRemoval: 3,
+			});
+			expect(decision.removeAccount).toBe(removeAccount);
+			expect(decision.rotateAccount).toBe(true);
+			expect(decision.handoffStrategy).toBe("hard");
+		},
+	);
+
 	it("removes account when auth refresh failures exceed threshold", () => {
 		const decision = evaluateFailurePolicy({
 			kind: "auth-refresh",
@@ -87,6 +105,25 @@ describe("failure policy", () => {
 		},
 	);
 
+	it.each([
+		["aggressive", false, undefined, true],
+		["balanced", false, undefined, true],
+		["conservative", true, 500, false],
+	] as const)(
+		"applies server mode matrix for %s",
+		(mode, retrySameAccount, retryDelayMs, rotateAccount) => {
+			const decision = evaluateFailurePolicy({
+				kind: "server",
+				failoverMode: mode,
+				serverRetryAfterMs: 0,
+			});
+			expect(decision.retrySameAccount).toBe(retrySameAccount);
+			expect(decision.retryDelayMs).toBe(retryDelayMs);
+			expect(decision.rotateAccount).toBe(rotateAccount);
+			expect(decision.handoffStrategy).toBe("hard");
+		},
+	);
+
 	it("retries same account for conservative server mode without retry-after", () => {
 		const decision = evaluateFailurePolicy({
 			kind: "server",
@@ -111,6 +148,21 @@ describe("failure policy", () => {
 		expect(decision.cooldownMs).toBe(3_000);
 	});
 
+	it("uses override cooldowns for network and server kinds", () => {
+		const network = evaluateFailurePolicy(
+			{ kind: "network", failoverMode: "aggressive" },
+			{ networkCooldownMs: 0 },
+		);
+		const server = evaluateFailurePolicy(
+			{ kind: "server", failoverMode: "aggressive", serverRetryAfterMs: 0 },
+			{ serverCooldownMs: 0 },
+		);
+		expect(network.cooldownMs).toBe(0);
+		expect(network.cooldownReason).toBeUndefined();
+		expect(server.cooldownMs).toBe(0);
+		expect(server.cooldownReason).toBeUndefined();
+	});
+
 	it.each([
 		["aggressive", false, undefined],
 		["balanced", true, 200],
@@ -129,4 +181,16 @@ describe("failure policy", () => {
 			expect(decision.handoffStrategy).toBe("soft");
 		},
 	);
+
+	it("falls back to default hard-handoff policy for unknown failure kind", () => {
+		const decision = evaluateFailurePolicy({ kind: "unknown" as never });
+		expect(decision).toMatchObject({
+			rotateAccount: true,
+			refundToken: true,
+			recordFailure: true,
+			removeAccount: false,
+			retrySameAccount: false,
+			handoffStrategy: "hard",
+		});
+	});
 });

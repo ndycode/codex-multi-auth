@@ -1035,6 +1035,32 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
 	});
 
+	it("does not penalize account health when fetch is aborted by user", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
+		const recordFailureSpy = vi.spyOn(AccountManager.prototype, "recordFailure");
+		const markCooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		const refundSpy = vi.spyOn(AccountManager.prototype, "refundToken");
+		const capabilityFailureSpy = vi.spyOn(CapabilityPolicyStore.prototype, "recordFailure");
+		const abortError = Object.assign(new Error("aborted by user"), { name: "AbortError" });
+		globalThis.fetch = vi.fn().mockRejectedValue(abortError);
+
+		const { sdk } = await setupPlugin();
+		const controller = new AbortController();
+		controller.abort(abortError);
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+			signal: controller.signal,
+		});
+
+		expect(response.status).toBe(503);
+		expect(recordFailureSpy).not.toHaveBeenCalled();
+		expect(markCooldownSpy).not.toHaveBeenCalled();
+		expect(refundSpy).not.toHaveBeenCalled();
+		expect(capabilityFailureSpy).not.toHaveBeenCalled();
+	});
+
 	it("skips fetch when local token bucket is depleted", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const consumeSpy = vi.spyOn(AccountManager.prototype, "consumeToken").mockReturnValue(false);
