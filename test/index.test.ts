@@ -91,7 +91,7 @@ vi.mock("../lib/config.js", () => ({
 	getPidOffsetEnabled: () => false,
 	getFetchTimeoutMs: () => 60000,
 	getStreamStallTimeoutMs: () => 45000,
-	getLiveAccountSync: () => false,
+	getLiveAccountSync: vi.fn(() => false),
 	getLiveAccountSyncDebounceMs: () => 250,
 	getLiveAccountSyncPollMs: () => 2000,
 	getSessionAffinity: () => false,
@@ -111,6 +111,26 @@ vi.mock("../lib/config.js", () => ({
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
 	loadPluginConfig: () => ({}),
+}));
+
+const liveAccountSyncSyncToPathMock = vi.fn(async () => {});
+const liveAccountSyncStopMock = vi.fn();
+const liveAccountSyncCtorMock = vi.fn(
+	class MockLiveAccountSync {
+		syncToPath = liveAccountSyncSyncToPathMock;
+		stop = liveAccountSyncStopMock;
+
+		getSnapshot() {
+			return {
+				running: true,
+				reloadCount: 0,
+			};
+		}
+	},
+);
+
+vi.mock("../lib/live-account-sync.js", () => ({
+	LiveAccountSync: liveAccountSyncCtorMock,
 }));
 
 vi.mock("../lib/request/request-transformer.js", () => ({
@@ -537,6 +557,34 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.apiKey).toBeDefined();
 			expect(result.baseURL).toBeDefined();
 			expect(result.fetch).toBeDefined();
+		});
+
+		it("serializes live sync setup when loader is called concurrently", async () => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getLiveAccountSync).mockReturnValue(true);
+			liveAccountSyncCtorMock.mockClear();
+			liveAccountSyncSyncToPathMock.mockClear();
+
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			try {
+				await Promise.all([
+					plugin.auth.loader(getAuth, { options: {}, models: {} }),
+					plugin.auth.loader(getAuth, { options: {}, models: {} }),
+					plugin.auth.loader(getAuth, { options: {}, models: {} }),
+				]);
+
+				expect(liveAccountSyncCtorMock).toHaveBeenCalledTimes(1);
+				expect(liveAccountSyncSyncToPathMock).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.mocked(configModule.getLiveAccountSync).mockReturnValue(false);
+			}
 		});
 	});
 
