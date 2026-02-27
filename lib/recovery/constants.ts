@@ -1,15 +1,21 @@
 /**
  * Constants for session recovery storage paths.
  *
- * Based on opencode-antigravity-auth recovery module.
+ * Adapted from prior recovery module patterns.
  */
 
 import { join } from "node:path";
 import { homedir } from "node:os";
 
 /**
- * Get the XDG data directory for OpenCode storage.
- * Falls back to ~/.local/share on Linux/Mac, or APPDATA on Windows.
+ * Determine the base XDG-style data directory used for Codex storage.
+ *
+ * This function is pure and side-effect free; it is safe to call concurrently from multiple processes.
+ * On Windows it prefers the APPDATA environment variable and falls back to the user's AppData/Roaming directory.
+ * On other platforms it prefers XDG_DATA_HOME and falls back to ~/.local/share.
+ * Returned paths may include the user's home directory; callers should redact or avoid logging any sensitive tokens contained in file names or paths.
+ *
+ * @returns The filesystem path to use as the base data directory for Codex storage.
  */
 function getXdgData(): string {
   const platform = process.platform;
@@ -21,9 +27,9 @@ function getXdgData(): string {
   return process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
 }
 
-export const OPENCODE_STORAGE = join(getXdgData(), "opencode", "storage");
-export const MESSAGE_STORAGE = join(OPENCODE_STORAGE, "message");
-export const PART_STORAGE = join(OPENCODE_STORAGE, "part");
+export const CODEX_STORAGE = join(getXdgData(), "codex", "storage");
+export const MESSAGE_STORAGE = join(CODEX_STORAGE, "message");
+export const PART_STORAGE = join(CODEX_STORAGE, "part");
 
 export const THINKING_TYPES = new Set(["thinking", "redacted_thinking", "reasoning"]);
 export const META_TYPES = new Set(["step-start", "step-finish"]);

@@ -203,6 +203,99 @@ describe("AccountManager", () => {
     expect(manager.getCurrentAccount()?.refreshToken).toBe("refresh-token");
   });
 
+  it("returns account by index and rejects invalid indexes", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        { refreshToken: "token-2", addedAt: now, lastUsed: now },
+      ],
+    };
+
+    const manager = new AccountManager(undefined, stored);
+    expect(manager.getAccountByIndex(0)?.refreshToken).toBe("token-1");
+    expect(manager.getAccountByIndex(1)?.refreshToken).toBe("token-2");
+    expect(manager.getAccountByIndex(-1)).toBeNull();
+    expect(manager.getAccountByIndex(9)).toBeNull();
+    expect(manager.getAccountByIndex(Number.NaN)).toBeNull();
+  });
+
+  it("checks account availability by enabled/rate-limit/cooldown state", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "token-1",
+          addedAt: now,
+          lastUsed: now,
+          enabled: false,
+        },
+        {
+          refreshToken: "token-2",
+          addedAt: now,
+          lastUsed: now,
+          rateLimitResetTimes: { codex: now + 60_000 },
+        },
+        {
+          refreshToken: "token-3",
+          addedAt: now,
+          lastUsed: now,
+          coolingDownUntil: now + 60_000,
+          cooldownReason: "network-error" as const,
+        },
+        {
+          refreshToken: "token-4",
+          addedAt: now,
+          lastUsed: now,
+        },
+      ],
+    };
+
+    const manager = new AccountManager(undefined, stored);
+
+    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(1, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(2, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(3, "codex")).toBe(true);
+  });
+
+  it("returns false for invalid account index in availability checks", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+    };
+    const manager = new AccountManager(undefined, stored);
+    expect(manager.isAccountAvailableForFamily(-1, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(99, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(Number.NaN, "codex")).toBe(false);
+  });
+
+  it("clears expired rate-limit windows before availability check", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "token-1",
+          addedAt: now,
+          lastUsed: now,
+          rateLimitResetTimes: { codex: now - 1_000 },
+        },
+      ],
+    };
+    const manager = new AccountManager(undefined, stored);
+    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(true);
+    const account = manager.getAccountByIndex(0);
+    expect(account?.rateLimitResetTimes?.codex).toBeUndefined();
+  });
+
   it("rotates when the active account is rate-limited", () => {
     const now = Date.now();
     const stored = {

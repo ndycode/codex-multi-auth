@@ -30,6 +30,7 @@ import {
         createAuthorizationFlow,
         exchangeAuthorizationCode,
         parseAuthorizationInput,
+        redactOAuthUrlForLog,
         REDIRECT_URI,
 } from "./lib/auth/auth.js";
 import { queuedRefresh } from "./lib/refresh-queue.js";
@@ -61,6 +62,22 @@ import {
 	getCodexTuiV2,
 	getCodexTuiColorProfile,
 	getCodexTuiGlyphMode,
+	getLiveAccountSync,
+	getLiveAccountSyncDebounceMs,
+	getLiveAccountSyncPollMs,
+	getSessionAffinity,
+	getSessionAffinityTtlMs,
+	getSessionAffinityMaxEntries,
+	getProactiveRefreshGuardian,
+	getProactiveRefreshIntervalMs,
+	getProactiveRefreshBufferMs,
+	getNetworkErrorCooldownMs,
+	getServerErrorCooldownMs,
+	getStorageBackupEnabled,
+	getPreemptiveQuotaEnabled,
+	getPreemptiveQuotaRemainingPercent5h,
+	getPreemptiveQuotaRemainingPercent7d,
+	getPreemptiveQuotaMaxDeferralMs,
 	loadPluginConfig,
 } from "./lib/config.js";
 import {
@@ -114,6 +131,7 @@ import {
 	clearFlaggedAccounts,
 	StorageError,
 	formatStorageErrorHint,
+	setStorageBackupEnabled,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
 } from "./lib/storage.js";
@@ -137,6 +155,23 @@ import {
 } from "./lib/request/rate-limit-backoff.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
 import { addJitter } from "./lib/rotation.js";
+import { SessionAffinityStore } from "./lib/session-affinity.js";
+import { LiveAccountSync } from "./lib/live-account-sync.js";
+import { RefreshGuardian } from "./lib/refresh-guardian.js";
+import {
+	evaluateFailurePolicy,
+	type FailoverMode,
+} from "./lib/request/failure-policy.js";
+import {
+	EntitlementCache,
+	resolveEntitlementAccountKey,
+} from "./lib/entitlement-cache.js";
+import {
+	PreemptiveQuotaScheduler,
+	readQuotaSchedulerSnapshot,
+} from "./lib/preemptive-quota-scheduler.js";
+import { CapabilityPolicyStore } from "./lib/capability-policy.js";
+import { withStreamingFailover } from "./lib/request/stream-failover.js";
 import { buildTableHeader, buildTableRow, type TableOptions } from "./lib/table-formatter.js";
 import { setUiRuntimeOptions, type UiRuntimeOptions } from "./lib/ui/runtime.js";
 import { paintUiText, formatUiBadge, formatUiHeader, formatUiItem, formatUiKeyValue, formatUiSection } from "./lib/ui/format.js";
@@ -165,6 +200,7 @@ import {
 	createHashlineEditTool,
 	createHashlineReadTool,
 } from "./lib/tools/hashline-tools.js";
+import { registerCleanup } from "./lib/shutdown.js";
 
 /**
  * OpenAI Codex OAuth authentication plugin for opencode
@@ -191,9 +227,70 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPrewarmTriggered = false;
 	let lastCodexCliActiveSyncIndex: number | null = null;
 	let perProjectStorageWarningShown = false;
+	let liveAccountSync: LiveAccountSync | null = null;
+	let liveAccountSyncPath: string | null = null;
+	let refreshGuardian: RefreshGuardian | null = null;
+	let refreshGuardianConfigKey: string | null = null;
+	let sessionAffinityStore: SessionAffinityStore | null = new SessionAffinityStore();
+	let sessionAffinityConfigKey: string | null = null;
+	const entitlementCache = new EntitlementCache();
+	const preemptiveQuotaScheduler = new PreemptiveQuotaScheduler();
+	const capabilityPolicyStore = new CapabilityPolicyStore();
+	let accountReloadInFlight: Promise<AccountManager> | null = null;
 	const exposeAdvancedCodexTools =
 		(process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS ?? "").trim() === "1";
 	const MIN_BACKOFF_MS = 100;
+	const STREAM_FAILOVER_MAX_BY_MODE: Record<FailoverMode, number> = {
+		aggressive: 1,
+		balanced: 2,
+		conservative: 2,
+	};
+	const STREAM_FAILOVER_SOFT_TIMEOUT_BY_MODE: Record<FailoverMode, number> = {
+		aggressive: 10_000,
+		balanced: 15_000,
+		conservative: 20_000,
+	};
+
+	const parseFailoverMode = (value: string | undefined): FailoverMode => {
+		const normalized = (value ?? "").trim().toLowerCase();
+		if (normalized === "aggressive") return "aggressive";
+		if (normalized === "conservative") return "conservative";
+		return "balanced";
+	};
+
+	const parseEnvInt = (value: string | undefined): number | undefined => {
+		if (value === undefined) return undefined;
+		const parsed = Number.parseInt(value, 10);
+		return Number.isFinite(parsed) ? parsed : undefined;
+	};
+
+	const sanitizeResponseHeadersForLog = (headers: Headers): Record<string, string> => {
+		const allowed = new Set([
+			"content-type",
+			"x-request-id",
+			"x-openai-request-id",
+			"x-codex-plan-type",
+			"x-codex-active-limit",
+			"x-codex-primary-used-percent",
+			"x-codex-primary-window-minutes",
+			"x-codex-primary-reset-at",
+			"x-codex-primary-reset-after-seconds",
+			"x-codex-secondary-used-percent",
+			"x-codex-secondary-window-minutes",
+			"x-codex-secondary-reset-at",
+			"x-codex-secondary-reset-after-seconds",
+			"retry-after",
+			"x-ratelimit-reset",
+			"x-ratelimit-reset-requests",
+		]);
+		const sanitized: Record<string, string> = {};
+		for (const [rawName, rawValue] of headers.entries()) {
+			const name = rawName.toLowerCase();
+			if (!allowed.has(name)) continue;
+			sanitized[name] = rawValue;
+		}
+		return sanitized;
+	};
 
 	type RuntimeMetrics = {
 		startedAt: number;
@@ -203,9 +300,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		rateLimitedResponses: number;
 		serverErrors: number;
 		networkErrors: number;
+		userAborts: number;
 		authRefreshFailures: number;
 		emptyResponseRetries: number;
 		accountRotations: number;
+		sameAccountRetries: number;
+		streamFailoverAttempts: number;
+		streamFailoverRecoveries: number;
+		streamFailoverCrossAccountRecoveries: number;
 		cumulativeLatencyMs: number;
 		lastRequestAt: number | null;
 		lastError: string | null;
@@ -219,9 +321,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		rateLimitedResponses: 0,
 		serverErrors: 0,
 		networkErrors: 0,
+		userAborts: 0,
 		authRefreshFailures: 0,
 		emptyResponseRetries: 0,
 		accountRotations: 0,
+		sameAccountRetries: 0,
+		streamFailoverAttempts: 0,
+		streamFailoverRecoveries: 0,
+		streamFailoverCrossAccountRecoveries: 0,
 		cumulativeLatencyMs: 0,
 		lastRequestAt: null,
 		lastError: null,
@@ -339,7 +446,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		forceNewLogin: boolean = false,
 	): Promise<TokenResult> => {
 		const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
-		logInfo(`OAuth URL: ${url}`);
+		logInfo(`OAuth URL: ${redactOAuthUrlForLog(url)}`);
 
                 let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
                 try {
@@ -676,8 +783,28 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			accountManagerPromise = null;
 		};
 
+		const reloadAccountManagerFromDisk = async (
+			authFallback?: OAuthAuthDetails,
+		): Promise<AccountManager> => {
+			if (accountReloadInFlight) {
+				return accountReloadInFlight;
+			}
+			accountReloadInFlight = (async () => {
+				const reloaded = await AccountManager.loadFromDisk(authFallback);
+				cachedAccountManager = reloaded;
+				accountManagerPromise = Promise.resolve(reloaded);
+				return reloaded;
+			})();
+			try {
+				return await accountReloadInFlight;
+			} finally {
+				accountReloadInFlight = null;
+			}
+		};
+
 		const applyAccountStorageScope = (pluginConfig: ReturnType<typeof loadPluginConfig>): void => {
 			const perProjectAccounts = getPerProjectAccounts(pluginConfig);
+			setStorageBackupEnabled(getStorageBackupEnabled(pluginConfig));
 			if (isCodexCliSyncEnabled()) {
 				if (perProjectAccounts && !perProjectStorageWarningShown) {
 					perProjectStorageWarningShown = true;
@@ -690,6 +817,118 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 
 			setStoragePath(perProjectAccounts ? process.cwd() : null);
+		};
+
+		const ensureLiveAccountSync = async (
+			pluginConfig: ReturnType<typeof loadPluginConfig>,
+			authFallback?: OAuthAuthDetails,
+		): Promise<void> => {
+			if (!getLiveAccountSync(pluginConfig)) {
+				if (liveAccountSync) {
+					liveAccountSync.stop();
+					liveAccountSync = null;
+					liveAccountSyncPath = null;
+				}
+				return;
+			}
+
+			const targetPath = getStoragePath();
+			if (!liveAccountSync) {
+				liveAccountSync = new LiveAccountSync(
+					async () => {
+						await reloadAccountManagerFromDisk(authFallback);
+					},
+					{
+						debounceMs: getLiveAccountSyncDebounceMs(pluginConfig),
+						pollIntervalMs: getLiveAccountSyncPollMs(pluginConfig),
+					},
+				);
+				registerCleanup(() => {
+					liveAccountSync?.stop();
+				});
+			}
+
+		if (liveAccountSyncPath !== targetPath) {
+			let switched = false;
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				try {
+					await liveAccountSync.syncToPath(targetPath);
+					liveAccountSyncPath = targetPath;
+					switched = true;
+					break;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException | undefined)?.code;
+					if (code !== "EBUSY" && code !== "EPERM") {
+						throw error;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+				}
+			}
+			if (!switched) {
+				logWarn(
+					`[${PLUGIN_NAME}] Live account sync path switch failed due to transient filesystem locks; keeping previous watcher.`,
+				);
+			}
+		}
+	};
+
+		const ensureRefreshGuardian = (
+			pluginConfig: ReturnType<typeof loadPluginConfig>,
+		): void => {
+			if (!getProactiveRefreshGuardian(pluginConfig)) {
+				if (refreshGuardian) {
+					refreshGuardian.stop();
+					refreshGuardian = null;
+					refreshGuardianConfigKey = null;
+				}
+				return;
+			}
+
+			const intervalMs = getProactiveRefreshIntervalMs(pluginConfig);
+			const bufferMs = getProactiveRefreshBufferMs(pluginConfig);
+			const configKey = `${intervalMs}:${bufferMs}`;
+			if (refreshGuardian && refreshGuardianConfigKey === configKey) return;
+
+			if (refreshGuardian) {
+				refreshGuardian.stop();
+			}
+			refreshGuardian = new RefreshGuardian(
+				() => cachedAccountManager,
+				{ intervalMs, bufferMs },
+			);
+			refreshGuardianConfigKey = configKey;
+			refreshGuardian.start();
+			registerCleanup(() => {
+				refreshGuardian?.stop();
+			});
+		};
+
+		const ensureSessionAffinity = (
+			pluginConfig: ReturnType<typeof loadPluginConfig>,
+		): void => {
+			if (!getSessionAffinity(pluginConfig)) {
+				sessionAffinityStore = null;
+				sessionAffinityConfigKey = null;
+				return;
+			}
+
+			const ttlMs = getSessionAffinityTtlMs(pluginConfig);
+			const maxEntries = getSessionAffinityMaxEntries(pluginConfig);
+			const configKey = `${ttlMs}:${maxEntries}`;
+			if (sessionAffinityStore && sessionAffinityConfigKey === configKey) return;
+			sessionAffinityStore = new SessionAffinityStore({ ttlMs, maxEntries });
+			sessionAffinityConfigKey = configKey;
+		};
+
+		const applyPreemptiveQuotaSettings = (
+			pluginConfig: ReturnType<typeof loadPluginConfig>,
+		): void => {
+			preemptiveQuotaScheduler.configure({
+				enabled: getPreemptiveQuotaEnabled(pluginConfig),
+				remainingPercentThresholdPrimary: getPreemptiveQuotaRemainingPercent5h(pluginConfig),
+				remainingPercentThresholdSecondary: getPreemptiveQuotaRemainingPercent7d(pluginConfig),
+				maxDeferralMs: getPreemptiveQuotaMaxDeferralMs(pluginConfig),
+			});
 		};
 
         // Event handler for session recovery and account selection
@@ -733,13 +972,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				}
 				lastCodexCliActiveSyncIndex = index;
 
-                                // Reload manager from disk so we don't overwrite newer rotated
-                                // refresh tokens with stale in-memory state.
-                                if (cachedAccountManager) {
-                                        const reloadedManager = await AccountManager.loadFromDisk();
-                                        cachedAccountManager = reloadedManager;
-                                        accountManagerPromise = Promise.resolve(reloadedManager);
-                                }
+				// Reload manager from disk so we don't overwrite newer rotated
+				// refresh tokens with stale in-memory state.
+				if (cachedAccountManager) {
+					await reloadAccountManagerFromDisk();
+				}
 
                                 await showToast(`Switched to account ${index + 1}`, "info");
                         }
@@ -775,6 +1012,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			const pluginConfig = loadPluginConfig();
 			applyUiRuntimeFromConfig(pluginConfig);
 			applyAccountStorageScope(pluginConfig);
+			ensureSessionAffinity(pluginConfig);
+			ensureRefreshGuardian(pluginConfig);
+			applyPreemptiveQuotaSettings(pluginConfig);
 
 			// Only handle OAuth auth type, skip API key auth
 			if (auth.type !== "oauth") {
@@ -790,7 +1030,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					`[${PLUGIN_NAME}] Auth is missing multiAccount marker; continuing with single-account compatibility mode`,
 				);
 			}
-
 				// Acquire mutex for thread-safe initialization
 				// Use while loop to handle multiple concurrent waiters correctly
 				while (loaderMutex) {
@@ -802,12 +1041,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					resolveMutex = resolve;
 				});
 				try {
+					await ensureLiveAccountSync(pluginConfig, auth);
 					if (!accountManagerPromise) {
-						accountManagerPromise = AccountManager.loadFromDisk(
-							auth as OAuthAuthDetails,
-						);
+						await reloadAccountManagerFromDisk(auth as OAuthAuthDetails);
 					}
-					let accountManager = await accountManagerPromise;
+					const managerPromise =
+						accountManagerPromise ??
+						reloadAccountManagerFromDisk(auth as OAuthAuthDetails);
+					let accountManager = await managerPromise;
 					cachedAccountManager = accountManager;
 					const refreshToken =
 						auth.type === "oauth" ? auth.refresh : "";
@@ -820,7 +1061,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 					if (accountManager.getAccountCount() === 0) {
 						logDebug(
-							`[${PLUGIN_NAME}] No OAuth accounts available (run opencode auth login)`,
+							`[${PLUGIN_NAME}] No OAuth accounts available (run codex login)`,
 						);
 						return {};
 					}
@@ -853,6 +1094,26 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const toastDurationMs = getToastDurationMs(pluginConfig);
 				const fetchTimeoutMs = getFetchTimeoutMs(pluginConfig);
 				const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
+				const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
+				const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
+				const failoverMode = parseFailoverMode(process.env.CODEX_AUTH_FAILOVER_MODE);
+				const streamFailoverMax = Math.max(
+					0,
+					parseEnvInt(process.env.CODEX_AUTH_STREAM_FAILOVER_MAX) ??
+						STREAM_FAILOVER_MAX_BY_MODE[failoverMode],
+				);
+				const streamFailoverSoftTimeoutMs = Math.max(
+					1_000,
+					parseEnvInt(process.env.CODEX_AUTH_STREAM_STALL_SOFT_TIMEOUT_MS) ??
+						STREAM_FAILOVER_SOFT_TIMEOUT_BY_MODE[failoverMode],
+				);
+				const streamFailoverHardTimeoutMs = Math.max(
+					streamFailoverSoftTimeoutMs,
+					parseEnvInt(process.env.CODEX_AUTH_STREAM_STALL_HARD_TIMEOUT_MS) ??
+						streamStallTimeoutMs,
+				);
+				const maxSameAccountRetries =
+					failoverMode === "conservative" ? 2 : failoverMode === "balanced" ? 1 : 0;
 
 				const sessionRecoveryEnabled = getSessionRecovery(pluginConfig);
 				const autoResumeEnabled = getAutoResume(pluginConfig);
@@ -1028,6 +1289,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							(process.env.CODEX_THREAD_ID ?? promptCacheKey ?? "")
 								.toString()
 								.trim() || undefined;
+						const sessionAffinityKey = threadIdCandidate ?? promptCacheKey ?? null;
+						const effectivePromptCacheKey =
+							(sessionAffinityKey ?? promptCacheKey ?? "").toString().trim() || undefined;
+						const preferredSessionAccountIndex = sessionAffinityStore?.getPreferredAccountIndex(
+							sessionAffinityKey,
+						);
+						sessionAffinityStore?.prune();
 							const requestCorrelationId = setCorrelationId(
 								threadIdCandidate ? `${threadIdCandidate}:${Date.now()}` : undefined,
 							);
@@ -1100,9 +1368,76 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										const accountCount = accountManager.getAccountCount();
 										const attempted = new Set<number>();
 										let restartAccountTraversalWithFallback = false;
+										let usedPreferredSessionAccount = false;
+										const capabilityBoostByAccount: Record<number, number> = {};
+										type AccountSnapshotCandidate = {
+											index: number;
+											accountId?: string;
+											email?: string;
+										};
+										const accountSnapshotSource = accountManager as {
+											getAccountsSnapshot?: () => AccountSnapshotCandidate[];
+											getAccountByIndex?: (index: number) => AccountSnapshotCandidate | null;
+										};
+										const accountSnapshotList =
+											typeof accountSnapshotSource.getAccountsSnapshot === "function"
+												? accountSnapshotSource.getAccountsSnapshot() ?? []
+												: [];
+										if (
+											accountSnapshotList.length === 0 &&
+											typeof accountSnapshotSource.getAccountByIndex === "function"
+										) {
+											for (
+												let accountSnapshotIndex = 0;
+												accountSnapshotIndex < accountCount;
+												accountSnapshotIndex += 1
+											) {
+												const candidate = accountSnapshotSource.getAccountByIndex(
+													accountSnapshotIndex,
+												);
+												if (candidate) {
+													accountSnapshotList.push(candidate);
+												}
+											}
+										}
+										for (const candidate of accountSnapshotList) {
+											const accountKey = resolveEntitlementAccountKey(candidate);
+											capabilityBoostByAccount[candidate.index] = capabilityPolicyStore.getBoost(
+												accountKey,
+												model ?? modelFamily,
+											);
+										}
 
 while (attempted.size < Math.max(1, accountCount)) {
-				const account = accountManager.getCurrentOrNextForFamilyHybrid(modelFamily, model, { pidOffsetEnabled });
+				let account = null;
+				if (
+					!usedPreferredSessionAccount &&
+					typeof preferredSessionAccountIndex === "number"
+				) {
+					usedPreferredSessionAccount = true;
+					if (
+						accountManager.isAccountAvailableForFamily(
+							preferredSessionAccountIndex,
+							modelFamily,
+							model,
+						)
+					) {
+						account = accountManager.getAccountByIndex(preferredSessionAccountIndex);
+						if (account) {
+							account.lastUsed = Date.now();
+							accountManager.markSwitched(account, "rotation", modelFamily);
+						}
+					} else {
+						sessionAffinityStore?.forgetSession(sessionAffinityKey);
+					}
+				}
+
+				if (!account) {
+					account = accountManager.getCurrentOrNextForFamilyHybrid(modelFamily, model, {
+						pidOffsetEnabled,
+						scoreBoostByAccount: capabilityBoostByAccount,
+					});
+				}
 				if (!account || attempted.has(account.index)) {
 					break;
 				}
@@ -1131,25 +1466,39 @@ while (attempted.size < Math.max(1, accountCount)) {
 				runtimeMetrics.lastError = (err as Error)?.message ?? String(err);
 				const failures = accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index);
-				
-				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL) {
+
+				const authFailurePolicy = evaluateFailurePolicy({
+					kind: "auth-refresh",
+					consecutiveAuthFailures: failures,
+				});
+				sessionAffinityStore?.forgetSession(sessionAffinityKey);
+
+				if (authFailurePolicy.removeAccount) {
+					const removedIndex = account.index;
+					sessionAffinityStore?.forgetAccount(removedIndex);
 					accountManager.removeAccount(account);
+					sessionAffinityStore?.reindexAfterRemoval(removedIndex);
 					accountManager.saveToDiskDebounced();
 					await showToast(
-						`Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'opencode auth login' to re-add.`,
+						`Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'codex login' to re-add.`,
 						"error",
 						{ duration: toastDurationMs * 2 },
 					);
 					continue;
 				}
-				
-				accountManager.markAccountCoolingDown(
-								account,
-								ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
-								"auth-failure",
-							);
-						accountManager.saveToDiskDebounced();
-						continue;
+
+				if (
+					typeof authFailurePolicy.cooldownMs === "number" &&
+					authFailurePolicy.cooldownReason
+				) {
+					accountManager.markAccountCoolingDown(
+						account,
+						authFailurePolicy.cooldownMs,
+						authFailurePolicy.cooldownReason,
+					);
+				}
+				accountManager.saveToDiskDebounced();
+				continue;
 					}
 
 				const hadAccountId = !!account.accountId;
@@ -1159,6 +1508,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 						account.accountIdSource,
 						tokenAccountId,
 					);
+					const entitlementAccountKey = resolveEntitlementAccountKey({
+						accountId: hadAccountId ? account.accountId : undefined,
+						email: account.email,
+						index: account.index,
+					});
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
@@ -1174,6 +1528,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 											}
 											account.email =
 												extractAccountEmail(accountAuth.access) ?? account.email;
+											const entitlementBlock = entitlementCache.isBlocked(
+												entitlementAccountKey,
+												model ?? modelFamily,
+											);
+											if (entitlementBlock.blocked) {
+												runtimeMetrics.accountRotations++;
+												runtimeMetrics.lastError = `Entitlement cached block for account ${account.index + 1}`;
+												logWarn(
+													`Skipping account ${account.index + 1} due to cached entitlement block (${formatWaitTime(entitlementBlock.waitMs)} remaining).`,
+												);
+												continue;
+											}
 
 											if (
 												accountCount > 1 &&
@@ -1196,12 +1562,29 @@ while (attempted.size < Math.max(1, accountCount)) {
 									accountAuth.access,
 									{
 										model,
-										promptCacheKey,
+										promptCacheKey: effectivePromptCacheKey,
 									},
 								);
+								const quotaScheduleKey = `${entitlementAccountKey}:${model ?? modelFamily}`;
+								const capabilityModelKey = model ?? modelFamily;
+								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);
+								if (quotaDeferral.defer && quotaDeferral.waitMs > 0) {
+									accountManager.markRateLimitedWithReason(
+										account,
+										quotaDeferral.waitMs,
+										modelFamily,
+										"quota",
+										model,
+									);
+									accountManager.recordRateLimit(account, modelFamily, model);
+									runtimeMetrics.accountRotations++;
+									runtimeMetrics.lastError = `Preemptive quota deferral for account ${account.index + 1}`;
+									accountManager.saveToDiskDebounced();
+									continue;
+								}
 
-								// Consume a token before making the request for proactive rate limiting
-								const tokenConsumed = accountManager.consumeToken(account, modelFamily, model);
+							// Consume a token before making the request for proactive rate limiting
+					const tokenConsumed = accountManager.consumeToken(account, modelFamily, model);
 								if (!tokenConsumed) {
 									accountManager.recordRateLimit(account, modelFamily, model);
 									runtimeMetrics.accountRotations++;
@@ -1213,6 +1596,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 									break;
 								}
 
+							let sameAccountRetryCount = 0;
+							let successAccountForResponse = account;
 							while (true) {
 								let response: Response;
 								const fetchStart = performance.now();
@@ -1236,7 +1621,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									abortSignal.addEventListener("abort", onUserAbort, { once: true });
 								}
 
-								try {
+							try {
 								runtimeMetrics.totalRequests++;
 								response = await fetch(url, {
 									...requestInit,
@@ -1244,14 +1629,61 @@ while (attempted.size < Math.max(1, accountCount)) {
 									signal: fetchController.signal,
 								});
 				} catch (networkError) {
+								const isUserAbort =
+									abortSignal?.aborted ||
+									(networkError instanceof Error &&
+										(networkError.name === "AbortError" || /abort/i.test(networkError.message)));
+								if (isUserAbort) {
+									runtimeMetrics.userAborts++;
+									runtimeMetrics.lastError = "request aborted by user";
+									sessionAffinityStore?.forgetSession(sessionAffinityKey);
+									break;
+								}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.networkErrors++;
 								runtimeMetrics.accountRotations++;
 								runtimeMetrics.lastError = errorMsg;
-								accountManager.refundToken(account, modelFamily, model);
-								accountManager.recordFailure(account, modelFamily, model);
+								const policy = evaluateFailurePolicy(
+									{ kind: "network", failoverMode },
+									{ networkCooldownMs: networkErrorCooldownMs },
+								);
+								if (policy.refundToken) {
+									accountManager.refundToken(account, modelFamily, model);
+								}
+								if (policy.recordFailure) {
+									accountManager.recordFailure(account, modelFamily, model);
+									capabilityPolicyStore.recordFailure(
+										entitlementAccountKey,
+										capabilityModelKey,
+									);
+								}
+								if (
+									policy.retrySameAccount &&
+									sameAccountRetryCount < maxSameAccountRetries
+								) {
+									sameAccountRetryCount += 1;
+									runtimeMetrics.sameAccountRetries += 1;
+									const retryDelayMs = Math.max(
+										MIN_BACKOFF_MS,
+										Math.floor(policy.retryDelayMs ?? 250),
+									);
+									await sleep(addJitter(retryDelayMs, 0.2));
+									continue;
+								}
+								if (
+									typeof policy.cooldownMs === "number" &&
+									policy.cooldownReason
+								) {
+									accountManager.markAccountCoolingDown(
+										account,
+										policy.cooldownMs,
+										policy.cooldownReason,
+									);
+									accountManager.saveToDiskDebounced();
+								}
+								sessionAffinityStore?.forgetSession(sessionAffinityKey);
 								break;
 								} finally {
 									clearTimeout(fetchTimeoutId);
@@ -1261,15 +1693,22 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 											const fetchLatencyMs = Math.round(performance.now() - fetchStart);
 
-											logRequest(LOG_STAGES.RESPONSE, {
-												status: response.status,
-												ok: response.ok,
-												statusText: response.statusText,
-												latencyMs: fetchLatencyMs,
-												headers: Object.fromEntries(response.headers.entries()),
-											});
+												logRequest(LOG_STAGES.RESPONSE, {
+													status: response.status,
+													ok: response.ok,
+													statusText: response.statusText,
+													latencyMs: fetchLatencyMs,
+													headers: sanitizeResponseHeadersForLog(response.headers),
+												});
+												const quotaSnapshot = readQuotaSchedulerSnapshot(
+													response.headers,
+													response.status,
+												);
+												if (quotaSnapshot) {
+													preemptiveQuotaScheduler.update(quotaScheduleKey, quotaSnapshot);
+												}
 
-								if (!response.ok) {
+									if (!response.ok) {
 									const contextOverflowResult = await handleContextOverflow(response, model);
 									if (contextOverflowResult.handled) {
 										return contextOverflowResult.response;
@@ -1297,13 +1736,27 @@ while (attempted.size < Math.max(1, accountCount)) {
 			// accounts before degrading the model via fallback.
 			// Spark entitlement is commonly unavailable on non-Pro/Business workspaces;
 			// force direct fallback instead of traversing every account/workspace first.
-			if (
-				unsupportedModelInfo.isUnsupported &&
-				hasRemainingAccounts &&
-				!shouldForceSparkFallback
-			) {
-				accountManager.refundToken(account, modelFamily, model);
-				accountManager.recordFailure(account, modelFamily, model);
+				if (
+					unsupportedModelInfo.isUnsupported &&
+					hasRemainingAccounts &&
+					!shouldForceSparkFallback
+				) {
+					entitlementCache.markBlocked(
+						entitlementAccountKey,
+						blockedModel,
+						"unsupported-model",
+					);
+					capabilityPolicyStore.recordUnsupported(
+						entitlementAccountKey,
+						blockedModel,
+					);
+										accountManager.refundToken(account, modelFamily, model);
+										accountManager.recordFailure(account, modelFamily, model);
+										capabilityPolicyStore.recordFailure(
+											entitlementAccountKey,
+											capabilityModelKey,
+										);
+										sessionAffinityStore?.forgetSession(sessionAffinityKey);
 				account.lastSwitchReason = "rotation";
 				runtimeMetrics.lastError = `Unsupported model on account ${account.index + 1}: ${blockedModel}`;
 				logWarn(
@@ -1328,12 +1781,21 @@ while (attempted.size < Math.max(1, accountCount)) {
 				customChain: unsupportedCodexFallbackChain,
 			});
 
-			if (fallbackModel) {
-				const previousModel = model ?? "gpt-5-codex";
-				const previousModelFamily = modelFamily;
-				attemptedUnsupportedFallbackModels.add(previousModel);
-				attemptedUnsupportedFallbackModels.add(fallbackModel);
-				accountManager.refundToken(account, previousModelFamily, previousModel);
+				if (fallbackModel) {
+					const previousModel = model ?? "gpt-5-codex";
+					const previousModelFamily = modelFamily;
+					attemptedUnsupportedFallbackModels.add(previousModel);
+					attemptedUnsupportedFallbackModels.add(fallbackModel);
+					entitlementCache.markBlocked(
+						entitlementAccountKey,
+						previousModel,
+						"unsupported-model",
+					);
+					capabilityPolicyStore.recordUnsupported(
+						entitlementAccountKey,
+						previousModel,
+					);
+					accountManager.refundToken(account, previousModelFamily, previousModel);
 
 				model = fallbackModel;
 				modelFamily = getModelFamily(model);
@@ -1379,6 +1841,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 			}
 
 			if (unsupportedModelInfo.isUnsupported && !allowUnsupportedFallback) {
+				entitlementCache.markBlocked(
+					entitlementAccountKey,
+					blockedModel,
+					"unsupported-model",
+				);
+				capabilityPolicyStore.recordUnsupported(
+					entitlementAccountKey,
+					blockedModel,
+				);
 				runtimeMetrics.lastError = `Unsupported model (strict): ${blockedModel}`;
 				logWarn(
 					`Model ${blockedModel} is unsupported for this ChatGPT account. Strict policy blocks automatic fallback.`,
@@ -1394,6 +1865,33 @@ while (attempted.size < Math.max(1, accountCount)) {
 					`Model ${blockedModel} is not available for this account. Strict policy blocked automatic fallback.`,
 					"warning",
 					{ duration: toastDurationMs },
+				);
+			}
+			if (
+				unsupportedModelInfo.isUnsupported &&
+				allowUnsupportedFallback &&
+				!hasRemainingAccounts &&
+				!fallbackModel
+			) {
+				entitlementCache.markBlocked(
+					entitlementAccountKey,
+					blockedModel,
+					"unsupported-model",
+				);
+				capabilityPolicyStore.recordUnsupported(
+					entitlementAccountKey,
+					blockedModel,
+				);
+			}
+			if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported) {
+				entitlementCache.markBlocked(
+					entitlementAccountKey,
+					model ?? modelFamily,
+					"plan-entitlement",
+				);
+				capabilityPolicyStore.recordFailure(
+					entitlementAccountKey,
+					capabilityModelKey,
 				);
 			}
 
@@ -1415,19 +1913,60 @@ while (attempted.size < Math.max(1, accountCount)) {
 						runtimeMetrics.serverErrors++;
 						runtimeMetrics.accountRotations++;
 						runtimeMetrics.lastError = `HTTP ${response.status}`;
-						accountManager.refundToken(account, modelFamily, model);
-						accountManager.recordFailure(account, modelFamily, model);
+						const policy = evaluateFailurePolicy(
+							{ kind: "server", failoverMode },
+							{ serverCooldownMs: serverErrorCooldownMs },
+						);
+						if (policy.refundToken) {
+							accountManager.refundToken(account, modelFamily, model);
+						}
+							if (policy.recordFailure) {
+								accountManager.recordFailure(account, modelFamily, model);
+								capabilityPolicyStore.recordFailure(
+									entitlementAccountKey,
+									capabilityModelKey,
+								);
+							}
+						if (
+							policy.retrySameAccount &&
+							sameAccountRetryCount < maxSameAccountRetries
+						) {
+							sameAccountRetryCount += 1;
+							runtimeMetrics.sameAccountRetries += 1;
+							const retryDelayMs = Math.max(
+								MIN_BACKOFF_MS,
+								Math.floor(policy.retryDelayMs ?? 500),
+							);
+							await sleep(addJitter(retryDelayMs, 0.2));
+							continue;
+						}
+						if (
+							typeof policy.cooldownMs === "number" &&
+							policy.cooldownReason
+						) {
+							accountManager.markAccountCoolingDown(
+								account,
+								policy.cooldownMs,
+								policy.cooldownReason,
+							);
+							accountManager.saveToDiskDebounced();
+						}
+						sessionAffinityStore?.forgetSession(sessionAffinityKey);
 						break;
 					}
 
 					if (rateLimit) {
 																														runtimeMetrics.rateLimitedResponses++;
-																														const { attempt, delayMs } = getRateLimitBackoff(
-																															account.index,
-																															quotaKey,
-																															rateLimit.retryAfterMs,
-																														);
-																														const waitLabel = formatWaitTime(delayMs);
+																															const { attempt, delayMs } = getRateLimitBackoff(
+																																account.index,
+																																quotaKey,
+																																rateLimit.retryAfterMs,
+																															);
+																															preemptiveQuotaScheduler.markRateLimited(
+																																quotaScheduleKey,
+																																delayMs,
+																															);
+																															const waitLabel = formatWaitTime(delayMs);
 
 																														if (delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
 																																if (
@@ -1457,6 +1996,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 				);
 				accountManager.recordRateLimit(account, modelFamily, model);
 				account.lastSwitchReason = "rate-limit";
+				sessionAffinityStore?.forgetSession(sessionAffinityKey);
 				runtimeMetrics.accountRotations++;
 				accountManager.saveToDiskDebounced();
 						logWarn(
@@ -1477,18 +2017,228 @@ while (attempted.size < Math.max(1, accountCount)) {
 																									);
 																																	accountManager.markToastShown(account.index);
 																																}
-																														break;
-																													}
-																													runtimeMetrics.failedRequests++;
-																													runtimeMetrics.lastError = `HTTP ${response.status}`;
-																													return errorResponse;
+																															break;
+																														}
+																														if (
+																															!rateLimit &&
+																															!unsupportedModelInfo.isUnsupported &&
+																															errorResponse.status !== 403
+																														) {
+																															capabilityPolicyStore.recordFailure(
+																																entitlementAccountKey,
+																																capabilityModelKey,
+																															);
+																														}
+																														runtimeMetrics.failedRequests++;
+																														runtimeMetrics.lastError = `HTTP ${response.status}`;
+																														return errorResponse;
 																											}
 
-					resetRateLimitBackoff(account.index, quotaKey);
-					runtimeMetrics.cumulativeLatencyMs += fetchLatencyMs;
-					const successResponse = await handleSuccessResponse(response, isStreaming, {
-						streamStallTimeoutMs,
-					});
+						resetRateLimitBackoff(account.index, quotaKey);
+						runtimeMetrics.cumulativeLatencyMs += fetchLatencyMs;
+						let responseForSuccess = response;
+						if (isStreaming) {
+							const streamFallbackCandidateOrder = [
+								account.index,
+								...accountManager
+									.getAccountsSnapshot()
+									.map((candidate) => candidate.index)
+									.filter((index) => index !== account.index),
+							];
+							responseForSuccess = withStreamingFailover(
+								response,
+								async (failoverAttempt, emittedBytes) => {
+									if (abortSignal?.aborted) {
+										return null;
+									}
+									runtimeMetrics.streamFailoverAttempts += 1;
+
+									for (const candidateIndex of streamFallbackCandidateOrder) {
+										if (abortSignal?.aborted) {
+											return null;
+										}
+										if (
+											!accountManager.isAccountAvailableForFamily(
+												candidateIndex,
+												modelFamily,
+												model,
+											)
+										) {
+											continue;
+										}
+
+										const fallbackAccount = accountManager.getAccountByIndex(candidateIndex);
+										if (!fallbackAccount) continue;
+
+										let fallbackAuth = accountManager.toAuthDetails(fallbackAccount) as OAuthAuthDetails;
+										try {
+											if (shouldRefreshToken(fallbackAuth, tokenRefreshSkewMs)) {
+												fallbackAuth = (await refreshAndUpdateToken(
+													fallbackAuth,
+													client,
+												)) as OAuthAuthDetails;
+												accountManager.updateFromAuth(fallbackAccount, fallbackAuth);
+												accountManager.clearAuthFailures(fallbackAccount);
+												accountManager.saveToDiskDebounced();
+											}
+										} catch (refreshError) {
+											logWarn(
+												`Stream failover refresh failed for account ${fallbackAccount.index + 1}.`,
+												{
+													error:
+														refreshError instanceof Error
+															? refreshError.message
+															: String(refreshError),
+												},
+											);
+											continue;
+										}
+
+										const fallbackTokenAccountId = extractAccountId(fallbackAuth.access);
+										const fallbackAccountId = resolveRequestAccountId(
+											fallbackAccount.accountId,
+											fallbackAccount.accountIdSource,
+											fallbackTokenAccountId,
+										);
+										if (!fallbackAccountId) {
+											continue;
+										}
+
+										if (!accountManager.consumeToken(fallbackAccount, modelFamily, model)) {
+											continue;
+										}
+
+										const fallbackHeaders = createCodexHeaders(
+											requestInit,
+											fallbackAccountId,
+											fallbackAuth.access,
+											{
+												model,
+												promptCacheKey: effectivePromptCacheKey,
+											},
+										);
+
+										const fallbackController = new AbortController();
+										const fallbackTimeoutId = setTimeout(
+											() => fallbackController.abort(new Error("Request timeout")),
+											fetchTimeoutMs,
+										);
+										const onFallbackAbort = abortSignal
+											? () =>
+													fallbackController.abort(
+														abortSignal.reason ?? new Error("Aborted by user"),
+													)
+											: null;
+										if (abortSignal && onFallbackAbort) {
+											abortSignal.addEventListener("abort", onFallbackAbort, {
+												once: true,
+											});
+										}
+
+										try {
+											runtimeMetrics.totalRequests++;
+											const fallbackResponse = await fetch(url, {
+												...requestInit,
+												headers: fallbackHeaders,
+												signal: fallbackController.signal,
+											});
+											const fallbackSnapshot = readQuotaSchedulerSnapshot(
+												fallbackResponse.headers,
+												fallbackResponse.status,
+											);
+											if (fallbackSnapshot) {
+												preemptiveQuotaScheduler.update(
+													`${resolveEntitlementAccountKey(fallbackAccount)}:${model ?? modelFamily}`,
+													fallbackSnapshot,
+												);
+											}
+											if (!fallbackResponse.ok) {
+												try {
+													await fallbackResponse.body?.cancel();
+												} catch {
+													// Best effort cleanup before trying next fallback account.
+												}
+												if (fallbackResponse.status === 429) {
+													const retryAfterRaw = fallbackResponse.headers
+														.get("retry-after")
+														?.trim();
+													const retryAfterMs =
+														retryAfterRaw && /^\d+$/.test(retryAfterRaw)
+															? Number.parseInt(retryAfterRaw, 10) * 1000
+															: 60_000;
+													accountManager.markRateLimitedWithReason(
+														fallbackAccount,
+														retryAfterMs,
+														modelFamily,
+														"quota",
+														model,
+													);
+													accountManager.recordRateLimit(fallbackAccount, modelFamily, model);
+												} else {
+													accountManager.recordFailure(fallbackAccount, modelFamily, model);
+												}
+												capabilityPolicyStore.recordFailure(
+													resolveEntitlementAccountKey(fallbackAccount),
+													capabilityModelKey,
+												);
+												continue;
+											}
+
+											successAccountForResponse = fallbackAccount;
+											runtimeMetrics.streamFailoverRecoveries += 1;
+											if (fallbackAccount.index !== account.index) {
+												runtimeMetrics.streamFailoverCrossAccountRecoveries += 1;
+												runtimeMetrics.accountRotations += 1;
+												sessionAffinityStore?.remember(
+													sessionAffinityKey,
+													fallbackAccount.index,
+												);
+											}
+
+											logInfo(
+												`Recovered stream via failover attempt ${failoverAttempt} using account ${fallbackAccount.index + 1}.`,
+												{ emittedBytes },
+											);
+											return fallbackResponse;
+										} catch (streamFailoverError) {
+											accountManager.refundToken(fallbackAccount, modelFamily, model);
+											accountManager.recordFailure(fallbackAccount, modelFamily, model);
+											capabilityPolicyStore.recordFailure(
+												resolveEntitlementAccountKey(fallbackAccount),
+												capabilityModelKey,
+											);
+											logWarn(
+												`Stream failover attempt ${failoverAttempt} failed for account ${fallbackAccount.index + 1}.`,
+												{
+													emittedBytes,
+													error:
+														streamFailoverError instanceof Error
+															? streamFailoverError.message
+															: String(streamFailoverError),
+												},
+											);
+											continue;
+										} finally {
+											clearTimeout(fallbackTimeoutId);
+											if (abortSignal && onFallbackAbort) {
+												abortSignal.removeEventListener("abort", onFallbackAbort);
+											}
+										}
+									}
+
+									return null;
+								},
+								{
+									maxFailovers: streamFailoverMax,
+									softTimeoutMs: streamFailoverSoftTimeoutMs,
+									hardTimeoutMs: streamFailoverHardTimeoutMs,
+									requestInstanceId: requestCorrelationId ?? undefined,
+								},
+							);
+						}
+						const successResponse = await handleSuccessResponse(responseForSuccess, isStreaming, {
+							streamStallTimeoutMs,
+						});
 
 					if (!isStreaming && emptyResponseMaxRetries > 0) {
 						const clonedResponse = successResponse.clone();
@@ -1507,6 +2257,30 @@ while (attempted.size < Math.max(1, accountCount)) {
 									);
 									accountManager.refundToken(account, modelFamily, model);
 									accountManager.recordFailure(account, modelFamily, model);
+									capabilityPolicyStore.recordFailure(
+										entitlementAccountKey,
+										capabilityModelKey,
+									);
+									const emptyPolicy = evaluateFailurePolicy({
+										kind: "empty-response",
+										failoverMode,
+									});
+									if (
+										emptyPolicy.retrySameAccount &&
+										sameAccountRetryCount < maxSameAccountRetries
+									) {
+										sameAccountRetryCount += 1;
+										runtimeMetrics.sameAccountRetries += 1;
+										const retryDelayMs = Math.max(
+											0,
+											Math.floor(emptyPolicy.retryDelayMs ?? emptyResponseRetryDelayMs),
+										);
+										if (retryDelayMs > 0) {
+											await sleep(addJitter(retryDelayMs, 0.2));
+										}
+										continue;
+									}
+									sessionAffinityStore?.forgetSession(sessionAffinityKey);
 									await sleep(addJitter(emptyResponseRetryDelayMs, 0.2));
 									break;
 								}
@@ -1517,12 +2291,25 @@ while (attempted.size < Math.max(1, accountCount)) {
 						}
 					}
 
-					accountManager.recordSuccess(account, modelFamily, model);
+						if (successAccountForResponse.index !== account.index) {
+							accountManager.markSwitched(successAccountForResponse, "rotation", modelFamily);
+						}
+						const successAccountKey = resolveEntitlementAccountKey(successAccountForResponse);
+						accountManager.recordSuccess(successAccountForResponse, modelFamily, model);
+						capabilityPolicyStore.recordSuccess(
+							successAccountKey,
+							capabilityModelKey,
+						);
+						entitlementCache.clear(successAccountKey, capabilityModelKey);
+						sessionAffinityStore?.remember(
+							sessionAffinityKey,
+							successAccountForResponse.index,
+						);
 					runtimeMetrics.successfulRequests++;
 					runtimeMetrics.lastError = null;
-					if (lastCodexCliActiveSyncIndex !== account.index) {
-						void accountManager.syncCodexCliActiveSelectionForIndex(account.index);
-						lastCodexCliActiveSyncIndex = account.index;
+					if (lastCodexCliActiveSyncIndex !== successAccountForResponse.index) {
+						void accountManager.syncCodexCliActiveSelectionForIndex(successAccountForResponse.index);
+						lastCodexCliActiveSyncIndex = successAccountForResponse.index;
 					}
 						return successResponse;
 																								}
@@ -1555,9 +2342,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 								const waitLabel = waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
 								const message =
 									count === 0
-										? "No Codex accounts configured. Run `opencode auth login`."
+										? "No Codex accounts configured. Run `codex login`."
 										: waitMs > 0
-											? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`
+											? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`codex login\`.`
 											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
@@ -2586,7 +3373,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								...formatUiHeader(ui, "Codex accounts"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: opencode auth login", "accent"),
+								formatUiItem(ui, "Run: codex login", "accent"),
 								formatUiKeyValue(ui, "Storage", storePath, "muted"),
 							].join("\n");
 						}
@@ -2594,7 +3381,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                         "No Codex accounts configured.",
                                                         "",
                                                         "Add accounts:",
-                                                        "  opencode auth login",
+                                                        "  codex login",
                                                         "",
                                                         `Storage: ${storePath}`,
                                                 ].join("\n");
@@ -2636,7 +3423,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 						lines.push("");
 						lines.push(...formatUiSection(ui, "Commands"));
-						lines.push(formatUiItem(ui, "Add account: opencode auth login", "accent"));
+						lines.push(formatUiItem(ui, "Add account: codex login", "accent"));
 						lines.push(formatUiItem(ui, "Switch account: codex-switch <index>"));
 						lines.push(formatUiItem(ui, "Detailed status: codex-status"));
 						lines.push(formatUiItem(ui, "Health check: codex-health"));
@@ -2681,7 +3468,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                                         lines.push(`Storage: ${storePath}`);
                                         lines.push("");
                                         lines.push("Commands:");
-                                        lines.push("  - Add account: opencode auth login");
+                                        lines.push("  - Add account: codex login");
                                         lines.push("  - Switch account: codex-switch");
                                         lines.push("  - Status details: codex-status");
                                         lines.push("  - Health check: codex-health");
@@ -2705,10 +3492,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 								...formatUiHeader(ui, "Switch account"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: opencode auth login", "accent"),
+								formatUiItem(ui, "Run: codex login", "accent"),
 							].join("\n");
 						}
-                                                return "No Codex accounts configured. Run: opencode auth login";
+                                                return "No Codex accounts configured. Run: codex login";
                                         }
 
                                         const targetIndex = Math.floor((index ?? 0) - 1);
@@ -2755,11 +3542,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 						return `Switched to ${formatAccountLabel(account, targetIndex)} but failed to persist. Changes may be lost on restart.`;
 					}
 
-                                        if (cachedAccountManager) {
-						const reloadedManager = await AccountManager.loadFromDisk();
-						cachedAccountManager = reloadedManager;
-						accountManagerPromise = Promise.resolve(reloadedManager);
-                                        }
+					if (cachedAccountManager) {
+						await reloadAccountManagerFromDisk();
+					}
 
                                         const label = formatAccountLabel(account, targetIndex);
 					if (ui.v2Enabled) {
@@ -2784,10 +3569,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 								...formatUiHeader(ui, "Account status"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: opencode auth login", "accent"),
+								formatUiItem(ui, "Run: codex login", "accent"),
 							].join("\n");
 						}
-						return "No Codex accounts configured. Run: opencode auth login";
+						return "No Codex accounts configured. Run: codex login";
 					}
 
 				const now = Date.now();
@@ -2907,6 +3692,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 						successful > 0
 							? Math.round(runtimeMetrics.cumulativeLatencyMs / successful)
 							: 0;
+					const liveSyncSnapshot = liveAccountSync?.getSnapshot();
+					const guardianStats = refreshGuardian?.getStats();
+					const sessionAffinityEntries = sessionAffinityStore?.size() ?? 0;
 					const lastRequest =
 						runtimeMetrics.lastRequestAt !== null
 							? `${formatWaitTime(now - runtimeMetrics.lastRequestAt)} ago`
@@ -2924,9 +3712,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 						`Rate-limited responses: ${runtimeMetrics.rateLimitedResponses}`,
 						`Server errors (5xx): ${runtimeMetrics.serverErrors}`,
 						`Network errors: ${runtimeMetrics.networkErrors}`,
+						`User aborts: ${runtimeMetrics.userAborts}`,
 						`Auth refresh failures: ${runtimeMetrics.authRefreshFailures}`,
 						`Account rotations: ${runtimeMetrics.accountRotations}`,
+						`Same-account retries: ${runtimeMetrics.sameAccountRetries}`,
+						`Stream failover attempts: ${runtimeMetrics.streamFailoverAttempts}`,
+						`Stream failover recoveries: ${runtimeMetrics.streamFailoverRecoveries}`,
+						`Stream failover cross-account recoveries: ${runtimeMetrics.streamFailoverCrossAccountRecoveries}`,
 						`Empty-response retries: ${runtimeMetrics.emptyResponseRetries}`,
+						`Session affinity entries: ${sessionAffinityEntries}`,
+						`Live sync: ${liveSyncSnapshot?.running ? "on" : "off"} (${liveSyncSnapshot?.reloadCount ?? 0} reloads)`,
+						`Refresh guardian: ${guardianStats ? "on" : "off"} (${guardianStats?.refreshed ?? 0} refreshed, ${guardianStats?.failed ?? 0} failed)`,
 						`Last upstream request: ${lastRequest}`,
 					];
 
@@ -2946,9 +3742,34 @@ while (attempted.size < Math.max(1, accountCount)) {
 							formatUiKeyValue(ui, "Rate-limited responses", String(runtimeMetrics.rateLimitedResponses), "warning"),
 							formatUiKeyValue(ui, "Server errors (5xx)", String(runtimeMetrics.serverErrors), "danger"),
 							formatUiKeyValue(ui, "Network errors", String(runtimeMetrics.networkErrors), "danger"),
+							formatUiKeyValue(ui, "User aborts", String(runtimeMetrics.userAborts), "muted"),
 							formatUiKeyValue(ui, "Auth refresh failures", String(runtimeMetrics.authRefreshFailures), "warning"),
 							formatUiKeyValue(ui, "Account rotations", String(runtimeMetrics.accountRotations), "accent"),
+							formatUiKeyValue(ui, "Same-account retries", String(runtimeMetrics.sameAccountRetries), "warning"),
+							formatUiKeyValue(ui, "Stream failover attempts", String(runtimeMetrics.streamFailoverAttempts), "muted"),
+							formatUiKeyValue(ui, "Stream failover recoveries", String(runtimeMetrics.streamFailoverRecoveries), "success"),
+							formatUiKeyValue(
+								ui,
+								"Stream failover cross-account recoveries",
+								String(runtimeMetrics.streamFailoverCrossAccountRecoveries),
+								"accent",
+							),
 							formatUiKeyValue(ui, "Empty-response retries", String(runtimeMetrics.emptyResponseRetries), "warning"),
+							formatUiKeyValue(ui, "Session affinity entries", String(sessionAffinityEntries), "muted"),
+							formatUiKeyValue(
+								ui,
+								"Live sync",
+								`${liveSyncSnapshot?.running ? "on" : "off"} (${liveSyncSnapshot?.reloadCount ?? 0} reloads)`,
+								liveSyncSnapshot?.running ? "success" : "muted",
+							),
+							formatUiKeyValue(
+								ui,
+								"Refresh guardian",
+								guardianStats
+									? `on (${guardianStats.refreshed} refreshed, ${guardianStats.failed} failed)`
+									: "off",
+								guardianStats ? "success" : "muted",
+							),
 							formatUiKeyValue(ui, "Last upstream request", lastRequest, "muted"),
 						];
 						if (runtimeMetrics.lastError) {
@@ -2973,10 +3794,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 								...formatUiHeader(ui, "Health check"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: opencode auth login", "accent"),
+								formatUiItem(ui, "Run: codex login", "accent"),
 							].join("\n");
 						}
-						return "No Codex accounts configured. Run: opencode auth login";
+						return "No Codex accounts configured. Run: codex login";
 					}
 
 					const results: string[] = ui.v2Enabled
@@ -3110,9 +3931,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 				}
 
 					if (cachedAccountManager) {
-						const reloadedManager = await AccountManager.loadFromDisk();
-						cachedAccountManager = reloadedManager;
-						accountManagerPromise = Promise.resolve(reloadedManager);
+						await reloadAccountManagerFromDisk();
 					}
 
 					const remaining = storage.accounts.length;
@@ -3123,7 +3942,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							formatUiItem(ui, `${getStatusMarker(ui, "ok")} Removed: ${label}`, "success"),
 							remaining > 0
 								? formatUiKeyValue(ui, "Remaining accounts", String(remaining))
-								: formatUiItem(ui, "No accounts remaining. Run: opencode auth login", "warning"),
+								: formatUiItem(ui, "No accounts remaining. Run: codex login", "warning"),
 						].join("\n");
 					}
 					return [
@@ -3131,7 +3950,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						"",
 						remaining > 0
 							? `Remaining accounts: ${remaining}`
-							: "No accounts remaining. Run: opencode auth login",
+							: "No accounts remaining. Run: codex login",
 					].join("\n");
 				},
 			}),
@@ -3148,10 +3967,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 								...formatUiHeader(ui, "Refresh accounts"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: opencode auth login", "accent"),
+								formatUiItem(ui, "Run: codex login", "accent"),
 							].join("\n");
 						}
-						return "No Codex accounts configured. Run: opencode auth login";
+						return "No Codex accounts configured. Run: codex login";
 					}
 
 					const results: string[] = ui.v2Enabled
@@ -3187,9 +4006,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 				await saveAccounts(storage);
 				if (cachedAccountManager) {
-					const reloadedManager = await AccountManager.loadFromDisk();
-					cachedAccountManager = reloadedManager;
-					accountManagerPromise = Promise.resolve(reloadedManager);
+					await reloadAccountManagerFromDisk();
 				}
 				results.push("");
 				results.push(`Summary: ${refreshedCount} refreshed, ${failedCount} failed`);

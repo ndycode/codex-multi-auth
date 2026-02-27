@@ -41,6 +41,22 @@ export const PluginConfigSchema = z.object({
 	pidOffsetEnabled: z.boolean().optional(),
 	fetchTimeoutMs: z.number().min(1_000).optional(),
 	streamStallTimeoutMs: z.number().min(1_000).optional(),
+	liveAccountSync: z.boolean().optional(),
+	liveAccountSyncDebounceMs: z.number().min(50).optional(),
+	liveAccountSyncPollMs: z.number().min(500).optional(),
+	sessionAffinity: z.boolean().optional(),
+	sessionAffinityTtlMs: z.number().min(1_000).optional(),
+	sessionAffinityMaxEntries: z.number().min(8).optional(),
+	proactiveRefreshGuardian: z.boolean().optional(),
+	proactiveRefreshIntervalMs: z.number().min(5_000).optional(),
+	proactiveRefreshBufferMs: z.number().min(30_000).optional(),
+	networkErrorCooldownMs: z.number().min(0).optional(),
+	serverErrorCooldownMs: z.number().min(0).optional(),
+	storageBackupEnabled: z.boolean().optional(),
+	preemptiveQuotaEnabled: z.boolean().optional(),
+	preemptiveQuotaRemainingPercent5h: z.number().min(0).max(100).optional(),
+	preemptiveQuotaRemainingPercent7d: z.number().min(0).max(100).optional(),
+	preemptiveQuotaMaxDeferralMs: z.number().min(1_000).optional(),
 });
 
 export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;
@@ -59,7 +75,7 @@ export type AccountIdSourceFromSchema = z.infer<typeof AccountIdSourceSchema>;
 /**
  * Cooldown reason for temporary account suspension.
  */
-export const CooldownReasonSchema = z.enum(["auth-failure", "network-error"]);
+export const CooldownReasonSchema = z.enum(["auth-failure", "network-error", "rate-limit"]);
 
 export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
 

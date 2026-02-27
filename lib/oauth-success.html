@@ -1,712 +1,338 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenCode - Authentication Successful</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&display=swap" rel="stylesheet">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>OpenAI Codex Sign-in Complete</title>
+  <style>
+    :root {
+      --bg: #040608;
+      --bg2: #0a1210;
+      --card: #0a0f0d;
+      --line: #1f3a2f;
+      --line-soft: #13261f;
+      --text: #e6f6ee;
+      --muted: #9ac3b1;
+      --green: #35d28a;
+      --green-strong: #13b06e;
+      --warn: #f2cc60;
+    }
 
-        body {
-            font-family: "IBM Plex Mono", monospace;
-            font-weight: 400;
-            background: #0a0a0a;
-            color: #B7B1B1;
-            overflow: hidden;
-            height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-        }
+    * { box-sizing: border-box; }
 
-        /* Matrix rain background */
-        .matrix {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 1;
-            opacity: 0.35;
-        }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      font-family: Consolas, "Cascadia Mono", "SFMono-Regular", Menlo, Monaco, monospace;
+      background: radial-gradient(1300px 700px at 20% -10%, #0f2b21 0%, transparent 55%),
+                  radial-gradient(1000px 560px at 100% 0%, #0a2019 0%, transparent 60%),
+                  linear-gradient(180deg, var(--bg), var(--bg2));
+      color: var(--text);
+      overflow-x: hidden;
+      overflow-y: auto;
+    }
 
-        /* Scan lines effect */
-        .scanline {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(
-                transparent 50%,
-                rgba(0, 0, 0, 0.1) 50%
-            );
-            background-size: 100% 4px;
-            z-index: 2;
-            pointer-events: none;
-            animation: scan 8s linear infinite;
-        }
+    .grid {
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(to right, rgba(53, 210, 138, 0.06) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(53, 210, 138, 0.05) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: radial-gradient(circle at center, black 35%, transparent 90%);
+      pointer-events: none;
+      animation: drift 16s linear infinite;
+    }
 
-        @keyframes scan {
-            0% { transform: translateY(0); }
-            100% { transform: translateY(4px); }
-        }
+    .scanline {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(180deg, transparent 0%, rgba(53, 210, 138, 0.07) 48%, transparent 52%, transparent 100%);
+      animation: sweep 5s linear infinite;
+      opacity: 0.45;
+    }
 
-        /* Vignette effect */
-        .vignette {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            box-shadow: inset 0 0 200px rgba(0, 0, 0, 0.8);
-            z-index: 2;
-            pointer-events: none;
-        }
+    @keyframes sweep {
+      0% { transform: translateY(-100%); }
+      100% { transform: translateY(100%); }
+    }
 
-        .container {
-            width: 90%;
-            max-width: 650px;
-            text-align: center;
-            z-index: 10;
-            position: relative;
-            animation: fadeIn 0.8s ease-out;
-        }
+    @keyframes drift {
+      from { transform: translateY(0); }
+      to { transform: translateY(28px); }
+    }
 
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: scale(0.95);
-            }
-            to {
-                opacity: 1;
-                transform: scale(1);
-            }
-        }
+    .wrap {
+      position: relative;
+      width: min(860px, calc(100vw - 32px));
+      margin: 24px auto;
+      top: 50%;
+      transform: translateY(-50%);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(10, 16, 13, 0.94), rgba(6, 11, 9, 0.94));
+      box-shadow: 0 28px 80px rgba(0,0,0,0.58), 0 0 0 1px rgba(53,210,138,0.08) inset;
+      overflow: hidden;
+      animation: pop 380ms ease-out;
+    }
 
-        .logo {
-            margin-bottom: 60px;
-            opacity: 0;
-            animation: logoEntrance 1.2s cubic-bezier(0.34, 1.56, 0.64, 1) 0.3s forwards;
-            position: relative;
-        }
+    @keyframes pop {
+      from { opacity: 0; transform: translateY(-48%) scale(0.985); }
+      to { opacity: 1; transform: translateY(-50%) scale(1); }
+    }
 
-        @keyframes logoEntrance {
-            0% {
-                opacity: 0;
-                transform: translateY(-50px) rotateX(90deg);
-            }
-            100% {
-                opacity: 1;
-                transform: translateY(0) rotateX(0);
-            }
-        }
+    .titlebar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line-soft);
+      background: rgba(6, 12, 10, 0.9);
+    }
 
-        .logo svg {
-            width: 300px;
-            height: auto;
-            filter: drop-shadow(0 0 30px rgba(241, 236, 236, 0.3));
-            animation: pulse 3s ease-in-out infinite;
-        }
+    .lights { display: flex; gap: 6px; }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #375a4a;
+      border: 1px solid #2b463b;
+    }
+    .dot.ok {
+      background: var(--green);
+      border-color: #1a6f46;
+      box-shadow: 0 0 8px rgba(53,210,138,0.65);
+      animation: blink 1.6s ease-in-out infinite;
+    }
 
-        @keyframes pulse {
-            0%, 100% {
-                filter: drop-shadow(0 0 30px rgba(241, 236, 236, 0.3));
-            }
-            50% {
-                filter: drop-shadow(0 0 50px rgba(241, 236, 236, 0.5));
-            }
-        }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.55; }
+    }
 
-        /* Glowing orb behind logo */
-        .logo::before {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 200px;
-            height: 200px;
-            background: radial-gradient(circle, rgba(241, 236, 236, 0.1) 0%, transparent 70%);
-            border-radius: 50%;
-            animation: orbPulse 4s ease-in-out infinite;
-            z-index: -1;
-        }
+    .bar-title {
+      font-size: 13px;
+      letter-spacing: 0.02em;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
 
-        @keyframes orbPulse {
-            0%, 100% {
-                transform: translate(-50%, -50%) scale(1);
-                opacity: 0.3;
-            }
-            50% {
-                transform: translate(-50%, -50%) scale(1.2);
-                opacity: 0.6;
-            }
-        }
+    .content {
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 16px;
+    }
 
-        .terminal-window {
-            background: rgba(26, 26, 26, 0.95);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid rgba(75, 70, 70, 0.3);
-            border-radius: 12px;
-            margin: 30px 0;
-            opacity: 0;
-            animation: boxEntrance 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) 0.6s forwards;
-            position: relative;
-            overflow: hidden;
-            box-shadow:
-                0 0 60px rgba(0, 0, 0, 0.5),
-                inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        }
+    .left {
+      border: 1px solid var(--line-soft);
+      border-radius: 10px;
+      padding: 18px;
+      background: rgba(8, 14, 11, 0.62);
+    }
 
-        .terminal-header {
-            background: rgba(15, 15, 15, 0.9);
-            padding: 14px 18px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border-bottom: 1px solid rgba(75, 70, 70, 0.3);
-            position: relative;
-        }
+    .right {
+      border: 1px solid var(--line-soft);
+      border-radius: 10px;
+      padding: 16px;
+      background: rgba(8, 14, 11, 0.62);
+    }
 
-        .terminal-button {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            transition: transform 0.2s;
-        }
+    .kicker {
+      color: var(--green);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      margin-bottom: 10px;
+    }
 
-        .terminal-button:hover {
-            transform: scale(1.2);
-        }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(22px, 3.2vw, 29px);
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
 
-        .terminal-button.red {
-            background: #ff5f56;
-            box-shadow: 0 0 10px rgba(255, 95, 86, 0.3);
-            animation: pulse 2s infinite;
-        }
+    .subtitle {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
 
-        .terminal-button.yellow {
-            background: #ffbd2e;
-            box-shadow: 0 0 10px rgba(255, 189, 46, 0.3);
-            animation: pulse 2s infinite 0.3s;
-        }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 14px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(53,210,138,0.4);
+      background: rgba(53,210,138,0.12);
+      color: #d9f9e9;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
 
-        .terminal-button.green {
-            background: #27c93f;
-            box-shadow: 0 0 10px rgba(39, 201, 63, 0.3);
-            animation: pulse 2s infinite 0.6s;
-        }
+    .badge .pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 9px rgba(53,210,138,0.85);
+      animation: ping 1.2s ease-out infinite;
+    }
 
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
+    @keyframes ping {
+      0% { transform: scale(1); opacity: 1; }
+      100% { transform: scale(1.8); opacity: 0.1; }
+    }
 
-        .terminal-title {
-            flex: 1;
-            text-align: center;
-            font-size: 12px;
-            color: #6a6565;
-            opacity: 0.8;
-            letter-spacing: 0.5px;
-        }
+    .steps {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 8px;
+    }
 
-        .status-box {
-            padding: 50px 40px;
-            position: relative;
-        }
+    .steps li {
+      border: 1px solid var(--line-soft);
+      background: rgba(7, 12, 10, 0.72);
+      border-radius: 8px;
+      padding: 9px 10px;
+      color: #cde6db;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
 
-        @keyframes boxEntrance {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
+    .steps li::before {
+      content: ">";
+      color: var(--green);
+      font-weight: 700;
+    }
 
-        /* Animated border gradient */
-        .terminal-window::before {
-            content: '';
-            position: absolute;
-            top: -2px;
-            left: -2px;
-            right: -2px;
-            bottom: -2px;
-            background: linear-gradient(
-                45deg,
-                transparent,
-                rgba(241, 236, 236, 0.1),
-                transparent,
-                rgba(241, 236, 236, 0.1)
-            );
-            background-size: 400% 400%;
-            border-radius: 12px;
-            z-index: -1;
-            animation: gradientShift 8s ease infinite;
-        }
+    .steps li:last-child::before { content: "*"; }
 
-        @keyframes gradientShift {
-            0%, 100% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-        }
+    .terminal {
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      padding: 12px;
+      background: #060b09;
+      min-height: 180px;
+    }
 
-        .checkmark-container {
-            width: 100px;
-            height: 100px;
-            margin: 0 auto 40px;
-            position: relative;
-        }
+    .prompt {
+      color: #cde6db;
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+    }
 
-        .checkmark-circle {
-            width: 100px;
-            height: 100px;
-            border-radius: 50%;
-            border: 4px solid transparent;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-            animation: circleAppear 0.6s ease-out 1s both;
-        }
+    .prompt .ok { color: var(--green); }
+    .prompt .muted { color: var(--muted); }
+    .prompt .warn { color: var(--warn); }
 
-        @keyframes circleAppear {
-            from {
-                transform: scale(0) rotate(-180deg);
-                border-color: transparent;
-            }
-            to {
-                transform: scale(1) rotate(0);
-                border-color: #4B4646;
-            }
-        }
+    .progress {
+      margin-top: 10px;
+      height: 8px;
+      border-radius: 999px;
+      background: #0b1a14;
+      border: 1px solid var(--line-soft);
+      overflow: hidden;
+      position: relative;
+    }
 
-        /* Spinning rings around checkmark */
-        .checkmark-circle::before,
-        .checkmark-circle::after {
-            content: '';
-            position: absolute;
-            width: 120%;
-            height: 120%;
-            border: 2px solid transparent;
-            border-top-color: rgba(241, 236, 236, 0.2);
-            border-radius: 50%;
-            animation: rotate 3s linear infinite;
-        }
+    .progress span {
+      display: block;
+      width: 72%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--green-strong), var(--green));
+      animation: load 1.8s ease-in-out infinite;
+    }
 
-        .checkmark-circle::after {
-            width: 140%;
-            height: 140%;
-            border-top-color: rgba(183, 177, 177, 0.1);
-            animation: rotate 4s linear infinite reverse;
-        }
+    @keyframes load {
+      0%, 100% { width: 62%; }
+      50% { width: 88%; }
+    }
 
-        @keyframes rotate {
-            to { transform: rotate(360deg); }
-        }
+    .footer {
+      border-top: 1px solid var(--line-soft);
+      padding: 11px 16px;
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      background: rgba(6, 11, 9, 0.9);
+    }
 
-        .checkmark {
-            width: 35px;
-            height: 18px;
-            border-left: 5px solid #F1ECEC;
-            border-bottom: 5px solid #F1ECEC;
-            transform: rotate(-45deg) scale(0);
-            animation: checkmarkDraw 0.5s cubic-bezier(0.65, 0, 0.45, 1) 1.3s forwards;
-            filter: drop-shadow(0 0 10px rgba(241, 236, 236, 0.5));
-        }
+    .footer strong { color: var(--text); font-weight: 700; }
 
-        @keyframes checkmarkDraw {
-            0% {
-                transform: rotate(-45deg) scale(0);
-            }
-            50% {
-                transform: rotate(-45deg) scale(1.1);
-            }
-            100% {
-                transform: rotate(-45deg) scale(1);
-            }
-        }
-
-        .title {
-            font-size: 32px;
-            color: #00ff41;
-            margin-bottom: 20px;
-            font-weight: 500;
-            letter-spacing: 1px;
-            text-shadow: 0 0 20px rgba(0, 255, 65, 0.5);
-            opacity: 0;
-            animation: fadeInUp 0.6s ease-out 1.8s forwards;
-        }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .message {
-            font-size: 16px;
-            color: #9a9595;
-            line-height: 1.8;
-            margin-bottom: 30px;
-            opacity: 0;
-            animation: fadeInUp 0.6s ease-out 2s forwards;
-        }
-
-        .terminal-output {
-            background: rgba(10, 10, 10, 0.6);
-            border: 1px solid rgba(75, 70, 70, 0.2);
-            border-radius: 8px;
-            padding: 25px;
-            text-align: left;
-            font-size: 14px;
-            line-height: 2;
-            margin-top: 25px;
-            position: relative;
-            overflow: hidden;
-        }
-
-        /* Terminal typing effect */
-        .terminal-output::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 2px;
-            background: linear-gradient(90deg, transparent, #4B4646, transparent);
-            animation: scanProgress 2s ease-out 2.2s forwards;
-        }
-
-        @keyframes scanProgress {
-            from {
-                transform: translateX(-100%);
-            }
-            to {
-                transform: translateX(100%);
-            }
-        }
-
-        .terminal-line {
-            opacity: 0;
-            transform: translateX(-20px);
-            animation: terminalType 0.4s ease-out forwards;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .terminal-line:nth-child(1) { animation-delay: 2.2s; }
-        .terminal-line:nth-child(2) { animation-delay: 2.4s; }
-        .terminal-line:nth-child(3) { animation-delay: 2.6s; }
-        .terminal-line:nth-child(4) { animation-delay: 2.8s; }
-
-        @keyframes terminalType {
-            to {
-                opacity: 1;
-                transform: translateX(0);
-            }
-        }
-
-        .prompt {
-            color: #6a6565;
-            font-weight: 500;
-        }
-
-        .success {
-            color: #B7B1B1;
-        }
-
-        .terminal-line::after {
-            content: '';
-            flex: 1;
-            height: 1px;
-            background: linear-gradient(90deg, rgba(75, 70, 70, 0.3), transparent);
-        }
-
-        .footer {
-            margin-top: 40px;
-            font-size: 14px;
-            color: #6a6565;
-            opacity: 0;
-            animation: fadeInUp 0.6s ease-out 3.2s forwards;
-            text-shadow: 0 0 10px rgba(106, 101, 101, 0.5);
-        }
-
-        .cursor {
-            display: inline-block;
-            width: 2px;
-            height: 16px;
-            background: #8a8585;
-            margin-left: 6px;
-            animation: blink 1s infinite;
-            box-shadow: 0 0 8px #8a8585;
-        }
-
-        @keyframes blink {
-            0%, 49% { opacity: 1; }
-            50%, 100% { opacity: 0; }
-        }
-
-        /* Floating particles */
-        .particle {
-            position: fixed;
-            width: 2px;
-            height: 2px;
-            background: rgba(183, 177, 177, 0.3);
-            border-radius: 50%;
-            pointer-events: none;
-            z-index: 5;
-            animation: float 8s linear infinite;
-        }
-
-        @keyframes float {
-            0% {
-                transform: translateY(100vh) translateX(0) scale(0);
-                opacity: 0;
-            }
-            10% {
-                opacity: 1;
-                transform: translateY(90vh) translateX(10px) scale(1);
-            }
-            90% {
-                opacity: 1;
-            }
-            100% {
-                transform: translateY(-10vh) translateX(-10px) scale(0);
-                opacity: 0;
-            }
-        }
-
-        /* Success glow effect */
-        @keyframes successGlow {
-            0%, 100% {
-                box-shadow:
-                    0 0 60px rgba(0, 0, 0, 0.5),
-                    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-            }
-            50% {
-                box-shadow:
-                    0 0 80px rgba(241, 236, 236, 0.1),
-                    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-            }
-        }
-
-        .terminal-window {
-            animation:
-                boxEntrance 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) 0.6s forwards,
-                successGlow 4s ease-in-out 2s infinite;
-        }
-    </style>
+    @media (max-width: 840px) {
+      .content {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
 </head>
 <body>
-    <canvas class="matrix" id="matrix"></canvas>
-    <div class="scanline"></div>
-    <div class="vignette"></div>
+  <div class="grid" aria-hidden="true"></div>
+  <div class="scanline" aria-hidden="true"></div>
 
-    <div class="container">
-        <div class="logo">
-            <svg width="300" height="54" viewBox="0 0 234 42" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M18 30H6V18H18V30Z" fill="#4B4646"/>
-                <path d="M18 12H6V30H18V12ZM24 36H0V6H24V36Z" fill="#B7B1B1"/>
-                <path d="M48 30H36V18H48V30Z" fill="#4B4646"/>
-                <path d="M36 30H48V12H36V30ZM54 36H36V42H30V6H54V36Z" fill="#B7B1B1"/>
-                <path d="M84 24V30H66V24H84Z" fill="#4B4646"/>
-                <path d="M84 24H66V30H84V36H60V6H84V24ZM66 18H78V12H66V18Z" fill="#B7B1B1"/>
-                <path d="M108 36H96V18H108V36Z" fill="#4B4646"/>
-                <path d="M108 12H96V36H90V6H108V12ZM114 36H108V12H114V36Z" fill="#B7B1B1"/>
-                <path d="M144 30H126V18H144V30Z" fill="#4B4646"/>
-                <path d="M144 12H126V30H144V36H120V6H144V12Z" fill="#F1ECEC"/>
-                <path d="M168 30H156V18H168V30Z" fill="#4B4646"/>
-                <path d="M168 12H156V30H168V12ZM174 36H150V6H174V36Z" fill="#F1ECEC"/>
-                <path d="M198 30H186V18H198V30Z" fill="#4B4646"/>
-                <path d="M198 12H186V30H198V12ZM204 36H180V6H198V0H204V36Z" fill="#F1ECEC"/>
-                <path d="M234 24V30H216V24H234Z" fill="#4B4646"/>
-                <path d="M216 12V18H228V12H216ZM234 24H216V30H234V36H210V6H234V24Z" fill="#F1ECEC"/>
-            </svg>
+  <main class="wrap" role="main" aria-label="OAuth callback success">
+    <header class="titlebar">
+      <div class="lights">
+        <span class="dot"></span>
+        <span class="dot"></span>
+        <span class="dot ok"></span>
+      </div>
+      <div class="bar-title">OpenAI Codex - Callback Received</div>
+    </header>
+
+    <section class="content">
+      <article class="left">
+        <p class="kicker">OpenAI Codex</p>
+        <h1>Sign-in Complete</h1>
+        <p class="subtitle">Account connected. Return to terminal.</p>
+
+        <div class="badge"><span class="pulse"></span> Connected</div>
+
+        <ul class="steps" aria-label="Completion steps">
+          <li>Authorization code received</li>
+          <li>Token exchange complete</li>
+          <li>Credentials saved to local Codex auth storage</li>
+          <li>Session ready</li>
+        </ul>
+      </article>
+
+      <aside class="right" aria-label="Terminal status">
+        <div class="terminal">
+          <pre class="prompt"><span class="ok">[ok]</span> callback received on localhost:1455
+<span class="ok">[ok]</span> secure token flow complete
+<span class="ok">[ok]</span> account saved
+
+<span class="muted">next:</span> return to terminal
+<span class="warn">tip:</span> close this tab</pre>
+          <div class="progress" aria-hidden="true"><span></span></div>
         </div>
+      </aside>
+    </section>
 
-        <div class="terminal-window">
-            <div class="terminal-header">
-                <div class="terminal-button red"></div>
-                <div class="terminal-button yellow"></div>
-                <div class="terminal-button green"></div>
-                <div class="terminal-title">codex-multi-auth — OAuth Authentication</div>
-            </div>
-
-            <div class="status-box">
-                <div class="checkmark-container">
-                    <div class="checkmark-circle">
-                        <div class="checkmark"></div>
-                    </div>
-                </div>
-
-                <div class="title">ACCESS GRANTED</div>
-                <div class="message">
-                    OpenAI ChatGPT authentication successful<br>
-                    Your credentials have been securely stored
-                </div>
-
-                <div class="terminal-output">
-                    <div class="terminal-line">
-                        <span class="prompt">▸</span>
-                        <span class="success">Initializing OAuth handshake...</span>
-                    </div>
-                    <div class="terminal-line">
-                        <span class="prompt">▸</span>
-                        <span class="success">Token exchange verified</span>
-                    </div>
-                    <div class="terminal-line">
-                        <span class="prompt">▸</span>
-                        <span class="success">Credentials encrypted & stored</span>
-                    </div>
-                    <div class="terminal-line">
-                        <span class="prompt">✓</span>
-                        <span class="success">OpenCode ready for deployment</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="footer">
-            Return to your terminal to continue<span class="cursor"></span>
-        </div>
-    </div>
-
-    <script>
-        // Enhanced Matrix rain effect with mouse interaction
-        const canvas = document.getElementById('matrix');
-        const ctx = canvas.getContext('2d');
-
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-
-        // Mix of characters including OpenCode themed ones
-        const chars = 'OPENCODE▸✓▹▸◂◃◄►◀▶←→↑↓⟨⟩∧∨∩∪⊂⊃⊆⊇∈∉∀∃∄∅∞≡≠≤≥±∓⊕⊗⊙01';
-        const fontSize = 16;
-        const columns = Math.floor(canvas.width / fontSize);
-
-        const drops = Array(columns).fill(1);
-        const speeds = Array(columns).fill(0).map(() => Math.random() * 0.5 + 0.5);
-
-        // Track mouse position
-        let mouseX = -1000;
-        let mouseY = -1000;
-
-        canvas.addEventListener('mousemove', (e) => {
-            mouseX = e.clientX;
-            mouseY = e.clientY;
-        });
-
-        canvas.addEventListener('mouseleave', () => {
-            mouseX = -1000;
-            mouseY = -1000;
-        });
-
-        function drawMatrix() {
-            ctx.fillStyle = 'rgba(10, 10, 10, 0.08)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-            ctx.font = fontSize + 'px "IBM Plex Mono"';
-
-            for (let i = 0; i < drops.length; i++) {
-                const text = chars[Math.floor(Math.random() * chars.length)];
-                const x = i * fontSize;
-                const y = drops[i] * fontSize;
-
-                // Check distance from mouse
-                const distanceFromMouse = Math.sqrt(
-                    Math.pow(x - mouseX, 2) + Math.pow(y - mouseY, 2)
-                );
-
-                const hoverRadius = 80;
-                const isNearMouse = distanceFromMouse < hoverRadius;
-
-                if (isNearMouse) {
-                    // Matrix green color when near mouse
-                    const intensity = 1 - (distanceFromMouse / hoverRadius);
-                    ctx.fillStyle = `rgba(0, 255, 65, ${intensity * 0.95})`;
-                    ctx.shadowBlur = 20 * intensity;
-                    ctx.shadowColor = '#00ff41';
-                } else {
-                    // Bright white gradient by default
-                    const gradient = ctx.createLinearGradient(0, y - fontSize * 10, 0, y);
-                    gradient.addColorStop(0, 'rgba(200, 200, 200, 0)');
-                    gradient.addColorStop(0.5, 'rgba(241, 236, 236, 0.8)');
-                    gradient.addColorStop(1, 'rgba(255, 255, 255, 1)');
-                    ctx.fillStyle = gradient;
-                    ctx.shadowBlur = 0;
-                }
-
-                ctx.fillText(text, x, y);
-
-                // Randomly reset drops
-                if (drops[i] * fontSize > canvas.height && Math.random() > 0.98) {
-                    drops[i] = 0;
-                    speeds[i] = Math.random() * 0.5 + 0.5;
-                }
-
-                drops[i] += speeds[i];
-            }
-
-            // Reset shadow for next frame
-            ctx.shadowBlur = 0;
-        }
-
-        setInterval(drawMatrix, 40);
-
-        // Create floating particles
-        function createParticle() {
-            const particle = document.createElement('div');
-            particle.className = 'particle';
-            particle.style.left = Math.random() * 100 + '%';
-            particle.style.animationDelay = Math.random() * 8 + 's';
-            particle.style.animationDuration = (Math.random() * 4 + 6) + 's';
-            document.body.appendChild(particle);
-
-            setTimeout(() => particle.remove(), 10000);
-        }
-
-        // Generate particles periodically
-        for (let i = 0; i < 20; i++) {
-            setTimeout(createParticle, i * 400);
-        }
-
-        setInterval(() => {
-            if (Math.random() > 0.7) createParticle();
-        }, 2000);
-
-        // Resize handler
-        window.addEventListener('resize', () => {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-        });
-
-        // Add subtle mouse parallax effect
-        document.addEventListener('mousemove', (e) => {
-            const moveX = (e.clientX - window.innerWidth / 2) / 50;
-            const moveY = (e.clientY - window.innerHeight / 2) / 50;
-
-            document.querySelector('.container').style.transform =
-                `translate(${moveX}px, ${moveY}px)`;
-        });
-    </script>
+    <footer class="footer">
+      <span>Status: <strong>Connected</strong></span>
+      <span>Back to terminal to continue.</span>
+    </footer>
+  </main>
 </body>
 </html>

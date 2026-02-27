@@ -1,7 +1,7 @@
 import { writeFileSync, mkdirSync, existsSync, statSync, renameSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { getCorrelationId, maskEmail } from "./logger.js";
+import { getCodexLogDir } from "./runtime-paths.js";
 
 export enum AuditAction {
 	ACCOUNT_ADD = "account.add",
@@ -48,7 +48,7 @@ export interface AuditConfig {
 
 const DEFAULT_CONFIG: AuditConfig = {
 	enabled: true,
-	logDir: join(homedir(), ".opencode", "logs"),
+	logDir: getCodexLogDir(),
 	maxFileSizeBytes: 10 * 1024 * 1024,
 	maxFiles: 5,
 };

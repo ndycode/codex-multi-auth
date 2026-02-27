@@ -14,6 +14,18 @@ import {
 } from "../lib/storage.js";
 
 describe("Storage Module - Async Operations", () => {
+  const _origCODEX_HOME = process.env.CODEX_HOME;
+  const _origCODEX_MULTI_AUTH_DIR = process.env.CODEX_MULTI_AUTH_DIR;
+
+  beforeEach(() => {
+    delete process.env.CODEX_HOME;
+    delete process.env.CODEX_MULTI_AUTH_DIR;
+  });
+
+  afterEach(() => {
+    if (_origCODEX_HOME !== undefined) process.env.CODEX_HOME = _origCODEX_HOME; else delete process.env.CODEX_HOME;
+    if (_origCODEX_MULTI_AUTH_DIR !== undefined) process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR; else delete process.env.CODEX_MULTI_AUTH_DIR;
+  });
   let testDir: string;
   let originalGetStoragePath: typeof getStoragePath;
 
@@ -262,9 +274,9 @@ describe("Storage Module - Async Operations", () => {
       expect(path).toMatch(/openai-codex-accounts\.json$/);
     });
 
-    it("returns path containing .opencode directory", () => {
+    it("returns path containing .codex directory", () => {
       const path = getStoragePath();
-      expect(path).toContain(".opencode");
+      expect(path).toContain(".codex");
     });
   });
 

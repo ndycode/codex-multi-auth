@@ -1,5 +1,6 @@
 import { promises as fs, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -21,6 +22,13 @@ const log = createLogger("storage");
 const ACCOUNTS_FILE_NAME = "openai-codex-accounts.json";
 const FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-flagged-accounts.json";
 const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
+const ACCOUNTS_BACKUP_SUFFIX = ".bak";
+const ACCOUNTS_WAL_SUFFIX = ".wal";
+const BACKUP_COPY_MAX_ATTEMPTS = 5;
+const BACKUP_COPY_BASE_DELAY_MS = 10;
+
+let storageBackupEnabled = true;
+let lastAccountsSaveTimestamp = 0;
 
 export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
 	flaggedAt: number;
@@ -63,7 +71,7 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
     case "EPERM":
       return isWindows
         ? `Permission denied writing to ${path}. Check antivirus exclusions for this folder. Ensure you have write permissions.`
-        : `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.opencode`;
+        : `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.codex`;
     case "EBUSY":
       return `File is locked at ${path}. The file may be open in another program. Close any editors or processes accessing it.`;
     case "ENOSPC":
@@ -115,14 +123,14 @@ async function ensureGitignore(storagePath: string): Promise<void> {
     if (existsSync(gitignorePath)) {
       content = await fs.readFile(gitignorePath, "utf-8");
       const lines = content.split("\n").map((l) => l.trim());
-      if (lines.includes(".opencode") || lines.includes(".opencode/") || lines.includes("/.opencode") || lines.includes("/.opencode/")) {
+      if (lines.includes(".codex") || lines.includes(".codex/") || lines.includes("/.codex") || lines.includes("/.codex/")) {
         return;
       }
     }
 
     const newContent = content.endsWith("\n") || content === "" ? content : content + "\n";
-    await fs.writeFile(gitignorePath, newContent + ".opencode/\n", "utf-8");
-    log.debug("Added .opencode to .gitignore", { path: gitignorePath });
+    await fs.writeFile(gitignorePath, newContent + ".codex/\n", "utf-8");
+    log.debug("Added .codex to .gitignore", { path: gitignorePath });
   } catch (error) {
     log.warn("Failed to update .gitignore", { error: String(error) });
   }
@@ -131,6 +139,34 @@ async function ensureGitignore(storagePath: string): Promise<void> {
 let currentStoragePath: string | null = null;
 let currentLegacyProjectStoragePath: string | null = null;
 let currentProjectRoot: string | null = null;
+
+export function setStorageBackupEnabled(enabled: boolean): void {
+	storageBackupEnabled = enabled;
+}
+
+function getAccountsBackupPath(path: string): string {
+	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
+}
+
+function getAccountsWalPath(path: string): string {
+	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
+}
+
+function computeSha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+type AccountsJournalEntry = {
+	version: 1;
+	createdAt: number;
+	path: string;
+	checksum: string;
+	content: string;
+};
+
+export function getLastAccountsSaveTimestamp(): number {
+	return lastAccountsSaveTimestamp;
+}
 
 export function setStoragePath(projectPath: string | null): void {
   if (!projectPath) {
@@ -485,22 +521,64 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
   return loadAccountsInternal(saveAccounts);
 }
 
+function parseAndNormalizeStorage(data: unknown): {
+	normalized: AccountStorageV3 | null;
+	storedVersion: unknown;
+	schemaErrors: string[];
+} {
+	const schemaErrors = getValidationErrors(AnyAccountStorageSchema, data);
+	const normalized = normalizeAccountStorage(data);
+	const storedVersion = isRecord(data) ? (data as { version?: unknown }).version : undefined;
+	return { normalized, storedVersion, schemaErrors };
+}
+
+async function loadAccountsFromPath(path: string): Promise<{
+	normalized: AccountStorageV3 | null;
+	storedVersion: unknown;
+	schemaErrors: string[];
+}> {
+	const content = await fs.readFile(path, "utf-8");
+	const data = JSON.parse(content) as unknown;
+	return parseAndNormalizeStorage(data);
+}
+
+async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 | null> {
+	const walPath = getAccountsWalPath(path);
+	try {
+		const raw = await fs.readFile(walPath, "utf-8");
+		const parsed = JSON.parse(raw) as unknown;
+		if (!isRecord(parsed)) return null;
+		const entry = parsed as Partial<AccountsJournalEntry>;
+		if (entry.version !== 1) return null;
+		if (typeof entry.content !== "string" || typeof entry.checksum !== "string") return null;
+		const computed = computeSha256(entry.content);
+		if (computed !== entry.checksum) {
+			log.warn("Account journal checksum mismatch", { path: walPath });
+			return null;
+		}
+		const data = JSON.parse(entry.content) as unknown;
+		const { normalized } = parseAndNormalizeStorage(data);
+		if (!normalized) return null;
+		log.warn("Recovered account storage from WAL journal", { path, walPath });
+		return normalized;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to load account WAL journal", { path: walPath, error: String(error) });
+		}
+		return null;
+	}
+}
+
 async function loadAccountsInternal(
   persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
 ): Promise<AccountStorageV3 | null> {
   try {
     const path = getStoragePath();
-    const content = await fs.readFile(path, "utf-8");
-    const data = JSON.parse(content) as unknown;
-
-    const schemaErrors = getValidationErrors(AnyAccountStorageSchema, data);
+    const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
     if (schemaErrors.length > 0) {
       log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
     }
-
-    const normalized = normalizeAccountStorage(data);
-
-    const storedVersion = isRecord(data) ? (data as { version?: unknown }).version : undefined;
     if (normalized && storedVersion !== normalized.version) {
       log.info("Migrating account storage to v3", { from: storedVersion, to: normalized.version });
       if (persistMigration) {
@@ -515,14 +593,65 @@ async function loadAccountsInternal(
     return normalized;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      const migrated = persistMigration
-        ? await migrateLegacyProjectStorageIfNeeded(persistMigration)
-        : null;
+	const path = getStoragePath();
+    if (code === "ENOENT" && persistMigration) {
+      const migrated = await migrateLegacyProjectStorageIfNeeded(persistMigration);
       if (migrated) return migrated;
-      return null;
     }
-    log.error("Failed to load account storage", { error: String(error) });
+
+	const recoveredFromWal = await loadAccountsFromJournal(path);
+	if (recoveredFromWal) {
+		if (persistMigration) {
+			try {
+				await persistMigration(recoveredFromWal);
+			} catch (persistError) {
+				log.warn("Failed to persist WAL-recovered storage", {
+					path,
+					error: String(persistError),
+				});
+			}
+		}
+		return recoveredFromWal;
+	}
+
+	if (storageBackupEnabled) {
+		const backupPath = getAccountsBackupPath(path);
+		try {
+			const backup = await loadAccountsFromPath(backupPath);
+			if (backup.schemaErrors.length > 0) {
+				log.warn("Backup account storage schema validation warnings", {
+					path: backupPath,
+					errors: backup.schemaErrors.slice(0, 5),
+				});
+			}
+			if (backup.normalized) {
+				log.warn("Recovered account storage from backup file", { path, backupPath });
+				if (persistMigration) {
+					try {
+						await persistMigration(backup.normalized);
+					} catch (persistError) {
+						log.warn("Failed to persist recovered backup storage", {
+							path,
+							error: String(persistError),
+						});
+					}
+				}
+				return backup.normalized;
+			}
+		} catch (backupError) {
+			const backupCode = (backupError as NodeJS.ErrnoException).code;
+			if (backupCode !== "ENOENT") {
+				log.warn("Failed to load backup account storage", {
+					path: backupPath,
+					error: String(backupError),
+				});
+			}
+		}
+	}
+
+    if (code !== "ENOENT") {
+      log.error("Failed to load account storage", { error: String(error) });
+    }
     return null;
   }
 }
@@ -531,12 +660,53 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   const path = getStoragePath();
   const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   const tempPath = `${path}.${uniqueSuffix}.tmp`;
+  const walPath = getAccountsWalPath(path);
 
   try {
     await fs.mkdir(dirname(path), { recursive: true });
     await ensureGitignore(path);
 
+	if (storageBackupEnabled && existsSync(path)) {
+		const backupPath = getAccountsBackupPath(path);
+		try {
+			for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
+				try {
+					await fs.copyFile(path, backupPath);
+					break;
+				} catch (backupError) {
+					const code = (backupError as NodeJS.ErrnoException).code;
+					const canRetry = (code === "EPERM" || code === "EBUSY") &&
+						attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+					if (canRetry) {
+						await new Promise((resolve) =>
+							setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt)
+						);
+						continue;
+					}
+					throw backupError;
+				}
+			}
+		} catch (backupError) {
+			log.warn("Failed to create account storage backup", {
+				path,
+				backupPath,
+				error: String(backupError),
+			});
+		}
+	}
+
     const content = JSON.stringify(storage, null, 2);
+	const journalEntry: AccountsJournalEntry = {
+		version: 1,
+		createdAt: Date.now(),
+		path,
+		checksum: computeSha256(content),
+		content,
+	};
+	await fs.writeFile(walPath, JSON.stringify(journalEntry), {
+		encoding: "utf-8",
+		mode: 0o600,
+	});
     await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 
     const stats = await fs.stat(tempPath);
@@ -550,6 +720,12 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         await fs.rename(tempPath, path);
+		lastAccountsSaveTimestamp = Date.now();
+		try {
+			await fs.unlink(walPath);
+		} catch {
+			// Best effort cleanup.
+		}
         return;
       } catch (renameError) {
         const code = (renameError as NodeJS.ErrnoException).code;
@@ -604,7 +780,7 @@ export async function withAccountStorageTransaction<T>(
 
 /**
  * Persists account storage to disk using atomic write (temp file + rename).
- * Creates the .opencode directory if it doesn't exist.
+ * Creates the Codex multi-auth storage directory if it doesn't exist.
  * Verifies file was written correctly and provides detailed error messages.
  * @param storage - Account storage data to save
  * @throws StorageError with platform-aware hints on failure
@@ -621,14 +797,27 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  */
 export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
-    try {
-      const path = getStoragePath();
-      await fs.unlink(path);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        log.error("Failed to clear account storage", { error: String(error) });
+    const path = getStoragePath();
+    const walPath = getAccountsWalPath(path);
+    const backupPath = getAccountsBackupPath(path);
+    const clearPath = async (targetPath: string): Promise<void> => {
+      try {
+        await fs.unlink(targetPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") {
+          log.error("Failed to clear account storage artifact", {
+            path: targetPath,
+            error: String(error),
+          });
+        }
       }
+    };
+
+    try {
+      await Promise.all([clearPath(path), clearPath(walPath), clearPath(backupPath)]);
+    } catch {
+      // Individual path cleanup is already best-effort with per-artifact logging.
     }
   });
 }
@@ -657,7 +846,7 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		const isCooldownReason = (
 			value: unknown,
 		): value is AccountMetadataV3["cooldownReason"] =>
-			value === "auth-failure" || value === "network-error";
+			value === "auth-failure" || value === "network-error" || value === "rate-limit";
 
 		let rateLimitResetTimes: AccountMetadataV3["rateLimitResetTimes"] | undefined;
 		if (isRecord(rawAccount.rateLimitResetTimes)) {

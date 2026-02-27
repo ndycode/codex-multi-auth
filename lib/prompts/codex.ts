@@ -1,15 +1,15 @@
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
+import { getCodexCacheDir } from "../runtime-paths.js";
 
 const GITHUB_API_RELEASES =
 	"https://api.github.com/repos/openai/codex/releases/latest";
 const GITHUB_HTML_RELEASES =
 	"https://github.com/openai/codex/releases/latest";
-const CACHE_DIR = join(homedir(), ".opencode", "cache");
+const CACHE_DIR = getCodexCacheDir();
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
 const __filename = fileURLToPath(import.meta.url);

@@ -26,3 +26,7 @@ winston/
 task_plan.md
 findings.md
 progress.md
+
+# local env files
+.env
+.env.local

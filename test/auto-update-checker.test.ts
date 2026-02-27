@@ -19,6 +19,7 @@ describe("auto-update-checker", () => {
 		vi.resetModules();
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-30T12:00:00Z"));
+		mockPackageJson.version = "4.12.0";
 
 		fs = await import("node:fs");
 		vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
@@ -78,14 +79,148 @@ describe("auto-update-checker", () => {
 			expect(result.hasUpdate).toBe(false);
 		});
 
-		it("handles semver with different segment counts", async () => {
+		it("handles versions with v-prefix", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({
 				ok: true,
-				json: async () => ({ version: "4.12.0.1" }),
+				json: async () => ({ version: "v4.13.0" }),
 			} as Response);
 
 			const result = await checkForUpdates(true);
 
+			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("treats stable releases as newer than prerelease", async () => {
+			mockPackageJson.version = "0.1.0-beta.0";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "0.1.0" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+
+			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("does not treat prerelease as newer than stable", async () => {
+			mockPackageJson.version = "0.1.0";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "0.1.0-beta.1" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+
+			expect(result.hasUpdate).toBe(false);
+		});
+
+		it("treats prerelease with additional segment as newer", async () => {
+			mockPackageJson.version = "1.2.3-beta";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta.1" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("treats shorter prerelease as older than longer current prerelease", async () => {
+			mockPackageJson.version = "1.2.3-beta.1";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(false);
+		});
+
+		it("compares numeric prerelease segments", async () => {
+			mockPackageJson.version = "1.2.3-beta.2";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta.10" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("does not treat lower numeric prerelease as newer", async () => {
+			mockPackageJson.version = "1.2.3-beta.10";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta.2" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(false);
+		});
+
+		it("continues prerelease comparison after equal numeric segments", async () => {
+			mockPackageJson.version = "1.2.3-beta.2.omega";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta.2.zeta" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("handles numeric current vs lexical latest prerelease segment", async () => {
+			mockPackageJson.version = "1.2.3-beta.2";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta.alpha" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("handles lexical current vs numeric latest prerelease segment", async () => {
+			mockPackageJson.version = "1.2.3-beta.alpha";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta.2" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(false);
+		});
+
+		it("compares lexical prerelease segments by locale order", async () => {
+			mockPackageJson.version = "1.2.3-beta.omega";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta.zeta" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("does not treat lexically lower prerelease as newer", async () => {
+			mockPackageJson.version = "1.2.3-beta.zeta";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.2.3-beta.alpha" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+			expect(result.hasUpdate).toBe(false);
+		});
+
+		it("handles invalid semver parts and build metadata safely", async () => {
+			mockPackageJson.version = "v1.x.0+build.1";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "1.0.1+build.2" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
 			expect(result.hasUpdate).toBe(true);
 		});
 	});
@@ -113,6 +248,30 @@ describe("auto-update-checker", () => {
 			expect(globalThis.fetch).not.toHaveBeenCalled();
 			expect(result.hasUpdate).toBe(true);
 			expect(result.latestVersion).toBe("5.0.0");
+		});
+
+		it("handles cached null latestVersion without update", async () => {
+			const cacheData = {
+				lastCheck: Date.now() - 1000 * 60 * 60,
+				latestVersion: null,
+				currentVersion: "4.12.0",
+			};
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+			vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+				if (String(path).includes("package.json")) {
+					return JSON.stringify(mockPackageJson);
+				}
+				if (String(path).includes("update-check-cache.json")) {
+					return JSON.stringify(cacheData);
+				}
+				throw new Error("File not found");
+			});
+
+			const result = await checkForUpdates();
+
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+			expect(result.hasUpdate).toBe(false);
+			expect(result.latestVersion).toBeNull();
 		});
 
 		it("fetches when cache is expired", async () => {
@@ -220,6 +379,31 @@ describe("auto-update-checker", () => {
 			});
 		});
 
+		it.each(["EBUSY", "EPERM"] as const)(
+			"retries cache writes when filesystem is transiently locked (%s)",
+			async (code) => {
+			let attempts = 0;
+			vi.mocked(fs.writeFileSync).mockClear();
+			vi.mocked(fs.writeFileSync).mockImplementation(() => {
+				attempts += 1;
+				if (attempts < 3) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = code;
+					throw error;
+				}
+				return undefined;
+			});
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+
+			await checkForUpdates(true);
+
+			expect(fs.writeFileSync).toHaveBeenCalledTimes(3);
+			},
+		);
+
 		it("includes updateCommand in result", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({
 				ok: true,
@@ -275,6 +459,21 @@ describe("auto-update-checker", () => {
 
 			await expect(checkAndNotify(showToast)).resolves.toBeUndefined();
 			expect(showToast).not.toHaveBeenCalled();
+		});
+
+		it("catches toast callback errors", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			const showToast = vi.fn().mockRejectedValue(new Error("toast failed"));
+
+			await expect(checkAndNotify(showToast)).resolves.toBeUndefined();
+			expect(showToast).toHaveBeenCalledTimes(1);
+			expect(showToast).toHaveBeenCalledWith(
+				expect.stringContaining("v5.0.0"),
+				"info",
+			);
 		});
 	});
 

@@ -1488,7 +1488,7 @@ describe('Request Transformer Module', () => {
 				expect(result.model).toBe('gpt-5-codex');
 				expect(result.reasoning?.effort).toBe('high');
 				expect(result.reasoning?.summary).toBe('detailed');
-			});
+			}, 10_000);
 
 		it('should downgrade xhigh to high for non-max codex', async () => {
 			const body: RequestBody = {

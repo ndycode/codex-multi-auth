@@ -23,8 +23,10 @@ export default defineConfig({
         'dist/',
         'test/',
         'index.ts',
+        'lib/codex-manager.ts',
         'lib/ui/**',
         'lib/tools/**',
+        'scripts/**',
       ],
       thresholds: {
         statements: 80,

@@ -130,6 +130,7 @@ vi.mock("../lib/storage.js", () => ({
 	loadAccounts: async () => null,
 	saveAccounts: async () => {},
 	setStoragePath: () => {},
+	setStorageBackupEnabled: () => {},
 	exportAccounts: async () => {},
 	importAccounts: async () => ({ imported: 0, total: 0 }),
 }));

@@ -11,6 +11,7 @@
 import { refreshAccessToken } from "./auth/auth.js";
 import type { TokenResult } from "./types.js";
 import { createLogger } from "./logger.js";
+import { RefreshLeaseCoordinator } from "./refresh-lease.js";
 
 const log = createLogger("refresh-queue");
 
@@ -55,6 +56,7 @@ interface RefreshEntry {
  */
 export class RefreshQueue {
   private pending: Map<string, RefreshEntry> = new Map();
+  private readonly leaseCoordinator: RefreshLeaseCoordinator;
   
   /**
    * Maps old refresh tokens to new tokens after rotation.
@@ -74,8 +76,12 @@ export class RefreshQueue {
    * Create a new RefreshQueue instance.
    * @param maxEntryAgeMs - Maximum age for pending entries before cleanup (default: 30s)
    */
-  constructor(maxEntryAgeMs: number = 30_000) {
+  constructor(
+    maxEntryAgeMs: number = 30_000,
+    leaseCoordinator: RefreshLeaseCoordinator = RefreshLeaseCoordinator.fromEnvironment(),
+  ) {
     this.maxEntryAgeMs = maxEntryAgeMs;
+    this.leaseCoordinator = leaseCoordinator;
   }
 
   /**
@@ -115,10 +121,49 @@ export class RefreshQueue {
       }
     }
 
-    // Start a new refresh
+    // Start a new refresh immediately so local state reflects "in-flight"
+    // without waiting on cross-process lease checks.
     const startedAt = Date.now();
-    const promise = this.executeRefreshWithRotationTracking(refreshToken);
+    const promise = (async (): Promise<TokenResult> => {
+      let lease: Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>;
+      try {
+        lease = await this.leaseCoordinator.acquire(refreshToken);
+      } catch (error) {
+        log.warn("Refresh lease acquire failed; falling back to local refresh", {
+          tokenSuffix: refreshToken.slice(-6),
+          error: (error as Error)?.message ?? String(error),
+        });
+        return this.executeRefreshWithRotationTracking(refreshToken);
+      }
+      if (lease.role === "follower" && lease.result) {
+        log.info("Using refresh result from cross-process lease", {
+          tokenSuffix: refreshToken.slice(-6),
+        });
+        return lease.result;
+      }
 
+      try {
+        const result = await this.executeRefreshWithRotationTracking(refreshToken);
+        try {
+          await lease.release(result);
+        } catch (error) {
+          log.warn("Failed to publish lease refresh result", {
+            tokenSuffix: refreshToken.slice(-6),
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
+        return result;
+      } finally {
+        try {
+          await lease.release();
+        } catch (error) {
+          log.warn("Failed to release refresh lease", {
+            tokenSuffix: refreshToken.slice(-6),
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
+      }
+    })();
     this.pending.set(refreshToken, { promise, startedAt });
 
     try {

@@ -178,7 +178,7 @@ describe('OAuth Server Unit Tests', () => {
 			expect(res.setHeader).toHaveBeenCalledWith('X-Content-Type-Options', 'nosniff');
 			expect(res.setHeader).toHaveBeenCalledWith(
 				'Content-Security-Policy',
-				"default-src 'self'; script-src 'none'"
+				"default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 			);
 			expect(res.end).toHaveBeenCalledWith('<html>Success</html>');
 		});
@@ -190,6 +190,21 @@ describe('OAuth Server Unit Tests', () => {
 			requestHandler(req, res);
 
 			expect(mockServer._lastCode).toBe('captured-code');
+		});
+
+		it('should keep the first code when duplicate callbacks arrive', () => {
+			const firstReq = createMockRequest('/auth/callback?code=first-code&state=test-state');
+			const secondReq = createMockRequest('/auth/callback?code=second-code&state=test-state');
+			const firstRes = createMockResponse();
+			const secondRes = createMockResponse();
+
+			requestHandler(firstReq, firstRes);
+			requestHandler(secondReq, secondRes);
+
+			expect(mockServer._lastCode).toBe('first-code');
+			expect(logWarn).toHaveBeenCalledWith(
+				expect.stringContaining('Duplicate OAuth callback received'),
+			);
 		});
 
 		it('should handle request handler errors gracefully', () => {

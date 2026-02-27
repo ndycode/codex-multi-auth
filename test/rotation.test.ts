@@ -438,6 +438,79 @@ describe("selectHybridAccount", () => {
 
 		expect(selectedIndices.size).toBeGreaterThan(1);
 	});
+
+	it("applies scoreBoostByAccount to deterministically change winner", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+
+		const baseline = selectHybridAccount(accounts, healthTracker, tokenTracker);
+		expect(baseline?.index).toBe(0);
+
+		const boosted = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+			undefined,
+			undefined,
+			{
+				scoreBoostByAccount: { 1: 25 },
+			},
+		);
+		expect(boosted?.index).toBe(1);
+	});
+
+	it("ignores non-finite score boosts", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+
+		const baseline = selectHybridAccount(accounts, healthTracker, tokenTracker);
+		const withNan = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+			undefined,
+			undefined,
+			{ scoreBoostByAccount: { 1: Number.NaN } },
+		);
+		const withInf = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+			undefined,
+			undefined,
+			{ scoreBoostByAccount: { 1: Number.POSITIVE_INFINITY } },
+		);
+
+		expect(withNan?.index).toBe(baseline?.index);
+		expect(withInf?.index).toBe(baseline?.index);
+	});
+
+	it("keeps boost behavior stable when pid offset is enabled", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+
+		const result = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+			undefined,
+			undefined,
+			{
+				pidOffsetEnabled: true,
+				scoreBoostByAccount: { 1: 100 },
+			},
+		);
+		expect(result?.index).toBe(1);
+	});
 });
 
 describe("utility functions", () => {

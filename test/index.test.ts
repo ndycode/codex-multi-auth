@@ -39,6 +39,7 @@ vi.mock("../lib/auth/auth.js", () => ({
 			state: stateMatch?.[1],
 		};
 	}),
+	redactOAuthUrlForLog: vi.fn((url: string) => url.replace(/state=[^&]+/, "state=%3Credacted%3E")),
 	REDIRECT_URI: "http://127.0.0.1:1455/auth/callback",
 }));
 
@@ -91,10 +92,46 @@ vi.mock("../lib/config.js", () => ({
 	getPidOffsetEnabled: () => false,
 	getFetchTimeoutMs: () => 60000,
 	getStreamStallTimeoutMs: () => 45000,
+	getLiveAccountSync: vi.fn(() => false),
+	getLiveAccountSyncDebounceMs: () => 250,
+	getLiveAccountSyncPollMs: () => 2000,
+	getSessionAffinity: () => false,
+	getSessionAffinityTtlMs: () => 1_200_000,
+	getSessionAffinityMaxEntries: () => 512,
+	getProactiveRefreshGuardian: () => false,
+	getProactiveRefreshIntervalMs: () => 60000,
+	getProactiveRefreshBufferMs: () => 300000,
+	getNetworkErrorCooldownMs: () => 0,
+	getServerErrorCooldownMs: () => 0,
+	getStorageBackupEnabled: () => true,
+	getPreemptiveQuotaEnabled: () => true,
+	getPreemptiveQuotaRemainingPercent5h: () => 5,
+	getPreemptiveQuotaRemainingPercent7d: () => 5,
+	getPreemptiveQuotaMaxDeferralMs: () => 2 * 60 * 60_000,
 	getCodexTuiV2: () => false,
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
 	loadPluginConfig: () => ({}),
+}));
+
+const liveAccountSyncSyncToPathMock = vi.fn(async () => {});
+const liveAccountSyncStopMock = vi.fn();
+const liveAccountSyncCtorMock = vi.fn(
+	class MockLiveAccountSync {
+		syncToPath = liveAccountSyncSyncToPathMock;
+		stop = liveAccountSyncStopMock;
+
+		getSnapshot() {
+			return {
+				running: true,
+				reloadCount: 0,
+			};
+		}
+	},
+);
+
+vi.mock("../lib/live-account-sync.js", () => ({
+	LiveAccountSync: liveAccountSyncCtorMock,
 }));
 
 vi.mock("../lib/request/request-transformer.js", () => ({
@@ -203,6 +240,7 @@ vi.mock("../lib/storage.js", () => ({
 	saveAccounts: vi.fn(async () => {}),
 	clearAccounts: vi.fn(async () => {}),
 	setStoragePath: vi.fn(),
+	setStorageBackupEnabled: vi.fn(),
 	exportAccounts: vi.fn(async () => {}),
 	importAccounts: vi.fn(async () => ({ imported: 2, skipped: 1, total: 5 })),
 	loadFlaggedAccounts: vi.fn(async () => ({ version: 1, accounts: [] })),
@@ -466,6 +504,37 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.reason).toBe("invalid_response");
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
+
+		it("redacts oauth state from logged oauth URL", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const loggerModule = await import("../lib/logger.js");
+			const browserModule = await import("../lib/auth/browser.js");
+			const serverModule = await import("../lib/auth/server.js");
+			const flow: Awaited<ReturnType<typeof authModule.createAuthorizationFlow>> = {
+				pkce: { verifier: "v", challenge: "c" },
+				state: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				url: "https://auth.openai.com/oauth/authorize?state=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&response_type=code&client_id=test",
+			};
+			vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue(flow);
+			vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+			vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+				ready: true,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+			});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize();
+
+			expect(vi.mocked(loggerModule.logInfo)).toHaveBeenCalledWith(
+				expect.stringContaining("state=%3Credacted%3E"),
+			);
+			expect(vi.mocked(loggerModule.logInfo)).not.toHaveBeenCalledWith(
+				expect.stringContaining("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+			);
+		});
 	});
 
 	describe("event handler", () => {
@@ -521,6 +590,34 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.baseURL).toBeDefined();
 			expect(result.fetch).toBeDefined();
 		});
+
+		it("serializes live sync setup when loader is called concurrently", async () => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getLiveAccountSync).mockReturnValue(true);
+			liveAccountSyncCtorMock.mockClear();
+			liveAccountSyncSyncToPathMock.mockClear();
+
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			try {
+				await Promise.all([
+					plugin.auth.loader(getAuth, { options: {}, models: {} }),
+					plugin.auth.loader(getAuth, { options: {}, models: {} }),
+					plugin.auth.loader(getAuth, { options: {}, models: {} }),
+				]);
+
+				expect(liveAccountSyncCtorMock).toHaveBeenCalledTimes(1);
+				expect(liveAccountSyncSyncToPathMock).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.mocked(configModule.getLiveAccountSync).mockReturnValue(false);
+			}
+		});
 	});
 
 	describe("codex-list tool", () => {
@@ -528,7 +625,7 @@ describe("OpenAIOAuthPlugin", () => {
 			mockStorage.accounts = [];
 			const result = await plugin.tool["codex-list"].execute();
 			expect(result).toContain("No Codex accounts configured");
-			expect(result).toContain("opencode auth login");
+			expect(result).toContain("codex login");
 		});
 
 		it("lists accounts with status", async () => {
@@ -968,6 +1065,32 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(response.status).toBe(503);
 		expect(await response.text()).toContain("server errors or auth issues");
 		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+	});
+
+	it("does not penalize account health when fetch is aborted by user", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
+		const recordFailureSpy = vi.spyOn(AccountManager.prototype, "recordFailure");
+		const markCooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		const refundSpy = vi.spyOn(AccountManager.prototype, "refundToken");
+		const capabilityFailureSpy = vi.spyOn(CapabilityPolicyStore.prototype, "recordFailure");
+		const abortError = Object.assign(new Error("aborted by user"), { name: "AbortError" });
+		globalThis.fetch = vi.fn().mockRejectedValue(abortError);
+
+		const { sdk } = await setupPlugin();
+		const controller = new AbortController();
+		controller.abort(abortError);
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+			signal: controller.signal,
+		});
+
+		expect(response.status).toBe(503);
+		expect(recordFailureSpy).not.toHaveBeenCalled();
+		expect(markCooldownSpy).not.toHaveBeenCalled();
+		expect(refundSpy).not.toHaveBeenCalled();
+		expect(capabilityFailureSpy).not.toHaveBeenCalled();
 	});
 
 	it("skips fetch when local token bucket is depleted", async () => {

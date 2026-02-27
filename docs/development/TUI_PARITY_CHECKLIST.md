@@ -1,104 +1,122 @@
-# TUI Parity Checklist (Codex Multi-Auth)
+# TUI Parity Checklist
 
-Use this checklist to keep `codex-multi-auth` aligned with the Antigravity-style auth TUI pattern, while preserving Codex-specific logic and storage behavior.
+Checklist for keeping the auth dashboard consistent, beginner-friendly, and predictable.
 
-## Scope
+* * *
 
-- Match interaction shape and operator experience.
-- Do not copy provider-specific business logic from Antigravity.
-- Keep Codex storage/auth semantics as source of truth.
+## UX Target
 
-## Menu Structure Parity
+1. New users can complete add/check/switch without docs.
+2. Focus and key behavior are stable across all menus.
+3. Action feedback is clear and non-duplicative.
+4. Colors and labels are consistent across screens.
 
-- `opencode auth login` -> provider -> login method -> account dashboard.
-- Dashboard sections exist in this order:
-  - `Actions`
-  - `Accounts`
-  - `Danger zone`
-- Core actions visible:
-  - `Add account`
-  - `Check quotas`
-  - `Deep probe accounts`
-  - `Verify flagged accounts`
-  - `Start fresh`
-  - `Delete all accounts`
-- Account row format includes:
-  - numeric index
-  - account label/email
-  - state badges (`[current]`, `[active]`, `[ok]`, `[rate-limited]`, `[disabled]`, `[flagged]`)
-  - usage hint (`used today`, `used yesterday`, etc.)
+* * *
 
-## Keyboard and Navigation Parity
+## Main Dashboard Structure
 
-- `Up/Down` moves selection.
-- `Enter` confirms selected item.
-- `Esc` returns/back/cancel.
-- Ctrl+C exits gracefully without corrupting terminal state.
-- Cursor visibility restored on exit from menu.
+Required sections:
 
-## Account Detail Menu Parity
+1. Quick Actions
+2. Advanced Checks
+3. Saved Accounts
+4. Danger Zone
 
-- Selecting an account opens account detail actions:
-  - `Enable/Disable account`
-  - `Refresh account` (re-auth that account)
-  - `Delete this account`
-  - `Back`
-- Destructive actions require confirmation.
-- `Delete all accounts` requires explicit typed confirmation (`DELETE`).
+Required action set:
 
-## Health/Quota Check Parity
+- Add New Account
+- Run Health Check
+- Pick Best Account
+- Auto-Repair Issues
+- Settings
+- Refresh/Verify problem accounts
 
-- `Check quotas` scans all active accounts and prints per-account results.
-- `Deep probe` performs stricter validation and surfaces richer diagnostic output.
-- Output includes index progress (`[i/N]`) and per-account status (`OK`, `ERROR`, `DISABLED`).
-- Summary line always shown at end (`ok/error/disabled` counts).
+* * *
 
-## Flagged/Disabled State Parity
+## Account Row Behavior
 
-- Invalid-refresh accounts are moved to flagged storage.
-- `Verify flagged accounts` can restore accounts that refresh successfully.
-- Disabled accounts remain visible but are skipped from active rotation and health execution paths.
-- Account manager never selects disabled accounts as current/next candidate.
+Each row should support:
 
-## Persistence and Cache Behavior
+- account identity (email/name)
+- optional status/current badges
+- last-used summary
+- quota summary bars (5h/7d)
+- optional cooldown text
+- clear selected-row highlight
 
-- Storage writes occur after:
-  - account add/update/delete
-  - enable/disable toggle
-  - flagged pool migration/restore
-- In-memory account manager caches are invalidated after any account pool mutation.
-- Import flow invalidates both cached manager object and pending manager promise.
+No duplicate focus indicators should be rendered.
 
-## V2 Rollout Controls
+* * *
 
-- Default behavior: Codex-style TUI is enabled.
-- Opt-out is supported through config/env:
-  - `codexTuiV2: false`
-  - `CODEX_TUI_V2=0`
-- Visual controls:
-  - `codexTuiColorProfile`: `truecolor` / `ansi256` / `ansi16`
-  - `codexTuiGlyphMode`: `ascii` / `unicode` / `auto`
+## Keyboard Behavior
 
-## Tooling Parity
+Main menu minimum:
 
-- `codex-list` reflects account states and active selection.
-- `codex-status` shows per-family active index and account-level state details.
-- `codex-import` and `codex-export` remain compatible with multi-account storage.
+- `Up/Down`
+- `Enter`
+- `Q`
+- `/` search
+- `?` help
+- `1-9` quick switch
 
-## Verification Checklist (Before Release)
+Account detail minimum:
 
-- `npm run -s typecheck` passes.
-- `npm test` passes.
-- Manual smoke run:
-  - login -> dashboard appears
-  - add account works
-  - check quotas runs and summarizes
-  - disable account prevents rotation to it
-  - verify flagged restores a recoverable account
-  - delete-all requires typed confirmation and clears active + flagged pools
+- `S` set current
+- `R` refresh login
+- `E` enable/disable
+- `D` delete
+- `Q` back
+
+Settings screens:
+
+- stable focus after toggle
+- no cursor reset on simple update
+- save/back behavior deterministic
+
+* * *
+
+## Auth Flow Parity
+
+Add-account flow must support:
+
+1. Browser-first OAuth.
+2. Manual/incognito callback paste flow.
+3. Safe cancel path returning to menu.
+4. No unhandled abort/CTRL+C stack traces in normal cancel behavior.
+
+* * *
+
+## Result Screen Quality
+
+1. No duplicated "Press Enter" lines.
+2. No stale text remnants after transitions.
+3. Auto-return messaging should not block user control.
+4. Errors should be normalized and readable.
+
+* * *
+
+## Data/Runtime Parity
+
+1. Displayed account state matches storage and active selection.
+2. Smart sort matches configured mode.
+3. Quick-switch follows configured row-index policy.
+4. Auto-fetch status is visible when running.
+
+* * *
+
+## Release Checklist
+
+Before release:
+
+1. Walk all menu paths manually.
+2. Validate hotkeys in terminal variants.
+3. Check color/focus consistency across all result screens.
+4. Ensure settings persist and reload correctly.
+5. Confirm command aliases still route correctly.
+
+* * *
 
 ## Non-Goals
 
-- Replicating Antigravity Google token semantics.
-- Sharing storage files with unrelated plugins.
-- Editing Antigravity repo files as part of Codex plugin maintenance.
+- Perfect clone of official Codex UI internals.
+- Terminal feature parity beyond supported input/color modes.

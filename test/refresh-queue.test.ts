@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { RefreshQueue, getRefreshQueue, resetRefreshQueue, queuedRefresh } from "../lib/refresh-queue.js";
 import * as authModule from "../lib/auth/auth.js";
+import { RefreshLeaseCoordinator } from "../lib/refresh-lease.js";
 
 vi.mock("../lib/auth/auth.js", () => ({
   refreshAccessToken: vi.fn(),
@@ -9,6 +13,7 @@ vi.mock("../lib/auth/auth.js", () => ({
 vi.mock("../lib/logger.js", () => ({
   createLogger: () => ({
     info: vi.fn(),
+    debug: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
   }),
@@ -93,6 +98,7 @@ describe("RefreshQueue", () => {
       const promise1 = queue.refresh("same-token");
       const promise2 = queue.refresh("same-token");
       const promise3 = queue.refresh("same-token");
+      await Promise.resolve();
 
       expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
 
@@ -197,6 +203,7 @@ describe("RefreshQueue", () => {
       expect(queue.pendingCount).toBe(1);
       
       const p2 = queue.refresh("token-2");
+      await Promise.resolve();
       expect(queue.pendingCount).toBe(2);
       
       resolvers[0]!();
@@ -325,6 +332,7 @@ describe("RefreshQueue", () => {
 			
 			const promise1 = queue.refresh("old-token");
 			expect(queue.pendingCount).toBe(1);
+			await Promise.resolve();
 			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
 
 			resolveRefresh!({
@@ -362,6 +370,7 @@ describe("RefreshQueue", () => {
 			
 			const promise1 = queue.refresh("old-token");
 			expect(queue.pendingCount).toBe(1);
+			await Promise.resolve();
 			
 			innerResolve!({
 				type: "success",
@@ -398,6 +407,7 @@ describe("RefreshQueue", () => {
 			
 			const promise1 = queue.refresh("old-token");
 			expect(queue.pendingCount).toBe(1);
+			await Promise.resolve();
 			
 			outerResolve!({
 				type: "success",
@@ -482,6 +492,7 @@ describe("RefreshQueue", () => {
 			queueInternal.tokenRotationMap.set("old-token", "new-rotated-token");
 			
 			const promise2 = queue.refresh("new-rotated-token");
+			await Promise.resolve();
 			
 			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
 			
@@ -553,6 +564,7 @@ describe("RefreshQueue", () => {
 			queueInternal.tokenRotationMap.set("original-token", "rotated-token");
 			
 			const promise2 = queue.refresh("rotated-token");
+			await Promise.resolve();
 			
 			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
 			expect(authModule.refreshAccessToken).toHaveBeenCalledWith("original-token");
@@ -566,6 +578,106 @@ describe("RefreshQueue", () => {
 			
 			const [result1, result2] = await Promise.all([promise1, promise2]);
 			expect(result1).toBe(result2);
+		});
+	});
+
+  describe("cross-process lease dedupe", () => {
+		it("reuses refresh result across queue instances via lease files", async () => {
+			const leaseDir = await mkdtemp(join(tmpdir(), "codex-refresh-lease-int-"));
+			const leaseA = new RefreshLeaseCoordinator({
+				enabled: true,
+				leaseDir,
+				leaseTtlMs: 5_000,
+				waitTimeoutMs: 2_000,
+				pollIntervalMs: 25,
+				resultTtlMs: 5_000,
+			});
+			const leaseB = new RefreshLeaseCoordinator({
+				enabled: true,
+				leaseDir,
+				leaseTtlMs: 5_000,
+				waitTimeoutMs: 2_000,
+				pollIntervalMs: 25,
+				resultTtlMs: 5_000,
+			});
+			const queueA = new RefreshQueue(30_000, leaseA);
+			const queueB = new RefreshQueue(30_000, leaseB);
+
+			const delayedResult = {
+				type: "success" as const,
+				access: "shared-access",
+				refresh: "shared-refresh-next",
+				expires: Date.now() + 3600000,
+			};
+			let releaseRefresh: (() => void) | null = null;
+			vi.mocked(authModule.refreshAccessToken).mockImplementation(() => {
+				return new Promise((resolve) => {
+					releaseRefresh = () => resolve(delayedResult);
+				});
+			});
+
+			const ownerRefresh = queueA.refresh("same-cross-token");
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			const followerRefresh = queueB.refresh("same-cross-token");
+
+			releaseRefresh?.();
+
+			const [ownerResult, followerResult] = await Promise.all([
+				ownerRefresh,
+				followerRefresh,
+			]);
+			expect(ownerResult).toEqual(delayedResult);
+			expect(followerResult).toEqual(delayedResult);
+      expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+    });
+  });
+
+	describe("lease failure handling", () => {
+		it("falls back to local refresh when lease acquisition throws", async () => {
+			const mockResult = {
+				type: "success" as const,
+				access: "fallback-access",
+				refresh: "fallback-refresh",
+				expires: Date.now() + 3600000,
+			};
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue(mockResult);
+
+			const leaseCoordinator = {
+				acquire: vi.fn().mockRejectedValue(new Error("EBUSY lease dir")),
+			} as unknown as RefreshLeaseCoordinator;
+
+			const queue = new RefreshQueue(30_000, leaseCoordinator);
+			const result = await queue.refresh("token-with-acquire-error");
+
+			expect(result).toEqual(mockResult);
+			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+		});
+
+		it("swallows lease release errors and still returns token result", async () => {
+			const mockResult = {
+				type: "success" as const,
+				access: "release-safe-access",
+				refresh: "release-safe-refresh",
+				expires: Date.now() + 3600000,
+			};
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue(mockResult);
+
+			const release = vi
+				.fn()
+				.mockRejectedValueOnce(new Error("publish failed"))
+				.mockRejectedValueOnce(new Error("unlock failed"));
+			const leaseCoordinator = {
+				acquire: vi.fn().mockResolvedValue({
+					role: "owner" as const,
+					release,
+				}),
+			} as unknown as RefreshLeaseCoordinator;
+
+			const queue = new RefreshQueue(30_000, leaseCoordinator);
+			const result = await queue.refresh("token-with-release-error");
+
+			expect(result).toEqual(mockResult);
+			expect(release).toHaveBeenCalledTimes(2);
 		});
 	});
 });

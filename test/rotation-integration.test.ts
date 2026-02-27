@@ -1,7 +1,34 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
-import { deduplicateAccounts, deduplicateAccountsByEmail, type AccountStorageV3 } from "../lib/storage.js";
+import {
+  deduplicateAccounts,
+  deduplicateAccountsByEmail,
+  setStoragePathDirect,
+  type AccountStorageV3,
+} from "../lib/storage.js";
 import type { ModelFamily } from "../lib/prompts/codex.js";
+
+let testStorageDir: string;
+let testStoragePath: string;
+
+beforeAll(async () => {
+  testStorageDir = await fs.mkdtemp(join(tmpdir(), "codex-multi-auth-rotation-"));
+  testStoragePath = join(testStorageDir, "openai-codex-accounts.json");
+  setStoragePathDirect(testStoragePath);
+});
+
+beforeEach(async () => {
+  setStoragePathDirect(testStoragePath);
+  await fs.rm(testStoragePath, { force: true });
+});
+
+afterAll(async () => {
+  setStoragePathDirect(null);
+  await fs.rm(testStorageDir, { recursive: true, force: true });
+});
 
 const TEST_ACCOUNTS = [
   { email: "account1@example.com", refresh_token: "fake_refresh_token_1_for_testing_only" },

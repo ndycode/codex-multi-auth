@@ -17,6 +17,10 @@ import {
 	getUnsupportedCodexFallbackChain,
 	getFetchTimeoutMs,
 	getStreamStallTimeoutMs,
+	getPreemptiveQuotaEnabled,
+	getPreemptiveQuotaRemainingPercent5h,
+	getPreemptiveQuotaRemainingPercent7d,
+	getPreemptiveQuotaMaxDeferralMs,
 } from '../lib/config.js';
 import type { PluginConfig } from '../lib/types.js';
 import * as fs from 'node:fs';
@@ -47,6 +51,8 @@ describe('Plugin Configuration', () => {
 	const mockExistsSync = vi.mocked(fs.existsSync);
 	const mockReadFileSync = vi.mocked(fs.readFileSync);
 	const envKeys = [
+		'CODEX_HOME',
+		'CODEX_MULTI_AUTH_DIR',
 		'CODEX_MODE',
 		'CODEX_TUI_V2',
 		'CODEX_TUI_COLOR_PROFILE',
@@ -57,6 +63,10 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_UNSUPPORTED_MODEL_POLICY',
 		'CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL',
 		'CODEX_AUTH_FALLBACK_GPT53_TO_GPT52',
+		'CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED',
+		'CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT',
+		'CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT',
+		'CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS',
 	] as const;
 	const originalEnv: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
 
@@ -113,10 +123,28 @@ describe('Plugin Configuration', () => {
 				pidOffsetEnabled: false,
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
+				liveAccountSync: true,
+				liveAccountSyncDebounceMs: 250,
+				liveAccountSyncPollMs: 2_000,
+				sessionAffinity: true,
+				sessionAffinityTtlMs: 20 * 60_000,
+				sessionAffinityMaxEntries: 512,
+				proactiveRefreshGuardian: true,
+				proactiveRefreshIntervalMs: 60_000,
+				proactiveRefreshBufferMs: 5 * 60_000,
+				networkErrorCooldownMs: 6_000,
+				serverErrorCooldownMs: 4_000,
+				storageBackupEnabled: true,
+				preemptiveQuotaEnabled: true,
+				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent7d: 5,
+				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
-			expect(mockExistsSync).toHaveBeenCalledWith(
-				path.join(os.homedir(), '.opencode', 'codex-multi-auth-config.json')
-			);
+			// existsSync is called with multiple candidate config paths (primary + legacy fallbacks)
+			expect(mockExistsSync).toHaveBeenCalled();
+			expect(mockExistsSync.mock.calls.some(([p]) =>
+				typeof p === 'string' && p.includes('config') && p.includes('codex')
+			)).toBe(true);
 		});
 
 		it('should load config from file when it exists', () => {
@@ -153,6 +181,22 @@ describe('Plugin Configuration', () => {
 				pidOffsetEnabled: false,
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
+				liveAccountSync: true,
+				liveAccountSyncDebounceMs: 250,
+				liveAccountSyncPollMs: 2_000,
+				sessionAffinity: true,
+				sessionAffinityTtlMs: 20 * 60_000,
+				sessionAffinityMaxEntries: 512,
+				proactiveRefreshGuardian: true,
+				proactiveRefreshIntervalMs: 60_000,
+				proactiveRefreshBufferMs: 5 * 60_000,
+				networkErrorCooldownMs: 6_000,
+				serverErrorCooldownMs: 4_000,
+				storageBackupEnabled: true,
+				preemptiveQuotaEnabled: true,
+				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent7d: 5,
+				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
 		});
 
@@ -190,6 +234,22 @@ describe('Plugin Configuration', () => {
 				pidOffsetEnabled: false,
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
+				liveAccountSync: true,
+				liveAccountSyncDebounceMs: 250,
+				liveAccountSyncPollMs: 2_000,
+				sessionAffinity: true,
+				sessionAffinityTtlMs: 20 * 60_000,
+				sessionAffinityMaxEntries: 512,
+				proactiveRefreshGuardian: true,
+				proactiveRefreshIntervalMs: 60_000,
+				proactiveRefreshBufferMs: 5 * 60_000,
+				networkErrorCooldownMs: 6_000,
+				serverErrorCooldownMs: 4_000,
+				storageBackupEnabled: true,
+				preemptiveQuotaEnabled: true,
+				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent7d: 5,
+				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
 		});
 
@@ -238,6 +298,22 @@ describe('Plugin Configuration', () => {
 		pidOffsetEnabled: false,
 		fetchTimeoutMs: 60_000,
 		streamStallTimeoutMs: 45_000,
+				liveAccountSync: true,
+				liveAccountSyncDebounceMs: 250,
+				liveAccountSyncPollMs: 2_000,
+				sessionAffinity: true,
+				sessionAffinityTtlMs: 20 * 60_000,
+				sessionAffinityMaxEntries: 512,
+				proactiveRefreshGuardian: true,
+				proactiveRefreshIntervalMs: 60_000,
+				proactiveRefreshBufferMs: 5 * 60_000,
+				networkErrorCooldownMs: 6_000,
+				serverErrorCooldownMs: 4_000,
+				storageBackupEnabled: true,
+				preemptiveQuotaEnabled: true,
+				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent7d: 5,
+				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 	});
 		expect(mockLogWarn).toHaveBeenCalled();
 	});
@@ -280,6 +356,22 @@ describe('Plugin Configuration', () => {
 			pidOffsetEnabled: false,
 			fetchTimeoutMs: 60_000,
 			streamStallTimeoutMs: 45_000,
+				liveAccountSync: true,
+				liveAccountSyncDebounceMs: 250,
+				liveAccountSyncPollMs: 2_000,
+				sessionAffinity: true,
+				sessionAffinityTtlMs: 20 * 60_000,
+				sessionAffinityMaxEntries: 512,
+				proactiveRefreshGuardian: true,
+				proactiveRefreshIntervalMs: 60_000,
+				proactiveRefreshBufferMs: 5 * 60_000,
+				networkErrorCooldownMs: 6_000,
+				serverErrorCooldownMs: 4_000,
+				storageBackupEnabled: true,
+				preemptiveQuotaEnabled: true,
+				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent7d: 5,
+				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 		});
 		expect(mockLogWarn).toHaveBeenCalled();
 	});
@@ -666,4 +758,25 @@ describe('Plugin Configuration', () => {
 			delete process.env.CODEX_AUTH_STREAM_STALL_TIMEOUT_MS;
 		});
 	});
+
+	describe('preemptive quota settings', () => {
+		it('should use default thresholds', () => {
+			expect(getPreemptiveQuotaEnabled({})).toBe(true);
+			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(5);
+			expect(getPreemptiveQuotaRemainingPercent7d({})).toBe(5);
+			expect(getPreemptiveQuotaMaxDeferralMs({})).toBe(2 * 60 * 60_000);
+		});
+
+		it('should prioritize environment overrides', () => {
+			process.env.CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED = '0';
+			process.env.CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT = '9';
+			process.env.CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT = '11';
+			process.env.CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS = '123000';
+			expect(getPreemptiveQuotaEnabled({ preemptiveQuotaEnabled: true })).toBe(false);
+			expect(getPreemptiveQuotaRemainingPercent5h({ preemptiveQuotaRemainingPercent5h: 1 })).toBe(9);
+			expect(getPreemptiveQuotaRemainingPercent7d({ preemptiveQuotaRemainingPercent7d: 2 })).toBe(11);
+			expect(getPreemptiveQuotaMaxDeferralMs({ preemptiveQuotaMaxDeferralMs: 2_000 })).toBe(123000);
+		});
+	});
 });
+

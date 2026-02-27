@@ -44,9 +44,78 @@ describe("PluginConfigSchema", () => {
 			autoResume: false,
 			fetchTimeoutMs: 60000,
 			streamStallTimeoutMs: 45000,
+			liveAccountSync: true,
+			liveAccountSyncDebounceMs: 250,
+			liveAccountSyncPollMs: 2000,
+			sessionAffinity: true,
+			sessionAffinityTtlMs: 1_200_000,
+			sessionAffinityMaxEntries: 512,
+			proactiveRefreshGuardian: true,
+			proactiveRefreshIntervalMs: 60_000,
+			proactiveRefreshBufferMs: 300_000,
+			networkErrorCooldownMs: 6000,
+			serverErrorCooldownMs: 4000,
+			preemptiveQuotaEnabled: true,
+			preemptiveQuotaRemainingPercent5h: 5,
+			preemptiveQuotaRemainingPercent7d: 5,
+			preemptiveQuotaMaxDeferralMs: 120_000,
 		};
 		const result = PluginConfigSchema.safeParse(config);
 		expect(result.success).toBe(true);
+	});
+
+	it.each([
+		["liveAccountSyncDebounceMs", 49, 50],
+		["liveAccountSyncPollMs", 499, 500],
+		["sessionAffinityTtlMs", 999, 1000],
+		["sessionAffinityMaxEntries", 7, 8],
+		["proactiveRefreshIntervalMs", 4999, 5000],
+		["proactiveRefreshBufferMs", 29_999, 30_000],
+		["preemptiveQuotaMaxDeferralMs", 999, 1000],
+	] as const)("enforces minimum for %s", (key, invalidValue, validValue) => {
+		const invalidResult = PluginConfigSchema.safeParse({ [key]: invalidValue });
+		const validResult = PluginConfigSchema.safeParse({ [key]: validValue });
+		expect(invalidResult.success).toBe(false);
+		expect(validResult.success).toBe(true);
+	});
+
+	it.each([
+		["networkErrorCooldownMs", -1, 0],
+		["serverErrorCooldownMs", -1, 0],
+	] as const)("allows zero and rejects negatives for %s", (key, invalidValue, validValue) => {
+		const invalidResult = PluginConfigSchema.safeParse({ [key]: invalidValue });
+		const validResult = PluginConfigSchema.safeParse({ [key]: validValue });
+		expect(invalidResult.success).toBe(false);
+		expect(validResult.success).toBe(true);
+	});
+
+	it.each([
+		["preemptiveQuotaRemainingPercent5h", -1, 0, 100, 101],
+		["preemptiveQuotaRemainingPercent7d", -1, 0, 100, 101],
+	] as const)(
+		"enforces 0-100 range for %s",
+		(key, belowMin, min, max, aboveMax) => {
+			expect(PluginConfigSchema.safeParse({ [key]: belowMin }).success).toBe(false);
+			expect(PluginConfigSchema.safeParse({ [key]: min }).success).toBe(true);
+			expect(PluginConfigSchema.safeParse({ [key]: max }).success).toBe(true);
+			expect(PluginConfigSchema.safeParse({ [key]: aboveMax }).success).toBe(false);
+		},
+	);
+
+	it.each([
+		"liveAccountSyncDebounceMs",
+		"liveAccountSyncPollMs",
+		"sessionAffinityTtlMs",
+		"sessionAffinityMaxEntries",
+		"proactiveRefreshIntervalMs",
+		"proactiveRefreshBufferMs",
+		"networkErrorCooldownMs",
+		"serverErrorCooldownMs",
+		"preemptiveQuotaRemainingPercent5h",
+		"preemptiveQuotaRemainingPercent7d",
+		"preemptiveQuotaMaxDeferralMs",
+	] as const)("rejects string values for numeric key %s", (key) => {
+		expect(PluginConfigSchema.safeParse({ [key]: "123" }).success).toBe(false);
 	});
 
 	it("rejects toastDurationMs below 1000", () => {

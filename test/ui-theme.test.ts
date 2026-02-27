@@ -8,6 +8,9 @@ describe("UI theme", () => {
 		expect(theme.glyphMode).toBe("ascii");
 		expect(theme.glyphs.selected.length).toBeGreaterThan(0);
 		expect(theme.colors.reset).toBe("\x1b[0m");
+		expect(theme.colors.primary).toContain("\x1b[");
+		expect(theme.colors.focusBg).toContain("\x1b[");
+		expect(theme.colors.focusText).toContain("\x1b[");
 	});
 
 	it("uses ansi16 color profile when requested", () => {
@@ -22,6 +25,17 @@ describe("UI theme", () => {
 		expect(theme.colors.accent).toContain("38;5;");
 	});
 
+	it("supports blue palette and cyan accent overrides", () => {
+		const theme = createUiTheme({
+			profile: "truecolor",
+			palette: "blue",
+			accent: "cyan",
+		});
+		expect(theme.colors.primary).toContain("\x1b[");
+		expect(theme.colors.accent).toContain("\x1b[");
+		expect(theme.colors.focusBg).toContain("\x1b[");
+	});
+
 	it("uses unicode glyph set when explicitly requested", () => {
 		const theme = createUiTheme({ glyphMode: "unicode" });
 		expect(theme.glyphs.selected).not.toBe(">");
@@ -34,4 +48,3 @@ describe("UI theme", () => {
 		expect(theme.glyphs.check).toBe("+");
 	});
 });
-

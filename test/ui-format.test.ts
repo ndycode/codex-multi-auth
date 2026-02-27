@@ -7,6 +7,7 @@ import {
 	formatUiKeyValue,
 	formatUiSection,
 	paintUiText,
+	quotaToneFromLeftPercent,
 } from "../lib/ui/format.js";
 import type { UiRuntimeOptions } from "../lib/ui/runtime.js";
 
@@ -14,6 +15,8 @@ const v2Ui: UiRuntimeOptions = {
 	v2Enabled: true,
 	colorProfile: "truecolor",
 	glyphMode: "ascii",
+	palette: "green",
+	accent: "green",
 	theme: createUiTheme({ profile: "truecolor", glyphMode: "ascii" }),
 };
 
@@ -21,6 +24,8 @@ const legacyUi: UiRuntimeOptions = {
 	v2Enabled: false,
 	colorProfile: "ansi16",
 	glyphMode: "ascii",
+	palette: "green",
+	accent: "green",
 	theme: createUiTheme({ profile: "ansi16", glyphMode: "ascii" }),
 };
 
@@ -54,5 +59,12 @@ describe("UI text formatter", () => {
 		expect(item).toContain("1. user@example.com");
 		expect(item).toContain(v2Ui.theme.glyphs.bullet);
 	});
-});
 
+	it("maps quota severity with traffic-light thresholds", () => {
+		expect(quotaToneFromLeftPercent(70)).toBe("success");
+		expect(quotaToneFromLeftPercent(35)).toBe("warning");
+		expect(quotaToneFromLeftPercent(16)).toBe("warning");
+		expect(quotaToneFromLeftPercent(15)).toBe("danger");
+		expect(quotaToneFromLeftPercent(0)).toBe("danger");
+	});
+});

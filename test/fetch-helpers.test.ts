@@ -546,7 +546,7 @@ describe('Fetch Helpers Module', () => {
 				};
 			};
 
-			expect(json.error.message).toContain('opencode auth login');
+			expect(json.error.message).toContain('codex login');
 			expect(json.error.diagnostics).toEqual(
 				expect.objectContaining({
 					cfRay: 'abc123-def',

@@ -297,8 +297,24 @@ export const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
  */
 export interface HybridSelectionOptions {
   pidOffsetEnabled?: boolean;
+  scoreBoostByAccount?: Record<number, number>;
 }
 
+/**
+ * Selects the best account from a set using a weighted hybrid score composed of health, token availability, and freshness.
+ *
+ * @param accounts - Candidate accounts with availability (`isAvailable`) and last-used timestamp (`lastUsed`); when none are available the least-recently-used account is returned.
+ * @param healthTracker - Tracker used to obtain per-account health scores (scoped by `quotaKey` when provided).
+ * @param tokenTracker - Tracker used to obtain per-account token counts (scoped by `quotaKey` when provided). Logged token values are rounded for telemetry and sensitive tokens are not emitted.
+ * @param quotaKey - Optional quota key to scope health and token lookups.
+ * @param config - Partial selection weights that override defaults (healthWeight, tokenWeight, freshnessWeight).
+ * @param options - Selection options. `pidOffsetEnabled` adds a small PID-based deterministic offset to distribute selection across processes. `scoreBoostByAccount` is an optional per-account numeric boost keyed by account index.
+ * @returns The chosen AccountWithMetrics for the next request, or `null` if no accounts exist.
+ *
+ * Concurrency & environment notes:
+ * - Selection is deterministic given the same inputs except when `pidOffsetEnabled` is used to bias selection per-process.
+ * - The function is purely in-memory and performs no filesystem operations (no Windows filesystem considerations).
+ */
 export function selectHybridAccount(
   accounts: AccountWithMetrics[],
   healthTracker: HealthScoreTracker,
@@ -338,10 +354,17 @@ export function selectHybridAccount(
     const tokens = tokenTracker.getTokens(account.index, quotaKey);
     const hoursSinceUsed = (now - account.lastUsed) / (1000 * 60 * 60);
 
+    const capabilityBoost =
+      typeof options.scoreBoostByAccount?.[account.index] === "number"
+        ? options.scoreBoostByAccount[account.index] ?? 0
+        : 0;
+    const safeCapabilityBoost = Number.isFinite(capabilityBoost) ? capabilityBoost : 0;
+
     let score =
       health * cfg.healthWeight +
       tokens * cfg.tokenWeight +
-      hoursSinceUsed * cfg.freshnessWeight;
+      hoursSinceUsed * cfg.freshnessWeight +
+      safeCapabilityBoost;
 
     // PID-based offset distributes selection across parallel agents
     if (options.pidOffsetEnabled) {

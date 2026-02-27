@@ -25,18 +25,18 @@ describe("recovery/constants.ts", () => {
       Object.defineProperty(process, "platform", { value: "linux" });
       process.env.XDG_DATA_HOME = "/custom/xdg/data";
 
-      const { OPENCODE_STORAGE } = await import("../lib/recovery/constants.js");
+      const { CODEX_STORAGE } = await import("../lib/recovery/constants.js");
 
-      expect(OPENCODE_STORAGE).toBe(join("/custom/xdg/data", "opencode", "storage"));
+      expect(CODEX_STORAGE).toBe(join("/custom/xdg/data", "codex", "storage"));
     });
 
     it("should fallback to ~/.local/share when XDG_DATA_HOME is not set", async () => {
       Object.defineProperty(process, "platform", { value: "linux" });
       delete process.env.XDG_DATA_HOME;
 
-      const { OPENCODE_STORAGE } = await import("../lib/recovery/constants.js");
+      const { CODEX_STORAGE } = await import("../lib/recovery/constants.js");
 
-      expect(OPENCODE_STORAGE).toBe(join(homedir(), ".local", "share", "opencode", "storage"));
+      expect(CODEX_STORAGE).toBe(join(homedir(), ".local", "share", "codex", "storage"));
     });
   });
 
@@ -45,18 +45,18 @@ describe("recovery/constants.ts", () => {
       Object.defineProperty(process, "platform", { value: "win32" });
       process.env.APPDATA = "C:\\Users\\Test\\AppData\\Roaming";
 
-      const { OPENCODE_STORAGE } = await import("../lib/recovery/constants.js");
+      const { CODEX_STORAGE } = await import("../lib/recovery/constants.js");
 
-      expect(OPENCODE_STORAGE).toBe(join("C:\\Users\\Test\\AppData\\Roaming", "opencode", "storage"));
+      expect(CODEX_STORAGE).toBe(join("C:\\Users\\Test\\AppData\\Roaming", "codex", "storage"));
     });
 
     it("should fallback to AppData/Roaming when APPDATA is not set", async () => {
       Object.defineProperty(process, "platform", { value: "win32" });
       delete process.env.APPDATA;
 
-      const { OPENCODE_STORAGE } = await import("../lib/recovery/constants.js");
+      const { CODEX_STORAGE } = await import("../lib/recovery/constants.js");
 
-      expect(OPENCODE_STORAGE).toBe(join(homedir(), "AppData", "Roaming", "opencode", "storage"));
+      expect(CODEX_STORAGE).toBe(join(homedir(), "AppData", "Roaming", "codex", "storage"));
     });
   });
 

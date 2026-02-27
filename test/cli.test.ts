@@ -124,6 +124,33 @@ describe("CLI Module", () => {
       expect(result).toEqual({ mode: "add" });
     });
 
+    it("returns 'forecast' for 'p' input", async () => {
+      mockRl.question.mockResolvedValueOnce("p");
+
+      const { promptLoginMode } = await import("../lib/cli.js");
+      const result = await promptLoginMode([{ index: 0 }]);
+
+      expect(result).toEqual({ mode: "forecast" });
+    });
+
+    it("returns 'fix' for 'x' input", async () => {
+      mockRl.question.mockResolvedValueOnce("x");
+
+      const { promptLoginMode } = await import("../lib/cli.js");
+      const result = await promptLoginMode([{ index: 0 }]);
+
+      expect(result).toEqual({ mode: "fix" });
+    });
+
+    it("returns 'settings' for 's' input", async () => {
+      mockRl.question.mockResolvedValueOnce("s");
+
+      const { promptLoginMode } = await import("../lib/cli.js");
+      const result = await promptLoginMode([{ index: 0 }]);
+
+      expect(result).toEqual({ mode: "settings" });
+    });
+
     it("returns 'fresh' for 'f' input", async () => {
       mockRl.question.mockResolvedValueOnce("f");
       
@@ -142,6 +169,31 @@ describe("CLI Module", () => {
       expect(result).toEqual({ mode: "fresh", deleteAll: true });
     });
 
+    it("returns 'verify-flagged' for 'g' input", async () => {
+      mockRl.question.mockResolvedValueOnce("g");
+
+      const { promptLoginMode } = await import("../lib/cli.js");
+      const result = await promptLoginMode([{ index: 0 }]);
+
+      expect(result).toEqual({ mode: "verify-flagged" });
+    });
+
+    it("accepts uppercase quick shortcuts for advanced actions", async () => {
+      const { promptLoginMode } = await import("../lib/cli.js");
+
+      mockRl.question.mockResolvedValueOnce("P");
+      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "forecast" });
+
+      mockRl.question.mockResolvedValueOnce("X");
+      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "fix" });
+
+      mockRl.question.mockResolvedValueOnce("S");
+      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "settings" });
+
+      mockRl.question.mockResolvedValueOnce("G");
+      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "verify-flagged" });
+    });
+
     it("is case insensitive", async () => {
       mockRl.question.mockResolvedValueOnce("A");
       
@@ -154,7 +206,7 @@ describe("CLI Module", () => {
     it("re-prompts on invalid input then accepts valid", async () => {
       mockRl.question
         .mockResolvedValueOnce("invalid")
-        .mockResolvedValueOnce("x")
+        .mockResolvedValueOnce("zzz")
         .mockResolvedValueOnce("a");
       
       const { promptLoginMode } = await import("../lib/cli.js");
