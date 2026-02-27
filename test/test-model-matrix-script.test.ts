@@ -91,4 +91,35 @@ describe("test-model-matrix script helpers", () => {
 			platformSpy.mockRestore();
 		}
 	});
+
+	it("serializes stopCodexServers calls and kills only tracked non-Windows PIDs", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		try {
+			spawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "" });
+
+			const mod = await import("../scripts/test-model-matrix.js");
+			mod.__resetTrackedCodexPidsForTests();
+			mod.registerSpawnedCodex(3003);
+			mod.registerSpawnedCodex(4004);
+			spawnSync.mockClear();
+
+			await Promise.all([mod.stopCodexServers(), mod.stopCodexServers()]);
+
+			expect(spawnSync).toHaveBeenCalledTimes(2);
+			expect(spawnSync).toHaveBeenNthCalledWith(
+				1,
+				"kill",
+				["-9", "3003"],
+				expect.objectContaining({ windowsHide: true, stdio: "ignore" }),
+			);
+			expect(spawnSync).toHaveBeenNthCalledWith(
+				2,
+				"kill",
+				["-9", "4004"],
+				expect.objectContaining({ windowsHide: true, stdio: "ignore" }),
+			);
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
 });

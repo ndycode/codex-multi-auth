@@ -263,6 +263,69 @@ describe('Plugin Configuration', () => {
 			);
 		});
 
+		it('should detect CODEX_HOME legacy plugin config path before global legacy path', async () => {
+			const runWithCodexHome = async (codexHomePath: string) => {
+				vi.resetModules();
+				process.env.CODEX_HOME = codexHomePath;
+				const expectedPath = path.join(codexHomePath, 'codex-multi-auth-config.json');
+
+				const existsSyncMock = vi.fn(
+					(candidate: unknown) => typeof candidate === 'string' && candidate === expectedPath,
+				);
+				const readFileSyncMock = vi.fn((filePath: unknown) => {
+					if (filePath === expectedPath) {
+						return JSON.stringify({ codexMode: false });
+					}
+					throw new Error('ENOENT');
+				});
+				const logWarnMock = vi.fn();
+
+				vi.doMock('node:fs', async () => {
+					const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+					return {
+						...actual,
+						existsSync: existsSyncMock,
+						readFileSync: readFileSyncMock,
+					};
+				});
+				vi.doMock('../lib/logger.js', async () => {
+					const actual = await vi.importActual<typeof import('../lib/logger.js')>('../lib/logger.js');
+					return {
+						...actual,
+						logWarn: logWarnMock,
+					};
+				});
+
+				try {
+					const cfg = await import('../lib/config.js');
+					const config = cfg.loadPluginConfig();
+					return { config, expectedPath, readFileSyncMock, logWarnMock };
+				} finally {
+					vi.doUnmock('node:fs');
+					vi.doUnmock('../lib/logger.js');
+				}
+			};
+
+			const posixResult = await runWithCodexHome(path.join(process.cwd(), '.tmp-codex-home'));
+			expect(posixResult.config.codexMode).toBe(false);
+			expect(posixResult.readFileSyncMock).toHaveBeenCalledWith(posixResult.expectedPath, 'utf-8');
+			expect(posixResult.logWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining(posixResult.expectedPath),
+			);
+
+			const windowsHome = String.raw`C:\Users\test\.codex-home`;
+			const windowsResult = await runWithCodexHome(windowsHome);
+			expect(windowsResult.config.codexMode).toBe(false);
+			expect(windowsResult.expectedPath).toContain('\\');
+			expect(windowsResult.readFileSyncMock).toHaveBeenCalledWith(
+				windowsResult.expectedPath,
+				'utf-8',
+			);
+			expect(windowsResult.logWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining(windowsResult.expectedPath),
+			);
+		});
+
 		it('should merge user config with defaults', () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue(JSON.stringify({}));

@@ -12,17 +12,20 @@ import {
 
 const CONFIG_DIR = getCodexMultiAuthDir();
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
-const LEGACY_CODEX_HOME_CONFIG_PATH = join(getCodexHomeDir(), "codex-multi-auth-config.json");
+const CODEX_HOME_DIR = getCodexHomeDir();
+const LEGACY_CODEX_DIR = getLegacyCodexDir();
+const IS_CUSTOM_CODEX_HOME = CODEX_HOME_DIR !== LEGACY_CODEX_DIR;
+const LEGACY_CODEX_HOME_CONFIG_PATH = join(CODEX_HOME_DIR, "codex-multi-auth-config.json");
 const LEGACY_CODEX_HOME_AUTH_CONFIG_PATH = join(
-	getCodexHomeDir(),
+	CODEX_HOME_DIR,
 	"openai-codex-auth-config.json",
 );
 const LEGACY_CODEX_CONFIG_PATH = join(
-	getLegacyCodexDir(),
+	LEGACY_CODEX_DIR,
 	"codex-multi-auth-config.json",
 );
 const LEGACY_CODEX_AUTH_CONFIG_PATH = join(
-	getLegacyCodexDir(),
+	LEGACY_CODEX_DIR,
 	"openai-codex-auth-config.json",
 );
 const TUI_COLOR_PROFILES = new Set(["truecolor", "ansi16", "ansi256"]);
@@ -72,7 +75,7 @@ function resolvePluginConfigPath(): string | null {
 		return CONFIG_PATH;
 	}
 
-	if (existsSync(LEGACY_CODEX_HOME_CONFIG_PATH)) {
+	if (IS_CUSTOM_CODEX_HOME && existsSync(LEGACY_CODEX_HOME_CONFIG_PATH)) {
 		logConfigWarnOnce(
 			`Using legacy config path ${LEGACY_CODEX_HOME_CONFIG_PATH}. ` +
 				`Please migrate to ${CONFIG_PATH}.`,
@@ -88,7 +91,7 @@ function resolvePluginConfigPath(): string | null {
 		return LEGACY_CODEX_CONFIG_PATH;
 	}
 
-	if (existsSync(LEGACY_CODEX_HOME_AUTH_CONFIG_PATH)) {
+	if (IS_CUSTOM_CODEX_HOME && existsSync(LEGACY_CODEX_HOME_AUTH_CONFIG_PATH)) {
 		logConfigWarnOnce(
 			`Using legacy config path ${LEGACY_CODEX_HOME_AUTH_CONFIG_PATH}. ` +
 				`Please migrate to ${CONFIG_PATH}.`,
