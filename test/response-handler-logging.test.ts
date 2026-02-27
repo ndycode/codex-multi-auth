@@ -22,6 +22,8 @@ describe("response handler logging branch", () => {
 
 		const result = await convertSseToJson(response, new Headers());
 		expect(result.status).toBe(200);
+		expect(result.headers.get("content-type")).toContain("application/json");
+		expect(logRequestMock).toHaveBeenCalledTimes(1);
 		expect(logRequestMock).toHaveBeenCalledWith(
 			"stream-full",
 			expect.objectContaining({ fullContent: expect.stringContaining("response.done") }),

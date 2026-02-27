@@ -111,10 +111,12 @@ describe("unified settings", () => {
 			error.code = "EBUSY";
 			throw error;
 		});
-
-		await saveUnifiedPluginConfig({ codexMode: true, retries: 1 });
-		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 1 });
-		renameSpy.mockRestore();
+		try {
+			await saveUnifiedPluginConfig({ codexMode: true, retries: 1 });
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 1 });
+		} finally {
+			renameSpy.mockRestore();
+		}
 	});
 
 	it("cleans async temp file when rename fails with non-retryable code", async () => {
@@ -127,12 +129,54 @@ describe("unified settings", () => {
 			error.code = "EACCES";
 			throw error;
 		});
-
-		await expect(saveUnifiedPluginConfig({ codexMode: true })).rejects.toThrow();
-		renameSpy.mockRestore();
+		try {
+			await expect(saveUnifiedPluginConfig({ codexMode: true })).rejects.toThrow();
+		} finally {
+			renameSpy.mockRestore();
+		}
 
 		const dir = tempDir;
 		const entries = await fs.readdir(dir);
+		const leakedTemps = entries.filter((entry) => entry.includes("settings.json.") && entry.endsWith(".tmp"));
+		expect(leakedTemps).toEqual([]);
+		expect(await fs.readFile(getUnifiedSettingsPath(), "utf8").catch(() => "")).toBe("");
+	});
+
+	it("retries async rename on windows-style EPERM lock", async () => {
+		const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+		const renameSpy = vi.spyOn(fs, "rename");
+		renameSpy.mockImplementationOnce(async () => {
+			const error = new Error("perm") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			throw error;
+		});
+		try {
+			await saveUnifiedPluginConfig({ codexMode: true, retries: 2 });
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 2 });
+		} finally {
+			renameSpy.mockRestore();
+		}
+	});
+
+	it("cleans async temp file when rename repeatedly fails with EPERM", async () => {
+		const { saveUnifiedPluginConfig, getUnifiedSettingsPath } = await import(
+			"../lib/unified-settings.js"
+		);
+		const renameSpy = vi.spyOn(fs, "rename");
+		renameSpy.mockImplementation(async () => {
+			const error = new Error("perm locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			throw error;
+		});
+		try {
+			await expect(saveUnifiedPluginConfig({ codexMode: true })).rejects.toThrow();
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		const entries = await fs.readdir(tempDir);
 		const leakedTemps = entries.filter((entry) => entry.includes("settings.json.") && entry.endsWith(".tmp"));
 		expect(leakedTemps).toEqual([]);
 		expect(await fs.readFile(getUnifiedSettingsPath(), "utf8").catch(() => "")).toBe("");

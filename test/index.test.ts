@@ -505,6 +505,19 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 
+		it("uses REDIRECT_URI in manual callback validation copy", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const manualMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+				}>;
+			};
+			const flow = await manualMethod.authorize();
+
+			const message = flow.validate("invalid-callback-value");
+			expect(message).toContain(authModule.REDIRECT_URI);
+		});
+
 		it("redacts oauth state from logged oauth URL", async () => {
 			const authModule = await import("../lib/auth/auth.js");
 			const loggerModule = await import("../lib/logger.js");
