@@ -263,6 +263,18 @@ describe("Storage Module - Async Operations", () => {
       expect(result.length).toBe(1);
     });
 
+    it("matches duplicate emails case-insensitively", () => {
+      const accounts = [
+        { email: "User@Example.com", lastUsed: 1000, addedAt: 100 },
+        { email: "user@example.com", lastUsed: 2000, addedAt: 200 },
+      ];
+
+      const result = deduplicateAccountsByEmail(accounts);
+      expect(result.length).toBe(1);
+      expect(result[0]?.email).toBe("user@example.com");
+      expect(result[0]?.lastUsed).toBe(2000);
+    });
+
     it("returns empty array for empty input", () => {
       expect(deduplicateAccountsByEmail([])).toEqual([]);
     });
