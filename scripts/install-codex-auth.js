@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir, copyFile, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile, rm, rename } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { normalizePluginList, resolveInstallPaths } from "./install-codex-auth-utils.js";
 
 const PLUGIN_NAME = "codex-multi-auth";
 
@@ -39,24 +39,11 @@ const templatePath = join(
 	useLegacy ? "codex-legacy.json" : "codex-modern.json"
 );
 
-const configDir = join(homedir(), ".config", "Codex");
-const configPath = join(configDir, "Codex.json");
-const cacheDir = join(homedir(), ".cache", "Codex");
-const cacheNodeModules = join(cacheDir, "node_modules", PLUGIN_NAME);
-const cacheBunLock = join(cacheDir, "bun.lock");
-const cachePackageJson = join(cacheDir, "package.json");
+const installPaths = resolveInstallPaths();
+const { configDir, configPath, cacheNodeModules, cacheBunLock, cachePackageJson } = installPaths;
 
 function log(message) {
 	console.log(message);
-}
-
-function normalizePluginList(list) {
-	const entries = Array.isArray(list) ? list.filter(Boolean) : [];
-	const filtered = entries.filter((entry) => {
-		if (typeof entry !== "string") return true;
-		return entry !== PLUGIN_NAME && !entry.startsWith(`${PLUGIN_NAME}@`);
-	});
-	return [...filtered, PLUGIN_NAME];
 }
 
 function formatJson(obj) {
@@ -66,6 +53,21 @@ function formatJson(obj) {
 async function readJson(filePath) {
 	const content = await readFile(filePath, "utf-8");
 	return JSON.parse(content);
+}
+
+async function writeJsonAtomic(filePath, value) {
+	const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random()
+		.toString(36)
+		.slice(2, 8)}`;
+	const content = formatJson(value);
+	try {
+		await writeFile(tempPath, content, "utf-8");
+		await rename(tempPath, filePath);
+	} finally {
+		if (existsSync(tempPath)) {
+			await rm(tempPath, { force: true });
+		}
+	}
 }
 
 async function backupConfig(sourcePath) {
@@ -120,7 +122,7 @@ async function removePluginFromCachePackage() {
 		return;
 	}
 
-	await writeFile(cachePackageJson, formatJson(cacheData), "utf-8");
+	await writeJsonAtomic(cachePackageJson, cacheData);
 }
 
 async function clearCache() {
@@ -188,7 +190,7 @@ async function main() {
 		log(`[dry-run] Would write ${configPath} using ${useLegacy ? "legacy" : "modern"} config`);
 	} else {
 		await mkdir(configDir, { recursive: true });
-		await writeFile(configPath, formatJson(nextConfig), "utf-8");
+		await writeJsonAtomic(configPath, nextConfig);
 		log(`Wrote ${configPath} (${useLegacy ? "legacy" : "modern"} config)`);
 	}
 
@@ -201,8 +203,18 @@ async function main() {
 	}
 }
 
-main().catch((error) => {
-	console.error(`Installer failed: ${error instanceof Error ? error.message : error}`);
-	process.exit(1);
-});
+const isDirectRun = (() => {
+	try {
+		return resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url);
+	} catch {
+		return false;
+	}
+})();
+
+if (isDirectRun) {
+	main().catch((error) => {
+		console.error(`Installer failed: ${error instanceof Error ? error.message : error}`);
+		process.exit(1);
+	});
+}
 
