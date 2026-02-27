@@ -3117,16 +3117,25 @@ async function runOAuthFlow(forceNewLogin: boolean): Promise<TokenResult> {
 				console.log(stylePromptText(UI_COPY.oauth.browserOpened, "success"));
 			} else {
 				console.log(stylePromptText(UI_COPY.oauth.browserOpenFail, "warning"));
+				console.log(`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${url}`);
+				const copied = copyTextToClipboard(url);
+				console.log(
+					stylePromptText(
+						copied ? UI_COPY.oauth.copyOk : UI_COPY.oauth.copyFail,
+						copied ? "success" : "warning",
+					),
+				);
 			}
+		} else {
+			console.log(`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${url}`);
+			const copied = copyTextToClipboard(url);
+			console.log(
+				stylePromptText(
+					copied ? UI_COPY.oauth.copyOk : UI_COPY.oauth.copyFail,
+					copied ? "success" : "warning",
+				),
+			);
 		}
-		console.log(`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${url}`);
-		const copied = copyTextToClipboard(url);
-		console.log(
-			stylePromptText(
-				copied ? UI_COPY.oauth.copyOk : UI_COPY.oauth.copyFail,
-				copied ? "success" : "warning",
-			),
-		);
 
 		if (oauthServer.ready) {
 			console.log(stylePromptText(UI_COPY.oauth.waitingCallback, "muted"));

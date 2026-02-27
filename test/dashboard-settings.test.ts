@@ -155,4 +155,57 @@ describe("dashboard settings", () => {
 		expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
 		readSpy.mockRestore();
 	});
+
+	it("falls back to defaults when legacy file contains malformed JSON", async () => {
+		const { loadDashboardDisplaySettings, DEFAULT_DASHBOARD_DISPLAY_SETTINGS } = await import(
+			"../lib/dashboard-settings.js"
+		);
+		const legacyPath = join(tempDir, "dashboard-settings.json");
+		await fs.writeFile(legacyPath, "{ malformed", "utf8");
+
+		const loaded = await loadDashboardDisplaySettings();
+		expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+	});
+
+	it("retries transient EBUSY reads for legacy settings and succeeds", async () => {
+		const { loadDashboardDisplaySettings } = await import("../lib/dashboard-settings.js");
+		const legacyPath = join(tempDir, "dashboard-settings.json");
+		const payload = JSON.stringify({
+			settings: {
+				showPerAccountRows: false,
+				menuShowQuotaSummary: false,
+			},
+		});
+		await fs.writeFile(legacyPath, payload, "utf8");
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const readSpy = vi.spyOn(fs, "readFile");
+		const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+		readSpy
+			.mockRejectedValueOnce(busy)
+			.mockImplementation(async (...args) => originalReadFile(...args));
+
+		const loaded = await loadDashboardDisplaySettings();
+		expect(loaded.showPerAccountRows).toBe(false);
+		expect(loaded.menuShowQuotaSummary).toBe(false);
+		expect(readSpy).toHaveBeenCalled();
+		readSpy.mockRestore();
+	});
+
+	it("falls back to defaults when retryable legacy reads keep failing", async () => {
+		const { loadDashboardDisplaySettings, DEFAULT_DASHBOARD_DISPLAY_SETTINGS } = await import(
+			"../lib/dashboard-settings.js"
+		);
+		const legacyPath = join(tempDir, "dashboard-settings.json");
+		await fs.writeFile(legacyPath, JSON.stringify({ settings: { showPerAccountRows: false } }), "utf8");
+
+		const readSpy = vi.spyOn(fs, "readFile");
+		const locked = Object.assign(new Error("locked"), { code: "EPERM" });
+		readSpy.mockRejectedValue(locked);
+
+		const loaded = await loadDashboardDisplaySettings();
+		expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+		expect(readSpy).toHaveBeenCalledTimes(4);
+		readSpy.mockRestore();
+	});
 });

@@ -28,9 +28,9 @@ Used only for host plugin mode through the host runtime config file.
 
 | Key | Type | Common values | Effect |
 | --- | --- | --- | --- |
-| `reasoningEffort` | string | `none|minimal|low|medium|high|xhigh` | Reasoning effort hint |
-| `reasoningSummary` | string | `auto|concise|detailed` | Summary detail hint |
-| `textVerbosity` | string | `low|medium|high` | Text verbosity target |
+| `reasoningEffort` | string | `none\|minimal\|low\|medium\|high\|xhigh` | Reasoning effort hint |
+| `reasoningSummary` | string | `auto\|concise\|detailed` | Summary detail hint |
+| `textVerbosity` | string | `low\|medium\|high` | Text verbosity target |
 | `include` | string[] | `reasoning.encrypted_content` | Extra payload include |
 | `store` | boolean | `false` | Required for stateless backend mode |
 

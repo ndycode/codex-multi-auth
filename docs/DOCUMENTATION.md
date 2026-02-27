@@ -100,6 +100,6 @@ Before merge:
 
 ## Related
 
-- [README.md](../README.md)
-- [README.md](README.md)
+- [Project README.md](../README.md)
+- [Docs README.md](README.md)
 - [STYLE_GUIDE.md](STYLE_GUIDE.md)

@@ -155,6 +155,20 @@ npm run typecheck
 npm test
 ```
 
+Migration quick checklist:
+
+1. Keep canonical commands on `codex auth ...` (do not use legacy command paths in new docs/workflows).
+2. Ensure `settings.json` contains both `dashboardDisplaySettings` and `pluginConfig`.
+3. If you use external config input, verify `CODEX_MULTI_AUTH_CONFIG_PATH` points to the intended file.
+4. Re-run `codex auth check` after upgrading so quota/session snapshots refresh against current runtime behavior.
+
+Relevant npm scripts for this settings/runtime model:
+
+- `npm run build`
+- `npm run test`
+- `npm run test:coverage`
+- `npm run audit:ci`
+
 For migration between older command/path layouts, follow:
 
 - [upgrade.md](upgrade.md)

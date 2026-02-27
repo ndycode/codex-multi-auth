@@ -65,7 +65,6 @@ function commandExists(command: string): boolean {
 
 	for (const entry of entries) {
 		const candidate = path.join(entry, command);
-		if (!fs.existsSync(candidate)) continue;
 		try {
 			const stats = fs.statSync(candidate);
 			if (!stats.isFile()) continue;

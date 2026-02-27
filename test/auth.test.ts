@@ -4,6 +4,7 @@ import {
 	parseAuthorizationInput,
 	decodeJWT,
 	createAuthorizationFlow,
+	redactOAuthUrlForLog,
 	refreshAccessToken,
 	exchangeAuthorizationCode,
 	CLIENT_ID,
@@ -221,6 +222,26 @@ describe('Auth Module', () => {
 			expect(flow1.state).not.toBe(flow2.state);
 			expect(flow1.pkce.verifier).not.toBe(flow2.pkce.verifier);
 			expect(flow1.url).not.toBe(flow2.url);
+		});
+	});
+
+	describe("redactOAuthUrlForLog", () => {
+		it("redacts sensitive oauth params in URLs", () => {
+			const raw =
+				"https://auth.openai.com/oauth/authorize?state=abc123&code=xyz&code_challenge=foo&response_type=code";
+			const redacted = redactOAuthUrlForLog(raw);
+			expect(redacted).not.toContain("abc123");
+			expect(redacted).not.toContain("xyz");
+			expect(redacted).not.toContain("foo");
+			expect(redacted).toContain("state=%3Credacted%3E");
+			expect(redacted).toContain("code=%3Credacted%3E");
+			expect(redacted).toContain("code_challenge=%3Credacted%3E");
+			expect(redacted).toContain("response_type=code");
+		});
+
+		it("returns original input when url parsing fails", () => {
+			const raw = "not-a-url";
+			expect(redactOAuthUrlForLog(raw)).toBe(raw);
 		});
 	});
 

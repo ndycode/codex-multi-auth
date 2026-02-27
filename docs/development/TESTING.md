@@ -57,6 +57,8 @@ npm run bench:edit-formats:smoke
 | Storage durability | backup/WAL recovery remains valid |
 | CLI state sync | active account sync with Codex CLI files |
 | Live updates | account changes picked up without restart |
+| Concurrency race safety | refresh/write races covered by deterministic tests |
+| Windows transient FS handling | retry behavior for `EBUSY`/`EPERM` paths |
 
 * * *
 

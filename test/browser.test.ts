@@ -111,7 +111,9 @@ describe("auth browser utilities", () => {
 		it("returns false on darwin when open is unavailable", () => {
 			Object.defineProperty(process, "platform", { value: "darwin" });
 			process.env.PATH = "/usr/bin";
-			mockedExistsSync.mockReturnValue(false);
+			mockedStatSync.mockImplementation(() => {
+				throw new Error("missing");
+			});
 
 			expect(openBrowserUrl("https://example.com")).toBe(false);
 			expect(mockedSpawn).not.toHaveBeenCalled();
@@ -217,14 +219,17 @@ describe("auth browser utilities", () => {
 		it("falls back across linux clipboard commands", () => {
 			Object.defineProperty(process, "platform", { value: "linux" });
 			process.env.PATH = "/usr/bin:/bin";
-			mockedExistsSync.mockImplementation((candidate) => {
-				if (typeof candidate !== "string") return false;
-				return candidate.endsWith("xclip");
+			mockedStatSync.mockImplementation((candidate) => {
+				if (typeof candidate !== "string") throw new Error("bad path");
+				if (candidate.endsWith("wl-copy")) throw new Error("missing");
+				if (candidate.endsWith("xclip")) {
+					return {
+						isFile: () => true,
+						mode: 0o755,
+					} as unknown as ReturnType<typeof fs.statSync>;
+				}
+				throw new Error("missing");
 			});
-			mockedStatSync.mockReturnValue({
-				isFile: () => true,
-				mode: 0o755,
-			} as unknown as ReturnType<typeof fs.statSync>);
 
 			expect(copyTextToClipboard("hello")).toBe(true);
 			expect(mockedSpawn).toHaveBeenCalledWith(
@@ -238,14 +243,16 @@ describe("auth browser utilities", () => {
 		it("falls back to xsel when only xsel is available on linux", () => {
 			Object.defineProperty(process, "platform", { value: "linux" });
 			process.env.PATH = "/usr/bin:/bin";
-			mockedExistsSync.mockImplementation((candidate) => {
-				if (typeof candidate !== "string") return false;
-				return candidate.endsWith("xsel");
+			mockedStatSync.mockImplementation((candidate) => {
+				if (typeof candidate !== "string") throw new Error("bad path");
+				if (candidate.endsWith("xsel")) {
+					return {
+						isFile: () => true,
+						mode: 0o755,
+					} as unknown as ReturnType<typeof fs.statSync>;
+				}
+				throw new Error("missing");
 			});
-			mockedStatSync.mockReturnValue({
-				isFile: () => true,
-				mode: 0o755,
-			} as unknown as ReturnType<typeof fs.statSync>);
 
 			expect(copyTextToClipboard("hello")).toBe(true);
 			expect(mockedSpawn).toHaveBeenCalledWith(

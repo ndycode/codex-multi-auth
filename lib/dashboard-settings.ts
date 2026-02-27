@@ -2,6 +2,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { join } from "node:path";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { logWarn } from "./logger.js";
+import { sleep } from "./utils.js";
 import {
 	getUnifiedSettingsPath,
 	loadUnifiedDashboardSettings,
@@ -77,6 +78,9 @@ export const DEFAULT_DASHBOARD_DISPLAY_SETTINGS: DashboardDisplaySettings = {
 };
 
 const DASHBOARD_SETTINGS_PATH = join(getCodexMultiAuthDir(), "dashboard-settings.json");
+const RETRYABLE_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+const LEGACY_READ_MAX_ATTEMPTS = 4;
+const LEGACY_READ_BASE_DELAY_MS = 20;
 
 /**
  * Checks whether a value is a non-null object that can be treated as a string-keyed record.
@@ -85,7 +89,28 @@ const DASHBOARD_SETTINGS_PATH = join(getCodexMultiAuthDir(), "dashboard-settings
  * @returns `true` if `value` is an object and not `null` (narrowed to `Record<string, unknown>`), `false` otherwise.
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object";
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRetryableReadError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_READ_CODES.has(code);
+}
+
+async function readLegacySettingsFile(path: string): Promise<string> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < LEGACY_READ_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			return await fs.readFile(path, "utf8");
+		} catch (error) {
+			if (!isRetryableReadError(error) || attempt + 1 >= LEGACY_READ_MAX_ATTEMPTS) {
+				throw error;
+			}
+			lastError = error;
+			await sleep(LEGACY_READ_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error("Failed to read legacy dashboard settings");
 }
 
 /**
@@ -395,7 +420,7 @@ export async function loadDashboardDisplaySettings(): Promise<DashboardDisplaySe
 	}
 
 	try {
-		const raw = await fs.readFile(DASHBOARD_SETTINGS_PATH, "utf8");
+		const raw = await readLegacySettingsFile(DASHBOARD_SETTINGS_PATH);
 		const parsed = JSON.parse(raw) as unknown;
 		if (!isRecord(parsed)) {
 			return { ...DEFAULT_DASHBOARD_DISPLAY_SETTINGS };
@@ -424,7 +449,7 @@ export async function loadDashboardDisplaySettings(): Promise<DashboardDisplaySe
  * Concurrent callers may race and overwrite each other; callers should serialize updates
  * when strong write ordering is required. On Windows, underlying filesystem writes may
  * not be atomic across processes. Any sensitive tokens or secrets present in settings
- * are expected to be redacted by the unified settings persistence layer.
+ * are written as provided; callers must remove or redact sensitive values before saving.
  *
  * @param settings - The dashboard display settings to normalize and save
  */

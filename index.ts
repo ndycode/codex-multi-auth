@@ -30,6 +30,7 @@ import {
         createAuthorizationFlow,
         exchangeAuthorizationCode,
         parseAuthorizationInput,
+        redactOAuthUrlForLog,
         REDIRECT_URI,
 } from "./lib/auth/auth.js";
 import { queuedRefresh } from "./lib/refresh-queue.js";
@@ -445,7 +446,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		forceNewLogin: boolean = false,
 	): Promise<TokenResult> => {
 		const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
-		logInfo(`OAuth URL: ${url}`);
+		logInfo(`OAuth URL: ${redactOAuthUrlForLog(url)}`);
 
                 let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
                 try {

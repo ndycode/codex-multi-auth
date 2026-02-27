@@ -56,8 +56,8 @@ This page is the authoritative index of implemented feature areas.
 | 23 | Token rotation mapping in refresh queue | Handles rotating token pairs safely | Refresh flow |
 | 24 | Refresh guardian (proactive refresh) | Refresh near-expiry accounts in background | `pluginConfig.proactiveRefreshGuardian` |
 | 25 | Preemptive quota scheduler | Delay before hard quota exhaustion | `pluginConfig.preemptiveQuotaEnabled` |
-| 26 | Entitlement cache for unsupported models | Temporarily suppress unsupported account/model paths | Entitlement cache |
-| 27 | Capability policy scoring store | Boost/penalty memory per account+model | Capability policy |
+| 26 | Entitlement cache for unsupported models | Temporarily suppress unsupported account/model paths | Automatic during forecast/check/probe |
+| 27 | Capability policy scoring store | Boost/penalty memory per account+model | Automatic scoring in runtime selection |
 | 28 | Failure policy evaluation module | Centralized retry/rotate/cooldown decisions | Failure policy |
 | 29 | Streaming failover pipeline | Recover from stream stalls via fallback | Stream failover |
 | 30 | Rate-limit backoff and cooldown handling | Controlled wait/rotation under rate limit | Backoff runtime |
