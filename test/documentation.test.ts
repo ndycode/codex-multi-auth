@@ -160,6 +160,12 @@ describe('Documentation Integrity', () => {
     expect(fieldInventory).toContain('### Stable (User-Facing)');
     expect(fieldInventory).toContain('### Advanced (Runtime Tuning)');
     expect(fieldInventory).toContain('### Advanced / Internal (Maintainers)');
+    expect(fieldInventory).toContain('## Concurrency and Windows Notes');
+    expect(fieldInventory).toContain('Windows');
+    expect(fieldInventory).toContain('EPERM');
+    expect(fieldInventory).toContain('EBUSY');
+    expect(fieldInventory).toContain('refresh lease');
+    expect(fieldInventory).toContain('Cross-process');
   });
 
   it('keeps changelog casing and patch-line ordering intact', () => {

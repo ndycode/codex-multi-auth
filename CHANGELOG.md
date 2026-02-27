@@ -377,6 +377,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.6...v4.
 ## [4.9.6] - 2026-02-08
 
 ### Improvements
+
 - tui auth gating: non-tty/ui auth attempts now return a clear instruction to run `codex auth login` in a terminal shell.
 - error-mapping simplification: consolidated entitlement/rate-limit mapping in fetch helpers for a single handling path.
 
