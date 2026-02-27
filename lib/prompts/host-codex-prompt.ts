@@ -26,6 +26,16 @@ const LEGACY_HOST_CODEX_URL_OVERRIDE_ENV = "CODEX_CODEX_PROMPT_URL";
 const CACHE_DIR = getCodexCacheDir();
 const CACHE_FILE = join(CACHE_DIR, "host-codex-prompt.txt");
 const CACHE_META_FILE = join(CACHE_DIR, "host-codex-prompt-meta.json");
+const LEGACY_CACHE_FILES: ReadonlyArray<{ content: string; meta: string }> = [
+	{
+		content: join(CACHE_DIR, "opencode-codex-prompt.txt"),
+		meta: join(CACHE_DIR, "opencode-codex-prompt-meta.json"),
+	},
+	{
+		content: join(CACHE_DIR, "codex-prompt.txt"),
+		meta: join(CACHE_DIR, "codex-prompt-meta.json"),
+	},
+];
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const RETRYABLE_FS_ERROR_CODES = new Set(["EBUSY", "EPERM"]);
 const WRITE_RETRY_ATTEMPTS = 5;
@@ -132,19 +142,39 @@ function resolvePromptSources(): string[] {
 }
 
 async function readDiskCache(): Promise<CacheSnapshot | null> {
-	try {
-		const [content, metaContent] = await Promise.all([
-			readFile(CACHE_FILE, "utf-8"),
-			readFile(CACHE_META_FILE, "utf-8"),
-		]);
-		const meta = JSON.parse(metaContent) as CacheMeta;
-		if (!meta.lastChecked) {
+	const tryRead = async (contentPath: string, metaPath: string): Promise<CacheSnapshot | null> => {
+		try {
+			const [content, metaContent] = await Promise.all([
+				readFile(contentPath, "utf-8"),
+				readFile(metaPath, "utf-8"),
+			]);
+			const meta = JSON.parse(metaContent) as CacheMeta;
+			if (!meta.lastChecked) {
+				return null;
+			}
+			return { content, meta };
+		} catch {
 			return null;
 		}
-		return { content, meta };
-	} catch {
-		return null;
+	};
+
+	const currentCache = await tryRead(CACHE_FILE, CACHE_META_FILE);
+	if (currentCache) {
+		return currentCache;
 	}
+
+	for (const legacy of LEGACY_CACHE_FILES) {
+		const legacyCache = await tryRead(legacy.content, legacy.meta);
+		if (!legacyCache) continue;
+		await mkdir(CACHE_DIR, { recursive: true });
+		await Promise.all([
+			writeFileWithRetry(CACHE_FILE, legacyCache.content),
+			writeFileWithRetry(CACHE_META_FILE, JSON.stringify(legacyCache.meta, null, 2)),
+		]);
+		return legacyCache;
+	}
+
+	return null;
 }
 
 async function saveDiskCache(

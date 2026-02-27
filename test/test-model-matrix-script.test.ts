@@ -45,7 +45,7 @@ describe("test-model-matrix script helpers", () => {
 		spawnSync.mockReturnValue({ stdout: "", stderr: "INFO: not found\n", status: 1 });
 
 		const mod = await import("../scripts/test-model-matrix.js");
-		expect(mod.resolveCodexExecutable()).toEqual({ command: "Codex", shell: false });
+		expect(mod.resolveCodexExecutable()).toEqual({ command: "codex", shell: false });
 		platformSpy.mockRestore();
 	});
 

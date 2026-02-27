@@ -56,6 +56,42 @@ describe("host-codex-prompt", () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
+    it("migrates legacy cache filenames into host-codex cache files", async () => {
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
+
+      vi.mocked(readFile).mockImplementation(async (filePath) => {
+        const file = String(filePath);
+        if (file.includes("host-codex-prompt")) {
+          throw new Error("ENOENT");
+        }
+        if (file.includes("opencode-codex-prompt-meta.json")) {
+          return JSON.stringify({
+            etag: '"legacy-etag"',
+            lastChecked: Date.now() - 1000,
+          });
+        }
+        if (file.includes("opencode-codex-prompt.txt")) {
+          return "Legacy cached content";
+        }
+        throw new Error("ENOENT");
+      });
+
+      const result = await getHostCodexPrompt();
+
+      expect(result).toBe("Legacy cached content");
+      expect(writeFile).toHaveBeenCalledWith(
+        expect.stringContaining("host-codex-prompt.txt"),
+        "Legacy cached content",
+        "utf-8",
+      );
+      expect(writeFile).toHaveBeenCalledWith(
+        expect.stringContaining("host-codex-prompt-meta.json"),
+        expect.stringContaining("legacy-etag"),
+        "utf-8",
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it("uses ETag for conditional request when cache expired", async () => {
       const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       

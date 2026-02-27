@@ -74,12 +74,16 @@ describe("Storage Paths Module", () => {
 				if (candidate === path.join(primary, "settings.json")) return true;
 				if (candidate === path.join(primary, "openai-codex-accounts.json")) return false;
 				if (candidate === path.join(primary, "codex-accounts.json")) return false;
+				if (candidate === path.join(primary, "config.json")) return false;
+				if (candidate === path.join(primary, "dashboard-settings.json")) return false;
+				if (candidate === path.join(primary, "projects")) return false;
 				return candidate === path.join(fallback, "openai-codex-accounts.json");
 			});
 
 			const result = getConfigDir();
 			expect(result).toBe(fallback);
 		});
+
 	});
 
 	describe("getProjectConfigDir", () => {

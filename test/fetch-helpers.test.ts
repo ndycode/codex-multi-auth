@@ -70,6 +70,20 @@ describe('Fetch Helpers Module', () => {
 	});
 
 	describe('refreshAndUpdateToken', () => {
+		it('throws when client auth setter is missing', async () => {
+			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
+			const client = {} as any;
+
+			await expect(refreshAndUpdateToken(auth, client)).rejects.toThrow();
+		});
+
+		it('throws when client auth.set is not a function', async () => {
+			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
+			const client = { auth: { set: 'bad' } } as any;
+
+			await expect(refreshAndUpdateToken(auth, client)).rejects.toThrow();
+		});
+
 		it('throws when refresh fails', async () => {
 			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'bad', expires: 0 };
 			const client = { auth: { set: vi.fn() } } as any;

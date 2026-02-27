@@ -13,6 +13,10 @@ import {
 const CONFIG_DIR = getCodexMultiAuthDir();
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const LEGACY_CODEX_HOME_CONFIG_PATH = join(getCodexHomeDir(), "codex-multi-auth-config.json");
+const LEGACY_CODEX_HOME_AUTH_CONFIG_PATH = join(
+	getCodexHomeDir(),
+	"openai-codex-auth-config.json",
+);
 const LEGACY_CODEX_CONFIG_PATH = join(
 	getLegacyCodexDir(),
 	"codex-multi-auth-config.json",
@@ -82,6 +86,14 @@ function resolvePluginConfigPath(): string | null {
 				`Please migrate to ${CONFIG_PATH}.`,
 		);
 		return LEGACY_CODEX_CONFIG_PATH;
+	}
+
+	if (existsSync(LEGACY_CODEX_HOME_AUTH_CONFIG_PATH)) {
+		logConfigWarnOnce(
+			`Using legacy config path ${LEGACY_CODEX_HOME_AUTH_CONFIG_PATH}. ` +
+				`Please migrate to ${CONFIG_PATH}.`,
+		);
+		return LEGACY_CODEX_HOME_AUTH_CONFIG_PATH;
 	}
 
 	if (existsSync(LEGACY_CODEX_AUTH_CONFIG_PATH)) {

@@ -348,5 +348,3 @@ export async function promptAccountSelection(
 
 export { isTTY };
 export type { AccountStatus };
-
-

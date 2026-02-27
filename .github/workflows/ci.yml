@@ -84,4 +84,3 @@ jobs:
 
       - name: Run Codex compatibility tests
         run: npm run test -- test/codex.test.ts test/host-codex-prompt.test.ts test/request-transformer.test.ts test/fetch-helpers.test.ts
-

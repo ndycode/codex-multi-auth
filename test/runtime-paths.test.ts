@@ -52,17 +52,20 @@ describe("runtime-paths", () => {
 
 	it("deduplicates Windows-style fallback paths case-insensitively", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-		homedir.mockReturnValue("C:\\Users\\Neil");
-		process.env.CODEX_HOME = "C:\\USERS\\NEIL\\.codex";
+		try {
+			homedir.mockReturnValue("C:\\Users\\Neil");
+			process.env.CODEX_HOME = "C:\\USERS\\NEIL\\.codex";
 
-		existsSync.mockImplementation((candidate: unknown) => {
-			if (typeof candidate !== "string") return false;
-			if (candidate === "C:\\USERS\\NEIL\\.codex\\multi-auth\\settings.json") return true;
-			return false;
-		});
+			existsSync.mockImplementation((candidate: unknown) => {
+				if (typeof candidate !== "string") return false;
+				if (candidate === "C:\\USERS\\NEIL\\.codex\\multi-auth\\settings.json") return true;
+				return false;
+			});
 
-		const mod = await import("../lib/runtime-paths.js");
-		expect(mod.getCodexMultiAuthDir()).toBe("C:\\USERS\\NEIL\\.codex\\multi-auth");
-		platformSpy.mockRestore();
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexMultiAuthDir()).toBe("C:\\USERS\\NEIL\\.codex\\multi-auth");
+		} finally {
+			platformSpy.mockRestore();
+		}
 	});
 });

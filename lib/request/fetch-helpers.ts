@@ -329,6 +329,11 @@ export async function refreshAndUpdateToken(
 	currentAuth: Auth,
 	client: CodexClient,
 ): Promise<Auth> {
+	const authSetter = (client as Partial<CodexAuthSetter>).auth;
+	if (!authSetter || typeof authSetter.set !== "function") {
+		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: false });
+	}
+
 	const refreshToken = currentAuth.type === "oauth" ? currentAuth.refresh : "";
 	const refreshResult = await queuedRefresh(refreshToken);
 
@@ -336,7 +341,7 @@ export async function refreshAndUpdateToken(
 		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: false });
 	}
 
-	await (client as unknown as CodexAuthSetter).auth.set({
+	await authSetter.set({
 		path: { id: "openai" },
 		body: {
 			type: "oauth",

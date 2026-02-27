@@ -200,6 +200,31 @@ describe('Plugin Configuration', () => {
 			});
 		});
 
+		it('should detect CODEX_HOME legacy auth config path before global legacy path', async () => {
+			vi.resetModules();
+			process.env.CODEX_HOME = path.join(process.cwd(), '.tmp-codex-home');
+			const expectedPath = path.join(process.env.CODEX_HOME, 'openai-codex-auth-config.json');
+
+			mockExistsSync.mockImplementation((candidate) => {
+				return typeof candidate === 'string' && candidate === expectedPath;
+			});
+			mockReadFileSync.mockImplementation((filePath) => {
+				if (filePath === expectedPath) {
+					return JSON.stringify({ codexMode: false });
+				}
+				throw new Error('ENOENT');
+			});
+
+			const cfg = await import('../lib/config.js');
+			const config = cfg.loadPluginConfig();
+
+			expect(config.codexMode).toBe(false);
+			expect(mockReadFileSync).toHaveBeenCalledWith(expectedPath, 'utf-8');
+			expect(vi.mocked(logger.logWarn)).toHaveBeenCalledWith(
+				expect.stringContaining(expectedPath),
+			);
+		});
+
 		it('should merge user config with defaults', () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue(JSON.stringify({}));

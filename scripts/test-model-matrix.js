@@ -25,7 +25,7 @@ export function resolveCodexExecutable() {
 	}
 
 	if (process.platform !== "win32") {
-		return { command: "Codex", shell: false };
+		return { command: "codex", shell: false };
 	}
 
 	const whereResult = spawnSync("where", ["Codex"], {
@@ -38,7 +38,7 @@ export function resolveCodexExecutable() {
 		.filter((line) => /^[A-Za-z]:\\.+\.(exe|cmd)$/i.test(line));
 
 	if (candidates.length === 0) {
-		return { command: "Codex", shell: false };
+		return { command: "codex", shell: false };
 	}
 
 	const exactExe = candidates.find((candidate) =>
