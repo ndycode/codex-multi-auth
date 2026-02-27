@@ -1,6 +1,8 @@
 import { createLogger } from "./logger.js";
 import { applyRefreshResult, refreshExpiringAccounts } from "./proactive-refresh.js";
 import type { AccountManager } from "./accounts.js";
+import type { CooldownReason } from "./storage.js";
+import type { TokenResult } from "./types.js";
 
 const log = createLogger("refresh-guardian");
 
@@ -13,6 +15,11 @@ export interface RefreshGuardianStats {
 	runs: number;
 	refreshed: number;
 	failed: number;
+	notNeeded: number;
+	noRefreshToken: number;
+	rateLimited: number;
+	networkFailed: number;
+	authFailed: number;
 	lastRunAt: number | null;
 }
 
@@ -28,6 +35,11 @@ export class RefreshGuardian {
 		runs: 0,
 		refreshed: 0,
 		failed: 0,
+		notNeeded: 0,
+		noRefreshToken: 0,
+		rateLimited: 0,
+		networkFailed: 0,
+		authFailed: 0,
 		lastRunAt: null,
 	};
 
@@ -64,6 +76,25 @@ export class RefreshGuardian {
 		return { ...this.stats };
 	}
 
+	private classifyFailureReason(tokenResult: TokenResult | undefined): CooldownReason {
+		if (!tokenResult || tokenResult.type !== "failed") {
+			return "network-error";
+		}
+
+		const statusCode = tokenResult.statusCode;
+		if (statusCode === 429) return "rate-limit";
+		if (tokenResult.reason === "network_error") return "network-error";
+		if (tokenResult.reason === "missing_refresh") return "auth-failure";
+		if (tokenResult.reason === "invalid_response") return "auth-failure";
+		if (
+			tokenResult.reason === "http_error" &&
+			(statusCode === 400 || statusCode === 401 || statusCode === 403)
+		) {
+			return "auth-failure";
+		}
+		return "network-error";
+	}
+
 	async tick(): Promise<void> {
 		if (this.running) return;
 		const manager = this.getAccountManager();
@@ -97,13 +128,37 @@ export class RefreshGuardian {
 				const account = resolvedIndex >= 0 ? manager.getAccountByIndex(resolvedIndex) : null;
 				if (!account) continue;
 
-				if (result.reason === "success" && result.tokenResult?.type === "success") {
-					applyRefreshResult(account, result.tokenResult);
-					manager.clearAuthFailures(account);
-					this.stats.refreshed += 1;
-				} else if (result.reason === "failed") {
-					manager.markAccountCoolingDown(account, this.bufferMs, "auth-failure");
-					this.stats.failed += 1;
+				switch (result.reason) {
+					case "success":
+						if (result.tokenResult?.type === "success") {
+							applyRefreshResult(account, result.tokenResult);
+							manager.clearAuthFailures(account);
+							this.stats.refreshed += 1;
+						} else {
+							manager.markAccountCoolingDown(account, this.bufferMs, "network-error");
+							this.stats.failed += 1;
+							this.stats.networkFailed += 1;
+						}
+						break;
+					case "failed": {
+						const cooldownReason = this.classifyFailureReason(result.tokenResult);
+						manager.markAccountCoolingDown(account, this.bufferMs, cooldownReason);
+						this.stats.failed += 1;
+						if (cooldownReason === "rate-limit") this.stats.rateLimited += 1;
+						else if (cooldownReason === "auth-failure") this.stats.authFailed += 1;
+						else this.stats.networkFailed += 1;
+						break;
+					}
+					case "not_needed":
+						this.stats.notNeeded += 1;
+						break;
+					case "no_refresh_token":
+						manager.markAccountCoolingDown(account, this.bufferMs, "auth-failure");
+						manager.setAccountEnabled(account.index, false);
+						this.stats.noRefreshToken += 1;
+						this.stats.failed += 1;
+						this.stats.authFailed += 1;
+						break;
 				}
 			}
 

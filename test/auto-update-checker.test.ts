@@ -379,6 +379,28 @@ describe("auto-update-checker", () => {
 			});
 		});
 
+		it("retries cache writes when filesystem is busy", async () => {
+			let attempts = 0;
+			vi.mocked(fs.writeFileSync).mockClear();
+			vi.mocked(fs.writeFileSync).mockImplementation(() => {
+				attempts += 1;
+				if (attempts < 3) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return undefined;
+			});
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+
+			await checkForUpdates(true);
+
+			expect(fs.writeFileSync).toHaveBeenCalledTimes(3);
+		});
+
 		it("includes updateCommand in result", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({
 				ok: true,
