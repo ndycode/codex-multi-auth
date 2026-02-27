@@ -55,10 +55,12 @@ function commandExists(command: string): boolean {
 }
 
 /**
- * Opens a URL in the default browser
- * Silently fails if browser cannot be opened (user can copy URL manually)
- * @param url - URL to open
- * @returns True if a browser launch was attempted
+ * Attempts to open the given URL in the system default browser.
+ *
+ * Concurrency: this function launches a detached child process and does not wait for completion; calling it concurrently is safe. On Windows the URL is sanitized for PowerShell quoting rules but not redacted. The function does not modify or redact any sensitive tokens that may be present in the URL.
+ *
+ * @param url - The URL to open; may contain query tokens or sensitive data which will not be redacted by this function.
+ * @returns `true` if a browser launch was attempted, `false` otherwise.
  */
 export function openBrowserUrl(url: string): boolean {
 	try {
@@ -95,3 +97,60 @@ export function openBrowserUrl(url: string): boolean {
 	}
 }
 
+/**
+ * Attempts to copy the provided string to the system clipboard using platform-appropriate utilities.
+ *
+ * This is a best-effort, fire-and-forget operation: child processes are launched and errors are ignored, so concurrent calls are safe but success is only indicated by whether a clipboard command was started. On Windows the text is escaped for PowerShell before launching Set-Clipboard. This function does not redact secrets; callers must remove or mask tokens/credentials before calling.
+ *
+ * @param text - The string to copy; empty or falsy values are ignored
+ * @returns `true` if a platform clipboard command was launched, `false` otherwise
+ */
+export function copyTextToClipboard(text: string): boolean {
+	try {
+		if (!text) return false;
+
+		if (process.platform === "win32") {
+			const psText = text
+				.replace(/`/g, "``")
+				.replace(/\$/g, "`$")
+				.replace(/"/g, '""');
+			const child = spawn(
+				"powershell.exe",
+				["-NoLogo", "-NoProfile", "-Command", `Set-Clipboard -Value "${psText}"`],
+				{ stdio: "ignore" },
+			);
+			child.on("error", () => {});
+			return true;
+		}
+
+		if (process.platform === "darwin") {
+			if (!commandExists("pbcopy")) return false;
+			const child = spawn("pbcopy", [], {
+				stdio: ["pipe", "ignore", "ignore"],
+				shell: false,
+			});
+			child.on("error", () => {});
+			child.stdin?.end(text);
+			return true;
+		}
+
+		const linuxClipboardCommands: Array<{ command: string; args: string[] }> = [
+			{ command: "wl-copy", args: [] },
+			{ command: "xclip", args: ["-selection", "clipboard"] },
+			{ command: "xsel", args: ["--clipboard", "--input"] },
+		];
+		for (const { command, args } of linuxClipboardCommands) {
+			if (!commandExists(command)) continue;
+			const child = spawn(command, args, {
+				stdio: ["pipe", "ignore", "ignore"],
+				shell: false,
+			});
+			child.on("error", () => {});
+			child.stdin?.end(text);
+			return true;
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}

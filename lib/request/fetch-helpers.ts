@@ -236,13 +236,20 @@ export function isEntitlementError(code: string, bodyText: string): boolean {
 }
 
 /**
- * Creates a user-friendly entitlement error response
+ * Create a 403 entitlement Response indicating the requested model is not included in the user's ChatGPT subscription.
+ *
+ * @param _bodyText - Original response body text (unused; retained for signature compatibility)
+ * @returns A Response with status 403 and a JSON error payload containing `message`, `type: "entitlement_error"`, and `code: "usage_not_included"`
+ *
+ * Concurrency: safe to call concurrently from multiple callers.
+ * Filesystem: does not access the filesystem; unaffected by Windows path semantics.
+ * Token redaction: does not include or expose authentication tokens or credentials in the returned message.
  */
 export function createEntitlementErrorResponse(_bodyText: string): Response {
         const message = 
                 "This model is not included in your ChatGPT subscription. " +
                 "Please check that your account or workspace has access to Codex models (Plus/Pro/Business/Enterprise). " +
-                "If you recently subscribed or switched workspaces, try logging out and back in with `opencode auth login`.";
+                "If you recently subscribed or switched workspaces, try logging out and back in with `codex login`.";
         
         const payload = {
                 error: {
@@ -682,6 +689,21 @@ type ErrorPayload = {
         };
 };
 
+/**
+ * Build a normalized ErrorPayload from a raw error body, response text, and status metadata.
+ *
+ * @param errorBody - Parsed error object if available (may be any shape)
+ * @param bodyText - Raw response body as text
+ * @param statusText - HTTP status text from the response
+ * @param status - HTTP status code from the response
+ * @param diagnostics - Optional diagnostic metadata to attach to the payload
+ * @returns An ErrorPayload containing a user-facing `error.message` and optional `type`, `code`, `unsupported_model`, and `diagnostics` fields; for 401 responses the message is suffixed with a `codex login` hint
+ *
+ * @remarks
+ * - Concurrency: function is pure and safe for concurrent use; it does not mutate inputs or rely on shared state.
+ * - Windows filesystem behavior: none — this function does not access the filesystem.
+ * - Token redaction: this function does not perform token redaction; callers must ensure sensitive tokens are removed before passing values into logging or external systems.
+ */
 function normalizeErrorPayload(
         errorBody: unknown,
         bodyText: string,
@@ -729,7 +751,7 @@ function normalizeErrorPayload(
                                 payload.error.diagnostics = diagnostics;
                         }
                         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                                payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
                         }
                         return payload;
                 }
@@ -740,7 +762,7 @@ function normalizeErrorPayload(
                                 payload.error.diagnostics = diagnostics;
                         }
                         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                                payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
                         }
                         return payload;
                 }
@@ -753,7 +775,7 @@ function normalizeErrorPayload(
                         payload.error.diagnostics = diagnostics;
                 }
                 if (status === HTTP_STATUS.UNAUTHORIZED) {
-                        payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                        payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
                 }
                 return payload;
         }
@@ -764,7 +786,7 @@ function normalizeErrorPayload(
                         payload.error.diagnostics = diagnostics;
                 }
                 if (status === HTTP_STATUS.UNAUTHORIZED) {
-                        payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                        payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
                 }
                 return payload;
         }
@@ -774,7 +796,7 @@ function normalizeErrorPayload(
                 payload.error.diagnostics = diagnostics;
         }
         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                payload.error.message = `${payload.error.message} (run \`opencode auth login\` if this persists)`;
+                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
         }
         return payload;
 }

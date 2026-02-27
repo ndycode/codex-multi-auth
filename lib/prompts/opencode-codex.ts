@@ -6,9 +6,9 @@
  */
 
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { logDebug } from "../logger.js";
+import { getCodexCacheDir } from "../runtime-paths.js";
 
 const DEFAULT_OPENCODE_CODEX_URLS = [
 	"https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/opencode/src/session/prompt/codex.txt",
@@ -20,8 +20,9 @@ const DEFAULT_OPENCODE_CODEX_URLS = [
 	"https://raw.githubusercontent.com/anomalyco/opencode/main/packages/opencode/src/session/prompt/codex.md",
 	"https://raw.githubusercontent.com/sst/opencode/main/packages/opencode/src/session/prompt/codex.md",
 ] as const;
-const OPENCODE_CODEX_URL_OVERRIDE_ENV = "OPENCODE_CODEX_PROMPT_URL";
-const CACHE_DIR = join(homedir(), ".opencode", "cache");
+const CODEX_PROMPT_URL_OVERRIDE_ENV = "CODEX_PROMPT_SOURCE_URL";
+const LEGACY_OPENCODE_CODEX_URL_OVERRIDE_ENV = "OPENCODE_CODEX_PROMPT_URL";
+const CACHE_DIR = getCodexCacheDir();
 const CACHE_FILE = join(CACHE_DIR, "opencode-codex.txt");
 const CACHE_META_FILE = join(CACHE_DIR, "opencode-codex-meta.json");
 const CACHE_TTL_MS = 15 * 60 * 1000;
@@ -66,6 +67,18 @@ function parseSourceUrl(source: string | undefined): string | undefined {
 	}
 }
 
+/**
+ * Builds an ordered list of validated, normalized, and deduplicated prompt source URLs to try.
+ *
+ * The order is: environment override (primary), legacy environment override, cached source URL, then the default sources.
+ * The function is synchronous and side-effect-free; it is safe to call concurrently.
+ *
+ * Note: this returns URL strings only (no filesystem interaction) and is platform-agnostic. It does not redact or alter
+ * credentials or tokens present in URLs; callers are responsible for redaction when exposing these values.
+ *
+ * @param cachedMeta - Optional cache metadata whose `sourceUrl`, if present and valid, will be included in the prioritized list
+ * @returns An array of unique, validated, normalized URLs in priority order (overrides first, then cached, then defaults)
+ */
 function resolvePromptSources(cachedMeta: CacheMeta | null): string[] {
 	const sources: string[] = [];
 	const seen = new Set<string>();
@@ -77,7 +90,8 @@ function resolvePromptSources(cachedMeta: CacheMeta | null): string[] {
 		sources.push(parsed);
 	};
 
-	add(process.env[OPENCODE_CODEX_URL_OVERRIDE_ENV]);
+	add(process.env[CODEX_PROMPT_URL_OVERRIDE_ENV]);
+	add(process.env[LEGACY_OPENCODE_CODEX_URL_OVERRIDE_ENV]);
 	add(cachedMeta?.sourceUrl);
 	for (const source of DEFAULT_OPENCODE_CODEX_URLS) {
 		add(source);

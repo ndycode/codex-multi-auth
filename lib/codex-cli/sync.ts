@@ -1,4 +1,8 @@
-import type { AccountMetadataV3, AccountStorageV3 } from "../storage.js";
+import {
+	getLastAccountsSaveTimestamp,
+	type AccountMetadataV3,
+	type AccountStorageV3,
+} from "../storage.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { createLogger } from "../logger.js";
 import { loadCodexCliState, type CodexCliAccountSnapshot } from "./state.js";
@@ -6,6 +10,7 @@ import {
 	incrementCodexCliMetric,
 	makeAccountFingerprint,
 } from "./observability.js";
+import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
 
@@ -180,6 +185,12 @@ function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 	}
 }
 
+/**
+ * Extract the accountId and email from the first snapshot marked active.
+ *
+ * @param snapshots - Array of Codex CLI account snapshots to search
+ * @returns An object with `accountId` and `email` from the first snapshot where `isActive` is true; properties are `undefined` if no active snapshot is found
+ */
 function readActiveFromSnapshots(
 	snapshots: CodexCliAccountSnapshot[],
 ): { accountId?: string; email?: string } {
@@ -190,6 +201,51 @@ function readActiveFromSnapshots(
 	};
 }
 
+/**
+ * Decide whether Codex CLI's active-account selection should overwrite local selection.
+ *
+ * Prefers the source (Codex CLI) selection when its timestamp/version appears at least as recent
+ * as the local selection write time (with a 1s tolerance); otherwise preserves the local selection.
+ *
+ * Concurrency assumptions: compares monotonic millisecond timestamps and assumes host clocks are
+ * reasonably synchronized; ties favor Codex CLI. On Windows filesystems where timestamp resolution
+ * may be coarse, the 1s tolerance reduces false negatives. Token-redaction: this decision only
+ * uses numeric timestamps/versions and never inspects or logs tokens or other sensitive strings.
+ *
+ * @param state - Loaded Codex CLI state (may be null/undefined when not present)
+ * @returns `true` if the Codex CLI selection should be applied (overwrite local), `false` otherwise.
+ */
+function shouldApplyCodexCliSelection(state: Awaited<ReturnType<typeof loadCodexCliState>>): boolean {
+	if (!state) return false;
+	const codexVersion =
+		typeof state.syncVersion === "number" && Number.isFinite(state.syncVersion)
+			? state.syncVersion
+			: typeof state.sourceUpdatedAtMs === "number" && Number.isFinite(state.sourceUpdatedAtMs)
+				? state.sourceUpdatedAtMs
+				: 0;
+	const localVersion = Math.max(
+		getLastAccountsSaveTimestamp(),
+		getLastCodexCliSelectionWriteTimestamp(),
+	);
+	if (codexVersion <= 0 || localVersion <= 0) return true;
+	// Keep local selection when plugin wrote more recently than Codex state.
+	return codexVersion >= localVersion - 1_000;
+}
+
+/**
+ * Reconciles local account storage with Codex CLI state and returns the resulting storage and whether it changed.
+ *
+ * Loads Codex CLI state, upserts snapshots into a clone (or new) storage, and conditionally applies the Codex CLI active-account selection based on state vs local timestamps.
+ *
+ * Concurrency: callers should serialize invocations to avoid lost updates; the function does not perform inter-process file locking.
+ *
+ * Windows filesystem note: this function operates on in-memory storage objects only; any caller that persists the returned storage must handle Windows path and locking semantics.
+ *
+ * Token redaction: account snapshots containing tokens are consulted for matching and merging, but this function does not log raw tokens; callers must ensure persisted storage redacts or encrypts sensitive tokens.
+ *
+ * @param current - The current local AccountStorageV3, or `null` to start from an empty storage.
+ * @returns An object with `storage` set to the reconciled AccountStorageV3 (or `null` if input was `null` and no accounts were produced) and `changed` set to `true` if the returned storage differs from `current`.
+ */
 export async function syncAccountStorageFromCodexCli(
 	current: AccountStorageV3 | null,
 ): Promise<{ storage: AccountStorageV3 | null; changed: boolean }> {
@@ -223,21 +279,30 @@ export async function syncAccountStorageFromCodexCli(
 		}
 
 		const activeFromSnapshots = readActiveFromSnapshots(state.accounts);
-		const desiredIndex = resolveActiveIndex(
-			next.accounts,
-			state.activeAccountId ?? activeFromSnapshots.accountId,
-			state.activeEmail ?? activeFromSnapshots.email,
-		);
+		const applyActiveFromCodex = shouldApplyCodexCliSelection(state);
+		if (applyActiveFromCodex) {
+			const desiredIndex = resolveActiveIndex(
+				next.accounts,
+				state.activeAccountId ?? activeFromSnapshots.accountId,
+				state.activeEmail ?? activeFromSnapshots.email,
+			);
 
-		const previousActive = next.activeIndex;
-		const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
-		writeFamilyIndexes(next, desiredIndex);
-		normalizeStoredFamilyIndexes(next);
-		if (previousActive !== next.activeIndex) {
-			changed = true;
-		}
-		if (previousFamilies !== JSON.stringify(next.activeIndexByFamily ?? {})) {
-			changed = true;
+			const previousActive = next.activeIndex;
+			const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
+			writeFamilyIndexes(next, desiredIndex);
+			normalizeStoredFamilyIndexes(next);
+			if (previousActive !== next.activeIndex) {
+				changed = true;
+			}
+			if (previousFamilies !== JSON.stringify(next.activeIndexByFamily ?? {})) {
+				changed = true;
+			}
+		} else {
+			normalizeStoredFamilyIndexes(next);
+			log.debug("Skipped Codex CLI active selection overwrite due to newer local state", {
+				operation: "reconcile-storage",
+				outcome: "local-newer",
+			});
 		}
 
 		incrementCodexCliMetric(changed ? "reconcileChanges" : "reconcileNoops");
