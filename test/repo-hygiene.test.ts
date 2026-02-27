@@ -172,7 +172,7 @@ describe("repo-hygiene script", () => {
 		await fs.writeFile(path.join(root, ".gitignore"), requiredGitignore);
 
 		const originalPath = process.env.PATH ?? "";
-		let result;
+		let result: ReturnType<typeof runRepoHygiene> | null = null;
 		try {
 			process.env.PATH = "";
 			result = runRepoHygiene(["check", "--root", root]);
@@ -180,8 +180,8 @@ describe("repo-hygiene script", () => {
 			process.env.PATH = originalPath;
 		}
 
-		expect(result.status).toBe(1);
-		expect(result.stderr).toContain("git ls-files failed in getTrackedPaths");
+		expect(result?.status).toBe(1);
+		expect(result?.stderr).toContain("git ls-files failed in getTrackedPaths");
 	});
 
 	it("has deterministic outcomes when check and clean run concurrently", async () => {
