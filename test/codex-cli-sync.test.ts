@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -290,6 +290,83 @@ describe("codex-cli sync", () => {
 		expect(result.storage?.activeIndex).toBe(0);
 	});
 
+	it("keeps local active selection when local state is newer by sub-second gap and syncVersion exists", async () => {
+		await writeFile(
+			authPath,
+			JSON.stringify(
+				{
+					auth_mode: "chatgpt",
+					OPENAI_API_KEY: null,
+					tokens: {
+						access_token: "local.access.token",
+						refresh_token: "local-refresh-token",
+						account_id: "acc_a",
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		await setCodexCliActiveSelection({
+			accountId: "acc_a",
+			accessToken: "local.access.token",
+			refreshToken: "local-refresh-token",
+		});
+
+		const staleSyncVersion = Date.now() - 500;
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					codexMultiAuthSyncVersion: staleSyncVersion,
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: { tokens: { access_token: "a.access", refresh_token: "refresh-a" } },
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: { tokens: { access_token: "b.access", refresh_token: "refresh-b" } },
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		clearCodexCliStateCache();
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await syncAccountStorageFromCodexCli(current);
+		expect(result.storage?.activeIndex).toBe(0);
+	});
+
 	it("marks changed when local index normalization mutates storage while codex selection is skipped", async () => {
 		await writeFile(
 			authPath,
@@ -366,5 +443,85 @@ describe("codex-cli sync", () => {
 		expect(result.changed).toBe(true);
 		expect(result.storage?.activeIndex).toBe(1);
 		expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
+	});
+
+	it("serializes concurrent active-selection writes to keep accounts/auth aligned", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									id_token: "id-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									id_token: "id-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		await writeFile(
+			authPath,
+			JSON.stringify(
+				{
+					auth_mode: "chatgpt",
+					OPENAI_API_KEY: null,
+					email: "a@example.com",
+					tokens: {
+						access_token: "access-a",
+						id_token: "id-a",
+						refresh_token: "refresh-a",
+						account_id: "acc_a",
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const [first, second] = await Promise.all([
+			setCodexCliActiveSelection({ accountId: "acc_a" }),
+			setCodexCliActiveSelection({ accountId: "acc_b" }),
+		]);
+		expect(first).toBe(true);
+		expect(second).toBe(true);
+
+		const writtenAccounts = JSON.parse(await readFile(accountsPath, "utf-8")) as {
+			activeAccountId?: string;
+			activeEmail?: string;
+			accounts?: Array<{ accountId?: string; active?: boolean }>;
+		};
+		const writtenAuth = JSON.parse(await readFile(authPath, "utf-8")) as {
+			email?: string;
+			tokens?: { account_id?: string };
+		};
+
+		expect(writtenAccounts.activeAccountId).toBe("acc_b");
+		expect(writtenAccounts.activeEmail).toBe("b@example.com");
+		expect(writtenAccounts.accounts?.[0]?.active).toBe(false);
+		expect(writtenAccounts.accounts?.[1]?.active).toBe(true);
+		expect(writtenAuth.tokens?.account_id).toBe("acc_b");
+		expect(writtenAuth.email).toBe("b@example.com");
 	});
 });

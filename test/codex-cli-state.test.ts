@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { promises as fsPromises } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -103,6 +104,47 @@ describe("codex-cli state", () => {
 		const lookup = await lookupCodexCliTokensByEmail("B@EXAMPLE.com");
 		expect(lookup?.refreshToken).toBe("refresh-b");
 		expect(lookup?.accountId).toBe("acc_b");
+	});
+
+	it("coalesces concurrent cache-miss loads into one file read", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "a.b.c",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		clearCodexCliStateCache();
+		const readSpy = vi.spyOn(fsPromises, "readFile");
+
+		try {
+			const results = await Promise.all(
+				Array.from({ length: 8 }, () => loadCodexCliState()),
+			);
+			expect(results.every((state) => state?.activeAccountId === "acc_a")).toBe(true);
+			const accountReads = readSpy.mock.calls.filter(
+				(args) => String(args[0]) === accountsPath,
+			);
+			expect(accountReads.length).toBe(1);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("falls back to Codex auth.json when accounts.json is missing", async () => {

@@ -95,4 +95,34 @@ describe("stream failover", () => {
 
 		await expect(response.text()).rejects.toThrow("fallback exploded");
 	});
+
+	it("releases underlying reader when wrapped stream is cancelled", async () => {
+		let sourceCancelled = 0;
+		const response = withStreamingFailover(
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode("data: first\n\n"));
+					},
+					cancel() {
+						sourceCancelled += 1;
+					},
+				}),
+				{
+					headers: {
+						"content-type": "text/event-stream",
+					},
+				},
+			),
+			async () => null,
+			{ maxFailovers: 1, stallTimeoutMs: 10_000 },
+		);
+
+		const reader = response.body?.getReader();
+		expect(reader).toBeDefined();
+		await reader?.read();
+		await reader?.cancel();
+
+		expect(sourceCancelled).toBeGreaterThan(0);
+	});
 });

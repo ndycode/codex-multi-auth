@@ -845,11 +845,29 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				});
 			}
 
-			if (liveAccountSyncPath !== targetPath) {
-				await liveAccountSync.syncToPath(targetPath);
-				liveAccountSyncPath = targetPath;
+		if (liveAccountSyncPath !== targetPath) {
+			let switched = false;
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				try {
+					await liveAccountSync.syncToPath(targetPath);
+					liveAccountSyncPath = targetPath;
+					switched = true;
+					break;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException | undefined)?.code;
+					if (code !== "EBUSY" && code !== "EPERM") {
+						throw error;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+				}
 			}
-		};
+			if (!switched) {
+				logWarn(
+					`[${PLUGIN_NAME}] Live account sync path switch failed due to transient filesystem locks; keeping previous watcher.`,
+				);
+			}
+		}
+	};
 
 		const ensureRefreshGuardian = (
 			pluginConfig: ReturnType<typeof loadPluginConfig>,
@@ -1009,8 +1027,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					`[${PLUGIN_NAME}] Auth is missing multiAccount marker; continuing with single-account compatibility mode`,
 				);
 			}
-			await ensureLiveAccountSync(pluginConfig, auth);
-
 				// Acquire mutex for thread-safe initialization
 				// Use while loop to handle multiple concurrent waiters correctly
 				while (loaderMutex) {
@@ -1022,6 +1038,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					resolveMutex = resolve;
 				});
 				try {
+					await ensureLiveAccountSync(pluginConfig, auth);
 					if (!accountManagerPromise) {
 						await reloadAccountManagerFromDisk(auth as OAuthAuthDetails);
 					}

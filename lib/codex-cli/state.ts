@@ -35,6 +35,7 @@ export interface CodexCliState {
 
 let cache: CodexCliState | null = null;
 let cacheLoadedAt = 0;
+let inFlightLoadPromise: Promise<CodexCliState | null> | null = null;
 const emittedWarnings = new Set<string>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -355,116 +356,132 @@ export async function loadCodexCliState(
 	if (!options?.forceRefresh && cache && now - cacheLoadedAt < CACHE_TTL_MS) {
 		return cache;
 	}
-
-	const accountsPath = getCodexCliAccountsPath();
-	const authPath = getCodexCliAuthPath();
-	incrementCodexCliMetric("readAttempts");
-	cacheLoadedAt = now;
-
-	const hasAccountsPath = existsSync(accountsPath);
-	const hasAuthPath = existsSync(authPath);
-	if (!hasAccountsPath && !hasAuthPath) {
-		incrementCodexCliMetric("readMisses");
-		cache = null;
-		return null;
+	if (inFlightLoadPromise) {
+		return inFlightLoadPromise;
 	}
 
-	try {
-		if (hasAccountsPath) {
-			try {
-				const raw = await fs.readFile(accountsPath, "utf-8");
-				const parsed = JSON.parse(raw) as unknown;
-				let sourceUpdatedAtMs: number | undefined;
+	const readTask = async (): Promise<CodexCliState | null> => {
+		const accountsPath = getCodexCliAccountsPath();
+		const authPath = getCodexCliAuthPath();
+		incrementCodexCliMetric("readAttempts");
+
+		const hasAccountsPath = existsSync(accountsPath);
+		const hasAuthPath = existsSync(authPath);
+		if (!hasAccountsPath && !hasAuthPath) {
+			incrementCodexCliMetric("readMisses");
+			cache = null;
+			return null;
+		}
+
+		try {
+			if (hasAccountsPath) {
 				try {
-					sourceUpdatedAtMs = (await fs.stat(accountsPath)).mtimeMs;
-				} catch {
-					sourceUpdatedAtMs = undefined;
-				}
-				const state = parseCodexCliState(accountsPath, parsed, sourceUpdatedAtMs);
-				if (state) {
-					incrementCodexCliMetric("readSuccesses");
-					log.debug("Loaded Codex CLI state", {
+					const raw = await fs.readFile(accountsPath, "utf-8");
+					const parsed = JSON.parse(raw) as unknown;
+					let sourceUpdatedAtMs: number | undefined;
+					try {
+						sourceUpdatedAtMs = (await fs.stat(accountsPath)).mtimeMs;
+					} catch {
+						sourceUpdatedAtMs = undefined;
+					}
+					const state = parseCodexCliState(accountsPath, parsed, sourceUpdatedAtMs);
+					if (state) {
+						incrementCodexCliMetric("readSuccesses");
+						log.debug("Loaded Codex CLI state", {
+							operation: "read-state",
+							outcome: "success",
+							path: accountsPath,
+							accountCount: state.accounts.length,
+							activeAccountRef: makeAccountFingerprint({
+								accountId: state.activeAccountId,
+								email: state.activeEmail,
+							}),
+						});
+						cache = state;
+						return state;
+					}
+					log.warn("Codex CLI accounts payload is malformed", {
 						operation: "read-state",
-						outcome: "success",
+						outcome: "malformed",
 						path: accountsPath,
-						accountCount: state.accounts.length,
-						activeAccountRef: makeAccountFingerprint({
-							accountId: state.activeAccountId,
-							email: state.activeEmail,
-						}),
 					});
-					cache = state;
-					return state;
-				}
-				log.warn("Codex CLI accounts payload is malformed", {
-					operation: "read-state",
-					outcome: "malformed",
-					path: accountsPath,
-				});
-			} catch (accountsError) {
-				log.warn("Failed to read Codex CLI accounts state", {
-					operation: "read-state",
-					outcome: "accounts-read-error",
-					path: accountsPath,
-					error: String(accountsError),
-				});
-			}
-		}
-
-		if (hasAuthPath) {
-			try {
-				const raw = await fs.readFile(authPath, "utf-8");
-				const parsed = JSON.parse(raw) as unknown;
-				let sourceUpdatedAtMs: number | undefined;
-				try {
-					sourceUpdatedAtMs = (await fs.stat(authPath)).mtimeMs;
-				} catch {
-					sourceUpdatedAtMs = undefined;
-				}
-				const state = parseCodexCliAuthState(authPath, parsed, sourceUpdatedAtMs);
-				if (state) {
-					incrementCodexCliMetric("readSuccesses");
-					log.debug("Loaded Codex CLI auth state", {
+				} catch (accountsError) {
+					log.warn("Failed to read Codex CLI accounts state", {
 						operation: "read-state",
-						outcome: "success",
-						path: authPath,
-						accountCount: state.accounts.length,
-						activeAccountRef: makeAccountFingerprint({
-							accountId: state.activeAccountId,
-							email: state.activeEmail,
-						}),
+						outcome: "accounts-read-error",
+						path: accountsPath,
+						error: String(accountsError),
 					});
-					cache = state;
-					return state;
 				}
-				log.warn("Codex CLI auth payload is malformed", {
-					operation: "read-state",
-					outcome: "malformed",
-					path: authPath,
-				});
-			} catch (authError) {
-				log.warn("Failed to read Codex CLI auth state", {
-					operation: "read-state",
-					outcome: "auth-read-error",
-					path: authPath,
-					error: String(authError),
-				});
 			}
-		}
 
-		incrementCodexCliMetric("readFailures");
-		cache = null;
-		return null;
-	} catch (error) {
-		incrementCodexCliMetric("readFailures");
-		log.warn("Failed to read Codex CLI state", {
-			operation: "read-state",
-			outcome: "error",
-			path: hasAccountsPath ? accountsPath : authPath,
-			error: String(error),
-		});
-		cache = null;
-		return null;
+			if (hasAuthPath) {
+				try {
+					const raw = await fs.readFile(authPath, "utf-8");
+					const parsed = JSON.parse(raw) as unknown;
+					let sourceUpdatedAtMs: number | undefined;
+					try {
+						sourceUpdatedAtMs = (await fs.stat(authPath)).mtimeMs;
+					} catch {
+						sourceUpdatedAtMs = undefined;
+					}
+					const state = parseCodexCliAuthState(authPath, parsed, sourceUpdatedAtMs);
+					if (state) {
+						incrementCodexCliMetric("readSuccesses");
+						log.debug("Loaded Codex CLI auth state", {
+							operation: "read-state",
+							outcome: "success",
+							path: authPath,
+							accountCount: state.accounts.length,
+							activeAccountRef: makeAccountFingerprint({
+								accountId: state.activeAccountId,
+								email: state.activeEmail,
+							}),
+						});
+						cache = state;
+						return state;
+					}
+					log.warn("Codex CLI auth payload is malformed", {
+						operation: "read-state",
+						outcome: "malformed",
+						path: authPath,
+					});
+				} catch (authError) {
+					log.warn("Failed to read Codex CLI auth state", {
+						operation: "read-state",
+						outcome: "auth-read-error",
+						path: authPath,
+						error: String(authError),
+					});
+				}
+			}
+
+			incrementCodexCliMetric("readFailures");
+			cache = null;
+			return null;
+		} catch (error) {
+			incrementCodexCliMetric("readFailures");
+			log.warn("Failed to read Codex CLI state", {
+				operation: "read-state",
+				outcome: "error",
+				path: hasAccountsPath ? accountsPath : authPath,
+				error: String(error),
+			});
+			cache = null;
+			return null;
+		} finally {
+			cacheLoadedAt = Date.now();
+		}
+	};
+
+	const currentLoad = readTask();
+	inFlightLoadPromise = currentLoad;
+	try {
+		return await currentLoad;
+	} finally {
+		if (inFlightLoadPromise === currentLoad) {
+			inFlightLoadPromise = null;
+		}
 	}
 }
 
@@ -491,6 +508,7 @@ export async function lookupCodexCliTokensByEmail(
 export function clearCodexCliStateCache(): void {
 	cache = null;
 	cacheLoadedAt = 0;
+	inFlightLoadPromise = null;
 }
 
 export function __resetCodexCliWarningCacheForTests(): void {

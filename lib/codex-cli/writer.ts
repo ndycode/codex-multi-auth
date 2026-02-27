@@ -14,6 +14,7 @@ import {
 
 const log = createLogger("codex-cli-writer");
 let lastCodexCliSelectionWriteAt = 0;
+let activeSelectionWriteQueue: Promise<void> = Promise.resolve();
 
 interface ActiveSelection {
 	accountId?: string;
@@ -241,173 +242,196 @@ async function writeCodexAuthState(
 	return true;
 }
 
+async function enqueueActiveSelectionWrite<T>(task: () => Promise<T>): Promise<T> {
+	let releaseQueue!: () => void;
+	const queueTail = new Promise<void>((resolve) => {
+		releaseQueue = resolve;
+	});
+	const previous = activeSelectionWriteQueue;
+	activeSelectionWriteQueue = previous
+		.catch(() => {
+			// Keep queue alive even if a previous task failed.
+		})
+		.then(() => queueTail);
+	await previous.catch(() => {
+		// Ignore previous failure, current task still runs.
+	});
+	try {
+		return await task();
+	} finally {
+		releaseQueue();
+	}
+}
+
 export async function setCodexCliActiveSelection(
 	selection: ActiveSelection,
 ): Promise<boolean> {
-	if (!isCodexCliSyncEnabled()) return false;
+	return enqueueActiveSelectionWrite(async () => {
+		if (!isCodexCliSyncEnabled()) return false;
 
-	incrementCodexCliMetric("writeAttempts");
-	const accountsPath = getCodexCliAccountsPath();
-	const authPath = getCodexCliAuthPath();
-	const hasAccountsPath = existsSync(accountsPath);
-	const hasAuthPath = existsSync(authPath);
+		incrementCodexCliMetric("writeAttempts");
+		const accountsPath = getCodexCliAccountsPath();
+		const authPath = getCodexCliAuthPath();
+		const hasAccountsPath = existsSync(accountsPath);
+		const hasAuthPath = existsSync(authPath);
 
-	if (!hasAccountsPath && !hasAuthPath) {
-		incrementCodexCliMetric("writeFailures");
-		return false;
-	}
+		if (!hasAccountsPath && !hasAuthPath) {
+			incrementCodexCliMetric("writeFailures");
+			return false;
+		}
 
-	try {
-		let resolvedSelection: ActiveSelection = { ...selection };
-		let wroteAccounts = false;
-		let wroteAuth = false;
+		try {
+			let resolvedSelection: ActiveSelection = { ...selection };
+			let wroteAccounts = false;
+			let wroteAuth = false;
 
-		if (hasAccountsPath) {
-			const raw = await fs.readFile(accountsPath, "utf-8");
-			const parsed = JSON.parse(raw) as unknown;
-			if (!isRecord(parsed) || !Array.isArray(parsed.accounts)) {
-				log.warn("Failed to persist Codex CLI active selection", {
-					operation: "write-active-selection",
-					outcome: "malformed",
-					path: accountsPath,
-				});
-			} else {
-				const matchIndex = resolveMatchIndex(parsed.accounts, selection);
-				if (matchIndex < 0) {
-					const hasSelectionTokens =
-						typeof selection.accessToken === "string" &&
-						selection.accessToken.trim().length > 0 &&
-						typeof selection.refreshToken === "string" &&
-						selection.refreshToken.trim().length > 0;
+			if (hasAccountsPath) {
+				const raw = await fs.readFile(accountsPath, "utf-8");
+				const parsed = JSON.parse(raw) as unknown;
+				if (!isRecord(parsed) || !Array.isArray(parsed.accounts)) {
 					log.warn("Failed to persist Codex CLI active selection", {
 						operation: "write-active-selection",
-						outcome: "no-match",
+						outcome: "malformed",
 						path: accountsPath,
-						accountRef: makeAccountFingerprint({
-							accountId: selection.accountId,
-							email: selection.email,
-						}),
 					});
-					if (!hasAuthPath || !hasSelectionTokens) {
-						incrementCodexCliMetric("writeFailures");
-						return false;
-					}
 				} else {
-					const chosen = parsed.accounts[matchIndex];
-					if (!isRecord(chosen)) {
+					const matchIndex = resolveMatchIndex(parsed.accounts, selection);
+					if (matchIndex < 0) {
+						const hasSelectionTokens =
+							typeof selection.accessToken === "string" &&
+							selection.accessToken.trim().length > 0 &&
+							typeof selection.refreshToken === "string" &&
+							selection.refreshToken.trim().length > 0;
 						log.warn("Failed to persist Codex CLI active selection", {
 							operation: "write-active-selection",
-							outcome: "invalid-account-record",
+							outcome: "no-match",
 							path: accountsPath,
+							accountRef: makeAccountFingerprint({
+								accountId: selection.accountId,
+								email: selection.email,
+							}),
 						});
-						if (!hasAuthPath) {
+						if (!hasAuthPath || !hasSelectionTokens) {
 							incrementCodexCliMetric("writeFailures");
 							return false;
 						}
 					} else {
-						const chosenSelection = extractSelectionFromAccountRecord(chosen);
-						resolvedSelection = {
-							...resolvedSelection,
-							accountId: resolvedSelection.accountId ?? chosenSelection.accountId,
-							email: resolvedSelection.email ?? chosenSelection.email,
-							accessToken: resolvedSelection.accessToken ?? chosenSelection.accessToken,
-							refreshToken: resolvedSelection.refreshToken ?? chosenSelection.refreshToken,
-							expiresAt: resolvedSelection.expiresAt ?? chosenSelection.expiresAt,
-							idToken: resolvedSelection.idToken ?? chosenSelection.idToken,
-						};
+						const chosen = parsed.accounts[matchIndex];
+						if (!isRecord(chosen)) {
+							log.warn("Failed to persist Codex CLI active selection", {
+								operation: "write-active-selection",
+								outcome: "invalid-account-record",
+								path: accountsPath,
+							});
+							if (!hasAuthPath) {
+								incrementCodexCliMetric("writeFailures");
+								return false;
+							}
+						} else {
+							const chosenSelection = extractSelectionFromAccountRecord(chosen);
+							resolvedSelection = {
+								...resolvedSelection,
+								accountId: resolvedSelection.accountId ?? chosenSelection.accountId,
+								email: resolvedSelection.email ?? chosenSelection.email,
+								accessToken: resolvedSelection.accessToken ?? chosenSelection.accessToken,
+								refreshToken: resolvedSelection.refreshToken ?? chosenSelection.refreshToken,
+								expiresAt: resolvedSelection.expiresAt ?? chosenSelection.expiresAt,
+								idToken: resolvedSelection.idToken ?? chosenSelection.idToken,
+							};
 
-						const next = { ...parsed };
-						const syncVersion = Date.now();
-						const chosenAccountId = readAccountId(chosen) ?? selection.accountId?.trim();
-						const chosenEmail = normalizeEmail(chosen.email) ?? normalizeEmail(selection.email);
+							const next = { ...parsed };
+							const syncVersion = Date.now();
+							const chosenAccountId = readAccountId(chosen) ?? selection.accountId?.trim();
+							const chosenEmail = normalizeEmail(chosen.email) ?? normalizeEmail(selection.email);
 
-						if (chosenAccountId) {
-							next.activeAccountId = chosenAccountId;
-							next.active_account_id = chosenAccountId;
+							if (chosenAccountId) {
+								next.activeAccountId = chosenAccountId;
+								next.active_account_id = chosenAccountId;
+							}
+							if (chosenEmail) {
+								next.activeEmail = chosenEmail;
+								next.active_email = chosenEmail;
+							}
+
+							next.accounts = parsed.accounts.map((entry, index) => {
+								if (!isRecord(entry)) return entry;
+								const updated = { ...entry };
+								updated.active = index === matchIndex;
+								updated.isActive = index === matchIndex;
+								updated.is_active = index === matchIndex;
+								return updated;
+							});
+							next.codexMultiAuthSyncVersion = syncVersion;
+
+							await atomicWriteJson(accountsPath, next);
+							lastCodexCliSelectionWriteAt = Math.max(lastCodexCliSelectionWriteAt, syncVersion);
+							wroteAccounts = true;
+							log.debug("Persisted Codex CLI accounts selection", {
+								operation: "write-active-selection",
+								outcome: "success",
+								path: accountsPath,
+								accountRef: makeAccountFingerprint({
+									accountId: chosenAccountId,
+									email: chosenEmail,
+								}),
+							});
 						}
-						if (chosenEmail) {
-							next.activeEmail = chosenEmail;
-							next.active_email = chosenEmail;
-						}
-
-						next.accounts = parsed.accounts.map((entry, index) => {
-							if (!isRecord(entry)) return entry;
-							const updated = { ...entry };
-							updated.active = index === matchIndex;
-							updated.isActive = index === matchIndex;
-							updated.is_active = index === matchIndex;
-							return updated;
-						});
-						next.codexMultiAuthSyncVersion = syncVersion;
-
-						await atomicWriteJson(accountsPath, next);
-						lastCodexCliSelectionWriteAt = Math.max(lastCodexCliSelectionWriteAt, syncVersion);
-						wroteAccounts = true;
-						log.debug("Persisted Codex CLI accounts selection", {
-							operation: "write-active-selection",
-							outcome: "success",
-							path: accountsPath,
-							accountRef: makeAccountFingerprint({
-								accountId: chosenAccountId,
-								email: chosenEmail,
-							}),
-						});
 					}
 				}
 			}
-		}
 
-		if (hasAuthPath) {
-			wroteAuth = await writeCodexAuthState(authPath, resolvedSelection);
-			if (!wroteAuth) {
-				if (!wroteAccounts) {
-					incrementCodexCliMetric("writeFailures");
-					return false;
+			if (hasAuthPath) {
+				wroteAuth = await writeCodexAuthState(authPath, resolvedSelection);
+				if (!wroteAuth) {
+					if (!wroteAccounts) {
+						incrementCodexCliMetric("writeFailures");
+						return false;
+					}
+					log.warn("Codex auth state update skipped after accounts selection update", {
+						operation: "write-active-selection",
+						outcome: "accounts-updated-auth-failed",
+						path: authPath,
+						accountRef: makeAccountFingerprint({
+							accountId: resolvedSelection.accountId,
+							email: resolvedSelection.email,
+						}),
+					});
+				} else {
+					log.debug("Persisted Codex auth active selection", {
+						operation: "write-active-selection",
+						outcome: "success",
+						path: authPath,
+						accountRef: makeAccountFingerprint({
+							accountId: resolvedSelection.accountId,
+							email: resolvedSelection.email,
+						}),
+					});
 				}
-				log.warn("Codex auth state update skipped after accounts selection update", {
-					operation: "write-active-selection",
-					outcome: "accounts-updated-auth-failed",
-					path: authPath,
-					accountRef: makeAccountFingerprint({
-						accountId: resolvedSelection.accountId,
-						email: resolvedSelection.email,
-					}),
-				});
-			} else {
-				log.debug("Persisted Codex auth active selection", {
-					operation: "write-active-selection",
-					outcome: "success",
-					path: authPath,
-					accountRef: makeAccountFingerprint({
-						accountId: resolvedSelection.accountId,
-						email: resolvedSelection.email,
-					}),
-				});
 			}
-		}
 
-		if (wroteAccounts || wroteAuth) {
-			clearCodexCliStateCache();
-			incrementCodexCliMetric("writeSuccesses");
-			return true;
-		}
+			if (wroteAccounts || wroteAuth) {
+				clearCodexCliStateCache();
+				incrementCodexCliMetric("writeSuccesses");
+				return true;
+			}
 
-		incrementCodexCliMetric("writeFailures");
-		return false;
-	} catch (error) {
-		incrementCodexCliMetric("writeFailures");
-		log.warn("Failed to persist Codex CLI active selection", {
-			operation: "write-active-selection",
-			outcome: "error",
-			path: hasAccountsPath ? accountsPath : authPath,
-			accountRef: makeAccountFingerprint({
-				accountId: selection.accountId,
-				email: selection.email,
-			}),
-			error: String(error),
-		});
-		return false;
-	}
+			incrementCodexCliMetric("writeFailures");
+			return false;
+		} catch (error) {
+			incrementCodexCliMetric("writeFailures");
+			log.warn("Failed to persist Codex CLI active selection", {
+				operation: "write-active-selection",
+				outcome: "error",
+				path: hasAccountsPath ? accountsPath : authPath,
+				accountRef: makeAccountFingerprint({
+					accountId: selection.accountId,
+					email: selection.email,
+				}),
+				error: String(error),
+			});
+			return false;
+		}
+	});
 }
 
 export function getLastCodexCliSelectionWriteTimestamp(): number {

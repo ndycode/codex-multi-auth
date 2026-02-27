@@ -178,6 +178,7 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 			return { byAccountId: {}, byEmail: {} };
 		}
 		if (parsed.version !== 1) {
+			logWarn(`Quota cache rejected due to version mismatch: ${String(parsed.version)}`);
 			return { byAccountId: {}, byEmail: {} };
 		}
 
@@ -224,7 +225,10 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 	try {
 		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
 		const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
 		let renamed = false;
 		try {
 			for (let attempt = 0; attempt < 5; attempt += 1) {

@@ -233,19 +233,21 @@ function readActiveFromSnapshots(
  */
 function shouldApplyCodexCliSelection(state: Awaited<ReturnType<typeof loadCodexCliState>>): boolean {
 	if (!state) return false;
-	const codexVersion =
-		typeof state.syncVersion === "number" && Number.isFinite(state.syncVersion)
-			? state.syncVersion
-			: typeof state.sourceUpdatedAtMs === "number" && Number.isFinite(state.sourceUpdatedAtMs)
-				? state.sourceUpdatedAtMs
-				: 0;
+	const hasSyncVersion =
+		typeof state.syncVersion === "number" && Number.isFinite(state.syncVersion);
+	const codexVersion = hasSyncVersion
+		? (state.syncVersion as number)
+		: typeof state.sourceUpdatedAtMs === "number" && Number.isFinite(state.sourceUpdatedAtMs)
+			? state.sourceUpdatedAtMs
+			: 0;
 	const localVersion = Math.max(
 		getLastAccountsSaveTimestamp(),
 		getLastCodexCliSelectionWriteTimestamp(),
 	);
 	if (codexVersion <= 0 || localVersion <= 0) return true;
 	// Keep local selection when plugin wrote more recently than Codex state.
-	return codexVersion >= localVersion - 1_000;
+	const toleranceMs = hasSyncVersion ? 0 : 1_000;
+	return codexVersion >= localVersion - toleranceMs;
 }
 
 /**

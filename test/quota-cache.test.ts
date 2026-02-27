@@ -78,4 +78,76 @@ describe("quota cache", () => {
 		const loaded = await loadQuotaCache();
 		expect(loaded).toEqual({ byAccountId: {}, byEmail: {} });
 	});
+
+	it.each(["EBUSY", "EPERM"] as const)(
+		"retries atomic rename on transient %s errors",
+		async (code) => {
+			const { saveQuotaCache, loadQuotaCache } = await import("../lib/quota-cache.js");
+			const realRename = fs.rename;
+			const renameSpy = vi.spyOn(fs, "rename");
+			let attempts = 0;
+			renameSpy.mockImplementation(async (...args) => {
+				attempts += 1;
+				if (attempts < 3) {
+					const error = new Error(`rename failed: ${code}`) as NodeJS.ErrnoException;
+					error.code = code;
+					throw error;
+				}
+				return realRename(...args);
+			});
+
+			try {
+				await saveQuotaCache({
+					byAccountId: {
+						acc_1: {
+							updatedAt: Date.now(),
+							status: 200,
+							model: "gpt-5-codex",
+							primary: { usedPercent: 40, windowMinutes: 300 },
+							secondary: { usedPercent: 20, windowMinutes: 10080 },
+						},
+					},
+					byEmail: {},
+				});
+				const loaded = await loadQuotaCache();
+				expect(loaded.byAccountId.acc_1?.model).toBe("gpt-5-codex");
+				expect(attempts).toBe(3);
+			} finally {
+				renameSpy.mockRestore();
+			}
+		},
+	);
+
+	it("cleans up temp files when rename keeps failing", async () => {
+		const { saveQuotaCache } = await import("../lib/quota-cache.js");
+		const renameSpy = vi.spyOn(fs, "rename");
+		const unlinkSpy = vi.spyOn(fs, "unlink");
+		renameSpy.mockImplementation(async () => {
+			const error = new Error("locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			throw error;
+		});
+
+		try {
+			await saveQuotaCache({
+				byAccountId: {
+					acc_1: {
+						updatedAt: Date.now(),
+						status: 200,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 40, windowMinutes: 300 },
+						secondary: { usedPercent: 20, windowMinutes: 10080 },
+					},
+				},
+				byEmail: {},
+			});
+
+			expect(unlinkSpy).toHaveBeenCalledTimes(1);
+			const entries = await fs.readdir(tempDir);
+			expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
+		} finally {
+			unlinkSpy.mockRestore();
+			renameSpy.mockRestore();
+		}
+	});
 });

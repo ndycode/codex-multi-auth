@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
+import { sleep } from "./utils.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -16,14 +17,11 @@ export const UNIFIED_SETTINGS_VERSION = 1 as const;
 
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+let settingsWriteQueue: Promise<void> = Promise.resolve();
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -204,6 +202,15 @@ async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
 	}
 }
 
+async function enqueueSettingsWrite<T>(task: () => Promise<T>): Promise<T> {
+	const run = settingsWriteQueue.catch(() => {}).then(task);
+	settingsWriteQueue = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	return run;
+}
+
 /**
  * Get the absolute filesystem path to the unified settings JSON file used for multi-auth plugins.
  *
@@ -251,14 +258,19 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
 /**
  * Persist the provided plugin configuration to the unified settings file, replacing the `pluginConfig` section.
  *
- * Writes a shallow clone of `pluginConfig` into the on-disk settings payload. Callers must serialize concurrent calls to avoid lost updates — concurrent writers may overwrite each other; no cross-process locking is provided. On Windows, filesystem atomicity and visibility semantics are platform-dependent; do not assume atomic merges across processes. The settings file is written as plain JSON; redact or remove any sensitive tokens or secrets before calling.
+ * Writes a shallow clone of `pluginConfig` into the on-disk settings payload. In-process calls are serialized
+ * through an async queue to reduce lost-update races, but there is still no cross-process locking. On Windows,
+ * filesystem atomicity and visibility semantics are platform-dependent; do not assume atomic merges across processes.
+ * The settings file is written as plain JSON; redact or remove any sensitive tokens or secrets before calling.
  *
  * @param pluginConfig - The plugin configuration object to store (will be shallow-cloned)
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
-	const record = await readSettingsRecordAsync() ?? {};
-	record.pluginConfig = { ...pluginConfig };
-	await writeSettingsRecordAsync(record);
+	await enqueueSettingsWrite(async () => {
+		const record = await readSettingsRecordAsync() ?? {};
+		record.pluginConfig = { ...pluginConfig };
+		await writeSettingsRecordAsync(record);
+	});
 }
 
 /**
@@ -281,8 +293,9 @@ export async function loadUnifiedDashboardSettings(): Promise<JsonRecord | null>
  *
  * Writes `dashboardDisplaySettings` into the shared settings.json (overwriting
  * any existing dashboardDisplaySettings section) and ensures the payload is
- * normalized with the file version. Concurrent callers may race: the last
- * writer wins. On Windows, path and directory creation follow Node's filesystem
+ * normalized with the file version. In-process async callers are serialized
+ * through an internal queue (last writer still wins), but no cross-process lock
+ * is provided. On Windows, path and directory creation follow Node's filesystem
  * semantics (case-insensitive paths, ACLs apply). Sensitive tokens or secrets
  * included in `dashboardDisplaySettings` are written verbatim — callers must
  * redact or omit secrets before calling.
@@ -292,7 +305,9 @@ export async function loadUnifiedDashboardSettings(): Promise<JsonRecord | null>
 export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
-	const record = await readSettingsRecordAsync() ?? {};
-	record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
-	await writeSettingsRecordAsync(record);
+	await enqueueSettingsWrite(async () => {
+		const record = await readSettingsRecordAsync() ?? {};
+		record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
+		await writeSettingsRecordAsync(record);
+	});
 }

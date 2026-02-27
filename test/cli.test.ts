@@ -206,7 +206,7 @@ describe("CLI Module", () => {
     it("re-prompts on invalid input then accepts valid", async () => {
       mockRl.question
         .mockResolvedValueOnce("invalid")
-        .mockResolvedValueOnce("z")
+        .mockResolvedValueOnce("zzz")
         .mockResolvedValueOnce("a");
       
       const { promptLoginMode } = await import("../lib/cli.js");
