@@ -60,12 +60,12 @@ function readSettingsRecordSync(): JsonRecord | null {
 		return null;
 	}
 
-	try {
-		const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
-		return cloneRecord(JSON.parse(raw));
-	} catch {
-		return null;
+	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
+	const parsed = cloneRecord(JSON.parse(raw));
+	if (!parsed) {
+		throw new Error("Unified settings must contain a JSON object at the root.");
 	}
+	return parsed;
 }
 
 /**
@@ -80,12 +80,12 @@ async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
 		return null;
 	}
 
-	try {
-		const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
-		return cloneRecord(JSON.parse(raw));
-	} catch {
-		return null;
+	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	const parsed = cloneRecord(JSON.parse(raw));
+	if (!parsed) {
+		throw new Error("Unified settings must contain a JSON object at the root.");
 	}
+	return parsed;
 }
 
 /**
@@ -232,9 +232,13 @@ export function getUnifiedSettingsPath(): string {
  * @returns A shallow clone of the `pluginConfig` object from the settings file, or `null` if unavailable.
  */
 export function loadUnifiedPluginConfigSync(): JsonRecord | null {
-	const record = readSettingsRecordSync();
-	if (!record) return null;
-	return cloneRecord(record.pluginConfig);
+	try {
+		const record = readSettingsRecordSync();
+		if (!record) return null;
+		return cloneRecord(record.pluginConfig);
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -283,9 +287,13 @@ export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise
  * @returns A cloned `JsonRecord` with the `dashboardDisplaySettings` section, or `null` if the settings file is missing or cannot be parsed.
  */
 export async function loadUnifiedDashboardSettings(): Promise<JsonRecord | null> {
-	const record = await readSettingsRecordAsync();
-	if (!record) return null;
-	return cloneRecord(record.dashboardDisplaySettings);
+	try {
+		const record = await readSettingsRecordAsync();
+		if (!record) return null;
+		return cloneRecord(record.dashboardDisplaySettings);
+	} catch {
+		return null;
+	}
 }
 
 /**

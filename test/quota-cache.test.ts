@@ -79,6 +79,50 @@ describe("quota cache", () => {
 		expect(loaded).toEqual({ byAccountId: {}, byEmail: {} });
 	});
 
+	it("retries transient EBUSY while loading cache", async () => {
+		const { loadQuotaCache, getQuotaCachePath } = await import("../lib/quota-cache.js");
+		await fs.writeFile(
+			getQuotaCachePath(),
+			JSON.stringify({
+				version: 1,
+				byAccountId: {
+					acc_1: {
+						updatedAt: Date.now(),
+						status: 200,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 10 },
+						secondary: { usedPercent: 5 },
+					},
+				},
+				byEmail: {},
+			}),
+			"utf8",
+		);
+
+		const realRead = fs.readFile.bind(fs);
+		let attempts = 0;
+		const readSpy = vi.spyOn(fs, "readFile");
+		readSpy.mockImplementation(async (...args) => {
+			if (String(args[0]) === getQuotaCachePath()) {
+				attempts += 1;
+				if (attempts === 1) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+			}
+			return realRead(...args);
+		});
+
+		try {
+			const loaded = await loadQuotaCache();
+			expect(loaded.byAccountId.acc_1?.model).toBe("gpt-5-codex");
+			expect(attempts).toBe(2);
+		} finally {
+			readSpy.mockRestore();
+		}
+	});
+
 	it.each(["EBUSY", "EPERM"] as const)(
 		"retries atomic rename on transient %s errors",
 		async (code) => {
@@ -148,6 +192,40 @@ describe("quota cache", () => {
 		} finally {
 			unlinkSpy.mockRestore();
 			renameSpy.mockRestore();
+		}
+	});
+
+	it("logs sanitized cache filename for load/save failures", async () => {
+		vi.resetModules();
+		const warnMock = vi.fn();
+		vi.doMock("../lib/logger.js", () => ({
+			logWarn: warnMock,
+		}));
+		try {
+			const { getQuotaCachePath, loadQuotaCache, saveQuotaCache } = await import(
+				"../lib/quota-cache.js"
+			);
+			await fs.writeFile(getQuotaCachePath(), "{}", "utf8");
+
+			const readSpy = vi.spyOn(fs, "readFile");
+			readSpy.mockRejectedValueOnce(new Error("read failed"));
+			await loadQuotaCache();
+			readSpy.mockRestore();
+
+			const renameSpy = vi.spyOn(fs, "rename");
+			renameSpy.mockImplementation(async () => {
+				const error = new Error("rename failed") as NodeJS.ErrnoException;
+				error.code = "EIO";
+				throw error;
+			});
+			await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+			renameSpy.mockRestore();
+
+			const logMessages = warnMock.mock.calls.map((args) => String(args[0]));
+			expect(logMessages.some((message) => message.includes("quota-cache.json"))).toBe(true);
+			expect(logMessages.some((message) => message.includes(tempDir))).toBe(false);
+		} finally {
+			vi.doUnmock("../lib/logger.js");
 		}
 	});
 });

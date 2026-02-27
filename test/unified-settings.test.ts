@@ -87,4 +87,58 @@ describe("unified settings", () => {
 		const raw = await fs.readFile(getUnifiedSettingsPath(), "utf8");
 		expect(() => JSON.parse(raw)).not.toThrow();
 	});
+
+	it("keeps both sections after concurrent plugin/dashboard writes", async () => {
+		const {
+			saveUnifiedPluginConfig,
+			saveUnifiedDashboardSettings,
+			loadUnifiedPluginConfigSync,
+			loadUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await Promise.all([
+			saveUnifiedPluginConfig({ codexMode: true, retries: 3 }),
+			saveUnifiedDashboardSettings({ menuShowLastUsed: false, uiThemePreset: "green" }),
+		]);
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 3 });
+		expect(await loadUnifiedDashboardSettings()).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "green",
+		});
+	});
+
+	it("refuses overwriting settings sections when a read fails", async () => {
+		const {
+			saveUnifiedPluginConfig,
+			saveUnifiedDashboardSettings,
+			getUnifiedSettingsPath,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 70_000 });
+		await saveUnifiedDashboardSettings({ menuShowLastUsed: false, uiThemePreset: "blue" });
+
+		const readSpy = vi.spyOn(fs, "readFile");
+		readSpy.mockImplementationOnce(async () => {
+			const error = new Error("file locked") as NodeJS.ErrnoException;
+			error.code = "EBUSY";
+			throw error;
+		});
+
+		await expect(
+			saveUnifiedDashboardSettings({ menuShowLastUsed: true, uiThemePreset: "yellow" }),
+		).rejects.toThrow();
+		readSpy.mockRestore();
+
+		const raw = await fs.readFile(getUnifiedSettingsPath(), "utf8");
+		const parsed = JSON.parse(raw) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+		};
+		expect(parsed.pluginConfig).toEqual({ codexMode: true, fetchTimeoutMs: 70_000 });
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+	});
 });

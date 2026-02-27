@@ -299,6 +299,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		rateLimitedResponses: number;
 		serverErrors: number;
 		networkErrors: number;
+		userAborts: number;
 		authRefreshFailures: number;
 		emptyResponseRetries: number;
 		accountRotations: number;
@@ -319,6 +320,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		rateLimitedResponses: 0,
 		serverErrors: 0,
 		networkErrors: 0,
+		userAborts: 0,
 		authRefreshFailures: 0,
 		emptyResponseRetries: 0,
 		accountRotations: 0,
@@ -1618,7 +1620,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									abortSignal.addEventListener("abort", onUserAbort, { once: true });
 								}
 
-								try {
+							try {
 								runtimeMetrics.totalRequests++;
 								response = await fetch(url, {
 									...requestInit,
@@ -1626,6 +1628,16 @@ while (attempted.size < Math.max(1, accountCount)) {
 									signal: fetchController.signal,
 								});
 				} catch (networkError) {
+								const isUserAbort =
+									abortSignal?.aborted ||
+									(networkError instanceof Error &&
+										(networkError.name === "AbortError" || /abort/i.test(networkError.message)));
+								if (isUserAbort) {
+									runtimeMetrics.userAborts++;
+									runtimeMetrics.lastError = "request aborted by user";
+									sessionAffinityStore?.forgetSession(sessionAffinityKey);
+									break;
+								}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
 								runtimeMetrics.failedRequests++;
@@ -3699,6 +3711,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						`Rate-limited responses: ${runtimeMetrics.rateLimitedResponses}`,
 						`Server errors (5xx): ${runtimeMetrics.serverErrors}`,
 						`Network errors: ${runtimeMetrics.networkErrors}`,
+						`User aborts: ${runtimeMetrics.userAborts}`,
 						`Auth refresh failures: ${runtimeMetrics.authRefreshFailures}`,
 						`Account rotations: ${runtimeMetrics.accountRotations}`,
 						`Same-account retries: ${runtimeMetrics.sameAccountRetries}`,
@@ -3728,6 +3741,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							formatUiKeyValue(ui, "Rate-limited responses", String(runtimeMetrics.rateLimitedResponses), "warning"),
 							formatUiKeyValue(ui, "Server errors (5xx)", String(runtimeMetrics.serverErrors), "danger"),
 							formatUiKeyValue(ui, "Network errors", String(runtimeMetrics.networkErrors), "danger"),
+							formatUiKeyValue(ui, "User aborts", String(runtimeMetrics.userAborts), "muted"),
 							formatUiKeyValue(ui, "Auth refresh failures", String(runtimeMetrics.authRefreshFailures), "warning"),
 							formatUiKeyValue(ui, "Account rotations", String(runtimeMetrics.accountRotations), "accent"),
 							formatUiKeyValue(ui, "Same-account retries", String(runtimeMetrics.sameAccountRetries), "warning"),

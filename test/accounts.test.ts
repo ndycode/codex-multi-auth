@@ -263,6 +263,39 @@ describe("AccountManager", () => {
     expect(manager.isAccountAvailableForFamily(3, "codex")).toBe(true);
   });
 
+  it("returns false for invalid account index in availability checks", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+    };
+    const manager = new AccountManager(undefined, stored);
+    expect(manager.isAccountAvailableForFamily(-1, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(99, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(Number.NaN, "codex")).toBe(false);
+  });
+
+  it("clears expired rate-limit windows before availability check", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "token-1",
+          addedAt: now,
+          lastUsed: now,
+          rateLimitResetTimes: { codex: now - 1_000 },
+        },
+      ],
+    };
+    const manager = new AccountManager(undefined, stored);
+    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(true);
+    const account = manager.getAccountByIndex(0);
+    expect(account?.rateLimitResetTimes?.codex).toBeUndefined();
+  });
+
   it("rotates when the active account is rate-limited", () => {
     const now = Date.now();
     const stored = {

@@ -91,6 +91,9 @@ describe("auth browser utilities", () => {
 				expect.arrayContaining([expect.stringContaining("Start-Process")]),
 				{ stdio: "ignore" },
 			);
+			const args = mockedSpawn.mock.calls.at(-1)?.[1] as string[] | undefined;
+			expect(args).toEqual(expect.arrayContaining(["-NoLogo", "-NoProfile", "-Command"]));
+			expect(args?.join(" ")).toContain('Start-Process "https://example.com/`$var"');
 		});
 
 		it("returns false when opener binary is non-executable on linux", () => {
@@ -165,6 +168,9 @@ describe("auth browser utilities", () => {
 				expect.arrayContaining([expect.stringContaining("Set-Clipboard")]),
 				{ stdio: "ignore" },
 			);
+			const args = mockedSpawn.mock.calls.at(-1)?.[1] as string[] | undefined;
+			expect(args).toEqual(expect.arrayContaining(["-NoLogo", "-NoProfile", "-Command"]));
+			expect(args?.join(" ")).toContain('Set-Clipboard -Value "hello`$world"');
 		});
 
 		it("uses pbcopy on darwin", () => {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { decodeJWT } from "../auth/auth.js";
 import { extractAccountEmail, extractAccountId } from "../auth/token-utils.js";
 import { createLogger } from "../logger.js";
+import { sleep } from "../utils.js";
 import {
 	incrementCodexCliMetric,
 	makeAccountFingerprint,
@@ -11,6 +12,7 @@ import {
 
 const log = createLogger("codex-cli-state");
 const CACHE_TTL_MS = 5_000;
+const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 
 export interface CodexCliTokenCacheEntry {
 	accessToken: string;
@@ -37,6 +39,27 @@ let cache: CodexCliState | null = null;
 let cacheLoadedAt = 0;
 let inFlightLoadPromise: Promise<CodexCliState | null> | null = null;
 const emittedWarnings = new Set<string>();
+
+function isRetryableFsError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+async function retryFsOperation<T>(task: () => Promise<T>, attempts = 4): Promise<T> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < attempts; attempt += 1) {
+		try {
+			return await task();
+		} catch (error) {
+			lastError = error;
+			if (!isRetryableFsError(error) || attempt >= attempts - 1) {
+				throw error;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error("filesystem retry exhausted");
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -376,11 +399,11 @@ export async function loadCodexCliState(
 		try {
 			if (hasAccountsPath) {
 				try {
-					const raw = await fs.readFile(accountsPath, "utf-8");
+					const raw = await retryFsOperation(() => fs.readFile(accountsPath, "utf-8"));
 					const parsed = JSON.parse(raw) as unknown;
 					let sourceUpdatedAtMs: number | undefined;
 					try {
-						sourceUpdatedAtMs = (await fs.stat(accountsPath)).mtimeMs;
+						sourceUpdatedAtMs = (await retryFsOperation(() => fs.stat(accountsPath))).mtimeMs;
 					} catch {
 						sourceUpdatedAtMs = undefined;
 					}
@@ -417,11 +440,11 @@ export async function loadCodexCliState(
 
 			if (hasAuthPath) {
 				try {
-					const raw = await fs.readFile(authPath, "utf-8");
+					const raw = await retryFsOperation(() => fs.readFile(authPath, "utf-8"));
 					const parsed = JSON.parse(raw) as unknown;
 					let sourceUpdatedAtMs: number | undefined;
 					try {
-						sourceUpdatedAtMs = (await fs.stat(authPath)).mtimeMs;
+						sourceUpdatedAtMs = (await retryFsOperation(() => fs.stat(authPath))).mtimeMs;
 					} catch {
 						sourceUpdatedAtMs = undefined;
 					}
