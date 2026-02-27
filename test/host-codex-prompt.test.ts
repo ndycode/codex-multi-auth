@@ -198,13 +198,49 @@ describe("host-codex-prompt", () => {
       const first = await getHostCodexPrompt();
       
       expect(first).toBe("Old cached content");
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await vi.waitFor(() =>
+        expect(writeFile).toHaveBeenCalledWith(
+          expect.stringContaining("host-codex-prompt.txt"),
+          "New content",
+          "utf-8"
+        )
+      );
       const second = await getHostCodexPrompt();
       expect(second).toBe("New content");
-      expect(writeFile).toHaveBeenCalledWith(
-        expect.stringContaining("host-codex-prompt.txt"),
-        "New content",
-        "utf-8"
+    });
+
+    it("deduplicates stale refresh calls when requested concurrently", async () => {
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
+
+      const staleMeta = JSON.stringify({
+        etag: '"old-etag"',
+        lastChecked: Date.now() - 20 * 60 * 1000,
+      });
+      vi.mocked(readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).includes("host-codex-prompt-meta.json")) {
+          return staleMeta;
+        }
+        return "Old cached content";
+      });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve("New content"),
+        headers: new Map([["etag", '"new-etag"']]),
+      });
+
+      const [first, second] = await Promise.all([getHostCodexPrompt(), getHostCodexPrompt()]);
+      expect(first).toBe("Old cached content");
+      expect(["Old cached content", "New content"]).toContain(second);
+
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(writeFile).toHaveBeenCalledWith(
+          expect.stringContaining("host-codex-prompt.txt"),
+          "New content",
+          "utf-8"
+        )
       );
     });
 

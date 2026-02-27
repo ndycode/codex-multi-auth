@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { existsSync } from "node:fs";
 import { readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
@@ -11,15 +9,15 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const localConfigPaths = [join(repoRoot, ".codex.json"), join(repoRoot, "Codex.json")];
 const scenarioTemplates = {
-	legacy: join(repoRoot, "config", "Codex-legacy.json"),
-	modern: join(repoRoot, "config", "Codex-modern.json"),
+	legacy: join(repoRoot, "config", "codex-legacy.json"),
+	modern: join(repoRoot, "config", "codex-modern.json"),
 };
 
 const defaultPromptPrefix = "Reply exactly:";
 const modelProviderId = "openai";
 const pluginPackageName = "codex-multi-auth";
 
-function resolveCodexExecutable() {
+export function resolveCodexExecutable() {
 	const envOverride = process.env.CODEX_BIN;
 	if (envOverride && envOverride.trim().length > 0) {
 		const command = envOverride.trim();
@@ -34,10 +32,10 @@ function resolveCodexExecutable() {
 		encoding: "utf8",
 		windowsHide: true,
 	});
-	const candidates = `${whereResult.stdout ?? ""}\n${whereResult.stderr ?? ""}`
+	const candidates = `${whereResult.stdout ?? ""}`
 		.split(/\r?\n/)
 		.map((line) => line.trim())
-		.filter(Boolean);
+		.filter((line) => /^[A-Za-z]:\\.+\.(exe|cmd)$/i.test(line));
 
 	if (candidates.length === 0) {
 		return { command: "Codex", shell: false };
@@ -113,11 +111,31 @@ function runQuiet(command, commandArgs) {
 	}
 }
 
-function stopCodexServers() {
+let stopCodexServersQueue = Promise.resolve();
+
+function stopCodexServersInternal() {
 	if (process.platform === "win32") {
-		runQuiet("taskkill", ["/F", "/IM", "Codex.exe"]);
+		const userName = process.env.USERNAME;
+		const args = ["/F", "/IM", "Codex.exe"];
+		if (userName && userName.trim().length > 0) {
+			args.push("/FI", `USERNAME eq ${userName.trim()}`);
+		}
+		runQuiet("taskkill", args);
+		return;
+	}
+	if (typeof process.getuid === "function") {
+		runQuiet("pkill", ["-u", String(process.getuid()), "-f", "Codex"]);
+		return;
 	}
 	runQuiet("pkill", ["-f", "Codex"]);
+}
+
+export function stopCodexServers() {
+	// Avoid overlapping global process cleanup when matrix scripts are run concurrently.
+	stopCodexServersQueue = stopCodexServersQueue.then(async () => {
+		stopCodexServersInternal();
+	});
+	return stopCodexServersQueue;
 }
 
 function normalizePluginList(value, pluginRef) {
@@ -203,6 +221,8 @@ function executeModelCase(caseInfo, index, port) {
 		encoding: "utf8",
 		windowsHide: true,
 		shell: CodexExecutable.shell,
+		timeout: Number.parseInt(process.env.CODEX_MATRIX_TIMEOUT_MS ?? "120000", 10),
+		killSignal: "SIGKILL",
 		env: {
 			...process.env,
 			ENABLE_PLUGIN_REQUEST_LOGGING: "0",
@@ -210,6 +230,16 @@ function executeModelCase(caseInfo, index, port) {
 			DEBUG_CODEX_PLUGIN: "0",
 		},
 	});
+
+	if (finalized.error && finalized.error.code === "ETIMEDOUT") {
+		return {
+			...caseInfo,
+			ok: false,
+			exitCode: 124,
+			hasToken: false,
+			output: `Timed out after ${process.env.CODEX_MATRIX_TIMEOUT_MS ?? "120000"}ms`,
+		};
+	}
 
 	const combinedOutput = `${finalized.stdout ?? ""}\n${finalized.stderr ?? ""}`.trim();
 	const hasToken = combinedOutput.includes(token);
@@ -363,7 +393,7 @@ async function main() {
 	try {
 		for (let i = 0; i < scenarios.length; i += 1) {
 			const scenario = scenarios[i];
-			stopCodexServers();
+			await stopCodexServers();
 			const scenarioResults = await runScenario(scenario, {
 				smoke,
 				maxCases,
@@ -415,11 +445,17 @@ async function main() {
 	}
 }
 
-main().catch((error) => {
-	console.error(
-		`Model matrix audit failed: ${error instanceof Error ? error.message : String(error)}`,
-	);
-	process.exit(1);
-});
+const isDirectRun =
+	process.argv.length > 1 &&
+	resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectRun) {
+	main().catch((error) => {
+		console.error(
+			`Model matrix audit failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		process.exit(1);
+	});
+}
 
 

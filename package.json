@@ -63,8 +63,13 @@
     "assets/",
     "config/",
     "scripts/",
+    "vendor/codex-ai-plugin/",
+    "vendor/codex-ai-sdk/",
     "README.md",
     "LICENSE"
+  ],
+  "bundleDependencies": [
+    "@codex-ai/plugin"
   ],
   "lint-staged": {
     "*.ts": [

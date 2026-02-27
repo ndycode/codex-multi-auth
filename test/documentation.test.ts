@@ -91,11 +91,11 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('does not include Codex wording in user docs', () => {
+  it('does not include opencode wording in user docs', () => {
     for (const filePath of userDocs) {
       const content = read(filePath).toLowerCase();
-      const hasCodex = content.includes('Codex');
-      expect(hasCodex, `${filePath} should not include Codex references`).toBe(false);
+      const hasLegacyHostWord = content.includes('opencode');
+      expect(hasLegacyHostWord, `${filePath} should not include opencode references`).toBe(false);
     }
   });
 

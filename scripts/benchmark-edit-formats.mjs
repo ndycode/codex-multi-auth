@@ -12,7 +12,7 @@ import {
   getToolEvents,
   resolveCodexExecutable,
   runCodexJson,
-} from "./bench-format/Codex.mjs";
+} from "./bench-format/codex-host.mjs";
 import { aliasCandidatesForCodexModel, listCodexModels, resolveModelPreset } from "./bench-format/models.mjs";
 import {
   applyHashlineV2Edits,

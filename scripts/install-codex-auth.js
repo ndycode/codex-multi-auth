@@ -36,7 +36,7 @@ const repoRoot = resolve(scriptDir, "..");
 const templatePath = join(
 	repoRoot,
 	"config",
-	useLegacy ? "Codex-legacy.json" : "Codex-modern.json"
+	useLegacy ? "codex-legacy.json" : "codex-modern.json"
 );
 
 const configDir = join(homedir(), ".config", "Codex");
@@ -74,7 +74,8 @@ async function backupConfig(sourcePath) {
 		.replace(/[:.]/g, "-")
 		.replace("T", "_")
 		.replace("Z", "");
-	const backupPath = `${sourcePath}.bak-${timestamp}`;
+	const nonce = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	const backupPath = `${sourcePath}.bak-${timestamp}-${nonce}`;
 	if (!dryRun) {
 		await copyFile(sourcePath, backupPath);
 	}
@@ -132,8 +133,14 @@ async function clearCache() {
 		log(`[dry-run] Would remove ${cacheNodeModules}`);
 		log(`[dry-run] Would remove ${cacheBunLock}`);
 	} else {
-		await rm(cacheNodeModules, { recursive: true, force: true });
-		await rm(cacheBunLock, { force: true });
+		try {
+			await rm(cacheNodeModules, { recursive: true, force: true });
+			await rm(cacheBunLock, { force: true });
+		} catch (error) {
+			log(
+				`Warning: Could not fully clear cache (${error instanceof Error ? error.message : String(error)}). You may need to restart Codex.`,
+			);
+		}
 	}
 
 	await removePluginFromCachePackage();
@@ -159,7 +166,14 @@ async function main() {
 			const provider = (existing.provider && typeof existing.provider === "object")
 				? { ...existing.provider }
 				: {};
-			provider.openai = template.provider.openai;
+			const existingOpenAi = provider.openai && typeof provider.openai === "object"
+				? provider.openai
+				: {};
+			const templateOpenAi = template.provider && typeof template.provider === "object" &&
+				template.provider.openai && typeof template.provider.openai === "object"
+				? template.provider.openai
+				: {};
+			provider.openai = { ...templateOpenAi, ...existingOpenAi };
 			merged.provider = provider;
 			nextConfig = merged;
 		} catch (error) {

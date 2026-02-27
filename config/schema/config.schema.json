@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-multi-auth.local/schema/config.schema.json",
+  "title": "codex-multi-auth config template",
+  "type": "object",
+  "properties": {
+    "plugin": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "model": {
+      "type": "string"
+    }
+  },
+  "required": ["plugin", "provider"],
+  "additionalProperties": true
+}

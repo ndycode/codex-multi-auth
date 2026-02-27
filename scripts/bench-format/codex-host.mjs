@@ -24,10 +24,10 @@ export function resolveCodexExecutable() {
     encoding: "utf8",
     windowsHide: true,
   });
-  const candidates = `${whereResult.stdout ?? ""}\n${whereResult.stderr ?? ""}`
+  const candidates = `${whereResult.stdout ?? ""}`
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter((line) => /^[A-Za-z]:\\.+\.(exe|cmd)$/i.test(line));
 
   if (candidates.length === 0) {
     return { command: "Codex", shell: false };

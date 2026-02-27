@@ -646,7 +646,7 @@ describe('Request Transformer Module', () => {
 			expect(result).toHaveLength(2);
 			expect(result![0].role).toBe('developer');
 			expect(result![0].type).toBe('message');
-			expect((result![0].content as any)[0].text).toContain('Codex Host Bridge');
+			expect((result![0].content as any)[0].text).toContain(CODEX_HOST_BRIDGE);
 		});
 
 		it('should not modify input when tools not present', async () => {
@@ -1773,7 +1773,7 @@ describe('Request Transformer Module', () => {
 
 				expect(result.input).toHaveLength(2);
 				expect(result.input![0].role).toBe('developer');
-				expect((result.input![0].content as any)[0].text).toContain('Codex Host Bridge');
+				expect((result.input![0].content as any)[0].text).toContain(CODEX_HOST_BRIDGE);
 			});
 
 			it('should filter Codex prompts when codexMode=true', async () => {
@@ -1794,7 +1794,7 @@ describe('Request Transformer Module', () => {
 				// Should have bridge message + user message (Codex prompt filtered out)
 				expect(result.input).toHaveLength(2);
 				expect(result.input![0].role).toBe('developer');
-				expect((result.input![0].content as any)[0].text).toContain('Codex Host Bridge');
+				expect((result.input![0].content as any)[0].text).toContain(CODEX_HOST_BRIDGE);
 				expect(result.input![1].role).toBe('user');
 			});
 
@@ -1858,7 +1858,7 @@ describe('Request Transformer Module', () => {
 
 				// Should use bridge message (codexMode=true by default)
 				expect(result.input![0].role).toBe('developer');
-				expect((result.input![0].content as any)[0].text).toContain('Codex Host Bridge');
+				expect((result.input![0].content as any)[0].text).toContain(CODEX_HOST_BRIDGE);
 			});
 
 			it('should remove request_user_input tool in default collaboration mode', async () => {

@@ -10,14 +10,6 @@ These files are example model/provider templates for `codex-multi-auth`.
 | [`codex-legacy.json`](./codex-legacy.json) | Legacy explicit-model template |
 | [`minimal-codex.json`](./minimal-codex.json) | Minimal debug template |
 
-## Compatibility Aliases
-
-The old filenames are still shipped for backward compatibility:
-
-- `Codex-modern.json`
-- `Codex-legacy.json`
-- `minimal-Codex.json`
-
 ## Notes
 
 - These templates are optional for the OAuth account manager flow.

@@ -201,8 +201,6 @@ When adding new functionality:
 ## Example Configurations
 
 See the `config/` directory for working configuration examples:
-- `Codex-legacy.json`: Legacy complete example with all model variants
-- `Codex-modern.json`: Variant-based example for host runtime v1.0.210+
-
-
+- `codex-legacy.json`: Legacy complete example with all model variants
+- `codex-modern.json`: Variant-based example for host runtime v1.0.210+
 

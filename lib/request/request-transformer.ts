@@ -323,9 +323,7 @@ function extractMessageText(content: unknown): string {
 }
 
 function detectCollaborationMode(body: RequestBody): CollaborationMode {
-	const envMode =
-		parseCollaborationMode(process.env.CODEX_COLLABORATION_MODE) ??
-		parseCollaborationMode(process.env.CODEX_COLLABORATION_MODE);
+	const envMode = parseCollaborationMode(process.env.CODEX_COLLABORATION_MODE);
 	if (envMode) return envMode;
 	if (!Array.isArray(body.input)) return "unknown";
 

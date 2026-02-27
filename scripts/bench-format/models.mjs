@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { resolveCodexExecutable } from "./Codex.mjs";
+import { resolveCodexExecutable } from "./codex-host.mjs";
 
 const FALLBACK_OPENAI_CODEX_STABLE = [
   "openai/gpt-5-codex",
@@ -54,7 +54,12 @@ export function listCodexModels() {
     windowsHide: true,
     shell: executable.shell,
     maxBuffer: 10 * 1024 * 1024,
+    timeout: Number.parseInt(process.env.CODEX_MODELS_TIMEOUT_MS ?? "30000", 10),
+    killSignal: "SIGKILL",
   });
+  if (child.error && child.error.code === "ETIMEDOUT") {
+    throw new Error(`Timed out while listing Codex models after ${process.env.CODEX_MODELS_TIMEOUT_MS ?? "30000"}ms`);
+  }
   const text = `${child.stdout ?? ""}\n${child.stderr ?? ""}`;
   if ((child.status ?? 1) !== 0) {
     throw new Error(`Failed to list Codex models (exit=${child.status ?? 1})`);
