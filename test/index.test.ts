@@ -91,6 +91,22 @@ vi.mock("../lib/config.js", () => ({
 	getPidOffsetEnabled: () => false,
 	getFetchTimeoutMs: () => 60000,
 	getStreamStallTimeoutMs: () => 45000,
+	getLiveAccountSync: () => false,
+	getLiveAccountSyncDebounceMs: () => 250,
+	getLiveAccountSyncPollMs: () => 2000,
+	getSessionAffinity: () => false,
+	getSessionAffinityTtlMs: () => 1_200_000,
+	getSessionAffinityMaxEntries: () => 512,
+	getProactiveRefreshGuardian: () => false,
+	getProactiveRefreshIntervalMs: () => 60000,
+	getProactiveRefreshBufferMs: () => 300000,
+	getNetworkErrorCooldownMs: () => 0,
+	getServerErrorCooldownMs: () => 0,
+	getStorageBackupEnabled: () => true,
+	getPreemptiveQuotaEnabled: () => true,
+	getPreemptiveQuotaRemainingPercent5h: () => 5,
+	getPreemptiveQuotaRemainingPercent7d: () => 5,
+	getPreemptiveQuotaMaxDeferralMs: () => 2 * 60 * 60_000,
 	getCodexTuiV2: () => false,
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
@@ -203,6 +219,7 @@ vi.mock("../lib/storage.js", () => ({
 	saveAccounts: vi.fn(async () => {}),
 	clearAccounts: vi.fn(async () => {}),
 	setStoragePath: vi.fn(),
+	setStorageBackupEnabled: vi.fn(),
 	exportAccounts: vi.fn(async () => {}),
 	importAccounts: vi.fn(async () => ({ imported: 2, skipped: 1, total: 5 })),
 	loadFlaggedAccounts: vi.fn(async () => ({ version: 1, accounts: [] })),
@@ -528,7 +545,7 @@ describe("OpenAIOAuthPlugin", () => {
 			mockStorage.accounts = [];
 			const result = await plugin.tool["codex-list"].execute();
 			expect(result).toContain("No Codex accounts configured");
-			expect(result).toContain("opencode auth login");
+			expect(result).toContain("codex login");
 		});
 
 		it("lists accounts with status", async () => {

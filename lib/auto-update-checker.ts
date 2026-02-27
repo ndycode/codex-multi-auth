@@ -1,13 +1,13 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { createLogger } from "./logger.js";
+import { getCodexCacheDir } from "./runtime-paths.js";
 
 const log = createLogger("update-checker");
 
 const PACKAGE_NAME = "codex-multi-auth";
 const NPM_REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
-const CACHE_DIR = join(homedir(), ".opencode", "cache");
+const CACHE_DIR = getCodexCacheDir();
 const CACHE_FILE = join(CACHE_DIR, "update-check-cache.json");
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -20,6 +20,11 @@ interface UpdateCheckCache {
 interface NpmPackageInfo {
   version: string;
   name: string;
+}
+
+interface ParsedSemver {
+  core: [number, number, number];
+  prerelease: string[];
 }
 
 function getCurrentVersion(): string {
@@ -53,17 +58,84 @@ function saveCache(cache: UpdateCheckCache): void {
   }
 }
 
-function compareVersions(current: string, latest: string): number {
-  const currentParts = current.split(".").map((p) => parseInt(p, 10) || 0);
-  const latestParts = latest.split(".").map((p) => parseInt(p, 10) || 0);
+function parseSemver(version: string): ParsedSemver {
+  const normalized = version.trim().replace(/^v/i, "");
+  const [withoutBuild] = normalized.split("+");
+  const [corePart = "0.0.0", prereleasePart] = (withoutBuild ?? "0.0.0").split("-", 2);
+  const [majorRaw = "0", minorRaw = "0", patchRaw = "0"] = corePart.split(".");
 
-  for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
-    const c = currentParts[i] ?? 0;
-    const l = latestParts[i] ?? 0;
-    if (l > c) return 1;
-    if (l < c) return -1;
+  const toSafeInt = (value: string): number => {
+    if (!/^\d+$/.test(value)) return 0;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  return {
+    core: [toSafeInt(majorRaw), toSafeInt(minorRaw), toSafeInt(patchRaw)],
+    prerelease:
+      prereleasePart && prereleasePart.trim().length > 0
+        ? prereleasePart.split(".").filter((segment) => segment.length > 0)
+        : [],
+  };
+}
+
+function comparePrerelease(current: string[], latest: string[]): number {
+  const maxLen = Math.max(current.length, latest.length);
+
+  for (let i = 0; i < maxLen; i++) {
+    const currentPart = current[i];
+    const latestPart = latest[i];
+
+    if (currentPart === undefined && latestPart === undefined) return 0;
+    if (currentPart === undefined) return 1;
+    if (latestPart === undefined) return -1;
+
+    if (currentPart === latestPart) continue;
+
+    const currentIsNumeric = /^\d+$/.test(currentPart);
+    const latestIsNumeric = /^\d+$/.test(latestPart);
+
+    if (currentIsNumeric && latestIsNumeric) {
+      const currentNum = Number.parseInt(currentPart, 10);
+      const latestNum = Number.parseInt(latestPart, 10);
+      if (latestNum > currentNum) return 1;
+      if (latestNum < currentNum) return -1;
+      continue;
+    }
+
+    if (currentIsNumeric && !latestIsNumeric) return 1;
+    if (!currentIsNumeric && latestIsNumeric) return -1;
+
+    const lexical = latestPart.localeCompare(currentPart, "en", { sensitivity: "case" });
+    if (lexical > 0) return 1;
+    if (lexical < 0) return -1;
   }
+
   return 0;
+}
+
+function compareVersions(current: string, latest: string): number {
+  const parsedCurrent = parseSemver(current);
+  const parsedLatest = parseSemver(latest);
+
+  for (let i = 0; i < parsedCurrent.core.length; i++) {
+    const currentPart = parsedCurrent.core[i] ?? 0;
+    const latestPart = parsedLatest.core[i] ?? 0;
+    if (latestPart > currentPart) return 1;
+    if (latestPart < currentPart) return -1;
+  }
+
+  const currentHasPrerelease = parsedCurrent.prerelease.length > 0;
+  const latestHasPrerelease = parsedLatest.prerelease.length > 0;
+
+  if (!currentHasPrerelease && latestHasPrerelease) {
+    return -1;
+  }
+  if (currentHasPrerelease && !latestHasPrerelease) {
+    return 1;
+  }
+
+  return comparePrerelease(parsedCurrent.prerelease, parsedLatest.prerelease);
 }
 
 async function fetchLatestVersion(): Promise<string | null> {

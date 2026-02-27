@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 vi.mock("node:fs", () => ({
+	existsSync: vi.fn(() => false),
 	promises: {
 		readFile: vi.fn(),
 		writeFile: vi.fn(),

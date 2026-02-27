@@ -178,7 +178,7 @@ describe('OAuth Server Unit Tests', () => {
 			expect(res.setHeader).toHaveBeenCalledWith('X-Content-Type-Options', 'nosniff');
 			expect(res.setHeader).toHaveBeenCalledWith(
 				'Content-Security-Policy',
-				"default-src 'self'; script-src 'none'"
+				"default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 			);
 			expect(res.end).toHaveBeenCalledWith('<html>Success</html>');
 		});

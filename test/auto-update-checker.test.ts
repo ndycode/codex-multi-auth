@@ -19,6 +19,7 @@ describe("auto-update-checker", () => {
 		vi.resetModules();
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-30T12:00:00Z"));
+		mockPackageJson.version = "4.12.0";
 
 		fs = await import("node:fs");
 		vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
@@ -78,15 +79,39 @@ describe("auto-update-checker", () => {
 			expect(result.hasUpdate).toBe(false);
 		});
 
-		it("handles semver with different segment counts", async () => {
+		it("handles versions with v-prefix", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({
 				ok: true,
-				json: async () => ({ version: "4.12.0.1" }),
+				json: async () => ({ version: "v4.13.0" }),
 			} as Response);
 
 			const result = await checkForUpdates(true);
 
 			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("treats stable releases as newer than prerelease", async () => {
+			mockPackageJson.version = "0.1.0-beta.0";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "0.1.0" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+
+			expect(result.hasUpdate).toBe(true);
+		});
+
+		it("does not treat prerelease as newer than stable", async () => {
+			mockPackageJson.version = "0.1.0";
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "0.1.0-beta.1" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+
+			expect(result.hasUpdate).toBe(false);
 		});
 	});
 

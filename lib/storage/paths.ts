@@ -7,17 +7,18 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import { getCodexMultiAuthDir } from "../runtime-paths.js";
 
-const PROJECT_MARKERS = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".opencode"];
+const PROJECT_MARKERS = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".codex"];
 const PROJECTS_DIR = "projects";
 const PROJECT_KEY_HASH_LENGTH = 12;
 
 export function getConfigDir(): string {
-	return join(homedir(), ".opencode");
+	return getCodexMultiAuthDir();
 }
 
 export function getProjectConfigDir(projectPath: string): string {
-	return join(projectPath, ".opencode");
+	return join(projectPath, ".codex");
 }
 
 function normalizeProjectPath(projectPath: string): string {
@@ -45,7 +46,7 @@ export function getProjectStorageKey(projectPath: string): string {
 }
 
 /**
- * Per-project storage is namespaced under ~/.opencode/projects
+ * Per-project storage is namespaced under ~/.codex/multi-auth/projects
  * to avoid writing account files into user repositories.
  */
 export function getProjectGlobalConfigDir(projectPath: string): string {
