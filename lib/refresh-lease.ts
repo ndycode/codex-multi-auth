@@ -69,9 +69,9 @@ function parseEnvInt(value: string | undefined): number | undefined {
 }
 
 /**
- * Suspends execution for the given duration.
+ * Delays execution for the specified number of milliseconds.
  *
- * @param delayMs - Time to wait in milliseconds
+ * @param delayMs - Number of milliseconds to wait
  * @returns No value
  */
 function sleep(delayMs: number): Promise<void> {
@@ -81,13 +81,13 @@ function sleep(delayMs: number): Promise<void> {
 }
 
 /**
- * Produces a stable, redacted identifier for a refresh token using SHA-256.
+ * Produces a stable, redacted filename-safe identifier for a refresh token using SHA-256.
  *
- * The hex-encoded digest can be used as a filename-safe token identifier (suitable for Windows paths),
- * is deterministic across processes (safe for concurrency checks), and avoids storing the raw token.
+ * This identifier is deterministic across processes (suitable for concurrency checks), safe to use
+ * in file paths on Windows, and avoids storing the raw token value.
  *
- * @param refreshToken - The raw refresh token to be redacted before persistence or comparison
- * @returns The SHA-256 digest of `refreshToken` as a lowercase hex string
+ * @param refreshToken - The raw refresh token to redact before persistence or comparison
+ * @returns The SHA-256 digest of `refreshToken` as a lowercase hexadecimal string
  */
 function hashRefreshToken(refreshToken: string): string {
 	return createHash("sha256").update(refreshToken).digest("hex");
@@ -161,15 +161,12 @@ function parseResultPayload(raw: unknown): ResultFilePayload | null {
 }
 
 /**
- * Read and parse a JSON file from disk, returning `null` on any read or parse error.
+ * Read and parse a JSON file from disk as a best-effort operation.
  *
- * This is a best-effort helper that swallows all errors (I/O or JSON syntax) and therefore
- * may return `null` if the file does not exist, is unreadable, locked by another process
- * (platform-dependent, e.g. Windows file locks), or contains invalid JSON. The file's
- * contents may change concurrently; callers should handle `null` as an absence of valid data.
- *
- * Note: this function does not redact or sanitize file contents; callers must handle
- * redaction of sensitive tokens or secrets extracted from the returned object.
+ * This helper swallows I/O and parse errors and may return `null` if the file does not exist,
+ * is unreadable, locked by another process (platform-dependent, e.g. Windows), or contains invalid JSON.
+ * The file may change concurrently; callers must treat `null` as absence of valid data.
+ * This function does not redact or sanitize sensitive values — callers are responsible for token/secret redaction.
  *
  * @param path - Filesystem path to the JSON file to read
  * @returns The parsed JSON value, or `null` if the file could not be read or parsed

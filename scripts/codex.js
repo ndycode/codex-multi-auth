@@ -38,9 +38,9 @@ function normalizeAuthAlias(args) {
 }
 
 /**
- * Decides whether a Codex CLI invocation should be handled by the multi-auth handler.
- * @param {string[]} args - Command tokens (typically the argv slice after the node executable and script).
- * @returns {boolean} `true` if the invocation starts with the `auth` command and either has no subcommand, a subcommand that begins with `-` (an option), or a recognized auth subcommand; `false` otherwise.
+ * Determine whether a Codex CLI invocation should be handled by the multi-auth handler.
+ * @param {string[]} args - Command tokens (argv slice after the node executable and script).
+ * @returns {boolean} `true` if the first token is "auth" and there is no subcommand, the subcommand starts with "-", or the subcommand is a recognized auth subcommand; `false` otherwise.
  */
 function shouldHandleMultiAuthAuth(args) {
 	if (args[0] !== "auth") return false;

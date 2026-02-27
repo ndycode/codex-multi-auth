@@ -116,18 +116,14 @@ function readAccountId(record: Record<string, unknown>): string | undefined {
 }
 
 /**
- * Extracts an ActiveSelection payload from a heterogeneous account record.
+ * Produce an ActiveSelection by extracting common fields and token variants from an account record.
  *
- * Parses common field variants (snake_case and camelCase) across top-level and nested `auth.tokens`
- * to populate accountId, email, accessToken, refreshToken, expiresAt, and idToken.
+ * @param record - Account object that may contain fields at top level or inside `auth.tokens`; keys may be camelCase or snake_case.
+ * @returns An ActiveSelection with any discovered properties (`accountId`, `email`, `accessToken`, `refreshToken`, `expiresAt`, `idToken`); missing values are `undefined`.
  *
- * @param record - An account object with arbitrary keys; commonly contains top-level fields or an `auth.tokens` object.
- * @returns An ActiveSelection with any discovered fields; fields absent in the source remain `undefined`.
- *
- * Notes:
- * - This function is pure and has no filesystem or external side effects; it is safe for concurrent use.
- * - It does not perform logging or mutation of the input record.
- * - Extracted token values are returned verbatim; callers must redact or secure tokens before logging or persisting.
+ * Concurrency: pure and side-effect-free; safe for concurrent use.
+ * Filesystem/OS note: callers performing atomic file writes should handle platform-specific rename semantics (Windows may replace in-use targets).
+ * Security: tokens are returned verbatim and must be redacted or secured by callers before logging or persisting.
  */
 function extractSelectionFromAccountRecord(record: Record<string, unknown>): ActiveSelection {
 	const auth = isRecord(record.auth) ? record.auth : undefined;
@@ -216,19 +212,17 @@ function toIsoTime(ms: number | undefined): string {
 }
 
 /**
- * Persist selected authentication tokens and related metadata to the Codex auth state file.
+ * Persist the provided authentication tokens and metadata into the Codex CLI auth state file.
  *
- * This performs an atomic replace of the target file (temp-file + rename) and updates a sync
- * version timestamp used by consumers. The function clears any existing OPENAI_API_KEY field to
- * avoid leaking API-key based configuration into multi-auth state. Callers must treat provided
- * tokens as sensitive; they will be written to disk with file mode 0600.
- *
- * Concurrency: the write is atomic but concurrent writers can race; callers should serialize calls
- * when possible. On Windows the rename-based replace is used and may replace the target file.
+ * Performs an atomic replace of the target JSON file (temp file + rename) and updates a numeric
+ * sync version timestamp stored as `codexMultiAuthSyncVersion`. The function clears any existing
+ * `OPENAI_API_KEY` field. Callers must treat token values as sensitive — they will be written to
+ * disk with file mode 0600. The write is atomic but concurrent writers can race; callers should
+ * serialize calls when possible. On Windows the rename may replace the target file.
  *
  * @param path - Filesystem path to the auth state JSON file to update.
- * @param selection - Active selection containing token fields (accessToken, refreshToken, idToken),
- *   accountId, email, and expiresAt; values are used to populate the persisted tokens and metadata.
+ * @param selection - ActiveSelection containing token fields (`accessToken`, `refreshToken`, `idToken`),
+ *   optional `accountId`, `email`, and `expiresAt` used to populate persisted tokens and metadata.
  * @returns `true` if the auth state was validated and written successfully, `false` otherwise.
  */
 async function writeCodexAuthState(
@@ -304,12 +298,12 @@ async function writeCodexAuthState(
 }
 
 /**
- * Update the Codex CLI active account and authentication state on disk based on the provided selection.
+ * Persist the provided active selection into Codex CLI accounts and/or auth stores on disk.
  *
- * Writes updates to the accounts store and/or the auth store when present; succeeds only if at least one store is persisted. Writes are performed atomically (temp file + rename). Callers should expect potential concurrent writers and OS-specific semantics (on Windows renames may fail if the target is open). Sensitive token values from `selection` may be persisted to the auth store but are redacted in telemetry/logs; do not rely on this function to scrub tokens elsewhere.
+ * Writes are atomic (temp file + rename); at least one store must be successfully written for the function to return `true`. Callers should expect concurrent writers; on Windows rename semantics may fail if the target file is open. Sensitive token values from `selection` may be persisted to disk and are treated as sensitive for telemetry/logging — this function does not scrub tokens elsewhere.
  *
- * @param selection - Partial active selection containing any of: accountId, email, accessToken, refreshToken, expiresAt, idToken. Fields present in `selection` will be merged with discovered account data when resolving an accounts entry.
- * @returns `true` if changes were successfully written to at least one persistent Codex CLI store (accounts or auth), `false` otherwise.
+ * @param selection - Partial active selection with any of: accountId, email, accessToken, refreshToken, expiresAt, idToken. Provided fields are merged with discovered account data when updating the accounts store.
+ * @returns `true` if changes were written to at least one persistent Codex CLI store (accounts or auth), `false` otherwise.
  */
 export async function setCodexCliActiveSelection(
 	selection: ActiveSelection,

@@ -10,26 +10,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const successHtml = fs.readFileSync(path.join(__dirname, "..", "oauth-success.html"), "utf-8");
 
 /**
- * Start a local HTTP server to capture an OAuth authorization code sent to /auth/callback.
+ * Start a local HTTP server that captures an OAuth authorization code sent to /auth/callback.
  *
- * The server validates the `state` query parameter, serves a static success page on valid requests,
- * and retains the received authorization code until consumed via `waitForCode`. The server is
- * bound to 127.0.0.1:1455 and is unref'd so the process can exit if no other work remains. If the
- * port cannot be bound the function resolves with `ready: false` to allow a manual (paste) fallback.
+ * The server validates the `state` query parameter, serves a static success page for valid callbacks,
+ * and retains a single authorization code on the server instance until consumed via `waitForCode`.
+ * Only one code is stored at a time; call `close` to abort polling and shut down the server.
  *
- * Concurrency and lifecycle: only one code is stored at a time on the server instance; call `close`
- * to abort polling and close the server. `waitForCode` polls for the code and returns as soon as one
- * is available or `null` on timeout/abort.
+ * On platforms such as Windows, binding to 127.0.0.1:1455 may fail if another process holds the port
+ * or if firewall/antivirus restrictions prevent local binding; in that case the returned `ready`
+ * flag is `false` to allow a manual paste fallback.
  *
- * Windows note: the server always binds to 127.0.0.1; port binding may fail on Windows when another
- * process holds the port or firewall/antivirus prevents local binding.
- *
- * Token handling: the captured code is stored transiently on the server and returned by `waitForCode`;
- * callers should treat it as a secret and redact it from logs and error messages.
+ * Captured authorization codes are secrets and must be treated accordingly; callers should redact
+ * them from logs and error messages.
  *
  * @param options - Object with a `state` string used to validate the OAuth redirect
- * @returns An OAuthServerInfo describing the server (`port`, `ready`), a `close` function, and a
- *          `waitForCode` helper that resolves to `{ code: string }` on success or `null` on timeout/failure
+ * @returns An OAuthServerInfo describing the server: `port` (1455), `ready` (boolean), a `close`
+ *          function to abort polling and close the server, and `waitForCode` which returns
+ *          `{ code: string }` when a code becomes available or `null` on timeout/abort.
  */
 export function startLocalOAuthServer({ state }: { state: string }): Promise<OAuthServerInfo> {
 	let pollAborted = false;

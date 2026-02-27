@@ -67,6 +67,13 @@ export function setUiRuntimeOptions(
 	return runtimeOptions;
 }
 
+/**
+ * Accesses the current UI runtime options.
+ *
+ * The returned object reflects the current in-memory runtime configuration; concurrent callers may observe updates made by others, so external synchronization is recommended when mutating options. This function performs no filesystem I/O (including on Windows) and the runtime options contain no sensitive tokens that require redaction.
+ *
+ * @returns The current UiRuntimeOptions object
+ */
 export function getUiRuntimeOptions(): UiRuntimeOptions {
 	return runtimeOptions;
 }

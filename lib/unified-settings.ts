@@ -25,10 +25,10 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 /**
- * Create a shallow clone of an object-style record.
+ * Return a shallow clone of an object-style record, or `null` if the input is not a record.
  *
- * @param value - The value to clone; if not a non-null object, it will not be cloned
- * @returns A new object with the same own enumerable properties as `value`, or `null` if `value` is not an object record
+ * @param value - Value to clone; must be a non-null plain object (record)
+ * @returns A new object containing the same own enumerable properties as `value`, or `null` if `value` is not a record
  */
 function cloneRecord(value: unknown): JsonRecord | null {
 	if (!isRecord(value)) return null;
@@ -79,18 +79,15 @@ async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
 }
 
 /**
- * Produce a write-ready settings record by ensuring the unified settings version is present.
+ * Return a shallow-cloned settings record with the canonical unified settings `version` applied.
  *
- * @param record - The input settings object to normalize; its keys are preserved.
- * @returns The input record shallow-cloned with `version` set to the current UNIFIED_SETTINGS_VERSION.
+ * This function is pure and only normalizes the payload for disk writes; it does not coordinate or serialize
+ * concurrent writers (callers must handle concurrency). No platform-specific behavior is applied for Windows —
+ * the `version` field is always set. Sensitive values (tokens, secrets) are not redacted or transformed;
+ * callers must remove or redact them before writing if required.
  *
- * Concurrency: This function is pure and does not provide concurrency guarantees for subsequent disk writes;
- * callers must coordinate concurrent write operations.
- *
- * Windows filesystem: No platform-specific behavior is applied here; the version field is added regardless of OS.
- *
- * Sensitive data: This function does not redact or mutate sensitive values (tokens, secrets); callers must remove
- * or redact sensitive fields before calling if required.
+ * @param record - The input settings object to normalize; keys are preserved.
+ * @returns The shallow clone of `record` with `version` set to `UNIFIED_SETTINGS_VERSION`.
  */
 function normalizeForWrite(record: JsonRecord): JsonRecord {
 	return {
@@ -190,9 +187,9 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
 }
 
 /**
- * Persist the provided plugin configuration into the unified settings file, overwriting the `pluginConfig` section.
+ * Persist the provided plugin configuration to the unified settings file, replacing the `pluginConfig` section.
  *
- * Writes a shallow clone of `pluginConfig` into the on-disk settings payload. Callers must serialize concurrent calls to avoid lost updates (concurrent writers can overwrite each other). On Windows, filesystem atomicity and visibility semantics are platform-dependent; do not assume cross-process atomic merges. The settings file is written as plain JSON — redact or remove any sensitive tokens or secrets before calling.
+ * Writes a shallow clone of `pluginConfig` into the on-disk settings payload. Callers must serialize concurrent calls to avoid lost updates — concurrent writers may overwrite each other; no cross-process locking is provided. On Windows, filesystem atomicity and visibility semantics are platform-dependent; do not assume atomic merges across processes. The settings file is written as plain JSON; redact or remove any sensitive tokens or secrets before calling.
  *
  * @param pluginConfig - The plugin configuration object to store (will be shallow-cloned)
  */

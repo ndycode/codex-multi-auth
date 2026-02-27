@@ -50,6 +50,18 @@ function getCurrentVersion(): string {
   }
 }
 
+/**
+ * Reads and parses the on-disk update-check cache if it exists.
+ *
+ * Returns the parsed cache object when the cache file is present and valid JSON; returns `null` if the file is missing or cannot be read/parsed.
+ *
+ * Notes:
+ * - This is a read-only operation and performs no file locking; concurrent writes by other processes can cause this function to return `null`.
+ * - Path resolution and platform-specific semantics (Windows paths) are handled by the surrounding code that provides `CACHE_FILE`.
+ * - The function does not redact or validate cache contents; callers must ensure no sensitive tokens or secrets are written to the cache.
+ *
+ * @returns The parsed `UpdateCheckCache`, or `null` if absent or unreadable.
+ */
 function loadCache(): UpdateCheckCache | null {
   try {
     if (!existsSync(CACHE_FILE)) return null;
@@ -115,63 +127,18 @@ function parseSemver(version: string): ParsedSemver {
 }
 
 /**
- * Compare two prerelease identifier arrays to determine which represents a greater semver prerelease.
+ * Determine ordering between two semver prerelease identifier arrays.
  *
- * Compares segments in order using numeric comparison for numeric segments and lexical comparison for non-numeric segments. A missing segment is considered lower than an existing segment.
+ * Compares corresponding prerelease segments using numeric comparison for purely numeric segments and locale-aware lexical comparison for non-numeric segments. Missing segments are considered lower than present segments.
  *
  * @param current - The current version's prerelease segments (e.g., ["alpha", "1"])
  * @param latest - The candidate/latest version's prerelease segments
  * @returns `1` if `latest` is greater, `-1` if `current` is greater, `0` if they are equivalent
  *
  * @remarks
- * - Pure and side-effect free; safe for concurrent use.
- * - Does not perform any filesystem or network operations and does not handle or redact tokens.
-function comparePrerelease(current: string[], latest: string[]): number {
-  const maxLen = Math.max(current.length, latest.length);
-
-  for (let i = 0; i < maxLen; i++) {
-    const currentPart = current[i];
-    const latestPart = latest[i];
-
-    if (currentPart === undefined && latestPart === undefined) return 0;
-    if (currentPart === undefined) return 1;
-    if (latestPart === undefined) return -1;
-
-    if (currentPart === latestPart) continue;
-
-    const currentIsNumeric = /^\d+$/.test(currentPart);
-    const latestIsNumeric = /^\d+$/.test(latestPart);
-
-    if (currentIsNumeric && latestIsNumeric) {
-      const currentNum = Number.parseInt(currentPart, 10);
-      const latestNum = Number.parseInt(latestPart, 10);
-      if (latestNum > currentNum) return 1;
-      if (latestNum < currentNum) return -1;
-      continue;
-    }
-
-    if (currentIsNumeric && !latestIsNumeric) return 1;
-    if (!currentIsNumeric && latestIsNumeric) return -1;
-
-    const lexical = latestPart.localeCompare(currentPart, "en", { sensitivity: "case" });
-    if (lexical > 0) return 1;
-    if (lexical < 0) return -1;
-  }
-
-  return 0;
-}
-
-/**
- * Compares two semantic version strings and determines their ordering.
- *
- * Compares major, minor, and patch in order; treats a version without a prerelease
- * as greater than the same version with a prerelease. If both have prereleases,
- * prerelease segments are compared with numeric segments ordered numerically and
- * non-numeric segments ordered lexically.
- *
- * @param current - The currently installed version string (e.g., "1.2.3" or "1.2.3-beta.1")
- * @param latest - The version string to compare against
- * @returns `1` if `latest` is greater than `current`, `-1` if `current` is greater, `0` if they are equal
+ * - Pure, side-effect free, and safe for concurrent use.
+ * - Performs no filesystem or network operations and does not read or redact tokens.
+ * - Behavior is consistent across platforms (no Windows-specific filesystem behavior).
  */
 function compareVersions(current: string, latest: string): number {
   const parsedCurrent = parseSemver(current);
@@ -198,20 +165,14 @@ function compareVersions(current: string, latest: string): number {
 }
 
 /**
- * Retrieves the latest published version string for the package from the NPM registry.
+ * Fetches the latest published version string for the package from the configured NPM registry.
  *
- * Performs an HTTP GET to the configured registry URL with a 5-second timeout and returns
- * the `version` field from the registry response, or `null` if the request fails or the
- * value is missing.
+ * Safe to call concurrently — each invocation uses its own AbortController and timer.
+ * Performs network I/O only (no filesystem access; Windows path semantics do not apply).
+ * No authentication tokens or Authorization headers are sent; logged status codes and error
+ * messages are emitted without including sensitive tokens.
  *
- * Notes:
- * - Safe to call concurrently; each invocation uses its own AbortController and timer.
- * - This function performs network I/O only and does not interact with the filesystem,
- *   so Windows path semantics are not applicable.
- * - No authentication tokens or Authorization headers are sent; logs emitted on failure
- *   include only status codes or error messages and should not contain sensitive tokens.
- *
- * @returns The latest version string from the registry if available, `null` otherwise.
+ * @returns The latest version string from the registry, or `null` if unavailable.
  */
 async function fetchLatestVersion(): Promise<string | null> {
   try {

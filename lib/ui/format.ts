@@ -22,15 +22,15 @@ const TONE_TO_COLOR: Record<UiTextTone, keyof UiRuntimeOptions["theme"]["colors"
 };
 
 /**
- * Compute ANSI/ANSI256/truecolor start and reset sequences for a badge based on UI options and tone.
+ * Produce the ANSI/ANSI256/truecolor start and theme reset sequences for a badge given UI options and tone.
  *
- * @param ui - Runtime UI options (palette, accent, colorProfile, and theme colors) used to choose appropriate escape sequences
- * @param tone - Badge tone; must be one of "primary", "accent", "success", "warning", "danger", or "muted"
- * @returns An object with `start` (the escape sequence to begin badge styling) and `end` (the theme reset sequence)
+ * @param ui - Runtime UI options used to select color profile, palette, accent, and the theme reset sequence
+ * @param tone - Badge tone: "primary", "accent", "success", "warning", "danger", or "muted"
+ * @returns The `start` escape sequence to begin badge styling and the `end` reset sequence from the theme
  *
- * Concurrency: pure and has no side effects; safe for concurrent use.
- * Windows consoles: returns ANSI sequences which may not be interpreted on older Windows terminals and may appear verbatim.
- * Token redaction: returned strings contain raw ANSI codes and should be treated like presentation data (do not leak in sensitive audit logs without redaction).
+ * Concurrency: pure and safe for concurrent use.
+ * Windows consoles: returned ANSI sequences may not be interpreted on older Windows terminals and can appear verbatim.
+ * Token redaction: returned strings contain raw ANSI codes and should be treated as presentation data (avoid leaking in sensitive logs).
  */
 function badgeStyleForTone(
 	ui: UiRuntimeOptions,
@@ -156,6 +156,20 @@ export function formatUiItem(
 	return `${bullet} ${paintUiText(ui, text, tone)}`;
 }
 
+/**
+ * Format a key/value pair for display, applying muted styling to the key and a configurable tone to the value when v2 UI is enabled.
+ *
+ * @param ui - Runtime UI options that control theming and v2 behavior
+ * @param key - The label for the value; a trailing colon is added when v2 is enabled
+ * @param value - The value text to display
+ * @param valueTone - Tone to apply to the value (e.g., "accent", "success"); "normal" leaves the value uncolored
+ *
+ * Concurrency: pure and safe to call concurrently.
+ * Windows: ANSI or truecolor sequences may not be interpreted on older Windows terminals.
+ * Redaction: this function does not redact sensitive tokens; callers must provide already-redacted values if needed.
+ *
+ * @returns The formatted key/value string, optionally wrapped with theme color sequences when v2 is enabled
+ */
 export function formatUiKeyValue(
 	ui: UiRuntimeOptions,
 	key: string,

@@ -14,13 +14,14 @@ const MAX_ENTRIES = 2048;
 const PASSIVE_RECOVERY_PER_MIN = 0.5;
 
 /**
- * Normalize a model identifier into a compact, canonical token for key construction.
+ * Produce a compact canonical token from a model identifier for use in storage keys.
  *
- * This is a pure, side-effect-free utility: safe for concurrent use and does not access the filesystem.
- * It treats only forward slashes ("/") as segment separators (backslashes are not recognized) and applies
- * token redaction by removing common trailing qualifiers (`-none`, `-minimal`, `-low`, `-medium`, `-high`, `-xhigh`).
+ * The function is side-effect-free and safe for concurrent use. It treats only forward slashes ("/") as segment separators,
+ * removes common trailing qualifiers (`-none`, `-minimal`, `-low`, `-medium`, `-high`, `-xhigh`) from the final segment,
+ * and does not access the filesystem. It does not further redact secrets; the resulting token may require encoding before
+ * use as a Windows filename.
  *
- * @param model - An optional model string (may include path-like segments and qualifiers)
+ * @param model - Optional model string which may include path-like segments and trailing qualifiers
  * @returns The normalized model token, or `null` if `model` is missing or empty after trimming
  */
 function normalizeModel(model: string | undefined): string | null {

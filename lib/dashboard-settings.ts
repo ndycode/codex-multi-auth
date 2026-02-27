@@ -79,10 +79,10 @@ export const DEFAULT_DASHBOARD_DISPLAY_SETTINGS: DashboardDisplaySettings = {
 const DASHBOARD_SETTINGS_PATH = join(getCodexMultiAuthDir(), "dashboard-settings.json");
 
 /**
- * Determines whether a value is a non-null object suitable as a string-keyed record.
+ * Checks whether a value is a non-null object that can be treated as a string-keyed record.
  *
- * @param value - The value to test
- * @returns `true` if `value` is an object and not `null` (narrowing to `Record<string, unknown>`), `false` otherwise.
+ * @param value - Value to test
+ * @returns `true` if `value` is an object and not `null` (narrowed to `Record<string, unknown>`), `false` otherwise.
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object";
@@ -129,10 +129,10 @@ function normalizeAccentColor(value: unknown): DashboardAccentColor {
 }
 
 /**
- * Determines a valid dashboard layout mode, returning `"expanded-rows"` only when `value` exactly matches that mode.
+ * Validate a dashboard layout mode, allowing only "expanded-rows".
  *
- * @param value - Input to validate as a DashboardLayoutMode
- * @param fallback - Value to use when `value` is not `"expanded-rows"`
+ * @param value - Candidate value to validate as a layout mode
+ * @param fallback - Value to return when `value` is not `"expanded-rows"`
  * @returns `"expanded-rows"` if `value` strictly equals that string, otherwise `fallback`
  */
 function normalizeLayoutMode(
@@ -143,10 +143,10 @@ function normalizeLayoutMode(
 }
 
 /**
- * Normalize an arbitrary value to a valid dashboard focus style.
+ * Coerces an arbitrary value into the dashboard focus style.
  *
- * @param value - The input to coerce into a DashboardFocusStyle
- * @returns `'row-invert'` if `value` matches the allowed style, `'row-invert'` otherwise
+ * @param value - Value to coerce into a DashboardFocusStyle
+ * @returns The normalized focus style; always `'row-invert'`.
  */
 function normalizeFocusStyle(value: unknown): DashboardFocusStyle {
 	return value === "row-invert" ? "row-invert" : "row-invert";
@@ -180,12 +180,11 @@ function normalizeAccountSortMode(value: unknown, fallback: DashboardAccountSort
 }
 
 /**
- * Normalize a numeric auto-return timeout to an integer between 0 and 10000 milliseconds.
+ * Coerces an untrusted value to an integer millisecond timeout between 0 and 10000.
  *
- * Rounds the provided numeric value to the nearest integer and clamps it to the range
- * 0–10000. If `value` is not a finite number, `fallback` is returned. This function has
- * no side effects and is safe to call concurrently. Filesystem semantics (including Windows)
- * and token redaction do not apply to this operation.
+ * This rounds and clamps numeric input; if the input is not a finite number the provided
+ * fallback is returned. Safe to call concurrently. Filesystem semantics, Windows atomicity,
+ * and unified-settings token redaction are not applicable to this operation.
  *
  * @param value - The untrusted input to normalize
  * @param fallback - The numeric fallback to use when `value` is invalid
@@ -198,10 +197,10 @@ function normalizeAutoReturnMs(value: unknown, fallback: number): number {
 }
 
 /**
- * Normalize an untrusted value into a deduplicated list of allowed statusline fields.
+ * Coerces an arbitrary value into a deduplicated, order-preserving list of allowed statusline fields.
  *
- * @param value - Input to normalize; expected to be an array of strings but may be any value. Non-string entries, unknown fields, and duplicates are removed.
- * @returns An array of `DashboardStatuslineField` values in the original order with duplicates removed. If the input is not an array or yields no valid fields, returns the default statusline fields.
+ * @param value - The input to normalize; may be any value. Non-string entries, unknown fields, and duplicates are discarded.
+ * @returns An array of `DashboardStatuslineField` in their original order with duplicates removed. If the input is not an array or yields no valid fields, returns the default statusline fields.
  */
 function normalizeStatuslineFields(value: unknown): DashboardStatuslineField[] {
 	const defaultFields = [...(DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuStatuslineFields ?? [])];

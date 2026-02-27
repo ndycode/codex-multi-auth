@@ -169,6 +169,21 @@ function writeFamilyIndexes(
 	}
 }
 
+/**
+ * Normalize and clamp the global and per-family active account indexes to valid ranges.
+ *
+ * Mutates `storage` in-place: ensures `activeIndexByFamily` exists, clamps `activeIndex` to
+ * 0..(accounts.length - 1) (or 0 when there are no accounts), and resolves each family entry
+ * to a valid index within the same bounds.
+ *
+ * Concurrency: callers must synchronize externally when multiple threads/processes may write
+ * the same storage object. Filesystem notes: no platform-specific IO is performed here; when
+ * persisted to disk on Windows consumers should still ensure atomic writes. Token handling:
+ * this function does not read or modify authentication tokens and makes no attempt to redact
+ * sensitive fields.
+ *
+ * @param storage - The account storage object whose indexes will be normalized and clamped
+ */
 function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 	const count = storage.accounts.length;
 	const clamped = count === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, count - 1));
@@ -186,14 +201,14 @@ function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 }
 
 /**
- * Extracts the accountId and email from the first snapshot marked as active.
+ * Return the `accountId` and `email` from the first snapshot marked active.
  *
- * @param snapshots - Array of Codex CLI account snapshots to search through.
- * @returns An object with `accountId` and `email` from the first snapshot where `isActive` is true, or empty properties if none found.
+ * @param snapshots - Array of Codex CLI account snapshots to search
+ * @returns The `accountId` and `email` from the first snapshot whose `isActive` is true; properties are omitted if no active snapshot is found
  *
  * Concurrency: pure and side-effect free; safe to call concurrently.
  * Filesystem: behavior is independent of OS/filesystem semantics (including Windows).
- * Security: only `accountId` and `email` are returned; other potentially sensitive snapshot fields (e.g., tokens) are not exposed by this function.
+ * Security: only `accountId` and `email` are returned; other sensitive snapshot fields (for example tokens) are not exposed or returned by this function.
  */
 function readActiveFromSnapshots(
 	snapshots: CodexCliAccountSnapshot[],

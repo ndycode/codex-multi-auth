@@ -44,12 +44,12 @@ const ansi256Bg = (code: number): string => `\x1b[48;5;${code}m`;
 const truecolorBg = (r: number, g: number, b: number): string => `\x1b[48;2;${r};${g};${b}m`;
 
 /**
- * Determine the effective glyph mode, interpreting `"auto"` based on the environment.
+ * Resolve a glyph mode, interpreting `"auto"` to choose `"unicode"` or `"ascii"` based on the environment.
  *
- * Resolves `"auto"` to `"unicode"` when the terminal environment suggests Unicode is likely supported (Windows Terminal, VS Code integrated terminal, or TERM containing "xterm"); otherwise resolves to `"ascii"`. This function is synchronous and safe for concurrent use, performs no filesystem operations (including on Windows), and does not expose or log sensitive tokens.
+ * Safe for concurrent use, performs no filesystem operations (including on Windows), and does not expose or log sensitive tokens.
  *
- * @param mode - The requested glyph mode (`"ascii"`, `"unicode"`, or `"auto"`).
- * @returns The resolved glyph mode: `"unicode"` when Unicode is likely safe, `"ascii"` otherwise; if `mode` is not `"auto"`, returns it unchanged.
+ * @param mode - The requested glyph mode ("ascii", "unicode", or "auto")
+ * @returns `"unicode"` when Unicode is likely safe, `"ascii"` otherwise; if `mode` is not `"auto"`, returns it unchanged
  */
 function resolveGlyphMode(mode: UiGlyphMode): Exclude<UiGlyphMode, "auto"> {
 	if (mode !== "auto") return mode;

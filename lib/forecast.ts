@@ -44,10 +44,10 @@ export interface ForecastSummary {
 /**
  * Clamp a numeric risk score to the integer range 0–100.
  *
- * This function has no concurrency or filesystem side effects; callers are responsible for any token redaction or platform-specific handling.
+ * This function is pure and safe for concurrent use; it performs no filesystem operations (including no Windows-specific filesystem behavior) and does not perform token redaction.
  *
- * @param score - The input risk score to clamp; non-finite values produce 100.
- * @returns The input rounded to the nearest integer and constrained between 0 and 100; returns 100 if `score` is not finite.
+ * @param score - The input risk score; non-finite values produce 100
+ * @returns The input rounded to the nearest integer constrained between 0 and 100; returns 100 if `score` is not finite
  */
 function clampRisk(score: number): number {
 	if (!Number.isFinite(score)) return 100;
@@ -67,13 +67,11 @@ function getRiskLevel(score: number): ForecastRiskLevel {
 }
 
 /**
- * Finds the earliest future rate-limit reset timestamp for a specific rate-limit family on an account.
+ * Finds the earliest future rate-limit reset timestamp for a specified family on an account.
  *
- * Examines the account's rateLimitResetTimes and returns the smallest timestamp greater than `now`
- * whose key equals `family` or starts with `${family}:`. Concurrency: this function performs read-only
- * checks and is safe for concurrent reads (it does not mutate shared state). Filesystem: behavior is
- * independent of OS filesystem semantics (including Windows). Token redaction: this function does not
- * log or return tokens, but callers should avoid logging account metadata that may contain sensitive keys.
+ * Examines the account's `rateLimitResetTimes` and considers keys equal to `family` or starting with `${family}:`.
+ * Read-only and safe for concurrent reads; behavior is independent of OS filesystem semantics (including Windows).
+ * This function does not log or return tokens — callers should avoid logging full account metadata.
  *
  * @param account - Account metadata containing an optional `rateLimitResetTimes` map of keys to epoch-ms timestamps.
  * @param now - Reference time in milliseconds since epoch; only reset times strictly greater than `now` are considered.
@@ -102,7 +100,9 @@ function getRateLimitResetTimeForFamily(
 }
 
 /**
- * Computes the maximum positive remaining milliseconds until the primary or secondary quota resets.
+ * Determine the maximum positive remaining milliseconds until the primary or secondary quota resets.
+ *
+ * This function is pure and safe for concurrent use; it performs no filesystem I/O and does not redact tokens or other sensitive fields.
  *
  * @param snapshot - Quota snapshot containing `primary.resetAtMs` and `secondary.resetAtMs`
  * @param now - Current time in milliseconds (epoch ms) used as the reference point
@@ -135,14 +135,16 @@ function describeQuotaUsage(label: string, usedPercent: number | undefined): str
 }
 
 /**
- * Determines whether a token refresh failure is non-recoverable ("hard").
+ * Classifies a token refresh failure as non-recoverable ("hard").
  *
- * @param failure - Token failure object to classify; the message is inspected case-insensitively and may be redacted or partial.
- * @returns `true` if the failure is considered non-recoverable (hard), `false` otherwise.
+ * Inspects the failure reason, HTTP status code, and (case-insensitive) message content; redacted or partial messages may prevent detection.
+ *
+ * @param failure - Token failure object to classify; `message` may be redacted or partial.
+ * @returns `true` if the failure is considered non-recoverable, `false` otherwise.
  *
  * Notes:
- * - No concurrency or filesystem assumptions.
- * - Message matching is case-insensitive; redacted/partial messages may prevent detection.
+ * - Message matching is case-insensitive.
+ * - No concurrency, Windows filesystem, or I/O assumptions affect this classification.
  */
 export function isHardRefreshFailure(failure: TokenFailure): boolean {
 	if (failure.reason === "missing_refresh") return true;
@@ -159,12 +161,14 @@ export function isHardRefreshFailure(failure: TokenFailure): boolean {
 /**
  * Append a human-readable wait reason to a mutable reasons array when the wait time is positive.
  *
- * @param reasons - The array to append the formatted reason to; mutated in-place.
- * @param prefix - The leading text to describe the wait reason (e.g., "rate limit resets in").
- * @param waitMs - Wait time in milliseconds; an entry is appended only if this is greater than zero.
+ * Appends a single entry of the form "`prefix` <humanized wait time>" to `reasons` if `waitMs` > 0.
  *
- * Note: This function mutates `reasons` and is not concurrency-safe — callers must synchronize access if used concurrently.
- * It performs no filesystem operations and does not perform any token redaction; ensure `prefix` contains no sensitive data.
+ * Note: this function mutates `reasons` in-place, is not concurrency-safe, performs no filesystem operations
+ * (including on Windows), and does not perform any token redaction — ensure `prefix` contains no sensitive data.
+ *
+ * @param reasons - The array to append the formatted reason to; mutated in-place.
+ * @param prefix - Leading text describing the wait reason (e.g., "rate limit resets in").
+ * @param waitMs - Wait time in milliseconds; an entry is appended only if this is greater than zero.
  */
 function appendWaitReason(reasons: string[], prefix: string, waitMs: number): void {
 	if (waitMs <= 0) return;
@@ -291,10 +295,13 @@ export function evaluateForecastAccounts(inputs: ForecastAccountInput[]): Foreca
 }
 
 /**
- * Compare two forecast results for deterministic sorting.
+ * Determine ordering between two forecast results for a deterministic sort.
  *
- * Ordering: availability (ready < delayed < unavailable), shorter `waitMs` when both delayed,
- * lower `riskScore`, `isCurrent` preferred, then ascending `index`.
+ * Comparison priority: availability (ready < delayed < unavailable), then for delayed items shorter `waitMs`,
+ * then lower `riskScore`, then `isCurrent` (current preferred), then ascending `index`.
+ *
+ * This function performs no I/O, is safe for concurrent reads, does not access the filesystem (including on Windows),
+ * and does not perform token redaction.
  *
  * @param a - The first forecast result to compare
  * @param b - The second forecast result to compare
@@ -363,14 +370,12 @@ export function recommendForecastAccount(results: ForecastAccountResult[]): Fore
 }
 
 /**
- * Produce an aggregate summary of forecast results.
+ * Generate aggregate counts from forecast account results.
  *
- * Computes counts for total results and how many are `ready`, `delayed`, `unavailable`, and `highRisk`.
- * This function is pure and performs no I/O; it has no concurrency or filesystem side effects (safe to call on Windows),
- * and it does not expose or redacted tokens — input objects are read-only for counting purposes.
+ * This pure function performs no I/O, is safe for concurrent use and on Windows filesystems, and does not expose or redact tokens — it only reads the provided results for counting.
  *
- * @param results - Array of forecasted account results to summarize
- * @returns An object with aggregated counts: `total`, `ready`, `delayed`, `unavailable`, and `highRisk`
+ * @param results - Forecast account results to summarize
+ * @returns The aggregated counts: `total`, `ready`, `delayed`, `unavailable`, and `highRisk`
  */
 export function summarizeForecast(results: ForecastAccountResult[]): ForecastSummary {
 	return {

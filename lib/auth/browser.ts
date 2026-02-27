@@ -19,6 +19,16 @@ export function getBrowserOpener(): string {
 	return PLATFORM_OPENERS.linux;
 }
 
+/**
+ * Determines whether a given command name exists on the system PATH.
+ *
+ * @param command - The command name to check.
+ * @returns `true` if a matching executable is found on PATH (on Windows this includes PATHEXT extensions or the literal `"start"`), `false` otherwise.
+ *
+ * Concurrency: result reflects the current filesystem state and may change after return; no atomicity guarantees.
+ * Windows filesystem behavior: resolves executable candidates using PATHEXT extensions.
+ * Token handling: the `command` string is used verbatim for lookup and is not redacted or modified.
+ */
 function commandExists(command: string): boolean {
 	if (!command) return false;
 
@@ -55,12 +65,13 @@ function commandExists(command: string): boolean {
 }
 
 /**
- * Open a URL in the user's default browser using a platform-appropriate command.
+ * Launches the user's default browser to open the provided URL using a platform-appropriate command.
  *
- * This is a best-effort, fire-and-forget launcher: child process errors are ignored and the function
- * returns based on whether a launch was attempted. On Windows this uses PowerShell Start-Process and
- * escapes PowerShell meta-characters to avoid shell injection and filesystem/command-line quirks.
- * Callers must redact any sensitive tokens from `url` before calling.
+ * This is a best-effort, fire-and-forget launcher: it attempts a platform-specific spawn and ignores
+ * child-process errors. On Windows it uses PowerShell `Start-Process` with PowerShell meta-character
+ * escaping to reduce shell/filesystem quirks. Callers must redact any sensitive tokens (for example,
+ * OAuth codes) from `url` before calling. Invocations are not atomic—concurrent calls may race but are
+ * safe to perform.
  *
  * @param url - The URL to open; redact sensitive tokens (e.g., OAuth codes) before passing.
  * @returns `true` if a browser launch was attempted, `false` if no suitable opener was available or an exception occurred.
@@ -101,13 +112,13 @@ export function openBrowserUrl(url: string): boolean {
 }
 
 /**
- * Copy text to the system clipboard using a best-effort, platform-specific command.
+ * Copy text into the system clipboard using a best-effort, platform-specific command.
  *
- * May be called concurrently; concurrent invocations may interleave and there's no atomicity guarantee across processes.
- * On Windows the text is escaped to avoid PowerShell interpretation of special characters. This function does not redact
- * or log clipboard contents — callers must remove or mask sensitive tokens before calling.
+ * On Windows the text is escaped for PowerShell to avoid interpretation of special characters.
+ * This function makes no guarantees of atomicity across processes; concurrent invocations may interleave.
+ * Clipboard contents are not redacted or logged — callers must mask or remove sensitive tokens before calling.
  *
- * @param text - The text to copy; empty or falsy values cause no action and return `false`
+ * @param text - The text to copy; falsy or empty values produce no action
  * @returns `true` if a clipboard command was launched, `false` otherwise
  */
 export function copyTextToClipboard(text: string): boolean {
