@@ -27,19 +27,15 @@ interface ParsedSemver {
   prerelease: string[];
 }
 
-/**
- * Reads the package version from the repository's nearest package.json.
- *
- * Attempts to load package.json located one level above this module and returns its `version` field.
- * If the file cannot be read or parsed, returns `"0.0.0"`.
- *
- * Notes:
- * - Safe for concurrent calls (read-only filesystem access).
- * - Path resolution is OS-aware (uses the runtime module directory); behavior on Windows follows normal path semantics.
- * - This function returns only the version string and does not expose or redact tokens or other secrets.
- *
- * @returns The package `version` string from package.json, or `"0.0.0"` when unavailable.
- */
+const RETRYABLE_WRITE_ERRORS = new Set(["EBUSY", "EPERM"]);
+
+function sleepSync(ms: number): void {
+  const delay = Math.max(0, Math.floor(ms));
+  if (delay === 0) return;
+  const lock = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(lock, 0, 0, delay);
+}
+
 function getCurrentVersion(): string {
   try {
     const packageJsonPath = join(import.meta.dirname ?? __dirname, "..", "package.json");
@@ -50,18 +46,6 @@ function getCurrentVersion(): string {
   }
 }
 
-/**
- * Reads and parses the on-disk update-check cache if it exists.
- *
- * Returns the parsed cache object when the cache file is present and valid JSON; returns `null` if the file is missing or cannot be read/parsed.
- *
- * Notes:
- * - This is a read-only operation and performs no file locking; concurrent writes by other processes can cause this function to return `null`.
- * - Path resolution and platform-specific semantics (Windows paths) are handled by the surrounding code that provides `CACHE_FILE`.
- * - The function does not redact or validate cache contents; callers must ensure no sensitive tokens or secrets are written to the cache.
- *
- * @returns The parsed `UpdateCheckCache`, or `null` if absent or unreadable.
- */
 function loadCache(): UpdateCheckCache | null {
   try {
     if (!existsSync(CACHE_FILE)) return null;
@@ -72,39 +56,32 @@ function loadCache(): UpdateCheckCache | null {
   }
 }
 
-/**
- * Persists the update check cache to disk, creating the cache directory if needed.
- *
- * Writes `cache` as prettified JSON to the configured cache file, overwriting any existing file.
- * This function swallows errors and logs a warning on failure.
- *
- * Concurrency: callers should avoid concurrent writes to the cache file (no file-locking is applied).
- * Windows: path creation uses recursive directory creation and works on Windows path semantics.
- * Security: the function does not redact tokens or secrets; callers must ensure `cache` contains no sensitive data.
- *
- * @param cache - The update check cache object to persist (lastCheck, latestVersion, currentVersion)
- */
 function saveCache(cache: UpdateCheckCache): void {
   try {
     if (!existsSync(CACHE_DIR)) {
       mkdirSync(CACHE_DIR, { recursive: true });
     }
-    writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), "utf8");
+    const serialized = JSON.stringify(cache, null, 2);
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        writeFileSync(CACHE_FILE, serialized, "utf8");
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? "";
+        lastError = error as Error;
+        if (!RETRYABLE_WRITE_ERRORS.has(code) || attempt >= 3) {
+          throw error;
+        }
+        sleepSync(15 * (2 ** attempt));
+      }
+    }
+    if (lastError) throw lastError;
   } catch (error) {
     log.warn("Failed to save update cache", { error: (error as Error).message });
   }
 }
 
-/**
- * Parse a semantic version string into numeric core segments and prerelease identifiers.
- *
- * The function normalizes input by removing a leading `v` and dropping build metadata (the `+` suffix).
- * Non-numeric core segments are treated as `0`. Missing core segments default to `0`. Prerelease identifiers
- * are split on `.` and empty segments are ignored.
- *
- * @param version - The version string to parse (e.g., "v1.2.3-alpha.1+build.123")
- * @returns An object with `core` as `[major, minor, patch]` numbers and `prerelease` as an array of identifier strings
- */
 function parseSemver(version: string): ParsedSemver {
   const normalized = version.trim().replace(/^v/i, "");
   const [withoutBuild] = normalized.split("+");
@@ -126,20 +103,41 @@ function parseSemver(version: string): ParsedSemver {
   };
 }
 
-/**
- * Determine ordering between two semver prerelease identifier arrays.
- *
- * Compares corresponding prerelease segments using numeric comparison for purely numeric segments and locale-aware lexical comparison for non-numeric segments. Missing segments are considered lower than present segments.
- *
- * @param current - The current version's prerelease segments (e.g., ["alpha", "1"])
- * @param latest - The candidate/latest version's prerelease segments
- * @returns `1` if `latest` is greater, `-1` if `current` is greater, `0` if they are equivalent
- *
- * @remarks
- * - Pure, side-effect free, and safe for concurrent use.
- * - Performs no filesystem or network operations and does not read or redact tokens.
- * - Behavior is consistent across platforms (no Windows-specific filesystem behavior).
- */
+function comparePrerelease(current: string[], latest: string[]): number {
+  const maxLen = Math.max(current.length, latest.length);
+
+  for (let i = 0; i < maxLen; i++) {
+    const currentPart = current[i];
+    const latestPart = latest[i];
+
+    if (currentPart === undefined && latestPart === undefined) return 0;
+    if (currentPart === undefined) return 1;
+    if (latestPart === undefined) return -1;
+
+    if (currentPart === latestPart) continue;
+
+    const currentIsNumeric = /^\d+$/.test(currentPart);
+    const latestIsNumeric = /^\d+$/.test(latestPart);
+
+    if (currentIsNumeric && latestIsNumeric) {
+      const currentNum = Number.parseInt(currentPart, 10);
+      const latestNum = Number.parseInt(latestPart, 10);
+      if (latestNum > currentNum) return 1;
+      if (latestNum < currentNum) return -1;
+      continue;
+    }
+
+    if (currentIsNumeric && !latestIsNumeric) return 1;
+    if (!currentIsNumeric && latestIsNumeric) return -1;
+
+    const lexical = latestPart.localeCompare(currentPart, "en", { sensitivity: "case" });
+    if (lexical > 0) return 1;
+    if (lexical < 0) return -1;
+  }
+
+  return 0;
+}
+
 function compareVersions(current: string, latest: string): number {
   const parsedCurrent = parseSemver(current);
   const parsedLatest = parseSemver(latest);
@@ -164,16 +162,6 @@ function compareVersions(current: string, latest: string): number {
   return comparePrerelease(parsedCurrent.prerelease, parsedLatest.prerelease);
 }
 
-/**
- * Fetches the latest published version string for the package from the configured NPM registry.
- *
- * Safe to call concurrently — each invocation uses its own AbortController and timer.
- * Performs network I/O only (no filesystem access; Windows path semantics do not apply).
- * No authentication tokens or Authorization headers are sent; logged status codes and error
- * messages are emitted without including sensitive tokens.
- *
- * @returns The latest version string from the registry, or `null` if unavailable.
- */
 async function fetchLatestVersion(): Promise<string | null> {
   try {
     const controller = new AbortController();

@@ -581,7 +581,7 @@ describe("RefreshQueue", () => {
 		});
 	});
 
-	describe("cross-process lease dedupe", () => {
+  describe("cross-process lease dedupe", () => {
 		it("reuses refresh result across queue instances via lease files", async () => {
 			const leaseDir = await mkdtemp(join(tmpdir(), "codex-refresh-lease-int-"));
 			const leaseA = new RefreshLeaseCoordinator({
@@ -628,7 +628,56 @@ describe("RefreshQueue", () => {
 			]);
 			expect(ownerResult).toEqual(delayedResult);
 			expect(followerResult).toEqual(delayedResult);
+      expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+    });
+  });
+
+	describe("lease failure handling", () => {
+		it("falls back to local refresh when lease acquisition throws", async () => {
+			const mockResult = {
+				type: "success" as const,
+				access: "fallback-access",
+				refresh: "fallback-refresh",
+				expires: Date.now() + 3600000,
+			};
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue(mockResult);
+
+			const leaseCoordinator = {
+				acquire: vi.fn().mockRejectedValue(new Error("EBUSY lease dir")),
+			} as unknown as RefreshLeaseCoordinator;
+
+			const queue = new RefreshQueue(30_000, leaseCoordinator);
+			const result = await queue.refresh("token-with-acquire-error");
+
+			expect(result).toEqual(mockResult);
 			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+		});
+
+		it("swallows lease release errors and still returns token result", async () => {
+			const mockResult = {
+				type: "success" as const,
+				access: "release-safe-access",
+				refresh: "release-safe-refresh",
+				expires: Date.now() + 3600000,
+			};
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue(mockResult);
+
+			const release = vi
+				.fn()
+				.mockRejectedValueOnce(new Error("publish failed"))
+				.mockRejectedValueOnce(new Error("unlock failed"));
+			const leaseCoordinator = {
+				acquire: vi.fn().mockResolvedValue({
+					role: "owner" as const,
+					release,
+				}),
+			} as unknown as RefreshLeaseCoordinator;
+
+			const queue = new RefreshQueue(30_000, leaseCoordinator);
+			const result = await queue.refresh("token-with-release-error");
+
+			expect(result).toEqual(mockResult);
+			expect(release).toHaveBeenCalledTimes(2);
 		});
 	});
 });

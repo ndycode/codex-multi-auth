@@ -6,7 +6,7 @@
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import type { AccountIdSource } from "../types.js";
 
-export type CooldownReason = "auth-failure" | "network-error";
+export type CooldownReason = "auth-failure" | "network-error" | "rate-limit";
 
 export interface RateLimitStateV3 {
 	[key: string]: number | undefined;

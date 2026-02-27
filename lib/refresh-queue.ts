@@ -125,7 +125,16 @@ export class RefreshQueue {
     // without waiting on cross-process lease checks.
     const startedAt = Date.now();
     const promise = (async (): Promise<TokenResult> => {
-      const lease = await this.leaseCoordinator.acquire(refreshToken);
+      let lease: Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>;
+      try {
+        lease = await this.leaseCoordinator.acquire(refreshToken);
+      } catch (error) {
+        log.warn("Refresh lease acquire failed; falling back to local refresh", {
+          tokenSuffix: refreshToken.slice(-6),
+          error: (error as Error)?.message ?? String(error),
+        });
+        return this.executeRefreshWithRotationTracking(refreshToken);
+      }
       if (lease.role === "follower" && lease.result) {
         log.info("Using refresh result from cross-process lease", {
           tokenSuffix: refreshToken.slice(-6),
@@ -135,10 +144,24 @@ export class RefreshQueue {
 
       try {
         const result = await this.executeRefreshWithRotationTracking(refreshToken);
-        await lease.release(result);
+        try {
+          await lease.release(result);
+        } catch (error) {
+          log.warn("Failed to publish lease refresh result", {
+            tokenSuffix: refreshToken.slice(-6),
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
         return result;
       } finally {
-        await lease.release();
+        try {
+          await lease.release();
+        } catch (error) {
+          log.warn("Failed to release refresh lease", {
+            tokenSuffix: refreshToken.slice(-6),
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
       }
     })();
     this.pending.set(refreshToken, { promise, startedAt });

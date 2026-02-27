@@ -12,6 +12,7 @@ const DEFAULT_LEASE_TTL_MS = 30_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 35_000;
 const DEFAULT_POLL_INTERVAL_MS = 150;
 const DEFAULT_RESULT_TTL_MS = 20_000;
+const RETRYABLE_IO_ERRORS = new Set(["EBUSY", "EPERM", "EMFILE", "ENFILE"]);
 
 interface LeaseFilePayload {
 	tokenHash: string;
@@ -26,6 +27,11 @@ interface ResultFilePayload {
 	result: TokenResult;
 }
 
+type LeaseFsOps = Pick<
+	typeof fs,
+	"mkdir" | "open" | "writeFile" | "rename" | "unlink" | "readFile" | "stat" | "readdir"
+>;
+
 export interface RefreshLeaseCoordinatorOptions {
 	enabled?: boolean;
 	leaseDir?: string;
@@ -33,6 +39,7 @@ export interface RefreshLeaseCoordinatorOptions {
 	waitTimeoutMs?: number;
 	pollIntervalMs?: number;
 	resultTtlMs?: number;
+	fsOps?: LeaseFsOps;
 }
 
 export interface RefreshLeaseHandle {
@@ -41,13 +48,6 @@ export interface RefreshLeaseHandle {
 	release: (result?: TokenResult) => Promise<void>;
 }
 
-/**
- * Parses an environment-style string into a boolean flag.
- *
- * @param value - The raw environment value (may be undefined). Comparison is case-insensitive and trims surrounding whitespace.
- * Accepted truthy values: `"1"`, `"true"`, `"yes"`. Accepted falsy values: `"0"`, `"false"`, `"no"`.
- * @returns `true` for accepted truthy values, `false` for accepted falsy values, or `undefined` if `value` is `undefined` or not recognized.
- */
 function parseBooleanEnv(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined;
 	const normalized = value.trim().toLowerCase();
@@ -56,63 +56,26 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
 	return undefined;
 }
 
-/**
- * Parse a base-10 integer from an environment-style string, returning undefined for absent or invalid input.
- *
- * @param value - The string to parse; may be `undefined`
- * @returns The parsed integer, or `undefined` if `value` is `undefined` or not a valid base-10 integer
- */
 function parseEnvInt(value: string | undefined): number | undefined {
 	if (value === undefined) return undefined;
 	const parsed = Number.parseInt(value, 10);
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-/**
- * Delays execution for the specified number of milliseconds.
- *
- * @param delayMs - Number of milliseconds to wait
- * @returns No value
- */
 function sleep(delayMs: number): Promise<void> {
 	return new Promise((resolve) => {
 		setTimeout(resolve, delayMs);
 	});
 }
 
-/**
- * Produces a stable, redacted filename-safe identifier for a refresh token using SHA-256.
- *
- * This identifier is deterministic across processes (suitable for concurrency checks), safe to use
- * in file paths on Windows, and avoids storing the raw token value.
- *
- * @param refreshToken - The raw refresh token to redact before persistence or comparison
- * @returns The SHA-256 digest of `refreshToken` as a lowercase hexadecimal string
- */
 function hashRefreshToken(refreshToken: string): string {
 	return createHash("sha256").update(refreshToken).digest("hex");
 }
 
-/**
- * Narrows an unknown value to a Record<string, unknown> (a non-null object with string keys).
- *
- * @param value - The value to test
- * @returns `true` if `value` is a non-null object (narrowable to `Record<string, unknown>`), `false` otherwise.
- */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object";
 }
 
-/**
- * Validates and normalizes a raw lease file payload read from disk into a LeaseFilePayload.
- *
- * @param raw - The parsed JSON value from a lease file; expected to be an object with `tokenHash` (non-empty string), `pid`, `acquiredAt`, and `expiresAt` (numeric timestamps).
- * @returns A normalized LeaseFilePayload with integer `pid`, `acquiredAt`, and `expiresAt` when the input is valid, or `null` if the structure or types are invalid.
- *
- * Notes:
- * - Concurrency: callers should treat the returned payload as a best-effort snapshot; lease files may be modified by other processes after parsing.
- * - Filesystem quirks: on Windows, mtime/locking semantics may differ; this function only validates in-memory content and does not rely on OS locking behavior.
- * - Token handling: only the hash (`tokenHash`) is validated and returned; no raw tokens are read or exposed by this function.
 function parseLeasePayload(raw: unknown): LeaseFilePayload | null {
 	if (!isRecord(raw)) return null;
 	const tokenHash = typeof raw.tokenHash === "string" ? raw.tokenHash : "";
@@ -135,18 +98,6 @@ function parseLeasePayload(raw: unknown): LeaseFilePayload | null {
 	};
 }
 
-/**
- * Validate and convert a raw value (typically JSON from a result file) into a ResultFilePayload.
- *
- * This function is pure and side-effect-free; it is safe to call concurrently and does not interact
- * with the filesystem or exhibit OS-specific behavior (Windows semantics do not apply here).
- * The `tokenHash` handled by this function is treated as an opaque, hashed identifier and does not
- * expose any original token material.
- *
- * @param raw - The raw input (for example, the result of JSON.parse on a result file)
- * @returns The parsed ResultFilePayload when `raw` contains a valid `tokenHash` (non-empty string),
- * `createdAt` (finite number), and a valid `result`; `null` otherwise.
- */
 function parseResultPayload(raw: unknown): ResultFilePayload | null {
 	if (!isRecord(raw)) return null;
 	const tokenHash = typeof raw.tokenHash === "string" ? raw.tokenHash : "";
@@ -160,47 +111,52 @@ function parseResultPayload(raw: unknown): ResultFilePayload | null {
 	};
 }
 
-/**
- * Read and parse a JSON file from disk as a best-effort operation.
- *
- * This helper swallows I/O and parse errors and may return `null` if the file does not exist,
- * is unreadable, locked by another process (platform-dependent, e.g. Windows), or contains invalid JSON.
- * The file may change concurrently; callers must treat `null` as absence of valid data.
- * This function does not redact or sanitize sensitive values — callers are responsible for token/secret redaction.
- *
- * @param path - Filesystem path to the JSON file to read
- * @returns The parsed JSON value, or `null` if the file could not be read or parsed
- */
-async function readJson(path: string): Promise<unknown | null> {
+async function readJson(path: string, fsOps: LeaseFsOps): Promise<unknown | null> {
 	try {
-		const content = await fs.readFile(path, "utf8");
+		const content = await fsOps.readFile(path, "utf8");
 		return JSON.parse(content) as unknown;
 	} catch {
 		return null;
 	}
 }
 
-/**
- * Attempts to remove a filesystem entry at the given path without throwing on failure.
- *
- * Performs a best-effort unlink: the function ignores a missing file (ENOENT) and logs other failures at debug level.
- * Safe to call concurrently from multiple processes; callers should treat it as a non-fatal cleanup helper.
- * On Windows, unlink can fail for files held open by another process — such failures are logged but not propagated.
- *
- * @param path - Filesystem path to remove. Do not embed raw secrets or refresh tokens in this string; prefer hashed identifiers. 
- */
-async function safeUnlink(path: string): Promise<void> {
-	try {
-		await fs.unlink(path);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
+async function safeUnlink(
+	path: string,
+	options?: { attempts?: number; baseDelayMs?: number },
+	fsOps: LeaseFsOps = fs,
+): Promise<boolean> {
+	const attempts = Math.max(1, Math.floor(options?.attempts ?? 4));
+	const baseDelayMs = Math.max(5, Math.floor(options?.baseDelayMs ?? 15));
+	for (let attempt = 0; attempt < attempts; attempt++) {
+		try {
+			await fsOps.unlink(path);
+			return true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return true;
+			const canRetry = RETRYABLE_IO_ERRORS.has(code ?? "");
+			if (canRetry && attempt + 1 < attempts) {
+				await sleep(baseDelayMs * (2 ** attempt));
+				continue;
+			}
 			log.debug("Failed to remove lease artifact", {
 				path,
 				error: error instanceof Error ? error.message : String(error),
+				code,
 			});
+			return false;
 		}
 	}
+	return false;
+}
+
+type LockStalenessAssessment =
+	| { state: "stale"; reason: string }
+	| { state: "active"; reason: string }
+	| { state: "unknown"; reason: string };
+
+function isRetryableFsCode(code: string | undefined): boolean {
+	return RETRYABLE_IO_ERRORS.has(code ?? "");
 }
 
 export class RefreshLeaseCoordinator {
@@ -210,6 +166,7 @@ export class RefreshLeaseCoordinator {
 	private readonly waitTimeoutMs: number;
 	private readonly pollIntervalMs: number;
 	private readonly resultTtlMs: number;
+	private readonly fsOps: LeaseFsOps;
 
 	constructor(options: RefreshLeaseCoordinatorOptions = {}) {
 		this.enabled = options.enabled ?? true;
@@ -218,6 +175,7 @@ export class RefreshLeaseCoordinator {
 		this.waitTimeoutMs = Math.max(0, Math.floor(options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS));
 		this.pollIntervalMs = Math.max(50, Math.floor(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
 		this.resultTtlMs = Math.max(1_000, Math.floor(options.resultTtlMs ?? DEFAULT_RESULT_TTL_MS));
+		this.fsOps = options.fsOps ?? fs;
 	}
 
 	static fromEnvironment(): RefreshLeaseCoordinator {
@@ -247,7 +205,7 @@ export class RefreshLeaseCoordinator {
 		const tokenHash = hashRefreshToken(refreshToken);
 		const lockPath = join(this.leaseDir, `${tokenHash}.lock`);
 		const resultPath = join(this.leaseDir, `${tokenHash}.result.json`);
-		await fs.mkdir(this.leaseDir, { recursive: true });
+		await this.fsOps.mkdir(this.leaseDir, { recursive: true });
 		void this.pruneExpiredArtifacts();
 
 		const deadline = Date.now() + this.waitTimeoutMs;
@@ -264,7 +222,7 @@ export class RefreshLeaseCoordinator {
 			}
 
 			try {
-				const handle = await fs.open(lockPath, "wx");
+				const handle = await this.fsOps.open(lockPath, "wx");
 				try {
 					const now = Date.now();
 					const payload: LeaseFilePayload = {
@@ -288,8 +246,17 @@ export class RefreshLeaseCoordinator {
 					return this.createBypassHandle("acquire-error");
 				}
 
-				if (await this.isLockStale(lockPath, tokenHash)) {
-					await safeUnlink(lockPath);
+				const stale = await this.assessLockStaleness(lockPath, tokenHash);
+				if (stale.state === "stale") {
+					const removed = await safeUnlink(lockPath, undefined, this.fsOps);
+					if (removed) continue;
+					if (Date.now() >= deadline) {
+						log.warn("Refresh lease wait timeout while stale lock could not be removed", {
+							waitTimeoutMs: this.waitTimeoutMs,
+						});
+						return this.createBypassHandle("wait-timeout");
+					}
+					await sleep(this.pollIntervalMs);
 					continue;
 				}
 
@@ -330,7 +297,7 @@ export class RefreshLeaseCoordinator {
 						await this.writeResult(resultPath, tokenHash, result);
 					}
 				} finally {
-					await safeUnlink(lockPath);
+					await safeUnlink(lockPath, undefined, this.fsOps);
 				}
 			},
 		};
@@ -348,10 +315,10 @@ export class RefreshLeaseCoordinator {
 		};
 		const tempPath = `${resultPath}.${process.pid}.${Date.now()}.tmp`;
 		try {
-			await fs.writeFile(tempPath, `${JSON.stringify(payload)}\n`, "utf8");
-			await fs.rename(tempPath, resultPath);
+			await this.fsOps.writeFile(tempPath, `${JSON.stringify(payload)}\n`, "utf8");
+			await this.fsOps.rename(tempPath, resultPath);
 		} finally {
-			await safeUnlink(tempPath);
+			await safeUnlink(tempPath, undefined, this.fsOps);
 		}
 	}
 
@@ -360,41 +327,60 @@ export class RefreshLeaseCoordinator {
 		tokenHash: string,
 	): Promise<TokenResult | null> {
 		if (!existsSync(resultPath)) return null;
-		const parsed = parseResultPayload(await readJson(resultPath));
+		const parsed = parseResultPayload(await readJson(resultPath, this.fsOps));
 		if (!parsed || parsed.tokenHash !== tokenHash) {
 			return null;
 		}
 		const ageMs = Date.now() - parsed.createdAt;
 		if (ageMs > this.resultTtlMs) {
-			await safeUnlink(resultPath);
+			await safeUnlink(resultPath, undefined, this.fsOps);
 			return null;
 		}
 		return parsed.result;
 	}
 
-	private async isLockStale(lockPath: string, tokenHash: string): Promise<boolean> {
-		let staleByPayload = false;
-		const parsed = parseLeasePayload(await readJson(lockPath));
-		if (!parsed || parsed.tokenHash !== tokenHash) {
-			staleByPayload = true;
-		} else if (parsed.expiresAt <= Date.now()) {
-			staleByPayload = true;
+	private async assessLockStaleness(
+		lockPath: string,
+		tokenHash: string,
+	): Promise<LockStalenessAssessment> {
+		const raw = await readJson(lockPath, this.fsOps);
+		if (raw === null) {
+			if (!existsSync(lockPath)) {
+				return { state: "stale", reason: "missing" };
+			}
+			return { state: "unknown", reason: "unreadable" };
 		}
-		if (staleByPayload) {
-			return true;
+
+		const parsed = parseLeasePayload(raw);
+		if (!parsed) {
+			return { state: "unknown", reason: "invalid-payload" };
+		}
+		if (parsed.tokenHash !== tokenHash) {
+			return { state: "unknown", reason: "token-mismatch" };
+		}
+		if (parsed.expiresAt <= Date.now()) {
+			return { state: "stale", reason: "expired" };
 		}
 
 		try {
-			const stat = await fs.stat(lockPath);
-			return Date.now() - stat.mtimeMs > this.leaseTtlMs;
-		} catch {
-			return true;
+			const stat = await this.fsOps.stat(lockPath);
+			if (Date.now() - stat.mtimeMs > this.leaseTtlMs) {
+				return { state: "stale", reason: "mtime-expired" };
+			}
+			return { state: "active", reason: "fresh" };
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return { state: "stale", reason: "missing" };
+			if (isRetryableFsCode(code) || code === "EACCES") {
+				return { state: "unknown", reason: `stat-${String(code).toLowerCase()}` };
+			}
+			return { state: "unknown", reason: "stat-error" };
 		}
 	}
 
 	private async pruneExpiredArtifacts(): Promise<void> {
 		try {
-			const entries = await fs.readdir(this.leaseDir, { withFileTypes: true });
+			const entries = await this.fsOps.readdir(this.leaseDir, { withFileTypes: true });
 			const now = Date.now();
 			const maxAgeMs = Math.max(this.leaseTtlMs, this.resultTtlMs) * 2;
 			for (const entry of entries) {
@@ -402,9 +388,9 @@ export class RefreshLeaseCoordinator {
 				if (!entry.name.endsWith(".lock") && !entry.name.endsWith(".result.json")) continue;
 				const fullPath = join(this.leaseDir, entry.name);
 				try {
-					const stat = await fs.stat(fullPath);
+					const stat = await this.fsOps.stat(fullPath);
 					if (now - stat.mtimeMs > maxAgeMs) {
-						await safeUnlink(fullPath);
+						await safeUnlink(fullPath, undefined, this.fsOps);
 					}
 				} catch {
 					// Best effort.
