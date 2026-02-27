@@ -2,19 +2,19 @@
 
 Complete CLI and hotkey reference for `codex-multi-auth`.
 
-* * *
+---
 
 ## Canonical Command Family
 
 Use `codex auth ...` for account operations.
 
-Supported aliases:
+Compatibility aliases:
 
 - `codex multi auth ...`
 - `codex multi-auth ...`
 - `codex multiauth ...`
 
-* * *
+---
 
 ## Primary Commands
 
@@ -27,7 +27,7 @@ Supported aliases:
 | `codex auth check` | Run quick account health check |
 | `codex auth features` | Print implemented feature list |
 
-* * *
+---
 
 ## Advanced Commands
 
@@ -51,7 +51,7 @@ Common flags:
 | `--out <path>` | report | write report file |
 | `--no-restore` | verify-flagged | verify only, do not restore |
 
-* * *
+---
 
 ## Dashboard Hotkeys
 
@@ -66,7 +66,7 @@ Common flags:
 | `?` | Toggle help |
 | `Q` | Back/cancel |
 
-### Account Detail Menu
+### Account Details
 
 | Key | Action |
 | --- | --- |
@@ -83,12 +83,12 @@ Common flags:
 | `Enter` | Toggle/select/open |
 | `1-9` | Quick toggle for numbered options |
 | `S` | Save |
-| `R` | Reset (where applicable) |
+| `R` | Reset |
 | `Q` | Back or Save+Back (context dependent) |
 | `[` / `]` | Reorder fields in summary settings |
 | `+` / `-` | Adjust focused numeric backend setting |
 
-* * *
+---
 
 ## Useful Workflows
 
@@ -108,25 +108,7 @@ codex auth fix
 codex auth doctor --fix
 ```
 
-Flagged account workflow:
-
-```bash
-codex auth verify-flagged --json
-```
-
-* * *
-
-## Troubleshooting Commands
-
-```bash
-where codex
-which codex
-codex --version
-codex auth status
-codex multi auth status
-```
-
-* * *
+---
 
 ## Related
 

@@ -2,7 +2,7 @@
 
 Canonical and legacy file paths for account/settings/runtime data.
 
-* * *
+---
 
 ## Canonical Root
 
@@ -14,7 +14,7 @@ Override root:
 
 - `CODEX_MULTI_AUTH_DIR=<path>`
 
-* * *
+---
 
 ## Canonical Files
 
@@ -34,44 +34,40 @@ Override root:
 Notes:
 
 - `~/.codex/multi-auth/*` is owned by this project.
-- `~/.codex/auth.json` and `~/.codex/accounts.json` are owned by official Codex CLI and may be synced by this project.
+- `~/.codex/auth.json` and `~/.codex/accounts.json` are owned by official Codex CLI.
 
-* * *
+---
 
-## Project-Scoped Account Paths
+## Project-Scoped Paths
 
-When project-scoped behavior is enabled, account files are namespaced under:
+When project-scoped behavior is enabled:
 
 - `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`
 
 `<project-key>` is derived from normalized project path + short hash.
 
-* * *
+---
 
-## Legacy Compatibility Paths
+## Legacy Compatibility
 
-Legacy compatibility paths may still be detected/read during migration.
-Exact legacy path values are internal compatibility details and are not part of the canonical user workflow.
+Legacy compatibility paths may still be discovered/read during migration.
+These paths are migration-only and are not canonical for new setup.
 
-Example legacy roots that might be discovered in older installs:
+Examples from older installs:
 
 - `~/.opencode/`
 - `~/DevTools/config/codex/`
 
-Canonical behavior should be documented against `~/.codex/multi-auth`.
+---
 
-* * *
-
-## Verify Paths in Your Environment
+## Verify Paths
 
 ```bash
 codex auth status
 codex auth list
 ```
 
-Inspect files manually if needed.
-
-* * *
+---
 
 ## Related
 

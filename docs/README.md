@@ -1,8 +1,8 @@
 # Documentation Portal
 
-Use this portal to navigate user docs, references, and maintainer docs.
+Use this portal to navigate user guides, references, and maintainer docs.
 
-* * *
+---
 
 ## Start Here
 
@@ -11,48 +11,49 @@ Use this portal to navigate user docs, references, and maintainer docs.
 3. [Configuration](configuration.md)
 4. [Troubleshooting](troubleshooting.md)
 
-* * *
+---
 
 ## User Guides
 
-| Page | What it answers |
+| Page | Purpose |
 | --- | --- |
-| [index.md](index.md) | Fast docs landing page |
-| [getting-started.md](getting-started.md) | How to install, login, add accounts, and run first checks |
-| [features.md](features.md) | What all implemented features do |
-| [configuration.md](configuration.md) | How to configure behavior and reliability settings |
-| [troubleshooting.md](troubleshooting.md) | What to do when login/switch/limits fail |
-| [privacy.md](privacy.md) | Where data is stored and what is sent over network |
-| [upgrade.md](upgrade.md) | How to migrate from older flows and legacy paths |
-| [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | GitHub-ready release notes for the first beta |
+| [index.md](index.md) | Fast landing page with daily commands |
+| [getting-started.md](getting-started.md) | Install, login, check, and switch accounts |
+| [features.md](features.md) | Complete feature matrix |
+| [configuration.md](configuration.md) | Settings model, presets, and env overrides |
+| [troubleshooting.md](troubleshooting.md) | Recovery playbooks and command diagnostics |
+| [privacy.md](privacy.md) | Data handling and local file storage |
+| [upgrade.md](upgrade.md) | Migration from older package/path layouts |
+| [releases/v0.1.0.md](releases/v0.1.0.md) | Stable release notes |
+| [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease notes |
 
-* * *
+---
 
 ## Reference
 
-| Page | What it answers |
+| Page | Purpose |
 | --- | --- |
 | [reference/commands.md](reference/commands.md) | Full command and hotkey reference |
 | [reference/settings.md](reference/settings.md) | Dashboard/backend settings reference |
-| [reference/storage-paths.md](reference/storage-paths.md) | Current and legacy file path matrix |
-| [STYLE_GUIDE.md](STYLE_GUIDE.md) | Documentation tone and formatting rules |
+| [reference/storage-paths.md](reference/storage-paths.md) | Canonical + legacy storage matrix |
+| [STYLE_GUIDE.md](STYLE_GUIDE.md) | Documentation style rules |
 
-* * *
+---
 
 ## Maintainer Docs
 
-| Page | What it answers |
+| Page | Purpose |
 | --- | --- |
-| [DOCUMENTATION.md](DOCUMENTATION.md) | How docs are structured and maintained |
-| [development/ARCHITECTURE.md](development/ARCHITECTURE.md) | Runtime architecture and request/account flow |
-| [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Full config field inventory |
-| [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Resolution and precedence flow |
-| [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map for repo paths |
-| [development/TESTING.md](development/TESTING.md) | Test matrix and release gate |
+| [DOCUMENTATION.md](DOCUMENTATION.md) | Documentation governance and QA contract |
+| [development/ARCHITECTURE.md](development/ARCHITECTURE.md) | Runtime architecture |
+| [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Config key inventory |
+| [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Config resolution flow |
+| [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by path |
+| [development/TESTING.md](development/TESTING.md) | Test matrix and release gates |
 | [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | TUI quality checklist |
-| [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark guide |
+| [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark methodology |
 
-* * *
+---
 
 ## Related
 

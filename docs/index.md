@@ -2,7 +2,7 @@
 
 Codex CLI-first multi-account OAuth docs in one place.
 
-* * *
+---
 
 ## Quick Start
 
@@ -18,9 +18,9 @@ Then continue with:
 - [Configuration](configuration.md)
 - [Troubleshooting](troubleshooting.md)
 
-* * *
+---
 
-## Quick Commands
+## Daily Commands
 
 ```bash
 codex auth forecast --live
@@ -29,21 +29,20 @@ codex auth doctor --fix
 codex auth report --live --json
 ```
 
-* * *
+---
 
 ## Documentation Sections
 
-- User guides: [README.md](README.md)
-- Full features list: [features.md](features.md)
-- Command reference: [reference/commands.md](reference/commands.md)
-- Settings reference: [reference/settings.md](reference/settings.md)
-- Storage paths: [reference/storage-paths.md](reference/storage-paths.md)
-- Development internals: [development/](development/)
+- Portal: [README.md](README.md)
+- User guides: [getting-started.md](getting-started.md), [features.md](features.md), [configuration.md](configuration.md)
+- References: [reference/commands.md](reference/commands.md), [reference/settings.md](reference/settings.md), [reference/storage-paths.md](reference/storage-paths.md)
+- Release notes: [releases/v0.1.0.md](releases/v0.1.0.md)
+- Maintainer docs: [development/](development/)
 
-* * *
+---
 
-## Notes
+## Policy
 
-- `codex auth ...` is the canonical account-management flow.
-- Legacy path/command notes live in [upgrade.md](upgrade.md).
-- Non-auth `codex` commands are forwarded to the official `@openai/codex` CLI by the wrapper.
+- Canonical package: `codex-multi-auth`
+- Canonical account workflow: `codex auth ...`
+- Legacy compatibility notes only: [upgrade.md](upgrade.md) and [reference/storage-paths.md](reference/storage-paths.md)

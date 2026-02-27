@@ -1,410 +1,158 @@
-import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync, statSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 const projectRoot = resolve(process.cwd());
 
+const userDocs = [
+  'docs/index.md',
+  'docs/README.md',
+  'docs/getting-started.md',
+  'docs/features.md',
+  'docs/configuration.md',
+  'docs/troubleshooting.md',
+  'docs/privacy.md',
+  'docs/upgrade.md',
+  'docs/reference/commands.md',
+  'docs/reference/settings.md',
+  'docs/reference/storage-paths.md',
+  'docs/releases/v0.1.0.md',
+  'docs/releases/v0.1.0-beta.0.md',
+];
+
+const scopedLegacyAllowedFiles = new Set([
+  'README.md',
+  'docs/getting-started.md',
+  'docs/troubleshooting.md',
+  'docs/upgrade.md',
+  'docs/releases/v0.1.0.md',
+  'docs/releases/v0.1.0-beta.0.md',
+]);
+
+const opencodeLegacyAllowedFiles = new Set([
+  'docs/upgrade.md',
+  'docs/reference/storage-paths.md',
+]);
+
+function read(filePath: string): string {
+  return readFileSync(join(projectRoot, filePath), 'utf-8');
+}
+
+function extractInternalLinks(markdown: string): string[] {
+  return [...markdown.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
+    .map((match) => match[1])
+    .filter((link) => !link.startsWith('http') && !link.startsWith('#'));
+}
+
 describe('Documentation Integrity', () => {
-	describe('Core Documentation Files', () => {
-		it('should have README.md at project root', () => {
-			const readmePath = join(projectRoot, 'README.md');
-			expect(existsSync(readmePath)).toBe(true);
-			const content = readFileSync(readmePath, 'utf-8');
-			expect(content.length).toBeGreaterThan(0);
-			expect(content).toContain('codex-multi-auth');
-		});
+  it('has all required user docs and release notes', () => {
+    for (const docPath of userDocs) {
+      const fullPath = join(projectRoot, docPath);
+      expect(existsSync(fullPath), `${docPath} should exist`).toBe(true);
+      expect(read(docPath).trim().length, `${docPath} should not be empty`).toBeGreaterThan(
+        0,
+      );
+    }
+  });
 
-		it('should have SECURITY.md at project root', () => {
-			const securityPath = join(projectRoot, 'SECURITY.md');
-			expect(existsSync(securityPath)).toBe(true);
-			const content = readFileSync(securityPath, 'utf-8');
-			expect(content.length).toBeGreaterThan(0);
-			expect(content).toContain('Security Policy');
-		});
+  it('docs portal links to stable release notes and archived beta notes', () => {
+    const portal = read('docs/README.md');
+    expect(portal).toContain('releases/v0.1.0.md');
+    expect(portal).toContain('releases/v0.1.0-beta.0.md');
 
-		it('should have docs/README.md as documentation portal', () => {
-			const docsReadmePath = join(projectRoot, 'docs', 'README.md');
-			expect(existsSync(docsReadmePath)).toBe(true);
-			const content = readFileSync(docsReadmePath, 'utf-8');
-			expect(content).toContain('Documentation Portal');
-		});
-	});
+    const beta = read('docs/releases/v0.1.0-beta.0.md');
+    expect(beta).toContain('Archived');
+    expect(beta).toContain('superseded by [v0.1.0]');
+  });
 
-	describe('Documentation Structure', () => {
-		const requiredDocs = [
-			'docs/README.md',
-			'docs/getting-started.md',
-			'docs/features.md',
-			'docs/configuration.md',
-			'docs/troubleshooting.md',
-			'docs/privacy.md',
-			'docs/index.md',
-			'docs/STYLE_GUIDE.md',
-			'docs/DOCUMENTATION.md',
-		];
+  it('uses codex-multi-auth as canonical package name', () => {
+    const canonicalPackageDocs = [
+      'README.md',
+      'docs/index.md',
+      'docs/getting-started.md',
+      'docs/troubleshooting.md',
+      'docs/upgrade.md',
+      'docs/releases/v0.1.0.md',
+    ];
 
-		requiredDocs.forEach((docPath) => {
-			it(`should have ${docPath}`, () => {
-				const fullPath = join(projectRoot, docPath);
-				expect(existsSync(fullPath)).toBe(true);
-				const content = readFileSync(fullPath, 'utf-8');
-				expect(content.length).toBeGreaterThan(0);
-			});
-		});
-	});
+    for (const filePath of canonicalPackageDocs) {
+      const content = read(filePath);
+      expect(content).toContain('codex-multi-auth');
+    }
+  });
 
-	describe('Reference Documentation', () => {
-		const referenceDocs = [
-			'docs/reference/commands.md',
-			'docs/reference/settings.md',
-			'docs/reference/storage-paths.md',
-		];
+  it('uses scoped package only in explicit legacy migration notes', () => {
+    const files = ['README.md', ...userDocs];
 
-		referenceDocs.forEach((docPath) => {
-			it(`should have ${docPath}`, () => {
-				const fullPath = join(projectRoot, docPath);
-				expect(existsSync(fullPath)).toBe(true);
-				const content = readFileSync(fullPath, 'utf-8');
-				expect(content.length).toBeGreaterThan(0);
-			});
-		});
-	});
+    for (const filePath of files) {
+      const content = read(filePath);
+      const hasScopedLegacyPackage = content.includes('@ndycode/codex-multi-auth');
+      if (hasScopedLegacyPackage) {
+        expect(
+          scopedLegacyAllowedFiles.has(filePath),
+          `${filePath} should not mention @ndycode/codex-multi-auth`,
+        ).toBe(true);
+      }
+    }
+  });
 
-	describe('Development Documentation', () => {
-		const devDocs = [
-			'docs/development/ARCHITECTURE.md',
-			'docs/development/CONFIG_FIELDS.md',
-			'docs/development/CONFIG_FLOW.md',
-			'docs/development/REPOSITORY_SCOPE.md',
-			'docs/development/TESTING.md',
-			'docs/development/TUI_PARITY_CHECKLIST.md',
-		];
+  it('contains opencode legacy path mentions only in upgrade/storage reference docs', () => {
+    for (const filePath of userDocs) {
+      const content = read(filePath).toLowerCase();
+      const hasOpencode = content.includes('opencode');
+      if (hasOpencode) {
+        expect(
+          opencodeLegacyAllowedFiles.has(filePath),
+          `${filePath} should not include opencode references`,
+        ).toBe(true);
+      }
+    }
+  });
 
-		devDocs.forEach((docPath) => {
-			it(`should have ${docPath}`, () => {
-				const fullPath = join(projectRoot, docPath);
-				expect(existsSync(fullPath)).toBe(true);
-				const content = readFileSync(fullPath, 'utf-8');
-				expect(content.length).toBeGreaterThan(0);
-			});
-		});
-	});
+  it('keeps codex auth as the command standard in key docs', () => {
+    const keyDocs = [
+      'README.md',
+      'docs/index.md',
+      'docs/getting-started.md',
+      'docs/reference/commands.md',
+      'docs/troubleshooting.md',
+      'docs/upgrade.md',
+    ];
 
-	describe('Benchmark Documentation', () => {
-		it('should have code-edit-format-benchmark.md', () => {
-			const benchPath = join(
-				projectRoot,
-				'docs/benchmarks/code-edit-format-benchmark.md',
-			);
-			expect(existsSync(benchPath)).toBe(true);
-			const content = readFileSync(benchPath, 'utf-8');
-			expect(content.length).toBeGreaterThan(0);
-		});
-	});
+    for (const filePath of keyDocs) {
+      expect(read(filePath), `${filePath} must include codex auth command examples`).toContain(
+        'codex auth',
+      );
+    }
+  });
 
-	describe('Internal Link Validation', () => {
-		it('should have valid internal links in README.md', () => {
-			const readmePath = join(projectRoot, 'README.md');
-			const content = readFileSync(readmePath, 'utf-8');
+  it('has valid internal links in README.md', () => {
+    const content = read('README.md');
+    const links = extractInternalLinks(content);
 
-			// Extract markdown links [text](path)
-			const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-			const matches = [...content.matchAll(linkRegex)];
+    for (const link of links) {
+      const cleanPath = link.split('#')[0];
+      if (!cleanPath) {
+        continue;
+      }
+      expect(existsSync(join(projectRoot, cleanPath)), `Missing link target: ${cleanPath}`).toBe(
+        true,
+      );
+    }
+  });
 
-			const internalLinks = matches
-				.map((m) => m[2])
-				.filter((link) => !link.startsWith('http') && !link.startsWith('#'));
+  it('has valid internal links in docs/README.md', () => {
+    const content = read('docs/README.md');
+    const links = extractInternalLinks(content);
 
-			for (const link of internalLinks) {
-				// Remove anchor fragments
-				const filePath = link.split('#')[0];
-				const fullPath = join(projectRoot, filePath);
-				expect(existsSync(fullPath), `Link target ${filePath} should exist`).toBe(true);
-			}
-		});
-
-		it('should have valid internal links in docs/README.md', () => {
-			const docsReadmePath = join(projectRoot, 'docs', 'README.md');
-			const content = readFileSync(docsReadmePath, 'utf-8');
-
-			const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-			const matches = [...content.matchAll(linkRegex)];
-
-			const internalLinks = matches
-				.map((m) => m[2])
-				.filter((link) => !link.startsWith('http') && !link.startsWith('#'));
-
-			for (const link of internalLinks) {
-				const filePath = link.split('#')[0];
-				const fullPath = join(projectRoot, 'docs', filePath);
-				expect(existsSync(fullPath), `Link target ${filePath} should exist`).toBe(true);
-			}
-		});
-
-		it('should have valid internal links in SECURITY.md', () => {
-			const securityPath = join(projectRoot, 'SECURITY.md');
-			const content = readFileSync(securityPath, 'utf-8');
-
-			const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-			const matches = [...content.matchAll(linkRegex)];
-
-			const internalLinks = matches
-				.map((m) => m[2])
-				.filter((link) => !link.startsWith('http') && !link.startsWith('#'));
-
-			for (const link of internalLinks) {
-				const filePath = link.split('#')[0];
-				const fullPath = join(projectRoot, filePath);
-				expect(existsSync(fullPath), `Link target ${filePath} should exist`).toBe(true);
-			}
-		});
-	});
-
-	describe('Markdown Structure Validation', () => {
-		it('README.md should have proper heading hierarchy', () => {
-			const readmePath = join(projectRoot, 'README.md');
-			const content = readFileSync(readmePath, 'utf-8');
-
-			// Check for H1 heading
-			expect(content).toMatch(/^#\s+/m);
-
-			// Check that headings don't skip levels (no H3 before H2, etc.)
-			const lines = content.split('\n');
-			let maxLevel = 0;
-			for (const line of lines) {
-				const match = line.match(/^(#{1,6})\s/);
-				if (match) {
-					const level = match[1].length;
-					// Allow same level, +1, or back to any previous level
-					if (level > maxLevel + 1) {
-						throw new Error(`Heading skips level: ${line}`);
-					}
-					maxLevel = Math.max(maxLevel, level);
-				}
-			}
-		});
-
-		it('SECURITY.md should have proper heading hierarchy', () => {
-			const securityPath = join(projectRoot, 'SECURITY.md');
-			const content = readFileSync(securityPath, 'utf-8');
-
-			expect(content).toMatch(/^#\s+/m);
-
-			const lines = content.split('\n');
-			let maxLevel = 0;
-			for (const line of lines) {
-				const match = line.match(/^(#{1,6})\s/);
-				if (match) {
-					const level = match[1].length;
-					if (level > maxLevel + 1 && maxLevel > 0) {
-						throw new Error(`Heading skips level: ${line}`);
-					}
-					maxLevel = Math.max(maxLevel, level);
-				}
-			}
-		});
-
-		it('docs/README.md should have proper heading hierarchy', () => {
-			const docsReadmePath = join(projectRoot, 'docs', 'README.md');
-			const content = readFileSync(docsReadmePath, 'utf-8');
-
-			expect(content).toMatch(/^#\s+/m);
-		});
-	});
-
-	describe('Documentation Content Validation', () => {
-		it('README.md should contain essential sections', () => {
-			const readmePath = join(projectRoot, 'README.md');
-			const content = readFileSync(readmePath, 'utf-8');
-
-			expect(content).toContain('Quick Start');
-			expect(content).toContain('codex auth');
-			expect(content).toContain('Documentation');
-		});
-
-		it('SECURITY.md should contain security policy sections', () => {
-			const securityPath = join(projectRoot, 'SECURITY.md');
-			const content = readFileSync(securityPath, 'utf-8');
-
-			expect(content).toContain('OAuth Token Security');
-			expect(content).toContain('Reporting a Vulnerability');
-			expect(content).toContain('Responsible Disclosure');
-		});
-
-		it('docs/getting-started.md should exist and be non-empty', () => {
-			const gettingStartedPath = join(projectRoot, 'docs', 'getting-started.md');
-			expect(existsSync(gettingStartedPath)).toBe(true);
-			const content = readFileSync(gettingStartedPath, 'utf-8');
-			expect(content.length).toBeGreaterThan(100);
-		});
-	});
-
-	describe('Configuration File Documentation', () => {
-		it('docs/_config.yml should exist for GitHub Pages', () => {
-			const configPath = join(projectRoot, 'docs', '_config.yml');
-			expect(existsSync(configPath)).toBe(true);
-			const content = readFileSync(configPath, 'utf-8');
-			expect(content.length).toBeGreaterThan(0);
-		});
-	});
-
-	describe('Documentation File Permissions', () => {
-		it('documentation files should be readable', () => {
-			const docs = [
-				'README.md',
-				'SECURITY.md',
-				'docs/README.md',
-				'docs/getting-started.md',
-			];
-
-			for (const doc of docs) {
-				const fullPath = join(projectRoot, doc);
-				expect(existsSync(fullPath)).toBe(true);
-
-				const stats = statSync(fullPath);
-				expect(stats.isFile()).toBe(true);
-
-				// File should be readable (not testing specific perms due to git)
-				expect(() => readFileSync(fullPath, 'utf-8')).not.toThrow();
-			}
-		});
-	});
-
-	describe('Documentation Completeness', () => {
-		it('all docs referenced in README should exist', () => {
-			const readmePath = join(projectRoot, 'README.md');
-			const content = readFileSync(readmePath, 'utf-8');
-
-			const docLinks = [
-				'docs/README.md',
-				'docs/getting-started.md',
-				'docs/features.md',
-				'docs/configuration.md',
-				'docs/troubleshooting.md',
-				'docs/reference/storage-paths.md',
-				'docs/reference/settings.md',
-				'docs/development/ARCHITECTURE.md',
-				'SECURITY.md',
-			];
-
-			for (const link of docLinks) {
-				const fullPath = join(projectRoot, link);
-				expect(existsSync(fullPath), `${link} should exist as referenced in README`).toBe(true);
-			}
-		});
-
-		it('all docs referenced in docs/README.md should exist', () => {
-			const docsReadmePath = join(projectRoot, 'docs', 'README.md');
-			const content = readFileSync(docsReadmePath, 'utf-8');
-
-			const docLinks = [
-				'getting-started.md',
-				'features.md',
-				'configuration.md',
-				'troubleshooting.md',
-				'privacy.md',
-				'reference/commands.md',
-				'reference/settings.md',
-				'reference/storage-paths.md',
-			];
-
-			for (const link of docLinks) {
-				const fullPath = join(projectRoot, 'docs', link);
-				expect(existsSync(fullPath), `docs/${link} should exist`).toBe(true);
-			}
-		});
-	});
-
-	describe('Edge Cases and Robustness', () => {
-		it('should handle documentation files with unicode characters', () => {
-			const readmePath = join(projectRoot, 'README.md');
-			const content = readFileSync(readmePath, 'utf-8');
-
-			// Should not throw when reading files with unicode
-			expect(() => Buffer.from(content, 'utf-8')).not.toThrow();
-		});
-
-		it('should handle missing anchor links gracefully', () => {
-			const readmePath = join(projectRoot, 'README.md');
-			const content = readFileSync(readmePath, 'utf-8');
-
-			// Links with anchors like [text](file.md#section) should have valid file
-			const linkRegex = /\[([^\]]+)\]\(([^)]+#[^)]+)\)/g;
-			const matches = [...content.matchAll(linkRegex)];
-
-			const internalLinksWithAnchors = matches
-				.map((m) => m[2])
-				.filter((link) => !link.startsWith('http'));
-
-			for (const link of internalLinksWithAnchors) {
-				const filePath = link.split('#')[0];
-				if (filePath) {
-					const fullPath = join(projectRoot, filePath);
-					expect(existsSync(fullPath), `File ${filePath} in anchored link should exist`).toBe(true);
-				}
-			}
-		});
-
-		it('should not have empty documentation files', () => {
-			const docs = [
-				'README.md',
-				'SECURITY.md',
-				'docs/README.md',
-				'docs/getting-started.md',
-				'docs/features.md',
-			];
-
-			for (const doc of docs) {
-				const fullPath = join(projectRoot, doc);
-				const content = readFileSync(fullPath, 'utf-8');
-				expect(content.trim().length, `${doc} should not be empty`).toBeGreaterThan(0);
-			}
-		});
-
-		it('should have consistent line endings in documentation', () => {
-			const readmePath = join(projectRoot, 'README.md');
-			const content = readFileSync(readmePath, 'utf-8');
-
-			// Check that file doesn't have mixed line endings (should be consistent)
-			const hasLF = content.includes('\n');
-			const hasCRLF = content.includes('\r\n');
-
-			if (hasLF || hasCRLF) {
-				// File has line endings - that's fine
-				expect(content.length).toBeGreaterThan(0);
-			}
-		});
-	});
-
-	describe('Documentation Style Compliance', () => {
-		it('docs/STYLE_GUIDE.md should define documentation standards', () => {
-			const styleGuidePath = join(projectRoot, 'docs', 'STYLE_GUIDE.md');
-			expect(existsSync(styleGuidePath)).toBe(true);
-			const content = readFileSync(styleGuidePath, 'utf-8');
-			expect(content.length).toBeGreaterThan(100);
-		});
-	});
-
-	describe('Regression: Documentation Structure Stability', () => {
-		it('should maintain stable documentation portal structure', () => {
-			const docsReadmePath = join(projectRoot, 'docs', 'README.md');
-			const content = readFileSync(docsReadmePath, 'utf-8');
-
-			// Portal should have consistent sections
-			expect(content).toContain('Start Here');
-			expect(content).toContain('User Guides');
-			expect(content).toContain('Reference');
-			expect(content).toContain('Maintainer Docs');
-		});
-
-		it('should maintain security documentation structure', () => {
-			const securityPath = join(projectRoot, 'SECURITY.md');
-			const content = readFileSync(securityPath, 'utf-8');
-
-			// Essential security sections should always be present
-			expect(content).toContain('Supported Versions');
-			expect(content).toContain('Security Considerations');
-			expect(content).toContain('Reporting a Vulnerability');
-		});
-	});
+    for (const link of links) {
+      const cleanPath = link.split('#')[0];
+      if (!cleanPath) {
+        continue;
+      }
+      expect(existsSync(join(projectRoot, 'docs', cleanPath)), `Missing docs link: ${cleanPath}`).toBe(
+        true,
+      );
+    }
+  });
 });

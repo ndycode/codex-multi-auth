@@ -2,9 +2,9 @@
 
 Use this page when login, switching, quota checks, or command routing fails.
 
-* * *
+---
 
-## 60-Second Recovery Flow
+## 60-Second Recovery
 
 ```bash
 codex auth doctor --fix
@@ -18,25 +18,24 @@ If still broken:
 codex auth login
 ```
 
-* * *
+---
 
 ## Symptom -> Action
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| Browser opens during login | Expected OAuth behavior | Complete auth in browser and return to same terminal |
+| Browser opens during login | Expected OAuth behavior | Complete auth and return to terminal |
 | `codex auth` unrecognized | Wrapper command path conflict | Run `where codex`, then `codex multi auth status` |
-| Account switch says success but wrong account in Codex | Stale Codex auth state sync | Run `codex auth switch <index>`, then restart `codex` session |
-| `missing field id_token` | Old/stale auth state payload | Re-login account with `codex auth login` |
-| `refresh_token_reused` | Refresh token already rotated by newer token pair | Re-login that account |
+| Switch says success but wrong account in Codex | Stale Codex auth state sync | Run `codex auth switch <index>`, restart `codex` session |
+| `missing field id_token` | Stale auth state payload | Re-login account with `codex auth login` |
+| `refresh_token_reused` | Token pair already rotated | Re-login that account |
 | `token_expired` | Token no longer valid | Re-login that account |
 | All accounts unhealthy | Entire pool stale/invalid | `codex auth doctor --fix`, then add one fresh account |
-| Menu feels stale or delayed | Limits not refreshed yet | Wait for auto-fetch or run `codex auth check` |
-| OAuth callback port `1455` busy | Another process is using callback port | Stop conflicting process and retry |
+| OAuth callback port `1455` busy | Port conflict | Stop conflicting process and retry |
 
-* * *
+---
 
-## Useful Diagnostics
+## Diagnostics Pack
 
 ```bash
 codex auth list
@@ -49,73 +48,28 @@ codex auth report --live --json
 codex auth doctor --json
 ```
 
-* * *
+---
 
-## Verify Command Routing
+## Verify Install and Routing
 
 ```bash
 where codex
 codex --version
 codex auth status
 codex multi auth status
+npm ls -g codex-multi-auth
 ```
 
-Expected:
-
-- `codex auth ...` works.
-- `codex multi auth ...` alias works.
-- Non-auth `codex` commands open official Codex CLI.
-
-* * *
-
-## Logging
-
-Use this only for plugin-host request debugging (not required for normal `codex auth ...` dashboard usage).
-
-Bash:
+If you still have old scoped package installed:
 
 ```bash
-DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 <run-your-host-request-command>
+npm uninstall -g @ndycode/codex-multi-auth
+npm i -g codex-multi-auth
 ```
 
-PowerShell:
-
-```powershell
-$env:DEBUG_CODEX_PLUGIN='1'
-$env:ENABLE_PLUGIN_REQUEST_LOGGING='1'
-$env:CODEX_PLUGIN_LOG_BODIES='1'
-<run-your-host-request-command>
-```
-
-cmd.exe:
-
-```bat
-set DEBUG_CODEX_PLUGIN=1
-set ENABLE_PLUGIN_REQUEST_LOGGING=1
-set CODEX_PLUGIN_LOG_BODIES=1
-<run-your-host-request-command>
-```
-
-Default log location:
-
-- `~/.codex/multi-auth/logs/codex-plugin/`
-
-* * *
+---
 
 ## Soft Reset
-
-1. Backup account and settings files.
-2. Remove stale local state.
-3. Re-login one known-good account first.
-
-Bash:
-
-```bash
-rm -f ~/.codex/multi-auth/openai-codex-accounts.json
-rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
-rm -f ~/.codex/multi-auth/settings.json
-codex auth login
-```
 
 PowerShell:
 
@@ -126,7 +80,16 @@ Remove-Item "$HOME\.codex\multi-auth\settings.json" -Force -ErrorAction Silently
 codex auth login
 ```
 
-* * *
+Bash:
+
+```bash
+rm -f ~/.codex/multi-auth/openai-codex-accounts.json
+rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
+rm -f ~/.codex/multi-auth/settings.json
+codex auth login
+```
+
+---
 
 ## Before Opening an Issue
 
@@ -137,4 +100,3 @@ Include:
 - `codex --version`
 - `npm ls -g codex-multi-auth`
 - failing command and full output
-

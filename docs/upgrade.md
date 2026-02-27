@@ -1,100 +1,73 @@
 # Upgrade Guide
 
-Migrate safely from older command/path layouts to the current Codex-first workflow.
+Migrate from older package/path layouts to the current Codex-first workflow.
 
-* * *
+---
 
-## What Changed
+## Canonical Targets
 
-| Area | Older flow | Current flow |
-| --- | --- | --- |
-| Primary auth command | mixed legacy command forms | `codex auth ...` |
-| Main account menu | mixed command/UI paths | `codex auth login` dashboard |
-| Settings location | split config files | unified `~/.codex/multi-auth/settings.json` |
-| Canonical accounts path | mixed legacy storage | `~/.codex/multi-auth/openai-codex-accounts.json` |
+- Canonical package: `codex-multi-auth`
+- Canonical commands: `codex auth ...`
+- Canonical root: `~/.codex/multi-auth`
 
-Compatibility note:
+---
 
-- Legacy files are still read when discovered for migration compatibility.
+## Migration Checklist
 
-* * *
-
-## Current Canonical Paths
-
-- `~/.codex/multi-auth/settings.json`
-- `~/.codex/multi-auth/openai-codex-accounts.json`
-- `~/.codex/multi-auth/openai-codex-flagged-accounts.json`
-- `~/.codex/multi-auth/quota-cache.json`
-
-Legacy compatibility paths may still appear in older environments and are migrated automatically.
-
-* * *
-
-## Recommended Migration Sequence
-
-1. Refresh Codex CLI and this project:
+1. Ensure official Codex CLI is installed:
 
 ```bash
-npm install -g @openai/codex
-npm install
-npm run build
-npm link
+npm i -g @openai/codex
 ```
 
-1. Confirm command routing:
+2. Remove legacy scoped package if present:
+
+```bash
+npm uninstall -g @ndycode/codex-multi-auth
+```
+
+3. Install canonical package:
+
+```bash
+npm i -g codex-multi-auth
+```
+
+4. Verify command routing:
 
 ```bash
 codex --version
 codex auth status
 ```
 
-1. Re-login and rebuild account pool:
+5. Rebuild account health snapshot:
 
 ```bash
 codex auth login
 codex auth check
-```
-
-1. Validate active behavior:
-
-```bash
-codex auth list
 codex auth forecast --live
 ```
 
-1. (Optional) refresh plugin-host config:
+---
 
-```bash
-codex-multi-auth --modern
-```
+## Legacy Compatibility
 
-* * *
+Legacy files may still be read during migration compatibility checks.
+They are not canonical and should not be used for new setup.
 
-## Post-Upgrade Verification
+See [reference/storage-paths.md](reference/storage-paths.md).
 
-```bash
-codex auth report --live --json
-codex auth doctor --fix --dry-run
-```
-
-Optional plugin-host smoke test (only if you use host mode):
-
-```bash
-<run your plugin-host smoke command in your host environment>
-```
-
-* * *
+---
 
 ## Common Upgrade Problems
 
 | Problem | Action |
 | --- | --- |
-| `codex auth` not found | `where codex` (Windows) or `which codex` (macOS/Linux), ensure wrapper path is active |
-| Old command habits | Use `codex auth ...` as canonical workflow |
+| `codex auth` not found | `where codex` (Windows) or `which codex` (macOS/Linux) |
+| Old package still active | Uninstall scoped package and reinstall unscoped package |
 | Accounts look stale | `codex auth doctor --fix` then re-login impacted accounts |
 | Mixed path confusion | Check [reference/storage-paths.md](reference/storage-paths.md) |
 
-* * *
+---
 
 ## Related
 
