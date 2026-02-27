@@ -39,7 +39,10 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 			res.setHeader("Content-Type", "text/html; charset=utf-8");
 			res.setHeader("X-Frame-Options", "DENY");
 			res.setHeader("X-Content-Type-Options", "nosniff");
-			res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'none'");
+			res.setHeader(
+				"Content-Security-Policy",
+				"default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+			);
 			res.end(successHtml);
 			(server as http.Server & { _lastCode?: string })._lastCode = code;
 	} catch (err) {

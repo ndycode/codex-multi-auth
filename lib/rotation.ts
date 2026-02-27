@@ -297,6 +297,7 @@ export const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
  */
 export interface HybridSelectionOptions {
   pidOffsetEnabled?: boolean;
+  scoreBoostByAccount?: Record<number, number>;
 }
 
 export function selectHybridAccount(
@@ -338,10 +339,16 @@ export function selectHybridAccount(
     const tokens = tokenTracker.getTokens(account.index, quotaKey);
     const hoursSinceUsed = (now - account.lastUsed) / (1000 * 60 * 60);
 
+    const capabilityBoost =
+      typeof options.scoreBoostByAccount?.[account.index] === "number"
+        ? options.scoreBoostByAccount[account.index] ?? 0
+        : 0;
+
     let score =
       health * cfg.healthWeight +
       tokens * cfg.tokenWeight +
-      hoursSinceUsed * cfg.freshnessWeight;
+      hoursSinceUsed * cfg.freshnessWeight +
+      capabilityBoost;
 
     // PID-based offset distributes selection across parallel agents
     if (options.pidOffsetEnabled) {

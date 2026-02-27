@@ -95,3 +95,57 @@ export function openBrowserUrl(url: string): boolean {
 	}
 }
 
+/**
+ * Copies text to system clipboard (best effort).
+ * @param text - Text to copy
+ * @returns True if clipboard command was launched
+ */
+export function copyTextToClipboard(text: string): boolean {
+	try {
+		if (!text) return false;
+
+		if (process.platform === "win32") {
+			const psText = text
+				.replace(/`/g, "``")
+				.replace(/\$/g, "`$")
+				.replace(/"/g, '""');
+			const child = spawn(
+				"powershell.exe",
+				["-NoLogo", "-NoProfile", "-Command", `Set-Clipboard -Value "${psText}"`],
+				{ stdio: "ignore" },
+			);
+			child.on("error", () => {});
+			return true;
+		}
+
+		if (process.platform === "darwin") {
+			if (!commandExists("pbcopy")) return false;
+			const child = spawn("pbcopy", [], {
+				stdio: ["pipe", "ignore", "ignore"],
+				shell: false,
+			});
+			child.on("error", () => {});
+			child.stdin?.end(text);
+			return true;
+		}
+
+		const linuxClipboardCommands: Array<{ command: string; args: string[] }> = [
+			{ command: "wl-copy", args: [] },
+			{ command: "xclip", args: ["-selection", "clipboard"] },
+			{ command: "xsel", args: ["--clipboard", "--input"] },
+		];
+		for (const { command, args } of linuxClipboardCommands) {
+			if (!commandExists(command)) continue;
+			const child = spawn(command, args, {
+				stdio: ["pipe", "ignore", "ignore"],
+				shell: false,
+			});
+			child.on("error", () => {});
+			child.stdin?.end(text);
+			return true;
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}

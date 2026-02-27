@@ -1,47 +1,102 @@
-# Documentation Structure
+# Documentation Architecture
 
-This file describes how docs are organized in this repository.
+This file defines the canonical documentation system for `codex-multi-auth`.
 
-## Repository-level docs
+* * *
 
-- `README.md` - Main entry point for users
-- `CHANGELOG.md` - Release history
-- `CONTRIBUTING.md` - Contribution workflow
-- `SECURITY.md` - Security reporting policy
-- `AGENTS.md` - AI agent instructions for this codebase
+## Documentation Layers
 
-## docs/ (site + user/developer guides)
+| Layer | Audience | Goal |
+| --- | --- | --- |
+| Product entry | New users | Install quickly and run first successful login/check |
+| User operations | Users/operators | Configure, operate, troubleshoot safely |
+| Reference | Power users/maintainers | Exact command/setting/path lookup |
+| Development | Maintainers/contributors | Internal architecture, flow, tests, ownership |
 
-```text
-docs/
-  index.md                     # documentation landing page
-  README.md                    # docs portal / navigation
-  getting-started.md           # install + first-run guide
-  configuration.md             # full config reference
-  troubleshooting.md           # operational debugging guide
-  privacy.md                   # data handling notes
-  development/
-    REPOSITORY_SCOPE.md        # canonical path ownership + extension points
-    ARCHITECTURE.md            # technical design
-    CONFIG_FLOW.md             # config resolution internals
-    CONFIG_FIELDS.md           # config field semantics
-    TESTING.md                 # testing strategy and commands
-    TUI_PARITY_CHECKLIST.md    # auth dashboard UI parity checks
-```
+* * *
 
-## config/ (copy-paste templates)
+## Master Chart
 
-- `config/opencode-modern.json` - OpenCode v1.0.210+ variant-based template
-- `config/opencode-legacy.json` - OpenCode v1.0.209 and below template
-- `config/minimal-opencode.json` - minimal debug template
-- `config/README.md` - template-selection guide
+| Scope | File |
+| --- | --- |
+| Project entry | `README.md` |
+| Docs portal | `docs/README.md` |
+| Docs landing | `docs/index.md` |
+| Beginner setup | `docs/getting-started.md` |
+| Feature matrix | `docs/features.md` |
+| Configuration guide | `docs/configuration.md` |
+| Troubleshooting guide | `docs/troubleshooting.md` |
+| Privacy/data handling | `docs/privacy.md` |
+| Upgrade/migration | `docs/upgrade.md` |
+| Command reference | `docs/reference/commands.md` |
+| Settings reference | `docs/reference/settings.md` |
+| Storage path reference | `docs/reference/storage-paths.md` |
+| Documentation style rules | `docs/STYLE_GUIDE.md` |
+| Docs governance (this file) | `docs/DOCUMENTATION.md` |
+| Architecture internals | `docs/development/ARCHITECTURE.md` |
+| Config fields internals | `docs/development/CONFIG_FIELDS.md` |
+| Config flow internals | `docs/development/CONFIG_FLOW.md` |
+| Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` |
+| Testing guide | `docs/development/TESTING.md` |
+| TUI parity checklist | `docs/development/TUI_PARITY_CHECKLIST.md` |
+| Benchmarks | `docs/benchmarks/code-edit-format-benchmark.md` |
 
-## Notes
+* * *
 
-- AGENTS hierarchy for source edits:
-  - `AGENTS.md` applies repository-wide.
-  - `lib/AGENTS.md` applies to `lib/**`.
-  - `test/AGENTS.md` applies to `test/**`.
-- `dist/` is build output and not a documentation source of truth.
-- `tmp*` files are release scratch artifacts and not part of user docs.
-- For user-facing guidance, start with `README.md` or `docs/getting-started.md`.
+## Tone and Formatting Contract
+
+All user-facing docs must follow `docs/STYLE_GUIDE.md`:
+
+1. Beginner-first language.
+2. Short lead sentence.
+3. Quick path before deep details.
+4. Command-first examples.
+5. Clear next steps/related links.
+
+Codex CLI-first style is the baseline:
+
+- concise sections
+- operational clarity
+- progressive disclosure
+
+* * *
+
+## Canonical Command and Path Policy
+
+1. Canonical account workflow command family: `codex auth ...`.
+2. Canonical runtime storage root: `~/.codex/multi-auth`.
+3. Legacy paths/flows are documented only in migration/compat sections.
+4. Do not present legacy flows as the default workflow.
+
+* * *
+
+## Update Rules
+
+When runtime behavior changes:
+
+1. Update `README.md` and `docs/getting-started.md` first.
+2. Update `docs/features.md` for feature coverage changes.
+3. Update command/settings/path references if any CLI/config/storage behavior changed.
+4. Update `docs/troubleshooting.md` with new failure signatures.
+5. Update development docs when architecture/config flow changed.
+
+* * *
+
+## Documentation QA Checklist
+
+Before merge:
+
+1. Every documented command executes as written.
+2. Paths match runtime code (`lib/runtime-paths.ts`, `lib/storage.ts`, `lib/config.ts`).
+3. Feature matrix covers all implemented features.
+4. Internal links are valid.
+5. Cross-platform examples are present for OS-sensitive flows.
+6. No conflicting duplicate guidance across pages.
+
+* * *
+
+## Related
+
+- [README.md](../README.md)
+- [README.md](README.md)
+- [STYLE_GUIDE.md](STYLE_GUIDE.md)

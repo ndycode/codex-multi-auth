@@ -7,6 +7,7 @@ import {
 	isTTY,
 	type AccountStatus,
 } from "./ui/auth-menu.js";
+import { UI_COPY } from "./ui/copy.js";
 
 /**
  * Detect if running in OpenCode Desktop/TUI mode where readline prompts don't work.
@@ -30,8 +31,8 @@ export async function promptAddAnotherAccount(currentCount: number): Promise<boo
 
 	const rl = createInterface({ input, output });
 	try {
-		console.log("\nTIP: use private browsing or sign out before adding another account.\n");
-		const answer = await rl.question(`Add another account? (${currentCount} added) (y/n): `);
+		console.log(`\n${UI_COPY.fallback.addAnotherTip}\n`);
+		const answer = await rl.question(UI_COPY.fallback.addAnotherQuestion(currentCount));
 		const normalized = answer.trim().toLowerCase();
 		return normalized === "y" || normalized === "yes";
 	} finally {
@@ -41,6 +42,9 @@ export async function promptAddAnotherAccount(currentCount: number): Promise<boo
 
 export type LoginMode =
 	| "add"
+	| "forecast"
+	| "fix"
+	| "settings"
 	| "fresh"
 	| "manage"
 	| "check"
@@ -53,15 +57,32 @@ export interface ExistingAccountInfo {
 	accountLabel?: string;
 	email?: string;
 	index: number;
+	sourceIndex?: number;
+	quickSwitchNumber?: number;
 	addedAt?: number;
 	lastUsed?: number;
 	status?: AccountStatus;
+	quotaSummary?: string;
+	quota5hLeftPercent?: number;
+	quota5hResetAtMs?: number;
+	quota7dLeftPercent?: number;
+	quota7dResetAtMs?: number;
+	quotaRateLimited?: boolean;
 	isCurrentAccount?: boolean;
 	enabled?: boolean;
+	showStatusBadge?: boolean;
+	showCurrentBadge?: boolean;
+	showLastUsed?: boolean;
+	showQuotaCooldown?: boolean;
+	showHintsForUnselectedRows?: boolean;
+	highlightCurrentRow?: boolean;
+	focusStyle?: "row-invert" | "chip";
+	statuslineFields?: string[];
 }
 
 export interface LoginMenuOptions {
 	flaggedCount?: number;
+	statusMessage?: string | (() => string | undefined);
 }
 
 export interface LoginMenuResult {
@@ -69,6 +90,7 @@ export interface LoginMenuResult {
 	deleteAccountIndex?: number;
 	refreshAccountIndex?: number;
 	toggleAccountIndex?: number;
+	switchAccountIndex?: number;
 	deleteAll?: boolean;
 }
 
@@ -88,10 +110,14 @@ function formatAccountLabel(account: ExistingAccountInfo, index: number): string
 	return `${num}. Account`;
 }
 
+function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
+	return typeof account.sourceIndex === "number" ? account.sourceIndex : account.index;
+}
+
 async function promptDeleteAllTypedConfirm(): Promise<boolean> {
 	const rl = createInterface({ input, output });
 	try {
-		const answer = await rl.question("Type DELETE to confirm removing all accounts: ");
+		const answer = await rl.question("Type DELETE to remove all saved accounts: ");
 		return answer.trim() === "DELETE";
 	} finally {
 		rl.close();
@@ -110,15 +136,33 @@ async function promptLoginModeFallback(existingAccounts: ExistingAccountInfo[]):
 		}
 
 		while (true) {
-			const answer = await rl.question("(a)dd, (f)resh, (c)heck, (d)eep, (v)erify flagged, or (q)uit? [a/f/c/d/v/q]: ");
+			const answer = await rl.question(UI_COPY.fallback.selectModePrompt);
 			const normalized = answer.trim().toLowerCase();
 			if (normalized === "a" || normalized === "add") return { mode: "add" };
-			if (normalized === "f" || normalized === "fresh") return { mode: "fresh", deleteAll: true };
+			if (normalized === "b" || normalized === "p" || normalized === "forecast") {
+				return { mode: "forecast" };
+			}
+			if (normalized === "x" || normalized === "fix") return { mode: "fix" };
+			if (normalized === "s" || normalized === "settings" || normalized === "configure") {
+				return { mode: "settings" };
+			}
+			if (normalized === "f" || normalized === "fresh" || normalized === "clear") {
+				return { mode: "fresh", deleteAll: true };
+			}
 			if (normalized === "c" || normalized === "check") return { mode: "check" };
-			if (normalized === "d" || normalized === "deep") return { mode: "deep-check" };
-			if (normalized === "v" || normalized === "verify") return { mode: "verify-flagged" };
+			if (normalized === "d" || normalized === "deep") {
+				return { mode: "deep-check" };
+			}
+			if (
+				normalized === "g" ||
+				normalized === "flagged" ||
+				normalized === "verify-flagged" ||
+				normalized === "verify"
+			) {
+				return { mode: "verify-flagged" };
+			}
 			if (normalized === "q" || normalized === "quit") return { mode: "cancel" };
-			console.log("Please enter one of: a, f, c, d, v, q.");
+			console.log(UI_COPY.fallback.invalidModePrompt);
 		}
 	} finally {
 		rl.close();
@@ -140,14 +184,21 @@ export async function promptLoginMode(
 	while (true) {
 		const action = await showAuthMenu(existingAccounts, {
 			flaggedCount: options.flaggedCount ?? 0,
+			statusMessage: options.statusMessage,
 		});
 
 		switch (action.type) {
 			case "add":
 				return { mode: "add" };
+			case "forecast":
+				return { mode: "forecast" };
+			case "fix":
+				return { mode: "fix" };
+			case "settings":
+				return { mode: "settings" };
 			case "fresh":
 				if (!(await promptDeleteAllTypedConfirm())) {
-					console.log("\nDelete-all cancelled.\n");
+					console.log("\nDelete all cancelled.\n");
 					continue;
 				}
 				return { mode: "fresh", deleteAll: true };
@@ -160,19 +211,32 @@ export async function promptLoginMode(
 			case "select-account": {
 				const accountAction = await showAccountDetails(action.account);
 				if (accountAction === "delete") {
-					return { mode: "manage", deleteAccountIndex: action.account.index };
+					return { mode: "manage", deleteAccountIndex: resolveAccountSourceIndex(action.account) };
+				}
+				if (accountAction === "set-current") {
+					return { mode: "manage", switchAccountIndex: resolveAccountSourceIndex(action.account) };
 				}
 				if (accountAction === "refresh") {
-					return { mode: "manage", refreshAccountIndex: action.account.index };
+					return { mode: "manage", refreshAccountIndex: resolveAccountSourceIndex(action.account) };
 				}
 				if (accountAction === "toggle") {
-					return { mode: "manage", toggleAccountIndex: action.account.index };
+					return { mode: "manage", toggleAccountIndex: resolveAccountSourceIndex(action.account) };
 				}
 				continue;
 			}
+			case "set-current-account":
+				return { mode: "manage", switchAccountIndex: resolveAccountSourceIndex(action.account) };
+			case "refresh-account":
+				return { mode: "manage", refreshAccountIndex: resolveAccountSourceIndex(action.account) };
+			case "toggle-account":
+				return { mode: "manage", toggleAccountIndex: resolveAccountSourceIndex(action.account) };
+			case "delete-account":
+				return { mode: "manage", deleteAccountIndex: resolveAccountSourceIndex(action.account) };
+			case "search":
+				continue;
 			case "delete-all":
 				if (!(await promptDeleteAllTypedConfirm())) {
-					console.log("\nDelete-all cancelled.\n");
+					console.log("\nDelete all cancelled.\n");
 					continue;
 				}
 				return { mode: "fresh", deleteAll: true };

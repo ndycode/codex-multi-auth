@@ -16,17 +16,17 @@ We provide security updates for the latest version of the plugin.
 This plugin handles sensitive OAuth tokens. To protect your security:
 
 ✅ **What we do:**
-- Store tokens securely via opencode's credential management
+- Store tokens in local account storage files with restricted file permissions
 - Use PKCE-secured OAuth 2.0 flows
 - Never transmit tokens to third parties
 - Implement automatic token refresh
 - Use industry-standard authentication practices
 
 ⚠️ **What you should do:**
-- Never share your `~/.opencode/` directory
+- Never share your `~/.codex/` directory
 - Do not commit OAuth tokens to version control
 - Regularly review authorized apps at [ChatGPT Settings](https://chatgpt.com/settings/apps)
-- Use `opencode auth logout` when done on shared systems
+- Remove local plugin auth files when done on shared systems (`~/.opencode/openai-codex-*.json`)
 - Enable debug logging (`ENABLE_PLUGIN_REQUEST_LOGGING=1`) only when troubleshooting
 
 ### Reporting a Vulnerability
@@ -72,7 +72,7 @@ The following are **not** security vulnerabilities:
 ### Third-Party Dependencies
 
 This plugin minimizes dependencies for security:
-- **Only dependency:** `@openauthjs/openauth` (for OAuth handling)
+- Runtime dependencies include: `@openauthjs/openauth`, `@opencode-ai/plugin`, `hono`, and `zod`
 - Regular dependency updates for security patches
 - No telemetry or analytics dependencies
 

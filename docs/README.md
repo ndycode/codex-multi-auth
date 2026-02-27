@@ -1,43 +1,59 @@
-# Documentation
+# Documentation Portal
 
-Welcome to the OpenCode OpenAI Codex Auth Plugin documentation!
+Use this portal to navigate user docs, references, and maintainer docs.
 
-## For Users
+* * *
 
-- **[Getting Started](getting-started.md)** - Installation, configuration, and quick start
-- **[Configuration Guide](configuration.md)** - Complete config reference
-- **[Troubleshooting](troubleshooting.md)** - Common issues and debugging
-- **[Changelog](../CHANGELOG.md)** - Version history and release notes
+## Start Here
 
-## For Developers
+1. [Getting Started](getting-started.md)
+2. [Features](features.md)
+3. [Configuration](configuration.md)
+4. [Troubleshooting](troubleshooting.md)
 
-Explore the engineering depth behind this plugin:
+* * *
 
-- **[Repository Scope Map](development/REPOSITORY_SCOPE.md)** - Canonical path ownership and extension points
-- **[Architecture](development/ARCHITECTURE.md)** - Technical design, request pipeline, AI SDK compatibility
-- **[Configuration System](development/CONFIG_FLOW.md)** - How config loading and merging works
-- **[Config Fields Guide](development/CONFIG_FIELDS.md)** - Understanding config keys, `id`, and `name`
-- **[Testing Guide](development/TESTING.md)** - Test scenarios, verification procedures, integration testing
-- **[TUI Parity Checklist](development/TUI_PARITY_CHECKLIST.md)** - Auth dashboard/UI parity requirements for future changes
+## User Guides
 
-## Documentation Meta
+| Page | What it answers |
+| --- | --- |
+| [index.md](index.md) | Fast docs landing page |
+| [getting-started.md](getting-started.md) | How to install, login, add accounts, and run first checks |
+| [features.md](features.md) | What all implemented features do |
+| [configuration.md](configuration.md) | How to configure behavior and reliability settings |
+| [troubleshooting.md](troubleshooting.md) | What to do when login/switch/limits fail |
+| [privacy.md](privacy.md) | Where data is stored and what is sent over network |
+| [upgrade.md](upgrade.md) | How to migrate from older flows and legacy paths |
 
-- **[Documentation Structure](DOCUMENTATION.md)** - How docs are organized in this repository
+* * *
 
-## Key Architectural Decisions
+## Reference
 
-This plugin bridges two different systems with careful engineering:
+| Page | What it answers |
+| --- | --- |
+| [reference/commands.md](reference/commands.md) | Full command and hotkey reference |
+| [reference/settings.md](reference/settings.md) | Dashboard/backend settings reference |
+| [reference/storage-paths.md](reference/storage-paths.md) | Current and legacy file path matrix |
+| [STYLE_GUIDE.md](STYLE_GUIDE.md) | Documentation tone and formatting rules |
 
-1. **AI SDK Compatibility** - Filters `item_reference` (AI SDK construct) for Codex API compatibility
-2. **Stateless Operation** - ChatGPT backend requires `store: false`, verified via testing
-3. **Full Context Preservation** - Sends complete message history (IDs stripped) for LLM context (with optional fast-session trimming)
-4. **Stale-While-Revalidate Caching** - Keeps prompt/instruction fetches fast while avoiding GitHub rate limits; optional startup prewarm for first-turn latency
-5. **Per-Model Configuration** - Enables quality presets with quick switching
-6. **Fast Session Mode** - Optional low-latency tuning (clamps reasoning/verbosity on trivial turns) without changing defaults
-7. **Entitlement-Aware Fallback Flow** - Unsupported models try remaining accounts/workspaces first, then optional fallback chain if enabled
+* * *
 
-**Testing**: large Vitest suite with enforced 80% coverage threshold plus integration coverage
+## Maintainer Docs
 
----
+| Page | What it answers |
+| --- | --- |
+| [DOCUMENTATION.md](DOCUMENTATION.md) | How docs are structured and maintained |
+| [development/ARCHITECTURE.md](development/ARCHITECTURE.md) | Runtime architecture and request/account flow |
+| [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Full config field inventory |
+| [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Resolution and precedence flow |
+| [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map for repo paths |
+| [development/TESTING.md](development/TESTING.md) | Test matrix and release gate |
+| [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | TUI quality checklist |
+| [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark guide |
 
-**Quick Links**: [GitHub](https://github.com/ndycode/codex-multi-auth) | [npm](https://www.npmjs.com/package/codex-multi-auth) | [Issues](https://github.com/ndycode/codex-multi-auth/issues)
+* * *
+
+## Related
+
+- Project README: [../README.md](../README.md)
+- Security policy: [../SECURITY.md](../SECURITY.md)

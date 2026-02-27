@@ -1,70 +1,82 @@
 # Code Edit Format Benchmark
 
-This benchmark compares code edit formats across Codex models using the same task corpus and validators.
+Benchmark guide for comparing edit format performance and render behavior.
 
-Formats:
-- `patch`
-- `replace`
-- `hashline`
-- `hashline_v2` (benchmark-only experimental mode based on the PinEdit-style workflow)
+* * *
 
-Default model preset:
-- `codex-core` (stable named `openai/*codex*` models discovered from local `opencode models`)
+## Purpose
 
-## Outputs
+Use this benchmark to compare edit-format throughput and output quality for Codex-focused editing workloads.
 
-Each run writes artifacts under `.tmp-bench/<label>/`:
-- `results/summary.json`
-- `results/report.md`
-- `results/dashboard.html`
-- `logs/*.ndjson` (measured runs and failures by default)
-- `workspaces/*` (per-run temp workspaces)
+* * *
 
-This keeps benchmark artifacts easy to delete later.
-
-## Quick start
-
-Smoke run (few tasks, 1 measured run, no warmup):
+## Quick Start
 
 ```bash
-node scripts/benchmark-edit-formats.mjs --smoke --models=openai/gpt-5-codex
+npm run bench:edit-formats
 ```
 
-Fuller run on Codex core preset:
+Smoke run:
 
 ```bash
-node scripts/benchmark-edit-formats.mjs --preset=codex-core --warmup-runs=1 --measured-runs=5
+npm run bench:edit-formats:smoke
 ```
 
-Use your existing provider config/home when required:
+Render dashboard output:
 
 ```bash
-node scripts/benchmark-edit-formats.mjs --home="C:\\Users\\Administrator"
+npm run bench:edit-formats:render
 ```
 
-## Re-render dashboard from summary
+* * *
 
-```bash
-node scripts/benchmark-render-dashboard.mjs --input=.tmp-bench/<label>/results/summary.json
-```
+## Output Files
 
-## Notes on mode behavior
+| Output | Location |
+| --- | --- |
+| Benchmark report JSON | `.tmp/` benchmark output paths |
+| Render preview artifacts | benchmark render output paths |
 
-- `patch` mode expects filesystem patch/edit tools (for example `filesystem_edit_file`). If the model uses another tool family, the run is marked unsupported for patch-mode scoring.
-- `replace` mode expects plugin edit payloads with `oldString/newString`.
-- `hashline` mode expects `hashline_read` followed by a hash-anchored edit (`lineRef`).
-- `hashline_v2` expects no tools and a single JSON edit call response in the benchmark-only PinEdit-style schema.
+(Temporary benchmark artifacts are not source files.)
+
+* * *
+
+## Common Presets
+
+| Preset | Goal |
+| --- | --- |
+| `codex-core` | Baseline Codex-oriented evaluation |
+| `smoke` | Fast sanity check for CI/local validation |
+
+* * *
+
+## Interpretation Checklist
+
+1. Compare latency per format.
+2. Compare token/size overhead.
+3. Compare success/error rates.
+4. Validate output consistency.
+5. Confirm no regressions in editing fidelity.
+
+* * *
 
 ## Cleanup
 
-Delete all benchmark artifacts:
+Bash:
 
 ```bash
-rm -rf .tmp-bench
+rm -rf .tmp
 ```
 
 PowerShell:
 
 ```powershell
-Remove-Item -Recurse -Force .tmp-bench
+Remove-Item ".tmp" -Recurse -Force -ErrorAction SilentlyContinue
 ```
+
+* * *
+
+## Related
+
+- [../development/TESTING.md](../development/TESTING.md)
+- [../development/ARCHITECTURE.md](../development/ARCHITECTURE.md)

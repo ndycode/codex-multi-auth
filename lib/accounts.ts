@@ -323,6 +323,21 @@ export class AccountManager {
 		}));
 	}
 
+	getAccountByIndex(index: number): ManagedAccount | null {
+		if (!Number.isFinite(index)) return null;
+		if (index < 0 || index >= this.accounts.length) return null;
+		const account = this.accounts[index];
+		return account ?? null;
+	}
+
+	isAccountAvailableForFamily(index: number, family: ModelFamily, model?: string | null): boolean {
+		const account = this.getAccountByIndex(index);
+		if (!account) return false;
+		if (account.enabled === false) return false;
+		clearExpiredRateLimits(account);
+		return !isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+	}
+
 	setActiveIndex(index: number): ManagedAccount | null {
 		if (!Number.isFinite(index)) return null;
 		if (index < 0 || index >= this.accounts.length) return null;
@@ -349,6 +364,9 @@ export class AccountManager {
 		await setCodexCliActiveSelection({
 			accountId: account.accountId,
 			email: account.email,
+			accessToken: account.access,
+			refreshToken: account.refreshToken,
+			expiresAt: account.expires,
 		});
 	}
 

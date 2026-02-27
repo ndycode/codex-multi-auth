@@ -1,0 +1,341 @@
+import { createHash } from "node:crypto";
+import { existsSync, promises as fs } from "node:fs";
+import { join } from "node:path";
+import { createLogger } from "./logger.js";
+import { getCodexMultiAuthDir } from "./runtime-paths.js";
+import { safeParseTokenResult } from "./schemas.js";
+import type { TokenResult } from "./types.js";
+
+const log = createLogger("refresh-lease");
+
+const DEFAULT_LEASE_TTL_MS = 30_000;
+const DEFAULT_WAIT_TIMEOUT_MS = 35_000;
+const DEFAULT_POLL_INTERVAL_MS = 150;
+const DEFAULT_RESULT_TTL_MS = 20_000;
+
+interface LeaseFilePayload {
+	tokenHash: string;
+	pid: number;
+	acquiredAt: number;
+	expiresAt: number;
+}
+
+interface ResultFilePayload {
+	tokenHash: string;
+	createdAt: number;
+	result: TokenResult;
+}
+
+export interface RefreshLeaseCoordinatorOptions {
+	enabled?: boolean;
+	leaseDir?: string;
+	leaseTtlMs?: number;
+	waitTimeoutMs?: number;
+	pollIntervalMs?: number;
+	resultTtlMs?: number;
+}
+
+export interface RefreshLeaseHandle {
+	role: "owner" | "follower" | "bypass";
+	result?: TokenResult;
+	release: (result?: TokenResult) => Promise<void>;
+}
+
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+	if (value === undefined) return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
+	if (normalized === "0" || normalized === "false" || normalized === "no") return false;
+	return undefined;
+}
+
+function parseEnvInt(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function sleep(delayMs: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, delayMs);
+	});
+}
+
+function hashRefreshToken(refreshToken: string): string {
+	return createHash("sha256").update(refreshToken).digest("hex");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object";
+}
+
+function parseLeasePayload(raw: unknown): LeaseFilePayload | null {
+	if (!isRecord(raw)) return null;
+	const tokenHash = typeof raw.tokenHash === "string" ? raw.tokenHash : "";
+	const pid = typeof raw.pid === "number" ? raw.pid : Number.NaN;
+	const acquiredAt = typeof raw.acquiredAt === "number" ? raw.acquiredAt : Number.NaN;
+	const expiresAt = typeof raw.expiresAt === "number" ? raw.expiresAt : Number.NaN;
+	if (
+		tokenHash.length === 0 ||
+		!Number.isFinite(pid) ||
+		!Number.isFinite(acquiredAt) ||
+		!Number.isFinite(expiresAt)
+	) {
+		return null;
+	}
+	return {
+		tokenHash,
+		pid: Math.floor(pid),
+		acquiredAt: Math.floor(acquiredAt),
+		expiresAt: Math.floor(expiresAt),
+	};
+}
+
+function parseResultPayload(raw: unknown): ResultFilePayload | null {
+	if (!isRecord(raw)) return null;
+	const tokenHash = typeof raw.tokenHash === "string" ? raw.tokenHash : "";
+	const createdAt = typeof raw.createdAt === "number" ? raw.createdAt : Number.NaN;
+	const result = safeParseTokenResult(raw.result);
+	if (tokenHash.length === 0 || !Number.isFinite(createdAt) || !result) return null;
+	return {
+		tokenHash,
+		createdAt: Math.floor(createdAt),
+		result,
+	};
+}
+
+async function readJson(path: string): Promise<unknown | null> {
+	try {
+		const content = await fs.readFile(path, "utf8");
+		return JSON.parse(content) as unknown;
+	} catch {
+		return null;
+	}
+}
+
+async function safeUnlink(path: string): Promise<void> {
+	try {
+		await fs.unlink(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.debug("Failed to remove lease artifact", {
+				path,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+}
+
+export class RefreshLeaseCoordinator {
+	private readonly enabled: boolean;
+	private readonly leaseDir: string;
+	private readonly leaseTtlMs: number;
+	private readonly waitTimeoutMs: number;
+	private readonly pollIntervalMs: number;
+	private readonly resultTtlMs: number;
+
+	constructor(options: RefreshLeaseCoordinatorOptions = {}) {
+		this.enabled = options.enabled ?? true;
+		this.leaseDir = options.leaseDir ?? join(getCodexMultiAuthDir(), "refresh-leases");
+		this.leaseTtlMs = Math.max(1_000, Math.floor(options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS));
+		this.waitTimeoutMs = Math.max(0, Math.floor(options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS));
+		this.pollIntervalMs = Math.max(50, Math.floor(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
+		this.resultTtlMs = Math.max(1_000, Math.floor(options.resultTtlMs ?? DEFAULT_RESULT_TTL_MS));
+	}
+
+	static fromEnvironment(): RefreshLeaseCoordinator {
+		const testMode = process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+		const enabled =
+			parseBooleanEnv(process.env.CODEX_AUTH_REFRESH_LEASE) ??
+			(testMode ? false : true);
+		return new RefreshLeaseCoordinator({
+			enabled,
+			leaseDir:
+				(process.env.CODEX_AUTH_REFRESH_LEASE_DIR ?? "").trim() || undefined,
+			leaseTtlMs: parseEnvInt(process.env.CODEX_AUTH_REFRESH_LEASE_TTL_MS),
+			waitTimeoutMs: parseEnvInt(process.env.CODEX_AUTH_REFRESH_LEASE_WAIT_MS),
+			pollIntervalMs: parseEnvInt(process.env.CODEX_AUTH_REFRESH_LEASE_POLL_MS),
+			resultTtlMs: parseEnvInt(process.env.CODEX_AUTH_REFRESH_LEASE_RESULT_TTL_MS),
+		});
+	}
+
+	async acquire(refreshToken: string): Promise<RefreshLeaseHandle> {
+		if (!this.enabled) {
+			return this.createBypassHandle("disabled");
+		}
+		if (refreshToken.trim().length === 0) {
+			return this.createBypassHandle("empty-token");
+		}
+
+		const tokenHash = hashRefreshToken(refreshToken);
+		const lockPath = join(this.leaseDir, `${tokenHash}.lock`);
+		const resultPath = join(this.leaseDir, `${tokenHash}.result.json`);
+		await fs.mkdir(this.leaseDir, { recursive: true });
+		void this.pruneExpiredArtifacts();
+
+		const deadline = Date.now() + this.waitTimeoutMs;
+		while (true) {
+			const cachedResult = await this.readFreshResult(resultPath, tokenHash);
+			if (cachedResult) {
+				return {
+					role: "follower",
+					result: cachedResult,
+					release: async () => {
+						// Follower does not own lock.
+					},
+				};
+			}
+
+			try {
+				const handle = await fs.open(lockPath, "wx");
+				try {
+					const now = Date.now();
+					const payload: LeaseFilePayload = {
+						tokenHash,
+						pid: process.pid,
+						acquiredAt: now,
+						expiresAt: now + this.leaseTtlMs,
+					};
+					await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf8");
+				} finally {
+					await handle.close();
+				}
+
+				return this.createOwnerHandle(tokenHash, lockPath, resultPath);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "EEXIST") {
+					log.warn("Refresh lease acquisition failed; proceeding without lease", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return this.createBypassHandle("acquire-error");
+				}
+
+				if (await this.isLockStale(lockPath, tokenHash)) {
+					await safeUnlink(lockPath);
+					continue;
+				}
+
+				if (Date.now() >= deadline) {
+					log.warn("Refresh lease wait timeout; proceeding without lease", {
+						waitTimeoutMs: this.waitTimeoutMs,
+					});
+					return this.createBypassHandle("wait-timeout");
+				}
+				await sleep(this.pollIntervalMs);
+			}
+		}
+	}
+
+	private createBypassHandle(reason: string): RefreshLeaseHandle {
+		log.debug("Bypassing refresh lease", { reason });
+		return {
+			role: "bypass",
+			release: async () => {
+				// No-op
+			},
+		};
+	}
+
+	private createOwnerHandle(
+		tokenHash: string,
+		lockPath: string,
+		resultPath: string,
+	): RefreshLeaseHandle {
+		let released = false;
+		return {
+			role: "owner",
+			release: async (result?: TokenResult) => {
+				if (released) return;
+				released = true;
+				try {
+					if (result) {
+						await this.writeResult(resultPath, tokenHash, result);
+					}
+				} finally {
+					await safeUnlink(lockPath);
+				}
+			},
+		};
+	}
+
+	private async writeResult(
+		resultPath: string,
+		tokenHash: string,
+		result: TokenResult,
+	): Promise<void> {
+		const payload: ResultFilePayload = {
+			tokenHash,
+			createdAt: Date.now(),
+			result,
+		};
+		const tempPath = `${resultPath}.${process.pid}.${Date.now()}.tmp`;
+		try {
+			await fs.writeFile(tempPath, `${JSON.stringify(payload)}\n`, "utf8");
+			await fs.rename(tempPath, resultPath);
+		} finally {
+			await safeUnlink(tempPath);
+		}
+	}
+
+	private async readFreshResult(
+		resultPath: string,
+		tokenHash: string,
+	): Promise<TokenResult | null> {
+		if (!existsSync(resultPath)) return null;
+		const parsed = parseResultPayload(await readJson(resultPath));
+		if (!parsed || parsed.tokenHash !== tokenHash) {
+			return null;
+		}
+		const ageMs = Date.now() - parsed.createdAt;
+		if (ageMs > this.resultTtlMs) {
+			await safeUnlink(resultPath);
+			return null;
+		}
+		return parsed.result;
+	}
+
+	private async isLockStale(lockPath: string, tokenHash: string): Promise<boolean> {
+		let staleByPayload = false;
+		const parsed = parseLeasePayload(await readJson(lockPath));
+		if (!parsed || parsed.tokenHash !== tokenHash) {
+			staleByPayload = true;
+		} else if (parsed.expiresAt <= Date.now()) {
+			staleByPayload = true;
+		}
+		if (staleByPayload) {
+			return true;
+		}
+
+		try {
+			const stat = await fs.stat(lockPath);
+			return Date.now() - stat.mtimeMs > this.leaseTtlMs;
+		} catch {
+			return true;
+		}
+	}
+
+	private async pruneExpiredArtifacts(): Promise<void> {
+		try {
+			const entries = await fs.readdir(this.leaseDir, { withFileTypes: true });
+			const now = Date.now();
+			const maxAgeMs = Math.max(this.leaseTtlMs, this.resultTtlMs) * 2;
+			for (const entry of entries) {
+				if (!entry.isFile()) continue;
+				if (!entry.name.endsWith(".lock") && !entry.name.endsWith(".result.json")) continue;
+				const fullPath = join(this.leaseDir, entry.name);
+				try {
+					const stat = await fs.stat(fullPath);
+					if (now - stat.mtimeMs > maxAgeMs) {
+						await safeUnlink(fullPath);
+					}
+				} catch {
+					// Best effort.
+				}
+			}
+		} catch {
+			// Best effort.
+		}
+	}
+}

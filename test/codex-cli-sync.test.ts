@@ -5,19 +5,25 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import { clearCodexCliStateCache } from "../lib/codex-cli/state.js";
 import { syncAccountStorageFromCodexCli } from "../lib/codex-cli/sync.js";
+import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 
 describe("codex-cli sync", () => {
 	let tempDir: string;
 	let accountsPath: string;
+	let authPath: string;
 	let previousPath: string | undefined;
+	let previousAuthPath: string | undefined;
 	let previousSync: string | undefined;
 
 	beforeEach(async () => {
 		previousPath = process.env.CODEX_CLI_ACCOUNTS_PATH;
+		previousAuthPath = process.env.CODEX_CLI_AUTH_PATH;
 		previousSync = process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
 		tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-sync-"));
 		accountsPath = join(tempDir, "accounts.json");
+		authPath = join(tempDir, "auth.json");
 		process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
+		process.env.CODEX_CLI_AUTH_PATH = authPath;
 		process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
 		clearCodexCliStateCache();
 	});
@@ -26,6 +32,8 @@ describe("codex-cli sync", () => {
 		clearCodexCliStateCache();
 		if (previousPath === undefined) delete process.env.CODEX_CLI_ACCOUNTS_PATH;
 		else process.env.CODEX_CLI_ACCOUNTS_PATH = previousPath;
+		if (previousAuthPath === undefined) delete process.env.CODEX_CLI_AUTH_PATH;
+		else process.env.CODEX_CLI_AUTH_PATH = previousAuthPath;
 		if (previousSync === undefined) delete process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
 		else process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = previousSync;
 		await rm(tempDir, { recursive: true, force: true });
@@ -204,5 +212,81 @@ describe("codex-cli sync", () => {
 		const result = await syncAccountStorageFromCodexCli(current);
 		expect(result.changed).toBe(false);
 		expect(result.storage).toBe(current);
+	});
+
+	it("keeps local active selection when local write is newer than codex snapshot", async () => {
+		await writeFile(
+			authPath,
+			JSON.stringify(
+				{
+					auth_mode: "chatgpt",
+					OPENAI_API_KEY: null,
+					tokens: {
+						access_token: "local.access.token",
+						refresh_token: "local-refresh-token",
+						account_id: "acc_a",
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		await setCodexCliActiveSelection({
+			accountId: "acc_a",
+			accessToken: "local.access.token",
+			refreshToken: "local-refresh-token",
+		});
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					codexMultiAuthSyncVersion: Date.now() - 120_000,
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: { tokens: { access_token: "a.access", refresh_token: "refresh-a" } },
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: { tokens: { access_token: "b.access", refresh_token: "refresh-b" } },
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		clearCodexCliStateCache();
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await syncAccountStorageFromCodexCli(current);
+		expect(result.storage?.activeIndex).toBe(0);
 	});
 });

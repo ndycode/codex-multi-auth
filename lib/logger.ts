@@ -1,8 +1,8 @@
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_NAME } from "./constants.js";
+import { getCodexLogDir } from "./runtime-paths.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -121,7 +121,7 @@ export const REQUEST_BODY_LOGGING_ENABLED = process.env.CODEX_PLUGIN_LOG_BODIES 
 export const DEBUG_ENABLED = process.env.DEBUG_CODEX_PLUGIN === "1" || LOGGING_ENABLED;
 export const LOG_LEVEL = parseLogLevel(process.env.CODEX_PLUGIN_LOG_LEVEL);
 const CONSOLE_LOG_ENABLED = process.env.CODEX_CONSOLE_LOG === "1";
-const LOG_DIR = join(homedir(), ".opencode", "logs", "codex-plugin");
+const LOG_DIR = join(getCodexLogDir(), "codex-plugin");
 
 let client: LogClient | null = null;
 let currentCorrelationId: string | null = null;

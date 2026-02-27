@@ -20,32 +20,63 @@ import {
 const mockedExistsSync = vi.mocked(existsSync);
 
 describe("Storage Paths Module", () => {
+	const _origCODEX_HOME = process.env.CODEX_HOME;
+	const _origCODEX_MULTI_AUTH_DIR = process.env.CODEX_MULTI_AUTH_DIR;
+
 	beforeEach(() => {
+		delete process.env.CODEX_HOME;
+		delete process.env.CODEX_MULTI_AUTH_DIR;
 		vi.clearAllMocks();
 	});
 
 	afterEach(() => {
 		vi.resetAllMocks();
+		if (_origCODEX_HOME !== undefined) process.env.CODEX_HOME = _origCODEX_HOME; else delete process.env.CODEX_HOME;
+		if (_origCODEX_MULTI_AUTH_DIR !== undefined) process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR; else delete process.env.CODEX_MULTI_AUTH_DIR;
 	});
 
 	describe("getConfigDir", () => {
-		it("should return ~/.opencode", () => {
+		it("should return ~/.codex/multi-auth", () => {
 			const result = getConfigDir();
-			expect(result).toBe(path.join(homedir(), ".opencode"));
+			expect(result).toBe(path.join(homedir(), ".codex", "multi-auth"));
+		});
+
+		it("uses explicit CODEX_MULTI_AUTH_DIR when provided", () => {
+			process.env.CODEX_MULTI_AUTH_DIR = "/custom/multi-auth";
+			const result = getConfigDir();
+			expect(result).toBe("/custom/multi-auth");
+		});
+
+		it("falls back to legacy codex home dir with storage when primary has none", () => {
+			const primary = path.join(homedir(), ".codex", "multi-auth");
+			const fallback = path.join(homedir(), "DevTools", "config", "codex", "multi-auth");
+
+			mockedExistsSync.mockImplementation((candidate) => {
+				if (typeof candidate !== "string") return false;
+				if (candidate === path.join(primary, "openai-codex-accounts.json")) return false;
+				if (candidate === path.join(primary, "settings.json")) return false;
+				if (candidate === path.join(primary, "config.json")) return false;
+				if (candidate === path.join(primary, "dashboard-settings.json")) return false;
+				if (candidate === path.join(primary, "projects")) return false;
+				return candidate === path.join(fallback, "openai-codex-accounts.json");
+			});
+
+			const result = getConfigDir();
+			expect(result).toBe(fallback);
 		});
 	});
 
 	describe("getProjectConfigDir", () => {
-		it("should return project path with .opencode appended", () => {
+		it("should return project path with .codex appended", () => {
 			const projectPath = "/home/user/myproject";
 			const result = getProjectConfigDir(projectPath);
-			expect(result).toBe(path.join(projectPath, ".opencode"));
+			expect(result).toBe(path.join(projectPath, ".codex"));
 		});
 
 		it("should handle Windows-style paths", () => {
 			const projectPath = "C:\\Users\\test\\project";
 			const result = getProjectConfigDir(projectPath);
-			expect(result).toBe(path.join(projectPath, ".opencode"));
+			expect(result).toBe(path.join(projectPath, ".codex"));
 		});
 	});
 
@@ -60,16 +91,16 @@ describe("Storage Paths Module", () => {
 	});
 
 	describe("getProjectGlobalConfigDir", () => {
-		it("returns ~/.opencode/projects/<key>", () => {
+		it("returns ~/.codex/multi-auth/projects/<key>", () => {
 			const projectPath = "/home/user/myproject";
 			const result = getProjectGlobalConfigDir(projectPath);
-			expect(result).toContain(path.join(homedir(), ".opencode", "projects"));
+			expect(result).toContain(path.join(homedir(), ".codex", "multi-auth", "projects"));
 			expect(result).toContain("myproject-");
 		});
 	});
 
 	describe("isProjectDirectory", () => {
-		const markers = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".opencode"];
+		const markers = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".codex"];
 
 		it.each(markers)("should return true when %s exists", (marker) => {
 			mockedExistsSync.mockImplementation((p) => {
@@ -132,8 +163,8 @@ describe("Storage Paths Module", () => {
 
 	describe("resolvePath", () => {
 		it("should expand tilde to home directory", () => {
-			const result = resolvePath("~/.opencode/config.json");
-			expect(result).toBe(path.join(homedir(), ".opencode/config.json"));
+			const result = resolvePath("~/.codex/config.json");
+			expect(result).toBe(path.join(homedir(), ".codex/config.json"));
 		});
 
 		it("should resolve relative paths", () => {

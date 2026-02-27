@@ -25,6 +25,18 @@ import {
 // But Task 0 says: "Tests should fail initially (RED phase)"
 
 describe("storage", () => {
+  const _origCODEX_HOME = process.env.CODEX_HOME;
+  const _origCODEX_MULTI_AUTH_DIR = process.env.CODEX_MULTI_AUTH_DIR;
+
+  beforeEach(() => {
+    delete process.env.CODEX_HOME;
+    delete process.env.CODEX_MULTI_AUTH_DIR;
+  });
+
+  afterEach(() => {
+    if (_origCODEX_HOME !== undefined) process.env.CODEX_HOME = _origCODEX_HOME; else delete process.env.CODEX_HOME;
+    if (_origCODEX_MULTI_AUTH_DIR !== undefined) process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR; else delete process.env.CODEX_MULTI_AUTH_DIR;
+  });
   describe("deduplication", () => {
     it("remaps activeIndex after deduplication using active account key", () => {
       const now = Date.now();
@@ -680,7 +692,7 @@ describe("storage", () => {
 
     beforeEach(async () => {
       await fs.mkdir(testWorkDir, { recursive: true });
-      testStoragePath = join(testWorkDir, ".opencode", "accounts.json");
+      testStoragePath = join(testWorkDir, ".codex", "accounts.json");
       setStoragePathDirect(testStoragePath);
     });
 
@@ -739,20 +751,20 @@ describe("storage", () => {
     it("sets path to null when projectPath is null", () => {
       setStoragePath(null);
       const path = getStoragePath();
-      expect(path).toContain(".opencode");
+      expect(path).toContain(".codex");
     });
 
     it("sets path to null when no project root found", () => {
       setStoragePath("/nonexistent/path/that/does/not/exist");
       const path = getStoragePath();
-      expect(path).toContain(".opencode");
+      expect(path).toContain(".codex");
     });
 
-    it("sets project-scoped path under global .opencode when project root found", () => {
+    it("sets project-scoped path under global .codex when project root found", () => {
       setStoragePath(process.cwd());
       const path = getStoragePath();
       expect(path).toContain("openai-codex-accounts.json");
-      expect(path).toContain(".opencode");
+      expect(path).toContain(".codex");
       expect(path).toContain("projects");
     });
   });
@@ -903,20 +915,20 @@ describe("storage", () => {
 
       expect(existsSync(gitignorePath)).toBe(true);
       const gitignoreContent = await fs.readFile(gitignorePath, "utf-8");
-      expect(gitignoreContent).toContain(".opencode/");
-      expect(getStoragePath()).toContain(join(fakeHome, ".opencode", "projects"));
+      expect(gitignoreContent).toContain(".codex/");
+      expect(getStoragePath()).toContain(join(fakeHome, ".codex", "multi-auth", "projects"));
     });
 
     it("creates .gitignore when it does not exist but .git dir exists (line 99-100 false branch)", async () => {
       const projectDir = join(testWorkDir, "project");
-      const openCodeDir = join(projectDir, ".opencode");
+      const codexDir = join(projectDir, ".codex");
       const gitDir = join(projectDir, ".git");
       const gitignorePath = join(projectDir, ".gitignore");
 
-      await fs.mkdir(openCodeDir, { recursive: true });
+      await fs.mkdir(codexDir, { recursive: true });
       await fs.mkdir(gitDir, { recursive: true });
 
-      testStoragePath = join(openCodeDir, "accounts.json");
+      testStoragePath = join(codexDir, "accounts.json");
       setStoragePathDirect(testStoragePath);
 
       const storage = {
@@ -929,20 +941,20 @@ describe("storage", () => {
 
       expect(existsSync(gitignorePath)).toBe(true);
       const gitignoreContent = await fs.readFile(gitignorePath, "utf-8");
-      expect(gitignoreContent).toContain(".opencode/");
+      expect(gitignoreContent).toContain(".codex/");
     });
 
     it("appends to existing .gitignore without trailing newline (line 107 coverage)", async () => {
       const projectDir = join(testWorkDir, "project2");
-      const openCodeDir = join(projectDir, ".opencode");
+      const codexDir = join(projectDir, ".codex");
       const gitDir = join(projectDir, ".git");
       const gitignorePath = join(projectDir, ".gitignore");
 
-      await fs.mkdir(openCodeDir, { recursive: true });
+      await fs.mkdir(codexDir, { recursive: true });
       await fs.mkdir(gitDir, { recursive: true });
       await fs.writeFile(gitignorePath, "node_modules", "utf-8");
 
-      testStoragePath = join(openCodeDir, "accounts.json");
+      testStoragePath = join(codexDir, "accounts.json");
       setStoragePathDirect(testStoragePath);
 
       const storage = {
@@ -954,7 +966,7 @@ describe("storage", () => {
       await saveAccounts(storage);
 
       const gitignoreContent = await fs.readFile(gitignorePath, "utf-8");
-      expect(gitignoreContent).toBe("node_modules\n.opencode/\n");
+      expect(gitignoreContent).toBe("node_modules\n.codex/\n");
     });
   });
 
@@ -974,7 +986,7 @@ describe("storage", () => {
       const fakeHome = join(testWorkDir, "home");
       const projectDir = join(testWorkDir, "project");
       const projectGitDir = join(projectDir, ".git");
-      const legacyProjectConfigDir = join(projectDir, ".opencode");
+      const legacyProjectConfigDir = join(projectDir, ".codex");
       const legacyStoragePath = join(legacyProjectConfigDir, "openai-codex-accounts.json");
 
       await fs.mkdir(fakeHome, { recursive: true });
