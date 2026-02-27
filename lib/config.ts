@@ -1101,5 +1101,3 @@ export function getPreemptiveQuotaMaxDeferralMs(pluginConfig: PluginConfig): num
 		{ min: 1_000 },
 	);
 }
-
-

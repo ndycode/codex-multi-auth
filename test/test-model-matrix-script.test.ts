@@ -24,6 +24,12 @@ describe("test-model-matrix script helpers", () => {
 		});
 	});
 
+	it("falls back to default timeout when CODEX_MATRIX_TIMEOUT_MS is invalid", async () => {
+		vi.stubEnv("CODEX_MATRIX_TIMEOUT_MS", "abc");
+		const mod = await import("../scripts/test-model-matrix.js");
+		expect(mod.resolveMatrixTimeoutMs()).toBe(120000);
+	});
+
 	it("filters non-path where output on Windows", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
 		try {

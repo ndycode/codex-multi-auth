@@ -16,6 +16,7 @@ const scenarioTemplates = {
 const defaultPromptPrefix = "Reply exactly:";
 const modelProviderId = "openai";
 const pluginPackageName = "codex-multi-auth";
+const DEFAULT_MATRIX_TIMEOUT_MS = 120000;
 
 export function resolveCodexExecutable() {
 	const envOverride = process.env.CODEX_BIN;
@@ -123,6 +124,14 @@ export function __resetTrackedCodexPidsForTests() {
 	spawnedCodexPids.clear();
 }
 
+export function resolveMatrixTimeoutMs() {
+	const parsedTimeout = Number.parseInt(process.env.CODEX_MATRIX_TIMEOUT_MS ?? String(DEFAULT_MATRIX_TIMEOUT_MS), 10);
+	if (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0) {
+		return DEFAULT_MATRIX_TIMEOUT_MS;
+	}
+	return parsedTimeout;
+}
+
 function stopCodexServersInternal() {
 	const tracked = [...spawnedCodexPids];
 	spawnedCodexPids.clear();
@@ -221,12 +230,13 @@ function executeModelCase(caseInfo, index, port) {
 		args.push("--variant", caseInfo.variant);
 	}
 
+	const timeoutMs = resolveMatrixTimeoutMs();
 	const finalized = spawnSync(CodexExecutable.command, args, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		windowsHide: true,
 		shell: CodexExecutable.shell,
-		timeout: Number.parseInt(process.env.CODEX_MATRIX_TIMEOUT_MS ?? "120000", 10),
+		timeout: timeoutMs,
 		killSignal: "SIGKILL",
 		env: {
 			...process.env,
@@ -242,7 +252,7 @@ function executeModelCase(caseInfo, index, port) {
 			ok: false,
 			exitCode: 124,
 			hasToken: false,
-			output: `Timed out after ${process.env.CODEX_MATRIX_TIMEOUT_MS ?? "120000"}ms`,
+			output: `Timed out after ${timeoutMs}ms`,
 		};
 	}
 

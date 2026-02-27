@@ -171,7 +171,13 @@ async function writeCacheFilesAtomically(content: string, meta: CacheMeta): Prom
 	} catch (error) {
 		if (renamedContent) {
 			// If only one rename succeeded, restore consistency by rewriting the content file.
-			await writeFileWithRetry(CACHE_FILE, content);
+			try {
+				await writeFileWithRetry(CACHE_FILE, content);
+			} catch (recoveryError) {
+				logDebug("Failed to restore host-codex prompt content after partial rename failure", {
+					error: String(recoveryError),
+				});
+			}
 		}
 		await removeFileQuietly(contentTmp);
 		await removeFileQuietly(metaTmp);

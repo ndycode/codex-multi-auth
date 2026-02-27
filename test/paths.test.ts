@@ -92,16 +92,18 @@ describe("Storage Paths Module", () => {
 			process.env.CODEX_HOME = "C:\\Users\\test\\.codex";
 			const primary = path.win32.join("C:\\Users\\test\\.codex", "multi-auth");
 			const fallback = path.win32.join("C:\\Users\\test", "DevTools", "config", "codex", "multi-auth");
+			const normalizePath = (input: string) => path.win32.normalize(input.replace(/\//g, "\\"));
 
 			mockedExistsSync.mockImplementation((candidate) => {
 				if (typeof candidate !== "string") return false;
-				if (candidate === path.win32.join(primary, "settings.json")) return true;
-				if (candidate === path.win32.join(primary, "openai-codex-accounts.json")) return false;
-				if (candidate === path.win32.join(primary, "codex-accounts.json")) return false;
-				if (candidate === path.win32.join(primary, "config.json")) return false;
-				if (candidate === path.win32.join(primary, "dashboard-settings.json")) return false;
-				if (candidate === path.win32.join(primary, "projects")) return false;
-				return candidate === path.win32.join(fallback, "openai-codex-accounts.json");
+				const normalizedCandidate = normalizePath(candidate);
+				if (normalizedCandidate === normalizePath(path.win32.join(primary, "settings.json"))) return true;
+				if (normalizedCandidate === normalizePath(path.win32.join(primary, "openai-codex-accounts.json"))) return false;
+				if (normalizedCandidate === normalizePath(path.win32.join(primary, "codex-accounts.json"))) return false;
+				if (normalizedCandidate === normalizePath(path.win32.join(primary, "config.json"))) return false;
+				if (normalizedCandidate === normalizePath(path.win32.join(primary, "dashboard-settings.json"))) return false;
+				if (normalizedCandidate === normalizePath(path.win32.join(primary, "projects"))) return false;
+				return normalizedCandidate === normalizePath(path.win32.join(fallback, "openai-codex-accounts.json"));
 			});
 
 			try {

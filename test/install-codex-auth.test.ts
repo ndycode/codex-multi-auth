@@ -73,7 +73,7 @@ describe("install-codex-auth script", () => {
 
 		expect(result.status).toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toContain("[dry-run]");
-		const configPath = path.join(home, ".config", "Codex", "config.json");
+		const configPath = path.join(home, ".config", "Codex", "Codex.json");
 		expect(existsSync(configPath)).toBe(false);
 	});
 });
