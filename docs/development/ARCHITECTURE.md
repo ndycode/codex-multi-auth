@@ -107,6 +107,7 @@ Canonical root: `~/.codex/multi-auth`.
 2. Dist folder is generated output only.
 3. Non-auth `codex` commands are always forwarded to official Codex CLI.
 4. Canonical account-management commands remain `codex auth ...`.
+5. CLI usage/help output must stay in sync with parser-supported flags.
 
 * * *
 

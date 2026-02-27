@@ -24,7 +24,17 @@ Canonical target is `~/.codex/multi-auth` when no override is set.
 - `dashboardDisplaySettings`
 - `pluginConfig`
 
-If legacy config exists, compatibility load and migration path still apply.
+Plugin config load order:
+
+1. `CODEX_MULTI_AUTH_CONFIG_PATH` (explicit file override)
+2. Unified settings (`~/.codex/multi-auth/settings.json` -> `pluginConfig`)
+3. Legacy config files, only when present:
+   - `~/.codex/multi-auth/config.json`
+   - `~/.codex/codex-multi-auth-config.json`
+   - `~/.codex/openai-codex-auth-config.json`
+4. `DEFAULT_PLUGIN_CONFIG` defaults
+
+Legacy sources are compatibility-only; next save migrates toward unified settings.
 
 * * *
 
@@ -33,7 +43,7 @@ If legacy config exists, compatibility load and migration path still apply.
 For plugin runtime values:
 
 1. Environment override
-2. `CODEX_MULTI_AUTH_CONFIG_PATH` (when set)
+2. Explicit config file (`CODEX_MULTI_AUTH_CONFIG_PATH`) when set
 3. Unified/compat config value
 4. Hardcoded default in `DEFAULT_PLUGIN_CONFIG`
 
@@ -86,7 +96,7 @@ For dashboard display values:
 ## 8) Live Runtime Sync Flow
 
 1. File watcher detects account-file updates.
-2. Debounce and reload in-memory account manager.
+2. Debounce + poll fallback reload in-memory account manager.
 3. Session affinity and guardian processes continue with updated state.
 
 * * *

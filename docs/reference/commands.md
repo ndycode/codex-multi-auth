@@ -44,10 +44,10 @@ Common flags:
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
 | `--json` | verify-flagged/forecast/report/fix/doctor | machine-readable output |
-| `--live` | forecast/report | use live quota/session probes |
+| `--live` | forecast/report/fix | use live quota/session probes |
 | `--dry-run` | verify-flagged/fix/doctor | preview without mutation |
 | `--fix` | doctor | apply repairs |
-| `--model <model>` | forecast/report | choose forecast model |
+| `--model <model>` | forecast/report/fix | choose probe model |
 | `--out <path>` | report | write report file |
 | `--no-restore` | verify-flagged | verify only, do not restore |
 
@@ -104,6 +104,7 @@ Repair workflow:
 
 ```bash
 codex auth fix --dry-run
+codex auth fix --live --model gpt-5-codex
 codex auth fix
 codex auth doctor --fix
 ```

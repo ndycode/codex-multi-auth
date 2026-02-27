@@ -16,6 +16,7 @@ Ownership map for source paths and documentation paths.
 | `config/` | Plugin-host config examples |
 | `assets/` | Static project assets |
 | `dist/` | Generated build output (do not edit directly) |
+| `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md` | Release, security, and contribution governance |
 
 * * *
 
@@ -43,6 +44,7 @@ Ownership map for source paths and documentation paths.
 | Reference docs | `docs/reference/*` |
 | Maintainer docs | `docs/development/*`, `docs/DOCUMENTATION.md` |
 | Style and consistency | `docs/STYLE_GUIDE.md` |
+| Governance linkage | `README.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md` |
 
 * * *
 
@@ -78,3 +80,4 @@ When adding a new feature:
 4. Update references if command/setting/path changed.
 5. Update architecture/config flow docs for cross-cutting behavior.
 6. Update `docs/upgrade.md` and any npm-script references when command flow/build steps changed.
+7. Update governance docs (`CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`) if release/security/contributor workflow changed.

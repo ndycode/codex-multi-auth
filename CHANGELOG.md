@@ -1,6 +1,6 @@
-# changelog
+# Changelog
 
-all notable changes to this project. dates are ISO format (YYYY-MM-DD).
+All notable changes to this project. Dates are ISO format (YYYY-MM-DD).
 
 ## [unreleased]
 
@@ -260,7 +260,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.12.1...v4
 - Proactive token refresh - Refreshes tokens 5 minutes before expiry
 - Zod schemas - Runtime validation as single source of truth
 - ### Stats
-- Tests: 580 â†’ 631 (+51)
+- Tests: 580 -> 631 (+51)
 - All passing on Windows with `--pool=forks`
 
 ### Bug Fixes
@@ -372,7 +372,17 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.7...v4.
 
 ### Changelog
 
-Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.5...v4.9.7
+Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.6...v4.9.7
+
+## [4.9.6] - 2026-02-08
+
+### Improvements
+- tui auth gating: non-tty/ui auth attempts now return a clear instruction to run `codex auth login` in a terminal shell.
+- error-mapping simplification: consolidated entitlement/rate-limit mapping in fetch helpers for a single handling path.
+
+### Changelog
+
+Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v5.0.0...v4.9.6
 
 ## [4.9.5] - 2026-01-28
 
@@ -386,16 +396,6 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.5...v4.
 ### Changelog
 
 Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.4...v4.9.5
-
-## [4.9.6] - 2026-02-08
-
-### Improvements
-- tui auth gating: non-tty/ui auth attempts now return a clear instruction to run `codex auth login` in a terminal shell.
-- error-mapping simplification: consolidated entitlement/rate-limit mapping in fetch helpers for a single handling path.
-
-### Changelog
-
-Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v5.0.0...v4.9.6
 
 ## [4.9.4] - 2026-01-27
 

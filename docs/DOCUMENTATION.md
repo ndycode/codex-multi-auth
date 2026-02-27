@@ -82,6 +82,7 @@ When runtime behavior changes:
 6. Update `docs/upgrade.md` when migration steps, command routing, or paths changed.
 7. Keep `SECURITY.md` aligned with current storage paths and credential handling.
 8. Update npm script references whenever build/install workflow changes.
+9. Keep CLI usage text in docs aligned with `lib/codex-manager.ts` usage output.
 
 * * *
 
@@ -95,6 +96,7 @@ Before merge:
 4. Internal links are valid.
 5. Cross-platform examples are present for OS-sensitive flows.
 6. No conflicting duplicate guidance across pages.
+7. `test/documentation.test.ts` passes.
 
 * * *
 

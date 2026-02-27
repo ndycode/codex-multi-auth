@@ -51,6 +51,7 @@ codex auth check
 | `codex auth check` | Quick health + live session checks |
 | `codex auth forecast --live` | Choose best next account |
 | `codex auth fix --dry-run` | Preview safe fixes |
+| `codex auth fix --live --model gpt-5-codex` | Run fix with live probe on a specific model |
 | `codex auth fix` | Apply safe fixes |
 | `codex auth doctor --fix` | Diagnose + repair common issues |
 | `codex auth report --live --json` | Export machine-readable status |
@@ -67,7 +68,7 @@ Main dashboard:
 - `Enter`: select
 - `1-9`: quick switch
 - `/`: search
-- `?` or `H`: help
+- `?`: toggle help
 - `Q`: back/cancel
 
 Account detail menu:
@@ -94,6 +95,30 @@ Settings location:
 - or `CODEX_MULTI_AUTH_DIR/settings.json` when custom root is set
 
 Reference: [docs/reference/settings.md](docs/reference/settings.md)
+
+* * *
+
+## Stable Env Overrides
+
+Use these stable overrides first:
+
+| Variable | Purpose |
+| --- | --- |
+| `CODEX_MULTI_AUTH_DIR` | Override the multi-auth root (`settings`, accounts, cache, logs) |
+| `CODEX_MULTI_AUTH_CONFIG_PATH` | Load plugin config from an alternate file |
+| `CODEX_HOME` | Override Codex home used to resolve default paths |
+| `CODEX_MODE` | Toggle Codex mode |
+| `CODEX_TUI_V2` | Toggle TUI v2 |
+| `CODEX_TUI_COLOR_PROFILE` | Set TUI color profile (`truecolor`, `ansi256`, `ansi16`) |
+| `CODEX_TUI_GLYPHS` | Set glyph mode (`ascii`, `unicode`, `auto`) |
+| `CODEX_AUTH_FETCH_TIMEOUT_MS` | Override upstream request timeout |
+| `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Override stream stall timeout |
+| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state synchronization |
+| `CODEX_CLI_ACCOUNTS_PATH` / `CODEX_CLI_AUTH_PATH` | Override Codex CLI state file locations |
+| `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force forwarded Codex binary path |
+| `CODEX_MULTI_AUTH_BYPASS` | Disable local auth interception and always forward |
+
+Advanced/internal toggles are documented in [docs/development/CONFIG_FIELDS.md](docs/development/CONFIG_FIELDS.md).
 
 * * *
 

@@ -33,6 +33,7 @@ npm run test:watch
 npm run test:coverage
 npm run test:model-matrix:smoke
 npm run bench:edit-formats:smoke
+npm run audit:ci
 ```
 
 * * *
@@ -43,7 +44,8 @@ npm run bench:edit-formats:smoke
 2. `npm run lint`
 3. `npm test`
 4. `npm run build`
-5. run docs command checks for newly documented command paths
+5. `npm run audit:ci` (release/dependency-sensitive changes)
+6. run docs command checks for newly documented command paths
 
 * * *
 
@@ -101,6 +103,7 @@ Optional plugin-host smoke:
 2. Cross-check path references against runtime modules.
 3. Confirm cross-links are valid.
 4. Keep feature matrix in sync with implemented features.
+5. Run `vitest run test/documentation.test.ts` before merge.
 
 * * *
 

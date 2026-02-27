@@ -1,6 +1,6 @@
 # Configuration
 
-Configure behavior from one settings root with optional environment overrides.
+Configure behavior from one settings root with stable env overrides and optional advanced toggles.
 
 ---
 
@@ -55,18 +55,36 @@ Keep these enabled for most users:
 
 ---
 
-## Environment Overrides
+## Stable Environment Overrides
+
+These overrides are stable and intended for day-to-day use:
 
 | Variable | Effect |
 | --- | --- |
-| `CODEX_MULTI_AUTH_DIR` | Override settings/accounts root |
-| `CODEX_MULTI_AUTH_CONFIG_PATH` | Read config from alternate file |
+| `CODEX_MULTI_AUTH_DIR` | Override settings/accounts/cache/log root |
+| `CODEX_MULTI_AUTH_CONFIG_PATH` | Read plugin config from alternate file |
+| `CODEX_HOME` | Change Codex home used for default path resolution |
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor\|ansi256\|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii\|unicode\|auto` | TUI glyph style |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Override request timeout |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Override stream stall timeout |
+| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI=0/1` | Disable/enable Codex CLI state sync |
+| `CODEX_CLI_ACCOUNTS_PATH=<path>` | Override Codex CLI accounts file path |
+| `CODEX_CLI_AUTH_PATH=<path>` | Override Codex CLI auth file path |
+| `CODEX_MULTI_AUTH_REAL_CODEX_BIN=<path>` | Force official Codex binary used by wrapper |
+| `CODEX_MULTI_AUTH_BYPASS=1` | Bypass local auth handling and forward all commands |
+
+---
+
+## Advanced/Internal Overrides
+
+Advanced runtime controls (failover policy, refresh lease internals, testing toggles) are documented in:
+
+- [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
+
+Treat those settings as maintainers-only unless explicitly advised.
 
 ---
 

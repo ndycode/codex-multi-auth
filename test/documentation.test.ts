@@ -116,6 +116,61 @@ describe('Documentation Integrity', () => {
     }
   });
 
+  it('keeps fix flag docs aligned across README, command reference, and CLI usage text', () => {
+    const readme = read('README.md');
+    const commandRef = read('docs/reference/commands.md');
+    const manager = read('lib/codex-manager.ts');
+
+    expect(readme).toContain('codex auth fix --live --model gpt-5-codex');
+    expect(commandRef).toContain('| `--live` | forecast/report/fix |');
+    expect(commandRef).toContain('| `--model <model>` | forecast/report/fix |');
+    expect(manager).toContain(
+      'codex auth fix [--dry-run] [--json] [--live] [--model <model>]',
+    );
+    expect(manager).toContain(
+      'codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]',
+    );
+  });
+
+  it('keeps dashboard help key docs consistent with current hotkey behavior', () => {
+    const readme = read('README.md');
+    const commandRef = read('docs/reference/commands.md');
+
+    expect(readme).toContain('`?`: toggle help');
+    expect(readme).not.toContain('`?` or `H`');
+    expect(commandRef).toContain('| `?` | Toggle help |');
+    expect(commandRef).not.toContain('| `H` |');
+  });
+
+  it('documents stable overrides separately from advanced/internal overrides', () => {
+    const configGuide = read('docs/configuration.md');
+    const settingsRef = read('docs/reference/settings.md');
+    const fieldInventory = read('docs/development/CONFIG_FIELDS.md');
+
+    expect(configGuide).toContain('## Stable Environment Overrides');
+    expect(configGuide).toContain('## Advanced/Internal Overrides');
+    expect(settingsRef).toContain('## Stable Environment Overrides');
+    expect(settingsRef).toContain('Advanced/internal toggles are documented');
+    expect(fieldInventory).toContain('### Stable (User-Facing)');
+    expect(fieldInventory).toContain('### Advanced (Runtime Tuning)');
+    expect(fieldInventory).toContain('### Advanced / Internal (Maintainers)');
+  });
+
+  it('keeps changelog casing and patch-line ordering intact', () => {
+    const changelog = read('CHANGELOG.md');
+    expect(changelog.startsWith('# Changelog')).toBe(true);
+
+    const idx497 = changelog.indexOf('## [4.9.7]');
+    const idx496 = changelog.indexOf('## [4.9.6]');
+    const idx495 = changelog.indexOf('## [4.9.5]');
+    expect(idx497).toBeGreaterThan(-1);
+    expect(idx496).toBeGreaterThan(-1);
+    expect(idx495).toBeGreaterThan(-1);
+    expect(idx497).toBeLessThan(idx496);
+    expect(idx496).toBeLessThan(idx495);
+    expect(changelog).toContain('legacy package');
+  });
+
   it('has valid internal links in README.md', () => {
     const content = read('README.md');
     const links = extractInternalLinks(content);

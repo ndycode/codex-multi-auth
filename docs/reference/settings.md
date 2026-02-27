@@ -113,6 +113,31 @@ Typical controls:
 
 * * *
 
+## Stable Environment Overrides
+
+Important stable overrides that supersede file settings:
+
+- `CODEX_MULTI_AUTH_DIR`
+- `CODEX_MULTI_AUTH_CONFIG_PATH`
+- `CODEX_HOME`
+- `CODEX_MODE`
+- `CODEX_TUI_V2`
+- `CODEX_TUI_COLOR_PROFILE`
+- `CODEX_TUI_GLYPHS`
+- `CODEX_AUTH_FETCH_TIMEOUT_MS`
+- `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
+- `CODEX_MULTI_AUTH_SYNC_CODEX_CLI`
+- `CODEX_CLI_ACCOUNTS_PATH`
+- `CODEX_CLI_AUTH_PATH`
+- `CODEX_MULTI_AUTH_REAL_CODEX_BIN`
+- `CODEX_MULTI_AUTH_BYPASS`
+
+Advanced/internal toggles are documented in maintainer docs:
+
+- [../development/CONFIG_FIELDS.md](../development/CONFIG_FIELDS.md)
+
+* * *
+
 ## Recommended Defaults
 
 For most users, keep:
@@ -123,23 +148,6 @@ For most users, keep:
 - session affinity enabled
 - preemptive quota deferral enabled
 - proactive refresh guardian enabled
-
-* * *
-
-## Environment Overrides
-
-Important env overrides that can supersede file settings:
-
-- `CODEX_MULTI_AUTH_DIR`
-- `CODEX_MULTI_AUTH_CONFIG_PATH`
-- `CODEX_MODE`
-- `CODEX_TUI_V2`
-- `CODEX_AUTH_FETCH_TIMEOUT_MS`
-- `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
-
-Full field inventory:
-
-- [../development/CONFIG_FIELDS.md](../development/CONFIG_FIELDS.md)
 
 * * *
 

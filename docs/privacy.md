@@ -25,7 +25,12 @@
 | Codex CLI auth state | `~/.codex/accounts.json`, `~/.codex/auth.json` | Official Codex CLI account/auth files |
 
 Legacy compatibility files from older versions may still be read during migration-only compatibility checks.
-If `CODEX_MULTI_AUTH_DIR` or `CODEX_MULTI_AUTH_CONFIG_PATH` is set, these locations move to the configured override path.
+
+Path overrides:
+
+- `CODEX_MULTI_AUTH_DIR` changes the multi-auth root (`settings`, accounts, cache, logs).
+- `CODEX_MULTI_AUTH_CONFIG_PATH` points plugin config reads/writes to an alternate file.
+- `CODEX_CLI_ACCOUNTS_PATH` and `CODEX_CLI_AUTH_PATH` override the Codex CLI state file paths.
 
 * * *
 
@@ -48,6 +53,7 @@ CODEX_PLUGIN_LOG_BODIES=1
 ```
 
 prompt/response payload text can be written to local logs. Treat those logs as sensitive.
+`ENABLE_PLUGIN_REQUEST_LOGGING=1` and `DEBUG_CODEX_PLUGIN=1` also increase local log verbosity.
 
 * * *
 

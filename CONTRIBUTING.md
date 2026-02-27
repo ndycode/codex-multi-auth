@@ -36,10 +36,10 @@ All contributions MUST:
 ## Code Standards
 
 - **TypeScript:** All code must be TypeScript with strict type checking
-- **Testing:** Include tests for new functionality (we maintain 200+ unit tests)
+- **Testing:** Include tests for new functionality and keep coverage gate healthy (80% threshold)
 - **Documentation:** Update README.md for user-facing changes
-- **Modular design:** Keep functions focused and under 40 lines
-- **No external dependencies:** Minimize dependencies (currently only @openauthjs/openauth)
+- **Validation gate:** Run `npm run typecheck`, `npm run lint`, and `npm test` before opening a PR
+- **Dependencies:** Minimize new dependencies and justify them in the PR
 
 ## Pull Request Process
 
@@ -48,7 +48,7 @@ All contributions MUST:
 3. **Include tests** for new functionality
 4. **Update documentation** (README.md, config examples, etc.)
 5. **Ensure compliance** with guidelines above
-6. **Test thoroughly** with actual ChatGPT Plus/Pro account
+6. **Run the validation gate** (`npm run typecheck`, `npm run lint`, `npm test`, `npm run build`)
 7. **Submit PR** with clear description of changes
 
 ## Reporting Issues

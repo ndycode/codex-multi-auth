@@ -14,6 +14,8 @@ These files are example model/provider templates for `codex-multi-auth`.
 
 - These templates are optional for the OAuth account manager flow.
 - Core auth commands use `codex auth login`.
+- Prefer `codex-modern.json` for new setup; use `codex-legacy.json` only for compatibility testing.
+- Verify account readiness after template updates with `codex auth forecast --live` and `codex auth fix --live --model gpt-5-codex`.
 
 ## Defaults Included
 

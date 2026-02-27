@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-We provide security updates for the latest version of the plugin.
+Security fixes are prioritized for the latest release line.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| Latest  | ✅ Active support |
-| < 1.0   | ❌ No longer supported |
+| Version line | Supported |
+| --- | --- |
+| Latest release line | ✅ Active support |
+| Older release lines | ⚠️ Best effort only; upgrade recommended |
 
 ## Security Considerations
 
@@ -28,6 +28,7 @@ This plugin handles sensitive OAuth tokens. To protect your security:
 - Regularly review authorized apps at [ChatGPT Settings](https://chatgpt.com/settings/apps)
 - Remove local plugin auth files when done on shared systems (default: `~/.codex/multi-auth/openai-codex-*.json`; use `CODEX_MULTI_AUTH_DIR` if overridden)
 - Enable debug logging (`ENABLE_PLUGIN_REQUEST_LOGGING=1`) only when troubleshooting
+- Avoid `CODEX_PLUGIN_LOG_BODIES=1` unless required for short-lived local debugging
 
 ### Reporting a Vulnerability
 
@@ -72,7 +73,7 @@ The following are **not** security vulnerabilities:
 ### Third-Party Dependencies
 
 This plugin minimizes dependencies for security:
-- Runtime dependencies include OAuth/auth libraries, plugin host SDK dependencies, `hono`, and `zod`
+- Runtime dependencies include OAuth/auth libraries, `@codex-ai/plugin`, `hono`, and `zod`
 - Regular dependency updates for security patches
 - No telemetry or analytics dependencies
 - CI/local guardrail: run `npm run audit:ci` before release or after dependency updates
