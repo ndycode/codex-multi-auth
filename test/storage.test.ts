@@ -453,6 +453,17 @@ describe("storage", () => {
       expect(deduped).toHaveLength(1);
     });
 
+    it("treats email casing as the same logical account", () => {
+      const accounts = [
+        { email: "Test@Example.com", refreshToken: "old", lastUsed: 100, addedAt: 10 },
+        { email: "test@example.com", refreshToken: "new", lastUsed: 200, addedAt: 20 },
+      ];
+      const deduped = deduplicateAccountsByEmail(accounts);
+      expect(deduped).toHaveLength(1);
+      expect(deduped[0]?.refreshToken).toBe("new");
+      expect(deduped[0]?.email).toBe("test@example.com");
+    });
+
     it("handles null existing account edge case", () => {
       const accounts = [
         { email: "test@example.com", lastUsed: 100 },

@@ -233,6 +233,17 @@ describe("Multi-Account Rotation Integration", () => {
       const result = deduplicateAccountsByEmail(accountsWithNoEmail as any);
       expect(result.length).toBe(3);
     });
+
+    it("deduplicates mixed-case email entries", () => {
+      const mixedCase = [
+        { email: "Mixed@Example.com", refresh_token: "token_old", lastUsed: 1000, addedAt: 100 },
+        { email: "mixed@example.com", refresh_token: "token_new", lastUsed: 2000, addedAt: 200 },
+      ];
+
+      const result = deduplicateAccountsByEmail(mixedCase as any);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.refresh_token).toBe("token_new");
+    });
   });
 
   describe("Refresh token deduplication", () => {
