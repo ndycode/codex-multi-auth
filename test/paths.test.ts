@@ -327,6 +327,52 @@ describe("Storage Paths Module", () => {
 				expect(normalize(resolved)).toBe(normalize(sharedRepoRoot));
 			});
 
+			it("supports windows UNC gitdir pointers", () => {
+				const sharedRepoRoot = "\\\\server\\share\\repo";
+				const projectRoot = path.win32.join(sharedRepoRoot, "worktrees", "pr-unc");
+				const gitEntry = path.win32.join(projectRoot, ".git");
+				const worktreeGitDir = path.win32.join(sharedRepoRoot, ".git", "worktrees", "pr-unc");
+				const commondirFile = path.win32.join(worktreeGitDir, "commondir");
+				const gitdirBackRefFile = path.win32.join(worktreeGitDir, "gitdir");
+				const sharedGitDir = path.win32.join(sharedRepoRoot, ".git");
+				const normalize = (value: string) => path.win32.normalize(value).toLowerCase();
+
+				mockedExistsSync.mockImplementation((candidate) => {
+					if (typeof candidate !== "string") return false;
+					const normalizedCandidate = normalize(candidate);
+					return (
+						normalizedCandidate === normalize(gitEntry) ||
+						normalizedCandidate === normalize(commondirFile) ||
+						normalizedCandidate === normalize(gitdirBackRefFile) ||
+						normalizedCandidate === normalize(sharedGitDir)
+					);
+				});
+				mockedStatSync.mockImplementation((candidate) => {
+					expect(normalize(String(candidate))).toBe(normalize(gitEntry));
+					return buildMockStat({ isDirectory: false, isFile: true });
+				});
+				mockedReadFileSync.mockImplementation((candidate) => {
+					if (typeof candidate !== "string") {
+						throw new Error(`Unexpected read path: ${String(candidate)}`);
+					}
+					const normalizedCandidate = normalize(candidate);
+					if (normalizedCandidate === normalize(gitEntry)) {
+						return `gitdir: ${worktreeGitDir}\n`;
+					}
+					if (normalizedCandidate === normalize(commondirFile)) {
+						return "..\\..\\\n";
+					}
+					if (normalizedCandidate === normalize(gitdirBackRefFile)) {
+						return `${path.win32.join(projectRoot, ".git")}\n`;
+					}
+					throw new Error(`Unexpected read path: ${String(candidate)}`);
+				});
+
+				const resolved = resolveProjectStorageIdentityRoot(projectRoot);
+
+				expect(normalize(resolved)).toBe(normalize(sharedRepoRoot));
+			});
+
 			it("falls back to project root for forged worktree pointers", () => {
 				const projectRoot = "/repo/attacker";
 				const gitEntry = path.join(projectRoot, ".git");
