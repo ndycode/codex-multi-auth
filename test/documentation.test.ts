@@ -18,6 +18,7 @@ const userDocs = [
   'docs/reference/storage-paths.md',
   'docs/releases/v0.1.0.md',
   'docs/releases/v0.1.0-beta.0.md',
+  'docs/releases/legacy-pre-0.1-history.md',
 ];
 
 const scopedLegacyAllowedFiles = new Set([
@@ -44,16 +45,15 @@ describe('Documentation Integrity', () => {
     for (const docPath of userDocs) {
       const fullPath = join(projectRoot, docPath);
       expect(existsSync(fullPath), `${docPath} should exist`).toBe(true);
-      expect(read(docPath).trim().length, `${docPath} should not be empty`).toBeGreaterThan(
-        0,
-      );
+      expect(read(docPath).trim().length, `${docPath} should not be empty`).toBeGreaterThan(0);
     }
   });
 
-  it('docs portal links to stable release notes and archived beta notes', () => {
+  it('docs portal links to stable, beta, and archived release history', () => {
     const portal = read('docs/README.md');
     expect(portal).toContain('releases/v0.1.0.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
+    expect(portal).toContain('releases/legacy-pre-0.1-history.md');
 
     const beta = read('docs/releases/v0.1.0-beta.0.md');
     expect(beta).toContain('Archived');
@@ -116,6 +116,48 @@ describe('Documentation Integrity', () => {
     }
   });
 
+  it('keeps fix command flag docs aligned across README, reference, and CLI usage text', () => {
+    const readme = read('README.md');
+    const commandRef = read('docs/reference/commands.md');
+    const managerPath = 'lib/codex-manager.ts';
+    expect(existsSync(join(projectRoot, managerPath)), `${managerPath} should exist`).toBe(true);
+    const manager = read(managerPath);
+
+    expect(readme).toContain('codex auth fix --live --model gpt-5-codex');
+    expect(commandRef).toContain('| `--live` | forecast, report, fix |');
+    expect(commandRef).toContain('| `--model <model>` | forecast, report, fix |');
+    expect(manager).toContain('codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]');
+  });
+
+  it('documents stable overrides separately from advanced and internal overrides', () => {
+    const configGuide = read('docs/configuration.md').toLowerCase();
+    const settingsRef = read('docs/reference/settings.md').toLowerCase();
+    const fieldInventoryPath = 'docs/development/CONFIG_FIELDS.md';
+    expect(existsSync(join(projectRoot, fieldInventoryPath)), `${fieldInventoryPath} should exist`).toBe(
+      true,
+    );
+    const fieldInventory = read(fieldInventoryPath).toLowerCase();
+
+    expect(configGuide).toContain('stable environment overrides');
+    expect(configGuide).toContain('advanced and internal overrides');
+    expect(settingsRef).toContain('stable environment overrides');
+    expect(settingsRef).toContain('advanced and internal overrides');
+
+    expect(fieldInventory).toContain('concurrency and windows notes');
+    expect(fieldInventory).toContain('eperm');
+    expect(fieldInventory).toContain('ebusy');
+    expect(fieldInventory).toContain('cross-process refresh');
+    expect(fieldInventory).toContain('tokenrefreshskewms');
+  });
+
+  it('keeps changelog aligned with canonical 0.x release policy', () => {
+    const changelog = read('CHANGELOG.md');
+    expect(changelog).toContain('## [0.1.0] - 2026-02-27');
+    expect(changelog).toContain('docs/releases/legacy-pre-0.1-history.md');
+    expect(changelog).not.toContain('## [5.');
+    expect(changelog).not.toContain('## [4.');
+  });
+
   it('has valid internal links in README.md', () => {
     const content = read('README.md');
     const links = extractInternalLinks(content);
@@ -146,4 +188,3 @@ describe('Documentation Integrity', () => {
     }
   });
 });
-
