@@ -11,6 +11,12 @@ import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.j
 async function loadRunCodexMultiAuthCli() {
 	try {
 		const mod = await import("../dist/lib/codex-manager.js");
+		if (typeof mod.runCodexMultiAuthCli !== "function") {
+			console.error(
+				"dist/lib/codex-manager.js is missing required export: runCodexMultiAuthCli",
+			);
+			return null;
+		}
 		return mod.runCodexMultiAuthCli;
 	} catch (error) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
