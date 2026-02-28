@@ -10,10 +10,11 @@ Ownership map for source paths and documentation paths.
 | --- | --- |
 | `index.ts` | Plugin-host runtime entry |
 | `lib/` | Core runtime, auth, storage, UI, policies |
-| `scripts/` | CLI wrappers and helper scripts |
+| `scripts/` | CLI wrappers, repo hygiene, and helper scripts |
 | `docs/` | User docs + references + maintainer docs |
 | `test/` | Unit/integration/property tests |
 | `config/` | Plugin-host config examples |
+| `vendor/` | Vendored codex-ai-plugin + codex-ai-sdk dist shims |
 | `assets/` | Static project assets |
 | `dist/` | Generated build output (do not edit directly) |
 
@@ -24,14 +25,17 @@ Ownership map for source paths and documentation paths.
 | Area | Primary files |
 | --- | --- |
 | CLI auth manager | `lib/codex-manager.ts` |
+| Settings hub | `lib/codex-manager/settings-hub.ts` |
 | OAuth flow/server | `lib/auth/*` |
 | Storage and paths | `lib/storage.ts`, `lib/storage/paths.ts`, `lib/runtime-paths.ts` |
+| Worktree resolution | `lib/storage/paths.ts` (`resolveProjectStorageIdentityRoot`) |
 | Unified settings | `lib/unified-settings.ts`, `lib/dashboard-settings.ts`, `lib/config.ts` |
 | Account runtime | `lib/accounts.ts`, `lib/rotation.ts`, `lib/forecast.ts` |
 | Quota runtime | `lib/quota-probe.ts`, `lib/quota-cache.ts`, `lib/preemptive-quota-scheduler.ts` |
 | Resilience | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts`, `lib/refresh-lease.ts` |
 | Request pipeline | `lib/request/*`, `index.ts` |
 | UI system | `lib/ui/*` |
+| Repo hygiene | `scripts/repo-hygiene.js` |
 
 * * *
 

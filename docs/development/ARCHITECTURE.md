@@ -26,6 +26,7 @@ scripts/codex.js
   v
 lib/codex-manager.ts
   |- oauth login flow + dashboard + check/forecast/fix/doctor/report
+  |- delegates settings panels to lib/codex-manager/settings-hub.ts (~2100 lines)
   |- reads/writes ~/.codex/multi-auth/*
   |- syncs active account to Codex CLI state files
 
@@ -48,14 +49,16 @@ OpenAI OAuth + Codex/ChatGPT backend
 | CLI wrapper | `scripts/codex.js`, `scripts/codex-multi-auth.js` | Command routing and alias normalization |
 | Auth flow | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts` | PKCE OAuth flow, callback handling, browser/manual auth path |
 | Account manager | `lib/codex-manager.ts`, `lib/accounts.ts` | Dashboard actions, account selection, health operations |
+| Settings hub | `lib/codex-manager/settings-hub.ts` | Extracted interactive settings panels (~2100 lines); Q = cancel without save |
 | Storage/runtime paths | `lib/storage.ts`, `lib/storage/paths.ts`, `lib/runtime-paths.ts` | Account/settings persistence, migration, path resolution |
-| Unified settings | `lib/unified-settings.ts`, `lib/dashboard-settings.ts`, `lib/config.ts` | Shared settings persistence + runtime config defaults/overrides |
+| Worktree resolution | `lib/storage/paths.ts` | `resolveProjectStorageIdentityRoot`, linked worktree identity via commondir/gitdir, forged pointer rejection, Windows UNC support |
+| Unified settings | `lib/unified-settings.ts`, `lib/dashboard-settings.ts`, `lib/config.ts` | Shared settings persistence with EBUSY retry + runtime config defaults/overrides |
 | Forecast + quota | `lib/forecast.ts`, `lib/quota-probe.ts`, `lib/quota-cache.ts` | Readiness scoring, live quota probe, cached quota view |
 | Resilience runtime | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts`, `lib/refresh-lease.ts` | No-restart sync, sticky sessions, proactive refresh, cross-process refresh dedupe |
 | Failure handling | `lib/request/failure-policy.ts`, `lib/request/stream-failover.ts`, `lib/request/rate-limit-backoff.ts` | Controlled retry, stream failover, cooldown/backoff |
 | Capability/entitlement | `lib/capability-policy.ts`, `lib/entitlement-cache.ts`, `lib/preemptive-quota-scheduler.ts` | Unsupported-model suppression, policy scoring, quota deferral |
 | Plugin-host request bridge | `index.ts`, `lib/request/fetch-helpers.ts`, `lib/request/request-transformer.ts` | Request shaping, headers, response handling, retry/rotation |
-
+| Repo hygiene | `scripts/repo-hygiene.js` | Deterministic cleanup (`clean --mode aggressive`) and validation (`check`), CI-gated |
 * * *
 
 ## Request Pipeline (Plugin Host)
@@ -89,6 +92,7 @@ Canonical root: `~/.codex/multi-auth`.
 | `quota-cache.json` | Cached quota snapshots |
 | `logs/` | Plugin logs when logging enabled |
 | `cache/` | Prompt/cache artifacts |
+| `projects/<key>/` | Per-project account pools (keyed by repo identity root) |
 
 * * *
 
@@ -107,6 +111,9 @@ Canonical root: `~/.codex/multi-auth`.
 2. Dist folder is generated output only.
 3. Non-auth `codex` commands are always forwarded to official Codex CLI.
 4. Canonical account-management commands remain `codex auth ...`.
+5. Settings Q hotkey = cancel without save; theme live-preview restores baseline on cancel.
+6. Email dedup is case-insensitive via `normalizeEmailKey()` (trim + lowercase).
+7. Windows filesystem operations use `removeWithRetry` for EBUSY/EPERM/ENOTEMPTY safety.
 
 * * *
 
