@@ -273,10 +273,6 @@ describe("Storage Paths Module", () => {
 			});
 
 			it("supports Windows-style backslash gitdir pointers", () => {
-				if (process.platform !== "win32") {
-					return;
-				}
-
 				const projectRoot = path.win32.join("C:\\repo", "worktrees", "pr-8");
 				const gitEntry = path.win32.join(projectRoot, ".git");
 				const worktreeGitDir = path.win32.join("C:\\repo", ".git", "worktrees", "pr-8");
