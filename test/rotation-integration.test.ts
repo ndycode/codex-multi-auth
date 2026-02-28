@@ -14,6 +14,30 @@ import type { ModelFamily } from "../lib/prompts/codex.js";
 let testStorageDir: string;
 let testStoragePath: string;
 
+async function removeWithRetry(path: string, options: { recursive?: boolean; force?: boolean }): Promise<void> {
+  const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
+  const maxAttempts = 6;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await fs.rm(path, options);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error)) {
+        throw error;
+      }
+      const maybeCode = "code" in error ? (error as { code?: string }).code : undefined;
+      const shouldRetry = maybeCode !== undefined && retryableCodes.has(maybeCode);
+      if (!shouldRetry || attempt === maxAttempts) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, attempt * 25);
+      });
+    }
+  }
+}
+
 beforeAll(async () => {
   testStorageDir = await fs.mkdtemp(join(tmpdir(), "codex-multi-auth-rotation-"));
   testStoragePath = join(testStorageDir, "openai-codex-accounts.json");
@@ -27,7 +51,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   setStoragePathDirect(null);
-  await fs.rm(testStorageDir, { recursive: true, force: true });
+  await removeWithRetry(testStorageDir, { recursive: true, force: true });
 });
 
 const TEST_ACCOUNTS = [
