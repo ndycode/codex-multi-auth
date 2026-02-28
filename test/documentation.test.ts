@@ -16,6 +16,7 @@ const userDocs = [
   'docs/reference/commands.md',
   'docs/reference/settings.md',
   'docs/reference/storage-paths.md',
+  'docs/releases/v0.1.1.md',
   'docs/releases/v0.1.0.md',
   'docs/releases/v0.1.0-beta.0.md',
 ];
@@ -52,6 +53,7 @@ describe('Documentation Integrity', () => {
 
   it('docs portal links to stable release notes and archived beta notes', () => {
     const portal = read('docs/README.md');
+    expect(portal).toContain('releases/v0.1.1.md');
     expect(portal).toContain('releases/v0.1.0.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
 
@@ -67,6 +69,7 @@ describe('Documentation Integrity', () => {
       'docs/getting-started.md',
       'docs/troubleshooting.md',
       'docs/upgrade.md',
+      'docs/releases/v0.1.1.md',
       'docs/releases/v0.1.0.md',
     ];
 
@@ -146,4 +149,3 @@ describe('Documentation Integrity', () => {
     }
   });
 });
-
