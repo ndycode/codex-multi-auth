@@ -20,7 +20,10 @@ Evidence sources:
   - `codex multi auth ...`
   - `codex multi-auth ...`
   - `codex multiauth ...`
-- Runtime usage labels before this audit mixed canonical and package-prefixed forms in some help/error paths.
+- Runtime usage labels before this audit mixed canonical and package-prefixed forms in help/error paths.
+  - Prior `printUsage()` output in `lib/codex-manager.ts` used package-prefixed forms such as `codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]`.
+  - Prior `runSwitch()` error text in `lib/codex-manager.ts` used `Missing index. Usage: codex-multi-auth auth switch <index>`.
+  - Post-fix regression baseline is now asserted in `test/documentation.test.ts` by checking canonical `codex auth ...` usage and switch-error strings.
 
 ### Docs hierarchy (current)
 
@@ -52,6 +55,11 @@ Hierarchy depth is 3 or fewer levels.
 
 ## Task-to-Location Mapping (Current)
 
+Scoring rubric:
+- `Match`: task is discoverable in the expected location within one navigation hop.
+- `Near-miss`: task is discoverable but appears in unexpected locations or requires extra context-switch hops.
+- `Lost`: task is not discoverable through expected navigation.
+
 | User Task | Expected Location | Actual Location | Findability |
 | --- | --- | --- | --- |
 | Log in first account | `README.md` quick start / `docs/getting-started.md` | Match | Match |
@@ -62,6 +70,12 @@ Hierarchy depth is 3 or fewer levels.
 | Find scoped legacy package guidance | Migration docs only (`docs/upgrade.md`, selected troubleshooting) | Also surfaced in stable release notes `docs/releases/v0.1.1.md` | Near-miss |
 
 Findability score (core tasks): 2/6 clear first-attempt match.
+
+Near-miss to remediation traceability:
+- `Understand alias availability` -> resolved by scoping aliases to reference/troubleshooting/migration surfaces and removing alias examples from primary onboarding flows.
+- `Interpret CLI usage output` -> resolved by canonicalizing runtime help and error usage strings to `codex auth ...` in `lib/codex-manager.ts`.
+- `Check current stable release notes` -> resolved by updating docs portal stable pointer to `docs/releases/v0.1.1.md`.
+- `Find scoped legacy package guidance` -> resolved by keeping scoped-package references in migration contexts and removing them from stable release notes.
 
 ---
 
@@ -101,10 +115,11 @@ Findability score (core tasks): 2/6 clear first-attempt match.
 2. Remove alias examples from primary README/onboarding flows; keep fallback routing guidance in troubleshooting/reference.
 3. Correct docs portal reference table to current stable release (`v0.1.1`).
 4. Remove scoped package mention from stable release notes and point to upgrade guide for migration details.
-5. Add test assertions for:
-   - canonical runtime usage wording,
-   - alias visibility boundaries,
-   - scoped package mention boundaries.
+5. Maintain deterministic regression checks in `test/documentation.test.ts`:
+   - `uses scoped package only in explicit legacy migration notes` enforces scoped package boundaries.
+   - `keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs` enforces alias-visibility boundaries with explicit allowlist files.
+   - `keeps canonical auth usage labels aligned across README, reference, and CLI usage text` enforces canonical runtime help/error wording.
+   - Keep cross-platform verification requirements explicit: Windows-oriented validation patterns (for example HOME/USERPROFILE handling and Windows path guidance checks already exercised in the CODEX config precedence test block) must be extended whenever new shell-sensitive command rendering is introduced.
 
 ---
 

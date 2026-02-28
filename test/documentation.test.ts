@@ -157,7 +157,7 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('keeps fix command flag docs aligned across README, reference, and CLI usage text', () => {
+  it('keeps canonical auth usage labels aligned across README, reference, and CLI usage text', () => {
     const readme = read('README.md');
     const commandRef = read('docs/reference/commands.md');
     const managerPath = 'lib/codex-manager.ts';
@@ -167,7 +167,10 @@ describe('Documentation Integrity', () => {
     expect(readme).toContain('codex auth fix --live --model gpt-5-codex');
     expect(commandRef).toContain('| `--live` | forecast, report, fix |');
     expect(commandRef).toContain('| `--model <model>` | forecast, report, fix |');
+    expect(manager).toContain('codex auth login');
     expect(manager).toContain('codex auth fix [--dry-run] [--json] [--live] [--model <model>]');
+    expect(manager).toContain('Missing index. Usage: codex auth switch <index>');
+    expect(manager).not.toContain('codex-multi-auth auth switch <index>');
   });
 
   it('documents stable overrides separately from advanced and internal overrides', () => {
