@@ -116,10 +116,10 @@ Near-miss to remediation traceability:
 3. Correct docs portal reference table to current stable release (`v0.1.1`).
 4. Remove scoped package mention from stable release notes and point to upgrade guide for migration details.
 5. Maintain deterministic regression checks in `test/documentation.test.ts`:
-   - `uses scoped package only in explicit legacy migration notes` enforces scoped package boundaries.
-   - `keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs` enforces alias-visibility boundaries with explicit allowlist files.
-   - `keeps canonical auth usage labels aligned across README, reference, and CLI usage text` enforces canonical runtime help/error wording.
-   - Keep cross-platform verification requirements explicit: Windows-oriented validation patterns (for example HOME/USERPROFILE handling and Windows path guidance checks already exercised in the CODEX config precedence test block) must be extended whenever new shell-sensitive command rendering is introduced.
+   - `uses scoped package only in explicit legacy migration notes` (`test/documentation.test.ts:104`) enforces scoped package boundaries.
+   - `keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs` (`test/documentation.test.ts:127`) enforces alias-visibility boundaries with explicit allowlist files.
+   - `keeps canonical auth usage labels aligned across README, reference, and CLI usage text` (`test/documentation.test.ts:160`) enforces canonical runtime help/error wording.
+   - Keep cross-platform verification requirements explicit: Windows-oriented validation patterns (for example HOME/USERPROFILE handling and Windows path guidance checks in `test/documentation.test.ts:244-245`) must be extended whenever new shell-sensitive command rendering is introduced, including explicit `codex auth` output-escaping checks for `cmd.exe` and `PowerShell`.
 
 ---
 
