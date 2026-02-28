@@ -281,17 +281,17 @@ function printUsage(): void {
 			"Codex Multi-Auth CLI",
 			"",
 			"Usage:",
-			"  codex-multi-auth auth login",
-			"  codex-multi-auth auth list",
-			"  codex-multi-auth auth status",
-			"  codex-multi-auth auth switch <index>",
-			"  codex-multi-auth auth check",
-			"  codex-multi-auth auth features",
-			"  codex-multi-auth auth verify-flagged [--dry-run] [--json] [--no-restore]",
-			"  codex-multi-auth auth forecast [--live] [--json] [--model <model>]",
-			"  codex-multi-auth auth report [--live] [--json] [--model <model>] [--out <path>]",
-			"  codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]",
-			"  codex-multi-auth auth doctor [--json] [--fix] [--dry-run]",
+			"  codex auth login",
+			"  codex auth list",
+			"  codex auth status",
+			"  codex auth switch <index>",
+			"  codex auth check",
+			"  codex auth features",
+			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
+			"  codex auth forecast [--live] [--json] [--model <model>]",
+			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
+			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
+			"  codex auth doctor [--json] [--fix] [--dry-run]",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
@@ -3652,7 +3652,7 @@ async function runSwitch(args: string[]): Promise<number> {
 	setStoragePath(null);
 	const indexArg = args[0];
 	if (!indexArg) {
-		console.error("Missing index. Usage: codex-multi-auth auth switch <index>");
+		console.error("Missing index. Usage: codex auth switch <index>");
 		return 1;
 	}
 	const parsed = Number.parseInt(indexArg, 10);
