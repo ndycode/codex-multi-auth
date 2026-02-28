@@ -44,7 +44,14 @@ When project-scoped behavior is enabled:
 
 - `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`
 
-`<project-key>` is derived from normalized project path plus short hash.
+`<project-key>` is derived as:
+
+- sanitized project folder basename (max 40 chars)
+- `-`
+- first 12 chars of `sha256(normalized project path)`
+
+On Windows, normalization lowercases drive/path segments before hashing.
+Implementation reference: `lib/storage/paths.ts` (`deriveProjectKey`).
 
 ---
 

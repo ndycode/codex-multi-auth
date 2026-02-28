@@ -24,7 +24,7 @@ codex auth login
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| `codex auth` not recognized | Wrapper path conflict | Run `where codex`, then `codex multi auth status` |
+| `codex auth` not recognized | Wrapper path conflict | Run `where codex` (Windows) or `which codex` / `command -v codex` (Unix), then `codex multi auth status` |
 | Browser opens unexpectedly | Normal OAuth browser-first flow | Complete auth and return to terminal |
 | Switch succeeded but wrong account used | Stale Codex CLI state | Re-run `codex auth switch <index>`, restart session |
 | `missing field id_token` | Stale auth payload | Re-login the affected account |

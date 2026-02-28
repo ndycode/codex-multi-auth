@@ -62,8 +62,8 @@ rm -f ~/.codex/multi-auth/quota-cache.json
 rm -rf ~/.codex/multi-auth/logs/codex-plugin
 rm -rf ~/.codex/multi-auth/cache
 # Override-root cleanup examples (if overrides are set):
-rm -rf "$CODEX_MULTI_AUTH_DIR"/logs/codex-plugin
-rm -f "$CODEX_MULTI_AUTH_CONFIG_PATH"
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && [ -d "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin"
+[ -n "${CODEX_MULTI_AUTH_CONFIG_PATH:-}" ] && [ -f "$CODEX_MULTI_AUTH_CONFIG_PATH" ] && rm -f "$CODEX_MULTI_AUTH_CONFIG_PATH"
 ```
 
 PowerShell:

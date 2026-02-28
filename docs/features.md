@@ -22,7 +22,7 @@ Capability map for `codex-multi-auth` grouped by operational domain.
 | --- | --- | --- |
 | Readiness/risk forecast engine | Recommends best next account | `codex auth forecast` |
 | Live quota probe mode | Uses live headers for stronger decisions | `codex auth forecast --live` |
-| Safe auto-fix workflow | Repairs known storage/account inconsistencies | `codex auth fix [--live]` |
+| Safe auto-fix workflow | Repairs known storage/account inconsistencies | `codex auth fix [--dry-run] [--json] [--live] [--model <model>]` |
 | Structured diagnostics with optional fix | Detect and remediate common failures | `codex auth doctor` |
 | JSON report output | Integrates with automation and support workflows | `--json`, `codex auth report` |
 

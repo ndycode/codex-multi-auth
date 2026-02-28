@@ -2,6 +2,7 @@
 
 This file is an archival snapshot of historical changelog entries that predate the canonical `0.x` release line.
 It is preserved for historical context and is not the active changelog source.
+<!-- markdownlint-disable MD022 -->
 
 ## [archived-unreleased]
 
@@ -338,7 +339,7 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.10.0...v4
 ## [4.10.0] - 2026-01-29
 
 ### New Features
-- per-project accounts: each project gets its own account storage now. no more conflicts when working across different repos with different chatgpt accounts. auto-detects project directories (looks for .git, package.json, etc). falls back to global storage if you're not in a project folder.
+- per-project accounts: each project gets its own account storage now. no more conflicts when working across different repos with different chatgpt accounts. auto-detects project directories (looks for .git, package.json, etc.). falls back to global storage if you're not in a project folder.
 - configurable toast duration: rate limit notifications stick around longer now (5s default). set `toastDurationMs` in config if you want them longer/shorter.
 - account removal tool: new `openai-accounts-remove` tool to delete accounts by index. finally.
 - token masking in logs: all tokens, api keys, and bearer headers are now masked in debug logs. no more accidentally leaking creds.
