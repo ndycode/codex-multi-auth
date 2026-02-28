@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -193,9 +192,19 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('keeps CODEX_MULTI_AUTH_CONFIG_PATH fallback and env override precedence aligned with docs', () => {
+  it('keeps CODEX_MULTI_AUTH_CONFIG_PATH fallback and env override precedence aligned with docs', async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'codex-doc-config-'));
     const fallbackConfigPath = join(tempRoot, 'fallback-config.json');
+    const envKeys = [
+      'CODEX_MULTI_AUTH_DIR',
+      'CODEX_MULTI_AUTH_CONFIG_PATH',
+      'CODEX_MODE',
+      'HOME',
+      'USERPROFILE',
+    ] as const;
+    const previousEnv = Object.fromEntries(
+      envKeys.map((key) => [key, process.env[key]]),
+    ) as Record<(typeof envKeys)[number], string | undefined>;
 
     try {
       writeFileSync(
@@ -203,26 +212,17 @@ describe('Documentation Integrity', () => {
         `${JSON.stringify({ codexMode: false, toastDurationMs: 7777 }, null, 2)}\n`,
         'utf-8',
       );
-      const script = [
-        "import { loadPluginConfig, getCodexMode } from './dist/lib/config.js';",
-        'const loaded = loadPluginConfig();',
-        "process.stdout.write(JSON.stringify({ raw: loaded.codexMode, resolved: getCodexMode(loaded) }));",
-      ].join('\n');
-      const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
-        cwd: projectRoot,
-        env: {
-          ...process.env,
-          CODEX_MULTI_AUTH_DIR: tempRoot,
-          CODEX_MULTI_AUTH_CONFIG_PATH: fallbackConfigPath,
-          CODEX_MODE: '1',
-          HOME: tempRoot,
-          USERPROFILE: tempRoot,
-        },
-        encoding: 'utf-8',
-      });
-      const parsed = JSON.parse(output) as { raw: boolean; resolved: boolean };
-      expect(parsed.raw).toBe(false);
-      expect(parsed.resolved).toBe(true);
+
+      process.env.CODEX_MULTI_AUTH_DIR = tempRoot;
+      process.env.CODEX_MULTI_AUTH_CONFIG_PATH = fallbackConfigPath;
+      process.env.CODEX_MODE = '1';
+      process.env.HOME = tempRoot;
+      process.env.USERPROFILE = tempRoot;
+
+      const { loadPluginConfig, getCodexMode } = await import('../lib/config.js');
+      const loaded = loadPluginConfig();
+      expect(loaded.codexMode).toBe(false);
+      expect(getCodexMode(loaded)).toBe(true);
 
       const configFlow = read('docs/development/CONFIG_FLOW.md');
       const configGuide = read('docs/configuration.md');
@@ -230,6 +230,14 @@ describe('Documentation Integrity', () => {
       expect(configFlow).toContain('After source selection, environment variables apply per-setting overrides.');
       expect(configGuide).toContain('CODEX_MULTI_AUTH_CONFIG_PATH');
     } finally {
+      for (const key of envKeys) {
+        const previousValue = previousEnv[key];
+        if (previousValue === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = previousValue;
+        }
+      }
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
