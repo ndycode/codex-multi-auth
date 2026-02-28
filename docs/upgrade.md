@@ -56,6 +56,14 @@ They are not canonical and should not be used for new setup.
 
 See [reference/storage-paths.md](reference/storage-paths.md).
 
+### Worktree Storage Migration
+
+If you used `perProjectAccounts=true` before worktree identity sharing was added, older worktree-keyed account files are migrated automatically on first load:
+
+- Legacy worktree storage is merged into the canonical repo-shared project file.
+- Legacy files are removed only after a successful canonical write.
+- If canonical persistence fails, legacy files are retained to avoid data loss.
+
 ---
 
 ## Common Upgrade Problems

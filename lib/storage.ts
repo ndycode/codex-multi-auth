@@ -5,7 +5,14 @@ import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
-import { getConfigDir, getProjectConfigDir, getProjectGlobalConfigDir, findProjectRoot, resolvePath } from "./storage/paths.js";
+import {
+	getConfigDir,
+	getProjectConfigDir,
+	getProjectGlobalConfigDir,
+	findProjectRoot,
+	resolvePath,
+	resolveProjectStorageIdentityRoot,
+} from "./storage/paths.js";
 import {
   migrateV1ToV3,
   type CooldownReason,
@@ -138,6 +145,7 @@ async function ensureGitignore(storagePath: string): Promise<void> {
 
 let currentStoragePath: string | null = null;
 let currentLegacyProjectStoragePath: string | null = null;
+let currentLegacyWorktreeStoragePath: string | null = null;
 let currentProjectRoot: string | null = null;
 
 export function setStorageBackupEnabled(enabled: boolean): void {
@@ -172,6 +180,7 @@ export function setStoragePath(projectPath: string | null): void {
   if (!projectPath) {
     currentStoragePath = null;
     currentLegacyProjectStoragePath = null;
+    currentLegacyWorktreeStoragePath = null;
     currentProjectRoot = null;
     return;
   }
@@ -179,11 +188,19 @@ export function setStoragePath(projectPath: string | null): void {
   const projectRoot = findProjectRoot(projectPath);
   if (projectRoot) {
     currentProjectRoot = projectRoot;
-    currentStoragePath = join(getProjectGlobalConfigDir(projectRoot), ACCOUNTS_FILE_NAME);
+    const identityRoot = resolveProjectStorageIdentityRoot(projectRoot);
+    currentStoragePath = join(getProjectGlobalConfigDir(identityRoot), ACCOUNTS_FILE_NAME);
     currentLegacyProjectStoragePath = join(getProjectConfigDir(projectRoot), ACCOUNTS_FILE_NAME);
+    const previousWorktreeScopedPath = join(
+      getProjectGlobalConfigDir(projectRoot),
+      ACCOUNTS_FILE_NAME,
+    );
+    currentLegacyWorktreeStoragePath =
+      previousWorktreeScopedPath !== currentStoragePath ? previousWorktreeScopedPath : null;
   } else {
     currentStoragePath = null;
     currentLegacyProjectStoragePath = null;
+    currentLegacyWorktreeStoragePath = null;
     currentProjectRoot = null;
   }
 }
@@ -191,6 +208,7 @@ export function setStoragePath(projectPath: string | null): void {
 export function setStoragePathDirect(path: string | null): void {
   currentStoragePath = path;
   currentLegacyProjectStoragePath = null;
+  currentLegacyWorktreeStoragePath = null;
   currentProjectRoot = null;
 }
 
@@ -216,50 +234,124 @@ function getLegacyFlaggedAccountsPath(): string {
 async function migrateLegacyProjectStorageIfNeeded(
   persist: (storage: AccountStorageV3) => Promise<void> = saveAccounts,
 ): Promise<AccountStorageV3 | null> {
-  if (
-    !currentStoragePath ||
-    !currentLegacyProjectStoragePath ||
-    currentLegacyProjectStoragePath === currentStoragePath ||
-    !existsSync(currentLegacyProjectStoragePath)
-  ) {
+  if (!currentStoragePath) {
     return null;
   }
 
-  try {
-    const legacyContent = await fs.readFile(currentLegacyProjectStoragePath, "utf-8");
-    const legacyData = JSON.parse(legacyContent) as unknown;
-    const normalized = normalizeAccountStorage(legacyData);
-    if (!normalized) return null;
+  const candidatePaths = [currentLegacyWorktreeStoragePath, currentLegacyProjectStoragePath]
+    .filter(
+      (path): path is string => typeof path === "string" && path.length > 0 && path !== currentStoragePath,
+    )
+    .filter((path, index, all) => all.indexOf(path) === index);
 
-    await persist(normalized);
+  if (candidatePaths.length === 0) {
+    return null;
+  }
+
+  let targetStorage = await loadNormalizedStorageFromPath(currentStoragePath, "current account storage");
+  let migrated = false;
+
+  for (const legacyPath of candidatePaths) {
+    if (!existsSync(legacyPath)) {
+      continue;
+    }
+
+    const legacyStorage = await loadNormalizedStorageFromPath(legacyPath, "legacy account storage");
+    if (!legacyStorage) {
+      continue;
+    }
+
+    const mergedStorage = mergeStorageForMigration(targetStorage, legacyStorage);
+    const fallbackStorage = targetStorage ?? legacyStorage;
+
     try {
-      await fs.unlink(currentLegacyProjectStoragePath);
-      log.info("Removed legacy project account storage file after migration", {
-        path: currentLegacyProjectStoragePath,
+      await persist(mergedStorage);
+      targetStorage = mergedStorage;
+      migrated = true;
+    } catch (error) {
+      targetStorage = fallbackStorage;
+      log.warn("Failed to persist migrated account storage", {
+        from: legacyPath,
+        to: currentStoragePath,
+        error: String(error),
+      });
+      continue;
+    }
+
+    try {
+      await fs.unlink(legacyPath);
+      log.info("Removed legacy account storage file after migration", {
+        path: legacyPath,
       });
     } catch (unlinkError) {
       const code = (unlinkError as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
-        log.warn("Failed to remove legacy project account storage file after migration", {
-          path: currentLegacyProjectStoragePath,
+        log.warn("Failed to remove legacy account storage file after migration", {
+          path: legacyPath,
           error: String(unlinkError),
         });
       }
     }
+
     log.info("Migrated legacy project account storage", {
-      from: currentLegacyProjectStoragePath,
+      from: legacyPath,
       to: currentStoragePath,
-      accounts: normalized.accounts.length,
+      accounts: mergedStorage.accounts.length,
     });
+  }
+
+  if (migrated) {
+    return targetStorage;
+  }
+  if (targetStorage && !existsSync(currentStoragePath)) {
+    return targetStorage;
+  }
+  return null;
+}
+
+async function loadNormalizedStorageFromPath(
+  path: string,
+  label: string,
+): Promise<AccountStorageV3 | null> {
+  try {
+    const { normalized, schemaErrors } = await loadAccountsFromPath(path);
+    if (schemaErrors.length > 0) {
+      log.warn(`${label} schema validation warnings`, {
+        path,
+        errors: schemaErrors.slice(0, 5),
+      });
+    }
     return normalized;
   } catch (error) {
-    log.warn("Failed to migrate legacy project account storage", {
-      from: currentLegacyProjectStoragePath,
-      to: currentStoragePath,
-      error: String(error),
-    });
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      log.warn(`Failed to load ${label}`, {
+        path,
+        error: String(error),
+      });
+    }
     return null;
   }
+}
+
+function mergeStorageForMigration(
+  current: AccountStorageV3 | null,
+  incoming: AccountStorageV3,
+): AccountStorageV3 {
+  if (!current) {
+    return incoming;
+  }
+
+  const merged = normalizeAccountStorage({
+    version: 3,
+    activeIndex: current.activeIndex,
+    activeIndexByFamily: current.activeIndexByFamily,
+    accounts: [...current.accounts, ...incoming.accounts],
+  });
+  if (!merged) {
+    return current;
+  }
+  return merged;
 }
 
 function selectNewestAccount<T extends AccountLike>(
@@ -573,8 +665,12 @@ async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 |
 async function loadAccountsInternal(
   persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
 ): Promise<AccountStorageV3 | null> {
+	const path = getStoragePath();
+	const migratedLegacyStorage = persistMigration
+		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
+		: null;
+
   try {
-    const path = getStoragePath();
     const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
     if (schemaErrors.length > 0) {
       log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
@@ -593,10 +689,8 @@ async function loadAccountsInternal(
     return normalized;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-	const path = getStoragePath();
-    if (code === "ENOENT" && persistMigration) {
-      const migrated = await migrateLegacyProjectStorageIfNeeded(persistMigration);
-      if (migrated) return migrated;
+    if (code === "ENOENT" && migratedLegacyStorage) {
+      return migratedLegacyStorage;
     }
 
 	const recoveredFromWal = await loadAccountsFromJournal(path);

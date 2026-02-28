@@ -44,7 +44,11 @@ When project-scoped behavior is enabled:
 
 - `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`
 
-`<project-key>` is derived from normalized project path + short hash.
+`<project-key>` is derived from project identity + short hash.
+
+- Standard repositories: identity is the project root path.
+- Linked Git worktrees: identity is the shared repository root, so all worktrees for the same repo share one account pool.
+- Non-Git directories: identity falls back to the detected project path.
 
 ---
 

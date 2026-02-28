@@ -27,6 +27,7 @@ codex auth login
 | Browser opens during login | Expected OAuth behavior | Complete auth and return to terminal |
 | `codex auth` unrecognized | Wrapper command path conflict | Run `where codex`, then `codex multi auth status` |
 | Switch says success but wrong account in Codex | Stale Codex auth state sync | Run `codex auth switch <index>`, restart `codex` session |
+| Opening a PR worktree asks for login again | Worktree was using a different legacy path key | Run `codex auth list` once in the worktree to trigger migration into repo-shared storage |
 | `missing field id_token` | Stale auth state payload | Re-login account with `codex auth login` |
 | `refresh_token_reused` | Token pair already rotated | Re-login that account |
 | `token_expired` | Token no longer valid | Re-login that account |
