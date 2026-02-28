@@ -585,8 +585,7 @@ function isRetryableSettingsWriteError(error: unknown): boolean {
 function resolveRetryDelayMs(error: unknown, attempt: number): number {
 	const retryAfterMs = getRetryAfterMs(error);
 	if (typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-		const normalized = retryAfterMs <= 60 ? retryAfterMs * 1_000 : retryAfterMs;
-		return Math.max(10, Math.min(SETTINGS_WRITE_MAX_DELAY_MS, Math.round(normalized)));
+		return Math.max(10, Math.min(SETTINGS_WRITE_MAX_DELAY_MS, Math.round(retryAfterMs)));
 	}
 	return Math.min(SETTINGS_WRITE_MAX_DELAY_MS, SETTINGS_WRITE_BASE_DELAY_MS * 2 ** attempt);
 }
@@ -1612,7 +1611,6 @@ async function promptThemeSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
 	if (!input.isTTY || !output.isTTY) return null;
-	const ui = getUiRuntimeOptions();
 	const baseline = cloneDashboardSettings(initial);
 	let draft = cloneDashboardSettings(initial);
 	let focus: ThemeConfigAction = {
@@ -1620,6 +1618,7 @@ async function promptThemeSettings(
 		palette: draft.uiThemePreset ?? "green",
 	};
 	while (true) {
+		const ui = getUiRuntimeOptions();
 		const palette = draft.uiThemePreset ?? "green";
 		const accent = draft.uiAccentColor ?? "green";
 		const paletteItems: MenuItem<ThemeConfigAction>[] = THEME_PRESET_OPTIONS.map((candidate, index) => {

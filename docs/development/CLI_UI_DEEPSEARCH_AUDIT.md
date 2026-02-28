@@ -54,7 +54,7 @@ Capture a comprehensive map of implemented CLI/UI behavior, highlight useful adv
 ## Test Coverage Notes
 
 - Existing integration-style CLI settings test already validates multi-section persistence paths.
-- Added regression test to prove `Q` cancel discards modified account-list drafts and does not persist dashboard/backend settings.
+- Added regression coverage proving `Q` cancel discards modified drafts across account-list, summary-fields, behavior, theme, and backend flows without persisting dashboard/backend settings.
 
 ## Search Findings
 
