@@ -545,6 +545,9 @@ export function filterInput(
 	if (!Array.isArray(input)) return input;
 	const filtered: InputItem[] = [];
 	for (const item of input) {
+		if (!item || typeof item !== "object") {
+			continue;
+		}
 		// Remove AI SDK constructs not supported by Codex API.
 		if (item.type === "item_reference") {
 			continue;
