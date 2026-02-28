@@ -1,20 +1,20 @@
 # Upgrade Guide
 
-Migrate from older package/path layouts to the current Codex-first workflow.
+Migrate legacy installs to the canonical `codex-multi-auth` workflow on the `0.x` release line.
 
 ---
 
 ## Canonical Targets
 
-- Canonical package: `codex-multi-auth`
-- Canonical commands: `codex auth ...`
-- Canonical root: `~/.codex/multi-auth`
+- Package: `codex-multi-auth`
+- Command family: `codex auth ...`
+- Runtime root: `~/.codex/multi-auth`
 
 ---
 
 ## Migration Checklist
 
-1. Ensure official Codex CLI is installed:
+1. Install official Codex CLI:
 
 ```bash
 npm i -g @openai/codex
@@ -32,27 +32,41 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-4. Verify command routing:
+4. Verify routing and status:
 
 ```bash
 codex --version
 codex auth status
 ```
 
-5. Rebuild account health snapshot:
+5. Rebuild account health baseline:
 
 ```bash
 codex auth login
 codex auth check
-codex auth forecast --live
+codex auth forecast --live --model gpt-5-codex
 ```
+
+---
+
+## Configuration Upgrade Notes
+
+During upgrades, configuration precedence is:
+
+1. Environment override values.
+2. `CODEX_MULTI_AUTH_CONFIG_PATH` file values.
+3. Unified settings compatibility values.
+4. Runtime defaults.
+
+For day-to-day operator use, prefer stable overrides documented in [configuration.md](configuration.md).
+For maintainer/debug flows, see advanced/internal controls in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).
 
 ---
 
 ## Legacy Compatibility
 
-Legacy files may still be read during migration compatibility checks.
-They are not canonical and should not be used for new setup.
+Legacy files may still be discovered during migration-only compatibility checks.
+They are not canonical for new setups.
 
 See [reference/storage-paths.md](reference/storage-paths.md).
 
@@ -62,9 +76,9 @@ See [reference/storage-paths.md](reference/storage-paths.md).
 
 | Problem | Action |
 | --- | --- |
-| `codex auth` not found | `where codex` (Windows) or `which codex` (macOS/Linux) |
+| `codex auth` not found | Run `where codex` (Windows) or `which codex` (macOS/Linux) |
 | Old package still active | Uninstall scoped package and reinstall unscoped package |
-| Accounts look stale | `codex auth doctor --fix` then re-login impacted accounts |
+| Account pool appears stale | Run `codex auth doctor --fix`, then re-login impacted accounts |
 | Mixed path confusion | Check [reference/storage-paths.md](reference/storage-paths.md) |
 
 ---
@@ -74,3 +88,4 @@ See [reference/storage-paths.md](reference/storage-paths.md).
 - [getting-started.md](getting-started.md)
 - [troubleshooting.md](troubleshooting.md)
 - [reference/storage-paths.md](reference/storage-paths.md)
+- [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md)
