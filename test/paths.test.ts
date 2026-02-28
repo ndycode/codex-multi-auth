@@ -231,6 +231,91 @@ describe("Storage Paths Module", () => {
 				expect(resolved).toBe(sharedRepoRoot);
 			});
 
+			it("resolves relative gitdir pointers to the shared repository root", () => {
+				const projectRoot = path.resolve("repo", "worktrees", "pr-relative");
+				const gitEntry = path.join(projectRoot, ".git");
+				const worktreeGitDir = path.resolve("repo", ".git", "worktrees", "pr-relative");
+				const commondirFile = path.join(worktreeGitDir, "commondir");
+				const sharedRepoRoot = path.resolve("repo");
+				const sharedGitDir = path.join(sharedRepoRoot, ".git");
+				const normalize = (value: string) =>
+					process.platform === "win32" ? value.toLowerCase() : value;
+
+				mockedExistsSync.mockImplementation((candidate) => {
+					if (typeof candidate !== "string") return false;
+					const normalizedCandidate = normalize(candidate);
+					if (normalizedCandidate === normalize(gitEntry)) return true;
+					if (normalizedCandidate === normalize(commondirFile)) return true;
+					if (normalizedCandidate === normalize(sharedGitDir)) return true;
+					return false;
+				});
+				mockedStatSync.mockImplementation((candidate) => {
+					expect(normalize(String(candidate))).toBe(normalize(gitEntry));
+					return buildMockStat({ isDirectory: false, isFile: true });
+				});
+				mockedReadFileSync.mockImplementation((candidate) => {
+					if (typeof candidate !== "string") {
+						throw new Error(`Unexpected read path: ${String(candidate)}`);
+					}
+					const normalizedCandidate = normalize(candidate);
+					if (normalizedCandidate === normalize(gitEntry)) {
+						return "gitdir: ../../.git/worktrees/pr-relative\n";
+					}
+					if (normalizedCandidate === normalize(commondirFile)) {
+						return "../..\n";
+					}
+					throw new Error(`Unexpected read path: ${String(candidate)}`);
+				});
+
+				const resolved = resolveProjectStorageIdentityRoot(projectRoot);
+
+				expect(resolved).toBe(sharedRepoRoot);
+			});
+
+			it("supports Windows-style backslash gitdir pointers", () => {
+				if (process.platform !== "win32") {
+					return;
+				}
+
+				const projectRoot = path.win32.join("C:\\repo", "worktrees", "pr-8");
+				const gitEntry = path.win32.join(projectRoot, ".git");
+				const worktreeGitDir = path.win32.join("C:\\repo", ".git", "worktrees", "pr-8");
+				const commondirFile = path.win32.join(worktreeGitDir, "commondir");
+				const sharedRepoRoot = "C:\\repo";
+				const sharedGitDir = path.win32.join(sharedRepoRoot, ".git");
+				const normalize = (value: string) => path.win32.normalize(value).toLowerCase();
+
+				mockedExistsSync.mockImplementation((candidate) => {
+					if (typeof candidate !== "string") return false;
+					const normalizedCandidate = normalize(candidate);
+					if (normalizedCandidate === normalize(gitEntry)) return true;
+					if (normalizedCandidate === normalize(commondirFile)) return true;
+					if (normalizedCandidate === normalize(sharedGitDir)) return true;
+					return false;
+				});
+				mockedStatSync.mockImplementation((candidate) => {
+					expect(normalize(String(candidate))).toBe(normalize(gitEntry));
+					return buildMockStat({ isDirectory: false, isFile: true });
+				});
+				mockedReadFileSync.mockImplementation((candidate) => {
+					if (typeof candidate !== "string") {
+						throw new Error(`Unexpected read path: ${String(candidate)}`);
+					}
+					const normalizedCandidate = normalize(candidate);
+					if (normalizedCandidate === normalize(gitEntry)) {
+						return `gitdir: ${worktreeGitDir}\n`;
+					}
+					if (normalizedCandidate === normalize(commondirFile)) {
+						return "..\\..\\\n";
+					}
+					throw new Error(`Unexpected read path: ${String(candidate)}`);
+				});
+
+				const resolved = resolveProjectStorageIdentityRoot(projectRoot);
+
+				expect(normalize(resolved)).toBe(normalize(sharedRepoRoot));
+			});
+
 			it("keeps project root when .git file does not point to worktrees", () => {
 				const projectRoot = "/repo/submodule";
 				const gitEntry = path.join(projectRoot, ".git");

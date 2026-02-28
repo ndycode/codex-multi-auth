@@ -248,14 +248,15 @@ async function migrateLegacyProjectStorageIfNeeded(
     return null;
   }
 
+  const existingCandidatePaths = candidatePaths.filter((legacyPath) => existsSync(legacyPath));
+  if (existingCandidatePaths.length === 0) {
+    return null;
+  }
+
   let targetStorage = await loadNormalizedStorageFromPath(currentStoragePath, "current account storage");
   let migrated = false;
 
-  for (const legacyPath of candidatePaths) {
-    if (!existsSync(legacyPath)) {
-      continue;
-    }
-
+  for (const legacyPath of existingCandidatePaths) {
     const legacyStorage = await loadNormalizedStorageFromPath(legacyPath, "legacy account storage");
     if (!legacyStorage) {
       continue;

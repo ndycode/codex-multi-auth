@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { 
@@ -794,8 +794,10 @@ describe("storage", () => {
         expect(worktreePath).toBe(mainPath);
       } finally {
         setStoragePathDirect(null);
-        process.env.HOME = originalHome;
-        process.env.USERPROFILE = originalUserProfile;
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
+        if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = originalUserProfile;
         await fs.rm(testWorkDir, { recursive: true, force: true });
       }
     });
@@ -920,8 +922,10 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalUserProfile;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
       await fs.rm(testWorkDir, { recursive: true, force: true });
     });
 
@@ -1009,8 +1013,10 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalUserProfile;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
       await fs.rm(testWorkDir, { recursive: true, force: true });
     });
 
@@ -1071,16 +1077,20 @@ describe("storage", () => {
       lastUsed: now + 1,
     };
 
-    async function prepareWorktreeFixture(): Promise<{
+    async function prepareWorktreeFixture(options?: {
+      pointerStyle?: "default" | "windows";
+      worktreeName?: string;
+    }): Promise<{
       fakeHome: string;
       mainRepo: string;
       worktreeRepo: string;
     }> {
       const fakeHome = join(testWorkDir, "home");
       const mainRepo = join(testWorkDir, "repo-main");
-      const worktreeRepo = join(testWorkDir, "repo-pr-8");
+      const worktreeName = options?.worktreeName ?? "repo-pr-8";
+      const worktreeRepo = join(testWorkDir, worktreeName);
       const mainGitDir = join(mainRepo, ".git");
-      const worktreeGitDir = join(mainGitDir, "worktrees", "repo-pr-8");
+      const worktreeGitDir = join(mainGitDir, "worktrees", worktreeName);
 
       process.env.HOME = fakeHome;
       process.env.USERPROFILE = fakeHome;
@@ -1089,8 +1099,14 @@ describe("storage", () => {
       await fs.mkdir(mainGitDir, { recursive: true });
       await fs.mkdir(worktreeGitDir, { recursive: true });
       await fs.mkdir(worktreeRepo, { recursive: true });
-      await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf-8");
-      await fs.writeFile(join(worktreeGitDir, "commondir"), "../..\n", "utf-8");
+      if (options?.pointerStyle === "windows") {
+        const winGitDirPointer = worktreeGitDir.replace(/\//g, "\\");
+        await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${winGitDirPointer}\n`, "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "commondir"), "..\\..\\\n", "utf-8");
+      } else {
+        await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "commondir"), "../..\n", "utf-8");
+      }
 
       return { fakeHome, mainRepo, worktreeRepo };
     }
@@ -1110,9 +1126,12 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalUserProfile;
-      process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      if (originalMultiAuthDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
+      else process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
       await fs.rm(testWorkDir, { recursive: true, force: true });
       vi.restoreAllMocks();
     });
@@ -1228,6 +1247,89 @@ describe("storage", () => {
       expect(loaded?.accounts).toHaveLength(1);
       expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
       expect(existsSync(legacyWorktreePath)).toBe(true);
+    });
+
+    it("handles concurrent loadAccounts migration without duplicate race artifacts", async () => {
+      const { worktreeRepo } = await prepareWorktreeFixture({ worktreeName: "repo-pr-race" });
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const legacyWorktreePath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      await fs.mkdir(join(getConfigDir(), "projects", getProjectStorageKey(worktreeRepo)), {
+        recursive: true,
+      });
+      await fs.mkdir(dirname(canonicalPath), { recursive: true });
+      await fs.writeFile(
+        canonicalPath,
+        JSON.stringify(buildStorage([accountFromCanonical]), null, 2),
+        "utf-8",
+      );
+      await fs.writeFile(
+        legacyWorktreePath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+
+      const results = await Promise.all([
+        loadAccounts(),
+        loadAccounts(),
+        loadAccounts(),
+        loadAccounts(),
+      ]);
+
+      for (const result of results) {
+        expect(result).not.toBeNull();
+        expect(result?.accounts).toHaveLength(2);
+      }
+
+      const persistedRaw = await fs.readFile(canonicalPath, "utf-8");
+      const persistedNormalized = normalizeAccountStorage(JSON.parse(persistedRaw) as unknown);
+      expect(persistedNormalized).not.toBeNull();
+      expect(persistedNormalized?.accounts).toHaveLength(2);
+      expect(existsSync(legacyWorktreePath)).toBe(false);
+    });
+
+    it("migrates worktree storage with Windows-style gitdir pointer fixtures", async () => {
+      if (process.platform !== "win32") {
+        return;
+      }
+
+      const { worktreeRepo } = await prepareWorktreeFixture({
+        pointerStyle: "windows",
+        worktreeName: "repo-pr-win-ptr",
+      });
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const legacyWorktreePath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      expect(legacyWorktreePath).not.toBe(canonicalPath);
+
+      await fs.mkdir(join(getConfigDir(), "projects", getProjectStorageKey(worktreeRepo)), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        legacyWorktreePath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+
+      const loaded = await loadAccounts();
+
+      expect(loaded).not.toBeNull();
+      expect(loaded?.accounts).toHaveLength(1);
+      expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
+      expect(existsSync(canonicalPath)).toBe(true);
+      expect(existsSync(legacyWorktreePath)).toBe(false);
     });
   });
 
