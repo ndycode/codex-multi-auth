@@ -113,6 +113,17 @@ function forwardToRealCodex(codexBin, args) {
 	});
 }
 
+function normalizeExitCode(value) {
+	if (typeof value === "number" && Number.isInteger(value)) {
+		return value;
+	}
+	const parsed = Number(value);
+	if (Number.isInteger(parsed)) {
+		return parsed;
+	}
+	return 1;
+}
+
 const rawArgs = process.argv.slice(2);
 const normalizedArgs = normalizeAuthAlias(rawArgs);
 const bypass = (process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1";
@@ -124,7 +135,7 @@ if (!bypass && shouldHandleMultiAuthAuth(normalizedArgs)) {
 			process.exit(1);
 		}
 		const exitCode = await runCodexMultiAuthCli(normalizedArgs);
-		process.exit(exitCode);
+		process.exit(normalizeExitCode(exitCode));
 	} catch (error) {
 		console.error(
 			`codex-multi-auth runner failed: ${error instanceof Error ? error.message : String(error)}`,
