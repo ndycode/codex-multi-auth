@@ -1,16 +1,17 @@
 ## Summary
 
-- 
+-
 
 ## What Changed
 
-- 
+-
 
 ## Validation
 
 - [ ] `npm run lint`
 - [ ] `npm run typecheck`
 - [ ] `npm test`
+- [ ] `npm test -- test/documentation.test.ts`
 - [ ] `npm run build`
 
 ## Docs and Governance Checklist
@@ -24,9 +25,9 @@
 
 ## Risk and Rollback
 
-- Risk level: 
-- Rollback plan: 
+- Risk level:
+- Rollback plan:
 
 ## Additional Notes
 
-- 
+-

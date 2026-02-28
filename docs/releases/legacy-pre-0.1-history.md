@@ -375,28 +375,31 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.7...v4.
 
 Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.5...v4.9.7
 
-## [4.9.5] - 2026-01-28
-
-### Improvements
-- When your ChatGPT subscription didn't include Codex access, the plugin kept rotating through all accounts and retrying forever because it thought it was a temporary rate limit.
-- You get an immediate, clear error: "This model is not included in your ChatGPT subscription."
-
-### Bug Fixes
-- Account error handling - Fixes infinite retry loop when account doesn't have access to Codex models. `usage_not_included` errors now return 403 Forbidden instead of being treated as rate limits. Clear error message explaining the subscription issue. Prevents pointless account rotation for non-recoverable errors. (#16, thanks @rainmeter33-jpg!)
-
-### Changelog
-
-Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.4...v4.9.5
-
 ## [4.9.6] - 2026-02-08
 
 ### Improvements
+
 - tui auth gating: non-tty/ui auth attempts now return a clear instruction to run `codex auth login` in a terminal shell.
 - error-mapping simplification: consolidated entitlement/rate-limit mapping in fetch helpers for a single handling path.
 
 ### Changelog
 
 Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v5.0.0...v4.9.6
+
+## [4.9.5] - 2026-01-28
+
+### Improvements
+
+- When your ChatGPT subscription didn't include Codex access, the plugin kept rotating through all accounts and retrying forever because it thought it was a temporary rate limit.
+- You get an immediate, clear error: "This model is not included in your ChatGPT subscription."
+
+### Bug Fixes
+
+- Account error handling - Fixes infinite retry loop when account doesn't have access to Codex models. `usage_not_included` errors now return 403 Forbidden instead of being treated as rate limits. Clear error message explaining the subscription issue. Prevents pointless account rotation for non-recoverable errors. (#16, thanks @rainmeter33-jpg!)
+
+### Changelog
+
+Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.9.4...v4.9.5
 
 ## [4.9.4] - 2026-01-27
 
@@ -583,5 +586,3 @@ Full Changelog: https://github.com/ndycode/codex-multi-auth/compare/v4.3.1...v4.
 ### Changelog
 
 Full Changelog: https://github.com/ndycode/codex-multi-auth/commits/v4.3.1
-
-

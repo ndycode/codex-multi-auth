@@ -20,26 +20,26 @@ Migrate legacy installs to the canonical `codex-multi-auth` workflow on the `0.x
 npm i -g @openai/codex
 ```
 
-2. Remove legacy scoped package if present:
+1. Remove legacy scoped package if present:
 
 ```bash
 npm uninstall -g @ndycode/codex-multi-auth
 ```
 
-3. Install canonical package:
+1. Install canonical package:
 
 ```bash
 npm i -g codex-multi-auth
 ```
 
-4. Verify routing and status:
+1. Verify routing and status:
 
 ```bash
 codex --version
 codex auth status
 ```
 
-5. Rebuild account health baseline:
+1. Rebuild account health baseline:
 
 ```bash
 codex auth login

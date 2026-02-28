@@ -26,6 +26,8 @@
 
 If `CODEX_MULTI_AUTH_DIR` is set, plugin-owned paths move under that root.
 If `CODEX_MULTI_AUTH_CONFIG_PATH` is set, configuration file loading uses that path.
+For cleanup, apply the same deletions to resolved override roots (including
+Windows override locations).
 
 ---
 
@@ -59,6 +61,9 @@ rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/quota-cache.json
 rm -rf ~/.codex/multi-auth/logs/codex-plugin
 rm -rf ~/.codex/multi-auth/cache
+# Override-root cleanup examples (if overrides are set):
+rm -rf "$CODEX_MULTI_AUTH_DIR"/logs/codex-plugin
+rm -f "$CODEX_MULTI_AUTH_CONFIG_PATH"
 ```
 
 PowerShell:
@@ -70,6 +75,9 @@ Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force 
 Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
+# Override-root cleanup examples (if overrides are set):
+if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\\*" -Recurse -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_CONFIG_PATH) { Remove-Item "$env:CODEX_MULTI_AUTH_CONFIG_PATH" -Force -ErrorAction SilentlyContinue }
 ```
 
 ---
