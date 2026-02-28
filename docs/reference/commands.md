@@ -84,7 +84,7 @@ Common flags:
 | `1-9` | Quick toggle for numbered options |
 | `S` | Save |
 | `R` | Reset |
-| `Q` | Back or Save+Back (context dependent) |
+| `Q` | Back/cancel without saving draft changes |
 | `[` / `]` | Reorder fields in summary settings |
 | `+` / `-` | Adjust focused numeric backend setting |
 
