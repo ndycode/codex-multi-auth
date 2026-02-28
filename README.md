@@ -129,11 +129,6 @@ codex auth doctor --fix
 | `codex auth fix --live --model gpt-5-codex` | Run repairs with live probe model |
 | `codex auth doctor --fix` | Diagnose and apply safe fixes |
 
-Compatibility aliases are also supported:
-- `codex multi auth ...`
-- `codex multi-auth ...`
-- `codex multiauth ...`
-
 ---
 
 ## Dashboard Hotkeys
@@ -226,7 +221,7 @@ codex auth login
 <details>
 <summary><b>Common symptoms</b></summary>
 
-- `codex auth` unrecognized: run `where codex`, then try `codex multi auth status`
+- `codex auth` unrecognized: run `where codex`, then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account
