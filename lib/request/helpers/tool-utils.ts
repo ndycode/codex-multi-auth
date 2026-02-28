@@ -14,6 +14,14 @@ export interface Tool {
 	function: ToolFunction;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object";
+}
+
+function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
+	return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
 /**
  * Cleans up tool definitions to ensure strict JSON Schema compliance.
  *
@@ -31,17 +39,29 @@ export function cleanupToolDefinitions(tools: unknown): unknown {
 	if (!Array.isArray(tools)) return tools;
 
 	return tools.map((tool) => {
-		if (tool?.type !== "function" || !tool.function) {
+		if (!isRecord(tool) || tool.type !== "function") {
+			return tool;
+		}
+		const functionDef = tool.function;
+		if (!isRecord(functionDef)) {
+			return tool;
+		}
+		const parameters = functionDef.parameters;
+		if (!isRecord(parameters)) {
 			return tool;
 		}
 
-		// Clone to avoid mutating original
-		const cleanedTool = JSON.parse(JSON.stringify(tool));
-		if (cleanedTool.function.parameters) {
-			cleanupSchema(cleanedTool.function.parameters);
-		}
+		// Clone only the schema tree we mutate to avoid heavy deep cloning of entire tools.
+		const cleanedParameters = cloneRecord(parameters);
+		cleanupSchema(cleanedParameters);
 
-		return cleanedTool;
+		return {
+			...tool,
+			function: {
+				...functionDef,
+				parameters: cleanedParameters,
+			},
+		};
 	});
 }
 
@@ -50,6 +70,15 @@ export function cleanupToolDefinitions(tools: unknown): unknown {
  */
 function cleanupSchema(schema: Record<string, unknown>): void {
 	if (!schema || typeof schema !== "object") return;
+
+	if (schema.properties && typeof schema.properties === "object") {
+		const properties = schema.properties as Record<string, unknown>;
+		for (const key of Object.keys(properties)) {
+			if (properties[key] === undefined) {
+				delete properties[key];
+			}
+		}
+	}
 
 	// 1. Flatten Unions (anyOf -> enum)
 	if (Array.isArray(schema.anyOf)) {

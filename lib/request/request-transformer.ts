@@ -543,24 +543,22 @@ export function filterInput(
 	input: InputItem[] | undefined,
 ): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
-
-	return input
-		.filter((item) => {
-			// Remove AI SDK constructs not supported by Codex API
-			if (item.type === "item_reference") {
-				return false; // AI SDK only - references server state
-			}
-			return true; // Keep all other items
-		})
-		.map((item) => {
-			// Strip IDs from all items (Codex API stateless mode)
-			if (item.id) {
-				const { id: _omit, ...itemWithoutId } = item;
-				void _omit;
-				return itemWithoutId as InputItem;
-			}
-			return item;
-		});
+	const filtered: InputItem[] = [];
+	for (const item of input) {
+		// Remove AI SDK constructs not supported by Codex API.
+		if (item.type === "item_reference") {
+			continue;
+		}
+		// Strip IDs from all items (Codex API stateless mode).
+		if (item.id) {
+			const { id: _omit, ...itemWithoutId } = item;
+			void _omit;
+			filtered.push(itemWithoutId as InputItem);
+			continue;
+		}
+		filtered.push(item);
+	}
+	return filtered;
 }
 
 /**
