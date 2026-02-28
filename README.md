@@ -5,7 +5,7 @@
 
 Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI.
 
-<img width="1270" height="741" alt="2026-02-28 12_54_58-prompt txt ‎- Notepads" src="https://github.com/user-attachments/assets/3a35f9c5-9082-457c-a069-9bc0a6181e1b" />
+<img width="1270" height="729" alt="2026-02-28 12_54_58-prompt txt ‎- Notepads" src="https://github.com/user-attachments/assets/0cecb77e-a6d3-432a-ba48-3577db0c7093" />
 
 
 > [!NOTE]
