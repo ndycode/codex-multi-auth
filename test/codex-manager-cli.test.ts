@@ -1234,6 +1234,27 @@ describe("codex manager cli commands", () => {
 		async ({ panel, mode }) => {
 			setInteractiveTTY(true);
 			const now = Date.now();
+			let originalRuntimeTheme:
+				| {
+						v2Enabled: boolean;
+						colorProfile: string;
+						glyphMode: string;
+						palette: string;
+						accent: string;
+				  }
+				| null = null;
+			if (panel === "theme") {
+				const runtime = await import("../lib/ui/runtime.js");
+				runtime.resetUiRuntimeOptions();
+				const snapshot = runtime.getUiRuntimeOptions();
+				originalRuntimeTheme = {
+					v2Enabled: snapshot.v2Enabled,
+					colorProfile: snapshot.colorProfile,
+					glyphMode: snapshot.glyphMode,
+					palette: snapshot.palette,
+					accent: snapshot.accent,
+				};
+			}
 			loadAccountsMock.mockResolvedValue({
 				version: 3,
 				activeIndex: 0,
@@ -1328,6 +1349,17 @@ describe("codex manager cli commands", () => {
 			expect(exitCode).toBe(0);
 			expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
 			expect(savePluginConfigMock).not.toHaveBeenCalled();
+			if (panel === "theme") {
+				const runtime = await import("../lib/ui/runtime.js");
+				const restored = runtime.getUiRuntimeOptions();
+				expect({
+					v2Enabled: restored.v2Enabled,
+					colorProfile: restored.colorProfile,
+					glyphMode: restored.glyphMode,
+					palette: restored.palette,
+					accent: restored.accent,
+				}).toEqual(originalRuntimeTheme);
+			}
 		},
 	);
 
