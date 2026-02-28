@@ -1,10 +1,10 @@
 # codex-multi-auth Docs
 
-Codex CLI-first multi-account OAuth docs in one place.
+Daily-use landing page for operators using `codex auth ...` workflows.
 
 ---
 
-## Quick Start
+## 5-Minute Start
 
 ```bash
 codex auth login
@@ -12,15 +12,15 @@ codex auth list
 codex auth check
 ```
 
-Then continue with:
+Then pick your next path:
 
-- [Getting Started](getting-started.md)
-- [Configuration](configuration.md)
-- [Troubleshooting](troubleshooting.md)
+- Setup and first-run details: [getting-started.md](getting-started.md)
+- Runtime behavior and controls: [configuration.md](configuration.md)
+- Recovery workflows: [troubleshooting.md](troubleshooting.md)
 
 ---
 
-## Daily Commands
+## Daily Operations
 
 ```bash
 codex auth forecast --live
@@ -31,18 +31,19 @@ codex auth report --live --json
 
 ---
 
-## Documentation Sections
+## Canonical Policy
 
-- Portal: [README.md](README.md)
-- User guides: [getting-started.md](getting-started.md), [features.md](features.md), [configuration.md](configuration.md)
-- References: [reference/commands.md](reference/commands.md), [reference/settings.md](reference/settings.md), [reference/storage-paths.md](reference/storage-paths.md)
-- Release notes: [releases/v0.1.0.md](releases/v0.1.0.md)
-- Maintainer docs: [development/](development/)
+- Canonical package: `codex-multi-auth`
+- Canonical command family: `codex auth ...`
+- Canonical data root: `~/.codex/multi-auth`
+
+Legacy package/path guidance is documented in [upgrade.md](upgrade.md) and [reference/storage-paths.md](reference/storage-paths.md).
 
 ---
 
-## Policy
+## Next References
 
-- Canonical package: `codex-multi-auth`
-- Canonical account workflow: `codex auth ...`
-- Legacy compatibility notes only: [upgrade.md](upgrade.md) and [reference/storage-paths.md](reference/storage-paths.md)
+- Command flags and hotkeys: [reference/commands.md](reference/commands.md)
+- Settings and overrides: [reference/settings.md](reference/settings.md)
+- Storage path matrix: [reference/storage-paths.md](reference/storage-paths.md)
+- Full docs portal: [README.md](README.md)

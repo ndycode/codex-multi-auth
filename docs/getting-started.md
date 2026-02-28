@@ -1,6 +1,6 @@
 # Getting Started
 
-Install, sign in, and run your first healthy multi-account setup.
+Install `codex-multi-auth`, add accounts, and verify healthy routing.
 
 ---
 
@@ -8,23 +8,24 @@ Install, sign in, and run your first healthy multi-account setup.
 
 - Node.js `18+`
 - Official Codex CLI package: `@openai/codex`
+- Active ChatGPT plan with the models you intend to use
 
 ---
 
-## Install (npm)
+## Install
 
 ```bash
 npm i -g @openai/codex
 npm i -g codex-multi-auth
 ```
 
-If you previously installed the scoped prerelease package, remove it first:
+If you previously used the scoped prerelease package:
 
 ```bash
 npm uninstall -g @ndycode/codex-multi-auth
 ```
 
-Verify command wiring:
+Validate command wiring:
 
 ```bash
 codex --version
@@ -33,7 +34,7 @@ codex auth status
 
 ---
 
-## Add Your First Account
+## First Login
 
 ```bash
 codex auth login
@@ -42,30 +43,32 @@ codex auth login
 Expected flow:
 
 1. Dashboard opens.
-2. Choose **Add New Account**.
+2. Select `Add New Account`.
 3. Complete OAuth in browser.
 4. Return to terminal.
-5. Your real email appears in account list.
+5. Account appears in `Saved Accounts`.
 
-Check result:
+Verify storage and active selection:
 
 ```bash
 codex auth list
+codex auth check
 ```
 
 ---
 
 ## Add More Accounts
 
+Repeat login, then run a readiness check:
+
 ```bash
 codex auth login
-codex auth check
 codex auth forecast --live
 ```
 
 ---
 
-## Day-1 Commands
+## Day-1 Command Pack
 
 ```bash
 codex auth list
@@ -73,13 +76,14 @@ codex auth switch 2
 codex auth check
 codex auth forecast --live
 codex auth fix --dry-run
+codex auth fix --live --model gpt-5-codex
 codex auth doctor --fix
 codex auth report --live --json
 ```
 
 ---
 
-## First-Run Problems
+## First-Run Issues
 
 If `codex auth` is not recognized:
 
@@ -90,8 +94,15 @@ codex multi auth status
 
 If OAuth callback on `1455` fails:
 
-- Close conflicting process on port `1455`
-- Retry `codex auth login`
+- Stop the process using port `1455`.
+- Retry `codex auth login`.
+
+If account data appears stale:
+
+```bash
+codex auth doctor --fix
+codex auth check
+```
 
 ---
 
@@ -101,4 +112,3 @@ If OAuth callback on `1455` fails:
 - [configuration.md](configuration.md)
 - [troubleshooting.md](troubleshooting.md)
 - [reference/commands.md](reference/commands.md)
-- [upgrade.md](upgrade.md)

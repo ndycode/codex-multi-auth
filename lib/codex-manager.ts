@@ -290,7 +290,7 @@ function printUsage(): void {
 			"  codex-multi-auth auth verify-flagged [--dry-run] [--json] [--no-restore]",
 			"  codex-multi-auth auth forecast [--live] [--json] [--model <model>]",
 			"  codex-multi-auth auth report [--live] [--json] [--model <model>] [--out <path>]",
-			"  codex-multi-auth auth fix [--dry-run] [--json]",
+			"  codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"  codex-multi-auth auth doctor [--json] [--fix] [--dry-run]",
 			"",
 			"Notes:",

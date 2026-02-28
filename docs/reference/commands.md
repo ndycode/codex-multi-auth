@@ -1,14 +1,14 @@
 # Command Reference
 
-Complete CLI and hotkey reference for `codex-multi-auth`.
+Complete command, flag, and hotkey reference for `codex-multi-auth`.
 
 ---
 
 ## Canonical Command Family
 
-Use `codex auth ...` for account operations.
+Primary operations use `codex auth ...`.
 
-Compatibility aliases:
+Compatibility aliases are supported:
 
 - `codex multi auth ...`
 - `codex multi-auth ...`
@@ -22,10 +22,10 @@ Compatibility aliases:
 | --- | --- |
 | `codex auth login` | Open interactive auth dashboard |
 | `codex auth list` | List saved accounts and active account |
-| `codex auth status` | Short status summary |
+| `codex auth status` | Print short runtime/account summary |
 | `codex auth switch <index>` | Set active account by index |
 | `codex auth check` | Run quick account health check |
-| `codex auth features` | Print implemented feature list |
+| `codex auth features` | Print implemented feature summary |
 
 ---
 
@@ -33,23 +33,25 @@ Compatibility aliases:
 
 | Command | Description |
 | --- | --- |
-| `codex auth verify-flagged` | Verify flagged accounts and optionally restore healthy ones |
+| `codex auth verify-flagged` | Verify flagged accounts and optionally restore healthy accounts |
 | `codex auth forecast` | Forecast best account by readiness/risk |
 | `codex auth report` | Generate full health report |
 | `codex auth fix` | Apply safe account storage fixes |
-| `codex auth doctor` | Run diagnostics and optional fixes |
+| `codex auth doctor` | Run diagnostics and optional repairs |
 
-Common flags:
+---
+
+## Common Flags
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
-| `--json` | verify-flagged/forecast/report/fix/doctor | machine-readable output |
-| `--live` | forecast/report | use live quota/session probes |
-| `--dry-run` | verify-flagged/fix/doctor | preview without mutation |
-| `--fix` | doctor | apply repairs |
-| `--model <model>` | forecast/report | choose forecast model |
-| `--out <path>` | report | write report file |
-| `--no-restore` | verify-flagged | verify only, do not restore |
+| `--json` | verify-flagged, forecast, report, fix, doctor | Print machine-readable output |
+| `--live` | forecast, report, fix | Use live probe before decisions/output |
+| `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
+| `--model <model>` | forecast, report, fix | Specify model for live probe paths |
+| `--out <path>` | report | Write report output to file |
+| `--fix` | doctor | Apply safe repairs |
+| `--no-restore` | verify-flagged | Verify only; do not restore healthy flagged accounts |
 
 ---
 
@@ -71,8 +73,8 @@ Common flags:
 | Key | Action |
 | --- | --- |
 | `S` | Set current account |
-| `R` | Refresh/re-login this account |
-| `E` | Enable/disable |
+| `R` | Refresh/re-login account |
+| `E` | Enable/disable account |
 | `D` | Delete account |
 | `Q` | Back |
 
@@ -90,21 +92,21 @@ Common flags:
 
 ---
 
-## Useful Workflows
+## Workflow Packs
 
-Health workflow:
+Health and planning:
 
 ```bash
 codex auth check
-codex auth forecast --live
+codex auth forecast --live --model gpt-5-codex
 codex auth report --live --json
 ```
 
-Repair workflow:
+Repair and recovery:
 
 ```bash
 codex auth fix --dry-run
-codex auth fix
+codex auth fix --live --model gpt-5-codex
 codex auth doctor --fix
 ```
 

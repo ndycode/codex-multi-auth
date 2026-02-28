@@ -126,6 +126,7 @@ codex auth doctor --fix
 | `codex auth forecast --live` | Forecast best next account with live probes |
 | `codex auth report --live --json` | Generate machine-readable health report |
 | `codex auth fix --dry-run` | Preview safe repairs |
+| `codex auth fix --live --model gpt-5-codex` | Run repairs with live probe model |
 | `codex auth doctor --fix` | Diagnose and apply safe fixes |
 
 Compatibility aliases are also supported:

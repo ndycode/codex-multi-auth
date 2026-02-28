@@ -1,93 +1,66 @@
 # Documentation Style Guide
 
-Use this style guide for every docs page in this repository.
+Style contract for all docs in this repository.
 
-* * *
+---
 
 ## Goals
 
-1. Beginner-first clarity.
-2. Fast path first, deep details second.
-3. Consistent wording and section structure.
-4. Codex CLI-first tone: concise, practical, command-driven.
+1. Fast onboarding for first-time operators.
+2. Precise references for maintainers and automation users.
+3. Stable wording for commands, flags, paths, and version policy.
+4. Consistent structure across user and maintainer docs.
 
-* * *
+---
 
 ## Page Template
 
-User-facing pages should follow this order:
+User-facing docs should generally follow:
 
-1. Title.
-2. One-line lead.
-3. Quick path section.
-4. Common tasks section.
-5. Deeper details/reference section.
-6. Troubleshooting/gotchas section (if relevant).
-7. Related links.
+1. Title and one-line lead.
+2. Quick path commands.
+3. Core operational workflow.
+4. Troubleshooting or failure handling.
+5. Related links.
 
-Use `* * *` separators between major blocks for scanability.
+Use short sections and scan-friendly tables where they improve clarity.
 
-* * *
+---
 
 ## Writing Rules
 
-1. Prefer short sentences and direct verbs.
-2. Prefer action phrasing:
-   - "Run ..."
-   - "Check ..."
-   - "If this fails, do ..."
-3. Avoid long abstract paragraphs before commands.
-4. Explain expected result after critical commands.
-5. Define acronyms/jargon once in plain language.
+1. Prefer direct, actionable language.
+2. Use runnable command examples.
+3. Explain expected outcomes after critical commands.
+4. Keep terminology consistent with runtime names.
+5. Avoid speculative language when behavior is deterministic.
 
-* * *
+---
 
-## Command Example Rules
+## Command and Path Rules
 
-1. Use runnable commands.
-2. Include platform-specific blocks for OS-sensitive operations.
-3. Use canonical command family: `codex auth ...`.
-4. Keep command blocks small and task-specific.
+1. Canonical command family is `codex auth ...`.
+2. Canonical runtime root is `~/.codex/multi-auth`.
+3. Legacy command/path references belong only in migration contexts.
+4. Keep command flags aligned with runtime usage text.
 
-* * *
-
-## Path and Terminology Rules
-
-1. Canonical runtime root is `~/.codex/multi-auth`.
-2. Legacy paths belong in migration/compat sections only.
-3. Keep command/path naming consistent across all docs.
-4. Do not mix old/new command families in beginner quick paths.
-
-* * *
-
-## Tables and Lists
-
-1. Use compact tables for key-value or comparison data.
-2. Keep table columns minimal and meaningful.
-3. Use flat bullet lists (no nested bullets in docs where possible).
-4. Keep long references in dedicated `docs/reference/*` pages.
-
-* * *
+---
 
 ## Maintainer Rules
 
-1. Any runtime change that affects users must update:
-   - `README.md`
-   - `docs/getting-started.md`
-   - `docs/features.md`
-   - relevant reference pages
-2. Any new setting/flag/path must be reflected in reference docs.
-3. Keep `docs/upgrade.md` updated for command/path migration changes.
-4. Keep `SECURITY.md` path guidance aligned with runtime paths.
-5. Validate commands before merging documentation changes.
+1. Behavior changes must update docs and tests together.
+2. New flags/settings/paths must be reflected in `docs/reference/*`.
+3. Migration-impacting changes must update `docs/upgrade.md`.
+4. Governance-impacting changes must review `SECURITY.md` and `CONTRIBUTING.md`.
+5. Keep PR/issue templates aligned with validation gates.
 
-* * *
+---
 
 ## Anti-Patterns
 
 Avoid:
 
-- command examples that are not executable
-- conflicting path guidance across pages
-- legacy-first wording in primary guides
-- giant walls of text before actionable steps
+- non-runnable command snippets
+- conflicting path guidance across docs
+- legacy-first onboarding language
+- undocumented behavior drift between runtime and docs
