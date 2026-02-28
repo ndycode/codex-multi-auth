@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 
@@ -22,6 +22,37 @@ function parseGitDirPointer(pointerContent: string): string | null {
 	return value.length > 0 ? value : null;
 }
 
+function normalizePathDelimiters(pathValue: string): string {
+	return pathValue.replace(/\\/g, "/");
+}
+
+function isWindowsRootedPath(pathValue: string): boolean {
+	return /^[A-Za-z]:[\\/]/.test(pathValue) || /^\\\\[^\\]/.test(pathValue) || /^\/\/[^/]/.test(pathValue);
+}
+
+function resolveGitPath(basePath: string, pointerValue: string): string {
+	const trimmedPointer = pointerValue.trim();
+	if (!trimmedPointer) {
+		return basePath;
+	}
+
+	if (isWindowsRootedPath(basePath) || isWindowsRootedPath(trimmedPointer)) {
+		const windowsBase = win32.normalize(basePath.replace(/\//g, "\\"));
+		const windowsPointer = win32.normalize(trimmedPointer.replace(/\//g, "\\"));
+		const windowsResolved = win32.isAbsolute(windowsPointer)
+			? windowsPointer
+			: win32.resolve(windowsBase, windowsPointer);
+		return process.platform === "win32"
+			? windowsResolved
+			: normalizePathDelimiters(windowsResolved);
+	}
+
+	const normalizedPointer = normalizePathDelimiters(trimmedPointer);
+	return isAbsolute(normalizedPointer)
+		? normalizedPointer
+		: resolve(basePath, normalizedPointer);
+}
+
 function readGitCommonDir(gitDirPath: string): string {
 	const commonDirFile = join(gitDirPath, "commondir");
 	if (!existsSync(commonDirFile)) {
@@ -31,14 +62,14 @@ function readGitCommonDir(gitDirPath: string): string {
 	try {
 		const raw = readFileSync(commonDirFile, "utf-8").trim();
 		if (!raw) return gitDirPath;
-		return isAbsolute(raw) ? raw : resolve(gitDirPath, raw);
+		return resolveGitPath(gitDirPath, raw);
 	} catch {
 		return gitDirPath;
 	}
 }
 
 function isWorktreeGitDirPath(gitDirPath: string): boolean {
-	const normalized = normalizeProjectPath(gitDirPath);
+	const normalized = normalizePathDelimiters(gitDirPath).toLowerCase();
 	return normalized.includes("/.git/worktrees/");
 }
 
@@ -172,9 +203,7 @@ export function resolveProjectStorageIdentityRoot(projectRoot: string): string {
 			return projectRoot;
 		}
 
-		const gitDirPath = isAbsolute(gitDirValue)
-			? gitDirValue
-			: resolve(projectRoot, gitDirValue);
+		const gitDirPath = resolveGitPath(projectRoot, gitDirValue);
 		if (!isWorktreeGitDirPath(gitDirPath)) {
 			return projectRoot;
 		}

@@ -1295,10 +1295,6 @@ describe("storage", () => {
     });
 
     it("migrates worktree storage with Windows-style gitdir pointer fixtures", async () => {
-      if (process.platform !== "win32") {
-        return;
-      }
-
       const { worktreeRepo } = await prepareWorktreeFixture({
         pointerStyle: "windows",
         worktreeName: "repo-pr-win-ptr",
