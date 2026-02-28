@@ -1,8 +1,9 @@
-# changelog
+# Legacy Pre-0.1 Changelog Archive
 
-all notable changes to this project. dates are ISO format (YYYY-MM-DD).
+This file is an archival snapshot of historical changelog entries that predate the canonical `0.x` release line.
+It is preserved for historical context and is not the active changelog source.
 
-## [unreleased]
+## [archived-unreleased]
 
 ### New Features
 - Added a plugin-owned true hashline engine for plain host runtime by overriding the `edit` tool.

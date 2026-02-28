@@ -51,12 +51,13 @@ codex auth forecast --live --model gpt-5-codex
 
 ## Configuration Upgrade Notes
 
-During upgrades, configuration precedence is:
+During upgrades, runtime config source precedence is:
 
-1. Environment override values.
-2. `CODEX_MULTI_AUTH_CONFIG_PATH` file values.
-3. Unified settings compatibility values.
-4. Runtime defaults.
+1. Unified settings `pluginConfig` from `settings.json` (when valid).
+2. Fallback file config from `CODEX_MULTI_AUTH_CONFIG_PATH` (or legacy compatibility path) when unified settings are absent/invalid.
+3. Runtime defaults.
+
+After source selection, environment variables still override individual setting values.
 
 For day-to-day operator use, prefer stable overrides documented in [configuration.md](configuration.md).
 For maintainer/debug flows, see advanced/internal controls in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).

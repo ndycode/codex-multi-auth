@@ -43,13 +43,13 @@ Runtime configuration is resolved from unified settings, optional override files
 
 ## Resolution Precedence
 
-Plugin runtime values are resolved in this order:
+Plugin runtime config source selection is resolved in this order:
 
-1. Explicit environment overrides.
-2. `CODEX_MULTI_AUTH_CONFIG_PATH` file values.
-3. Unified settings compatibility values.
-4. Hardcoded defaults.
+1. Unified settings `pluginConfig` from `settings.json` (when present and valid).
+2. Fallback file config from `CODEX_MULTI_AUTH_CONFIG_PATH` (or legacy compatibility path) when unified settings are absent/invalid.
+3. Hardcoded defaults.
 
+After a config source is selected, environment variables override individual runtime settings.
 Dashboard display values are resolved from persisted `dashboardDisplaySettings` and then normalized defaults.
 
 ---

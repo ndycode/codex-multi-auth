@@ -158,6 +158,36 @@ describe('Documentation Integrity', () => {
     expect(changelog).not.toContain('## [4.');
   });
 
+  it('keeps governance templates and security reporting guidance present', () => {
+    const prTemplate = '.github/pull_request_template.md';
+    const issueConfig = '.github/ISSUE_TEMPLATE/config.yml';
+    const bugTemplate = '.github/ISSUE_TEMPLATE/bug_report.md';
+    const featureTemplate = '.github/ISSUE_TEMPLATE/feature_request.md';
+
+    expect(existsSync(join(projectRoot, prTemplate)), `${prTemplate} should exist`).toBe(true);
+    expect(existsSync(join(projectRoot, issueConfig)), `${issueConfig} should exist`).toBe(true);
+    expect(existsSync(join(projectRoot, bugTemplate)), `${bugTemplate} should exist`).toBe(true);
+    expect(existsSync(join(projectRoot, featureTemplate)), `${featureTemplate} should exist`).toBe(true);
+
+    const prBody = read(prTemplate);
+    expect(prBody).toContain('npm run lint');
+    expect(prBody).toContain('npm run typecheck');
+    expect(prBody).toContain('npm test');
+    expect(prBody).toContain('npm run build');
+
+    const security = read('SECURITY.md').toLowerCase();
+    expect(security).toContain('do not open a public issue');
+    expect(security).toContain('enable_plugin_request_logging=1');
+    expect(security).toContain('codex_plugin_log_bodies=1');
+
+    const contributing = read('CONTRIBUTING.md').toLowerCase();
+    expect(contributing).toContain('pull request process');
+    expect(contributing).toContain('npm run typecheck');
+    expect(contributing).toContain('npm run lint');
+    expect(contributing).toContain('npm test');
+    expect(contributing).toContain('npm run build');
+  });
+
   it('has valid internal links in README.md', () => {
     const content = read('README.md');
     const links = extractInternalLinks(content);
