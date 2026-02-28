@@ -109,7 +109,7 @@ Start here:
 - Storage paths: [docs/reference/storage-paths.md](docs/reference/storage-paths.md)
 - Upgrade guide: [docs/upgrade.md](docs/upgrade.md)
 - Privacy: [docs/privacy.md](docs/privacy.md)
-- Stable release notes: [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md)
+- Stable release notes: [docs/releases/v0.1.1.md](docs/releases/v0.1.1.md)
 
 Maintainer docs:
 

@@ -24,7 +24,8 @@ Use this portal to navigate user guides, references, and maintainer docs.
 | [troubleshooting.md](troubleshooting.md) | Recovery playbooks and command diagnostics |
 | [privacy.md](privacy.md) | Data handling and local file storage |
 | [upgrade.md](upgrade.md) | Migration from older package/path layouts |
-| [releases/v0.1.0.md](releases/v0.1.0.md) | Stable release notes |
+| [releases/v0.1.1.md](releases/v0.1.1.md) | Stable release notes |
+| [releases/v0.1.0.md](releases/v0.1.0.md) | Previous stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease notes |
 
 ---
