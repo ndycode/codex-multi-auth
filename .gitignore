@@ -26,6 +26,7 @@ winston/
 task_plan.md
 findings.md
 progress.md
+test-results.md
 
 # local env files
 .env

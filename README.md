@@ -11,7 +11,6 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 > [!NOTE]
 > Legacy scoped prerelease package `@ndycode/codex-multi-auth` is migration-only.
 > Use `codex-multi-auth` for all new installs.
-
 ## What You Get
 
 - Canonical `codex auth ...` workflow for account login, switching, checks, and diagnostics
@@ -127,6 +126,7 @@ codex auth doctor --fix
 | `codex auth forecast --live` | Forecast best next account with live probes |
 | `codex auth report --live --json` | Generate machine-readable health report |
 | `codex auth fix --dry-run` | Preview safe repairs |
+| `codex auth fix --live --model gpt-5-codex` | Run repairs with live probe model |
 | `codex auth doctor --fix` | Diagnose and apply safe fixes |
 
 Compatibility aliases are also supported:
@@ -268,8 +268,8 @@ codex auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md)
-- Previous stable: n/a (current stable is `v0.1.0`)
+- Current stable: [docs/releases/v0.1.1.md](docs/releases/v0.1.1.md)
+- Previous stable: [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md)
 - Archived prerelease: [docs/releases/v0.1.0-beta.0.md](docs/releases/v0.1.0-beta.0.md)
 
 ## License

@@ -6,8 +6,31 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { runCodexMultiAuthCli } from "../dist/lib/codex-manager.js";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+
+async function loadRunCodexMultiAuthCli() {
+	try {
+		const mod = await import("../dist/lib/codex-manager.js");
+		if (typeof mod.runCodexMultiAuthCli !== "function") {
+			console.error(
+				"dist/lib/codex-manager.js is missing required export: runCodexMultiAuthCli",
+			);
+			return null;
+		}
+		return mod.runCodexMultiAuthCli;
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
+			console.error(
+				[
+					"codex-multi-auth auth commands require built runtime files, but dist output is missing.",
+					"Run: npm run build",
+				].join("\n"),
+			);
+			return null;
+		}
+		throw error;
+	}
+}
 
 function resolveRealCodexBin() {
 	const override = (process.env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
@@ -90,14 +113,29 @@ function forwardToRealCodex(codexBin, args) {
 	});
 }
 
+function normalizeExitCode(value) {
+	if (typeof value === "number" && Number.isInteger(value)) {
+		return value;
+	}
+	const parsed = Number(value);
+	if (Number.isInteger(parsed)) {
+		return parsed;
+	}
+	return 1;
+}
+
 const rawArgs = process.argv.slice(2);
 const normalizedArgs = normalizeAuthAlias(rawArgs);
 const bypass = (process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1";
 
 if (!bypass && shouldHandleMultiAuthAuth(normalizedArgs)) {
 	try {
+		const runCodexMultiAuthCli = await loadRunCodexMultiAuthCli();
+		if (!runCodexMultiAuthCli) {
+			process.exit(1);
+		}
 		const exitCode = await runCodexMultiAuthCli(normalizedArgs);
-		process.exit(exitCode);
+		process.exit(normalizeExitCode(exitCode));
 	} catch (error) {
 		console.error(
 			`codex-multi-auth runner failed: ${error instanceof Error ? error.message : String(error)}`,

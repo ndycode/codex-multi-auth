@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  - name: OpenAI Support
-    url: https://help.openai.com/
-    about: For ChatGPT account or subscription issues, contact OpenAI directly
-  - name: OpenAI Terms of Service
-    url: https://openai.com/policies/terms-of-use/
-    about: Review OpenAI's Terms of Service for compliance questions
+  - name: Security Vulnerability Reporting
+    url: https://github.com/ndycode/codex-multi-auth/security
+    about: Report security vulnerabilities privately. Do not open public issues for security findings.
   - name: Discussions
     url: https://github.com/ndycode/codex-multi-auth/discussions
-    about: Ask questions or discuss the plugin with the community
+    about: Ask usage questions, share feedback, or discuss proposals.
+  - name: OpenAI Support
+    url: https://help.openai.com/
+    about: For ChatGPT account/subscription issues, contact OpenAI directly.

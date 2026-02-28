@@ -3,15 +3,129 @@
  * Extracted from storage.ts to reduce module size.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 
 const PROJECT_MARKERS = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".codex"];
 const PROJECTS_DIR = "projects";
 const PROJECT_KEY_HASH_LENGTH = 12;
+
+function parseGitDirPointer(pointerContent: string): string | null {
+	const firstLine = pointerContent.split(/\r?\n/, 1)[0]?.trim();
+	if (!firstLine) return null;
+	const match = /^gitdir:\s*(.+)$/i.exec(firstLine);
+	if (!match?.[1]) return null;
+	const value = match[1].trim();
+	return value.length > 0 ? value : null;
+}
+
+function normalizePathDelimiters(pathValue: string): string {
+	return pathValue.replace(/\\/g, "/");
+}
+
+function isWindowsRootedPath(pathValue: string): boolean {
+	return /^[A-Za-z]:[\\/]/.test(pathValue) || /^\\\\[^\\]/.test(pathValue) || /^\/\/[^/]/.test(pathValue);
+}
+
+function resolveGitPath(basePath: string, pointerValue: string): string {
+	const trimmedPointer = pointerValue.trim();
+	if (!trimmedPointer) {
+		return basePath;
+	}
+
+	if (isWindowsRootedPath(basePath) || isWindowsRootedPath(trimmedPointer)) {
+		const windowsBase = win32.normalize(basePath.replace(/\//g, "\\"));
+		const windowsPointer = win32.normalize(trimmedPointer.replace(/\//g, "\\"));
+		const windowsResolved = win32.isAbsolute(windowsPointer)
+			? windowsPointer
+			: win32.resolve(windowsBase, windowsPointer);
+		return process.platform === "win32"
+			? windowsResolved
+			: normalizePathDelimiters(windowsResolved);
+	}
+
+	const normalizedPointer = normalizePathDelimiters(trimmedPointer);
+	return isAbsolute(normalizedPointer)
+		? normalizedPointer
+		: resolve(basePath, normalizedPointer);
+}
+
+function readGitCommonDir(gitDirPath: string): string {
+	const commonDirFile = join(gitDirPath, "commondir");
+	if (!existsSync(commonDirFile)) {
+		return gitDirPath;
+	}
+
+	try {
+		const raw = readFileSync(commonDirFile, "utf-8").trim();
+		if (!raw) return gitDirPath;
+		return resolveGitPath(gitDirPath, raw);
+	} catch {
+		return gitDirPath;
+	}
+}
+
+function isWorktreeGitDirPath(gitDirPath: string): boolean {
+	const normalized = normalizePathDelimiters(gitDirPath).toLowerCase();
+	return normalized.includes("/.git/worktrees/");
+}
+
+function normalizePathForIdentityCheck(pathValue: string): string {
+	const normalizedDelimiters = normalizePathDelimiters(pathValue.trim());
+	if (!normalizedDelimiters) {
+		return normalizedDelimiters;
+	}
+
+	if (isWindowsRootedPath(normalizedDelimiters)) {
+		return win32.normalize(normalizedDelimiters.replace(/\//g, "\\")).toLowerCase();
+	}
+
+	const resolvedPath = resolve(normalizedDelimiters);
+	const normalizedResolved = normalizePathDelimiters(resolvedPath);
+	return process.platform === "win32" ? normalizedResolved.toLowerCase() : normalizedResolved;
+}
+
+function worktreeGitDirBelongsToProject(projectRoot: string, gitDirPath: string): boolean {
+	const gitdirBackRefPath = join(gitDirPath, "gitdir");
+	if (!existsSync(gitdirBackRefPath)) {
+		return false;
+	}
+
+	try {
+		const gitdirBackRefRaw = readFileSync(gitdirBackRefPath, "utf-8").trim();
+		if (!gitdirBackRefRaw) {
+			return false;
+		}
+
+		const resolvedBackRef = resolveGitPath(gitDirPath, gitdirBackRefRaw);
+		const expectedBackRef = join(projectRoot, ".git");
+		return (
+			normalizePathForIdentityCheck(resolvedBackRef) ===
+			normalizePathForIdentityCheck(expectedBackRef)
+		);
+	} catch {
+		return false;
+	}
+}
+
+function isGitDirUnderCommonWorktrees(gitDirPath: string, commonGitDir: string): boolean {
+	const normalizedGitDir = normalizePathDelimiters(
+		normalizePathForIdentityCheck(gitDirPath),
+	).replace(/\/+$/, "");
+	const normalizedCommonGitDir = normalizePathDelimiters(
+		normalizePathForIdentityCheck(commonGitDir),
+	).replace(/\/+$/, "");
+
+	if (!normalizedGitDir || !normalizedCommonGitDir) {
+		return false;
+	}
+
+	const worktreesRoot = `${normalizedCommonGitDir}/worktrees/`;
+	return normalizedGitDir.startsWith(worktreesRoot);
+}
 
 /**
  * Gets the path to the global Codex multi-auth configuration directory.
@@ -110,6 +224,60 @@ export function getProjectStorageKey(projectPath: string): string {
  */
 export function getProjectGlobalConfigDir(projectPath: string): string {
 	return join(getConfigDir(), PROJECTS_DIR, getProjectStorageKey(projectPath));
+}
+
+/**
+ * Resolve a stable project identity root for account storage keying.
+ *
+ * For standard repositories, this returns `projectRoot` unchanged.
+ * For linked Git worktrees, this resolves to the shared repository root so
+ * multiple worktrees use the same per-project account key.
+ *
+ * @param projectRoot - Detected project root path (typically from findProjectRoot)
+ * @returns Identity root used for per-project storage key generation
+ */
+export function resolveProjectStorageIdentityRoot(projectRoot: string): string {
+	const gitEntryPath = join(projectRoot, ".git");
+	if (!existsSync(gitEntryPath)) {
+		return projectRoot;
+	}
+
+	try {
+		const gitEntryStat = statSync(gitEntryPath);
+		if (gitEntryStat.isDirectory()) {
+			return projectRoot;
+		}
+		if (!gitEntryStat.isFile()) {
+			return projectRoot;
+		}
+
+		const gitPointer = readFileSync(gitEntryPath, "utf-8");
+		const gitDirValue = parseGitDirPointer(gitPointer);
+		if (!gitDirValue) {
+			return projectRoot;
+		}
+
+		const gitDirPath = resolveGitPath(projectRoot, gitDirValue);
+		if (!isWorktreeGitDirPath(gitDirPath)) {
+			return projectRoot;
+		}
+		if (!worktreeGitDirBelongsToProject(projectRoot, gitDirPath)) {
+			return projectRoot;
+		}
+
+		const commonGitDir = readGitCommonDir(gitDirPath);
+		if (!isGitDirUnderCommonWorktrees(gitDirPath, commonGitDir)) {
+			return projectRoot;
+		}
+		const candidateRepoRoot = dirname(commonGitDir);
+		if (!existsSync(join(candidateRepoRoot, ".git"))) {
+			return projectRoot;
+		}
+
+		return candidateRepoRoot;
+	} catch {
+		return projectRoot;
+	}
 }
 
 export function isProjectDirectory(dir: string): boolean {

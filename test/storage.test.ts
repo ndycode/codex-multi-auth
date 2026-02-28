@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { 
   deduplicateAccounts,
   deduplicateAccountsByEmail,
@@ -453,6 +454,17 @@ describe("storage", () => {
       expect(deduped).toHaveLength(1);
     });
 
+    it("treats email casing as the same logical account", () => {
+      const accounts = [
+        { email: "Test@Example.com", refreshToken: "old", lastUsed: 100, addedAt: 10 },
+        { email: "test@example.com", refreshToken: "new", lastUsed: 200, addedAt: 20 },
+      ];
+      const deduped = deduplicateAccountsByEmail(accounts);
+      expect(deduped).toHaveLength(1);
+      expect(deduped[0]?.refreshToken).toBe("new");
+      expect(deduped[0]?.email).toBe("test@example.com");
+    });
+
     it("handles null existing account edge case", () => {
       const accounts = [
         { email: "test@example.com", lastUsed: 100 },
@@ -767,6 +779,40 @@ describe("storage", () => {
       expect(path).toContain(".codex");
       expect(path).toContain("projects");
     });
+
+    it("uses the same storage path for main repo and linked worktree", async () => {
+      const testWorkDir = join(tmpdir(), "codex-worktree-key-" + Math.random().toString(36).slice(2));
+      const fakeHome = join(testWorkDir, "home");
+      const mainRepo = join(testWorkDir, "repo-main");
+      const mainGitDir = join(mainRepo, ".git");
+      const worktreeRepo = join(testWorkDir, "repo-pr-8");
+      const worktreeGitDir = join(mainGitDir, "worktrees", "repo-pr-8");
+      const originalHome = process.env.HOME;
+      const originalUserProfile = process.env.USERPROFILE;
+      try {
+        process.env.HOME = fakeHome;
+        process.env.USERPROFILE = fakeHome;
+        await fs.mkdir(mainGitDir, { recursive: true });
+        await fs.mkdir(worktreeGitDir, { recursive: true });
+        await fs.mkdir(worktreeRepo, { recursive: true });
+        await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "commondir"), "../..\n", "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "gitdir"), `${join(worktreeRepo, ".git")}\n`, "utf-8");
+
+        setStoragePath(mainRepo);
+        const mainPath = getStoragePath();
+        setStoragePath(worktreeRepo);
+        const worktreePath = getStoragePath();
+        expect(worktreePath).toBe(mainPath);
+      } finally {
+        setStoragePathDirect(null);
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
+        if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = originalUserProfile;
+        await fs.rm(testWorkDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("getStoragePath", () => {
@@ -888,8 +934,10 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalUserProfile;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
       await fs.rm(testWorkDir, { recursive: true, force: true });
     });
 
@@ -977,8 +1025,10 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalUserProfile;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
       await fs.rm(testWorkDir, { recursive: true, force: true });
     });
 
@@ -1009,6 +1059,348 @@ describe("storage", () => {
       expect(migrated?.accounts).toHaveLength(1);
       expect(existsSync(legacyStoragePath)).toBe(false);
       expect(existsSync(getStoragePath())).toBe(true);
+    });
+  });
+
+  describe("worktree-scoped storage migration", () => {
+    const testWorkDir = join(tmpdir(), "codex-worktree-migration-" + Math.random().toString(36).slice(2));
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    const originalMultiAuthDir = process.env.CODEX_MULTI_AUTH_DIR;
+
+    type StoredAccountFixture = {
+      refreshToken: string;
+      accountId: string;
+      addedAt: number;
+      lastUsed: number;
+    };
+
+    const now = Date.now();
+    const accountFromLegacy: StoredAccountFixture = {
+      refreshToken: "legacy-refresh",
+      accountId: "legacy-account",
+      addedAt: now,
+      lastUsed: now,
+    };
+    const accountFromCanonical: StoredAccountFixture = {
+      refreshToken: "canonical-refresh",
+      accountId: "canonical-account",
+      addedAt: now + 1,
+      lastUsed: now + 1,
+    };
+
+    async function prepareWorktreeFixture(options?: {
+      pointerStyle?: "default" | "windows";
+      worktreeName?: string;
+    }): Promise<{
+      fakeHome: string;
+      mainRepo: string;
+      worktreeRepo: string;
+    }> {
+      const fakeHome = join(testWorkDir, "home");
+      const mainRepo = join(testWorkDir, "repo-main");
+      const worktreeName = options?.worktreeName ?? "repo-pr-8";
+      const worktreeRepo = join(testWorkDir, worktreeName);
+      const mainGitDir = join(mainRepo, ".git");
+      const worktreeGitDir = join(mainGitDir, "worktrees", worktreeName);
+
+      process.env.HOME = fakeHome;
+      process.env.USERPROFILE = fakeHome;
+      process.env.CODEX_MULTI_AUTH_DIR = join(fakeHome, ".codex", "multi-auth");
+
+      await fs.mkdir(mainGitDir, { recursive: true });
+      await fs.mkdir(worktreeGitDir, { recursive: true });
+      await fs.mkdir(worktreeRepo, { recursive: true });
+      if (options?.pointerStyle === "windows") {
+        const winGitDirPointer = worktreeGitDir.replace(/\//g, "\\");
+        await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${winGitDirPointer}\n`, "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "commondir"), "..\\..\\\n", "utf-8");
+        await fs.writeFile(
+          join(worktreeGitDir, "gitdir"),
+          `${join(worktreeRepo, ".git").replace(/\//g, "\\")}\n`,
+          "utf-8",
+        );
+      } else {
+        await fs.writeFile(join(worktreeRepo, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "commondir"), "../..\n", "utf-8");
+        await fs.writeFile(join(worktreeGitDir, "gitdir"), `${join(worktreeRepo, ".git")}\n`, "utf-8");
+      }
+
+      return { fakeHome, mainRepo, worktreeRepo };
+    }
+
+    function buildStorage(accounts: StoredAccountFixture[]) {
+      return {
+        version: 3 as const,
+        activeIndex: 0,
+        activeIndexByFamily: {},
+        accounts,
+      };
+    }
+
+    beforeEach(async () => {
+      await fs.mkdir(testWorkDir, { recursive: true });
+    });
+
+    afterEach(async () => {
+      setStoragePathDirect(null);
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      if (originalMultiAuthDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
+      else process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
+      await fs.rm(testWorkDir, { recursive: true, force: true });
+      vi.restoreAllMocks();
+    });
+
+    it("migrates worktree-keyed storage to repo-shared canonical path", async () => {
+      const { worktreeRepo } = await prepareWorktreeFixture();
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const legacyWorktreePath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      expect(legacyWorktreePath).not.toBe(canonicalPath);
+
+      await fs.mkdir(join(getConfigDir(), "projects", getProjectStorageKey(worktreeRepo)), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        legacyWorktreePath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+
+      const loaded = await loadAccounts();
+
+      expect(loaded).not.toBeNull();
+      expect(loaded?.accounts).toHaveLength(1);
+      expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
+      expect(existsSync(canonicalPath)).toBe(true);
+      expect(existsSync(legacyWorktreePath)).toBe(false);
+    });
+
+    it("merges canonical and legacy worktree storage when both exist", async () => {
+      const { worktreeRepo } = await prepareWorktreeFixture();
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const legacyWorktreePath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      await fs.mkdir(join(getConfigDir(), "projects", getProjectStorageKey(worktreeRepo)), {
+        recursive: true,
+      });
+      await fs.mkdir(join(getConfigDir(), "projects", getProjectStorageKey(join(testWorkDir, "repo-main"))), {
+        recursive: true,
+      });
+
+      await fs.writeFile(
+        canonicalPath,
+        JSON.stringify(buildStorage([accountFromCanonical]), null, 2),
+        "utf-8",
+      );
+      await fs.writeFile(
+        legacyWorktreePath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+
+      const loaded = await loadAccounts();
+
+      expect(loaded).not.toBeNull();
+      expect(loaded?.accounts).toHaveLength(2);
+      const accountIds = loaded?.accounts.map((account) => account.accountId) ?? [];
+      expect(accountIds).toContain("canonical-account");
+      expect(accountIds).toContain("legacy-account");
+      expect(existsSync(legacyWorktreePath)).toBe(false);
+    });
+
+    it("keeps legacy worktree file when migration persist fails", async () => {
+      const { worktreeRepo } = await prepareWorktreeFixture();
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const canonicalWalPath = `${canonicalPath}.wal`;
+      const legacyWorktreePath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      await fs.mkdir(join(getConfigDir(), "projects", getProjectStorageKey(worktreeRepo)), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        legacyWorktreePath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+
+      const originalWriteFile = fs.writeFile.bind(fs);
+      const writeSpy = vi
+        .spyOn(fs, "writeFile")
+        .mockImplementation(async (...args: Parameters<typeof fs.writeFile>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === canonicalWalPath) {
+            const error = new Error("forced write failure") as NodeJS.ErrnoException;
+            error.code = "EACCES";
+            throw error;
+          }
+          return originalWriteFile(...args);
+        });
+
+      const loaded = await loadAccounts();
+
+      writeSpy.mockRestore();
+      expect(loaded).not.toBeNull();
+      expect(loaded?.accounts).toHaveLength(1);
+      expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
+      expect(existsSync(legacyWorktreePath)).toBe(true);
+    });
+
+    it("handles concurrent loadAccounts migration without duplicate race artifacts", async () => {
+      const { worktreeRepo } = await prepareWorktreeFixture({ worktreeName: "repo-pr-race" });
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const legacyWorktreePath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      await fs.mkdir(join(getConfigDir(), "projects", getProjectStorageKey(worktreeRepo)), {
+        recursive: true,
+      });
+      await fs.mkdir(dirname(canonicalPath), { recursive: true });
+      await fs.writeFile(
+        canonicalPath,
+        JSON.stringify(buildStorage([accountFromCanonical]), null, 2),
+        "utf-8",
+      );
+      await fs.writeFile(
+        legacyWorktreePath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+
+      const results = await Promise.all([
+        loadAccounts(),
+        loadAccounts(),
+        loadAccounts(),
+        loadAccounts(),
+      ]);
+
+      for (const result of results) {
+        expect(result).not.toBeNull();
+        expect(result?.accounts).toHaveLength(2);
+      }
+
+      const persistedRaw = await fs.readFile(canonicalPath, "utf-8");
+      const persistedNormalized = normalizeAccountStorage(JSON.parse(persistedRaw) as unknown);
+      expect(persistedNormalized).not.toBeNull();
+      expect(persistedNormalized?.accounts).toHaveLength(2);
+      expect(existsSync(legacyWorktreePath)).toBe(false);
+    });
+
+    it("migrates worktree storage with Windows-style gitdir pointer fixtures", async () => {
+      const { worktreeRepo } = await prepareWorktreeFixture({
+        pointerStyle: "windows",
+        worktreeName: "repo-pr-win-ptr",
+      });
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const legacyWorktreePath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      expect(legacyWorktreePath).not.toBe(canonicalPath);
+
+      await fs.mkdir(join(getConfigDir(), "projects", getProjectStorageKey(worktreeRepo)), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        legacyWorktreePath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+
+      const loaded = await loadAccounts();
+
+      expect(loaded).not.toBeNull();
+      expect(loaded?.accounts).toHaveLength(1);
+      expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
+      expect(existsSync(canonicalPath)).toBe(true);
+      expect(existsSync(legacyWorktreePath)).toBe(false);
+    });
+
+    it("rejects forged commondir aliasing and keeps storage scoped to the current worktree", async () => {
+      const worktreeName = "repo-pr-hostile";
+      const { mainRepo, worktreeRepo } = await prepareWorktreeFixture({ worktreeName });
+      const worktreeGitDir = join(mainRepo, ".git", "worktrees", worktreeName);
+      const foreignRepo = join(testWorkDir, "repo-foreign");
+      const foreignGitDir = join(foreignRepo, ".git");
+      const foreignAccount: StoredAccountFixture = {
+        refreshToken: "foreign-refresh",
+        accountId: "foreign-account",
+        addedAt: now + 2,
+        lastUsed: now + 2,
+      };
+
+      await fs.mkdir(foreignGitDir, { recursive: true });
+      await fs.writeFile(join(worktreeGitDir, "commondir"), `${foreignGitDir}\n`, "utf-8");
+
+      setStoragePath(worktreeRepo);
+      const canonicalPath = getStoragePath();
+      const safeCanonicalPath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(worktreeRepo),
+        "openai-codex-accounts.json",
+      );
+      const foreignCanonicalPath = join(
+        getConfigDir(),
+        "projects",
+        getProjectStorageKey(foreignRepo),
+        "openai-codex-accounts.json",
+      );
+      await fs.mkdir(dirname(safeCanonicalPath), { recursive: true });
+      await fs.mkdir(dirname(foreignCanonicalPath), { recursive: true });
+      await fs.writeFile(
+        safeCanonicalPath,
+        JSON.stringify(buildStorage([accountFromLegacy]), null, 2),
+        "utf-8",
+      );
+      await fs.writeFile(
+        foreignCanonicalPath,
+        JSON.stringify(buildStorage([foreignAccount]), null, 2),
+        "utf-8",
+      );
+
+      const loaded = await loadAccounts();
+
+      expect(canonicalPath).toBe(safeCanonicalPath);
+      expect(canonicalPath).not.toBe(foreignCanonicalPath);
+      expect(loaded).not.toBeNull();
+      expect(loaded?.accounts).toHaveLength(1);
+      expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
+      expect(existsSync(canonicalPath)).toBe(true);
+
+      const foreignRaw = await fs.readFile(foreignCanonicalPath, "utf-8");
+      const foreignStorage = normalizeAccountStorage(JSON.parse(foreignRaw) as unknown);
+      expect(foreignStorage?.accounts[0]?.accountId).toBe("foreign-account");
     });
   });
 

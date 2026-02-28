@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Use this page when login, switching, quota checks, or command routing fails.
+Deterministic recovery guide for login, switching, quota, and command-routing issues.
 
 ---
 
@@ -12,7 +12,7 @@ codex auth check
 codex auth forecast --live
 ```
 
-If still broken:
+If unresolved:
 
 ```bash
 codex auth login
@@ -20,18 +20,19 @@ codex auth login
 
 ---
 
-## Symptom -> Action
+## Symptom to Action
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| Browser opens during login | Expected OAuth behavior | Complete auth and return to terminal |
-| `codex auth` unrecognized | Wrapper command path conflict | Run `where codex`, then `codex multi auth status` |
-| Switch says success but wrong account in Codex | Stale Codex auth state sync | Run `codex auth switch <index>`, restart `codex` session |
-| `missing field id_token` | Stale auth state payload | Re-login account with `codex auth login` |
-| `refresh_token_reused` | Token pair already rotated | Re-login that account |
-| `token_expired` | Token no longer valid | Re-login that account |
-| All accounts unhealthy | Entire pool stale/invalid | `codex auth doctor --fix`, then add one fresh account |
-| OAuth callback port `1455` busy | Port conflict | Stop conflicting process and retry |
+| `codex auth` not recognized | Wrapper path conflict | Run `where codex` (Windows) or `which codex` / `command -v codex` (Unix), then `codex multi auth status` |
+| Browser opens unexpectedly | Normal OAuth browser-first flow | Complete auth and return to terminal |
+| Switch succeeded but wrong account used | Stale Codex CLI state | Re-run `codex auth switch <index>`, restart session |
+| Opening a PR worktree asks for login again | Worktree was using a different legacy path key | Run `codex auth list` once in the worktree to trigger migration into repo-shared storage |
+| `missing field id_token` | Stale auth payload | Re-login the affected account |
+| `refresh_token_reused` | Token pair rotated elsewhere | Re-login the affected account |
+| `token_expired` | Refresh token no longer valid | Re-login the affected account |
+| All accounts unhealthy | Entire account pool stale | `codex auth doctor --fix`, then add at least one fresh account |
+| OAuth callback port `1455` in use | Local port conflict | Stop conflicting process and retry login |
 
 ---
 
@@ -60,7 +61,7 @@ codex multi auth status
 npm ls -g codex-multi-auth
 ```
 
-If you still have old scoped package installed:
+If an old scoped package is still active:
 
 ```bash
 npm uninstall -g @ndycode/codex-multi-auth
@@ -91,12 +92,12 @@ codex auth login
 
 ---
 
-## Before Opening an Issue
+## Issue Report Checklist
 
-Include:
+Attach these outputs:
 
 - `codex auth report --json`
 - `codex auth doctor --json`
 - `codex --version`
 - `npm ls -g codex-multi-auth`
-- failing command and full output
+- failing command and full terminal output

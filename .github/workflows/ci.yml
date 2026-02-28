@@ -28,6 +28,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Repository hygiene check
+        run: npm run clean:repo:check
+
       - name: Security audit (CI policy)
         run: npm run audit:ci
 

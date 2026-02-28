@@ -2,85 +2,96 @@
 
 ## Supported Versions
 
-We provide security updates for the latest version of the plugin.
+Security updates are provided for the current maintained release line.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| Latest  | ✅ Active support |
-| < 1.0   | ❌ No longer supported |
-
-## Security Considerations
-
-### OAuth Token Security
-
-This plugin handles sensitive OAuth tokens. To protect your security:
-
-✅ **What we do:**
-- Store tokens in local account storage files with restricted file permissions
-- Use PKCE-secured OAuth 2.0 flows
-- Never transmit tokens to third parties
-- Implement automatic token refresh
-- Use industry-standard authentication practices
-
-⚠️ **What you should do:**
-- Never share your `~/.codex/` directory
-- Do not commit OAuth tokens to version control
-- Regularly review authorized apps at [ChatGPT Settings](https://chatgpt.com/settings/apps)
-- Remove local plugin auth files when done on shared systems (default: `~/.codex/multi-auth/openai-codex-*.json`; use `CODEX_MULTI_AUTH_DIR` if overridden)
-- Enable debug logging (`ENABLE_PLUGIN_REQUEST_LOGGING=1`) only when troubleshooting
-
-### Reporting a Vulnerability
-
-If you discover a security vulnerability:
-
-1. **DO NOT open a public issue**
-2. Email the maintainer directly (check GitHub profile for contact)
-3. Include:
-   - Description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Suggested fix (if any)
-
-We aim to respond to security reports within 48 hours.
-
-### Responsible Disclosure
-
-We follow responsible disclosure practices:
-- Security issues are patched before public disclosure
-- Reporter receives credit (unless anonymity is requested)
-- Timeline for disclosure is coordinated with reporter
-
-### Security Best Practices
-
-When using this plugin:
-
-- **Personal use only:** Do not use for commercial services
-- **Respect rate limits:** Avoid excessive automation
-- **Monitor usage:** Review your ChatGPT usage regularly
-- **Keep updated:** Use the latest version for security patches
-- **Secure your machine:** This plugin is as secure as your development environment
-- **Review permissions:** Understand what the plugin can access via OAuth
-
-### Out of Scope
-
-The following are **not** security vulnerabilities:
-- Issues related to violating OpenAI's Terms of Service
-- Rate limiting by OpenAI's servers
-- Authentication failures due to expired subscriptions
-- OpenAI API or service outages
-
-### Third-Party Dependencies
-
-This plugin minimizes dependencies for security:
-- Runtime dependencies include OAuth/auth libraries, plugin host SDK dependencies, `hono`, and `zod`
-- Regular dependency updates for security patches
-- No telemetry or analytics dependencies
-- CI/local guardrail: run `npm run audit:ci` before release or after dependency updates
-
-## Questions?
-
-For security questions that are not vulnerabilities, open a discussion thread on GitHub.
+| Version line | Status |
+| --- | --- |
+| `0.x` latest | Supported |
+| pre-`0.x` historical branches | Not supported |
 
 ---
 
-**Note:** This plugin is not affiliated with OpenAI. For OpenAI security concerns, contact OpenAI directly.
+## Security Model
+
+`codex-multi-auth` handles OAuth credentials and account metadata locally.
+
+Key controls:
+
+- PKCE-based OAuth flow.
+- Local storage under `~/.codex/multi-auth` (or `CODEX_MULTI_AUTH_DIR`).
+- Refresh-token lifecycle management and account health isolation.
+- No project-owned telemetry backend.
+
+---
+
+## Operator Security Practices
+
+- Do not share `~/.codex/` directories.
+- Never commit auth files, logs, or cache artifacts.
+- Review connected apps in ChatGPT settings periodically.
+- Enable debug/body logging only for short-lived troubleshooting sessions.
+
+Sensitive logging toggles:
+
+- `ENABLE_PLUGIN_REQUEST_LOGGING=1` (metadata)
+- `CODEX_PLUGIN_LOG_BODIES=1` (raw bodies; sensitive)
+
+---
+
+## Vulnerability Reporting
+
+If you discover a vulnerability:
+
+1. Do not open a public issue.
+2. Contact the maintainer privately via GitHub profile contact channel.
+3. Include:
+   - vulnerability description
+   - reproduction steps
+   - impact assessment
+   - suggested mitigation (optional)
+
+Target response time: within 48 hours.
+
+---
+
+## Responsible Disclosure
+
+- Fixes are prepared before public disclosure.
+- Reporter attribution is provided unless anonymity is requested.
+- Disclosure timing is coordinated to reduce user risk.
+
+---
+
+## Out of Scope
+
+The following are not treated as vulnerabilities in this repository:
+
+- OpenAI platform outages.
+- Account/subscription entitlement limitations.
+- Expected upstream rate limiting.
+- Requests to bypass OpenAI terms or controls.
+
+---
+
+## Dependency and Release Hygiene
+
+Before release and after dependency changes:
+
+```bash
+npm run audit:ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```
+
+---
+
+## Questions
+
+For non-vulnerability security questions, open a GitHub discussion.
+
+---
+
+This project is not affiliated with OpenAI.
+For OpenAI platform security concerns, contact OpenAI directly.

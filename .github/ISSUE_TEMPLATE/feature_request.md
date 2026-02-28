@@ -1,28 +1,33 @@
 ---
 name: Feature Request
-about: Suggest a new feature or enhancement
-title: '[FEATURE] '
-labels: enhancement
-assignees: ''
+about: Propose a policy-compliant improvement
+title: "[feature] "
+labels: [enhancement]
+assignees: ""
 ---
 
-**Feature Description**
-A clear description of the feature you'd like to see.
+## Problem Statement
 
-**Use Case**
-Explain how this feature would be used and what problem it solves.
+What user/operator problem should this solve?
 
-**Proposed Implementation**
-If you have ideas about how this could be implemented, share them here.
+## Proposed Solution
 
-**Compliance Consideration**
-Please confirm:
-- [ ] This feature is for personal development use
-- [ ] This feature does not violate or circumvent OpenAI's Terms of Service
-- [ ] This feature is not intended for commercial resale or multi-user access
+Describe the proposed behavior and expected user impact.
 
-**Alternatives Considered**
-Have you considered any alternative solutions or workarounds?
+## Alternatives Considered
 
-**Additional Context**
-Add any other context, screenshots, or examples.
+What alternatives or workarounds were considered?
+
+## Scope
+
+What is in scope and out of scope for this feature?
+
+## Validation Plan
+
+How should this be tested? Include command-level validation where possible.
+
+## Compliance Confirmation
+
+- [ ] This proposal is for legitimate personal development workflows.
+- [ ] This proposal does not request bypassing OpenAI controls or policies.
+- [ ] This proposal does not introduce multi-tenant resale behavior.

@@ -158,6 +158,26 @@ function restoreTTYDescriptors(): void {
 	}
 }
 
+function createDeferred<T>(): {
+	promise: Promise<T>;
+	resolve: (value: T | PromiseLike<T>) => void;
+	reject: (reason?: unknown) => void;
+} {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+function makeErrnoError(message: string, code: string): NodeJS.ErrnoException {
+	const error = new Error(message) as NodeJS.ErrnoException;
+	error.code = code;
+	return error;
+}
+
 describe("codex manager cli commands", () => {
 	beforeEach(() => {
 		vi.resetModules();
@@ -1189,6 +1209,425 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				preemptiveQuotaEnabled: expect.any(Boolean),
 				preemptiveQuotaRemainingPercent5h: expect.any(Number),
+			}),
+		);
+	});
+
+	it.each([
+		{ panel: "account-list", mode: "windows-ebusy" },
+		{ panel: "summary-fields", mode: "windows-ebusy" },
+		{ panel: "behavior", mode: "windows-ebusy" },
+		{ panel: "theme", mode: "windows-ebusy" },
+		{ panel: "backend", mode: "windows-ebusy" },
+		{ panel: "account-list", mode: "concurrent-save-ordering" },
+		{ panel: "summary-fields", mode: "concurrent-save-ordering" },
+		{ panel: "behavior", mode: "concurrent-save-ordering" },
+		{ panel: "theme", mode: "concurrent-save-ordering" },
+		{ panel: "backend", mode: "concurrent-save-ordering" },
+		{ panel: "account-list", mode: "token-refresh-race" },
+		{ panel: "summary-fields", mode: "token-refresh-race" },
+		{ panel: "behavior", mode: "token-refresh-race" },
+		{ panel: "theme", mode: "token-refresh-race" },
+		{ panel: "backend", mode: "token-refresh-race" },
+	] as const)(
+		"keeps no-save-on-cancel contract for panel=$panel mode=$mode",
+		async ({ panel, mode }) => {
+			setInteractiveTTY(true);
+			const now = Date.now();
+			let originalRuntimeTheme:
+				| {
+						v2Enabled: boolean;
+						colorProfile: string;
+						glyphMode: string;
+						palette: string;
+						accent: string;
+				  }
+				| null = null;
+			if (panel === "theme") {
+				const runtime = await import("../lib/ui/runtime.js");
+				runtime.resetUiRuntimeOptions();
+				const snapshot = runtime.getUiRuntimeOptions();
+				originalRuntimeTheme = {
+					v2Enabled: snapshot.v2Enabled,
+					colorProfile: snapshot.colorProfile,
+					glyphMode: snapshot.glyphMode,
+					palette: snapshot.palette,
+					accent: snapshot.accent,
+				};
+			}
+			loadAccountsMock.mockResolvedValue({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "cancel-settings@example.com",
+						accountId: "acc_cancel_settings",
+						refreshToken: "refresh-cancel-settings",
+						accessToken: "access-cancel-settings",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			});
+			promptLoginModeMock
+				.mockResolvedValueOnce({ mode: "settings" })
+				.mockResolvedValueOnce({ mode: "cancel" });
+
+			if (mode === "windows-ebusy") {
+				const busy = makeErrnoError("busy", "EBUSY");
+				saveDashboardDisplaySettingsMock.mockRejectedValue(busy);
+				savePluginConfigMock.mockRejectedValue(busy);
+			}
+			if (mode === "concurrent-save-ordering") {
+				const dashboardDeferred = createDeferred<void>();
+				const pluginDeferred = createDeferred<void>();
+				saveDashboardDisplaySettingsMock.mockImplementation(async () => dashboardDeferred.promise);
+				savePluginConfigMock.mockImplementation(async () => pluginDeferred.promise);
+				queueMicrotask(() => {
+					dashboardDeferred.resolve(undefined);
+					pluginDeferred.resolve(undefined);
+				});
+			}
+			if (mode === "token-refresh-race") {
+				const refreshDeferred = createDeferred<{
+					type: "success";
+					access: string;
+					refresh: string;
+					expires: number;
+				}>();
+				queuedRefreshMock.mockImplementation(async () => refreshDeferred.promise);
+				queueMicrotask(() => {
+					refreshDeferred.resolve({
+						type: "success",
+						access: "race-access",
+						refresh: "race-refresh",
+						expires: now + 3_600_000,
+					});
+				});
+			}
+
+			let selectCall = 0;
+			selectMock.mockImplementation(async (_items, options) => {
+				selectCall += 1;
+				const onInput = (options as { onInput?: (raw: string) => unknown } | undefined)?.onInput;
+				if (selectCall === 1) return { type: panel };
+
+				if (panel === "account-list") {
+					if (selectCall === 2) return { type: "toggle", key: "menuShowStatusBadge" };
+					if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
+					return { type: "back" };
+				}
+				if (panel === "summary-fields") {
+					if (selectCall === 2) return { type: "toggle", key: "status" };
+					if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
+					return { type: "back" };
+				}
+				if (panel === "behavior") {
+					if (selectCall === 2) return { type: "toggle-pause" };
+					if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
+					return { type: "back" };
+				}
+				if (panel === "theme") {
+					if (selectCall === 2) return { type: "set-palette", palette: "blue" };
+					if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
+					return { type: "back" };
+				}
+
+				if (selectCall === 2) return { type: "open-category", key: "rotation-quota" };
+				if (selectCall === 3) return { type: "toggle", key: "preemptiveQuotaEnabled" };
+				if (selectCall === 4) return { type: "back" };
+				if (selectCall === 5) return onInput?.("q") ?? { type: "cancel" };
+				return { type: "back" };
+			});
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
+			expect(savePluginConfigMock).not.toHaveBeenCalled();
+			if (panel === "theme") {
+				const runtime = await import("../lib/ui/runtime.js");
+				const restored = runtime.getUiRuntimeOptions();
+				expect({
+					v2Enabled: restored.v2Enabled,
+					colorProfile: restored.colorProfile,
+					glyphMode: restored.glyphMode,
+					palette: restored.palette,
+					accent: restored.accent,
+				}).toEqual(originalRuntimeTheme);
+			}
+		},
+	);
+
+	it("retries transient EBUSY dashboard save and keeps settings flow alive", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "retry-dashboard@example.com",
+					accountId: "acc_retry_dashboard",
+					refreshToken: "refresh-retry-dashboard",
+					accessToken: "access-retry-dashboard",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		selectMock
+			.mockResolvedValueOnce({ type: "behavior" })
+			.mockResolvedValueOnce({ type: "toggle-pause" })
+			.mockResolvedValueOnce({ type: "save" })
+			.mockResolvedValueOnce({ type: "back" });
+
+		saveDashboardDisplaySettingsMock
+			.mockRejectedValueOnce(makeErrnoError("dashboard busy", "EBUSY"))
+			.mockResolvedValueOnce(undefined);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledTimes(2);
+		expect(savePluginConfigMock).not.toHaveBeenCalled();
+	});
+
+	it("retries transient 429-like backend save and keeps settings flow alive", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "retry-backend@example.com",
+					accountId: "acc_retry_backend",
+					refreshToken: "refresh-retry-backend",
+					accessToken: "access-retry-backend",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		selectMock
+			.mockResolvedValueOnce({ type: "backend" })
+			.mockResolvedValueOnce({ type: "open-category", key: "rotation-quota" })
+			.mockResolvedValueOnce({ type: "toggle", key: "preemptiveQuotaEnabled" })
+			.mockResolvedValueOnce({ type: "back" })
+			.mockResolvedValueOnce({ type: "save" })
+			.mockResolvedValueOnce({ type: "back" });
+
+		const rateLimitError = Object.assign(new Error("rate limited"), {
+			status: 429,
+			retryAfterMs: 1,
+		});
+		savePluginConfigMock
+			.mockRejectedValueOnce(rateLimitError)
+			.mockResolvedValueOnce(undefined);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(savePluginConfigMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not abort settings flow when dashboard saves keep failing after retries", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "retry-exhausted@example.com",
+					accountId: "acc_retry_exhausted",
+					refreshToken: "refresh-retry-exhausted",
+					accessToken: "access-retry-exhausted",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		selectMock
+			.mockResolvedValueOnce({ type: "theme" })
+			.mockResolvedValueOnce({ type: "set-palette", palette: "blue" })
+			.mockResolvedValueOnce({ type: "save" })
+			.mockResolvedValueOnce({ type: "back" });
+
+		const rateLimitError = Object.assign(new Error("slow down"), {
+			statusCode: 429,
+			retryAfterMs: 1,
+		});
+		saveDashboardDisplaySettingsMock.mockRejectedValue(rateLimitError);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledTimes(4);
+		expect(warnSpy).toHaveBeenCalled();
+	});
+
+	it("merges behavior edits with latest disk settings to avoid stale overwrite", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "merge-settings@example.com",
+					accountId: "acc_merge_settings",
+					refreshToken: "refresh-merge-settings",
+					accessToken: "access-merge-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const initialSettings = {
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			actionAutoReturnMs: 2_000,
+			actionPauseOnKey: true,
+			menuAutoFetchLimits: true,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+			uiThemePreset: "green",
+			uiAccentColor: "green",
+		} as const;
+		let settingsReadCount = 0;
+		loadDashboardDisplaySettingsMock.mockImplementation(async () => {
+			settingsReadCount += 1;
+			if (settingsReadCount >= 3) {
+				return {
+					...initialSettings,
+					uiThemePreset: "blue",
+					uiAccentColor: "cyan",
+				};
+			}
+			return initialSettings;
+		});
+
+		selectMock
+			.mockResolvedValueOnce({ type: "behavior" })
+			.mockResolvedValueOnce({ type: "toggle-pause" })
+			.mockResolvedValueOnce({ type: "save" })
+			.mockResolvedValueOnce({ type: "back" });
+
+		saveDashboardDisplaySettingsMock.mockResolvedValue(undefined);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				uiThemePreset: "blue",
+				uiAccentColor: "cyan",
+				actionPauseOnKey: false,
+			}),
+		);
+	});
+
+	it("resets only focused panel fields and preserves unrelated draft settings", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "panel-reset@example.com",
+					accountId: "acc_panel_reset",
+					refreshToken: "refresh-panel-reset",
+					accessToken: "access-panel-reset",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			actionAutoReturnMs: 2_000,
+			actionPauseOnKey: true,
+			menuAutoFetchLimits: true,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+			menuShowStatusBadge: false,
+			uiThemePreset: "blue",
+			uiAccentColor: "cyan",
+		});
+
+		selectMock
+			.mockResolvedValueOnce({ type: "account-list" })
+			.mockResolvedValueOnce({ type: "reset" })
+			.mockResolvedValueOnce({ type: "save" })
+			.mockResolvedValueOnce({ type: "back" });
+
+		saveDashboardDisplaySettingsMock.mockResolvedValue(undefined);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				uiThemePreset: "blue",
+				uiAccentColor: "cyan",
 			}),
 		);
 	});

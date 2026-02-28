@@ -129,6 +129,7 @@ import {
 	loadFlaggedAccounts,
 	saveFlaggedAccounts,
 	clearFlaggedAccounts,
+	normalizeEmailKey,
 	StorageError,
 	formatStorageErrorHint,
 	setStorageBackupEnabled,
@@ -398,7 +399,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 validate: (input: string): string | undefined => {
                         const parsed = parseAuthorizationInput(input);
                         if (!parsed.code) {
-                                return "No authorization code found. Paste the full callback URL (e.g., http://localhost:1455/auth/callback?code=...)";
+                                return `No authorization code found. Paste the full callback URL (e.g., ${REDIRECT_URI}?code=...)`;
                         }
                         if (!parsed.state) {
                                 return "Missing OAuth state. Paste the full callback URL including both code and state parameters.";
@@ -502,8 +503,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						if (account.accountId) {
 							indexByAccountId.set(account.accountId, i);
 						}
-						if (account.email) {
-							indexByEmail.set(account.email, i);
+						const emailKey = normalizeEmailKey(account.email);
+						if (emailKey) {
+							indexByEmail.set(emailKey, i);
 						}
 					}
 
@@ -555,7 +557,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 						const oldToken = existing.refreshToken;
 						const oldEmail = existing.email;
-						const nextEmail = accountEmail ?? existing.email;
+						const nextEmail = accountEmail ?? sanitizeEmail(existing.email);
 						const nextAccountId = accountId ?? existing.accountId;
 						const nextAccountIdSource =
 							accountId ? accountIdSource ?? existing.accountIdSource : existing.accountIdSource;
@@ -578,11 +580,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						if (accountId) {
 							indexByAccountId.set(accountId, existingIndex);
 						}
-						if (oldEmail && oldEmail !== nextEmail) {
-							indexByEmail.delete(oldEmail);
+						const oldEmailKey = normalizeEmailKey(oldEmail);
+						const nextEmailKey = normalizeEmailKey(nextEmail);
+						if (oldEmailKey && oldEmailKey !== nextEmailKey) {
+							indexByEmail.delete(oldEmailKey);
 						}
-						if (nextEmail) {
-							indexByEmail.set(nextEmail, existingIndex);
+						if (nextEmailKey) {
+							indexByEmail.set(nextEmailKey, existingIndex);
 						}
 					}
 

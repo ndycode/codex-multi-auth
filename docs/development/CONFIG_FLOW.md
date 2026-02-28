@@ -32,10 +32,11 @@ If legacy config exists, compatibility load and migration path still apply.
 
 For plugin runtime values:
 
-1. Environment override
-2. `CODEX_MULTI_AUTH_CONFIG_PATH` (when set)
-3. Unified/compat config value
-4. Hardcoded default in `DEFAULT_PLUGIN_CONFIG`
+1. Unified settings `pluginConfig` (if present and valid)
+2. Fallback file from `CODEX_MULTI_AUTH_CONFIG_PATH` or legacy compatibility path (only when unified config is missing/invalid)
+3. Hardcoded default in `DEFAULT_PLUGIN_CONFIG`
+
+After source selection, environment variables apply per-setting overrides.
 
 For dashboard display values:
 

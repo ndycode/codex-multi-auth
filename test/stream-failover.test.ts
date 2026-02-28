@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { withStreamingFailover } from "../lib/request/stream-failover.js";
 
 const encoder = new TextEncoder();
@@ -35,6 +35,10 @@ function makeSseResponse(payload: string): Response {
 }
 
 describe("stream failover", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("returns original response when max failovers disabled", async () => {
 		const response = withStreamingFailover(
 			makeSseResponse("data: ok\n\n"),
@@ -46,13 +50,16 @@ describe("stream failover", () => {
 	});
 
 	it("switches to fallback stream when primary stalls", async () => {
+		vi.useFakeTimers();
 		const fallback = vi.fn(async () => makeSseResponse("data: second\n\n"));
 		const response = withStreamingFailover(makeStallingResponse(), fallback, {
 			maxFailovers: 1,
 			stallTimeoutMs: 10,
 		});
 
-		const text = await response.text();
+		const textPromise = response.text();
+		await vi.advanceTimersByTimeAsync(1_200);
+		const text = await textPromise;
 		expect(text).toContain("data: first");
 		expect(text).toContain("codex-multi-auth failover 1");
 		expect(text).toContain("data: second");
@@ -60,6 +67,7 @@ describe("stream failover", () => {
 	});
 
 	it("includes request id marker when provided", async () => {
+		vi.useFakeTimers();
 		const response = withStreamingFailover(
 			makeStallingResponse(),
 			async () => makeSseResponse("data: fallback\n\n"),
@@ -70,21 +78,28 @@ describe("stream failover", () => {
 			},
 		);
 
-		const text = await response.text();
+		const textPromise = response.text();
+		await vi.advanceTimersByTimeAsync(1_200);
+		const text = await textPromise;
 		expect(text).toContain("codex-multi-auth failover 1 req:req-123");
 	});
 
 	it("errors when fallback is unavailable", async () => {
+		vi.useFakeTimers();
 		const response = withStreamingFailover(
 			makeStallingResponse(),
 			async () => null,
 			{ maxFailovers: 1, stallTimeoutMs: 10 },
 		);
 
-		await expect(response.text()).rejects.toThrow("SSE stream stalled");
+		const textPromise = response.text();
+		const assertion = expect(textPromise).rejects.toThrow("SSE stream stalled");
+		await vi.advanceTimersByTimeAsync(1_200);
+		await assertion;
 	});
 
 	it("propagates fallback provider exceptions deterministically", async () => {
+		vi.useFakeTimers();
 		const response = withStreamingFailover(
 			makeStallingResponse(),
 			async () => {
@@ -93,7 +108,44 @@ describe("stream failover", () => {
 			{ maxFailovers: 1, stallTimeoutMs: 10 },
 		);
 
-		await expect(response.text()).rejects.toThrow("fallback exploded");
+		const textPromise = response.text();
+		const assertion = expect(textPromise).rejects.toThrow("fallback exploded");
+		await vi.advanceTimersByTimeAsync(1_200);
+		await assertion;
+	});
+
+	it("calls fallback exactly once when read-error and timeout race", async () => {
+		vi.useFakeTimers();
+		const raceResponse = new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode("data: first\n\n"));
+					setTimeout(() => {
+						controller.error(new Error("primary read failure"));
+					}, 20);
+				},
+			}),
+			{
+				headers: {
+					"content-type": "text/event-stream",
+				},
+			},
+		);
+		const fallback = vi.fn(async () => makeSseResponse("data: fallback\n\n"));
+		const response = withStreamingFailover(raceResponse, fallback, {
+			maxFailovers: 1,
+			softTimeoutMs: 10,
+			hardTimeoutMs: 20,
+		});
+
+		const textPromise = response.text();
+		await vi.advanceTimersByTimeAsync(1_200);
+		const text = await textPromise;
+
+		expect(fallback).toHaveBeenCalledTimes(1);
+		expect((text.match(/codex-multi-auth failover 1/g) ?? []).length).toBe(1);
+		expect(text).toContain("data: first");
+		expect(text).toContain("data: fallback");
 	});
 
 	it("releases underlying reader when wrapped stream is cancelled", async () => {

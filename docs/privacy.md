@@ -1,55 +1,54 @@
 # Privacy and Data Handling
 
-`codex-multi-auth` is local-first: account/session data is stored on your machine.
+`codex-multi-auth` is local-first: account/session state is stored on your machine under the configured runtime root.
 
-* * *
+---
 
 ## Telemetry
 
-- No custom-hosted analytics pipeline in this project.
+- No custom analytics pipeline in this repository.
 - No project-owned remote database.
-- Network calls only go to required OAuth/backend/update endpoints.
+- Network calls are limited to required OAuth/backend/update endpoints.
 
-* * *
+---
 
-## Local Files (Current Canonical)
+## Canonical Local Files
 
-| Data | Path | Why it exists |
+| Data | Default path | Purpose |
 | --- | --- | --- |
-| Unified settings | `~/.codex/multi-auth/settings.json` | Dashboard + backend behavior settings |
-| Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` | Saved account pool |
+| Unified settings | `~/.codex/multi-auth/settings.json` | Dashboard and backend configuration |
+| Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` | Primary saved account pool |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` | Accounts with hard auth failures |
-| Quota cache | `~/.codex/multi-auth/quota-cache.json` | Cached 5h/7d limit snapshots |
-| Logs | `~/.codex/multi-auth/logs/codex-plugin/` | Optional diagnostic logs |
+| Quota cache | `~/.codex/multi-auth/quota-cache.json` | Cached quota snapshots |
+| Logs | `~/.codex/multi-auth/logs/codex-plugin/` | Optional diagnostics |
 | Prompt/cache files | `~/.codex/multi-auth/cache/` | Cached prompt/template metadata |
-| Codex CLI auth state | `~/.codex/accounts.json`, `~/.codex/auth.json` | Official Codex CLI account/auth files |
+| Codex CLI state | `~/.codex/accounts.json`, `~/.codex/auth.json` | Official Codex CLI files |
 
-Legacy compatibility files from older versions may still be read during migration-only compatibility checks.
-If `CODEX_MULTI_AUTH_DIR` or `CODEX_MULTI_AUTH_CONFIG_PATH` is set, these locations move to the configured override path.
+If `CODEX_MULTI_AUTH_DIR` is set, plugin-owned paths move under that root.
+If `CODEX_MULTI_AUTH_CONFIG_PATH` is set, configuration file loading uses that path.
+For cleanup, apply the same deletions to resolved override roots (including
+Windows override locations).
 
-* * *
+---
 
 ## Network Destinations
 
-This project communicates with:
+Current external destinations:
 
 - OpenAI OAuth endpoints (`auth.openai.com`)
 - OpenAI Codex/ChatGPT backend endpoints
-- GitHub raw/releases endpoints for prompt-template sync cache
+- GitHub raw/releases endpoints for prompt template sync
 
-* * *
+---
 
-## Sensitive Logging Warning
+## Sensitive Logging
 
-If you enable raw body logging:
+`ENABLE_PLUGIN_REQUEST_LOGGING=1` enables request logging metadata.
+`CODEX_PLUGIN_LOG_BODIES=1` enables raw request/response body logging.
 
-```bash
-CODEX_PLUGIN_LOG_BODIES=1
-```
+Raw body logs may contain sensitive payload text. Treat logs as sensitive data and rotate/delete as needed.
 
-prompt/response payload text can be written to local logs. Treat those logs as sensitive.
-
-* * *
+---
 
 ## Data Cleanup
 
@@ -62,6 +61,9 @@ rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/quota-cache.json
 rm -rf ~/.codex/multi-auth/logs/codex-plugin
 rm -rf ~/.codex/multi-auth/cache
+# Override-root cleanup examples (if overrides are set):
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && [ -d "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin"
+[ -n "${CODEX_MULTI_AUTH_CONFIG_PATH:-}" ] && [ -f "$CODEX_MULTI_AUTH_CONFIG_PATH" ] && rm -f "$CODEX_MULTI_AUTH_CONFIG_PATH"
 ```
 
 PowerShell:
@@ -73,21 +75,25 @@ Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force 
 Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
+# Override-root cleanup examples (if overrides are set):
+if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\\*" -Recurse -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_CONFIG_PATH) { Remove-Item "$env:CODEX_MULTI_AUTH_CONFIG_PATH" -Force -ErrorAction SilentlyContinue }
 ```
 
-* * *
+---
 
 ## Policy Responsibility
 
-Usage must comply with OpenAI policy documents:
+Usage must comply with OpenAI policies:
 
 - https://openai.com/policies/terms-of-use/
 - https://openai.com/policies/privacy-policy/
 
-* * *
+---
 
 ## Related
 
 - [configuration.md](configuration.md)
 - [troubleshooting.md](troubleshooting.md)
 - [reference/storage-paths.md](reference/storage-paths.md)
+- [../SECURITY.md](../SECURITY.md)

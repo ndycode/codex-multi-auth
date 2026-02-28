@@ -1,105 +1,88 @@
 # Documentation Architecture
 
-This file defines the canonical documentation system for `codex-multi-auth`.
+Canonical governance for repository documentation quality and consistency.
 
-* * *
+---
 
 ## Documentation Layers
 
-| Layer | Audience | Goal |
+| Layer | Audience | Primary goal |
 | --- | --- | --- |
-| Product entry | New users | Install quickly and run first successful login/check |
-| User operations | Users/operators | Configure, operate, troubleshoot safely |
-| Reference | Power users/maintainers | Exact command/setting/path lookup |
-| Development | Maintainers/contributors | Internal architecture, flow, tests, ownership |
+| Product entry | New operators | Install quickly and complete first successful login/check |
+| User operations | Daily users | Configure, run, recover, and report issues safely |
+| Reference | Power users and maintainers | Exact command, setting, and path lookup |
+| Development | Contributors and maintainers | Internal architecture, flow, tests, and ownership |
 
-* * *
+---
 
-## Master Chart
+## Source of Truth Map
 
 | Scope | File |
 | --- | --- |
 | Project entry | `README.md` |
 | Docs portal | `docs/README.md` |
-| Docs landing | `docs/index.md` |
-| Beginner setup | `docs/getting-started.md` |
-| Feature matrix | `docs/features.md` |
+| Daily operator landing | `docs/index.md` |
+| Onboarding | `docs/getting-started.md` |
+| Feature map | `docs/features.md` |
 | Configuration guide | `docs/configuration.md` |
 | Troubleshooting guide | `docs/troubleshooting.md` |
-| Privacy/data handling | `docs/privacy.md` |
-| Upgrade/migration | `docs/upgrade.md` |
+| Privacy and data handling | `docs/privacy.md` |
+| Upgrade and migration | `docs/upgrade.md` |
 | Command reference | `docs/reference/commands.md` |
 | Settings reference | `docs/reference/settings.md` |
 | Storage path reference | `docs/reference/storage-paths.md` |
-| Documentation style rules | `docs/STYLE_GUIDE.md` |
+| Docs style contract | `docs/STYLE_GUIDE.md` |
 | Docs governance (this file) | `docs/DOCUMENTATION.md` |
 | Architecture internals | `docs/development/ARCHITECTURE.md` |
 | Config fields internals | `docs/development/CONFIG_FIELDS.md` |
 | Config flow internals | `docs/development/CONFIG_FLOW.md` |
 | Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` |
-| Testing guide | `docs/development/TESTING.md` |
+| Testing and release gates | `docs/development/TESTING.md` |
 | TUI parity checklist | `docs/development/TUI_PARITY_CHECKLIST.md` |
-| Benchmarks | `docs/benchmarks/code-edit-format-benchmark.md` |
+| Benchmark methodology | `docs/benchmarks/code-edit-format-benchmark.md` |
 
-* * *
+---
 
-## Tone and Formatting Contract
+## Canonical Policy
 
-All user-facing docs must follow `docs/STYLE_GUIDE.md`:
+1. Canonical package name: `codex-multi-auth`.
+2. Canonical account command family: `codex auth ...`.
+3. Canonical storage root: `~/.codex/multi-auth` unless explicitly overridden.
+4. Legacy paths/flows belong only in migration and compatibility sections.
+5. Public release line is `0.x`; historical pre-`0.1.0` entries are archived separately.
 
-1. Beginner-first language.
-2. Short lead sentence.
-3. Quick path before deep details.
-4. Command-first examples.
-5. Clear next steps/related links.
-
-Codex CLI-first style is the baseline:
-
-- concise sections
-- operational clarity
-- progressive disclosure
-
-* * *
-
-## Canonical Command and Path Policy
-
-1. Canonical account workflow command family: `codex auth ...`.
-2. Canonical runtime storage root: `~/.codex/multi-auth`.
-3. Legacy paths/flows are documented only in migration/compat sections.
-4. Do not present legacy flows as the default workflow.
-
-* * *
+---
 
 ## Update Rules
 
 When runtime behavior changes:
 
 1. Update `README.md` and `docs/getting-started.md` first.
-2. Update `docs/features.md` for feature coverage changes.
-3. Update command/settings/path references if any CLI/config/storage behavior changed.
-4. Update `docs/troubleshooting.md` with new failure signatures.
-5. Update development docs when architecture/config flow changed.
-6. Update `docs/upgrade.md` when migration steps, command routing, or paths changed.
-7. Keep `SECURITY.md` aligned with current storage paths and credential handling.
-8. Update npm script references whenever build/install workflow changes.
+2. Update `docs/features.md` for capability coverage changes.
+3. Update relevant command/settings/path references.
+4. Update `docs/troubleshooting.md` with new failure signatures or recovery steps.
+5. Update development docs when architecture or config flow changes.
+6. Update `docs/upgrade.md` for migration-impacting behavior.
+7. Update `SECURITY.md` and `CONTRIBUTING.md` when governance or safe usage guidance changes.
+8. Keep issue/PR templates aligned with validation expectations.
 
-* * *
+---
 
 ## Documentation QA Checklist
 
 Before merge:
 
-1. Every documented command executes as written.
-2. Paths match runtime code (`lib/runtime-paths.ts`, `lib/storage.ts`, `lib/config.ts`).
-3. Feature matrix covers all implemented features.
+1. Every documented command is executable as written.
+2. CLI flags documented in references match runtime parser/usage output.
+3. Paths match runtime modules (`lib/runtime-paths.ts`, `lib/storage.ts`, `lib/config.ts`).
 4. Internal links are valid.
-5. Cross-platform examples are present for OS-sensitive flows.
-6. No conflicting duplicate guidance across pages.
+5. Cross-platform instructions exist for OS-sensitive operations.
+6. No conflicting guidance between README, docs, and governance files.
 
-* * *
+---
 
 ## Related
 
 - [Project README.md](../README.md)
-- [Docs README.md](README.md)
+- [Docs Portal](README.md)
 - [STYLE_GUIDE.md](STYLE_GUIDE.md)

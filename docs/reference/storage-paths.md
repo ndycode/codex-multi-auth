@@ -1,6 +1,6 @@
 # Storage Paths Reference
 
-Canonical and legacy file paths for account/settings/runtime data.
+Canonical and compatibility paths for account, settings, cache, and logs.
 
 ---
 
@@ -31,36 +31,48 @@ Override root:
 | Codex CLI accounts | `~/.codex/accounts.json` |
 | Codex CLI auth | `~/.codex/auth.json` |
 
-Notes:
+Ownership note:
 
-- `~/.codex/multi-auth/*` is owned by this project.
-- `~/.codex/auth.json` and `~/.codex/accounts.json` are owned by official Codex CLI.
+- `~/.codex/multi-auth/*` is managed by this project.
+- `~/.codex/accounts.json` and `~/.codex/auth.json` are managed by official Codex CLI.
 
 ---
 
-## Project-Scoped Paths
+## Project-Scoped Account Paths
 
 When project-scoped behavior is enabled:
 
 - `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`
 
-`<project-key>` is derived from normalized project path + short hash.
+`<project-key>` is derived as:
+
+- sanitized project folder basename (max 40 chars)
+- `-`
+- first 12 chars of `sha256(normalized project path)`
+
+On Windows, normalization lowercases drive/path segments before hashing.
+Implementation reference: `lib/storage/paths.ts` (`deriveProjectKey`).
+
+**Worktree behavior:**
+
+- Standard repositories: identity is the project root path.
+- Linked Git worktrees: identity is the shared repository root, so all worktrees for the same repo share one account pool.
+- Non-Git directories: identity falls back to the detected project path.
 
 ---
 
-## Legacy Compatibility
+## Legacy Compatibility Paths
 
-Legacy compatibility paths may still be discovered/read during migration.
-These paths are migration-only and are not canonical for new setup.
+Older installations may still have compatibility-read paths during migration. These are migration-only and not canonical for new setup.
 
-Examples from older installs:
+Examples:
 
 - `~/DevTools/config/codex/`
-- other pre-`~/.codex/multi-auth` custom roots
+- older pre-`~/.codex/multi-auth` custom roots
 
 ---
 
-## Verify Paths
+## Verification Commands
 
 ```bash
 codex auth status
