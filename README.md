@@ -3,6 +3,8 @@
 [![npm version](https://img.shields.io/npm/v/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
 [![npm downloads](https://img.shields.io/npm/dw/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
 
+<img width="1270" height="741" alt="2026-02-28 12_54_58-prompt txt ‎- Notepads" src="https://github.com/user-attachments/assets/b4133d68-66e9-4e54-88fd-f1f0b17b9a6c" />
+
 Codex CLI-first multi-account OAuth manager for the official Codex CLI.
 
 * * *
