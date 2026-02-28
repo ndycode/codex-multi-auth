@@ -6,6 +6,30 @@ import path from "node:path";
 import process from "node:process";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 
+async function removeWithRetry(targetPath: string, options: { recursive?: boolean; force?: boolean }): Promise<void> {
+	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
+	const maxAttempts = 6;
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			if (!(error instanceof Error)) {
+				throw error;
+			}
+			const maybeCode = "code" in error ? (error as { code?: string }).code : undefined;
+			const shouldRetry = maybeCode !== undefined && retryableCodes.has(maybeCode);
+			if (!shouldRetry || attempt === maxAttempts) {
+				throw error;
+			}
+			await new Promise<void>((resolve) => {
+				setTimeout(resolve, attempt * 25);
+			});
+		}
+	}
+}
+
 const scriptPath = path.resolve(process.cwd(), "scripts", "repo-hygiene.js");
 const requiredGitignore = [
 	"tmp",
@@ -62,7 +86,7 @@ describe("repo-hygiene script", () => {
 		if (!fixtureRoot) {
 			return;
 		}
-		await fs.rm(fixtureRoot, { recursive: true, force: true });
+		await removeWithRetry(fixtureRoot, { recursive: true, force: true });
 		fixtureRoot = null;
 	});
 
