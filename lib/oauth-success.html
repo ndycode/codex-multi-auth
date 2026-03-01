@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>OpenAI Codex Sign-in Complete</title>
+  <title>OpenAI Codex Callback Received</title>
   <style>
     /* Space Grotesk import removed to avoid CSP font-src violations; rely on system stack. */
 
@@ -228,11 +228,11 @@
   <main role="main" aria-label="OAuth callback success">
     <p class="eyebrow">OpenAI Codex</p>
     <div class="icon" aria-hidden="true"></div>
-    <h1>Sign-in complete</h1>
-    <p class="lead">Account connected. Return to your terminal to continue.</p>
+    <h1>Callback received</h1>
+    <p class="lead">Return to your terminal to complete sign-in.</p>
     <div class="state">
       <span>Status</span>
-      <strong>Connected</strong>
+      <strong>Processing</strong>
     </div>
     <ul class="status-list" aria-label="OAuth steps">
       <li>
@@ -241,15 +241,15 @@
       </li>
       <li>
         <span>Token exchange</span>
-        <span>continuing in terminal</span>
+        <span>running in terminal</span>
       </li>
       <li>
         <span>Credentials</span>
-        <span>saving after terminal completes</span>
+        <span>persisting after terminal completes</span>
       </li>
       <li>
         <span>Session</span>
-        <span>finalizing</span>
+        <span>activating in terminal</span>
       </li>
     </ul>
     <section class="meta" aria-label="Callback summary">

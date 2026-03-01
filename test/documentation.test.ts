@@ -146,7 +146,7 @@ describe('Documentation Integrity', () => {
 
   it('keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs', () => {
     const files = ['README.md', ...userDocs];
-    const aliasPattern = /\bcodex (multi auth|multi-auth|multiauth)\b/;
+    const aliasPattern = /\bcodex (multi auth|multi-auth|multiauth)\b/i;
 
     for (const filePath of files) {
       const content = read(filePath);

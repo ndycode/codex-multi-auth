@@ -24,6 +24,7 @@ Evidence sources:
   - Prior `printUsage()` output in `lib/codex-manager.ts` used package-prefixed forms such as `codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]`.
   - Prior `runSwitch()` error text in `lib/codex-manager.ts` used `Missing index. Usage: codex-multi-auth auth switch <index>`.
   - Post-fix regression baseline is now asserted in `test/documentation.test.ts` by checking canonical `codex auth ...` usage and switch-error strings.
+  - Canonical baseline strings now used in runtime output are `codex auth fix [--dry-run] [--json] [--live] [--model <model>]` and `Missing index. Usage: codex auth switch <index>`.
 
 ### Docs hierarchy (current)
 
@@ -70,6 +71,11 @@ Scoring rubric:
 | Find scoped legacy package guidance | Migration docs only (`docs/upgrade.md`, selected troubleshooting) | Also surfaced in stable release notes `docs/releases/v0.1.1.md` | Near-miss |
 
 Findability score (core tasks): 2/6 clear first-attempt match.
+
+Verification evidence snapshot (2026-03-01):
+- Runtime source checks in `lib/codex-manager.ts` confirm canonical `codex auth ...` usage labels and switch-error wording.
+- Documentation checks in `test/documentation.test.ts` validate stable release pointer correctness and alias-scope allowlists.
+- Alias detection checks are case-insensitive to prevent false negatives on mixed-case docs labels.
 
 Near-miss to remediation traceability:
 - `Understand alias availability` -> resolved by scoping aliases to reference/troubleshooting/migration surfaces and removing alias examples from primary onboarding flows.
@@ -118,7 +124,7 @@ Near-miss to remediation traceability:
 5. Maintain deterministic regression checks in `test/documentation.test.ts`:
    - `uses scoped package only in explicit legacy migration notes` (`test/documentation.test.ts:104`) enforces scoped package boundaries.
    - `keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs` (`test/documentation.test.ts:127`) enforces alias-visibility boundaries with explicit allowlist files.
-   - `keeps canonical auth usage labels aligned across README, reference, and CLI usage text` (`test/documentation.test.ts:160`) enforces canonical runtime help/error wording.
+   - `keeps fix command flag docs aligned across README, reference, and CLI usage text` (`test/documentation.test.ts:160`) enforces canonical runtime help/error wording.
    - Keep cross-platform verification requirements explicit: Windows-oriented validation patterns (for example HOME/USERPROFILE handling and Windows path guidance checks in `test/documentation.test.ts:244-245`) must be extended whenever new shell-sensitive command rendering is introduced, including explicit `codex auth` output-escaping checks for `cmd.exe` and `PowerShell`.
 
 ---

@@ -17,16 +17,6 @@ function getDefaultPaths() {
 }
 
 /**
- * Pause execution for the requested number of milliseconds.
- * @param {number} delayMs milliseconds to wait
- */
-async function sleep(delayMs) {
-	return new Promise((resolve) => {
-		setTimeout(resolve, delayMs);
-	});
-}
-
-/**
  * Copy a file and retry automatically while the destination is temporarily locked.
  * @param {string} src absolute path to the source HTML file
  * @param {string} dest absolute path to the destination HTML file
@@ -37,18 +27,23 @@ async function copyWithRetry(
 	dest,
 	{ maxAttempts = 3, backoffMs = 50 } = {},
 ) {
+	const retryableCodes = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
 	let attempt = 0;
 	for (;;) {
 		try {
 			await fs.copyFile(src, dest);
 			return;
 		} catch (err) {
-			const isBusy = err && typeof err === "object" && err.code === "EBUSY";
-			if (!isBusy || attempt >= maxAttempts - 1) {
+			const code = err && typeof err === "object" && "code" in err ? err.code : undefined;
+			const isRetryable = typeof code === "string" && retryableCodes.has(code);
+			if (!isRetryable || attempt >= maxAttempts - 1) {
 				throw err;
 			}
 			attempt += 1;
-			await sleep(backoffMs * attempt);
+			const delayMs = backoffMs * (2 ** (attempt - 1));
+			await new Promise((resolve) => {
+				setTimeout(resolve, delayMs);
+			});
 		}
 	}
 }
