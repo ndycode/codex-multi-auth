@@ -217,10 +217,9 @@ describe("RefreshQueue", () => {
   });
 
   describe("stale entry cleanup", () => {
-    it("should clean up stale entries after maxEntryAge", async () => {
+    it("should keep stale unresolved entries to preserve dedupe", async () => {
       vi.useFakeTimers();
-      
-      let resolveRefresh: () => void;
+
       const stuckPromise = new Promise<never>(() => {});
       vi.mocked(authModule.refreshAccessToken)
         .mockReturnValueOnce(stuckPromise)
@@ -240,7 +239,7 @@ describe("RefreshQueue", () => {
       
       await queue.refresh("other-token");
       
-      expect(queue.pendingCount).toBe(0);
+      expect(queue.pendingCount).toBe(1);
       
       vi.useRealTimers();
     });
