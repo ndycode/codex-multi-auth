@@ -31,7 +31,7 @@ describe('OAuth auth logging', () => {
 				'token response validation failed',
 				expect.objectContaining({
 					responseType: 'object',
-					keys: expect.arrayContaining(['access_token', 'refresh_token', 'expires_in']),
+					keyCount: 3,
 				}),
 			);
 
@@ -61,7 +61,7 @@ describe('OAuth auth logging', () => {
 				'token response missing refresh token',
 				expect.objectContaining({
 					responseType: 'object',
-					keys: expect.arrayContaining(['access_token', 'expires_in']),
+					keyCount: 2,
 				}),
 			);
 

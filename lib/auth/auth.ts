@@ -28,7 +28,6 @@ function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unkno
 		return {
 			responseType: "object",
 			keyCount: allKeys.length,
-			keys: allKeys.slice(0, 12),
 		};
 	}
 
