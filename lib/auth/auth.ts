@@ -34,6 +34,12 @@ function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unkno
 	return { responseType: typeof rawResponse };
 }
 
+function isAbortError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const maybe = error as Error & { code?: string };
+	return maybe.name === "AbortError" || maybe.code === "ABORT_ERR";
+}
+
 /**
  * Redacts sensitive OAuth query parameters for safe logging.
  * Returns the original string when parsing fails.
@@ -231,6 +237,9 @@ export async function refreshAccessToken(
 		};
 	} catch (error) {
 		const err = error as Error;
+		if (isAbortError(err)) {
+			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
+		}
 		logError("Token refresh error", err);
 		return { type: "failed", reason: "network_error", message: err?.message };
 	}

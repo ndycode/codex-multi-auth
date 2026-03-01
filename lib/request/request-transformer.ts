@@ -563,7 +563,7 @@ export function filterInput(
 			continue;
 		}
 		// Strip IDs from all items (Codex API stateless mode).
-		if (item.id) {
+		if ("id" in item) {
 			const { id: _omit, ...itemWithoutId } = item;
 			void _omit;
 			filtered.push(itemWithoutId as InputItem);

@@ -283,6 +283,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (retryAfterHeader && /^\d+$/.test(retryAfterHeader)) {
 				return clampRetryHintMs(Number.parseInt(retryAfterHeader, 10) * 1000);
 			}
+			if (retryAfterHeader) {
+				const retryAtMs = Date.parse(retryAfterHeader);
+				if (Number.isFinite(retryAtMs)) {
+					return clampRetryHintMs(retryAtMs - Date.now());
+				}
+			}
 
 			const resetAtHeader = headers.get("x-ratelimit-reset")?.trim();
 			if (resetAtHeader && /^\d+$/.test(resetAtHeader)) {
@@ -1671,11 +1677,16 @@ while (attempted.size < Math.max(1, accountCount)) {
 											fetchAbortReason.message === timeoutReason.message);
 									const isUserAbort = Boolean(abortSignal?.aborted) && !isTimeoutAbort;
 									if (isUserAbort) {
+										accountManager.refundToken(account, modelFamily, model);
 										runtimeMetrics.userAborts++;
 										runtimeMetrics.lastError = "request aborted by user";
-									sessionAffinityStore?.forgetSession(sessionAffinityKey);
-									break;
-								}
+										sessionAffinityStore?.forgetSession(sessionAffinityKey);
+										throw (
+											fetchAbortReason instanceof Error
+												? fetchAbortReason
+												: new Error("Aborted by user")
+										);
+									}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
 								runtimeMetrics.failedRequests++;

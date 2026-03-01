@@ -154,6 +154,36 @@ describe("settings-hub utility coverage", () => {
 		expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
 	});
 
+	it("allows concurrent writes for different path keys", async () => {
+		const api = await loadSettingsHubTestApi();
+		const order: string[] = [];
+		let releaseA: (() => void) | undefined;
+		const gateA = new Promise<void>((resolve) => {
+			releaseA = resolve;
+		});
+
+		const taskA = api.withQueuedRetry("key-a", async () => {
+			order.push("a:start");
+			await gateA;
+			order.push("a:end");
+			return "a";
+		});
+
+		const taskB = api.withQueuedRetry("key-b", async () => {
+			order.push("b:start");
+			order.push("b:end");
+			return "b";
+		});
+
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(order).toContain("b:start");
+
+		releaseA?.();
+		await expect(taskA).resolves.toBe("a");
+		await expect(taskB).resolves.toBe("b");
+	});
+
 	it("retries queued writes for HTTP 429 using retryAfterMs delay", async () => {
 		const api = await loadSettingsHubTestApi();
 		vi.useFakeTimers();

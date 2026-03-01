@@ -22,7 +22,7 @@ Error contract reference for user-facing CLI and exported helper behavior.
 Examples:
 
 - unknown subcommand: `Unknown command: <name>` plus usage
-- `switch` with missing index: `Missing index. Usage: codex-multi-auth auth switch <index>`
+- `switch` with missing index: `Missing index. Usage: codex auth switch <index>`
 - `switch` with invalid index: `Invalid index: <value>`
 
 ---

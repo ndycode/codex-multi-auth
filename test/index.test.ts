@@ -1093,16 +1093,16 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const { sdk } = await setupPlugin();
 		const controller = new AbortController();
 		controller.abort(abortError);
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
-			signal: controller.signal,
-		});
-
-		expect(response.status).toBe(503);
+		await expect(
+			sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+				signal: controller.signal,
+			}),
+		).rejects.toMatchObject({ message: "aborted by user" });
 		expect(recordFailureSpy).not.toHaveBeenCalled();
 		expect(markCooldownSpy).not.toHaveBeenCalled();
-		expect(refundSpy).not.toHaveBeenCalled();
+		expect(refundSpy).toHaveBeenCalled();
 		expect(capabilityFailureSpy).not.toHaveBeenCalled();
 	});
 
@@ -1169,11 +1169,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			consumeSpy.mockRestore();
 		});
 
-		it("treats timeout-triggered abort as network failure", async () => {
-			const { AccountManager } = await import("../lib/accounts.js");
-			const configModule = await import("../lib/config.js");
-			const recordFailureSpy = vi.spyOn(AccountManager.prototype, "recordFailure");
-			const timeoutSpy = vi.spyOn(configModule, "getFetchTimeoutMs").mockReturnValueOnce(5);
+	it("treats timeout-triggered abort as network failure", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const recordFailureSpy = vi.spyOn(AccountManager.prototype, "recordFailure");
+		const timeoutSpy = vi.spyOn(configModule, "getFetchTimeoutMs").mockReturnValueOnce(5);
 			globalThis.fetch = vi.fn((_: unknown, init?: { signal?: AbortSignal }) => {
 				return new Promise((_resolve, reject) => {
 					const signal = init?.signal;
@@ -1194,15 +1194,64 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			});
 
 			const { sdk } = await setupPlugin();
-			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
-				method: "POST",
-				body: JSON.stringify({ model: "gpt-5.1" }),
-			});
-
-			expect(response.status).toBe(503);
-			expect(recordFailureSpy).toHaveBeenCalled();
-			timeoutSpy.mockRestore();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
 		});
+
+		expect(response.status).toBe(503);
+		expect(recordFailureSpy).toHaveBeenCalled();
+		recordFailureSpy.mockRestore();
+		timeoutSpy.mockRestore();
+	});
+
+	it("uses numeric retry-after hints for server cooldown decisions", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("server error", {
+				status: 500,
+				headers: new Headers({ "retry-after": "5" }),
+			}),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(cooldownSpy).toHaveBeenCalled();
+		expect(cooldownSpy.mock.calls[0]?.[1]).toBe(5000);
+		cooldownSpy.mockRestore();
+	});
+
+	it("parses HTTP-date retry-after hints for server cooldown decisions", async () => {
+		const baseNow = 1_700_000_000_000;
+		const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+		const retryAt = new Date(baseNow + 9_000).toUTCString();
+		const { AccountManager } = await import("../lib/accounts.js");
+		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("server error", {
+				status: 500,
+				headers: new Headers({ "retry-after": retryAt }),
+			}),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(cooldownSpy).toHaveBeenCalled();
+		expect(cooldownSpy.mock.calls[0]?.[1]).toBe(9000);
+		cooldownSpy.mockRestore();
+		dateNowSpy.mockRestore();
+	});
 
 	it("falls back from gpt-5.3-codex to gpt-5.2-codex when unsupported fallback is enabled", async () => {
 		const configModule = await import("../lib/config.js");

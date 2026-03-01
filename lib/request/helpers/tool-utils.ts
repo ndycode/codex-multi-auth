@@ -15,7 +15,7 @@ export interface Tool {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object";
+	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
@@ -52,7 +52,12 @@ export function cleanupToolDefinitions(tools: unknown): unknown {
 		}
 
 		// Clone only the schema tree we mutate to avoid heavy deep cloning of entire tools.
-		const cleanedParameters = cloneRecord(parameters);
+		let cleanedParameters: Record<string, unknown>;
+		try {
+			cleanedParameters = cloneRecord(parameters);
+		} catch {
+			return tool;
+		}
 		cleanupSchema(cleanedParameters);
 
 		return {

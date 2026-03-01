@@ -27,7 +27,7 @@ async function copyWithRetry(
 	dest,
 	{ maxAttempts = 3, backoffMs = 50 } = {},
 ) {
-	const retryableCodes = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
+	const retryableCodes = new Set(["EBUSY", "EPERM", "EACCES"]);
 	let attempt = 0;
 	for (;;) {
 		try {

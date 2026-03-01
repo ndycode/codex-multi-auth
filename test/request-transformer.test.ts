@@ -397,6 +397,16 @@ describe('Request Transformer Module', () => {
 				expect(filterInput(undefined)).toBeUndefined();
 			});
 
+			it('should remove empty-string id values', async () => {
+				const input: InputItem[] = [
+					{ id: '', type: 'message', role: 'user', content: 'hello' },
+				];
+				const result = filterInput(input);
+
+				expect(result).toHaveLength(1);
+				expect(result![0]).not.toHaveProperty('id');
+			});
+
 		it('should return non-array input as-is', async () => {
 			const notArray = { notAnArray: true };
 			expect(filterInput(notArray as any)).toBe(notArray);

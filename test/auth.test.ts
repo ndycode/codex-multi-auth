@@ -460,6 +460,27 @@ describe('Auth Module', () => {
 			}
 		});
 
+		it('returns non-network failure for aborted refresh requests', async () => {
+			const originalFetch = globalThis.fetch;
+			const abortError = Object.assign(new Error('Request aborted'), { name: 'AbortError' });
+			globalThis.fetch = vi.fn(async () => {
+				throw abortError;
+			}) as never;
+
+			try {
+				const controller = new AbortController();
+				controller.abort(abortError);
+				const result = await refreshAccessToken('some-token', { signal: controller.signal });
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toBe('Request aborted');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		});
+
 		it('returns failed when both response and input have no refresh token', async () => {
 			const originalFetch = globalThis.fetch;
 			globalThis.fetch = vi.fn(async () =>

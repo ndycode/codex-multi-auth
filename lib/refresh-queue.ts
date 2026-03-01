@@ -21,7 +21,15 @@ const log = createLogger("refresh-queue");
 interface RefreshEntry {
   promise: Promise<TokenResult>;
   startedAt: number;
+  stage: "acquire" | "refresh";
+  generation: number;
   staleWarningLogged?: boolean;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const maybe = error as Error & { code?: string };
+  return maybe.name === "AbortError" || maybe.code === "ABORT_ERR";
 }
 
 /**
@@ -58,6 +66,7 @@ interface RefreshEntry {
 export class RefreshQueue {
   private pending: Map<string, RefreshEntry> = new Map();
   private readonly leaseCoordinator: RefreshLeaseCoordinator;
+  private nextGeneration = 0;
   
   /**
    * Maps old refresh tokens to new tokens after rotation.
@@ -67,8 +76,7 @@ export class RefreshQueue {
   private tokenRotationMap: Map<string, string> = new Map();
 
   /**
-   * Age threshold for logging stuck refresh operations.
-   * We intentionally do not evict unresolved entries to preserve deduplication.
+   * Age threshold for stale pending refresh operations.
    */
   private readonly maxEntryAgeMs: number;
 
@@ -124,6 +132,14 @@ export class RefreshQueue {
     // Start a new refresh immediately so local state reflects "in-flight"
     // without waiting on cross-process lease checks.
     const startedAt = Date.now();
+    const generation = ++this.nextGeneration;
+    const markStage = (stage: "acquire" | "refresh") => {
+      const entry = this.pending.get(refreshToken);
+      if (!entry || entry.generation !== generation) return;
+      entry.stage = stage;
+      entry.startedAt = Date.now();
+      entry.staleWarningLogged = false;
+    };
     const promise = (async (): Promise<TokenResult> => {
       let lease: Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>;
       try {
@@ -133,6 +149,7 @@ export class RefreshQueue {
           tokenSuffix: refreshToken.slice(-6),
           error: (error as Error)?.message ?? String(error),
         });
+        markStage("refresh");
         return this.executeRefreshWithRotationTracking(refreshToken);
       }
       if (lease.role === "follower" && lease.result) {
@@ -143,6 +160,7 @@ export class RefreshQueue {
       }
 
       try {
+        markStage("refresh");
         const result = await this.executeRefreshWithRotationTracking(refreshToken);
         try {
           await lease.release(result);
@@ -164,13 +182,21 @@ export class RefreshQueue {
         }
       }
     })();
-    this.pending.set(refreshToken, { promise, startedAt });
+    this.pending.set(refreshToken, {
+      promise,
+      startedAt,
+      stage: "acquire",
+      generation,
+    });
 
     try {
       return await promise;
     } finally {
-      this.pending.delete(refreshToken);
-      this.cleanupRotationMapping(refreshToken);
+      const entry = this.pending.get(refreshToken);
+      if (!entry || entry.generation === generation) {
+        this.pending.delete(refreshToken);
+        this.cleanupRotationMapping(refreshToken);
+      }
     }
   }
 
@@ -246,6 +272,18 @@ export class RefreshQueue {
       return result;
     } catch (error) {
       const duration = Date.now() - startTime;
+      if (isAbortError(error)) {
+        log.warn("Token refresh aborted", {
+          tokenSuffix: refreshToken.slice(-6),
+          error: (error as Error)?.message ?? String(error),
+          durationMs: duration,
+        });
+        return {
+          type: "failed",
+          reason: "unknown",
+          message: (error as Error)?.message ?? "Refresh aborted",
+        };
+      }
       log.error("Token refresh threw exception", {
         tokenSuffix: refreshToken.slice(-6),
         error: (error as Error)?.message ?? String(error),
@@ -265,14 +303,24 @@ export class RefreshQueue {
   }
 
   /**
-   * Log stale entries that have been pending too long.
-   * Entries are not removed to avoid duplicate in-flight refresh operations.
+   * Cleanup stale entries that have been pending too long.
+   * Acquire-stage entries are evicted to prevent deadlocked refresh lanes.
    */
   private cleanup(): void {
     const now = Date.now();
     for (const [token, entry] of this.pending.entries()) {
       const ageMs = now - entry.startedAt;
-      if (ageMs > this.maxEntryAgeMs && !entry.staleWarningLogged) {
+      if (ageMs <= this.maxEntryAgeMs) continue;
+      if (entry.stage === "acquire") {
+        log.warn("Evicting stale refresh entry during lease acquire stage", {
+          tokenSuffix: token.slice(-6),
+          ageMs,
+        });
+        this.pending.delete(token);
+        this.cleanupRotationMapping(token);
+        continue;
+      }
+      if (!entry.staleWarningLogged) {
         log.warn("Refresh entry exceeded stale warning threshold", {
           tokenSuffix: token.slice(-6),
           ageMs,

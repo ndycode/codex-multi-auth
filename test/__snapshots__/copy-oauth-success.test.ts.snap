@@ -228,7 +228,7 @@ exports[`copy-oauth-success script > copies oauth-success.html to the requested 
   </style>
 </head>
 <body>
-  <main role="main" aria-label="OAuth callback success">
+  <main role="main" aria-label="OAuth callback received">
     <p class="eyebrow">OpenAI Codex</p>
     <div class="icon" aria-hidden="true"></div>
     <h1>Callback received</h1>

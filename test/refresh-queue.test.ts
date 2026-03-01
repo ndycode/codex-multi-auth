@@ -6,16 +6,23 @@ import { RefreshQueue, getRefreshQueue, resetRefreshQueue, queuedRefresh } from 
 import * as authModule from "../lib/auth/auth.js";
 import { RefreshLeaseCoordinator } from "../lib/refresh-lease.js";
 
+const loggerMocks = vi.hoisted(() => ({
+  info: vi.fn(),
+  debug: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
 vi.mock("../lib/auth/auth.js", () => ({
   refreshAccessToken: vi.fn(),
 }));
 
 vi.mock("../lib/logger.js", () => ({
   createLogger: () => ({
-    info: vi.fn(),
-    debug: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+    info: loggerMocks.info,
+    debug: loggerMocks.debug,
+    warn: loggerMocks.warn,
+    error: loggerMocks.error,
   }),
 }));
 
@@ -77,6 +84,21 @@ describe("RefreshQueue", () => {
       if (result.type === "failed") {
         expect(result.reason).toBe("network_error");
         expect(result.message).toBe("Network timeout");
+      }
+    });
+
+    it("should classify AbortError exceptions as non-network failures", async () => {
+      vi.mocked(authModule.refreshAccessToken).mockRejectedValue(
+        Object.assign(new Error("Request aborted"), { name: "AbortError" }),
+      );
+
+      const queue = new RefreshQueue();
+      const result = await queue.refresh("abort-token");
+
+      expect(result.type).toBe("failed");
+      if (result.type === "failed") {
+        expect(result.reason).toBe("unknown");
+        expect(result.message).toBe("Request aborted");
       }
     });
   });
@@ -220,6 +242,42 @@ describe("RefreshQueue", () => {
   });
 
   describe("stale entry cleanup", () => {
+    it("evicts stale acquire-stage entries and allows a fresh retry", async () => {
+      vi.useFakeTimers();
+      const leaseAcquire = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>>(() => {}),
+        )
+        .mockResolvedValue({
+          role: "owner" as const,
+          release: vi.fn().mockResolvedValue(undefined),
+        });
+      const leaseCoordinator = { acquire: leaseAcquire } as unknown as RefreshLeaseCoordinator;
+      const successResult = {
+        type: "success" as const,
+        access: "access",
+        refresh: "refresh",
+        expires: Date.now() + 3600_000,
+      };
+      vi.mocked(authModule.refreshAccessToken).mockResolvedValue(successResult);
+
+      const queue = new RefreshQueue(1000, leaseCoordinator);
+      const firstAttempt = queue.refresh("stale-acquire-token");
+      void firstAttempt;
+      await Promise.resolve();
+      expect(queue.pendingCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1200);
+
+      const secondResult = await queue.refresh("stale-acquire-token");
+      expect(secondResult).toEqual(successResult);
+      expect(leaseAcquire).toHaveBeenCalledTimes(2);
+      expect(queue.pendingCount).toBe(0);
+      vi.useRealTimers();
+    });
+
     it("times out stale unresolved entries and allows retry", async () => {
       vi.useFakeTimers();
 
@@ -281,6 +339,41 @@ describe("RefreshQueue", () => {
       expect(queue.pendingCount).toBe(0);
       
       vi.useRealTimers();
+    });
+
+    it("logs stale refresh-stage warnings only once per entry", async () => {
+      vi.mocked(authModule.refreshAccessToken).mockResolvedValue({
+        type: "success",
+        access: "a",
+        refresh: "r",
+        expires: Date.now() + 3600_000,
+      });
+
+      const queue = new RefreshQueue(1000);
+      const queueInternal = queue as unknown as {
+        pending: Map<string, {
+          promise: Promise<unknown>;
+          startedAt: number;
+          stage: "acquire" | "refresh";
+          generation: number;
+          staleWarningLogged?: boolean;
+        }>;
+      };
+      queueInternal.pending.set("stale-refresh-token", {
+        promise: new Promise(() => {}),
+        startedAt: Date.now() - 5_000,
+        stage: "refresh",
+        generation: 1,
+      });
+
+      await queue.refresh("fresh-token-1");
+      await queue.refresh("fresh-token-2");
+
+      const staleWarnCalls = loggerMocks.warn.mock.calls.filter((call) =>
+        String(call[0]).includes("stale warning threshold"),
+      );
+      expect(staleWarnCalls).toHaveLength(1);
+      queue.clear();
     });
   });
 

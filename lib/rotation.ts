@@ -346,13 +346,18 @@ export function selectHybridAccount(
   config: Partial<HybridSelectionConfig> = {},
   options: HybridSelectionOptions = {},
 ): AccountWithMetrics | null {
-  const useNamedParams = !Array.isArray(accountsOrParams);
-  const resolvedAccounts = useNamedParams ? accountsOrParams.accounts : accountsOrParams;
-  const resolvedHealthTracker = useNamedParams ? accountsOrParams.healthTracker : healthTracker;
-  const resolvedTokenTracker = useNamedParams ? accountsOrParams.tokenTracker : tokenTracker;
-  const resolvedQuotaKey = useNamedParams ? accountsOrParams.quotaKey : quotaKey;
-  const resolvedConfig = useNamedParams ? (accountsOrParams.config ?? {}) : config;
-  const resolvedOptions = useNamedParams ? (accountsOrParams.options ?? {}) : options;
+  const namedParams =
+    !Array.isArray(accountsOrParams) &&
+    accountsOrParams !== null &&
+    typeof accountsOrParams === "object"
+      ? accountsOrParams
+      : null;
+  const resolvedAccounts = namedParams ? namedParams.accounts : accountsOrParams;
+  const resolvedHealthTracker = namedParams ? namedParams.healthTracker : healthTracker;
+  const resolvedTokenTracker = namedParams ? namedParams.tokenTracker : tokenTracker;
+  const resolvedQuotaKey = namedParams ? namedParams.quotaKey : quotaKey;
+  const resolvedConfig = namedParams ? (namedParams.config ?? {}) : config;
+  const resolvedOptions = namedParams ? (namedParams.options ?? {}) : options;
 
   if (!Array.isArray(resolvedAccounts)) {
     throw new TypeError("selectHybridAccount requires accounts to be an array");

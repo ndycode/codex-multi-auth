@@ -29,16 +29,11 @@ describe('OAuth auth logging', () => {
 
 			expect(vi.mocked(logError)).toHaveBeenCalledWith(
 				'token response validation failed',
-				expect.objectContaining({
-					responseType: 'object',
-					keyCount: 3,
-				}),
+				{ responseType: 'object', keyCount: 3 },
 			);
 
 			const loggedData = vi.mocked(logError).mock.calls[0]?.[1] as Record<string, unknown> | undefined;
-			expect(loggedData).toBeDefined();
-			expect(loggedData).not.toHaveProperty('access_token');
-			expect(loggedData).not.toHaveProperty('refresh_token');
+			expect(loggedData).toEqual({ responseType: 'object', keyCount: 3 });
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -59,16 +54,11 @@ describe('OAuth auth logging', () => {
 
 			expect(vi.mocked(logError)).toHaveBeenCalledWith(
 				'token response missing refresh token',
-				expect.objectContaining({
-					responseType: 'object',
-					keyCount: 2,
-				}),
+				{ responseType: 'object', keyCount: 2 },
 			);
 
 			const loggedData = vi.mocked(logError).mock.calls[0]?.[1] as Record<string, unknown> | undefined;
-			expect(loggedData).toBeDefined();
-			expect(loggedData).not.toHaveProperty('access_token');
-			expect(loggedData).not.toHaveProperty('refresh_token');
+			expect(loggedData).toEqual({ responseType: 'object', keyCount: 2 });
 		} finally {
 			globalThis.fetch = originalFetch;
 		}

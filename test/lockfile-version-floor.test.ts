@@ -19,7 +19,7 @@ function extractSemverFloor(range: string): string {
 }
 
 function parseSemver(version: string): [number, number, number] {
-	const match = version.match(/^v?(\d+)\.(\d+)\.(\d+)/);
+	const match = version.match(/^v?(\d+)\.(\d+)\.(\d+)$/);
 	if (!match) {
 		throw new Error(`Invalid semver "${version}"`);
 	}

@@ -47,7 +47,7 @@ describe("public api contract", () => {
 	it("keeps positional and options-object overload behavior aligned", async () => {
 		const healthTracker = new HealthScoreTracker();
 		const tokenTracker = new TokenBucketTracker();
-		const accounts = [{ index: 0, isAvailable: true, lastUsed: Date.now() }];
+		const accounts = [{ index: 0, isAvailable: true, lastUsed: 1_709_280_000_000 }];
 
 		const selectedPositional = selectHybridAccount(accounts, healthTracker, tokenTracker);
 		const selectedNamed = selectHybridAccount({ accounts, healthTracker, tokenTracker });

@@ -722,6 +722,16 @@ describe('Fetch Helpers Module', () => {
 			expect(rateLimit?.retryAfterMs).toBe(5000);
 		});
 
+		it('falls back to retry-after headers when body retry values are invalid', async () => {
+			const body = { error: { message: 'rate limited', retry_after_ms: -1 } };
+			const headers = new Headers({ 'retry-after-ms': '2500' });
+			const response = new Response(JSON.stringify(body), { status: 429, headers });
+
+			const { rateLimit } = await handleErrorResponse(response);
+
+			expect(rateLimit?.retryAfterMs).toBe(2500);
+		});
+
 	it('caps retryAfterMs at 5 minutes', async () => {
 		const body = { error: { message: 'rate limited', retry_after_ms: 600000 } };
 		const response = new Response(JSON.stringify(body), { status: 429 });

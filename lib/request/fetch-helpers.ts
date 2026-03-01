@@ -889,11 +889,13 @@ function parseRetryAfterMs(
 	parsedBody?: { resetsAt?: number; retryAfterMs?: number; retryAfterSeconds?: number },
 ): number | null {
 	if (parsedBody?.retryAfterMs !== undefined) {
-		return normalizeRetryAfterMs(parsedBody.retryAfterMs);
+		const normalized = normalizeRetryAfterMs(parsedBody.retryAfterMs);
+		if (normalized !== null) return normalized;
 	}
 
 	if (parsedBody?.retryAfterSeconds !== undefined) {
-		return normalizeRetryAfterSeconds(parsedBody.retryAfterSeconds);
+		const normalized = normalizeRetryAfterSeconds(parsedBody.retryAfterSeconds);
+		if (normalized !== null) return normalized;
 	}
 
         const retryAfterMsHeader = response.headers.get("retry-after-ms");
@@ -947,18 +949,18 @@ function parseRetryAfterMs(
         return null;
 }
 
-function normalizeRetryAfterMs(value: number): number {
-	if (!Number.isFinite(value)) return 60000;
+function normalizeRetryAfterMs(value: number): number | null {
+	if (!Number.isFinite(value)) return null;
 	const ms = Math.floor(value);
-	if (ms <= 0) return 60000;
+	if (ms <= 0) return null;
 	const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 	return Math.min(ms, MAX_RETRY_DELAY_MS);
 }
 
-function normalizeRetryAfterSeconds(value: number): number {
-	if (!Number.isFinite(value)) return 60000;
+function normalizeRetryAfterSeconds(value: number): number | null {
+	if (!Number.isFinite(value)) return null;
 	const ms = Math.floor(value * 1000);
-	if (ms <= 0) return 60000;
+	if (ms <= 0) return null;
 	const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 	return Math.min(ms, MAX_RETRY_DELAY_MS);
 }

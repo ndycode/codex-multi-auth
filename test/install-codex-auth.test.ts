@@ -182,4 +182,11 @@ describe("install-codex-auth script", () => {
 
 		randomSpy.mockRestore();
 	});
+
+	it("throws immediately for non-retryable file-operation errors", async () => {
+		const operation = vi.fn<() => Promise<void>>().mockRejectedValue(retryableError("ENOENT"));
+
+		await expect(withFileOperationRetry(operation)).rejects.toMatchObject({ code: "ENOENT" });
+		expect(operation).toHaveBeenCalledTimes(1);
+	});
 });

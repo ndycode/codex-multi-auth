@@ -13,6 +13,55 @@ describe("cleanupToolDefinitions", () => {
     expect(cleanupToolDefinitions(tools)).toEqual(tools);
   });
 
+  it("treats array parameters as non-records and leaves tool unchanged", () => {
+    const tools = [{
+      type: "function",
+      function: {
+        name: "array-params",
+        parameters: [] as unknown,
+      },
+    }];
+
+    const result = cleanupToolDefinitions(tools as never) as typeof tools;
+    expect(result[0]).toBe(tools[0]);
+  });
+
+  it("returns tool unchanged when parameters contain circular references", () => {
+    const circular: Record<string, unknown> = {
+      type: "object",
+      properties: { a: { type: "string" } },
+    };
+    circular.self = circular;
+    const tools = [{
+      type: "function",
+      function: {
+        name: "circular-params",
+        parameters: circular,
+      },
+    }];
+
+    const result = cleanupToolDefinitions(tools as never) as typeof tools;
+    expect(result[0]).toBe(tools[0]);
+  });
+
+  it("returns tool unchanged when parameters contain bigint values", () => {
+    const tools = [{
+      type: "function",
+      function: {
+        name: "bigint-params",
+        parameters: {
+          type: "object",
+          properties: {
+            size: 1n,
+          },
+        },
+      },
+    }];
+
+    const result = cleanupToolDefinitions(tools as never) as typeof tools;
+    expect(result[0]).toBe(tools[0]);
+  });
+
   it("filters required array to only existing properties", () => {
     const tools = [{
       type: "function",

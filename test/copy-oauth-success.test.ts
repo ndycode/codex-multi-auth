@@ -73,4 +73,33 @@ describe("copy-oauth-success script", () => {
 			}
 		}
 	});
+
+	it("throws immediately for non-retryable copy errors", async () => {
+		vi.resetModules();
+		const actualFs =
+			await vi.importActual<typeof import("node:fs/promises")>(
+				"node:fs/promises",
+			);
+		const error = Object.assign(new Error("missing file"), { code: "ENOENT" });
+		const mockCopyFile = vi.fn().mockRejectedValue(error);
+		vi.doMock("node:fs/promises", () => ({
+			...actualFs,
+			copyFile: mockCopyFile,
+		}));
+
+		const mod = await import("../scripts/copy-oauth-success.js");
+		const root = await mkdtemp(join(tmpdir(), "codex-oauth-success-enoent-"));
+		const dest = join(root, "dist", "lib", "oauth-success.html");
+
+		try {
+			await expect(mod.copyOAuthSuccessHtml({ src: oauthSuccessPath, dest })).rejects.toMatchObject({
+				code: "ENOENT",
+			});
+			expect(mockCopyFile).toHaveBeenCalledTimes(1);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+			vi.doUnmock("node:fs/promises");
+			vi.resetModules();
+		}
+	});
 });
