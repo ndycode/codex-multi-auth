@@ -882,6 +882,9 @@ export async function transformRequestBody(
 		resolvedFastSessionMaxInputItems = fastSessionMaxInputItems;
 	}
 
+	if (!body || typeof body !== "object") {
+		throw new TypeError("transformRequestBody requires body");
+	}
 	if (typeof resolvedCodexInstructions !== "string") {
 		throw new TypeError("transformRequestBody requires codexInstructions");
 	}

@@ -354,6 +354,9 @@ export function selectHybridAccount(
   const resolvedConfig = useNamedParams ? (accountsOrParams.config ?? {}) : config;
   const resolvedOptions = useNamedParams ? (accountsOrParams.options ?? {}) : options;
 
+  if (!Array.isArray(resolvedAccounts)) {
+    throw new TypeError("selectHybridAccount requires accounts to be an array");
+  }
   if (!resolvedHealthTracker || !resolvedTokenTracker) {
     throw new TypeError("selectHybridAccount requires healthTracker and tokenTracker");
   }
@@ -480,19 +483,36 @@ export function exponentialBackoff(
   maxMs: number = 60000,
   jitterFactor: number = 0.1,
 ): number {
-  const useNamedParams = typeof attemptOrOptions !== "number";
+  const useNamedParams =
+    typeof attemptOrOptions === "object" && attemptOrOptions !== null;
   const normalizedAttempt = useNamedParams
-    ? attemptOrOptions.attempt
+    ? (attemptOrOptions as ExponentialBackoffOptions).attempt
     : attemptOrOptions;
   const normalizedBaseMs = useNamedParams
-    ? (attemptOrOptions.baseMs ?? 1000)
+    ? ((attemptOrOptions as ExponentialBackoffOptions).baseMs ?? 1000)
     : baseMs;
   const normalizedMaxMs = useNamedParams
-    ? (attemptOrOptions.maxMs ?? 60000)
+    ? ((attemptOrOptions as ExponentialBackoffOptions).maxMs ?? 60000)
     : maxMs;
   const normalizedJitterFactor = useNamedParams
-    ? (attemptOrOptions.jitterFactor ?? 0.1)
+    ? ((attemptOrOptions as ExponentialBackoffOptions).jitterFactor ?? 0.1)
     : jitterFactor;
+  if (!Number.isInteger(normalizedAttempt) || normalizedAttempt < 1) {
+    throw new TypeError("exponentialBackoff requires attempt to be a positive integer");
+  }
+  if (!Number.isFinite(normalizedBaseMs) || normalizedBaseMs < 0) {
+    throw new TypeError("exponentialBackoff requires baseMs to be a finite non-negative number");
+  }
+  if (!Number.isFinite(normalizedMaxMs) || normalizedMaxMs < 0) {
+    throw new TypeError("exponentialBackoff requires maxMs to be a finite non-negative number");
+  }
+  if (
+    !Number.isFinite(normalizedJitterFactor) ||
+    normalizedJitterFactor < 0 ||
+    normalizedJitterFactor > 1
+  ) {
+    throw new TypeError("exponentialBackoff requires jitterFactor to be between 0 and 1");
+  }
   const delay = Math.min(
     normalizedBaseMs * Math.pow(2, normalizedAttempt - 1),
     normalizedMaxMs,

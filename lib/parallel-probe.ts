@@ -72,14 +72,29 @@ export function getTopCandidates(
 		resolvedMaxCandidates = maxCandidates;
 	}
 
-	if (!resolvedModelFamily || typeof resolvedMaxCandidates !== "number") {
-		throw new TypeError("getTopCandidates requires modelFamily and maxCandidates");
+	if (
+		!resolvedAccountManager ||
+		typeof resolvedAccountManager.getAccountsSnapshot !== "function"
+	) {
+		throw new TypeError("getTopCandidates requires accountManager");
 	}
+	if (!resolvedModelFamily) {
+		throw new TypeError("getTopCandidates requires modelFamily");
+	}
+	if (
+		typeof resolvedMaxCandidates !== "number" ||
+		!Number.isInteger(resolvedMaxCandidates) ||
+		resolvedMaxCandidates <= 0
+	) {
+		throw new TypeError("getTopCandidates requires maxCandidates to be a positive integer");
+	}
+	const normalizedModelFamily = resolvedModelFamily;
+	const normalizedMaxCandidates = resolvedMaxCandidates;
 
 	const accounts = resolvedAccountManager.getAccountsSnapshot();
 	if (accounts.length === 0) return [];
 
-	const quotaKey = resolvedModel ? `${resolvedModelFamily}:${resolvedModel}` : resolvedModelFamily;
+	const quotaKey = resolvedModel ? `${normalizedModelFamily}:${resolvedModel}` : normalizedModelFamily;
 	const healthTracker = getHealthTracker();
 	const tokenTracker = getTokenTracker();
 
@@ -87,7 +102,7 @@ export function getTopCandidates(
 
 	for (const account of accounts) {
 		clearExpiredRateLimits(account);
-		const isRateLimited = isRateLimitedForFamily(account, resolvedModelFamily, resolvedModel);
+		const isRateLimited = isRateLimitedForFamily(account, normalizedModelFamily, resolvedModel);
 		const isCoolingDown = account.coolingDownUntil !== undefined && account.coolingDownUntil > Date.now();
 		const isAvailable = !isRateLimited && !isCoolingDown;
 
@@ -113,7 +128,7 @@ export function getTopCandidates(
 
 	scored.sort((a, b) => b.score - a.score);
 
-	return scored.slice(0, resolvedMaxCandidates).map((s) => s.account);
+	return scored.slice(0, normalizedMaxCandidates).map((s) => s.account);
 }
 
 /**

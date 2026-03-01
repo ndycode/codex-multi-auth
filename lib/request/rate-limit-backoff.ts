@@ -148,12 +148,18 @@ export function getRateLimitBackoffWithReason(
 	const resolvedReason = useNamedParams
 		? (accountIndexOrParams.reason ?? "unknown")
 		: reason;
-	if (typeof resolvedQuotaKey !== "string" || resolvedQuotaKey.length === 0) {
+	if (!Number.isInteger(resolvedAccountIndex) || resolvedAccountIndex < 0) {
+		throw new TypeError(
+			"getRateLimitBackoffWithReason requires a non-negative integer accountIndex",
+		);
+	}
+	if (typeof resolvedQuotaKey !== "string" || resolvedQuotaKey.trim().length === 0) {
 		throw new TypeError("getRateLimitBackoffWithReason requires a non-empty quotaKey");
 	}
+	const normalizedQuotaKey = resolvedQuotaKey.trim();
 	const result = getRateLimitBackoff(
 		resolvedAccountIndex,
-		resolvedQuotaKey,
+		normalizedQuotaKey,
 		resolvedServerRetryAfterMs,
 	);
 	const adjustedDelay = calculateBackoffMs(
