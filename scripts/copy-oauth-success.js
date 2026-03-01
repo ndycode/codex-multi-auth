@@ -16,12 +16,22 @@ function getDefaultPaths() {
 	return { src, dest };
 }
 
+/**
+ * Pause execution for the requested number of milliseconds.
+ * @param {number} delayMs milliseconds to wait
+ */
 async function sleep(delayMs) {
 	return new Promise((resolve) => {
 		setTimeout(resolve, delayMs);
 	});
 }
 
+/**
+ * Copy a file and retry automatically while the destination is temporarily locked.
+ * @param {string} src absolute path to the source HTML file
+ * @param {string} dest absolute path to the destination HTML file
+ * @param {{ maxAttempts?: number, backoffMs?: number }} options retry configuration
+ */
 async function copyWithRetry(
 	src,
 	dest,
@@ -43,6 +53,10 @@ async function copyWithRetry(
 	}
 }
 
+/**
+ * Copy the OAuth success HTML into dist/, ensuring safe directory creation and retries.
+ * @param {{ src?: string, dest?: string }} options optional override paths for testing
+ */
 export async function copyOAuthSuccessHtml(options = {}) {
 	const defaults = getDefaultPaths();
 	const src = options.src ?? defaults.src;
