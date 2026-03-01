@@ -1,4 +1,7 @@
-<!doctype html>
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`copy-oauth-success script > copies oauth-success.html to the requested destination and matches snapshot 1`] = `
+"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -267,3 +270,5 @@
   </main>
 </body>
 </html>
+"
+`;
