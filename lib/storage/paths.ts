@@ -3,7 +3,7 @@
  * Extracted from storage.ts to reduce module size.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -88,6 +88,23 @@ function normalizePathForIdentityCheck(pathValue: string): string {
 	return process.platform === "win32" ? normalizedResolved.toLowerCase() : normalizedResolved;
 }
 
+function normalizeCanonicalPathForIdentityCheck(pathValue: string): string {
+	const normalized = normalizePathForIdentityCheck(pathValue);
+	if (!normalized) {
+		return normalized;
+	}
+
+	try {
+		const canonical =
+			typeof realpathSync.native === "function"
+				? realpathSync.native(pathValue)
+				: realpathSync(pathValue);
+		return normalizePathForIdentityCheck(canonical);
+	} catch {
+		return normalized;
+	}
+}
+
 function worktreeGitDirBelongsToProject(projectRoot: string, gitDirPath: string): boolean {
 	const gitdirBackRefPath = join(gitDirPath, "gitdir");
 	if (!existsSync(gitdirBackRefPath)) {
@@ -103,8 +120,8 @@ function worktreeGitDirBelongsToProject(projectRoot: string, gitDirPath: string)
 		const resolvedBackRef = resolveGitPath(gitDirPath, gitdirBackRefRaw);
 		const expectedBackRef = join(projectRoot, ".git");
 		return (
-			normalizePathForIdentityCheck(resolvedBackRef) ===
-			normalizePathForIdentityCheck(expectedBackRef)
+			normalizeCanonicalPathForIdentityCheck(resolvedBackRef) ===
+			normalizeCanonicalPathForIdentityCheck(expectedBackRef)
 		);
 	} catch {
 		return false;
@@ -286,11 +303,15 @@ export function isProjectDirectory(dir: string): boolean {
 
 export function findProjectRoot(startDir: string): string | null {
 	let current = startDir;
-	const root = dirname(current) === current ? current : null;
+	let firstMarkerRoot: string | null = null;
 	
 	while (current) {
-		if (isProjectDirectory(current)) {
+		if (existsSync(join(current, ".git"))) {
 			return current;
+		}
+
+		if (!firstMarkerRoot && isProjectDirectory(current)) {
+			firstMarkerRoot = current;
 		}
 		
 		const parent = dirname(current);
@@ -300,7 +321,7 @@ export function findProjectRoot(startDir: string): string | null {
 		current = parent;
 	}
 	
-	return root && isProjectDirectory(root) ? root : null;
+	return firstMarkerRoot;
 }
 
 function normalizePathForComparison(filePath: string): string {
