@@ -121,10 +121,18 @@ export async function exchangeAuthorizationCode(
 		logError("token response validation failed", rawJson);
 		return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 	}
+	if (!json.refresh_token || json.refresh_token.trim().length === 0) {
+		logError("token response missing refresh token", rawJson);
+		return {
+			type: "failed",
+			reason: "invalid_response",
+			message: "Missing refresh token in authorization code exchange response",
+		};
+	}
 	return {
 		type: "success",
 		access: json.access_token,
-		refresh: json.refresh_token ?? "",
+		refresh: json.refresh_token,
 		expires: Date.now() + json.expires_in * 1000,
 		idToken: json.id_token,
 		multiAccount: true,

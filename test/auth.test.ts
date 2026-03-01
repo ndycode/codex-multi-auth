@@ -280,29 +280,26 @@ describe('Auth Module', () => {
 			}
 		});
 
-		it('returns success with empty refresh token when not provided', async () => {
-			vi.spyOn(Date, 'now').mockReturnValue(1_000);
-			const originalFetch = globalThis.fetch;
-			globalThis.fetch = vi.fn(async () =>
+			it('returns failed when refresh token is missing', async () => {
+				vi.spyOn(Date, 'now').mockReturnValue(1_000);
+				const originalFetch = globalThis.fetch;
+				globalThis.fetch = vi.fn(async () =>
 				new Response(JSON.stringify({
 					access_token: 'access-123',
 					expires_in: 3600,
 				}), { status: 200 }),
 			) as never;
 
-			try {
-				const result = await exchangeAuthorizationCode('auth-code', 'verifier-123');
-				expect(result).toEqual({
-					type: 'success',
-					access: 'access-123',
-					refresh: '',
-					expires: 3_601_000,
-					idToken: undefined,
-					multiAccount: true,
-				});
-			} finally {
-				globalThis.fetch = originalFetch;
-				vi.restoreAllMocks();
+				try {
+					const result = await exchangeAuthorizationCode('auth-code', 'verifier-123');
+					expect(result.type).toBe('failed');
+					if (result.type === 'failed') {
+						expect(result.reason).toBe('invalid_response');
+						expect(result.message).toContain('Missing refresh token');
+					}
+				} finally {
+					globalThis.fetch = originalFetch;
+					vi.restoreAllMocks();
 			}
 		});
 
