@@ -34,7 +34,7 @@ describe("install-codex-auth renameWithRetry", () => {
 		});
 
 		expect(renameMock).toHaveBeenCalledTimes(4);
-		expect(delays).toEqual([25, 45, 85]);
+		expect(delays).toEqual([35, 60, 110]);
 		expect(logs.length).toBe(3);
 		expect(logs[0]).toContain("code=EPERM");
 		expect(logs[1]).toContain("code=EBUSY");
@@ -63,7 +63,7 @@ describe("install-codex-auth renameWithRetry", () => {
 				}),
 			).rejects.toMatchObject({ code });
 			expect(renameMock).toHaveBeenCalledTimes(3);
-			expect(delays).toEqual([25, 45]);
+			expect(delays).toEqual([35, 60]);
 			expect(random).toHaveBeenCalledTimes(2);
 			expect(logs.length).toBe(2);
 			expect(logs[0]).toContain(`code=${code}`);

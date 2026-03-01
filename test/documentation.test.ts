@@ -97,7 +97,7 @@ describe('Documentation Integrity', () => {
     expect(portal).toContain('releases/v0.1.0.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
     expect(portal).toContain('releases/legacy-pre-0.1-history.md');
-    expect(portal).toContain('| [releases/v0.1.1.md](releases/v0.1.1.md) | Current stable release notes |');
+    expect(portal).toContain('| [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |');
 
     const beta = read('docs/releases/v0.1.0-beta.0.md');
     expect(beta).toContain('Archived');

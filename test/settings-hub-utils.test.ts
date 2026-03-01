@@ -122,6 +122,25 @@ describe("settings-hub utility coverage", () => {
 		expect(attempts).toBe(3);
 	});
 
+	it.each(["ENOTEMPTY", "EACCES"] as const)(
+		"retries queued writes for %s filesystem errors",
+		async (code) => {
+			const api = await loadSettingsHubTestApi();
+			let attempts = 0;
+			const result = await api.withQueuedRetry(`settings-path-${code.toLowerCase()}`, async () => {
+				attempts += 1;
+				if (attempts < 3) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = code;
+					throw error;
+				}
+				return "ok";
+			});
+			expect(result).toBe("ok");
+			expect(attempts).toBe(3);
+		},
+	);
+
 	it("serializes concurrent writes for the same path key", async () => {
 		const api = await loadSettingsHubTestApi();
 		const order: string[] = [];

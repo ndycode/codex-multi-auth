@@ -57,6 +57,8 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 	/model is not supported when using codex with a chatgpt account/i;
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
+const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+const CREATE_CODEX_HEADERS_PARAM_KEYS = new Set(["init", "accountId", "accessToken", "opts"]);
 
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
@@ -318,6 +320,12 @@ export interface CreateCodexHeadersParams {
 	opts?: CreateCodexHeadersOptions;
 }
 
+function isCreateCodexHeadersNamedParams(value: unknown): value is CreateCodexHeadersParams {
+	if (!isRecord(value)) return false;
+	if (typeof value.accountId !== "string" || typeof value.accessToken !== "string") return false;
+	return Object.keys(value).every((key) => CREATE_CODEX_HEADERS_PARAM_KEYS.has(key));
+}
+
 /**
  * Determines if the current auth token needs to be refreshed
  * @param auth - Current authentication state
@@ -530,12 +538,9 @@ export function createCodexHeaders(
     opts?: CreateCodexHeadersOptions,
 ): Headers {
 	const useNamedParams =
-		accountId === undefined &&
+		typeof accountId === "undefined" &&
 		typeof accessToken === "undefined" &&
-		typeof initOrParams === "object" &&
-		initOrParams !== null &&
-		"accountId" in initOrParams &&
-		"accessToken" in initOrParams;
+		isCreateCodexHeadersNamedParams(initOrParams);
 	const namedParams = useNamedParams
 		? (initOrParams as CreateCodexHeadersParams)
 		: null;
@@ -953,7 +958,6 @@ function normalizeRetryAfterMs(value: number): number | null {
 	if (!Number.isFinite(value)) return null;
 	const ms = Math.floor(value);
 	if (ms <= 0) return null;
-	const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 	return Math.min(ms, MAX_RETRY_DELAY_MS);
 }
 
@@ -961,7 +965,6 @@ function normalizeRetryAfterSeconds(value: number): number | null {
 	if (!Number.isFinite(value)) return null;
 	const ms = Math.floor(value * 1000);
 	if (ms <= 0) return null;
-	const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 	return Math.min(ms, MAX_RETRY_DELAY_MS);
 }
 

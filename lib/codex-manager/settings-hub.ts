@@ -517,7 +517,7 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 
 type DashboardSettingKey = keyof DashboardDisplaySettings;
 
-const RETRYABLE_SETTINGS_WRITE_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+const RETRYABLE_SETTINGS_WRITE_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
 const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
 const SETTINGS_WRITE_BASE_DELAY_MS = 20;
 const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
@@ -2094,6 +2094,8 @@ async function promptSettingsHub(
 	});
 }
 
+/* c8 ignore stop */
+
 async function configureUnifiedSettings(
 	initialSettings?: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings> {
@@ -2135,8 +2137,6 @@ async function configureUnifiedSettings(
 		}
 	}
 }
-
-/* c8 ignore stop */
 
 export { configureUnifiedSettings, applyUiThemeFromDashboardSettings, resolveMenuLayoutMode, __testOnly };
 

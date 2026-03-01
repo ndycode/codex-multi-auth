@@ -1,3 +1,5 @@
+import { isRecord } from "../../utils.js";
+
 export interface ToolFunction {
 	name: string;
 	description?: string;
@@ -12,10 +14,6 @@ export interface ToolFunction {
 export interface Tool {
 	type: "function";
 	function: ToolFunction;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {

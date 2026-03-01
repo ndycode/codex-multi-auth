@@ -17,6 +17,7 @@ import {
 } from '../lib/request/fetch-helpers.js';
 import * as loggerModule from '../lib/logger.js';
 import type { Auth } from '../lib/types.js';
+import type { CreateCodexHeadersParams } from '../lib/request/fetch-helpers.js';
 import { URL_PATHS, OPENAI_HEADERS, OPENAI_HEADER_VALUES, CODEX_BASE_URL } from '../lib/constants.js';
 
 describe('Fetch Helpers Module', () => {
@@ -258,6 +259,18 @@ describe('Fetch Helpers Module', () => {
 			expect(named.get('accept')).toBe(positional.get('accept'));
 			expect(named.get('content-type')).toBe(positional.get('content-type'));
 			expect(named.has('x-api-key')).toBe(false);
+		});
+
+		it('does not treat RequestInit-like objects as named params when keys are spread accidentally', () => {
+			const accidentalRequestInit = {
+				headers: { 'content-type': 'application/json' },
+				accountId: 'accidental-account',
+				accessToken: 'accidental-token',
+			};
+
+			expect(() =>
+				createCodexHeaders(accidentalRequestInit as unknown as CreateCodexHeadersParams),
+			).toThrow('createCodexHeaders requires accountId and accessToken');
 		});
 
 		it('maps usage_not_included 404 to 403 entitlement error, not rate limit', async () => {

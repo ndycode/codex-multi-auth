@@ -6,6 +6,7 @@ const PLUGIN_NAME = "codex-multi-auth";
 export const FILE_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
 export const FILE_RETRY_MAX_ATTEMPTS = 6;
 export const FILE_RETRY_BASE_DELAY_MS = 25;
+export const FILE_RETRY_JITTER_MS = 20;
 
 export function resolveInstallPaths(
 	platform = process.platform,
@@ -52,6 +53,7 @@ export function normalizePluginList(list) {
 }
 
 function sleep(ms) {
+	// Keep this helper local so installer scripts remain standalone and do not depend on lib/.
 	return new Promise((resolve) => {
 		setTimeout(resolve, ms);
 	});
@@ -72,7 +74,7 @@ export async function withFileOperationRetry(operation) {
 				throw error;
 			}
 
-			const jitter = Math.floor(Math.random() * 20);
+			const jitter = Math.floor(Math.random() * FILE_RETRY_JITTER_MS);
 			const delayMs = (FILE_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1))) + jitter;
 			await sleep(delayMs);
 		}
@@ -83,9 +85,9 @@ export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 	const {
 		rename = fsRename,
 		log = () => {},
-		maxRetries = 5,
-		baseDelayMs = 20,
-		jitterMs = 10,
+		maxRetries = FILE_RETRY_MAX_ATTEMPTS,
+		baseDelayMs = FILE_RETRY_BASE_DELAY_MS,
+		jitterMs = FILE_RETRY_JITTER_MS,
 		random = Math.random,
 		sleep: sleepImpl = sleep,
 	} = options;

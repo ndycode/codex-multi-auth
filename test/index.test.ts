@@ -1227,6 +1227,80 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		cooldownSpy.mockRestore();
 	});
 
+	it("uses retry-after-ms hints for server cooldown decisions", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("server error", {
+				status: 500,
+				headers: new Headers({ "retry-after-ms": "4500" }),
+			}),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(cooldownSpy).toHaveBeenCalled();
+		expect(cooldownSpy.mock.calls[0]?.[1]).toBe(4500);
+		cooldownSpy.mockRestore();
+	});
+
+	it("parses x-ratelimit-reset seconds hints for server cooldown decisions", async () => {
+		const baseNow = 1_700_000_000_000;
+		const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+		const resetAtSeconds = Math.floor((baseNow + 7_000) / 1000);
+		const { AccountManager } = await import("../lib/accounts.js");
+		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("server error", {
+				status: 500,
+				headers: new Headers({ "x-ratelimit-reset": String(resetAtSeconds) }),
+			}),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(cooldownSpy).toHaveBeenCalled();
+		expect(cooldownSpy.mock.calls[0]?.[1]).toBe(7000);
+		cooldownSpy.mockRestore();
+		dateNowSpy.mockRestore();
+	});
+
+	it("parses x-ratelimit-reset millisecond hints for server cooldown decisions", async () => {
+		const baseNow = 1_700_000_000_000;
+		const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+		const resetAtMs = baseNow + 12_000;
+		const { AccountManager } = await import("../lib/accounts.js");
+		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("server error", {
+				status: 500,
+				headers: new Headers({ "x-ratelimit-reset": String(resetAtMs) }),
+			}),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(cooldownSpy).toHaveBeenCalled();
+		expect(cooldownSpy.mock.calls[0]?.[1]).toBe(12000);
+		cooldownSpy.mockRestore();
+		dateNowSpy.mockRestore();
+	});
+
 	it("parses HTTP-date retry-after hints for server cooldown decisions", async () => {
 		const baseNow = 1_700_000_000_000;
 		const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(baseNow);

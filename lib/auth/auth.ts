@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
 import { safeParseOAuthTokenResponse } from "../schemas.js";
+import { isAbortError } from "../utils.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -32,12 +33,6 @@ function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unkno
 	}
 
 	return { responseType: typeof rawResponse };
-}
-
-function isAbortError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	const maybe = error as Error & { code?: string };
-	return maybe.name === "AbortError" || maybe.code === "ABORT_ERR";
 }
 
 /**

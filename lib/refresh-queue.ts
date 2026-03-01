@@ -12,6 +12,7 @@ import { refreshAccessToken } from "./auth/auth.js";
 import type { TokenResult } from "./types.js";
 import { createLogger } from "./logger.js";
 import { RefreshLeaseCoordinator } from "./refresh-lease.js";
+import { isAbortError } from "./utils.js";
 
 const log = createLogger("refresh-queue");
 
@@ -24,12 +25,6 @@ interface RefreshEntry {
   stage: "acquire" | "refresh";
   generation: number;
   staleWarningLogged?: boolean;
-}
-
-function isAbortError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const maybe = error as Error & { code?: string };
-  return maybe.name === "AbortError" || maybe.code === "ABORT_ERR";
 }
 
 /**
