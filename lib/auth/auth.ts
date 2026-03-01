@@ -18,6 +18,22 @@ const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"code_verifier",
 ] as const;
 
+function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unknown> {
+	if (Array.isArray(rawResponse)) {
+		return { responseType: "array", itemCount: rawResponse.length };
+	}
+
+	if (rawResponse !== null && typeof rawResponse === "object") {
+		const allKeys = Object.keys(rawResponse as Record<string, unknown>);
+		return {
+			responseType: "object",
+			keyCount: allKeys.length,
+		};
+	}
+
+	return { responseType: typeof rawResponse };
+}
+
 /**
  * Redacts sensitive OAuth query parameters for safe logging.
  * Returns the original string when parsing fails.
@@ -118,13 +134,21 @@ export async function exchangeAuthorizationCode(
 	const rawJson = (await res.json()) as unknown;
 	const json = safeParseOAuthTokenResponse(rawJson);
 	if (!json) {
-		logError("token response validation failed", rawJson);
+		logError("token response validation failed", getOAuthResponseLogMetadata(rawJson));
 		return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
+	}
+	if (!json.refresh_token || json.refresh_token.trim().length === 0) {
+		logError("token response missing refresh token", getOAuthResponseLogMetadata(rawJson));
+		return {
+			type: "failed",
+			reason: "invalid_response",
+			message: "Missing refresh token in authorization code exchange response",
+		};
 	}
 	return {
 		type: "success",
 		access: json.access_token,
-		refresh: json.refresh_token ?? "",
+		refresh: json.refresh_token,
 		expires: Date.now() + json.expires_in * 1000,
 		idToken: json.id_token,
 		multiAccount: true,
@@ -158,11 +182,19 @@ export function decodeJWT(token: string): JWTPayload | null {
  * @param refreshToken - Refresh token
  * @returns Token result
  */
-export async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
+type RefreshAccessTokenOptions = {
+	signal?: AbortSignal;
+};
+
+export async function refreshAccessToken(
+	refreshToken: string,
+	options: RefreshAccessTokenOptions = {},
+): Promise<TokenResult> {
 	try {
 		const response = await fetch(TOKEN_URL, {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			signal: options?.signal,
 			body: new URLSearchParams({
 				grant_type: "refresh_token",
 				refresh_token: refreshToken,
@@ -179,7 +211,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
 		const rawJson = (await response.json()) as unknown;
 		const json = safeParseOAuthTokenResponse(rawJson);
 		if (!json) {
-			logError("Token refresh response validation failed", rawJson);
+			logError("Token refresh response validation failed", getOAuthResponseLogMetadata(rawJson));
 			return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 		}
 

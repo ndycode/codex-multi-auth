@@ -259,11 +259,40 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		return "balanced";
 	};
 
-	const parseEnvInt = (value: string | undefined): number | undefined => {
-		if (value === undefined) return undefined;
-		const parsed = Number.parseInt(value, 10);
-		return Number.isFinite(parsed) ? parsed : undefined;
-	};
+		const parseEnvInt = (value: string | undefined): number | undefined => {
+			if (value === undefined) return undefined;
+			const parsed = Number.parseInt(value, 10);
+			return Number.isFinite(parsed) ? parsed : undefined;
+		};
+
+		const MAX_RETRY_HINT_MS = 5 * 60 * 1000;
+		const clampRetryHintMs = (value: number): number | null => {
+			if (!Number.isFinite(value)) return null;
+			const normalized = Math.floor(value);
+			if (normalized <= 0) return null;
+			return Math.min(normalized, MAX_RETRY_HINT_MS);
+		};
+
+		const parseRetryAfterHintMs = (headers: Headers): number | null => {
+			const retryAfterMsHeader = headers.get("retry-after-ms")?.trim();
+			if (retryAfterMsHeader && /^\d+$/.test(retryAfterMsHeader)) {
+				return clampRetryHintMs(Number.parseInt(retryAfterMsHeader, 10));
+			}
+
+			const retryAfterHeader = headers.get("retry-after")?.trim();
+			if (retryAfterHeader && /^\d+$/.test(retryAfterHeader)) {
+				return clampRetryHintMs(Number.parseInt(retryAfterHeader, 10) * 1000);
+			}
+
+			const resetAtHeader = headers.get("x-ratelimit-reset")?.trim();
+			if (resetAtHeader && /^\d+$/.test(resetAtHeader)) {
+				const resetRaw = Number.parseInt(resetAtHeader, 10);
+				const resetAtMs = resetRaw < 10_000_000_000 ? resetRaw * 1000 : resetRaw;
+				return clampRetryHintMs(resetAtMs - Date.now());
+			}
+
+			return null;
+		};
 
 	const sanitizeResponseHeadersForLog = (headers: Headers): Record<string, string> => {
 		const allowed = new Set([
@@ -1587,18 +1616,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 									continue;
 								}
 
-							// Consume a token before making the request for proactive rate limiting
-					const tokenConsumed = accountManager.consumeToken(account, modelFamily, model);
-								if (!tokenConsumed) {
-									accountManager.recordRateLimit(account, modelFamily, model);
-									runtimeMetrics.accountRotations++;
+								// Consume a token before making the request for proactive rate limiting
+								const tokenConsumed = accountManager.consumeToken(account, modelFamily, model);
+									if (!tokenConsumed) {
+										accountManager.recordRateLimit(account, modelFamily, model);
+										runtimeMetrics.accountRotations++;
 									runtimeMetrics.lastError =
 										`Local token bucket depleted for account ${account.index + 1} (${modelFamily}${model ? `:${model}` : ""})`;
-									logWarn(
-										`Skipping account ${account.index + 1}: local token bucket depleted for ${modelFamily}${model ? `:${model}` : ""}`,
-									);
-									break;
-								}
+										logWarn(
+											`Skipping account ${account.index + 1}: local token bucket depleted for ${modelFamily}${model ? `:${model}` : ""}`,
+										);
+										continue;
+									}
 
 							let sameAccountRetryCount = 0;
 							let successAccountForResponse = account;
@@ -1609,10 +1638,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 								// Merge user AbortSignal with timeout (Node 18 compatible - no AbortSignal.any)
 								const fetchController = new AbortController();
 								const requestTimeoutMs = fetchTimeoutMs;
-								const fetchTimeoutId = setTimeout(
-									() => fetchController.abort(new Error("Request timeout")),
-									requestTimeoutMs,
-								);
+									let requestTimedOut = false;
+									const timeoutReason = new Error("Request timeout");
+									const fetchTimeoutId = setTimeout(() => {
+										requestTimedOut = true;
+										fetchController.abort(timeoutReason);
+									}, requestTimeoutMs);
 
 								const onUserAbort = abortSignal
 									? () => fetchController.abort(abortSignal.reason ?? new Error("Aborted by user"))
@@ -1632,14 +1663,16 @@ while (attempted.size < Math.max(1, accountCount)) {
 									headers,
 									signal: fetchController.signal,
 								});
-				} catch (networkError) {
-								const isUserAbort =
-									abortSignal?.aborted ||
-									(networkError instanceof Error &&
-										(networkError.name === "AbortError" || /abort/i.test(networkError.message)));
-								if (isUserAbort) {
-									runtimeMetrics.userAborts++;
-									runtimeMetrics.lastError = "request aborted by user";
+					} catch (networkError) {
+									const fetchAbortReason = fetchController.signal.reason;
+									const isTimeoutAbort =
+										requestTimedOut ||
+										(fetchAbortReason instanceof Error &&
+											fetchAbortReason.message === timeoutReason.message);
+									const isUserAbort = Boolean(abortSignal?.aborted) && !isTimeoutAbort;
+									if (isUserAbort) {
+										runtimeMetrics.userAborts++;
+										runtimeMetrics.lastError = "request aborted by user";
 									sessionAffinityStore?.forgetSession(sessionAffinityKey);
 									break;
 								}
@@ -1910,17 +1943,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 						logDebug(`[${PLUGIN_NAME}] Recoverable error detected: ${errorType}`);
 					}
 
-					// Handle 5xx server errors by rotating to another account
-					if (response.status >= 500 && response.status < 600) {
-						logWarn(`Server error ${response.status} for account ${account.index + 1}. Rotating to next account.`);
-						runtimeMetrics.failedRequests++;
-						runtimeMetrics.serverErrors++;
-						runtimeMetrics.accountRotations++;
-						runtimeMetrics.lastError = `HTTP ${response.status}`;
-						const policy = evaluateFailurePolicy(
-							{ kind: "server", failoverMode },
-							{ serverCooldownMs: serverErrorCooldownMs },
-						);
+						// Handle 5xx server errors by rotating to another account
+						if (response.status >= 500 && response.status < 600) {
+							logWarn(`Server error ${response.status} for account ${account.index + 1}. Rotating to next account.`);
+							runtimeMetrics.failedRequests++;
+							runtimeMetrics.serverErrors++;
+							runtimeMetrics.accountRotations++;
+							runtimeMetrics.lastError = `HTTP ${response.status}`;
+							const serverRetryAfterMs = parseRetryAfterHintMs(response.headers);
+							const policy = evaluateFailurePolicy(
+								{ kind: "server", failoverMode, serverRetryAfterMs: serverRetryAfterMs ?? undefined },
+								{ serverCooldownMs: serverErrorCooldownMs },
+							);
 						if (policy.refundToken) {
 							accountManager.refundToken(account, modelFamily, model);
 						}
@@ -2162,17 +2196,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 												} catch {
 													// Best effort cleanup before trying next fallback account.
 												}
-												if (fallbackResponse.status === 429) {
-													const retryAfterRaw = fallbackResponse.headers
-														.get("retry-after")
-														?.trim();
-													const retryAfterMs =
-														retryAfterRaw && /^\d+$/.test(retryAfterRaw)
-															? Number.parseInt(retryAfterRaw, 10) * 1000
-															: 60_000;
-													accountManager.markRateLimitedWithReason(
-														fallbackAccount,
-														retryAfterMs,
+													if (fallbackResponse.status === 429) {
+														const retryAfterMs =
+															parseRetryAfterHintMs(fallbackResponse.headers) ?? 60_000;
+														accountManager.markRateLimitedWithReason(
+															fallbackAccount,
+															retryAfterMs,
 														modelFamily,
 														"quota",
 														model,

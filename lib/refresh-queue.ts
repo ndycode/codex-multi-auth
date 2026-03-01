@@ -21,6 +21,7 @@ const log = createLogger("refresh-queue");
 interface RefreshEntry {
   promise: Promise<TokenResult>;
   startedAt: number;
+  staleWarningLogged?: boolean;
 }
 
 /**
@@ -66,9 +67,8 @@ export class RefreshQueue {
   private tokenRotationMap: Map<string, string> = new Map();
 
   /**
-   * Maximum time to keep a refresh entry in the queue (prevents memory leaks
-   * from stuck requests). After this timeout, the entry is removed and new
-   * callers will trigger a fresh refresh.
+   * Age threshold for logging stuck refresh operations.
+   * We intentionally do not evict unresolved entries to preserve deduplication.
    */
   private readonly maxEntryAgeMs: number;
 
@@ -212,9 +212,22 @@ export class RefreshQueue {
   private async executeRefresh(refreshToken: string): Promise<TokenResult> {
     const startTime = Date.now();
     log.info("Starting token refresh", { tokenSuffix: refreshToken.slice(-6) });
+    const timeoutMs = Math.max(1_000, this.maxEntryAgeMs);
+    const timeoutController = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      const result = await refreshAccessToken(refreshToken);
+      const timeoutErrorMessage = `Refresh timeout after ${timeoutMs}ms`;
+      const timeoutPromise = new Promise<TokenResult>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          timeoutController.abort(new Error(timeoutErrorMessage));
+          reject(new Error(timeoutErrorMessage));
+        }, timeoutMs);
+      });
+      const refreshPromise = refreshAccessToken(refreshToken, {
+        signal: timeoutController.signal,
+      });
+      const result = await Promise.race([refreshPromise, timeoutPromise]);
       const duration = Date.now() - startTime;
 
       if (result.type === "success") {
@@ -244,31 +257,28 @@ export class RefreshQueue {
         reason: "network_error",
         message: (error as Error)?.message ?? "Unknown error during refresh",
       };
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 
   /**
-   * Remove stale entries that have been pending too long.
-   * This prevents memory leaks from stuck or abandoned refresh operations.
+   * Log stale entries that have been pending too long.
+   * Entries are not removed to avoid duplicate in-flight refresh operations.
    */
   private cleanup(): void {
     const now = Date.now();
-    const staleTokens: string[] = [];
-
     for (const [token, entry] of this.pending.entries()) {
-      if (now - entry.startedAt > this.maxEntryAgeMs) {
-        staleTokens.push(token);
+      const ageMs = now - entry.startedAt;
+      if (ageMs > this.maxEntryAgeMs && !entry.staleWarningLogged) {
+        log.warn("Refresh entry exceeded stale warning threshold", {
+          tokenSuffix: token.slice(-6),
+          ageMs,
+        });
+        entry.staleWarningLogged = true;
       }
-    }
-
-    for (const token of staleTokens) {
-      // istanbul ignore next -- defensive: token always exists in pending at this point (not yet deleted)
-      const ageMs = now - (this.pending.get(token)?.startedAt ?? now);
-      log.warn("Removing stale refresh entry", {
-        tokenSuffix: token.slice(-6),
-        ageMs,
-      });
-      this.pending.delete(token);
     }
   }
 
