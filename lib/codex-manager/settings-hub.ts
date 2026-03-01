@@ -1084,13 +1084,20 @@ async function persistDashboardSettingsSelectionForTests(
 	return persistDashboardSettingsSelection(selected, keys as readonly DashboardSettingKey[], scope);
 }
 
+async function persistBackendConfigSelectionForTests(
+	selected: PluginConfig,
+	scope: string,
+): Promise<PluginConfig> {
+	return persistBackendConfigSelection(selected, scope);
+}
+
 const __testOnly = {
 	clampBackendNumber: clampBackendNumberForTests,
 	formatMenuLayoutMode,
 	cloneDashboardSettings,
 	withQueuedRetry: withQueuedRetryForTests,
 	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
-	persistBackendConfigSelection,
+	persistBackendConfigSelection: persistBackendConfigSelectionForTests,
 };
 
 /* c8 ignore start - interactive prompt flows are covered by integration tests */

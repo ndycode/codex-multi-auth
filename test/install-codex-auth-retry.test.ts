@@ -42,6 +42,34 @@ describe("install-codex-auth renameWithRetry", () => {
 		expect(random).toHaveBeenCalledTimes(3);
 	});
 
+	it("throws after exhausting retries for retryable EBUSY and ENOTEMPTY errors", async () => {
+		for (const code of ["EBUSY", "ENOTEMPTY"] as const) {
+			const renameMock = vi.fn().mockRejectedValue(makeRenameError(code));
+			const random = vi.fn().mockReturnValue(0.5);
+			const delays: number[] = [];
+			const logs: string[] = [];
+			await expect(
+				renameWithRetry("config.json.tmp", "config.json", {
+					rename: renameMock,
+					maxRetries: 3,
+					random,
+					sleep: async (delayMs) => {
+						delays.push(delayMs);
+					},
+					log: (message) => {
+						logs.push(message);
+					},
+				}),
+			).rejects.toMatchObject({ code });
+			expect(renameMock).toHaveBeenCalledTimes(3);
+			expect(delays).toEqual([25, 45]);
+			expect(random).toHaveBeenCalledTimes(2);
+			expect(logs.length).toBe(2);
+			expect(logs[0]).toContain(`code=${code}`);
+			expect(logs[1]).toContain(`code=${code}`);
+		}
+	});
+
 	it("throws immediately for non-retryable rename errors", async () => {
 		const renameMock = vi.fn().mockRejectedValue(makeRenameError("EINVAL"));
 		const delays: number[] = [];

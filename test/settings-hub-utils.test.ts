@@ -80,8 +80,13 @@ describe("settings-hub utility coverage", () => {
 		const dashboard = await import("../lib/dashboard-settings.js");
 		const original = await dashboard.loadDashboardDisplaySettings();
 		const clone = api.cloneDashboardSettings(original);
-		clone.menuStatuslineFields?.push("status");
-		expect(original.menuStatuslineFields?.length).toBeGreaterThan(0);
+		const originalLength = original.menuStatuslineFields?.length ?? 0;
+		const cloneFields = clone.menuStatuslineFields ?? [];
+		if (!clone.menuStatuslineFields) {
+			clone.menuStatuslineFields = cloneFields;
+		}
+		cloneFields.push("status");
+		expect(clone.menuStatuslineFields?.length).toBe(originalLength + 1);
 		expect(clone.menuStatuslineFields).not.toBe(original.menuStatuslineFields);
 	});
 
@@ -99,6 +104,45 @@ describe("settings-hub utility coverage", () => {
 		});
 		expect(result).toBe("ok");
 		expect(attempts).toBe(3);
+	});
+
+	it("retries queued writes for EAGAIN filesystem errors", async () => {
+		const api = await loadSettingsHubTestApi();
+		let attempts = 0;
+		const result = await api.withQueuedRetry("settings-path-eagain", async () => {
+			attempts += 1;
+			if (attempts < 3) {
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EAGAIN";
+				throw error;
+			}
+			return "ok";
+		});
+		expect(result).toBe("ok");
+		expect(attempts).toBe(3);
+	});
+
+	it("retries queued writes for HTTP 429 using retryAfterMs delay", async () => {
+		const api = await loadSettingsHubTestApi();
+		let attempts = 0;
+		const startedAt = Date.now();
+		const result = await api.withQueuedRetry("settings-path-429", async () => {
+			attempts += 1;
+			if (attempts === 1) {
+				const error = new Error("rate limited") as Error & {
+					status: number;
+					retryAfterMs: number;
+				};
+				error.status = 429;
+				error.retryAfterMs = 120;
+				throw error;
+			}
+			return "ok";
+		});
+		const elapsedMs = Date.now() - startedAt;
+		expect(result).toBe("ok");
+		expect(attempts).toBe(2);
+		expect(elapsedMs).toBeGreaterThanOrEqual(100);
 	});
 
 	it("persists selected dashboard keys through retry-aware save", async () => {
