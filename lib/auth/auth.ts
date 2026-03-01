@@ -18,6 +18,23 @@ const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"code_verifier",
 ] as const;
 
+function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unknown> {
+	if (Array.isArray(rawResponse)) {
+		return { responseType: "array", itemCount: rawResponse.length };
+	}
+
+	if (rawResponse !== null && typeof rawResponse === "object") {
+		const allKeys = Object.keys(rawResponse as Record<string, unknown>);
+		return {
+			responseType: "object",
+			keyCount: allKeys.length,
+			keys: allKeys.slice(0, 12),
+		};
+	}
+
+	return { responseType: typeof rawResponse };
+}
+
 /**
  * Redacts sensitive OAuth query parameters for safe logging.
  * Returns the original string when parsing fails.
@@ -118,11 +135,11 @@ export async function exchangeAuthorizationCode(
 	const rawJson = (await res.json()) as unknown;
 	const json = safeParseOAuthTokenResponse(rawJson);
 	if (!json) {
-		logError("token response validation failed", rawJson);
+		logError("token response validation failed", getOAuthResponseLogMetadata(rawJson));
 		return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 	}
 	if (!json.refresh_token || json.refresh_token.trim().length === 0) {
-		logError("token response missing refresh token", rawJson);
+		logError("token response missing refresh token", getOAuthResponseLogMetadata(rawJson));
 		return {
 			type: "failed",
 			reason: "invalid_response",
@@ -195,7 +212,7 @@ export async function refreshAccessToken(
 		const rawJson = (await response.json()) as unknown;
 		const json = safeParseOAuthTokenResponse(rawJson);
 		if (!json) {
-			logError("Token refresh response validation failed", rawJson);
+			logError("Token refresh response validation failed", getOAuthResponseLogMetadata(rawJson));
 			return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 		}
 
