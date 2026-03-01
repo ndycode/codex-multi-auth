@@ -369,21 +369,33 @@ describe('Request Transformer Module', () => {
 			expect(result![2].content).toBe('3');
 		});
 
-		it('should handle custom ID formats (future-proof)', async () => {
-			const input: InputItem[] = [
-				{ id: 'custom_id_format', type: 'message', role: 'user', content: 'test' },
-				{ id: 'another-format-123', type: 'message', role: 'user', content: 'test2' },
-			];
-			const result = filterInput(input);
+			it('should handle custom ID formats (future-proof)', async () => {
+				const input: InputItem[] = [
+					{ id: 'custom_id_format', type: 'message', role: 'user', content: 'test' },
+					{ id: 'another-format-123', type: 'message', role: 'user', content: 'test2' },
+				];
+				const result = filterInput(input);
 
-			expect(result).toHaveLength(2);
-			expect(result![0]).not.toHaveProperty('id');
-			expect(result![1]).not.toHaveProperty('id');
-		});
+				expect(result).toHaveLength(2);
+				expect(result![0]).not.toHaveProperty('id');
+				expect(result![1]).not.toHaveProperty('id');
+			});
 
-		it('should return undefined for undefined input', async () => {
-			expect(filterInput(undefined)).toBeUndefined();
-		});
+			it('should skip sparse entries without throwing', async () => {
+				const sparse = new Array<InputItem | undefined>(3);
+				sparse[0] = { id: 'msg_1', type: 'message', role: 'user', content: 'test' };
+				sparse[2] = { id: 'msg_2', type: 'message', role: 'assistant', content: 'reply' };
+
+				const result = filterInput(sparse as InputItem[]);
+
+				expect(result).toHaveLength(2);
+				expect(result![0]).not.toHaveProperty('id');
+				expect(result![1]).not.toHaveProperty('id');
+			});
+
+			it('should return undefined for undefined input', async () => {
+				expect(filterInput(undefined)).toBeUndefined();
+			});
 
 		it('should return non-array input as-is', async () => {
 			const notArray = { notAnArray: true };
