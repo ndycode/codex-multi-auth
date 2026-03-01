@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const projectRoot = resolve(process.cwd());
 
@@ -43,6 +43,22 @@ function extractInternalLinks(markdown: string): string[] {
   return [...markdown.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
     .map((match) => match[1])
     .filter((link) => !link.startsWith('http') && !link.startsWith('#'));
+}
+
+function listMarkdownFiles(rootDir: string): string[] {
+  const entries = readdirSync(rootDir, { withFileTypes: true });
+  const markdownFiles: string[] = [];
+  for (const entry of entries) {
+    const absolutePath = join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      markdownFiles.push(...listMarkdownFiles(absolutePath));
+      continue;
+    }
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      markdownFiles.push(absolutePath);
+    }
+  }
+  return markdownFiles;
 }
 
 function compareSemverDescending(left: string, right: string): number {
@@ -152,6 +168,13 @@ describe('Documentation Integrity', () => {
     expect(errorContracts).toContain('json mode contract');
     expect(errorContracts).toContain('entitlement');
     expect(errorContracts).toContain('rate-limit');
+    expect(errorContracts).toContain('options-object compatibility contract');
+    expect(errorContracts).toContain('selecthybridaccount');
+    expect(errorContracts).toContain('exponentialbackoff');
+    expect(errorContracts).toContain('gettopcandidates');
+    expect(errorContracts).toContain('createcodexheaders');
+    expect(errorContracts).toContain('getratelimitbackoffwithreason');
+    expect(errorContracts).toContain('transformrequestbody');
   });
 
   it('keeps fix command flag docs aligned across README, reference, and CLI usage text', () => {
@@ -300,18 +323,24 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('has valid internal links in docs/README.md', () => {
-    const content = read('docs/README.md');
-    const links = extractInternalLinks(content);
+  it('has valid internal links in markdown files under docs/', () => {
+    const docsRoot = join(projectRoot, 'docs');
+    const docsMarkdownFiles = listMarkdownFiles(docsRoot);
 
-    for (const link of links) {
-      const cleanPath = link.split('#')[0];
-      if (!cleanPath) {
-        continue;
+    for (const filePath of docsMarkdownFiles) {
+      const content = readFileSync(filePath, 'utf-8');
+      const links = extractInternalLinks(content);
+      for (const link of links) {
+        const cleanPath = link.split('#')[0];
+        if (!cleanPath) {
+          continue;
+        }
+        const targetPath = resolve(dirname(filePath), cleanPath);
+        expect(
+          existsSync(targetPath),
+          `Missing docs link in ${filePath.replace(projectRoot, '')}: ${cleanPath}`,
+        ).toBe(true);
       }
-      expect(existsSync(join(projectRoot, 'docs', cleanPath)), `Missing docs link: ${cleanPath}`).toBe(
-        true,
-      );
     }
   });
 });

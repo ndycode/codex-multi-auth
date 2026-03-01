@@ -2330,6 +2330,15 @@ describe('Request Transformer Module', () => {
 
 					expect(named).toEqual(positional);
 				});
+
+				it('throws clear TypeError when named-parameter body is invalid', async () => {
+					await expect(
+						transformRequestBody({
+							body: null as unknown as RequestBody,
+							codexInstructions,
+						}),
+					).rejects.toThrowError('transformRequestBody requires body');
+				});
 			});
 		});
 	});

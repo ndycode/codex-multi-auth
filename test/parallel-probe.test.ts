@@ -286,5 +286,33 @@ describe("parallel-probe", () => {
 
 			expect(named).toEqual(positional);
 		});
+
+		it("throws clear TypeError when accountManager is missing required shape", () => {
+			expect(() =>
+				getTopCandidates({
+					accountManager: {} as unknown as Parameters<typeof getTopCandidates>[0],
+					modelFamily: "codex",
+					model: null,
+					maxCandidates: 2,
+				}),
+			).toThrowError("getTopCandidates requires accountManager");
+		});
+
+		it("throws clear TypeError for invalid maxCandidates values", () => {
+			const mockManager = {
+				getAccountsSnapshot: vi.fn().mockReturnValue([createMockAccount(0)]),
+			};
+			const invalidValues = [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5];
+			for (const value of invalidValues) {
+				expect(() =>
+					getTopCandidates({
+						accountManager: mockManager as unknown as Parameters<typeof getTopCandidates>[0],
+						modelFamily: "codex",
+						model: null,
+						maxCandidates: value,
+					}),
+				).toThrowError("getTopCandidates requires maxCandidates to be a positive integer");
+			}
+		});
 	});
 });

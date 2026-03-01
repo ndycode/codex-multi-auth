@@ -252,6 +252,12 @@ describe('Fetch Helpers Module', () => {
 			expect(named.get('Authorization')).toBe(positional.get('Authorization'));
 			expect(named.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe(positional.get(OPENAI_HEADERS.ACCOUNT_ID));
 			expect(named.get(OPENAI_HEADERS.SESSION_ID)).toBe(positional.get(OPENAI_HEADERS.SESSION_ID));
+			expect(named.get(OPENAI_HEADERS.CONVERSATION_ID)).toBe(positional.get(OPENAI_HEADERS.CONVERSATION_ID));
+			expect(named.get(OPENAI_HEADERS.BETA)).toBe(positional.get(OPENAI_HEADERS.BETA));
+			expect(named.get(OPENAI_HEADERS.ORIGINATOR)).toBe(positional.get(OPENAI_HEADERS.ORIGINATOR));
+			expect(named.get('accept')).toBe(positional.get('accept'));
+			expect(named.get('content-type')).toBe(positional.get('content-type'));
+			expect(named.has('x-api-key')).toBe(false);
 		});
 
 		it('maps usage_not_included 404 to 403 entitlement error, not rate limit', async () => {
