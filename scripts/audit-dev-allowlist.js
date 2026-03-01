@@ -2,16 +2,9 @@
 
 import { spawnSync } from "node:child_process";
 
-const ALLOWED_HIGH_OR_CRITICAL_PACKAGES = new Set([
-	"eslint",
-	"ajv",
-	"@eslint-community/eslint-utils",
-	"@typescript-eslint/eslint-plugin",
-	"@typescript-eslint/parser",
-	"@typescript-eslint/type-utils",
-	"@typescript-eslint/typescript-estree",
-	"@typescript-eslint/utils",
-	"minimatch",
+const ALLOWED_HIGH_OR_CRITICAL_ADVISORIES = new Map([
+	// Example:
+	// ["1113465", { package: "minimatch", expiresOn: "2026-06-30" }],
 ]);
 
 function summarizeVia(via) {
@@ -25,6 +18,38 @@ function summarizeVia(via) {
 			return range ? `${name}:${range}` : name;
 		})
 		.slice(0, 5);
+}
+
+function extractAdvisoryIds(via) {
+	if (!Array.isArray(via)) return [];
+	const advisoryIds = [];
+	for (const item of via) {
+		if (!item || typeof item !== "object") {
+			continue;
+		}
+		const source = "source" in item ? item.source : undefined;
+		if (typeof source === "number" || typeof source === "string") {
+			advisoryIds.push(String(source));
+		}
+	}
+	return advisoryIds;
+}
+
+function isAdvisoryAllowed(packageName, advisoryId) {
+	const rule = ALLOWED_HIGH_OR_CRITICAL_ADVISORIES.get(advisoryId);
+	if (!rule || typeof rule !== "object") {
+		return false;
+	}
+	if (typeof rule.package === "string" && rule.package !== packageName) {
+		return false;
+	}
+	if (typeof rule.expiresOn === "string") {
+		const expiresAt = Date.parse(rule.expiresOn);
+		if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) {
+			return false;
+		}
+	}
+	return true;
 }
 
 const isWindows = process.platform === "win32";
@@ -97,10 +122,15 @@ for (const [name, details] of Object.entries(vulnerabilities)) {
 		name,
 		severity,
 		via: summarizeVia(details.via),
+		advisoryIds: extractAdvisoryIds(details.via),
 		fixAvailable: details.fixAvailable ?? false,
 	};
 
-	if (ALLOWED_HIGH_OR_CRITICAL_PACKAGES.has(name)) {
+	const hasAdvisories = entry.advisoryIds.length > 0;
+	const allAdvisoriesAllowlisted =
+		hasAdvisories &&
+		entry.advisoryIds.every((advisoryId) => isAdvisoryAllowed(name, advisoryId));
+	if (allAdvisoriesAllowlisted) {
 		allowlisted.push(entry);
 		continue;
 	}
@@ -111,7 +141,7 @@ if (unexpected.length > 0) {
 	console.error("Unexpected high/critical vulnerabilities detected in dev dependency audit:");
 	for (const entry of unexpected) {
 		console.error(
-			`- ${entry.name} (${entry.severity}) via ${entry.via.join(", ") || "unknown"} fixAvailable=${String(entry.fixAvailable)}`,
+			`- ${entry.name} (${entry.severity}) advisories=${entry.advisoryIds.join(", ") || "none"} via ${entry.via.join(", ") || "unknown"} fixAvailable=${String(entry.fixAvailable)}`,
 		);
 	}
 	process.exit(1);
@@ -121,7 +151,7 @@ if (allowlisted.length > 0) {
 	console.warn("Allowlisted high/critical dev vulnerabilities detected:");
 	for (const entry of allowlisted) {
 		console.warn(
-			`- ${entry.name} (${entry.severity}) via ${entry.via.join(", ") || "unknown"} fixAvailable=${String(entry.fixAvailable)}`,
+			`- ${entry.name} (${entry.severity}) advisories=${entry.advisoryIds.join(", ") || "none"} via ${entry.via.join(", ") || "unknown"} fixAvailable=${String(entry.fixAvailable)}`,
 		);
 	}
 	console.warn("No unexpected high/critical vulnerabilities found.");

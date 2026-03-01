@@ -116,14 +116,16 @@
   "dependencies": {
     "@openauthjs/openauth": "^0.4.3",
     "@codex-ai/plugin": "file:vendor/codex-ai-plugin",
-    "hono": "^4.12.0",
+    "hono": "4.12.3",
     "zod": "^4.3.6"
   },
   "overrides": {
-    "hono": "^4.12.0",
+    "hono": "4.12.3",
+    "minimatch": "10.2.4",
+    "rollup": "4.59.0",
     "vite": "^7.3.1",
     "@typescript-eslint/typescript-estree": {
-      "minimatch": "^9.0.5"
+      "minimatch": "9.0.9"
     }
   }
 }
