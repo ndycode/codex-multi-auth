@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import * as fs from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,20 +16,50 @@ function getDefaultPaths() {
 	return { src, dest };
 }
 
+async function sleep(delayMs) {
+	return new Promise((resolve) => {
+		setTimeout(resolve, delayMs);
+	});
+}
+
+async function copyWithRetry(
+	src,
+	dest,
+	{ maxAttempts = 3, backoffMs = 50 } = {},
+) {
+	let attempt = 0;
+	for (;;) {
+		try {
+			await fs.copyFile(src, dest);
+			return;
+		} catch (err) {
+			const isBusy = err && typeof err === "object" && err.code === "EBUSY";
+			if (!isBusy || attempt >= maxAttempts - 1) {
+				throw err;
+			}
+			attempt += 1;
+			await sleep(backoffMs * attempt);
+		}
+	}
+}
+
 export async function copyOAuthSuccessHtml(options = {}) {
 	const defaults = getDefaultPaths();
 	const src = options.src ?? defaults.src;
 	const dest = options.dest ?? defaults.dest;
 
 	await fs.mkdir(dirname(dest), { recursive: true });
-	await fs.copyFile(src, dest);
+	await copyWithRetry(src, dest);
 
 	return { src, dest };
 }
 
 const isDirectRun = (() => {
 	if (!process.argv[1]) return false;
-	return normalizePathForCompare(process.argv[1]) === normalizePathForCompare(__filename);
+	return (
+		normalizePathForCompare(process.argv[1]) ===
+		normalizePathForCompare(__filename)
+	);
 })();
 
 if (isDirectRun) {

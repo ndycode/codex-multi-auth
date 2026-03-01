@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>OpenAI Codex Sign-in Complete</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&display=swap');
+    /* Space Grotesk import removed to avoid CSP font-src violations; rely on system stack. */
 
     :root {
       --bg: #020403;
@@ -26,7 +26,7 @@
     body {
       margin: 0;
       min-height: 100vh;
-      font-family: "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
+      font-family: "Segoe UI", system-ui, -apple-system, "IBM Plex Sans", sans-serif;
       background: radial-gradient(circle at top, rgba(73, 241, 168, 0.12), transparent 55%),
                   linear-gradient(180deg, var(--bg), var(--bg2));
       color: var(--text);
@@ -163,7 +163,7 @@
     }
 
     .meta-row code {
-      font-family: "Space Grotesk", "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+      font-family: "Segoe UI", system-ui, -apple-system, "SFMono-Regular", Menlo, monospace;
       background: rgba(255, 255, 255, 0.04);
       border-radius: 8px;
       padding: 4px 8px;
@@ -255,6 +255,7 @@
     <section class="meta" aria-label="Callback summary">
       <div class="meta-row">
         <span>Callback</span>
+        <!-- Port 1455 is fixed by design via REDIRECT_URI -->
         <code>127.0.0.1:1455</code>
       </div>
       <div class="meta-row">
