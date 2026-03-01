@@ -55,6 +55,7 @@ Canonical documentation map for `codex-multi-auth`.
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |
 | [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Dashboard UX parity checklist |
 | [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark methodology and outputs |
+| [../OMX_PROMPTS_RALPH_PHASED_PLAN.md](../OMX_PROMPTS_RALPH_PHASED_PLAN.md) | Ralph loop phased-plan prompts and git-plan workflow |
 
 ---
 

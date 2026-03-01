@@ -263,6 +263,7 @@ codex auth doctor --json
 - Storage paths: [docs/reference/storage-paths.md](docs/reference/storage-paths.md)
 - Upgrade guide: [docs/upgrade.md](docs/upgrade.md)
 - Privacy: [docs/privacy.md](docs/privacy.md)
+- Git-plan prompts: [OMX_PROMPTS_RALPH_PHASED_PLAN.md](OMX_PROMPTS_RALPH_PHASED_PLAN.md)
 
 ---
 
