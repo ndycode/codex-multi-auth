@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -52,7 +52,8 @@ function extractInternalLinks(markdown: string): string[] {
 }
 
 function listMarkdownFiles(rootDir: string): string[] {
-  const entries = readdirSync(rootDir, { withFileTypes: true });
+  const entries = readdirSync(rootDir, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name));
   const markdownFiles: string[] = [];
   for (const entry of entries) {
     const absolutePath = join(rootDir, entry.name);
@@ -64,7 +65,11 @@ function listMarkdownFiles(rootDir: string): string[] {
       markdownFiles.push(absolutePath);
     }
   }
-  return markdownFiles;
+  return markdownFiles.sort((left, right) => left.localeCompare(right));
+}
+
+function isExternalOrUriSchemeLink(linkPath: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(linkPath) || linkPath.startsWith('//');
 }
 
 function compareSemverDescending(left: string, right: string): number {
@@ -349,6 +354,49 @@ describe('Documentation Integrity', () => {
     }
   });
 
+  it('ignores URI scheme links during docs link validation', () => {
+    const tempDocsRoot = mkdtempSync(join(tmpdir(), 'codex-doc-links-'));
+
+    try {
+      const nestedDir = join(tempDocsRoot, 'nested');
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(
+        join(tempDocsRoot, 'index.md'),
+        [
+          '# Temporary docs',
+          '[Guide](./nested/guide.md)',
+          '[Mail](mailto:support@example.com)',
+          '[Phone](tel:+1234567890)',
+          '[Scheme relative](//example.com/path)',
+        ].join('\n'),
+        'utf-8',
+      );
+      writeFileSync(join(nestedDir, 'guide.md'), '# Guide\n', 'utf-8');
+
+      const docsMarkdownFiles = listMarkdownFiles(tempDocsRoot);
+      const missingTargets: string[] = [];
+
+      for (const filePath of docsMarkdownFiles) {
+        const content = readFileSync(filePath, 'utf-8');
+        const links = extractInternalLinks(content);
+        for (const link of links) {
+          const cleanPath = link.split('#')[0];
+          if (!cleanPath || isExternalOrUriSchemeLink(cleanPath)) {
+            continue;
+          }
+          const targetPath = resolve(dirname(filePath), cleanPath);
+          if (!existsSync(targetPath)) {
+            missingTargets.push(`${filePath}: ${cleanPath}`);
+          }
+        }
+      }
+
+      expect(missingTargets).toEqual([]);
+    } finally {
+      rmSync(tempDocsRoot, { recursive: true, force: true });
+    }
+  });
+
   it('has valid internal links in markdown files under docs/', () => {
     const docsRoot = join(projectRoot, 'docs');
     const docsMarkdownFiles = listMarkdownFiles(docsRoot);
@@ -359,6 +407,9 @@ describe('Documentation Integrity', () => {
       for (const link of links) {
         const cleanPath = link.split('#')[0];
         if (!cleanPath) {
+          continue;
+        }
+        if (isExternalOrUriSchemeLink(cleanPath)) {
           continue;
         }
         const targetPath = resolve(dirname(filePath), cleanPath);

@@ -268,7 +268,9 @@ describe("settings-hub utility coverage", () => {
 		expect(saved.fetchTimeoutMs).toBe(12_345);
 		expect(saved.streamStallTimeoutMs).toBe(23_456);
 
-		const reloaded = configModule.loadPluginConfig();
+		vi.resetModules();
+		const freshConfigModule = await import("../lib/config.js");
+		const reloaded = freshConfigModule.loadPluginConfig();
 		expect(reloaded.fetchTimeoutMs).toBe(12_345);
 		expect(reloaded.streamStallTimeoutMs).toBe(23_456);
 	});

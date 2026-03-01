@@ -12,6 +12,7 @@ import {
 	REDIRECT_URI,
 	SCOPE,
 } from '../lib/auth/auth.js';
+import * as loggerModule from '../lib/logger.js';
 
 describe('Auth Module', () => {
 	describe('createState', () => {
@@ -478,6 +479,57 @@ describe('Auth Module', () => {
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it('returns failed when response refresh token is whitespace only', async () => {
+			const originalFetch = globalThis.fetch;
+			const logErrorSpy = vi.spyOn(loggerModule, 'logError').mockImplementation(() => {});
+			globalThis.fetch = vi.fn(async () =>
+				new Response(JSON.stringify({
+					access_token: 'new-access',
+					refresh_token: '   ',
+					expires_in: 60,
+				}), { status: 200 }),
+			) as never;
+
+			try {
+				const result = await refreshAccessToken('existing-refresh');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('missing_refresh');
+					expect(result.message).toBe('No refresh token in response or input');
+				}
+				expect(logErrorSpy).toHaveBeenCalledWith('Token refresh missing refresh token');
+				expect(logErrorSpy.mock.calls[0]).toEqual(['Token refresh missing refresh token']);
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.restoreAllMocks();
+			}
+		});
+
+		it('returns failed when input refresh token is whitespace only and response omits refresh token', async () => {
+			const originalFetch = globalThis.fetch;
+			const logErrorSpy = vi.spyOn(loggerModule, 'logError').mockImplementation(() => {});
+			globalThis.fetch = vi.fn(async () =>
+				new Response(JSON.stringify({
+					access_token: 'new-access',
+					expires_in: 60,
+				}), { status: 200 }),
+			) as never;
+
+			try {
+				const result = await refreshAccessToken('   ');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('missing_refresh');
+					expect(result.message).toBe('No refresh token in response or input');
+				}
+				expect(logErrorSpy).toHaveBeenCalledWith('Token refresh missing refresh token');
+				expect(logErrorSpy.mock.calls[0]).toEqual(['Token refresh missing refresh token']);
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.restoreAllMocks();
 			}
 		});
 

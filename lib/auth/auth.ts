@@ -216,7 +216,8 @@ export async function refreshAccessToken(
 			return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 		}
 
-		const nextRefresh = json.refresh_token ?? refreshToken;
+		const nextRefreshRaw = json.refresh_token ?? refreshToken;
+		const nextRefresh = nextRefreshRaw.trim();
 		if (!nextRefresh) {
 			logError("Token refresh missing refresh token");
 			return { type: "failed", reason: "missing_refresh", message: "No refresh token in response or input" };

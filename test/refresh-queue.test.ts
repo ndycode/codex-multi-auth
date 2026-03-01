@@ -300,6 +300,10 @@ describe("RefreshQueue", () => {
       await vi.advanceTimersByTimeAsync(1500);
       const firstResult = await firstAttempt;
       expect(firstResult.type).toBe("failed");
+      if (firstResult.type === "failed") {
+        expect(firstResult.reason).toBe("unknown");
+        expect(firstResult.message).toContain("Refresh timeout after");
+      }
       expect(queue.pendingCount).toBe(0);
 
       const secondResult = await queue.refresh("stuck-token");

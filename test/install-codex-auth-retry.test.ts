@@ -71,6 +71,17 @@ describe("install-codex-auth renameWithRetry", () => {
 		},
 	);
 
+	it("throws when maxRetries is less than 1", async () => {
+		const renameMock = vi.fn();
+		await expect(
+			renameWithRetry("config.json.tmp", "config.json", {
+				rename: renameMock,
+				maxRetries: 0,
+			}),
+		).rejects.toThrow("maxRetries must be an integer >= 1");
+		expect(renameMock).not.toHaveBeenCalled();
+	});
+
 	it("throws immediately for non-retryable rename errors", async () => {
 		const renameMock = vi.fn().mockRejectedValue(makeRenameError("EINVAL"));
 		const delays: number[] = [];

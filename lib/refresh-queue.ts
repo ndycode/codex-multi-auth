@@ -241,8 +241,11 @@ export class RefreshQueue {
       const timeoutErrorMessage = `Refresh timeout after ${timeoutMs}ms`;
       const timeoutPromise = new Promise<TokenResult>((_resolve, reject) => {
         timeoutId = setTimeout(() => {
-          timeoutController.abort(new Error(timeoutErrorMessage));
-          reject(new Error(timeoutErrorMessage));
+          const timeoutError = new Error(timeoutErrorMessage) as Error & { code?: string };
+          timeoutError.name = "AbortError";
+          timeoutError.code = "ABORT_ERR";
+          timeoutController.abort(timeoutError);
+          reject(timeoutError);
         }, timeoutMs);
       });
       const refreshPromise = refreshAccessToken(refreshToken, {

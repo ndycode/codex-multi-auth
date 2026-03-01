@@ -92,6 +92,10 @@ export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 		sleep: sleepImpl = sleep,
 	} = options;
 
+	if (!Number.isInteger(maxRetries) || maxRetries < 1) {
+		throw new RangeError("maxRetries must be an integer >= 1");
+	}
+
 	for (let attempt = 0; attempt < maxRetries; attempt += 1) {
 		try {
 			await rename(sourcePath, targetPath);
