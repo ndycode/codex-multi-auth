@@ -1106,11 +1106,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(capabilityFailureSpy).not.toHaveBeenCalled();
 	});
 
-	it("skips fetch when local token bucket is depleted", async () => {
-		const { AccountManager } = await import("../lib/accounts.js");
-		const consumeSpy = vi.spyOn(AccountManager.prototype, "consumeToken").mockReturnValue(false);
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "should-not-be-returned" }), { status: 200 }),
+		it("skips fetch when local token bucket is depleted", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const consumeSpy = vi.spyOn(AccountManager.prototype, "consumeToken").mockReturnValue(false);
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "should-not-be-returned" }), { status: 200 }),
 		);
 
 		const { sdk } = await setupPlugin();
@@ -1121,9 +1121,88 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 		expect(response.status).toBe(503);
-		expect(await response.text()).toContain("server errors or auth issues");
-		consumeSpy.mockRestore();
-	});
+			expect(await response.text()).toContain("server errors or auth issues");
+			consumeSpy.mockRestore();
+		});
+
+		it("continues to next account when local token bucket is depleted", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const accountOne = {
+				index: 0,
+				accountId: "acc-1",
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+			};
+			const accountTwo = {
+				index: 1,
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+			};
+			const countSpy = vi
+				.spyOn(AccountManager.prototype, "getAccountCount")
+				.mockReturnValue(2);
+			const selectionSpy = vi
+				.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
+				.mockImplementationOnce(() => accountOne)
+				.mockImplementationOnce(() => accountTwo)
+				.mockImplementation(() => null);
+			const consumeSpy = vi
+				.spyOn(AccountManager.prototype, "consumeToken")
+				.mockReturnValueOnce(false)
+				.mockReturnValueOnce(true);
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "from-second-account" }), { status: 200 }),
+			);
+
+			const { sdk } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+			expect(consumeSpy).toHaveBeenCalledTimes(2);
+			countSpy.mockRestore();
+			selectionSpy.mockRestore();
+			consumeSpy.mockRestore();
+		});
+
+		it("treats timeout-triggered abort as network failure", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const configModule = await import("../lib/config.js");
+			const recordFailureSpy = vi.spyOn(AccountManager.prototype, "recordFailure");
+			const timeoutSpy = vi.spyOn(configModule, "getFetchTimeoutMs").mockReturnValueOnce(5);
+			globalThis.fetch = vi.fn((_: unknown, init?: { signal?: AbortSignal }) => {
+				return new Promise((_resolve, reject) => {
+					const signal = init?.signal;
+					if (!signal) {
+						reject(new Error("missing signal"));
+						return;
+					}
+					if (signal.aborted) {
+						reject(Object.assign(new Error("timeout"), { name: "AbortError" }));
+						return;
+					}
+					signal.addEventListener(
+						"abort",
+						() => reject(Object.assign(new Error("timeout"), { name: "AbortError" })),
+						{ once: true },
+					);
+				});
+			});
+
+			const { sdk } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			expect(response.status).toBe(503);
+			expect(recordFailureSpy).toHaveBeenCalled();
+			timeoutSpy.mockRestore();
+		});
 
 	it("falls back from gpt-5.3-codex to gpt-5.2-codex when unsupported fallback is enabled", async () => {
 		const configModule = await import("../lib/config.js");

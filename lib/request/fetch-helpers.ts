@@ -691,15 +691,21 @@ interface RateLimitErrorBody {
 
 function parseRateLimitBody(
 	body: string,
-): { code?: string; resetsAt?: number; retryAfterMs?: number } | undefined {
+): {
+	code?: string;
+	resetsAt?: number;
+	retryAfterMs?: number;
+	retryAfterSeconds?: number;
+} | undefined {
 	if (!body) return undefined;
 	try {
 		const parsed = JSON.parse(body) as RateLimitErrorBody;
 		const error = parsed?.error ?? {};
 		const code = (error.code ?? error.type ?? "").toString();
 		const resetsAt = toNumber(error.resets_at ?? error.reset_at);
-		const retryAfterMs = toNumber(error.retry_after_ms ?? error.retry_after);
-		return { code, resetsAt, retryAfterMs };
+		const retryAfterMs = toNumber(error.retry_after_ms);
+		const retryAfterSeconds = toNumber(error.retry_after);
+		return { code, resetsAt, retryAfterMs, retryAfterSeconds };
 	} catch {
 		return undefined;
 	}
@@ -839,12 +845,16 @@ function ensureJsonErrorResponse(response: Response, payload: ErrorPayload): Res
 }
 
 function parseRetryAfterMs(
-        response: Response,
-        parsedBody?: { resetsAt?: number; retryAfterMs?: number },
+	response: Response,
+	parsedBody?: { resetsAt?: number; retryAfterMs?: number; retryAfterSeconds?: number },
 ): number | null {
-        if (parsedBody?.retryAfterMs !== undefined) {
-                return normalizeRetryAfter(parsedBody.retryAfterMs);
-        }
+	if (parsedBody?.retryAfterMs !== undefined) {
+		return normalizeRetryAfterMs(parsedBody.retryAfterMs);
+	}
+
+	if (parsedBody?.retryAfterSeconds !== undefined) {
+		return normalizeRetryAfterSeconds(parsedBody.retryAfterSeconds);
+	}
 
         const retryAfterMsHeader = response.headers.get("retry-after-ms");
         if (retryAfterMsHeader) {
@@ -897,16 +907,20 @@ function parseRetryAfterMs(
         return null;
 }
 
-function normalizeRetryAfter(value: number): number {
-        if (!Number.isFinite(value)) return 60000;
-        let ms: number;
-        if (value > 0 && value < 1000) {
-                ms = Math.floor(value * 1000);
-        } else {
-                ms = Math.floor(value);
-        }
-        const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
-        return Math.min(ms, MAX_RETRY_DELAY_MS);
+function normalizeRetryAfterMs(value: number): number {
+	if (!Number.isFinite(value)) return 60000;
+	const ms = Math.floor(value);
+	if (ms <= 0) return 60000;
+	const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+	return Math.min(ms, MAX_RETRY_DELAY_MS);
+}
+
+function normalizeRetryAfterSeconds(value: number): number {
+	if (!Number.isFinite(value)) return 60000;
+	const ms = Math.floor(value * 1000);
+	if (ms <= 0) return 60000;
+	const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+	return Math.min(ms, MAX_RETRY_DELAY_MS);
 }
 
 function toNumber(value: unknown): number | undefined {
