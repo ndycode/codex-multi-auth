@@ -212,9 +212,22 @@ export class RefreshQueue {
   private async executeRefresh(refreshToken: string): Promise<TokenResult> {
     const startTime = Date.now();
     log.info("Starting token refresh", { tokenSuffix: refreshToken.slice(-6) });
+    const timeoutMs = Math.max(1_000, this.maxEntryAgeMs);
+    const timeoutController = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      const result = await refreshAccessToken(refreshToken);
+      const timeoutErrorMessage = `Refresh timeout after ${timeoutMs}ms`;
+      const timeoutPromise = new Promise<TokenResult>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          timeoutController.abort(new Error(timeoutErrorMessage));
+          reject(new Error(timeoutErrorMessage));
+        }, timeoutMs);
+      });
+      const refreshPromise = refreshAccessToken(refreshToken, {
+        signal: timeoutController.signal,
+      });
+      const result = await Promise.race([refreshPromise, timeoutPromise]);
       const duration = Date.now() - startTime;
 
       if (result.type === "success") {
@@ -244,6 +257,10 @@ export class RefreshQueue {
         reason: "network_error",
         message: (error as Error)?.message ?? "Unknown error during refresh",
       };
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 

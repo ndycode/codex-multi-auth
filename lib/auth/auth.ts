@@ -166,11 +166,19 @@ export function decodeJWT(token: string): JWTPayload | null {
  * @param refreshToken - Refresh token
  * @returns Token result
  */
-export async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
+type RefreshAccessTokenOptions = {
+	signal?: AbortSignal;
+};
+
+export async function refreshAccessToken(
+	refreshToken: string,
+	options: RefreshAccessTokenOptions = {},
+): Promise<TokenResult> {
 	try {
 		const response = await fetch(TOKEN_URL, {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			signal: options?.signal,
 			body: new URLSearchParams({
 				grant_type: "refresh_token",
 				refresh_token: refreshToken,

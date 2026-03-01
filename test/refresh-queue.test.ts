@@ -44,7 +44,10 @@ describe("RefreshQueue", () => {
 
       expect(result).toEqual(mockResult);
       expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
-      expect(authModule.refreshAccessToken).toHaveBeenCalledWith("test-refresh-token");
+      expect(authModule.refreshAccessToken).toHaveBeenCalledWith(
+        "test-refresh-token",
+        expect.any(Object),
+      );
     });
 
     it("should return failed result when refresh fails", async () => {
@@ -130,9 +133,9 @@ describe("RefreshQueue", () => {
       ]);
 
       expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(3);
-      expect(authModule.refreshAccessToken).toHaveBeenCalledWith("token-1");
-      expect(authModule.refreshAccessToken).toHaveBeenCalledWith("token-2");
-      expect(authModule.refreshAccessToken).toHaveBeenCalledWith("token-3");
+      expect(authModule.refreshAccessToken).toHaveBeenCalledWith("token-1", expect.any(Object));
+      expect(authModule.refreshAccessToken).toHaveBeenCalledWith("token-2", expect.any(Object));
+      expect(authModule.refreshAccessToken).toHaveBeenCalledWith("token-3", expect.any(Object));
     });
 
     it("should allow new refresh after previous completes", async () => {
@@ -217,29 +220,65 @@ describe("RefreshQueue", () => {
   });
 
   describe("stale entry cleanup", () => {
-    it("should keep stale unresolved entries to preserve dedupe", async () => {
+    it("times out stale unresolved entries and allows retry", async () => {
       vi.useFakeTimers();
 
       const stuckPromise = new Promise<never>(() => {});
+      const successfulRefresh = {
+        type: "success" as const,
+        access: "access",
+        refresh: "refresh",
+        expires: Date.now() + 3600000,
+      };
       vi.mocked(authModule.refreshAccessToken)
         .mockReturnValueOnce(stuckPromise)
-        .mockResolvedValue({
-          type: "success",
-          access: "access",
-          refresh: "refresh", 
-          expires: Date.now() + 3600000,
-        });
+        .mockResolvedValueOnce(successfulRefresh);
 
       const queue = new RefreshQueue(1000);
       
-      queue.refresh("stuck-token");
+      const firstAttempt = queue.refresh("stuck-token");
       expect(queue.pendingCount).toBe(1);
       
-      vi.advanceTimersByTime(1500);
+      await vi.advanceTimersByTimeAsync(1500);
+      const firstResult = await firstAttempt;
+      expect(firstResult.type).toBe("failed");
+      expect(queue.pendingCount).toBe(0);
+
+      const secondResult = await queue.refresh("stuck-token");
+      expect(secondResult).toEqual(successfulRefresh);
+      expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(2);
       
-      await queue.refresh("other-token");
-      
+      vi.useRealTimers();
+    });
+
+    it("keeps dedupe for same token before timeout elapses", async () => {
+      vi.useFakeTimers();
+
+      let resolveRefresh: ((value: { type: "success"; access: string; refresh: string; expires: number }) => void) | undefined;
+      const inFlight = new Promise<{ type: "success"; access: string; refresh: string; expires: number }>((resolve) => {
+        resolveRefresh = resolve;
+      });
+      vi.mocked(authModule.refreshAccessToken).mockReturnValueOnce(inFlight as Promise<never>);
+
+      const queue = new RefreshQueue(1000);
+      const p1 = queue.refresh("same-token");
+      const p2 = queue.refresh("same-token");
+      await Promise.resolve();
+
+      expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(1);
       expect(queue.pendingCount).toBe(1);
+
+      resolveRefresh?.({
+        type: "success",
+        access: "a",
+        refresh: "r",
+        expires: Date.now() + 3600_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+      const [r1, r2] = await Promise.all([p1, p2]);
+      expect(r1).toEqual(r2);
+      expect(queue.pendingCount).toBe(0);
       
       vi.useRealTimers();
     });
@@ -271,7 +310,10 @@ describe("RefreshQueue", () => {
       const result = await queuedRefresh("test-token");
       
       expect(result).toEqual(mockResult);
-      expect(authModule.refreshAccessToken).toHaveBeenCalledWith("test-token");
+      expect(authModule.refreshAccessToken).toHaveBeenCalledWith(
+        "test-token",
+        expect.any(Object),
+      );
     });
   });
 
@@ -562,11 +604,14 @@ describe("RefreshQueue", () => {
 			queueInternal.tokenRotationMap.set("unrelated-token", "some-other-token");
 			queueInternal.tokenRotationMap.set("original-token", "rotated-token");
 			
-			const promise2 = queue.refresh("rotated-token");
-			await Promise.resolve();
-			
-			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
-			expect(authModule.refreshAccessToken).toHaveBeenCalledWith("original-token");
+      const promise2 = queue.refresh("rotated-token");
+      await Promise.resolve();
+      
+      expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+      expect(authModule.refreshAccessToken).toHaveBeenCalledWith(
+        "original-token",
+        expect.any(Object),
+      );
 			
 			outerResolve!({
 				type: "success",
@@ -615,11 +660,14 @@ describe("RefreshQueue", () => {
 				});
 			});
 
-			const ownerRefresh = queueA.refresh("same-cross-token");
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			const followerRefresh = queueB.refresh("same-cross-token");
-
-			releaseRefresh?.();
+      const ownerRefresh = queueA.refresh("same-cross-token");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const followerRefresh = queueB.refresh("same-cross-token");
+      for (let i = 0; i < 40 && !releaseRefresh; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(releaseRefresh).not.toBeNull();
+      releaseRefresh?.();
 
 			const [ownerResult, followerResult] = await Promise.all([
 				ownerRefresh,
