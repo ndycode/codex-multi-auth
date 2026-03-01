@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { rename as fsRename } from "node:fs/promises";
 
 const PLUGIN_NAME = "codex-multi-auth";
 
@@ -45,5 +46,37 @@ export function normalizePluginList(list) {
 		deduped.push(entry);
 	}
 	return [...deduped, PLUGIN_NAME];
+}
+
+export async function renameWithRetry(sourcePath, targetPath, options = {}) {
+	const {
+		rename = fsRename,
+		log = () => {},
+		maxRetries = 5,
+		baseDelayMs = 20,
+		jitterMs = 10,
+		random = Math.random,
+		sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+	} = options;
+	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY", "EACCES"]);
+	for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+		try {
+			await rename(sourcePath, targetPath);
+			return;
+		} catch (error) {
+			const code = error && typeof error === "object" && "code" in error
+				? error.code
+				: undefined;
+			const isRetryable = typeof code === "string" && retryableCodes.has(code);
+			if (!isRetryable || attempt === maxRetries - 1) {
+				throw error;
+			}
+			const delayMs = baseDelayMs * 2 ** attempt + Math.floor(random() * jitterMs);
+			log(
+				`Retrying atomic rename (${attempt + 1}/${maxRetries}) code=${code ?? "unknown"} source=${sourcePath} target=${targetPath} delayMs=${delayMs}`,
+			);
+			await sleep(delayMs);
+		}
+	}
 }
 

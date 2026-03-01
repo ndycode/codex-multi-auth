@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir, copyFile, rm, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { normalizePluginList, resolveInstallPaths } from "./install-codex-auth-utils.js";
+import { normalizePluginList, renameWithRetry, resolveInstallPaths } from "./install-codex-auth-utils.js";
 
 const PLUGIN_NAME = "codex-multi-auth";
 
@@ -55,26 +55,6 @@ async function readJson(filePath) {
 	return JSON.parse(content);
 }
 
-async function renameWithRetry(sourcePath, targetPath) {
-	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
-	const maxRetries = 5;
-	for (let attempt = 0; attempt < maxRetries; attempt += 1) {
-		try {
-			await rename(sourcePath, targetPath);
-			return;
-		} catch (error) {
-			const code = error && typeof error === "object" && "code" in error
-				? error.code
-				: undefined;
-			const isRetryable = typeof code === "string" && retryableCodes.has(code);
-			if (!isRetryable || attempt === maxRetries - 1) {
-				throw error;
-			}
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 20 * (attempt + 1)));
-		}
-	}
-}
-
 async function writeJsonAtomic(filePath, value) {
 	const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random()
 		.toString(36)
@@ -82,7 +62,7 @@ async function writeJsonAtomic(filePath, value) {
 	const content = formatJson(value);
 	try {
 		await writeFile(tempPath, content, "utf-8");
-		await renameWithRetry(tempPath, filePath);
+		await renameWithRetry(tempPath, filePath, { log });
 	} finally {
 		if (existsSync(tempPath)) {
 			await rm(tempPath, { force: true });
