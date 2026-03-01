@@ -122,27 +122,72 @@ describe("settings-hub utility coverage", () => {
 		expect(attempts).toBe(3);
 	});
 
+	it("serializes concurrent writes for the same path key", async () => {
+		const api = await loadSettingsHubTestApi();
+		const order: string[] = [];
+		let releaseFirst: (() => void) | undefined;
+		const firstGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+
+		const first = api.withQueuedRetry("same-key", async () => {
+			order.push("first:start");
+			await firstGate;
+			order.push("first:end");
+			return "first-ok";
+		});
+
+		const second = api.withQueuedRetry("same-key", async () => {
+			order.push("second:start");
+			order.push("second:end");
+			return "second-ok";
+		});
+
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(order).toEqual(["first:start"]);
+
+		releaseFirst?.();
+
+		await expect(first).resolves.toBe("first-ok");
+		await expect(second).resolves.toBe("second-ok");
+		expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
+	});
+
 	it("retries queued writes for HTTP 429 using retryAfterMs delay", async () => {
 		const api = await loadSettingsHubTestApi();
-		let attempts = 0;
-		const startedAt = Date.now();
-		const result = await api.withQueuedRetry("settings-path-429", async () => {
-			attempts += 1;
-			if (attempts === 1) {
-				const error = new Error("rate limited") as Error & {
-					status: number;
-					retryAfterMs: number;
-				};
-				error.status = 429;
-				error.retryAfterMs = 120;
-				throw error;
-			}
-			return "ok";
-		});
-		const elapsedMs = Date.now() - startedAt;
-		expect(result).toBe("ok");
-		expect(attempts).toBe(2);
-		expect(elapsedMs).toBeGreaterThanOrEqual(100);
+		vi.useFakeTimers();
+		try {
+			let attempts = 0;
+			const retryAfterMs = 120;
+			const resultPromise = api.withQueuedRetry("settings-path-429", async () => {
+				attempts += 1;
+				if (attempts === 1) {
+					const error = new Error("rate limited") as Error & {
+						status: number;
+						retryAfterMs: number;
+					};
+					error.status = 429;
+					error.retryAfterMs = retryAfterMs;
+					throw error;
+				}
+				return "ok";
+			});
+
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(attempts).toBe(1);
+
+			await vi.advanceTimersByTimeAsync(retryAfterMs - 1);
+			expect(attempts).toBe(1);
+
+			await vi.advanceTimersByTimeAsync(1);
+			const result = await resultPromise;
+			expect(result).toBe("ok");
+			expect(attempts).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("persists selected dashboard keys through retry-aware save", async () => {
