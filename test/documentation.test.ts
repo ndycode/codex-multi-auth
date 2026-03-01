@@ -33,6 +33,12 @@ const scopedLegacyAllowedFiles = new Set([
   'docs/releases/v0.1.0-beta.0.md',
 ]);
 
+const compatibilityAliasAllowedFiles = new Set([
+  'docs/reference/commands.md',
+  'docs/troubleshooting.md',
+  'docs/upgrade.md',
+]);
+
 function read(filePath: string): string {
   return readFileSync(join(projectRoot, filePath), 'utf-8');
 }
@@ -71,6 +77,7 @@ describe('Documentation Integrity', () => {
     expect(portal).toContain('releases/v0.1.0.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
     expect(portal).toContain('releases/legacy-pre-0.1-history.md');
+    expect(portal).toContain('| [releases/v0.1.1.md](releases/v0.1.1.md) | Current stable release notes |');
 
     const beta = read('docs/releases/v0.1.0-beta.0.md');
     expect(beta).toContain('Archived');
@@ -117,6 +124,22 @@ describe('Documentation Integrity', () => {
     }
   });
 
+  it('keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs', () => {
+    const files = ['README.md', ...userDocs];
+    const aliasPattern = /\bcodex (multi auth|multi-auth|multiauth)\b/;
+
+    for (const filePath of files) {
+      const content = read(filePath);
+      const hasAlias = aliasPattern.test(content);
+      if (hasAlias) {
+        expect(
+          compatibilityAliasAllowedFiles.has(filePath),
+          `${filePath} should not include compatibility alias commands`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it('keeps codex auth as the command standard in key docs', () => {
     const keyDocs = [
       'README.md',
@@ -134,7 +157,7 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('keeps fix command flag docs aligned across README, reference, and CLI usage text', () => {
+  it('keeps canonical auth usage labels aligned across README, reference, and CLI usage text', () => {
     const readme = read('README.md');
     const commandRef = read('docs/reference/commands.md');
     const managerPath = 'lib/codex-manager.ts';
@@ -144,7 +167,10 @@ describe('Documentation Integrity', () => {
     expect(readme).toContain('codex auth fix --live --model gpt-5-codex');
     expect(commandRef).toContain('| `--live` | forecast, report, fix |');
     expect(commandRef).toContain('| `--model <model>` | forecast, report, fix |');
-    expect(manager).toContain('codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]');
+    expect(manager).toContain('codex auth login');
+    expect(manager).toContain('codex auth fix [--dry-run] [--json] [--live] [--model <model>]');
+    expect(manager).toContain('Missing index. Usage: codex auth switch <index>');
+    expect(manager).not.toContain('codex-multi-auth auth switch <index>');
   });
 
   it('documents stable overrides separately from advanced and internal overrides', () => {
