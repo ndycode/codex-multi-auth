@@ -306,6 +306,18 @@ export interface ErrorDiagnostics {
 	httpStatus?: number;
 }
 
+export interface CreateCodexHeadersOptions {
+	model?: string;
+	promptCacheKey?: string;
+}
+
+export interface CreateCodexHeadersParams {
+	init?: RequestInit;
+	accountId: string;
+	accessToken: string;
+	opts?: CreateCodexHeadersOptions;
+}
+
 /**
  * Determines if the current auth token needs to be refreshed
  * @param auth - Current authentication state
@@ -503,19 +515,47 @@ export async function transformRequestForCodex(
  * @returns Headers object with all required Codex headers
  */
 export function createCodexHeaders(
+	params: CreateCodexHeadersParams,
+): Headers;
+export function createCodexHeaders(
     init: RequestInit | undefined,
     accountId: string,
     accessToken: string,
-    opts?: { model?: string; promptCacheKey?: string },
+    opts?: CreateCodexHeadersOptions,
+): Headers;
+export function createCodexHeaders(
+    initOrParams: RequestInit | undefined | CreateCodexHeadersParams,
+    accountId?: string,
+    accessToken?: string,
+    opts?: CreateCodexHeadersOptions,
 ): Headers {
-	const headers = new Headers(init?.headers ?? {});
+	const useNamedParams =
+		accountId === undefined &&
+		typeof accessToken === "undefined" &&
+		typeof initOrParams === "object" &&
+		initOrParams !== null &&
+		"accountId" in initOrParams &&
+		"accessToken" in initOrParams;
+	const namedParams = useNamedParams
+		? (initOrParams as CreateCodexHeadersParams)
+		: null;
+	const resolvedInit = useNamedParams
+		? namedParams?.init
+		: (initOrParams as RequestInit | undefined);
+	const resolvedAccountId = useNamedParams ? namedParams?.accountId : accountId;
+	const resolvedAccessToken = useNamedParams ? namedParams?.accessToken : accessToken;
+	const resolvedOpts = useNamedParams ? namedParams?.opts : opts;
+	if (!resolvedAccountId || !resolvedAccessToken) {
+		throw new TypeError("createCodexHeaders requires accountId and accessToken");
+	}
+	const headers = new Headers(resolvedInit?.headers ?? {});
 	headers.delete("x-api-key"); // Remove any existing API key
-	headers.set("Authorization", `Bearer ${accessToken}`);
-	headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+	headers.set("Authorization", `Bearer ${resolvedAccessToken}`);
+	headers.set(OPENAI_HEADERS.ACCOUNT_ID, resolvedAccountId);
 	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
 
-    const cacheKey = opts?.promptCacheKey;
+    const cacheKey = resolvedOpts?.promptCacheKey;
     if (cacheKey) {
         headers.set(OPENAI_HEADERS.CONVERSATION_ID, cacheKey);
         headers.set(OPENAI_HEADERS.SESSION_ID, cacheKey);

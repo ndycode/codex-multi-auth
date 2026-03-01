@@ -511,6 +511,23 @@ describe("selectHybridAccount", () => {
 		);
 		expect(result?.index).toBe(1);
 	});
+
+	it("supports named-parameter options form", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+
+		const baseline = selectHybridAccount(accounts, healthTracker, tokenTracker);
+		const named = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+		});
+
+		expect(named?.index).toBe(baseline?.index);
+	});
 });
 
 describe("utility functions", () => {
@@ -565,6 +582,21 @@ describe("utility functions", () => {
 			const result = exponentialBackoff(10, 1000, 5000, 0);
 			expect(result).toBe(5000);
 
+			vi.spyOn(Math, "random").mockRestore();
+		});
+
+		it("supports named-parameter options form", () => {
+			vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+			const positional = exponentialBackoff(3, 1000, 60000, 0);
+			const named = exponentialBackoff({
+				attempt: 3,
+				baseMs: 1000,
+				maxMs: 60000,
+				jitterFactor: 0,
+			});
+
+			expect(named).toBe(positional);
 			vi.spyOn(Math, "random").mockRestore();
 		});
 	});

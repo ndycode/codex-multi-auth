@@ -37,6 +37,8 @@ Canonical documentation map for `codex-multi-auth`.
 | [reference/commands.md](reference/commands.md) | Commands, flags, and hotkeys |
 | [reference/settings.md](reference/settings.md) | Dashboard/backend settings and defaults |
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
+| [reference/public-api.md](reference/public-api.md) | Tiered public API stability and semver contract |
+| [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics contract |
 | [releases/v0.1.0.md](releases/v0.1.0.md) | Current stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
 | [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |

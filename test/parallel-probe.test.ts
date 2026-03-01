@@ -260,5 +260,31 @@ describe("parallel-probe", () => {
 			expect(candidates).toHaveLength(2);
 			expect(candidates[0].index).toBe(1);
 		});
+
+		it("supports named-parameter options form", () => {
+			const accounts = [
+				createMockAccount(0, { lastUsed: Date.now() }),
+				createMockAccount(1, { lastUsed: Date.now() - 1000 * 60 * 60 * 2 }),
+			];
+
+			const mockManager = {
+				getAccountsSnapshot: vi.fn().mockReturnValue(accounts),
+			};
+
+			const positional = getTopCandidates(
+				mockManager as unknown as Parameters<typeof getTopCandidates>[0],
+				"codex",
+				null,
+				2,
+			);
+			const named = getTopCandidates({
+				accountManager: mockManager as unknown as Parameters<typeof getTopCandidates>[0],
+				modelFamily: "codex",
+				model: null,
+				maxCandidates: 2,
+			});
+
+			expect(named).toEqual(positional);
+		});
 	});
 });

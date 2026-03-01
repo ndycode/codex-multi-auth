@@ -154,5 +154,17 @@ describe("Rate limit backoff", () => {
 			expect(second.attempt).toBe(2);
 			expect(second.delayMs).toBe(12000);
 		});
+
+		it("supports named-parameter options form", () => {
+			const positional = getRateLimitBackoffWithReason(20, "named-quota", 1000, "tokens");
+			clearRateLimitBackoffState();
+			const named = getRateLimitBackoffWithReason({
+				accountIndex: 20,
+				quotaKey: "named-quota",
+				serverRetryAfterMs: 1000,
+				reason: "tokens",
+			});
+			expect(named).toEqual(positional);
+		});
 	});
 });

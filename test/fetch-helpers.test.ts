@@ -237,6 +237,23 @@ describe('Fetch Helpers Module', () => {
 			expect(headers.get(OPENAI_HEADERS.SESSION_ID)).toBeNull();
 		});
 
+		it('supports named-parameter options form', () => {
+			const positional = createCodexHeaders(undefined, accountId, accessToken, {
+				model: 'gpt-5',
+				promptCacheKey: 'session-named',
+			});
+			const named = createCodexHeaders({
+				init: undefined,
+				accountId,
+				accessToken,
+				opts: { model: 'gpt-5', promptCacheKey: 'session-named' },
+			});
+
+			expect(named.get('Authorization')).toBe(positional.get('Authorization'));
+			expect(named.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe(positional.get(OPENAI_HEADERS.ACCOUNT_ID));
+			expect(named.get(OPENAI_HEADERS.SESSION_ID)).toBe(positional.get(OPENAI_HEADERS.SESSION_ID));
+		});
+
 		it('maps usage_not_included 404 to 403 entitlement error, not rate limit', async () => {
 			const body = {
 				error: {

@@ -259,6 +259,8 @@ codex auth doctor --json
 - Configuration: [docs/configuration.md](docs/configuration.md)
 - Troubleshooting: [docs/troubleshooting.md](docs/troubleshooting.md)
 - Commands reference: [docs/reference/commands.md](docs/reference/commands.md)
+- Public API contract: [docs/reference/public-api.md](docs/reference/public-api.md)
+- Error contracts: [docs/reference/error-contracts.md](docs/reference/error-contracts.md)
 - Settings reference: [docs/reference/settings.md](docs/reference/settings.md)
 - Storage paths: [docs/reference/storage-paths.md](docs/reference/storage-paths.md)
 - Upgrade guide: [docs/upgrade.md](docs/upgrade.md)

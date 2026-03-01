@@ -115,5 +115,7 @@ codex auth doctor --fix
 ## Related
 
 - [../features.md](../features.md)
+- [public-api.md](public-api.md)
+- [error-contracts.md](error-contracts.md)
 - [settings.md](settings.md)
 - [../troubleshooting.md](../troubleshooting.md)

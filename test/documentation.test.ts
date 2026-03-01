@@ -16,6 +16,8 @@ const userDocs = [
   'docs/privacy.md',
   'docs/upgrade.md',
   'docs/reference/commands.md',
+  'docs/reference/public-api.md',
+  'docs/reference/error-contracts.md',
   'docs/reference/settings.md',
   'docs/reference/storage-paths.md',
   'docs/releases/v0.1.1.md',
@@ -67,6 +69,8 @@ describe('Documentation Integrity', () => {
 
   it('docs portal links to stable, beta, and archived release history', () => {
     const portal = read('docs/README.md');
+    expect(portal).toContain('reference/public-api.md');
+    expect(portal).toContain('reference/error-contracts.md');
     expect(portal).toContain('releases/v0.1.1.md');
     expect(portal).toContain('releases/v0.1.0.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
@@ -132,6 +136,22 @@ describe('Documentation Integrity', () => {
         'codex auth',
       );
     }
+  });
+
+  it('documents public API stability tiers and error contracts', () => {
+    const publicApi = read('docs/reference/public-api.md').toLowerCase();
+    const errorContracts = read('docs/reference/error-contracts.md').toLowerCase();
+
+    expect(publicApi).toContain('tier a');
+    expect(publicApi).toContain('tier b');
+    expect(publicApi).toContain('tier c');
+    expect(publicApi).toContain('options-object');
+    expect(publicApi).toContain('semver');
+
+    expect(errorContracts).toContain('exit codes');
+    expect(errorContracts).toContain('json mode contract');
+    expect(errorContracts).toContain('entitlement');
+    expect(errorContracts).toContain('rate-limit');
   });
 
   it('keeps fix command flag docs aligned across README, reference, and CLI usage text', () => {

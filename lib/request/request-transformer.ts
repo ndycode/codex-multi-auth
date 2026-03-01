@@ -21,6 +21,16 @@ type CollaborationMode = "plan" | "default" | "unknown";
 type FastSessionStrategy = "hybrid" | "always";
 type SupportedReasoningSummary = "auto" | "concise" | "detailed";
 
+export interface TransformRequestBodyParams {
+	body: RequestBody;
+	codexInstructions: string;
+	userConfig?: UserConfig;
+	codexMode?: boolean;
+	fastSession?: boolean;
+	fastSessionStrategy?: FastSessionStrategy;
+	fastSessionMaxInputItems?: number;
+}
+
 const PLAN_MODE_ONLY_TOOLS = new Set(["request_user_input"]);
 
 export {
@@ -819,27 +829,76 @@ export function addToolRemapMessage(
  * @returns Transformed request body
  */
 export async function transformRequestBody(
+	params: TransformRequestBodyParams,
+): Promise<RequestBody>;
+export async function transformRequestBody(
 	body: RequestBody,
 	codexInstructions: string,
+	userConfig?: UserConfig,
+	codexMode?: boolean,
+	fastSession?: boolean,
+	fastSessionStrategy?: FastSessionStrategy,
+	fastSessionMaxInputItems?: number,
+): Promise<RequestBody>;
+export async function transformRequestBody(
+	bodyOrParams: RequestBody | TransformRequestBodyParams,
+	codexInstructions?: string,
 	userConfig: UserConfig = { global: {}, models: {} },
 	codexMode = true,
 	fastSession = false,
 	fastSessionStrategy: FastSessionStrategy = "hybrid",
 	fastSessionMaxInputItems = 30,
 ): Promise<RequestBody> {
+	const useNamedParams =
+		typeof codexInstructions === "undefined" &&
+		typeof bodyOrParams === "object" &&
+		bodyOrParams !== null &&
+		"body" in bodyOrParams &&
+		"codexInstructions" in bodyOrParams;
+	let body: RequestBody;
+	let resolvedCodexInstructions: string | undefined;
+	let resolvedUserConfig: UserConfig;
+	let resolvedCodexMode: boolean;
+	let resolvedFastSession: boolean;
+	let resolvedFastSessionStrategy: FastSessionStrategy;
+	let resolvedFastSessionMaxInputItems: number;
+
+	if (useNamedParams) {
+		const namedParams = bodyOrParams as TransformRequestBodyParams;
+		body = namedParams.body;
+		resolvedCodexInstructions = namedParams.codexInstructions;
+		resolvedUserConfig = namedParams.userConfig ?? { global: {}, models: {} };
+		resolvedCodexMode = namedParams.codexMode ?? true;
+		resolvedFastSession = namedParams.fastSession ?? false;
+		resolvedFastSessionStrategy = namedParams.fastSessionStrategy ?? "hybrid";
+		resolvedFastSessionMaxInputItems = namedParams.fastSessionMaxInputItems ?? 30;
+	} else {
+		body = bodyOrParams as RequestBody;
+		resolvedCodexInstructions = codexInstructions;
+		resolvedUserConfig = userConfig;
+		resolvedCodexMode = codexMode;
+		resolvedFastSession = fastSession;
+		resolvedFastSessionStrategy = fastSessionStrategy;
+		resolvedFastSessionMaxInputItems = fastSessionMaxInputItems;
+	}
+
+	if (typeof resolvedCodexInstructions !== "string") {
+		throw new TypeError("transformRequestBody requires codexInstructions");
+	}
+
 	const originalModel = body.model;
 	const normalizedModel = normalizeModel(body.model);
 
 	// Get model-specific configuration using ORIGINAL model name (config key)
 	// This allows per-model options like "gpt-5-codex-low" to work correctly
 	const lookupModel = originalModel || normalizedModel;
-	const modelConfig = getModelConfig(lookupModel, userConfig);
+	const modelConfig = getModelConfig(lookupModel, resolvedUserConfig);
 
 	// Debug: Log which config was resolved
 	logDebug(
-		`Model config lookup: "${lookupModel}" → normalized to "${normalizedModel}" for API`,
+			`Model config lookup: "${lookupModel}" → normalized to "${normalizedModel}" for API`,
 		{
-			hasModelSpecificConfig: !!userConfig.models?.[lookupModel],
+			hasModelSpecificConfig: !!resolvedUserConfig.models?.[lookupModel],
 			resolvedConfig: modelConfig,
 		},
 	);
@@ -853,9 +912,9 @@ export async function transformRequestBody(
 		? normalizedModel
 		: lookupModel;
 	const shouldApplyFastSessionTuning =
-		fastSession &&
-		(fastSessionStrategy === "always" ||
-			!isComplexFastSessionRequest(body, fastSessionMaxInputItems));
+		resolvedFastSession &&
+		(resolvedFastSessionStrategy === "always" ||
+			!isComplexFastSessionRequest(body, resolvedFastSessionMaxInputItems));
 	const latestUserText = getLatestUserText(body.input);
 	const isTrivialTurn = isTrivialLatestPrompt(latestUserText ?? "");
 	const shouldDisableToolsForTrivialTurn =
@@ -884,8 +943,8 @@ export async function transformRequestBody(
 	}
 
 	body.instructions = shouldApplyFastSessionTuning
-		? compactInstructionsForFastSession(codexInstructions, isTrivialTurn)
-		: codexInstructions;
+		? compactInstructionsForFastSession(resolvedCodexInstructions, isTrivialTurn)
+		: resolvedCodexInstructions;
 
 	// Prompt caching relies on the host providing a stable prompt_cache_key
 	// Host passes its session identifier. We no longer synthesize one here.
@@ -896,9 +955,9 @@ export async function transformRequestBody(
 
 			if (shouldApplyFastSessionTuning) {
 				inputItems =
-					trimInputForFastSession(inputItems, fastSessionMaxInputItems, {
-						preferLatestUserOnly: shouldPreferLatestUserOnly,
-					}) ?? inputItems;
+						trimInputForFastSession(inputItems, resolvedFastSessionMaxInputItems, {
+							preferLatestUserOnly: shouldPreferLatestUserOnly,
+						}) ?? inputItems;
 			}
 
 		// Debug: Log original input message IDs before filtering
@@ -929,7 +988,7 @@ export async function transformRequestBody(
 			logDebug(`Successfully removed all ${originalIds.length} message IDs`);
 		}
 
-		if (codexMode) {
+		if (resolvedCodexMode) {
 			// CODEX_MODE: Remove host system prompt, add bridge prompt
 			body.input = await filterHostSystemPrompts(body.input);
 			body.input = addCodexBridgeMessage(body.input, !!body.tools);

@@ -41,9 +41,40 @@ const templatePath = join(
 
 const installPaths = resolveInstallPaths();
 const { configDir, configPath, cacheNodeModules, cacheBunLock, cachePackageJson } = installPaths;
+const FILE_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY"]);
+const FILE_RETRY_MAX_ATTEMPTS = 6;
+const FILE_RETRY_BASE_DELAY_MS = 25;
 
 function log(message) {
 	console.log(message);
+}
+
+function sleep(ms) {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
+function shouldRetryFileOperation(error) {
+	return error instanceof Error &&
+		typeof error.code === "string" &&
+		FILE_RETRY_CODES.has(error.code);
+}
+
+async function withFileOperationRetry(operation) {
+	for (let attempt = 1; ; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (!shouldRetryFileOperation(error) || attempt >= FILE_RETRY_MAX_ATTEMPTS) {
+				throw error;
+			}
+
+			const jitter = Math.floor(Math.random() * 20);
+			const delayMs = (FILE_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1))) + jitter;
+			await sleep(delayMs);
+		}
+	}
 }
 
 function formatJson(obj) {
@@ -61,11 +92,15 @@ async function writeJsonAtomic(filePath, value) {
 		.slice(2, 8)}`;
 	const content = formatJson(value);
 	try {
-		await writeFile(tempPath, content, "utf-8");
-		await rename(tempPath, filePath);
+		await withFileOperationRetry(() => writeFile(tempPath, content, "utf-8"));
+		await withFileOperationRetry(() => rename(tempPath, filePath));
 	} finally {
 		if (existsSync(tempPath)) {
-			await rm(tempPath, { force: true });
+			try {
+				await withFileOperationRetry(() => rm(tempPath, { force: true }));
+			} catch (error) {
+				log(`Warning: Could not remove temporary file ${tempPath} (${error}).`);
+			}
 		}
 	}
 }

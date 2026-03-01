@@ -29,6 +29,8 @@ Canonical governance for repository documentation quality and consistency.
 | Privacy and data handling | `docs/privacy.md` |
 | Upgrade and migration | `docs/upgrade.md` |
 | Command reference | `docs/reference/commands.md` |
+| Public API contract | `docs/reference/public-api.md` |
+| Error contract reference | `docs/reference/error-contracts.md` |
 | Settings reference | `docs/reference/settings.md` |
 | Storage path reference | `docs/reference/storage-paths.md` |
 | Docs style contract | `docs/STYLE_GUIDE.md` |
