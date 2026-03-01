@@ -55,6 +55,26 @@ async function readJson(filePath) {
 	return JSON.parse(content);
 }
 
+async function renameWithRetry(sourcePath, targetPath) {
+	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
+	const maxRetries = 5;
+	for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+		try {
+			await rename(sourcePath, targetPath);
+			return;
+		} catch (error) {
+			const code = error && typeof error === "object" && "code" in error
+				? error.code
+				: undefined;
+			const isRetryable = typeof code === "string" && retryableCodes.has(code);
+			if (!isRetryable || attempt === maxRetries - 1) {
+				throw error;
+			}
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 20 * (attempt + 1)));
+		}
+	}
+}
+
 async function writeJsonAtomic(filePath, value) {
 	const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random()
 		.toString(36)
@@ -62,7 +82,7 @@ async function writeJsonAtomic(filePath, value) {
 	const content = formatJson(value);
 	try {
 		await writeFile(tempPath, content, "utf-8");
-		await rename(tempPath, filePath);
+		await renameWithRetry(tempPath, filePath);
 	} finally {
 		if (existsSync(tempPath)) {
 			await rm(tempPath, { force: true });

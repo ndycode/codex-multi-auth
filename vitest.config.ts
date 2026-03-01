@@ -37,6 +37,7 @@ export default defineConfig({
         'eslint.config.js',
         'index.ts',
         'lib/codex-manager.ts',
+        'lib/codex-manager/settings-hub.ts',
         'lib/ui/**',
         'lib/tools/**',
         'scripts/**',
