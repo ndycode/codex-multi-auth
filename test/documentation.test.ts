@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const projectRoot = resolve(process.cwd());
 
@@ -16,6 +16,8 @@ const userDocs = [
   'docs/privacy.md',
   'docs/upgrade.md',
   'docs/reference/commands.md',
+  'docs/reference/public-api.md',
+  'docs/reference/error-contracts.md',
   'docs/reference/settings.md',
   'docs/reference/storage-paths.md',
   'docs/releases/v0.1.1.md',
@@ -49,6 +51,22 @@ function extractInternalLinks(markdown: string): string[] {
     .filter((link) => !link.startsWith('http') && !link.startsWith('#'));
 }
 
+function listMarkdownFiles(rootDir: string): string[] {
+  const entries = readdirSync(rootDir, { withFileTypes: true });
+  const markdownFiles: string[] = [];
+  for (const entry of entries) {
+    const absolutePath = join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      markdownFiles.push(...listMarkdownFiles(absolutePath));
+      continue;
+    }
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      markdownFiles.push(absolutePath);
+    }
+  }
+  return markdownFiles;
+}
+
 function compareSemverDescending(left: string, right: string): number {
   const leftParts = left.split('.').map((part) => Number.parseInt(part, 10));
   const rightParts = right.split('.').map((part) => Number.parseInt(part, 10));
@@ -73,6 +91,8 @@ describe('Documentation Integrity', () => {
 
   it('docs portal links to stable, beta, and archived release history', () => {
     const portal = read('docs/README.md');
+    expect(portal).toContain('reference/public-api.md');
+    expect(portal).toContain('reference/error-contracts.md');
     expect(portal).toContain('releases/v0.1.1.md');
     expect(portal).toContain('releases/v0.1.0.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
@@ -157,7 +177,30 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('keeps canonical auth usage labels aligned across README, reference, and CLI usage text', () => {
+  it('documents public API stability tiers and error contracts', () => {
+    const publicApi = read('docs/reference/public-api.md').toLowerCase();
+    const errorContracts = read('docs/reference/error-contracts.md').toLowerCase();
+
+    expect(publicApi).toContain('tier a');
+    expect(publicApi).toContain('tier b');
+    expect(publicApi).toContain('tier c');
+    expect(publicApi).toContain('options-object');
+    expect(publicApi).toContain('semver');
+
+    expect(errorContracts).toContain('exit codes');
+    expect(errorContracts).toContain('json mode contract');
+    expect(errorContracts).toContain('entitlement');
+    expect(errorContracts).toContain('rate-limit');
+    expect(errorContracts).toContain('options-object compatibility contract');
+    expect(errorContracts).toContain('selecthybridaccount');
+    expect(errorContracts).toContain('exponentialbackoff');
+    expect(errorContracts).toContain('gettopcandidates');
+    expect(errorContracts).toContain('createcodexheaders');
+    expect(errorContracts).toContain('getratelimitbackoffwithreason');
+    expect(errorContracts).toContain('transformrequestbody');
+  });
+
+  it('keeps fix command flag docs aligned across README, reference, and CLI usage text', () => {
     const readme = read('README.md');
     const commandRef = read('docs/reference/commands.md');
     const managerPath = 'lib/codex-manager.ts';
@@ -306,18 +349,24 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('has valid internal links in docs/README.md', () => {
-    const content = read('docs/README.md');
-    const links = extractInternalLinks(content);
+  it('has valid internal links in markdown files under docs/', () => {
+    const docsRoot = join(projectRoot, 'docs');
+    const docsMarkdownFiles = listMarkdownFiles(docsRoot);
 
-    for (const link of links) {
-      const cleanPath = link.split('#')[0];
-      if (!cleanPath) {
-        continue;
+    for (const filePath of docsMarkdownFiles) {
+      const content = readFileSync(filePath, 'utf-8');
+      const links = extractInternalLinks(content);
+      for (const link of links) {
+        const cleanPath = link.split('#')[0];
+        if (!cleanPath) {
+          continue;
+        }
+        const targetPath = resolve(dirname(filePath), cleanPath);
+        expect(
+          existsSync(targetPath),
+          `Missing docs link in ${filePath.replace(projectRoot, '')}: ${cleanPath}`,
+        ).toBe(true);
       }
-      expect(existsSync(join(projectRoot, 'docs', cleanPath)), `Missing docs link: ${cleanPath}`).toBe(
-        true,
-      );
     }
   });
 });

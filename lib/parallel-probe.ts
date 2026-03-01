@@ -27,20 +27,74 @@ export interface ParallelProbeOptions {
 	timeoutMs: number;
 }
 
+export interface GetTopCandidatesParams {
+	accountManager: AccountManager;
+	modelFamily: ModelFamily;
+	model: string | null;
+	maxCandidates: number;
+}
+
 /**
  * Get top N candidates ranked by hybrid score WITHOUT mutating AccountManager state.
  * Uses getAccountsSnapshot() and ranks by health + tokens + freshness.
  */
 export function getTopCandidates(
+	params: GetTopCandidatesParams,
+): ManagedAccount[];
+export function getTopCandidates(
 	accountManager: AccountManager,
 	modelFamily: ModelFamily,
 	model: string | null,
 	maxCandidates: number,
+): ManagedAccount[];
+export function getTopCandidates(
+	accountManagerOrParams: AccountManager | GetTopCandidatesParams,
+	modelFamily?: ModelFamily,
+	model?: string | null,
+	maxCandidates?: number,
 ): ManagedAccount[] {
-	const accounts = accountManager.getAccountsSnapshot();
+	const useNamedParams = typeof modelFamily === "undefined";
+	let resolvedAccountManager: AccountManager;
+	let resolvedModelFamily: ModelFamily | undefined;
+	let resolvedModel: string | null | undefined;
+	let resolvedMaxCandidates: number | undefined;
+
+	if (useNamedParams) {
+		const namedParams = accountManagerOrParams as GetTopCandidatesParams;
+		resolvedAccountManager = namedParams.accountManager;
+		resolvedModelFamily = namedParams.modelFamily;
+		resolvedModel = namedParams.model;
+		resolvedMaxCandidates = namedParams.maxCandidates;
+	} else {
+		resolvedAccountManager = accountManagerOrParams as AccountManager;
+		resolvedModelFamily = modelFamily;
+		resolvedModel = model;
+		resolvedMaxCandidates = maxCandidates;
+	}
+
+	if (
+		!resolvedAccountManager ||
+		typeof resolvedAccountManager.getAccountsSnapshot !== "function"
+	) {
+		throw new TypeError("getTopCandidates requires accountManager");
+	}
+	if (!resolvedModelFamily) {
+		throw new TypeError("getTopCandidates requires modelFamily");
+	}
+	if (
+		typeof resolvedMaxCandidates !== "number" ||
+		!Number.isInteger(resolvedMaxCandidates) ||
+		resolvedMaxCandidates <= 0
+	) {
+		throw new TypeError("getTopCandidates requires maxCandidates to be a positive integer");
+	}
+	const normalizedModelFamily = resolvedModelFamily;
+	const normalizedMaxCandidates = resolvedMaxCandidates;
+
+	const accounts = resolvedAccountManager.getAccountsSnapshot();
 	if (accounts.length === 0) return [];
 
-	const quotaKey = model ? `${modelFamily}:${model}` : modelFamily;
+	const quotaKey = resolvedModel ? `${normalizedModelFamily}:${resolvedModel}` : normalizedModelFamily;
 	const healthTracker = getHealthTracker();
 	const tokenTracker = getTokenTracker();
 
@@ -48,7 +102,7 @@ export function getTopCandidates(
 
 	for (const account of accounts) {
 		clearExpiredRateLimits(account);
-		const isRateLimited = isRateLimitedForFamily(account, modelFamily, model);
+		const isRateLimited = isRateLimitedForFamily(account, normalizedModelFamily, resolvedModel);
 		const isCoolingDown = account.coolingDownUntil !== undefined && account.coolingDownUntil > Date.now();
 		const isAvailable = !isRateLimited && !isCoolingDown;
 
@@ -74,7 +128,7 @@ export function getTopCandidates(
 
 	scored.sort((a, b) => b.score - a.score);
 
-	return scored.slice(0, maxCandidates).map((s) => s.account);
+	return scored.slice(0, normalizedMaxCandidates).map((s) => s.account);
 }
 
 /**

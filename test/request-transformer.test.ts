@@ -2286,6 +2286,59 @@ describe('Request Transformer Module', () => {
 					expect(params.$schema).toBeUndefined();
 					expect(params.properties.prop.const).toBeUndefined();
 				});
+
+				it('supports named-parameter options form', async () => {
+					const baseBody: RequestBody = {
+						model: 'gpt-5-codex-low',
+						input: [
+							{ type: 'message', role: 'user', content: 'hello' },
+						],
+						tools: [
+							{
+								type: 'function',
+								function: {
+									name: 'echo',
+									parameters: {
+										type: 'object',
+										properties: {
+											value: { type: 'string' },
+										},
+									},
+								},
+							},
+						] as any,
+					};
+
+					const positional = await transformRequestBody(
+						JSON.parse(JSON.stringify(baseBody)),
+						codexInstructions,
+						{ global: {}, models: {} },
+						true,
+						true,
+						'always',
+						12,
+					);
+					const named = await transformRequestBody({
+						body: JSON.parse(JSON.stringify(baseBody)),
+						codexInstructions,
+						userConfig: { global: {}, models: {} },
+						codexMode: true,
+						fastSession: true,
+						fastSessionStrategy: 'always',
+						fastSessionMaxInputItems: 12,
+					});
+
+					expect(named).toEqual(positional);
+				});
+
+				it('throws clear TypeError when named-parameter body is invalid', async () => {
+					await expect(
+						transformRequestBody({
+							body: null as unknown as RequestBody,
+							codexInstructions,
+						}),
+					).rejects.toThrowError('transformRequestBody requires body');
+				});
 			});
 		});
 	});

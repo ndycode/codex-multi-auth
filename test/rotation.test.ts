@@ -511,6 +511,40 @@ describe("selectHybridAccount", () => {
 		);
 		expect(result?.index).toBe(1);
 	});
+
+	it("supports named-parameter options form", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now },
+			{ index: 1, isAvailable: true, lastUsed: now },
+		];
+
+		const baseline = selectHybridAccount(accounts, healthTracker, tokenTracker);
+		const named = selectHybridAccount({
+			accounts,
+			healthTracker,
+			tokenTracker,
+		});
+
+		expect(named?.index).toBe(baseline?.index);
+	});
+
+	it("throws when named params accounts is not an array", () => {
+		expect(() =>
+			selectHybridAccount({
+				accounts: {} as unknown as AccountWithMetrics[],
+				healthTracker,
+				tokenTracker,
+			}),
+		).toThrowError("selectHybridAccount requires accounts to be an array");
+		expect(() =>
+			selectHybridAccount({
+				accounts: null as unknown as AccountWithMetrics[],
+				healthTracker,
+				tokenTracker,
+			}),
+		).toThrowError("selectHybridAccount requires accounts to be an array");
+	});
 });
 
 describe("utility functions", () => {
@@ -547,25 +581,80 @@ describe("utility functions", () => {
 
 	describe("exponentialBackoff", () => {
 		it("increases delay exponentially", () => {
-			vi.spyOn(Math, "random").mockReturnValue(0.5);
+			const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+			try {
+				const delay1 = exponentialBackoff(1, 1000, 60000, 0);
+				const delay2 = exponentialBackoff(2, 1000, 60000, 0);
+				const delay3 = exponentialBackoff(3, 1000, 60000, 0);
 
-			const delay1 = exponentialBackoff(1, 1000, 60000, 0);
-			const delay2 = exponentialBackoff(2, 1000, 60000, 0);
-			const delay3 = exponentialBackoff(3, 1000, 60000, 0);
-
-			expect(delay2).toBe(delay1 * 2);
-			expect(delay3).toBe(delay1 * 4);
-
-			vi.spyOn(Math, "random").mockRestore();
+				expect(delay2).toBe(delay1 * 2);
+				expect(delay3).toBe(delay1 * 4);
+			} finally {
+				randomSpy.mockRestore();
+			}
 		});
 
 		it("caps at maxMs", () => {
-			vi.spyOn(Math, "random").mockReturnValue(0.5);
+			const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+			try {
+				const result = exponentialBackoff(10, 1000, 5000, 0);
+				expect(result).toBe(5000);
+			} finally {
+				randomSpy.mockRestore();
+			}
+		});
 
-			const result = exponentialBackoff(10, 1000, 5000, 0);
-			expect(result).toBe(5000);
+		it("supports named-parameter options form", () => {
+			const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+			try {
+				const positional = exponentialBackoff(3, 1000, 60000, 0);
+				const named = exponentialBackoff({
+					attempt: 3,
+					baseMs: 1000,
+					maxMs: 60000,
+					jitterFactor: 0,
+				});
 
-			vi.spyOn(Math, "random").mockRestore();
+				expect(named).toBe(positional);
+			} finally {
+				randomSpy.mockRestore();
+			}
+		});
+
+		it("throws for invalid positional and named inputs before jitter is applied", () => {
+			const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+			try {
+				expect(() => exponentialBackoff(0, 1000, 60000, 0.1)).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
+				expect(() => exponentialBackoff(-1, 1000, 60000, 0.1)).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
+				expect(() =>
+					exponentialBackoff(Number.NaN as unknown as number, 1000, 60000, 0.1),
+				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+				expect(() =>
+					exponentialBackoff(Number.POSITIVE_INFINITY as unknown as number, 1000, 60000, 0.1),
+				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+				expect(() =>
+					exponentialBackoff(undefined as unknown as number, 1000, 60000, 0.1),
+				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+				expect(() => exponentialBackoff(1, -1, 60000, 0.1)).toThrowError(
+					"exponentialBackoff requires baseMs to be a finite non-negative number",
+				);
+				expect(() => exponentialBackoff(1, 1000, -1, 0.1)).toThrowError(
+					"exponentialBackoff requires maxMs to be a finite non-negative number",
+				);
+				expect(() => exponentialBackoff({} as unknown as Parameters<typeof exponentialBackoff>[0])).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
+				expect(() =>
+					exponentialBackoff({ attempt: 1, jitterFactor: 2 }),
+				).toThrowError("exponentialBackoff requires jitterFactor to be between 0 and 1");
+				expect(randomSpy).not.toHaveBeenCalled();
+			} finally {
+				randomSpy.mockRestore();
+			}
 		});
 	});
 });

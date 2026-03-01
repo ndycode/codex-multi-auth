@@ -154,5 +154,52 @@ describe("Rate limit backoff", () => {
 			expect(second.attempt).toBe(2);
 			expect(second.delayMs).toBe(12000);
 		});
+
+		it("supports named-parameter options form", () => {
+			const positional = getRateLimitBackoffWithReason(20, "named-quota", 1000, "tokens");
+			clearRateLimitBackoffState();
+			const named = getRateLimitBackoffWithReason({
+				accountIndex: 20,
+				quotaKey: "named-quota",
+				serverRetryAfterMs: 1000,
+				reason: "tokens",
+			});
+			expect(named).toEqual(positional);
+		});
+
+		it("throws for invalid named accountIndex values", () => {
+			expect(() =>
+				getRateLimitBackoffWithReason({
+					accountIndex: -1,
+					quotaKey: "invalid-index",
+					serverRetryAfterMs: 1000,
+				}),
+			).toThrowError(
+				"getRateLimitBackoffWithReason requires a non-negative integer accountIndex",
+			);
+			expect(() =>
+				getRateLimitBackoffWithReason({
+					accountIndex: Number.NaN,
+					quotaKey: "invalid-index",
+					serverRetryAfterMs: 1000,
+				}),
+			).toThrowError(
+				"getRateLimitBackoffWithReason requires a non-negative integer accountIndex",
+			);
+		});
+
+		it("does not mutate shared state when named accountIndex is invalid", () => {
+			expect(() =>
+				getRateLimitBackoffWithReason({
+					accountIndex: -5,
+					quotaKey: "state-safe",
+					serverRetryAfterMs: 1000,
+				}),
+			).toThrow();
+
+			const firstValid = getRateLimitBackoffWithReason(7, "state-safe", 1000, "unknown");
+			expect(firstValid.attempt).toBe(1);
+			expect(firstValid.isDuplicate).toBe(false);
+		});
 	});
 });

@@ -10,6 +10,7 @@ opencode.json
 tmp
 .tmp
 tmp*
+.tmp
 .tmp*/
 .tmp-*/
 .tmp-*

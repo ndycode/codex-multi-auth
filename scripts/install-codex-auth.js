@@ -4,7 +4,12 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile, mkdir, copyFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { normalizePluginList, renameWithRetry, resolveInstallPaths } from "./install-codex-auth-utils.js";
+import {
+	normalizePluginList,
+	renameWithRetry,
+	resolveInstallPaths,
+	withFileOperationRetry,
+} from "./install-codex-auth-utils.js";
 
 const PLUGIN_NAME = "codex-multi-auth";
 
@@ -61,11 +66,15 @@ async function writeJsonAtomic(filePath, value) {
 		.slice(2, 8)}`;
 	const content = formatJson(value);
 	try {
-		await writeFile(tempPath, content, "utf-8");
+		await withFileOperationRetry(() => writeFile(tempPath, content, "utf-8"));
 		await renameWithRetry(tempPath, filePath, { log });
 	} finally {
 		if (existsSync(tempPath)) {
-			await rm(tempPath, { force: true });
+			try {
+				await withFileOperationRetry(() => rm(tempPath, { force: true }));
+			} catch (error) {
+				log(`Warning: Could not remove temporary file ${tempPath} (${error}).`);
+			}
 		}
 	}
 }

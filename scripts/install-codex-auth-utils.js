@@ -3,6 +3,9 @@ import { homedir } from "node:os";
 import { rename as fsRename } from "node:fs/promises";
 
 const PLUGIN_NAME = "codex-multi-auth";
+export const FILE_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
+export const FILE_RETRY_MAX_ATTEMPTS = 6;
+export const FILE_RETRY_BASE_DELAY_MS = 25;
 
 export function resolveInstallPaths(
 	platform = process.platform,
@@ -48,6 +51,34 @@ export function normalizePluginList(list) {
 	return [...deduped, PLUGIN_NAME];
 }
 
+function sleep(ms) {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
+function shouldRetryFileOperation(error) {
+	return error instanceof Error &&
+		typeof error.code === "string" &&
+		FILE_RETRY_CODES.has(error.code);
+}
+
+export async function withFileOperationRetry(operation) {
+	for (let attempt = 1; ; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (!shouldRetryFileOperation(error) || attempt >= FILE_RETRY_MAX_ATTEMPTS) {
+				throw error;
+			}
+
+			const jitter = Math.floor(Math.random() * 20);
+			const delayMs = (FILE_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1))) + jitter;
+			await sleep(delayMs);
+		}
+	}
+}
+
 export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 	const {
 		rename = fsRename,
@@ -56,9 +87,9 @@ export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 		baseDelayMs = 20,
 		jitterMs = 10,
 		random = Math.random,
-		sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+		sleep: sleepImpl = sleep,
 	} = options;
-	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY", "EACCES"]);
+
 	for (let attempt = 0; attempt < maxRetries; attempt += 1) {
 		try {
 			await rename(sourcePath, targetPath);
@@ -67,7 +98,7 @@ export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 			const code = error && typeof error === "object" && "code" in error
 				? error.code
 				: undefined;
-			const isRetryable = typeof code === "string" && retryableCodes.has(code);
+			const isRetryable = typeof code === "string" && FILE_RETRY_CODES.has(code);
 			if (!isRetryable || attempt === maxRetries - 1) {
 				throw error;
 			}
@@ -75,8 +106,7 @@ export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 			log(
 				`Retrying atomic rename (${attempt + 1}/${maxRetries}) code=${code ?? "unknown"} source=${sourcePath} target=${targetPath} delayMs=${delayMs}`,
 			);
-			await sleep(delayMs);
+			await sleepImpl(delayMs);
 		}
 	}
 }
-

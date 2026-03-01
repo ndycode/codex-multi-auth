@@ -113,17 +113,63 @@ export function calculateBackoffMs(
 	return Math.min(Math.floor(exponentialDelay * multiplier), MAX_BACKOFF_MS);
 }
 
+export interface RateLimitBackoffWithReasonParams {
+	accountIndex: number;
+	quotaKey: string;
+	serverRetryAfterMs: number | null | undefined;
+	reason?: RateLimitReason;
+}
+
+export function getRateLimitBackoffWithReason(
+	params: RateLimitBackoffWithReasonParams,
+): RateLimitBackoffResult;
 export function getRateLimitBackoffWithReason(
 	accountIndex: number,
 	quotaKey: string,
 	serverRetryAfterMs: number | null | undefined,
+	reason?: RateLimitReason,
+): RateLimitBackoffResult;
+export function getRateLimitBackoffWithReason(
+	accountIndexOrParams: number | RateLimitBackoffWithReasonParams,
+	quotaKey?: string,
+	serverRetryAfterMs?: number | null | undefined,
 	reason: RateLimitReason = "unknown",
 ): RateLimitBackoffResult {
-	const result = getRateLimitBackoff(accountIndex, quotaKey, serverRetryAfterMs);
-	const adjustedDelay = calculateBackoffMs(result.delayMs, result.attempt, reason);
+	const useNamedParams = typeof accountIndexOrParams !== "number";
+	const resolvedAccountIndex = useNamedParams
+		? accountIndexOrParams.accountIndex
+		: accountIndexOrParams;
+	const resolvedQuotaKey = useNamedParams
+		? accountIndexOrParams.quotaKey
+		: quotaKey;
+	const resolvedServerRetryAfterMs = useNamedParams
+		? accountIndexOrParams.serverRetryAfterMs
+		: serverRetryAfterMs;
+	const resolvedReason = useNamedParams
+		? (accountIndexOrParams.reason ?? "unknown")
+		: reason;
+	if (!Number.isInteger(resolvedAccountIndex) || resolvedAccountIndex < 0) {
+		throw new TypeError(
+			"getRateLimitBackoffWithReason requires a non-negative integer accountIndex",
+		);
+	}
+	if (typeof resolvedQuotaKey !== "string" || resolvedQuotaKey.trim().length === 0) {
+		throw new TypeError("getRateLimitBackoffWithReason requires a non-empty quotaKey");
+	}
+	const normalizedQuotaKey = resolvedQuotaKey.trim();
+	const result = getRateLimitBackoff(
+		resolvedAccountIndex,
+		normalizedQuotaKey,
+		resolvedServerRetryAfterMs,
+	);
+	const adjustedDelay = calculateBackoffMs(
+		result.delayMs,
+		result.attempt,
+		resolvedReason,
+	);
 	return {
 		...result,
 		delayMs: adjustedDelay,
-		reason,
+		reason: resolvedReason,
 	};
 }
