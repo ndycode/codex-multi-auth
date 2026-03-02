@@ -121,6 +121,35 @@ describe("storage recovery paths", () => {
 		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup-history");
 	});
 
+	it("falls back to .bak.2 when newer backups are unreadable", async () => {
+		await fs.writeFile(storagePath, "{broken-primary", "utf-8");
+		await fs.writeFile(`${storagePath}.bak`, "{broken-bak", "utf-8");
+		await fs.writeFile(`${storagePath}.bak.1`, "{broken-bak-1", "utf-8");
+
+		const oldestBackupPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "deep-refresh",
+					accountId: "from-backup-2",
+					addedAt: 5,
+					lastUsed: 5,
+				},
+			],
+		};
+		await fs.writeFile(`${storagePath}.bak.2`, JSON.stringify(oldestBackupPayload), "utf-8");
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.accountId).toBe("from-backup-2");
+
+		const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+			accounts?: Array<{ accountId?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup-2");
+	});
+
 	it("does not use backup recovery when backups are disabled", async () => {
 		setStorageBackupEnabled(false);
 		await fs.writeFile(storagePath, "{broken-primary", "utf-8");
