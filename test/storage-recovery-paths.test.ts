@@ -93,6 +93,34 @@ describe("storage recovery paths", () => {
 		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup");
 	});
 
+	it("falls back to historical backup snapshots when the latest backup is unreadable", async () => {
+		await fs.writeFile(storagePath, "{broken-primary", "utf-8");
+		await fs.writeFile(`${storagePath}.bak`, "{broken-latest-backup", "utf-8");
+
+		const historicalBackupPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "historical-refresh",
+					accountId: "from-backup-history",
+					addedAt: 4,
+					lastUsed: 4,
+				},
+			],
+		};
+		await fs.writeFile(`${storagePath}.bak.1`, JSON.stringify(historicalBackupPayload), "utf-8");
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.accountId).toBe("from-backup-history");
+
+		const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+			accounts?: Array<{ accountId?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup-history");
+	});
+
 	it("does not use backup recovery when backups are disabled", async () => {
 		setStorageBackupEnabled(false);
 		await fs.writeFile(storagePath, "{broken-primary", "utf-8");
