@@ -274,6 +274,59 @@ async function createRotatingAccountsBackup(path: string): Promise<void> {
 	}
 }
 
+function isRotatingBackupTempArtifact(storagePath: string, candidatePath: string): boolean {
+	const backupPrefix = `${storagePath}${ACCOUNTS_BACKUP_SUFFIX}`;
+	if (!candidatePath.startsWith(backupPrefix) || !candidatePath.endsWith(".tmp")) {
+		return false;
+	}
+
+	const suffix = candidatePath.slice(backupPrefix.length);
+	const rotateSeparatorIndex = suffix.indexOf(".rotate.");
+	if (rotateSeparatorIndex === -1) {
+		return false;
+	}
+
+	const backupIndexSuffix = suffix.slice(0, rotateSeparatorIndex);
+	if (backupIndexSuffix.length > 0 && !/^\.\d+$/.test(backupIndexSuffix)) {
+		return false;
+	}
+
+	return true;
+}
+
+async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> {
+	const directoryPath = dirname(path);
+	try {
+		const directoryEntries = await fs.readdir(directoryPath, { withFileTypes: true });
+		const staleArtifacts = directoryEntries
+			.filter((entry) => entry.isFile())
+			.map((entry) => join(directoryPath, entry.name))
+			.filter((entryPath) => isRotatingBackupTempArtifact(path, entryPath));
+
+		for (const staleArtifactPath of staleArtifacts) {
+			try {
+				await fs.unlink(staleArtifactPath);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.warn("Failed to remove stale rotating backup artifact", {
+						path: staleArtifactPath,
+						error: String(error),
+					});
+				}
+			}
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to scan for stale rotating backup artifacts", {
+				path,
+				error: String(error),
+			});
+		}
+	}
+}
+
 function computeSha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
@@ -789,6 +842,7 @@ async function loadAccountsInternal(
   persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
 ): Promise<AccountStorageV3 | null> {
 	const path = getStoragePath();
+	await cleanupStaleRotatingBackupArtifacts(path);
 	const migratedLegacyStorage = persistMigration
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;

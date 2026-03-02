@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -148,6 +148,40 @@ describe("storage recovery paths", () => {
 			accounts?: Array<{ accountId?: string }>;
 		};
 		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup-2");
+	});
+
+	it("cleans up stale staged backup artifacts during load", async () => {
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "primary-refresh", accountId: "primary", addedAt: 6, lastUsed: 6 }],
+			}),
+			"utf-8",
+		);
+
+		const staleArtifacts = [
+			`${storagePath}.bak.rotate.12345.abc123.latest.tmp`,
+			`${storagePath}.bak.1.rotate.12345.abc123.slot-1.tmp`,
+			`${storagePath}.bak.2.rotate.12345.abc123.slot-2.tmp`,
+		];
+		for (const staleArtifactPath of staleArtifacts) {
+			await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+			expect(existsSync(staleArtifactPath)).toBe(true);
+		}
+		const unrelatedArtifactPath = `${storagePath}.rotate.12345.abc123.latest.tmp`;
+		await fs.writeFile(unrelatedArtifactPath, "keep", "utf-8");
+		expect(existsSync(unrelatedArtifactPath)).toBe(true);
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.accountId).toBe("primary");
+
+		for (const staleArtifactPath of staleArtifacts) {
+			expect(existsSync(staleArtifactPath)).toBe(false);
+		}
+		expect(existsSync(unrelatedArtifactPath)).toBe(true);
 	});
 
 	it("does not use backup recovery when backups are disabled", async () => {
