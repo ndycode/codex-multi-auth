@@ -893,5 +893,226 @@ describe('Fetch Helpers Module', () => {
 			expect(result?.body.model).toBe('gpt-5.1');
 			expect(result?.updatedInit).toBeDefined();
 		});
+	describe("additional edge branches", () => {
+		it("handles unsupported model info for malformed payloads", () => {
+			expect(getUnsupportedCodexModelInfo(undefined).isUnsupported).toBe(false);
+			expect(
+				getUnsupportedCodexModelInfo({ error: "not-an-object" }).isUnsupported,
+			).toBe(false);
+
+			const info = getUnsupportedCodexModelInfo({
+				error: {
+					code: 123,
+				},
+			});
+			expect(info.code).toBeUndefined();
+			expect(info.message).toBeUndefined();
+			expect(info.isUnsupported).toBe(false);
+		});
+
+		it("resolves unsupported-model fallbacks with custom chains and canonicalization", () => {
+			const fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: "org/gpt-5.3-codex-high",
+				errorBody: {
+					error: {
+						code: "model_not_supported_with_chatgpt_account",
+						message: "not supported when using Codex with a ChatGPT account",
+					},
+				},
+				attemptedModels: ["", "   ", "gpt-5.3-codex"],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+				customChain: {
+					"": ["gpt-5-codex"],
+					"gpt-5.3-codex": ["gpt-5.3-codex", "gpt-5-codex-low"],
+					"bad-entry": "not-an-array" as unknown as string[],
+				},
+			});
+
+			expect(fallback).toBe("gpt-5-codex");
+		});
+
+		it("returns undefined when fallback is disabled or model cannot be resolved", () => {
+			const unsupportedError = {
+				error: {
+					code: "model_not_supported_with_chatgpt_account",
+				},
+			};
+
+			expect(
+				resolveUnsupportedCodexFallbackModel({
+					requestedModel: "gpt-5.3-codex",
+					errorBody: unsupportedError,
+					fallbackOnUnsupportedCodexModel: false,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBeUndefined();
+
+			expect(
+				resolveUnsupportedCodexFallbackModel({
+					requestedModel: undefined,
+					errorBody: unsupportedError,
+					fallbackOnUnsupportedCodexModel: true,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBeUndefined();
+
+			expect(
+				resolveUnsupportedCodexFallbackModel({
+					requestedModel: "unknown-codex-model",
+					errorBody: unsupportedError,
+					fallbackOnUnsupportedCodexModel: true,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBeUndefined();
+		});
+
+		it("throws when createCodexHeaders receives invalid named-parameter candidates", () => {
+			expect(() => createCodexHeaders("bad" as unknown as RequestInit)).toThrow(
+				"createCodexHeaders requires accountId and accessToken",
+			);
+
+			expect(() =>
+				createCodexHeaders({
+					accountId: "acc",
+					accessToken: "tok",
+					extra: "value",
+				} as unknown as CreateCodexHeadersParams),
+			).toThrow("createCodexHeaders requires accountId and accessToken");
+
+			expect(() =>
+				createCodexHeaders({
+					accountId: "acc",
+					accessToken: 123,
+				} as unknown as CreateCodexHeadersParams),
+			).toThrow("createCodexHeaders requires accountId and accessToken");
+		});
+
+		it("refreshes using API auth without mutating oauth-only fields", async () => {
+			const auth: Auth = { type: "api", key: "api-key" };
+			const client = { auth: { set: vi.fn() } };
+
+			vi.spyOn(refreshQueueModule, "queuedRefresh").mockResolvedValue({
+				type: "success",
+				access: "new-access",
+				refresh: "new-refresh",
+				expires: Date.now() + 60_000,
+			} as never);
+
+			const updated = await refreshAndUpdateToken(auth, client as never);
+			expect(updated).toBe(auth);
+			expect(client.auth.set).toHaveBeenCalledTimes(1);
+		});
+
+		it("transforms parsed body when init is undefined", async () => {
+			const { transformRequestForCodex } =
+				await import("../lib/request/fetch-helpers.js");
+			const result = await transformRequestForCodex(
+				undefined,
+				"https://example.com",
+				{ global: {}, models: {} },
+				true,
+				{
+					model: "gpt-5.3-codex",
+					input: [{ type: "message", role: "user", content: "hello" }],
+				},
+			);
+
+			expect(result).toBeDefined();
+			expect(typeof result?.updatedInit.body).toBe("string");
+			expect(result?.body.model).toBe("gpt-5-codex");
+		});
+
+		it("adds codex login hint for unauthorized top-level, trimmed, statusText, and fallback messages", async () => {
+			const topLevel = await handleErrorResponse(
+				new Response(JSON.stringify({ message: "token invalid" }), {
+					status: 401,
+					statusText: "Unauthorized",
+				}),
+			);
+			const topLevelJson = (await topLevel.response.json()) as {
+				error: { message: string };
+			};
+			expect(topLevelJson.error.message).toContain("codex login");
+
+			const trimmed = await handleErrorResponse(
+				new Response("plain auth failure", {
+					status: 401,
+					statusText: "Unauthorized",
+				}),
+			);
+			const trimmedJson = (await trimmed.response.json()) as {
+				error: { message: string };
+			};
+			expect(trimmedJson.error.message).toContain("codex login");
+
+			const statusText = await handleErrorResponse(
+				new Response("", { status: 401, statusText: "Unauthorized" }),
+			);
+			const statusTextJson = (await statusText.response.json()) as {
+				error: { message: string };
+			};
+			expect(statusTextJson.error.message).toContain("codex login");
+
+			const fallback = await handleErrorResponse(
+				new Response("", { status: 401, statusText: "" }),
+			);
+			const fallbackJson = (await fallback.response.json()) as {
+				error: { message: string };
+			};
+			expect(fallbackJson.error.message).toContain("codex login");
+		});
+
+		it("does not remap empty 404 bodies to rate limits", async () => {
+			const { response, rateLimit } = await handleErrorResponse(
+				new Response("", { status: 404 }),
+			);
+			expect(response.status).toBe(404);
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it("falls back to default retry window when retry metadata is invalid", async () => {
+			const pastUnixSeconds = Math.floor(Date.now() / 1000) - 60;
+			const response = new Response(
+				JSON.stringify({
+					error: {
+						message: "rate limited",
+						retry_after_ms: "not-a-number",
+						retry_after: 0,
+						resets_at: "also-bad",
+					},
+				}),
+				{
+					status: 429,
+					headers: {
+						"retry-after-ms": "NaN",
+						"retry-after": "0",
+						"x-ratelimit-reset": String(pastUnixSeconds),
+					},
+				},
+			);
+
+			const { rateLimit } = await handleErrorResponse(response);
+			expect(rateLimit?.retryAfterMs).toBe(60000);
+		});
+
+		it("uses generic unsupported model placeholder when body has no quoted model", async () => {
+			const body = {
+				detail:
+					"model is not supported when using Codex with a ChatGPT account",
+			};
+			const response = new Response(JSON.stringify(body), {
+				status: 400,
+				statusText: "Bad Request",
+			});
+
+			const { response: result } = await handleErrorResponse(response);
+			const json = (await result.json()) as {
+				error: { unsupported_model?: string };
+			};
+			expect(json.error.unsupported_model).toBe("requested model");
+		});
 	});
+});
+
 });

@@ -240,4 +240,113 @@ describe("codex-cli writer", () => {
       renameSpy.mockRestore();
     }
   });
+
+  it("uses auth token fallback/default auth mode when selected account lacks tokens", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              accountId: "acc_a",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify(
+        {
+          auth_mode: 123,
+          tokens: {
+            access_token: "fallback-access",
+            refresh_token: "fallback-refresh",
+            id_token: "fallback-id",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_a",
+      email: "fallback@example.com",
+    });
+    expect(updated).toBe(true);
+
+    const writtenAccounts = JSON.parse(
+      await readFile(accountsPath, "utf-8"),
+    ) as {
+      activeEmail?: string;
+    };
+    expect(writtenAccounts.activeEmail).toBe("fallback@example.com");
+
+    const writtenAuth = JSON.parse(await readFile(authPath, "utf-8")) as {
+      auth_mode?: unknown;
+      email?: string;
+      tokens?: {
+        access_token?: string;
+        refresh_token?: string;
+        id_token?: string;
+      };
+    };
+    expect(writtenAuth.auth_mode).toBe("chatgpt");
+    expect(writtenAuth.email).toBe("fallback@example.com");
+    expect(writtenAuth.tokens?.access_token).toBe("fallback-access");
+    expect(writtenAuth.tokens?.refresh_token).toBe("fallback-refresh");
+    expect(writtenAuth.tokens?.id_token).toBe("fallback-id");
+  });
+
+  it("writes auth from explicit selection when persisted tokens payload is not an object", async () => {
+    await writeFile(
+      authPath,
+      JSON.stringify(
+        {
+          auth_mode: "chatgpt",
+          tokens: [],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_direct",
+      email: "direct@example.com",
+      accessToken: "direct-access",
+      refreshToken: "direct-refresh",
+    });
+    expect(updated).toBe(true);
+
+    const writtenAuth = JSON.parse(await readFile(authPath, "utf-8")) as {
+      email?: string;
+      tokens?: {
+        account_id?: string;
+        access_token?: string;
+        refresh_token?: string;
+      };
+    };
+    expect(writtenAuth.email).toBe("direct@example.com");
+    expect(writtenAuth.tokens?.account_id).toBe("acc_direct");
+    expect(writtenAuth.tokens?.access_token).toBe("direct-access");
+    expect(writtenAuth.tokens?.refresh_token).toBe("direct-refresh");
+  });
+
+  it("surfaces auth-path errors when accounts file is absent", async () => {
+    await writeFile(authPath, "{not-json", "utf-8");
+
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_only_auth",
+      accessToken: "a",
+      refreshToken: "r",
+    });
+    expect(updated).toBe(false);
+  });
 });

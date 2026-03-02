@@ -716,6 +716,108 @@ describe("codex-cli sync", () => {
     }
   });
 
+  it("applies active selection using normalized email when accountId is absent", async () => {
+    const current: AccountStorageV3 = {
+      version: 3,
+      accounts: [
+        {
+          accountId: "acc_a",
+          email: "a@example.com",
+          refreshToken: "refresh-a",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+        {
+          accountId: "acc_b",
+          email: "b@example.com",
+          refreshToken: "refresh-b",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+    };
+
+    const loadSpy = vi
+      .spyOn(codexCliState, "loadCodexCliState")
+      .mockResolvedValue({
+        path: "mock",
+        accounts: [
+          {
+            accountId: "acc_a",
+            email: "a@example.com",
+            accessToken: "a.access.token",
+            refreshToken: "refresh-a",
+          },
+          {
+            accountId: "acc_b",
+            email: "b@example.com",
+            accessToken: "b.access.token",
+            refreshToken: "refresh-b",
+          },
+        ],
+        activeEmail: "  B@EXAMPLE.COM  ",
+      });
+
+    try {
+      const result = await syncAccountStorageFromCodexCli(current);
+      expect(result.storage?.activeIndex).toBe(1);
+    } finally {
+      loadSpy.mockRestore();
+    }
+  });
+
+  it("initializes family indexes when local storage omits activeIndexByFamily", async () => {
+    const current: AccountStorageV3 = {
+      version: 3,
+      accounts: [
+        {
+          accountId: "acc_a",
+          email: "a@example.com",
+          refreshToken: "refresh-a",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+        {
+          accountId: "acc_b",
+          email: "b@example.com",
+          refreshToken: "refresh-b",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+      activeIndex: 1,
+    };
+
+    const loadSpy = vi
+      .spyOn(codexCliState, "loadCodexCliState")
+      .mockResolvedValue({
+        path: "mock",
+        accounts: [
+          {
+            accountId: "acc_a",
+            email: "a@example.com",
+            accessToken: "a.access.token",
+            refreshToken: "refresh-a",
+          },
+        ],
+        activeAccountId: "acc_a",
+        syncVersion: undefined,
+        sourceUpdatedAtMs: undefined,
+      });
+
+    try {
+      const result = await syncAccountStorageFromCodexCli(current);
+      expect(result.storage?.activeIndex).toBe(0);
+      for (const family of MODEL_FAMILIES) {
+        expect(result.storage?.activeIndexByFamily?.[family]).toBe(0);
+      }
+    } finally {
+      loadSpy.mockRestore();
+    }
+  });
+
   it("clamps and defaults active selection indexes by model family", () => {
     const family = MODEL_FAMILIES[0];
     expect(
