@@ -322,4 +322,138 @@ describe("dashboard settings", () => {
     const loaded = await loadDashboardDisplaySettings();
     expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
   });
+  it("uses hard fallback literals when optional defaults are undefined", async () => {
+    const dashboardModule = await import("../lib/dashboard-settings.js");
+    const defaults = dashboardModule.DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
+    const original = {
+      actionAutoReturnMs: defaults.actionAutoReturnMs,
+      actionPauseOnKey: defaults.actionPauseOnKey,
+      menuAutoFetchLimits: defaults.menuAutoFetchLimits,
+      menuSortEnabled: defaults.menuSortEnabled,
+      menuSortMode: defaults.menuSortMode,
+      menuSortPinCurrent: defaults.menuSortPinCurrent,
+      menuSortQuickSwitchVisibleRow: defaults.menuSortQuickSwitchVisibleRow,
+      menuShowStatusBadge: defaults.menuShowStatusBadge,
+      menuShowCurrentBadge: defaults.menuShowCurrentBadge,
+      menuShowLastUsed: defaults.menuShowLastUsed,
+      menuShowQuotaSummary: defaults.menuShowQuotaSummary,
+      menuShowQuotaCooldown: defaults.menuShowQuotaCooldown,
+      menuShowFetchStatus: defaults.menuShowFetchStatus,
+      menuQuotaTtlMs: defaults.menuQuotaTtlMs,
+      menuHighlightCurrentRow: defaults.menuHighlightCurrentRow,
+      menuStatuslineFields: defaults.menuStatuslineFields,
+    };
+
+    defaults.actionAutoReturnMs = undefined;
+    defaults.actionPauseOnKey = undefined;
+    defaults.menuAutoFetchLimits = undefined;
+    defaults.menuSortEnabled = undefined;
+    defaults.menuSortMode = undefined;
+    defaults.menuSortPinCurrent = undefined;
+    defaults.menuSortQuickSwitchVisibleRow = undefined;
+    defaults.menuShowStatusBadge = undefined;
+    defaults.menuShowCurrentBadge = undefined;
+    defaults.menuShowLastUsed = undefined;
+    defaults.menuShowQuotaSummary = undefined;
+    defaults.menuShowQuotaCooldown = undefined;
+    defaults.menuShowFetchStatus = undefined;
+    defaults.menuQuotaTtlMs = undefined;
+    defaults.menuHighlightCurrentRow = undefined;
+    defaults.menuStatuslineFields = undefined;
+
+    try {
+      const normalized = dashboardModule.normalizeDashboardDisplaySettings({
+        actionAutoReturnMs: "bad",
+        actionPauseOnKey: "bad",
+        menuAutoFetchLimits: "bad",
+        menuSortEnabled: "bad",
+        menuSortMode: "bad",
+        menuSortPinCurrent: "bad",
+        menuSortQuickSwitchVisibleRow: "bad",
+        menuShowStatusBadge: "bad",
+        menuShowCurrentBadge: "bad",
+        menuShowLastUsed: "bad",
+        menuShowQuotaSummary: "bad",
+        menuShowQuotaCooldown: "bad",
+        menuShowFetchStatus: "bad",
+        menuQuotaTtlMs: "bad",
+        menuHighlightCurrentRow: "bad",
+        uiAccentColor: "blue",
+        menuStatuslineFields: "not-array",
+      });
+
+      expect(normalized.actionAutoReturnMs).toBe(2_000);
+      expect(normalized.actionPauseOnKey).toBe(true);
+      expect(normalized.menuAutoFetchLimits).toBe(true);
+      expect(normalized.menuSortEnabled).toBe(false);
+      expect(normalized.menuSortMode).toBe("ready-first");
+      expect(normalized.menuSortPinCurrent).toBe(true);
+      expect(normalized.menuSortQuickSwitchVisibleRow).toBe(true);
+      expect(normalized.menuShowStatusBadge).toBe(true);
+      expect(normalized.menuShowCurrentBadge).toBe(true);
+      expect(normalized.menuShowLastUsed).toBe(true);
+      expect(normalized.menuShowQuotaSummary).toBe(true);
+      expect(normalized.menuShowQuotaCooldown).toBe(true);
+      expect(normalized.menuShowFetchStatus).toBe(true);
+      expect(normalized.menuQuotaTtlMs).toBe(300_000);
+      expect(normalized.menuHighlightCurrentRow).toBe(true);
+      expect(normalized.menuStatuslineFields).toEqual([]);
+      expect(normalized.uiAccentColor).toBe("blue");
+    } finally {
+      defaults.actionAutoReturnMs = original.actionAutoReturnMs;
+      defaults.actionPauseOnKey = original.actionPauseOnKey;
+      defaults.menuAutoFetchLimits = original.menuAutoFetchLimits;
+      defaults.menuSortEnabled = original.menuSortEnabled;
+      defaults.menuSortMode = original.menuSortMode;
+      defaults.menuSortPinCurrent = original.menuSortPinCurrent;
+      defaults.menuSortQuickSwitchVisibleRow =
+        original.menuSortQuickSwitchVisibleRow;
+      defaults.menuShowStatusBadge = original.menuShowStatusBadge;
+      defaults.menuShowCurrentBadge = original.menuShowCurrentBadge;
+      defaults.menuShowLastUsed = original.menuShowLastUsed;
+      defaults.menuShowQuotaSummary = original.menuShowQuotaSummary;
+      defaults.menuShowQuotaCooldown = original.menuShowQuotaCooldown;
+      defaults.menuShowFetchStatus = original.menuShowFetchStatus;
+      defaults.menuQuotaTtlMs = original.menuQuotaTtlMs;
+      defaults.menuHighlightCurrentRow = original.menuHighlightCurrentRow;
+      defaults.menuStatuslineFields = original.menuStatuslineFields;
+    }
+  });
+
+  it("logs stringified legacy read failures thrown as non-Error values", async () => {
+    vi.resetModules();
+    const warnMock = vi.fn();
+    vi.doMock("../lib/logger.js", () => ({
+      logWarn: warnMock,
+    }));
+
+    try {
+      const {
+        loadDashboardDisplaySettings,
+        DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+      } = await import("../lib/dashboard-settings.js");
+
+      const legacyPath = join(tempDir, "dashboard-settings.json");
+      await fs.writeFile(
+        legacyPath,
+        JSON.stringify({ settings: { showPerAccountRows: false } }),
+        "utf8",
+      );
+
+      const readSpy = vi.spyOn(fs, "readFile");
+      readSpy.mockRejectedValueOnce("legacy-read-string-failure");
+
+      const loaded = await loadDashboardDisplaySettings();
+      expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+      expect(
+        warnMock.mock.calls.some((args) =>
+          String(args[0]).includes("legacy-read-string-failure"),
+        ),
+      ).toBe(true);
+
+      readSpy.mockRestore();
+    } finally {
+      vi.doUnmock("../lib/logger.js");
+    }
+  });
 });
