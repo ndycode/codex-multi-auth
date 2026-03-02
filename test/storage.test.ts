@@ -1570,6 +1570,39 @@ describe("storage", () => {
       expect(copyAttempts).toBe(2);
       copySpy.mockRestore();
     });
+
+    it("rotates backups and retains historical snapshots", async () => {
+      const now = Date.now();
+      const storagePath = getStoragePath();
+
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-2", addedAt: now + 1, lastUsed: now + 1 }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-3", addedAt: now + 2, lastUsed: now + 2 }],
+      });
+
+      const latestBackupRaw = await fs.readFile(`${storagePath}.bak`, "utf-8");
+      const historicalBackupRaw = await fs.readFile(`${storagePath}.bak.1`, "utf-8");
+      const latestBackup = JSON.parse(latestBackupRaw) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const historicalBackup = JSON.parse(historicalBackupRaw) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+
+      expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-2");
+      expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-1");
+    });
   });
 
   describe("clearAccounts edge cases", () => {
@@ -1584,16 +1617,22 @@ describe("storage", () => {
       const storagePath = getStoragePath();
       await saveAccounts(storage);
       await fs.writeFile(`${storagePath}.bak`, JSON.stringify(storage), "utf-8");
+      await fs.writeFile(`${storagePath}.bak.1`, JSON.stringify(storage), "utf-8");
+      await fs.writeFile(`${storagePath}.bak.2`, JSON.stringify(storage), "utf-8");
       await fs.writeFile(`${storagePath}.wal`, JSON.stringify(storage), "utf-8");
 
       expect(existsSync(storagePath)).toBe(true);
       expect(existsSync(`${storagePath}.bak`)).toBe(true);
+      expect(existsSync(`${storagePath}.bak.1`)).toBe(true);
+      expect(existsSync(`${storagePath}.bak.2`)).toBe(true);
       expect(existsSync(`${storagePath}.wal`)).toBe(true);
 
       await clearAccounts();
 
       expect(existsSync(storagePath)).toBe(false);
       expect(existsSync(`${storagePath}.bak`)).toBe(false);
+      expect(existsSync(`${storagePath}.bak.1`)).toBe(false);
+      expect(existsSync(`${storagePath}.bak.2`)).toBe(false);
       expect(existsSync(`${storagePath}.wal`)).toBe(false);
     });
 

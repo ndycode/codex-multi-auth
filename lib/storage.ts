@@ -31,6 +31,7 @@ const FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-flagged-accounts.json";
 const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
 const ACCOUNTS_BACKUP_SUFFIX = ".bak";
 const ACCOUNTS_WAL_SUFFIX = ".wal";
+const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
 
@@ -156,8 +157,70 @@ function getAccountsBackupPath(path: string): string {
 	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
 }
 
+function getAccountsBackupPathAtIndex(path: string, index: number): string {
+	if (index <= 0) {
+		return getAccountsBackupPath(path);
+	}
+	return `${path}${ACCOUNTS_BACKUP_SUFFIX}.${index}`;
+}
+
+function getAccountsBackupRecoveryCandidates(path: string): string[] {
+	const candidates: string[] = [];
+	for (let i = 0; i < ACCOUNTS_BACKUP_HISTORY_DEPTH; i += 1) {
+		candidates.push(getAccountsBackupPathAtIndex(path, i));
+	}
+	return candidates;
+}
+
 function getAccountsWalPath(path: string): string {
 	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
+}
+
+async function copyFileWithRetry(
+	sourcePath: string,
+	destinationPath: string,
+	options?: { allowMissingSource?: boolean },
+): Promise<void> {
+	const allowMissingSource = options?.allowMissingSource ?? false;
+	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.copyFile(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (allowMissingSource && code === "ENOENT") {
+				return;
+			}
+			const canRetry =
+				(code === "EPERM" || code === "EBUSY") &&
+				attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+			if (canRetry) {
+				await new Promise((resolve) =>
+					setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt),
+				);
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
+async function createRotatingAccountsBackup(path: string): Promise<void> {
+	const candidates = getAccountsBackupRecoveryCandidates(path);
+	for (let i = candidates.length - 1; i > 0; i -= 1) {
+		const previousPath = candidates[i - 1];
+		const currentPath = candidates[i];
+		if (!previousPath || !currentPath || !existsSync(previousPath)) {
+			continue;
+		}
+		await copyFileWithRetry(previousPath, currentPath, { allowMissingSource: true });
+	}
+
+	const latestBackupPath = candidates[0];
+	if (!latestBackupPath) {
+		return;
+	}
+	await copyFileWithRetry(path, latestBackupPath);
 }
 
 function computeSha256(value: string): string {
@@ -718,36 +781,38 @@ async function loadAccountsInternal(
 	}
 
 	if (storageBackupEnabled) {
-		const backupPath = getAccountsBackupPath(path);
-		try {
-			const backup = await loadAccountsFromPath(backupPath);
-			if (backup.schemaErrors.length > 0) {
-				log.warn("Backup account storage schema validation warnings", {
-					path: backupPath,
-					errors: backup.schemaErrors.slice(0, 5),
-				});
-			}
-			if (backup.normalized) {
-				log.warn("Recovered account storage from backup file", { path, backupPath });
-				if (persistMigration) {
-					try {
-						await persistMigration(backup.normalized);
-					} catch (persistError) {
-						log.warn("Failed to persist recovered backup storage", {
-							path,
-							error: String(persistError),
-						});
-					}
+		const backupCandidates = getAccountsBackupRecoveryCandidates(path);
+		for (const backupPath of backupCandidates) {
+			try {
+				const backup = await loadAccountsFromPath(backupPath);
+				if (backup.schemaErrors.length > 0) {
+					log.warn("Backup account storage schema validation warnings", {
+						path: backupPath,
+						errors: backup.schemaErrors.slice(0, 5),
+					});
 				}
-				return backup.normalized;
-			}
-		} catch (backupError) {
-			const backupCode = (backupError as NodeJS.ErrnoException).code;
-			if (backupCode !== "ENOENT") {
-				log.warn("Failed to load backup account storage", {
-					path: backupPath,
-					error: String(backupError),
-				});
+				if (backup.normalized) {
+					log.warn("Recovered account storage from backup file", { path, backupPath });
+					if (persistMigration) {
+						try {
+							await persistMigration(backup.normalized);
+						} catch (persistError) {
+							log.warn("Failed to persist recovered backup storage", {
+								path,
+								error: String(persistError),
+							});
+						}
+					}
+					return backup.normalized;
+				}
+			} catch (backupError) {
+				const backupCode = (backupError as NodeJS.ErrnoException).code;
+				if (backupCode !== "ENOENT") {
+					log.warn("Failed to load backup account storage", {
+						path: backupPath,
+						error: String(backupError),
+					});
+				}
 			}
 		}
 	}
@@ -770,29 +835,12 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
     await ensureGitignore(path);
 
 	if (storageBackupEnabled && existsSync(path)) {
-		const backupPath = getAccountsBackupPath(path);
 		try {
-			for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
-				try {
-					await fs.copyFile(path, backupPath);
-					break;
-				} catch (backupError) {
-					const code = (backupError as NodeJS.ErrnoException).code;
-					const canRetry = (code === "EPERM" || code === "EBUSY") &&
-						attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
-					if (canRetry) {
-						await new Promise((resolve) =>
-							setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt)
-						);
-						continue;
-					}
-					throw backupError;
-				}
-			}
+			await createRotatingAccountsBackup(path);
 		} catch (backupError) {
 			log.warn("Failed to create account storage backup", {
 				path,
-				backupPath,
+				backupPath: getAccountsBackupPath(path),
 				error: String(backupError),
 			});
 		}
@@ -902,7 +950,7 @@ export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
     const path = getStoragePath();
     const walPath = getAccountsWalPath(path);
-    const backupPath = getAccountsBackupPath(path);
+	const backupPaths = getAccountsBackupRecoveryCandidates(path);
     const clearPath = async (targetPath: string): Promise<void> => {
       try {
         await fs.unlink(targetPath);
@@ -918,7 +966,7 @@ export async function clearAccounts(): Promise<void> {
     };
 
     try {
-      await Promise.all([clearPath(path), clearPath(walPath), clearPath(backupPath)]);
+      await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.
     }
