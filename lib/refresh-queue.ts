@@ -135,6 +135,18 @@ export class RefreshQueue {
       entry.startedAt = Date.now();
       entry.staleWarningLogged = false;
     };
+    const getSupersedingPromise = (): Promise<TokenResult> | undefined => {
+      const current = this.pending.get(refreshToken);
+      if (!current || current.generation === generation) {
+        return undefined;
+      }
+      log.info("Refresh generation superseded; joining newer in-flight refresh", {
+        tokenSuffix: refreshToken.slice(-6),
+        staleGeneration: generation,
+        activeGeneration: current.generation,
+      });
+      return current.promise;
+    };
     const promise = (async (): Promise<TokenResult> => {
       let lease: Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>;
       try {
@@ -144,6 +156,10 @@ export class RefreshQueue {
           tokenSuffix: refreshToken.slice(-6),
           error: (error as Error)?.message ?? String(error),
         });
+        const supersedingPromise = getSupersedingPromise();
+        if (supersedingPromise) {
+          return supersedingPromise;
+        }
         markStage("refresh");
         return this.executeRefreshWithRotationTracking(refreshToken);
       }
@@ -155,6 +171,10 @@ export class RefreshQueue {
       }
 
       try {
+        const supersedingPromise = getSupersedingPromise();
+        if (supersedingPromise) {
+          return supersedingPromise;
+        }
         markStage("refresh");
         const result = await this.executeRefreshWithRotationTracking(refreshToken);
         try {

@@ -244,105 +244,202 @@ describe("RefreshQueue", () => {
   describe("stale entry cleanup", () => {
     it("evicts stale acquire-stage entries and allows a fresh retry", async () => {
       vi.useFakeTimers();
-      const leaseAcquire = vi
-        .fn()
-        .mockImplementationOnce(
-          () =>
-            new Promise<Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>>(() => {}),
-        )
-        .mockResolvedValue({
+      try {
+        const leaseAcquire = vi
+          .fn()
+          .mockImplementationOnce(
+            () =>
+              new Promise<Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>>(() => {}),
+          )
+          .mockResolvedValue({
+            role: "owner" as const,
+            release: vi.fn().mockResolvedValue(undefined),
+          });
+        const leaseCoordinator = { acquire: leaseAcquire } as unknown as RefreshLeaseCoordinator;
+        const successResult = {
+          type: "success" as const,
+          access: "access",
+          refresh: "refresh",
+          expires: Date.now() + 3600_000,
+        };
+        vi.mocked(authModule.refreshAccessToken).mockResolvedValue(successResult);
+
+        const queue = new RefreshQueue(1000, leaseCoordinator);
+        const firstAttempt = queue.refresh("stale-acquire-token");
+        void firstAttempt;
+        await Promise.resolve();
+        expect(queue.pendingCount).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(1200);
+
+        const secondResult = await queue.refresh("stale-acquire-token");
+        expect(secondResult).toEqual(successResult);
+        expect(leaseAcquire).toHaveBeenCalledTimes(2);
+        expect(queue.pendingCount).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("joins a superseding generation after stale acquire eviction", async () => {
+      vi.useFakeTimers();
+      try {
+        const ownerLease = {
           role: "owner" as const,
           release: vi.fn().mockResolvedValue(undefined),
+        };
+        let resolveFirstAcquire:
+          | ((value: Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>) => void)
+          | undefined;
+        const firstAcquire = new Promise<Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>>(
+          (resolve) => {
+            resolveFirstAcquire = resolve;
+          },
+        );
+        const leaseAcquire = vi.fn().mockReturnValueOnce(firstAcquire).mockResolvedValue(ownerLease);
+        const leaseCoordinator = { acquire: leaseAcquire } as unknown as RefreshLeaseCoordinator;
+        const successResult = {
+          type: "success" as const,
+          access: "access-after-supersede",
+          refresh: "refresh-after-supersede",
+          expires: Date.now() + 3600_000,
+        };
+        let resolveRefresh: ((value: typeof successResult) => void) | undefined;
+        const delayedRefresh = new Promise<typeof successResult>((resolve) => {
+          resolveRefresh = resolve;
         });
-      const leaseCoordinator = { acquire: leaseAcquire } as unknown as RefreshLeaseCoordinator;
-      const successResult = {
-        type: "success" as const,
-        access: "access",
-        refresh: "refresh",
-        expires: Date.now() + 3600_000,
-      };
-      vi.mocked(authModule.refreshAccessToken).mockResolvedValue(successResult);
+        vi.mocked(authModule.refreshAccessToken).mockReturnValue(delayedRefresh);
 
-      const queue = new RefreshQueue(1000, leaseCoordinator);
-      const firstAttempt = queue.refresh("stale-acquire-token");
-      void firstAttempt;
-      await Promise.resolve();
-      expect(queue.pendingCount).toBe(1);
+        const queue = new RefreshQueue(1000, leaseCoordinator);
+        const firstAttempt = queue.refresh("superseded-acquire-token");
+        await Promise.resolve();
+        expect(queue.pendingCount).toBe(1);
 
-      await vi.advanceTimersByTimeAsync(1200);
+        await vi.advanceTimersByTimeAsync(1200);
+        const secondAttempt = queue.refresh("superseded-acquire-token");
+        await Promise.resolve();
+        expect(leaseAcquire).toHaveBeenCalledTimes(2);
 
-      const secondResult = await queue.refresh("stale-acquire-token");
-      expect(secondResult).toEqual(successResult);
-      expect(leaseAcquire).toHaveBeenCalledTimes(2);
-      expect(queue.pendingCount).toBe(0);
-      vi.useRealTimers();
+        resolveFirstAcquire?.(ownerLease);
+        await Promise.resolve();
+        expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(1);
+
+        resolveRefresh?.(successResult);
+        const [firstResult, secondResult] = await Promise.all([firstAttempt, secondAttempt]);
+        expect(firstResult).toEqual(successResult);
+        expect(secondResult).toEqual(successResult);
+        expect(queue.pendingCount).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("times out stale unresolved entries and allows retry", async () => {
       vi.useFakeTimers();
+      try {
+        const stuckPromise = new Promise<never>(() => {});
+        const successfulRefresh = {
+          type: "success" as const,
+          access: "access",
+          refresh: "refresh",
+          expires: Date.now() + 3600000,
+        };
+        vi.mocked(authModule.refreshAccessToken)
+          .mockReturnValueOnce(stuckPromise)
+          .mockResolvedValueOnce(successfulRefresh);
 
-      const stuckPromise = new Promise<never>(() => {});
-      const successfulRefresh = {
-        type: "success" as const,
-        access: "access",
-        refresh: "refresh",
-        expires: Date.now() + 3600000,
-      };
-      vi.mocked(authModule.refreshAccessToken)
-        .mockReturnValueOnce(stuckPromise)
-        .mockResolvedValueOnce(successfulRefresh);
+        const queue = new RefreshQueue(1000);
 
-      const queue = new RefreshQueue(1000);
-      
-      const firstAttempt = queue.refresh("stuck-token");
-      expect(queue.pendingCount).toBe(1);
-      
-      await vi.advanceTimersByTimeAsync(1500);
-      const firstResult = await firstAttempt;
-      expect(firstResult.type).toBe("failed");
-      if (firstResult.type === "failed") {
-        expect(firstResult.reason).toBe("unknown");
-        expect(firstResult.message).toContain("Refresh timeout after");
+        const firstAttempt = queue.refresh("stuck-token");
+        expect(queue.pendingCount).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(1500);
+        const firstResult = await firstAttempt;
+        expect(firstResult.type).toBe("failed");
+        if (firstResult.type === "failed") {
+          expect(firstResult.reason).toBe("unknown");
+          expect(firstResult.message).toContain("Refresh timeout after");
+        }
+        expect(queue.pendingCount).toBe(0);
+
+        const secondResult = await queue.refresh("stuck-token");
+        expect(secondResult).toEqual(successfulRefresh);
+        expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
       }
-      expect(queue.pendingCount).toBe(0);
+    });
 
-      const secondResult = await queue.refresh("stuck-token");
-      expect(secondResult).toEqual(successfulRefresh);
-      expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(2);
-      
-      vi.useRealTimers();
+    it("recovers after a 429 response and retries cleanly", async () => {
+      vi.useFakeTimers();
+      try {
+        const rateLimitedResult = {
+          type: "failed" as const,
+          reason: "http_error" as const,
+          statusCode: 429,
+          message: "Rate limited",
+        };
+        const successfulRefresh = {
+          type: "success" as const,
+          access: "access-after-429",
+          refresh: "refresh-after-429",
+          expires: Date.now() + 3600000,
+        };
+        vi.mocked(authModule.refreshAccessToken)
+          .mockResolvedValueOnce(rateLimitedResult)
+          .mockResolvedValueOnce(successfulRefresh);
+
+        const queue = new RefreshQueue(1000);
+        const firstResult = await queue.refresh("rate-limited-token");
+        expect(firstResult).toEqual(rateLimitedResult);
+        expect(queue.pendingCount).toBe(0);
+
+        const secondResult = await queue.refresh("rate-limited-token");
+        expect(secondResult).toEqual(successfulRefresh);
+        expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("keeps dedupe for same token before timeout elapses", async () => {
       vi.useFakeTimers();
+      try {
+        let resolveRefresh:
+          | ((value: { type: "success"; access: string; refresh: string; expires: number }) => void)
+          | undefined;
+        const inFlight = new Promise<{
+          type: "success";
+          access: string;
+          refresh: string;
+          expires: number;
+        }>((resolve) => {
+          resolveRefresh = resolve;
+        });
+        vi.mocked(authModule.refreshAccessToken).mockReturnValueOnce(inFlight as Promise<never>);
 
-      let resolveRefresh: ((value: { type: "success"; access: string; refresh: string; expires: number }) => void) | undefined;
-      const inFlight = new Promise<{ type: "success"; access: string; refresh: string; expires: number }>((resolve) => {
-        resolveRefresh = resolve;
-      });
-      vi.mocked(authModule.refreshAccessToken).mockReturnValueOnce(inFlight as Promise<never>);
+        const queue = new RefreshQueue(1000);
+        const p1 = queue.refresh("same-token");
+        const p2 = queue.refresh("same-token");
+        await Promise.resolve();
 
-      const queue = new RefreshQueue(1000);
-      const p1 = queue.refresh("same-token");
-      const p2 = queue.refresh("same-token");
-      await Promise.resolve();
+        expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(1);
+        expect(queue.pendingCount).toBe(1);
 
-      expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(1);
-      expect(queue.pendingCount).toBe(1);
+        resolveRefresh?.({
+          type: "success",
+          access: "a",
+          refresh: "r",
+          expires: Date.now() + 3600_000,
+        });
 
-      resolveRefresh?.({
-        type: "success",
-        access: "a",
-        refresh: "r",
-        expires: Date.now() + 3600_000,
-      });
-
-      await vi.advanceTimersByTimeAsync(10);
-      const [r1, r2] = await Promise.all([p1, p2]);
-      expect(r1).toEqual(r2);
-      expect(queue.pendingCount).toBe(0);
-      
-      vi.useRealTimers();
+        await vi.advanceTimersByTimeAsync(10);
+        const [r1, r2] = await Promise.all([p1, p2]);
+        expect(r1).toEqual(r2);
+        expect(queue.pendingCount).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("logs stale refresh-stage warnings only once per entry", async () => {
@@ -751,20 +848,23 @@ describe("RefreshQueue", () => {
 				expires: Date.now() + 3600000,
 			};
 			let releaseRefresh: (() => void) | null = null;
+			let signalReleaseAssigned: (() => void) | null = null;
+			const releaseAssigned = new Promise<void>((resolve) => {
+				signalReleaseAssigned = resolve;
+			});
 			vi.mocked(authModule.refreshAccessToken).mockImplementation(() => {
 				return new Promise((resolve) => {
 					releaseRefresh = () => resolve(delayedResult);
+					signalReleaseAssigned?.();
+					signalReleaseAssigned = null;
 				});
 			});
 
-      const ownerRefresh = queueA.refresh("same-cross-token");
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      const followerRefresh = queueB.refresh("same-cross-token");
-      for (let i = 0; i < 40 && !releaseRefresh; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      expect(releaseRefresh).not.toBeNull();
-      releaseRefresh?.();
+			const ownerRefresh = queueA.refresh("same-cross-token");
+			await releaseAssigned;
+			const followerRefresh = queueB.refresh("same-cross-token");
+			expect(releaseRefresh).not.toBeNull();
+			releaseRefresh?.();
 
 			const [ownerResult, followerResult] = await Promise.all([
 				ownerRefresh,
@@ -772,9 +872,9 @@ describe("RefreshQueue", () => {
 			]);
 			expect(ownerResult).toEqual(delayedResult);
 			expect(followerResult).toEqual(delayedResult);
-      expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
-    });
-  });
+			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+		});
+	});
 
 	describe("lease failure handling", () => {
 		it("falls back to local refresh when lease acquisition throws", async () => {

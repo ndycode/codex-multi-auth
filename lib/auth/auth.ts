@@ -146,10 +146,11 @@ export async function exchangeAuthorizationCode(
 			message: "Missing refresh token in authorization code exchange response",
 		};
 	}
+	const normalizedRefreshToken = json.refresh_token.trim();
 	return {
 		type: "success",
 		access: json.access_token,
-		refresh: json.refresh_token,
+		refresh: normalizedRefreshToken,
 		expires: Date.now() + json.expires_in * 1000,
 		idToken: json.id_token,
 		multiAccount: true,
