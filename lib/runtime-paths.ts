@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { existsSync } from "node:fs";
 
 function firstNonEmpty(values: Array<string | undefined>): string | null {
@@ -17,7 +17,9 @@ function getResolvedUserHomeDir(): string {
 		const homeDrive = (process.env.HOMEDRIVE ?? "").trim();
 		const homePath = (process.env.HOMEPATH ?? "").trim();
 		const drivePathHome =
-			homeDrive.length > 0 && homePath.length > 0 ? `${homeDrive}${homePath}` : undefined;
+			homeDrive.length > 0 && homePath.length > 0
+				? win32.resolve(`${homeDrive}\\`, homePath)
+				: undefined;
 		return (
 			firstNonEmpty([
 				process.env.USERPROFILE,

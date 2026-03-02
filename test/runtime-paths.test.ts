@@ -7,20 +7,39 @@ const homedir = vi.fn(() => "/home/neil");
 vi.mock("node:fs", () => ({ existsSync }));
 vi.mock("node:os", () => ({ homedir }));
 
+const ENV_KEYS = [
+	"CODEX_HOME",
+	"CODEX_MULTI_AUTH_DIR",
+	"USERPROFILE",
+	"HOME",
+	"HOMEDRIVE",
+	"HOMEPATH",
+] as const;
+
+type EnvKey = (typeof ENV_KEYS)[number];
+
 describe("runtime-paths", () => {
+	const originalEnv: Partial<Record<EnvKey, string | undefined>> = {};
+
 	beforeEach(() => {
 		vi.resetModules();
 		vi.clearAllMocks();
-		delete process.env.CODEX_HOME;
-		delete process.env.CODEX_MULTI_AUTH_DIR;
-		delete process.env.USERPROFILE;
-		delete process.env.HOME;
-		delete process.env.HOMEDRIVE;
-		delete process.env.HOMEPATH;
+		for (const key of ENV_KEYS) {
+			originalEnv[key] = process.env[key];
+			delete process.env[key];
+		}
 		homedir.mockReturnValue("/home/neil");
 	});
 
 	afterEach(() => {
+		for (const key of ENV_KEYS) {
+			const value = originalEnv[key];
+			if (typeof value === "string") {
+				process.env[key] = value;
+			} else {
+				delete process.env[key];
+			}
+		}
 		vi.restoreAllMocks();
 	});
 
@@ -104,6 +123,19 @@ describe("runtime-paths", () => {
 			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
 			process.env.HOMEDRIVE = "E:";
 			process.env.HOMEPATH = "\\Users\\Carol";
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexHomeDir()).toBe("E:\\Users\\Carol\\.codex");
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("normalizes HOMEPATH without a leading slash on Windows", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
+			process.env.HOMEDRIVE = "E:";
+			process.env.HOMEPATH = "Users\\Carol";
 			const mod = await import("../lib/runtime-paths.js");
 			expect(mod.getCodexHomeDir()).toBe("E:\\Users\\Carol\\.codex");
 		} finally {
