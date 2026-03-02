@@ -440,6 +440,144 @@ describe("Storage Paths Module", () => {
 				expect(normalize(resolved)).toBe(normalize(sharedRepoRoot));
 			});
 
+			it("falls back to normalized paths when realpathSync.native throws", () => {
+				const projectRoot = path.win32.join("X:\\repo", "worktrees", "pr-8");
+				const gitEntry = path.win32.join(projectRoot, ".git");
+				const canonicalProjectRoot = path.win32.join("D:\\repo", "worktrees", "pr-8");
+				const canonicalBackRef = path.win32.join(canonicalProjectRoot, ".git");
+				const worktreeGitDir = path.win32.join("D:\\repo", ".git", "worktrees", "pr-8");
+				const commondirFile = path.win32.join(worktreeGitDir, "commondir");
+				const gitdirBackRefFile = path.win32.join(worktreeGitDir, "gitdir");
+				const sharedRepoRoot = "D:\\repo";
+				const sharedGitDir = path.win32.join(sharedRepoRoot, ".git");
+				const normalize = (value: string) => path.win32.normalize(value).toLowerCase();
+				const aliasPrefix = normalize(path.win32.join("X:\\repo"));
+				const canonicalBackRefNormalized = normalize(canonicalBackRef);
+
+				mockedRealpathSyncNative.mockImplementation((value) => {
+					const normalizedValue = normalize(String(value));
+					if (normalizedValue === canonicalBackRefNormalized) {
+						throw new Error("simulated native realpath failure");
+					}
+					if (normalizedValue.startsWith(aliasPrefix)) {
+						const suffix = normalizedValue.slice(aliasPrefix.length);
+						return path.win32.join("D:\\repo", suffix.replace(/^\\+/, ""));
+					}
+					return String(value);
+				});
+				mockedRealpathSync.mockImplementation((value) => String(value));
+
+				mockedExistsSync.mockImplementation((candidate) => {
+					if (typeof candidate !== "string") return false;
+					const normalizedCandidate = normalize(candidate);
+					return (
+						normalizedCandidate === normalize(gitEntry) ||
+						normalizedCandidate === normalize(commondirFile) ||
+						normalizedCandidate === normalize(gitdirBackRefFile) ||
+						normalizedCandidate === normalize(sharedGitDir)
+					);
+				});
+				mockedStatSync.mockImplementation((candidate) => {
+					expect(normalize(String(candidate))).toBe(normalize(gitEntry));
+					return buildMockStat({ isDirectory: false, isFile: true });
+				});
+				mockedReadFileSync.mockImplementation((candidate) => {
+					if (typeof candidate !== "string") {
+						throw new Error(`Unexpected read path: ${String(candidate)}`);
+					}
+					const normalizedCandidate = normalize(candidate);
+					if (normalizedCandidate === normalize(gitEntry)) {
+						return `gitdir: ${worktreeGitDir}\n`;
+					}
+					if (normalizedCandidate === normalize(commondirFile)) {
+						return "..\\..\\\n";
+					}
+					if (normalizedCandidate === normalize(gitdirBackRefFile)) {
+						return `${canonicalBackRef}\n`;
+					}
+					throw new Error(`Unexpected read path: ${String(candidate)}`);
+				});
+
+				const resolved = resolveProjectStorageIdentityRoot(projectRoot);
+				expect(normalize(resolved)).toBe(normalize(sharedRepoRoot));
+			});
+
+			it("falls back when realpathSync.native is unavailable and realpathSync throws", () => {
+				const projectRoot = path.win32.join("X:\\repo", "worktrees", "pr-8");
+				const gitEntry = path.win32.join(projectRoot, ".git");
+				const canonicalProjectRoot = path.win32.join("D:\\repo", "worktrees", "pr-8");
+				const canonicalBackRef = path.win32.join(canonicalProjectRoot, ".git");
+				const worktreeGitDir = path.win32.join("D:\\repo", ".git", "worktrees", "pr-8");
+				const commondirFile = path.win32.join(worktreeGitDir, "commondir");
+				const gitdirBackRefFile = path.win32.join(worktreeGitDir, "gitdir");
+				const sharedRepoRoot = "D:\\repo";
+				const sharedGitDir = path.win32.join(sharedRepoRoot, ".git");
+				const normalize = (value: string) => path.win32.normalize(value).toLowerCase();
+				const aliasPrefix = normalize(path.win32.join("X:\\repo"));
+				const canonicalBackRefNormalized = normalize(canonicalBackRef);
+				const originalNative = realpathSync.native;
+
+				Object.defineProperty(realpathSync, "native", {
+					value: undefined,
+					configurable: true,
+					writable: true,
+				});
+
+				try {
+					mockedRealpathSync.mockImplementation((value) => {
+						const normalizedValue = normalize(String(value));
+						if (normalizedValue === canonicalBackRefNormalized) {
+							throw new Error("simulated realpath fallback failure");
+						}
+						if (normalizedValue.startsWith(aliasPrefix)) {
+							const suffix = normalizedValue.slice(aliasPrefix.length);
+							return path.win32.join("D:\\repo", suffix.replace(/^\\+/, ""));
+						}
+						return String(value);
+					});
+
+					mockedExistsSync.mockImplementation((candidate) => {
+						if (typeof candidate !== "string") return false;
+						const normalizedCandidate = normalize(candidate);
+						return (
+							normalizedCandidate === normalize(gitEntry) ||
+							normalizedCandidate === normalize(commondirFile) ||
+							normalizedCandidate === normalize(gitdirBackRefFile) ||
+							normalizedCandidate === normalize(sharedGitDir)
+						);
+					});
+					mockedStatSync.mockImplementation((candidate) => {
+						expect(normalize(String(candidate))).toBe(normalize(gitEntry));
+						return buildMockStat({ isDirectory: false, isFile: true });
+					});
+					mockedReadFileSync.mockImplementation((candidate) => {
+						if (typeof candidate !== "string") {
+							throw new Error(`Unexpected read path: ${String(candidate)}`);
+						}
+						const normalizedCandidate = normalize(candidate);
+						if (normalizedCandidate === normalize(gitEntry)) {
+							return `gitdir: ${worktreeGitDir}\n`;
+						}
+						if (normalizedCandidate === normalize(commondirFile)) {
+							return "..\\..\\\n";
+						}
+						if (normalizedCandidate === normalize(gitdirBackRefFile)) {
+							return `${canonicalBackRef}\n`;
+						}
+						throw new Error(`Unexpected read path: ${String(candidate)}`);
+					});
+
+					const resolved = resolveProjectStorageIdentityRoot(projectRoot);
+					expect(normalize(resolved)).toBe(normalize(sharedRepoRoot));
+				} finally {
+					Object.defineProperty(realpathSync, "native", {
+						value: originalNative,
+						configurable: true,
+						writable: true,
+					});
+				}
+			});
+
 			it("falls back to project root for forged worktree pointers", () => {
 				const projectRoot = "/repo/attacker";
 				const gitEntry = path.join(projectRoot, ".git");
