@@ -122,7 +122,10 @@ import {
 	getRateLimitResetTimeForFamily,
 	formatRateLimitEntry,
 } from "./lib/accounts/account-view.js";
-import { setActiveIndexForAllFamilies } from "./lib/accounts/active-index.js";
+import {
+	setActiveIndexForAllFamilies,
+	normalizeActiveIndexByFamily,
+} from "./lib/accounts/active-index.js";
 import {
 	getStoragePath,
 	loadAccounts,
@@ -2385,20 +2388,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 							let refreshAccountIndex: number | undefined;
 
 							const clampActiveIndices = (storage: AccountStorageV3): void => {
-								const count = storage.accounts.length;
-								if (count === 0) {
-									storage.activeIndex = 0;
-									storage.activeIndexByFamily = {};
-									return;
-								}
-								storage.activeIndex = Math.max(0, Math.min(storage.activeIndex, count - 1));
-								storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-								for (const family of MODEL_FAMILIES) {
-									const raw = storage.activeIndexByFamily[family];
-									const candidate =
-										typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
-									storage.activeIndexByFamily[family] = Math.max(0, Math.min(candidate, count - 1));
-								}
+								normalizeActiveIndexByFamily(storage, storage.accounts.length, {
+									clearFamilyMapWhenEmpty: true,
+								});
 							};
 
 							const isFlaggableFailure = (failure: Extract<TokenResult, { type: "failed" }>): boolean => {

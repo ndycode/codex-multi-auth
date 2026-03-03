@@ -29,6 +29,7 @@ import {
 import {
 	createActiveIndexByFamily,
 	setActiveIndexForAllFamilies,
+	normalizeActiveIndexByFamily,
 } from "./accounts/active-index.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
@@ -44,7 +45,6 @@ import {
 	summarizeForecast,
 	type ForecastAccountResult,
 } from "./forecast.js";
-import { MODEL_FAMILIES } from "./prompts/codex.js";
 import {
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
@@ -3051,25 +3051,7 @@ function hasPlaceholderEmail(value: string | undefined): boolean {
 }
 
 function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
-	const total = storage.accounts.length;
-	const nextActive = total === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, total - 1));
-	let changed = false;
-	if (storage.activeIndex !== nextActive) {
-		storage.activeIndex = nextActive;
-		changed = true;
-	}
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		const raw = storage.activeIndexByFamily[family];
-		const fallback = storage.activeIndex;
-		const candidate = typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
-		const clamped = total === 0 ? 0 : Math.max(0, Math.min(candidate, total - 1));
-		if (storage.activeIndexByFamily[family] !== clamped) {
-			storage.activeIndexByFamily[family] = clamped;
-			changed = true;
-		}
-	}
-	return changed;
+	return normalizeActiveIndexByFamily(storage, storage.accounts.length);
 }
 
 function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {

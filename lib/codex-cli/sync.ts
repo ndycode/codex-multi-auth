@@ -3,8 +3,11 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "../storage.js";
-import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
-import { setActiveIndexForAllFamilies } from "../accounts/active-index.js";
+import { type ModelFamily } from "../prompts/codex.js";
+import {
+	setActiveIndexForAllFamilies,
+	normalizeActiveIndexByFamily,
+} from "../accounts/active-index.js";
 import { createLogger } from "../logger.js";
 import { loadCodexCliState, type CodexCliAccountSnapshot } from "./state.js";
 import {
@@ -182,19 +185,7 @@ function writeFamilyIndexes(
  * @param storage - The account storage object whose indexes will be normalized and clamped
  */
 function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
-	const count = storage.accounts.length;
-	const clamped = count === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, count - 1));
-	if (storage.activeIndex !== clamped) {
-		storage.activeIndex = clamped;
-	}
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		const raw = storage.activeIndexByFamily[family];
-		const resolved =
-			typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
-		storage.activeIndexByFamily[family] =
-			count === 0 ? 0 : Math.max(0, Math.min(resolved, count - 1));
-	}
+	normalizeActiveIndexByFamily(storage, storage.accounts.length);
 }
 
 /**

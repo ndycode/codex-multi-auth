@@ -803,9 +803,13 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("handles removal of last account", async () => {
 			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			mockStorage.activeIndex = 3;
+			mockStorage.activeIndexByFamily = { codex: 3, "gpt-5.1": 3 };
 			const result = await plugin.tool["codex-remove"].execute({ index: 1 });
 			expect(result).toContain("Removed");
 			expect(result).toContain("No accounts remaining");
+			expect(mockStorage.activeIndex).toBe(0);
+			expect(mockStorage.activeIndexByFamily).toEqual({});
 		});
 	});
 
