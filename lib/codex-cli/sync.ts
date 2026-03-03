@@ -4,6 +4,7 @@ import {
 	type AccountStorageV3,
 } from "../storage.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
+import { setActiveIndexForAllFamilies } from "../accounts/active-index.js";
 import { createLogger } from "../logger.js";
 import { loadCodexCliState, type CodexCliAccountSnapshot } from "./state.js";
 import {
@@ -162,11 +163,7 @@ function writeFamilyIndexes(
 	storage: AccountStorageV3,
 	index: number,
 ): void {
-	storage.activeIndex = index;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = index;
-	}
+	setActiveIndexForAllFamilies(storage, index);
 }
 
 /**

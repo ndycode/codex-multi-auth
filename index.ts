@@ -122,6 +122,7 @@ import {
 	getRateLimitResetTimeForFamily,
 	formatRateLimitEntry,
 } from "./lib/accounts/account-view.js";
+import { setActiveIndexForAllFamilies } from "./lib/accounts/active-index.js";
 import {
 	getStoragePath,
 	loadAccounts,
@@ -955,11 +956,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         account.lastUsed = now;
                                         account.lastSwitchReason = "rotation";
                                 }
-                                storage.activeIndex = index;
-                                storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-                                for (const family of MODEL_FAMILIES) {
-                                        storage.activeIndexByFamily[family] = index;
-                                }
+                                setActiveIndexForAllFamilies(storage, index);
 
                                 await saveAccounts(storage);
 				if (cachedAccountManager) {
@@ -3522,11 +3519,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                 account.lastSwitchReason = "rotation";
                                         }
 
-					storage.activeIndex = targetIndex;
-					storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-					for (const family of MODEL_FAMILIES) {
-							storage.activeIndexByFamily[family] = targetIndex;
-					}
+					setActiveIndexForAllFamilies(storage, targetIndex);
 					try {
 						await saveAccounts(storage);
 					} catch (saveError) {

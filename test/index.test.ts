@@ -696,6 +696,11 @@ describe("OpenAIOAuthPlugin", () => {
 				{ refreshToken: "r2", email: "user2@example.com" },
 			];
 			const result = await plugin.tool["codex-switch"].execute({ index: 2 });
+			const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
+			expect(mockStorage.activeIndex).toBe(1);
+			for (const family of MODEL_FAMILIES) {
+				expect(mockStorage.activeIndexByFamily[family]).toBe(1);
+			}
 			expect(result).toContain("Switched to account");
 		});
 
@@ -1906,6 +1911,11 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		await plugin.event({
 			event: { type: "account.select", properties: { accountIndex: 1 } },
 		});
+		const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
+		expect(mockStorage.activeIndex).toBe(1);
+		for (const family of MODEL_FAMILIES) {
+			expect(mockStorage.activeIndexByFamily[family]).toBe(1);
+		}
 	});
 
 	it("reloads account manager from disk when handling account.select", async () => {

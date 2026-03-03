@@ -26,6 +26,10 @@ import {
 	resolveActiveIndex,
 	formatRateLimitEntry,
 } from "./accounts/account-view.js";
+import {
+	createActiveIndexByFamily,
+	setActiveIndexForAllFamilies,
+} from "./accounts/active-index.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
 	loadDashboardDisplaySettings,
@@ -40,7 +44,7 @@ import {
 	summarizeForecast,
 	type ForecastAccountResult,
 } from "./forecast.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import { MODEL_FAMILIES } from "./prompts/codex.js";
 import {
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
@@ -1331,10 +1335,7 @@ async function persistAccountPool(
 		: selectedAccountIndex === null
 			? fallbackActiveIndex
 			: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = nextActiveIndex;
-	}
+	const activeIndexByFamily = createActiveIndexByFamily(nextActiveIndex);
 
 	await saveAccounts({
 		version: 3,
@@ -2345,10 +2346,7 @@ interface VerifyFlaggedReport {
 }
 
 function createEmptyAccountStorage(): AccountStorageV3 {
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = 0;
-	}
+	const activeIndexByFamily = createActiveIndexByFamily(0);
 	return {
 		version: 3,
 		accounts: [],
@@ -3631,11 +3629,7 @@ async function handleManageAction(
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
 			storage.accounts.splice(idx, 1);
-			storage.activeIndex = 0;
-			storage.activeIndexByFamily = {};
-			for (const family of MODEL_FAMILIES) {
-				storage.activeIndexByFamily[family] = 0;
-			}
+			setActiveIndexForAllFamilies(storage, 0);
 			await saveAccounts(storage);
 			console.log(`Deleted account ${idx + 1}.`);
 		}
@@ -3856,11 +3850,7 @@ async function runSwitch(args: string[]): Promise<number> {
 		return 1;
 	}
 
-	storage.activeIndex = targetIndex;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = targetIndex;
-	}
+	setActiveIndexForAllFamilies(storage, targetIndex);
 	const wasDisabled = account.enabled === false;
 	if (wasDisabled) {
 		account.enabled = true;
