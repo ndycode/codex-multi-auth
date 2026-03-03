@@ -98,8 +98,9 @@ describe('Documentation Integrity', () => {
     const portal = read('docs/README.md');
     expect(portal).toContain('reference/public-api.md');
     expect(portal).toContain('reference/error-contracts.md');
+    expect(portal).toContain('releases/v0.1.3.md');
+    expect(portal).toContain('releases/v0.1.2.md');
     expect(portal).toContain('releases/v0.1.1.md');
-    expect(portal).toContain('releases/v0.1.0.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
     expect(portal).toContain('releases/legacy-pre-0.1-history.md');
     expect(portal).toContain('| [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |');

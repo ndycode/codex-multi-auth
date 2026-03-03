@@ -402,17 +402,19 @@ describe("selectHybridAccount", () => {
 
 	it("pidOffsetEnabled uses process.pid modulo 100 for offset calculation", () => {
 		const originalPid = process.pid;
-		Object.defineProperty(process, 'pid', { value: 50, configurable: true });
+		try {
+			Object.defineProperty(process, "pid", { value: 50, configurable: true });
 
-		const accounts: AccountWithMetrics[] = [
-			{ index: 0, isAvailable: true, lastUsed: Date.now() },
-			{ index: 1, isAvailable: true, lastUsed: Date.now() },
-		];
+			const accounts: AccountWithMetrics[] = [
+				{ index: 0, isAvailable: true, lastUsed: Date.now() },
+				{ index: 1, isAvailable: true, lastUsed: Date.now() },
+			];
 
-		const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
-		expect(result).not.toBe(null);
-
-		Object.defineProperty(process, 'pid', { value: originalPid, configurable: true });
+			const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
+			expect(result).not.toBe(null);
+		} finally {
+			Object.defineProperty(process, "pid", { value: originalPid, configurable: true });
+		}
 	});
 
 	it("pidOffsetEnabled differentiates selection across different PIDs", () => {
@@ -426,15 +428,17 @@ describe("selectHybridAccount", () => {
 		];
 
 		const selectedIndices = new Set<number>();
-		for (let pid = 0; pid < 100; pid += 10) {
-			Object.defineProperty(process, 'pid', { value: pid, configurable: true });
-			const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
-			if (result) {
-				selectedIndices.add(result.index);
+		try {
+			for (let pid = 0; pid < 100; pid += 10) {
+				Object.defineProperty(process, "pid", { value: pid, configurable: true });
+				const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
+				if (result) {
+					selectedIndices.add(result.index);
+				}
 			}
+		} finally {
+			Object.defineProperty(process, "pid", { value: originalPid, configurable: true });
 		}
-
-		Object.defineProperty(process, 'pid', { value: originalPid, configurable: true });
 
 		expect(selectedIndices.size).toBeGreaterThan(1);
 	});
