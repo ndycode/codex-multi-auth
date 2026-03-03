@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawnSync = vi.fn();
@@ -22,6 +25,42 @@ describe("test-model-matrix script helpers", () => {
 			command: "C:\\Tools\\Codex.cmd",
 			shell: true,
 		});
+	});
+
+	it("resolves CODEX_BIN .cmd wrapper to node + script entry when available", async () => {
+		const fixtureRoot = mkdtempSync(join(tmpdir(), "matrix-cmd-wrapper-"));
+		try {
+			const scriptPath = join(
+				fixtureRoot,
+				"node_modules",
+				"codex-multi-auth",
+				"scripts",
+				"codex.js",
+			);
+			mkdirSync(dirname(scriptPath), { recursive: true });
+			writeFileSync(scriptPath, "#!/usr/bin/env node\n", "utf8");
+
+			const cmdPath = join(fixtureRoot, "Codex.cmd");
+			writeFileSync(
+				cmdPath,
+				[
+					"@ECHO off",
+					'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\codex-multi-auth\\scripts\\codex.js" %*',
+				].join("\r\n"),
+				"utf8",
+			);
+			vi.stubEnv("CODEX_BIN", cmdPath);
+
+			const mod = await import("../scripts/test-model-matrix.js");
+			expect(mod.resolveCodexExecutable()).toEqual({
+				command: process.execPath,
+				shell: false,
+				prefixArgs: [scriptPath],
+				displayCommand: cmdPath,
+			});
+		} finally {
+			rmSync(fixtureRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("falls back to default timeout when CODEX_MATRIX_TIMEOUT_MS is invalid", async () => {

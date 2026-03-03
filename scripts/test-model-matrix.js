@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -13,16 +13,45 @@ const scenarioTemplates = {
 	modern: join(repoRoot, "config", "codex-modern.json"),
 };
 
-const defaultPromptPrefix = "Reply exactly:";
-const modelProviderId = "openai";
 const pluginPackageName = "codex-multi-auth";
 const DEFAULT_MATRIX_TIMEOUT_MS = 120000;
+
+function resolveCmdScriptEntry(commandPath) {
+	if (!/\.cmd$/i.test(commandPath)) {
+		return null;
+	}
+	try {
+		const raw = readFileSync(commandPath, "utf8");
+		const match = raw.match(/"%dp0%\\([^"\r\n]+\.js)"/i);
+		if (!match || typeof match[1] !== "string") {
+			return null;
+		}
+		const relScriptPath = match[1].replace(/[\\/]+/g, "/");
+		const scriptPath = resolve(dirname(commandPath), relScriptPath);
+		return existsSync(scriptPath) ? scriptPath : null;
+	} catch {
+		return null;
+	}
+}
+
+function buildExecutable(command) {
+	const scriptEntry = resolveCmdScriptEntry(command);
+	if (scriptEntry) {
+		return {
+			command: process.execPath,
+			shell: false,
+			prefixArgs: [scriptEntry],
+			displayCommand: command,
+		};
+	}
+	return { command, shell: /\.cmd$/i.test(command) };
+}
 
 export function resolveCodexExecutable() {
 	const envOverride = process.env.CODEX_BIN;
 	if (envOverride && envOverride.trim().length > 0) {
 		const command = envOverride.trim();
-		return { command, shell: /\.cmd$/i.test(command) };
+		return buildExecutable(command);
 	}
 
 	if (process.platform !== "win32") {
@@ -53,12 +82,12 @@ export function resolveCodexExecutable() {
 		/npm\\Codex\.cmd$/i.test(candidate),
 	);
 	if (exactCmd) {
-		return { command: exactCmd, shell: true };
+		return buildExecutable(exactCmd);
 	}
 
 	const anyCmd = candidates.find((candidate) => /\.cmd$/i.test(candidate));
 	if (anyCmd) {
-		return { command: anyCmd, shell: true };
+		return buildExecutable(anyCmd);
 	}
 
 	return { command: candidates[0], shell: false };
@@ -215,23 +244,24 @@ function enumerateCases(models, smoke, maxCases) {
 	return selected;
 }
 
-function executeModelCase(caseInfo, index, port) {
+function executeModelCase(caseInfo, index) {
 	const token = `MODEL_MATRIX_OK_${index}`;
-	const message = `${defaultPromptPrefix} ${token}`;
+	const message = token;
 	const args = [
-		"run",
+		"exec",
 		message,
 		"--model",
-		`${modelProviderId}/${caseInfo.model}`,
-		"--port",
-		String(port),
+		caseInfo.model,
+		"--json",
+		"--skip-git-repo-check",
 	];
 	if (caseInfo.variant) {
-		args.push("--variant", caseInfo.variant);
+		args.push("-c", `model_reasoning_effort="${caseInfo.variant}"`);
 	}
 
 	const timeoutMs = resolveMatrixTimeoutMs();
-	const finalized = spawnSync(CodexExecutable.command, args, {
+	const commandArgs = [...(CodexExecutable.prefixArgs ?? []), ...args];
+	const finalized = spawnSync(CodexExecutable.command, commandArgs, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		windowsHide: true,
@@ -258,9 +288,8 @@ function executeModelCase(caseInfo, index, port) {
 
 	const combinedOutput = `${finalized.stdout ?? ""}\n${finalized.stderr ?? ""}`.trim();
 	const hasToken = combinedOutput.includes(token);
-	const hasFatalError = /ProviderModelNotFoundError|Model not found/i.test(combinedOutput);
 	const exitCode = finalized.status ?? 1;
-	const ok = exitCode === 0 && hasToken && !hasFatalError;
+	const ok = exitCode === 0 && hasToken;
 
 	return {
 		...caseInfo,
@@ -346,7 +375,6 @@ async function runScenario(scenario, options) {
 		const result = executeModelCase(
 			caseInfo,
 			i + 1,
-			options.portStart + i,
 		);
 		results.push(result);
 		const variantLabel = result.variant ? ` [variant=${result.variant}]` : "";
@@ -401,7 +429,7 @@ async function main() {
 	console.log(`Scenarios: ${scenarios.join(", ")}`);
 	console.log(`Mode: ${smoke ? "smoke" : "full"}`);
 	console.log(`Plugin: ${pluginRef}`);
-	console.log(`Codex command: ${CodexExecutable.command}`);
+	console.log(`Codex command: ${CodexExecutable.displayCommand ?? CodexExecutable.command}`);
 
 	const backups = await backupLocalConfigs();
 	const allResults = [];
@@ -437,7 +465,7 @@ async function main() {
 			scenarios,
 			mode: smoke ? "smoke" : "full",
 			plugin: pluginRef,
-			CodexCommand: CodexExecutable.command,
+			CodexCommand: CodexExecutable.displayCommand ?? CodexExecutable.command,
 			totals: {
 				total: allResults.length,
 				passed,
