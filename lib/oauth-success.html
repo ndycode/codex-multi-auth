@@ -2,21 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>OpenAI Codex Callback Received</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Codex Sign-In Complete</title>
   <style>
-    /* Space Grotesk import removed to avoid CSP font-src violations; rely on system stack. */
-
     :root {
-      --bg: #020403;
-      --bg2: #050908;
-      --surface: rgba(6, 10, 9, 0.92);
-      --border: rgba(255, 255, 255, 0.08);
-      --divider: rgba(255, 255, 255, 0.07);
-      --text: #f5fbf7;
-      --muted: rgba(245, 251, 247, 0.68);
-      --accent: #49f1a8;
-      --accent-soft: rgba(73, 241, 168, 0.15);
+      color-scheme: dark;
+      --bg: #0b0b0b;
+      --panel: #111111;
+      --text: #f2f2f2;
+      --muted: #a3a3a3;
+      --line: #232323;
+      --ok: #7cf0a6;
     }
 
     * {
@@ -26,245 +22,105 @@
     body {
       margin: 0;
       min-height: 100vh;
-      font-family: "Segoe UI", system-ui, -apple-system, "IBM Plex Sans", sans-serif;
-      background: radial-gradient(circle at top, rgba(73, 241, 168, 0.12), transparent 55%),
-                  linear-gradient(180deg, var(--bg), var(--bg2));
-      color: var(--text);
       display: grid;
       place-items: center;
-      padding: 32px 16px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Geist Mono", "GeistMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      padding: 24px;
     }
 
     main {
-      width: min(440px, 100%);
-      background: var(--surface);
-      border-radius: 22px;
-      border: 1px solid var(--border);
-      padding: 32px;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
-    }
-
-    .eyebrow {
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.22em;
-      color: var(--muted);
-    }
-
-    .icon {
-      width: 64px;
-      height: 64px;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      background: var(--accent-soft);
+      width: min(520px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
       display: grid;
-      place-items: center;
-      color: var(--accent);
-      margin: 4px 0 6px;
-      position: relative;
-      animation: fade 1s ease both;
-    }
-
-    .icon::after {
-      content: "";
-      width: 20px;
-      height: 12px;
-      border-left: 3px solid currentColor;
-      border-bottom: 3px solid currentColor;
-      transform: rotate(-45deg);
+      gap: 14px;
     }
 
     h1 {
       margin: 0;
-      font-size: clamp(26px, 4vw, 32px);
+      font-size: 20px;
+      font-weight: 600;
       letter-spacing: -0.02em;
     }
 
-    .lead {
+    p {
       margin: 0;
       color: var(--muted);
-      font-size: 15px;
-      line-height: 1.6;
-    }
-
-    .state {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      padding: 16px 18px;
-      border-radius: 16px;
-      background: rgba(8, 14, 11, 0.75);
-      border: 1px solid var(--border);
-    }
-
-    .state span {
-      font-size: 13px;
-      text-transform: uppercase;
-      letter-spacing: 0.15em;
-      color: var(--muted);
-    }
-
-    .state strong {
-      font-size: 20px;
-      color: var(--accent);
-      font-weight: 600;
-    }
-
-    .status-list {
-      list-style: none;
-      margin: 8px 0 0;
-      padding: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .status-list li {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 1px solid var(--divider);
-      padding-bottom: 8px;
       font-size: 14px;
+      line-height: 1.5;
     }
 
-    .status-list li:last-child {
-      border-bottom: none;
-      padding-bottom: 0;
-    }
-
-    .status-list span {
-      color: var(--muted);
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--ok);
       font-size: 13px;
-      letter-spacing: 0.02em;
     }
 
-    .status-list .ok {
-      color: var(--accent);
-      font-weight: 500;
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
     }
 
-    .meta {
-      border-top: 1px solid var(--divider);
-      padding-top: 14px;
-      display: grid;
-      gap: 10px;
-    }
-
-    .meta-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      font-size: 13px;
-      color: var(--muted);
-    }
-
-    .meta-row code {
-      font-family: "Segoe UI", system-ui, -apple-system, "SFMono-Regular", Menlo, monospace;
-      background: rgba(255, 255, 255, 0.04);
-      border-radius: 8px;
-      padding: 4px 8px;
-      color: var(--text);
-    }
-
-    .tip {
+    dl {
       margin: 0;
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px 12px;
       font-size: 13px;
-      color: var(--muted);
-      border-top: 1px solid var(--divider);
-      padding-top: 14px;
     }
 
-    .tip strong {
+    dt {
+      color: var(--muted);
+    }
+
+    dd {
+      margin: 0;
       color: var(--text);
+      word-break: break-word;
     }
 
-    footer {
+    code {
+      background: #171717;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-family: inherit;
       font-size: 12px;
-      color: var(--muted);
-      text-align: center;
     }
 
-    @keyframes fade {
-      from { opacity: 0; transform: translateY(6px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .icon {
-        animation: none;
-      }
-    }
-
-    @media (max-width: 480px) {
-      main {
-        padding: 24px;
-        border-radius: 18px;
-      }
-
-      .state {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 4px;
-      }
-
-      .status-list li {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 2px;
-      }
-
-      .meta-row {
-        flex-direction: column;
-        gap: 4px;
+    @media (max-width: 520px) {
+      dl {
+        grid-template-columns: 1fr;
       }
     }
   </style>
 </head>
 <body>
   <main role="main" aria-label="OAuth callback received">
-    <p class="eyebrow">OpenAI Codex</p>
-    <div class="icon" aria-hidden="true"></div>
-    <h1>Callback received</h1>
-    <p class="lead">Return to your terminal to complete sign-in.</p>
-    <div class="state">
-      <span>Status</span>
-      <strong>Processing</strong>
+    <h1>Sign-in complete</h1>
+    <p>Return to your terminal to finish Codex login.</p>
+
+    <div class="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      Callback received
     </div>
-    <ul class="status-list" aria-label="OAuth steps">
-      <li>
-        <span>Authorization code</span>
-        <span class="ok">received</span>
-      </li>
-      <li>
-        <span>Token exchange</span>
-        <span>running in terminal</span>
-      </li>
-      <li>
-        <span>Credentials</span>
-        <span>persisting after terminal completes</span>
-      </li>
-      <li>
-        <span>Session</span>
-        <span>activating in terminal</span>
-      </li>
-    </ul>
-    <section class="meta" aria-label="Callback summary">
-      <div class="meta-row">
-        <span>Callback</span>
-        <!-- Port 1455 is fixed by design via REDIRECT_URI -->
-        <code>localhost:1455</code>
-      </div>
-      <div class="meta-row">
-        <span>Tip</span>
-        <span>Close this tab when you are done.</span>
-      </div>
-    </section>
-    <p class="tip"><strong>Next:</strong> return to the terminal window to continue.</p>
-    <footer>Back to terminal to continue.</footer>
+
+    <dl>
+      <dt>Endpoint</dt>
+      <dd><code>localhost:1455</code></dd>
+      <dt>Flow</dt>
+      <dd>OAuth callback captured</dd>
+      <dt>Next</dt>
+      <dd>Close this tab and continue in terminal</dd>
+    </dl>
   </main>
 </body>
 </html>

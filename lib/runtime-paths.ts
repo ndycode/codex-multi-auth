@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join, win32 } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 
 function firstNonEmpty(values: Array<string | undefined>): string | null {
 	for (const value of values) {
@@ -108,7 +108,26 @@ function hasAccountsStorage(dir: string): boolean {
 		if (existsSync(join(dir, fileName))) {
 			return true;
 		}
+		if (existsSync(join(dir, `${fileName}.wal`))) {
+			return true;
+		}
 	}
+
+	try {
+		const entries = readdirSync(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isFile()) continue;
+			for (const fileName of accountFiles) {
+				if (!entry.name.startsWith(`${fileName}.`)) continue;
+				if (entry.name.endsWith(".tmp")) continue;
+				if (entry.name.includes(".rotate.")) continue;
+				return true;
+			}
+		}
+	} catch {
+		// Ignore unreadable directories and fall back to known filename probes.
+	}
+
 	return false;
 }
 

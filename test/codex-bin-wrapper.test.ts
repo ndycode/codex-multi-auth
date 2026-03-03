@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -77,6 +77,20 @@ function runWrapper(
 			},
 		},
 	);
+}
+
+function runWrapperScript(
+	scriptPath: string,
+	args: string[],
+	extraEnv: NodeJS.ProcessEnv = {},
+): SpawnSyncReturns<string> {
+	return spawnSync(process.execPath, [scriptPath, ...args], {
+		encoding: "utf8",
+		env: {
+			...process.env,
+			...extraEnv,
+		},
+	});
 }
 
 type WrapperAsyncResult = {
@@ -171,6 +185,109 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain("FORWARDED:--version");
 	});
 
+	it("installs Windows codex shell guards to survive shim takeover", () => {
+		if (process.platform !== "win32") {
+			return;
+		}
+
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const shimDir = join(fixtureRoot, "shim-bin");
+		mkdirSync(shimDir, { recursive: true });
+		writeFileSync(
+			join(shimDir, "codex-multi-auth.cmd"),
+			"@ECHO OFF\r\nREM fixture codex-multi-auth shim\r\n",
+			"utf8",
+		);
+		writeFileSync(
+			join(shimDir, "codex.cmd"),
+			'@ECHO OFF\r\necho "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js"\r\n',
+			"utf8",
+		);
+		writeFileSync(
+			join(shimDir, "codex.ps1"),
+			'Write-Output "$basedir/node_modules/@openai/codex/bin/codex.js"' + "\r\n",
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD: "1",
+			PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
+			USERPROFILE: fixtureRoot,
+			HOME: fixtureRoot,
+		});
+		expect(result.status).toBe(0);
+
+		const codexBatchPath = join(shimDir, "codex.bat");
+		expect(readFileSync(codexBatchPath, "utf8")).toContain(
+			"codex-multi-auth windows shim guardian v1",
+		);
+		const codexCmdPath = join(shimDir, "codex.cmd");
+		expect(readFileSync(codexCmdPath, "utf8")).toContain(
+			"codex-multi-auth windows shim guardian v1",
+		);
+		expect(readFileSync(codexCmdPath, "utf8")).toContain(
+			"node_modules\\codex-multi-auth\\scripts\\codex.js",
+		);
+		const codexPs1Path = join(shimDir, "codex.ps1");
+		expect(readFileSync(codexPs1Path, "utf8")).toContain(
+			"codex-multi-auth windows shim guardian v1",
+		);
+		expect(readFileSync(codexPs1Path, "utf8")).toContain(
+			"node_modules/codex-multi-auth/scripts/codex.js",
+		);
+		const pwshProfilePath = join(
+			fixtureRoot,
+			"Documents",
+			"PowerShell",
+			"Microsoft.PowerShell_profile.ps1",
+		);
+		expect(readFileSync(pwshProfilePath, "utf8")).toContain(
+			"# >>> codex-multi-auth shell guard >>>",
+		);
+		expect(readFileSync(pwshProfilePath, "utf8")).toContain("CodexMultiAuthShim");
+	});
+
+	it("prefers invocation-derived shim directory over PATH-decoy shim entries", () => {
+		if (process.platform !== "win32") {
+			return;
+		}
+
+		const fixtureRoot = mkdtempSync(join(tmpdir(), "codex-wrapper-invoke-fixture-"));
+		createdDirs.push(fixtureRoot);
+		const globalShimDir = join(fixtureRoot, "global-bin");
+		const scriptDir = join(globalShimDir, "node_modules", "codex-multi-auth", "scripts");
+		mkdirSync(scriptDir, { recursive: true });
+		copyFileSync(join(repoRootDir, "scripts", "codex.js"), join(scriptDir, "codex.js"));
+		copyFileSync(join(repoRootDir, "scripts", "codex-routing.js"), join(scriptDir, "codex-routing.js"));
+		writeFileSync(
+			join(globalShimDir, "codex-multi-auth.cmd"),
+			"@ECHO OFF\r\nREM real shim\r\n",
+			"utf8",
+		);
+		const decoyShimDir = join(fixtureRoot, "decoy-bin");
+		mkdirSync(decoyShimDir, { recursive: true });
+		writeFileSync(
+			join(decoyShimDir, "codex-multi-auth.cmd"),
+			"@ECHO OFF\r\nREM decoy shim\r\n",
+			"utf8",
+		);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const scriptPath = join(scriptDir, "codex.js");
+		const result = runWrapperScript(scriptPath, ["--version"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			PATH: `${decoyShimDir}${delimiter}${globalShimDir}${delimiter}${process.env.PATH ?? ""}`,
+			USERPROFILE: fixtureRoot,
+			HOME: fixtureRoot,
+		});
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(globalShimDir, "codex.bat"), "utf8")).toContain(
+			"codex-multi-auth windows shim guardian v1",
+		);
+		expect(() => readFileSync(join(decoyShimDir, "codex.bat"), "utf8")).toThrow();
+	});
+
 	it("honors bypass for auth commands and forwards to the real CLI", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
@@ -226,6 +343,27 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(1);
 		expect(output).not.toContain("codex-multi-auth runner failed:");
+	});
+
+	it("propagates numeric-string multi-auth exit codes", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli() {",
+				'\treturn "7";',
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["auth", "status"], {
+			CODEX_MULTI_AUTH_BYPASS: "",
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+		});
+		expect(result.status).toBe(7);
 	});
 
 	it("prints actionable guidance when real codex bin cannot be found", () => {

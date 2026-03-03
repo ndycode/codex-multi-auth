@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
 	loadAccounts,
+	saveAccounts,
 	setStorageBackupEnabled,
 	setStoragePathDirect,
 } from "../lib/storage.js";
@@ -148,6 +149,181 @@ describe("storage recovery paths", () => {
 			accounts?: Array<{ accountId?: string }>;
 		};
 		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup-2");
+	});
+
+	it("recovers from discovered non-standard backup artifact when primary file is missing", async () => {
+		const discoveredBackupPath = `${storagePath}.manual-before-dedupe-2026-03-03T00-25-19-753Z`;
+		await fs.writeFile(
+			discoveredBackupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "manual-refresh",
+						accountId: "from-discovered-backup",
+						addedAt: 6,
+						lastUsed: 6,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.accountId).toBe("from-discovered-backup");
+
+		const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+			accounts?: Array<{ accountId?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.accountId).toBe("from-discovered-backup");
+	});
+
+	it("auto-promotes backup when primary storage matches synthetic fixture pattern", async () => {
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						email: "account1@example.com",
+						refreshToken: "fake_refresh_token_1",
+						accountId: "acc_1",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						email: "account2@example.com",
+						refreshToken: "fake_refresh_token_2",
+						accountId: "acc_2",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			}),
+			"utf-8",
+		);
+		await fs.writeFile(
+			`${storagePath}.manual-before-dedupe-2026-03-03T00-25-19-753Z`,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						email: "realuser@gmail.com",
+						refreshToken: "real-refresh-token",
+						accountId: "real-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.email).toBe("realuser@gmail.com");
+
+		const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+			accounts?: Array<{ email?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.email).toBe("realuser@gmail.com");
+	});
+
+	it("auto-promotes backup when synthetic fixture accounts are missing accountId fields", async () => {
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						email: "account1@example.com",
+						refreshToken: "fake_refresh_token_1_for_testing_only",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						email: "account2@example.com",
+						refreshToken: "fake_refresh_token_2_for_testing_only",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			}),
+			"utf-8",
+		);
+		await fs.writeFile(
+			`${storagePath}.manual-pre-recovery-test-latest`,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						email: "realuser2@gmail.com",
+						refreshToken: "real-refresh-token-2",
+						accountId: "real-account-2",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.email).toBe("realuser2@gmail.com");
+
+		const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+			accounts?: Array<{ email?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.email).toBe("realuser2@gmail.com");
+	});
+
+	it("rejects saving synthetic fixture payload over real account storage", async () => {
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						email: "realuser@gmail.com",
+						refreshToken: "real-refresh-token",
+						accountId: "real-account",
+						addedAt: 10,
+						lastUsed: 10,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		await expect(
+			saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [
+					{
+						email: "account1@example.com",
+						refreshToken: "fake_refresh_token_1",
+						accountId: "acc_1",
+						addedAt: 11,
+						lastUsed: 11,
+					},
+				],
+			}),
+		).rejects.toThrow("Refusing to overwrite non-synthetic account storage");
+
+		const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+			accounts?: Array<{ email?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.email).toBe("realuser@gmail.com");
 	});
 
 	it("cleans up stale staged backup artifacts during load", async () => {

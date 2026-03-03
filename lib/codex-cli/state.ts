@@ -1,9 +1,9 @@
 import { existsSync, promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { decodeJWT } from "../auth/auth.js";
 import { extractAccountEmail, extractAccountId } from "../auth/token-utils.js";
 import { createLogger } from "../logger.js";
+import { getCodexHomeDir } from "../runtime-paths.js";
 import { sleep } from "../utils.js";
 import {
 	incrementCodexCliMetric,
@@ -210,7 +210,7 @@ export function isCodexCliSyncEnabled(): boolean {
 export function getCodexCliAccountsPath(): string {
 	const override = (process.env.CODEX_CLI_ACCOUNTS_PATH ?? "").trim();
 	if (override.length > 0) return override;
-	return join(homedir(), ".codex", "accounts.json");
+	return join(getCodexHomeDir(), "accounts.json");
 }
 
 /**
@@ -226,7 +226,7 @@ export function getCodexCliAccountsPath(): string {
 export function getCodexCliAuthPath(): string {
 	const override = (process.env.CODEX_CLI_AUTH_PATH ?? "").trim();
 	if (override.length > 0) return override;
-	return join(homedir(), ".codex", "auth.json");
+	return join(getCodexHomeDir(), "auth.json");
 }
 
 /**
@@ -240,7 +240,7 @@ export function getCodexCliAuthPath(): string {
 export function getCodexCliConfigPath(): string {
 	const override = (process.env.CODEX_CLI_CONFIG_PATH ?? "").trim();
 	if (override.length > 0) return override;
-	return join(homedir(), ".codex", "config.toml");
+	return join(getCodexHomeDir(), "config.toml");
 }
 
 /**

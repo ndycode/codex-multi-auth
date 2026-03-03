@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetCodexCliWarningCacheForTests,
   clearCodexCliStateCache,
+  getCodexCliAccountsPath,
+  getCodexCliAuthPath,
+  getCodexCliConfigPath,
   isCodexCliSyncEnabled,
   loadCodexCliState,
   lookupCodexCliTokensByEmail,
@@ -26,6 +29,7 @@ describe("codex-cli state", () => {
   let previousSync: string | undefined;
   let previousLegacySync: string | undefined;
   let previousEnforceFileStore: string | undefined;
+  let previousCodexHome: string | undefined;
   beforeEach(async () => {
     previousPath = process.env.CODEX_CLI_ACCOUNTS_PATH;
     previousAuthPath = process.env.CODEX_CLI_AUTH_PATH;
@@ -34,6 +38,7 @@ describe("codex-cli state", () => {
     previousLegacySync = process.env.CODEX_AUTH_SYNC_CODEX_CLI;
     previousEnforceFileStore =
       process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
+    previousCodexHome = process.env.CODEX_HOME;
     tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-state-"));
     accountsPath = join(tempDir, "accounts.json");
     authPath = join(tempDir, "auth.json");
@@ -43,6 +48,7 @@ describe("codex-cli state", () => {
     process.env.CODEX_CLI_CONFIG_PATH = configPath;
     process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
     process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
+    delete process.env.CODEX_HOME;
     delete process.env.CODEX_AUTH_SYNC_CODEX_CLI;
     clearCodexCliStateCache();
     __resetCodexCliWarningCacheForTests();
@@ -63,6 +69,11 @@ describe("codex-cli state", () => {
     if (previousLegacySync === undefined)
       delete process.env.CODEX_AUTH_SYNC_CODEX_CLI;
     else process.env.CODEX_AUTH_SYNC_CODEX_CLI = previousLegacySync;
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
     if (previousEnforceFileStore === undefined) {
       delete process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
     } else {
@@ -804,6 +815,71 @@ describe("codex-cli state", () => {
     expect(written.tokens?.id_token).toBe("new.access.token");
     expect(written.tokens?.refresh_token).toBe("new-refresh-token");
     expect(written.tokens?.account_id).toBe("acc_new");
+  });
+  it("uses CODEX_HOME defaults when explicit Codex CLI path overrides are absent", async () => {
+    const codexHome = join(tempDir, "custom-codex-home");
+    process.env.CODEX_HOME = codexHome;
+    delete process.env.CODEX_CLI_ACCOUNTS_PATH;
+    delete process.env.CODEX_CLI_AUTH_PATH;
+    delete process.env.CODEX_CLI_CONFIG_PATH;
+
+    expect(getCodexCliAccountsPath()).toBe(join(codexHome, "accounts.json"));
+    expect(getCodexCliAuthPath()).toBe(join(codexHome, "auth.json"));
+    expect(getCodexCliConfigPath()).toBe(join(codexHome, "config.toml"));
+
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_new",
+      email: "new@example.com",
+      accessToken: "new.access.token",
+      refreshToken: "new-refresh-token",
+      expiresAt: Date.parse("2026-03-01T00:00:00.000Z"),
+    });
+    expect(updated).toBe(true);
+    const writtenAuth = JSON.parse(
+      await readFile(join(codexHome, "auth.json"), "utf-8"),
+    ) as {
+      tokens?: { account_id?: string };
+    };
+    expect(writtenAuth.tokens?.account_id).toBe("acc_new");
+  });
+  it("returns false when auth state exists but cannot be persisted", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              accountId: "acc_a",
+              email: "a@example.com",
+              auth: {
+                tokens: { access_token: "a.b.c", refresh_token: "refresh-a" },
+              },
+            },
+            {
+              accountId: "acc_b",
+              email: "b@example.com",
+              auth: {
+                tokens: { access_token: "x.y.z", refresh_token: "refresh-b" },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    await writeFile(authPath, JSON.stringify([], null, 2), "utf-8");
+
+    const updated = await setCodexCliActiveSelection({ accountId: "acc_b" });
+    expect(updated).toBe(false);
+
+    const writtenAccounts = JSON.parse(await readFile(accountsPath, "utf-8")) as {
+      activeAccountId?: string;
+      activeEmail?: string;
+    };
+    expect(writtenAccounts.activeAccountId).toBe("acc_b");
+    expect(writtenAccounts.activeEmail).toBe("b@example.com");
   });
   it("honors legacy sync env values and emits warning metric once", () => {
     delete process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;

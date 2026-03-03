@@ -63,6 +63,61 @@ describe("test-model-matrix script helpers", () => {
 		}
 	});
 
+	it("falls back to shell mode when .cmd wrapper cannot be parsed", async () => {
+		const fixtureRoot = mkdtempSync(join(tmpdir(), "matrix-cmd-fallback-"));
+		try {
+			const cmdPath = join(fixtureRoot, "Codex.cmd");
+			writeFileSync(
+				cmdPath,
+				[
+					"@ECHO off",
+					"REM deliberately no %dp0% JS wrapper path for parser",
+					"echo hello",
+				].join("\r\n"),
+				"utf8",
+			);
+			vi.stubEnv("CODEX_BIN", cmdPath);
+
+			const mod = await import("../scripts/test-model-matrix.js");
+			expect(mod.resolveCodexExecutable()).toEqual({
+				command: cmdPath,
+				shell: true,
+			});
+		} finally {
+			rmSync(fixtureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("builds matrix exec args with JSON + git-check skip and optional variant config", async () => {
+		const mod = await import("../scripts/test-model-matrix.js");
+
+		expect(mod.__buildModelCaseArgsForTests({ model: "gpt-5.2" }, 3)).toEqual({
+			token: "MODEL_MATRIX_OK_3",
+			args: [
+				"exec",
+				"MODEL_MATRIX_OK_3",
+				"--model",
+				"gpt-5.2",
+				"--json",
+				"--skip-git-repo-check",
+			],
+		});
+
+		expect(mod.__buildModelCaseArgsForTests({ model: "gpt-5.2", variant: "high" }, 4)).toEqual({
+			token: "MODEL_MATRIX_OK_4",
+			args: [
+				"exec",
+				"MODEL_MATRIX_OK_4",
+				"--model",
+				"gpt-5.2",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				'model_reasoning_effort="high"',
+			],
+		});
+	});
+
 	it("falls back to default timeout when CODEX_MATRIX_TIMEOUT_MS is invalid", async () => {
 		vi.stubEnv("CODEX_MATRIX_TIMEOUT_MS", "abc");
 		const mod = await import("../scripts/test-model-matrix.js");

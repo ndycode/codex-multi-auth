@@ -70,6 +70,18 @@ export type AuthMenuAction =
 
 export type AccountAction = "back" | "delete" | "refresh" | "toggle" | "set-current" | "cancel";
 
+function resolveCliVersionLabel(): string | null {
+	const raw = (process.env.CODEX_MULTI_AUTH_CLI_VERSION ?? "").trim();
+	if (raw.length === 0) return null;
+	return raw.startsWith("v") ? raw : `v${raw}`;
+}
+
+function mainMenuTitleWithVersion(): string {
+	const versionLabel = resolveCliVersionLabel();
+	if (!versionLabel) return UI_COPY.mainMenu.title;
+	return `${UI_COPY.mainMenu.title} (${versionLabel})`;
+}
+
 function sanitizeTerminalText(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	return value
@@ -534,7 +546,7 @@ export async function showAuthMenu(
 		});
 
 		const result = await select(items, {
-			message: UI_COPY.mainMenu.title,
+			message: mainMenuTitleWithVersion(),
 			subtitle: buildSubtitle(),
 			dynamicSubtitle: buildSubtitle,
 			help: showDetailedHelp ? detailedHelp : compactHelp,

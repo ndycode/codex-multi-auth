@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import path from "node:path";
 
 const existsSync = vi.fn();
+const readdirSync = vi.fn();
 const homedir = vi.fn(() => "/home/neil");
 
-vi.mock("node:fs", () => ({ existsSync }));
+vi.mock("node:fs", () => ({ existsSync, readdirSync }));
 vi.mock("node:os", () => ({ homedir }));
 
 const ENV_KEYS = [
@@ -24,6 +25,7 @@ describe("runtime-paths", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.clearAllMocks();
+		readdirSync.mockReturnValue([]);
 		for (const key of ENV_KEYS) {
 			originalEnv[key] = process.env[key];
 			delete process.env[key];
@@ -53,6 +55,31 @@ describe("runtime-paths", () => {
 			if (candidate === path.join(primary, "settings.json")) return true;
 			if (candidate === path.join(fallback, "openai-codex-accounts.json")) return true;
 			return false;
+		});
+
+		const mod = await import("../lib/runtime-paths.js");
+		expect(mod.getCodexMultiAuthDir()).toBe(fallback);
+	});
+
+	it("prefers fallback directory with recoverable backup artifacts over primary signal-only directory", async () => {
+		process.env.CODEX_HOME = "/home/neil/.codex";
+		const primary = path.join("/home/neil/.codex", "multi-auth");
+		const fallback = path.join("/home/neil/DevTools/config/codex", "multi-auth");
+
+		existsSync.mockImplementation((candidate: unknown) => {
+			if (typeof candidate !== "string") return false;
+			if (candidate === path.join(primary, "settings.json")) return true;
+			return false;
+		});
+
+		readdirSync.mockImplementation((candidate: unknown) => {
+			if (candidate !== fallback) return [];
+			return [
+				{
+					name: "openai-codex-accounts.json.manual-before-dedupe-2026-03-03T00-25-19-753Z",
+					isFile: () => true,
+				},
+			];
 		});
 
 		const mod = await import("../lib/runtime-paths.js");

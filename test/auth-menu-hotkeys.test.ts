@@ -21,16 +21,25 @@ function createAccounts(): AccountInfo[] {
 }
 
 describe("auth-menu hotkeys", () => {
+	let previousCliVersion: string | undefined;
+
 	beforeEach(() => {
 		vi.resetModules();
 		selectMock.mockReset();
 		confirmMock.mockReset();
 		confirmMock.mockResolvedValue(true);
+		previousCliVersion = process.env.CODEX_MULTI_AUTH_CLI_VERSION;
+		delete process.env.CODEX_MULTI_AUTH_CLI_VERSION;
 		Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
 		Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
 	});
 
 	afterEach(() => {
+		if (previousCliVersion === undefined) {
+			delete process.env.CODEX_MULTI_AUTH_CLI_VERSION;
+		} else {
+			process.env.CODEX_MULTI_AUTH_CLI_VERSION = previousCliVersion;
+		}
 		vi.restoreAllMocks();
 	});
 
@@ -176,5 +185,16 @@ describe("auth-menu hotkeys", () => {
 		expect(result).toEqual({ type: "cancel" });
 		const options = selectMock.mock.calls[0]?.[1] as { showHintsForUnselected?: boolean };
 		expect(options?.showHintsForUnselected).toBe(true);
+	});
+
+	it("shows package version in the dashboard title when version env is present", async () => {
+		process.env.CODEX_MULTI_AUTH_CLI_VERSION = "0.1.6";
+		selectMock.mockResolvedValueOnce({ type: "cancel" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		await showAuthMenu(createAccounts());
+
+		const options = selectMock.mock.calls[0]?.[1] as { message?: string };
+		expect(options?.message).toBe("Accounts Dashboard (v0.1.6)");
 	});
 });

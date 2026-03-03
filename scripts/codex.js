@@ -1,12 +1,25 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+
+function hydrateCliVersionEnv() {
+	try {
+		const require = createRequire(import.meta.url);
+		const pkg = require("../package.json");
+		const version = typeof pkg?.version === "string" ? pkg.version.trim() : "";
+		if (version.length > 0) {
+			process.env.CODEX_MULTI_AUTH_CLI_VERSION = version;
+		}
+	} catch {
+		// Best effort only.
+	}
+}
 
 async function loadRunCodexMultiAuthCli() {
 	try {
@@ -178,7 +191,307 @@ function normalizeExitCode(value) {
 	return 1;
 }
 
+const WINDOWS_SHIM_MARKER = "codex-multi-auth windows shim guardian v1";
+const POWERSHELL_PROFILE_MARKER_START = "# >>> codex-multi-auth shell guard >>>";
+const POWERSHELL_PROFILE_MARKER_END = "# <<< codex-multi-auth shell guard <<<";
+
+function shouldInstallWindowsBatchShimGuard() {
+	if (process.platform !== "win32") return false;
+	const override = (process.env.CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD ?? "1").trim();
+	return override !== "0";
+}
+
+function splitPathEntries(pathValue) {
+	if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
+		return [];
+	}
+	return pathValue
+		.split(delimiter)
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
+}
+
+function resolveWindowsShimDirectoryFromInvocation() {
+	const invokedScript = (process.argv[1] ?? "").trim();
+	if (invokedScript.length === 0) return null;
+	const resolvedScript = resolvePath(invokedScript);
+	const scriptDir = dirname(resolvedScript);
+	const packageRoot = dirname(scriptDir);
+	const nodeModulesDir = dirname(packageRoot);
+	if (basename(nodeModulesDir).toLowerCase() !== "node_modules") {
+		return null;
+	}
+	const shimDir = dirname(nodeModulesDir);
+	if (existsSync(join(shimDir, "codex-multi-auth.cmd"))) {
+		return shimDir;
+	}
+	return null;
+}
+
+function resolveWindowsShimDirectoryFromPath() {
+	const fromInvocation = resolveWindowsShimDirectoryFromInvocation();
+	if (fromInvocation) {
+		return fromInvocation;
+	}
+	const pathEntries = splitPathEntries(process.env.PATH ?? process.env.Path ?? "");
+	for (const entry of pathEntries) {
+		if (existsSync(join(entry, "codex-multi-auth.cmd"))) {
+			return entry;
+		}
+	}
+	return null;
+}
+
+function buildWindowsBatchShimContent() {
+	return [
+		"@ECHO off",
+		`:: ${WINDOWS_SHIM_MARKER}`,
+		"GOTO start",
+		":find_dp0",
+		"SET dp0=%~dp0",
+		"EXIT /b",
+		":start",
+		"SETLOCAL",
+		"CALL :find_dp0",
+		"",
+		'IF EXIST "%dp0%\\node.exe" (',
+		'  SET "_prog=%dp0%\\node.exe"',
+		") ELSE (",
+		'  SET "_prog=node"',
+		'  SET PATHEXT=%PATHEXT:;.JS;=%',
+		")",
+		"",
+		'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\codex-multi-auth\\scripts\\codex.js" %*',
+	].join("\r\n");
+}
+
+function buildWindowsCmdShimContent() {
+	return [
+		"@ECHO off",
+		`:: ${WINDOWS_SHIM_MARKER}`,
+		"GOTO start",
+		":find_dp0",
+		"SET dp0=%~dp0",
+		"EXIT /b",
+		":start",
+		"SETLOCAL",
+		"CALL :find_dp0",
+		"",
+		'IF EXIST "%dp0%\\node.exe" (',
+		'  SET "_prog=%dp0%\\node.exe"',
+		") ELSE (",
+		'  SET "_prog=node"',
+		'  SET PATHEXT=%PATHEXT:;.JS;=%',
+		")",
+		"",
+		'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\codex-multi-auth\\scripts\\codex.js" %*',
+	].join("\r\n");
+}
+
+function buildWindowsPowerShellShimContent() {
+	return [
+		`# ${WINDOWS_SHIM_MARKER}`,
+		"$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent",
+		"",
+		'$exe=""',
+		'if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {',
+		'  $exe=".exe"',
+		"}",
+		"$ret=0",
+		'if (Test-Path "$basedir/node$exe") {',
+		"  if ($MyInvocation.ExpectingInput) {",
+		'    $input | & "$basedir/node$exe"  "$basedir/node_modules/codex-multi-auth/scripts/codex.js" $args',
+		"  } else {",
+		'    & "$basedir/node$exe"  "$basedir/node_modules/codex-multi-auth/scripts/codex.js" $args',
+		"  }",
+		"  $ret=$LASTEXITCODE",
+		"} else {",
+		"  if ($MyInvocation.ExpectingInput) {",
+		'    $input | & "node$exe"  "$basedir/node_modules/codex-multi-auth/scripts/codex.js" $args',
+		"  } else {",
+		'    & "node$exe"  "$basedir/node_modules/codex-multi-auth/scripts/codex.js" $args',
+		"  }",
+		"  $ret=$LASTEXITCODE",
+		"}",
+		"if ($null -eq $ret) {",
+		"  exit 0",
+		"}",
+		"exit $ret",
+	].join("\r\n");
+}
+
+function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
+	const {
+		overwriteCustomShim = false,
+		shimMarker = WINDOWS_SHIM_MARKER,
+	} = options;
+
+	let currentContent = "";
+	if (existsSync(filePath)) {
+		try {
+			currentContent = readFileSync(filePath, "utf8");
+		} catch {
+			return false;
+		}
+		if (currentContent === desiredContent || currentContent.includes(shimMarker)) {
+			if (currentContent !== desiredContent) {
+				try {
+					writeFileSync(filePath, desiredContent, { encoding: "utf8", mode: 0o755 });
+					return true;
+				} catch {
+					return false;
+				}
+			}
+			return false;
+		}
+		const looksLikeStockOpenAiShim =
+			currentContent.includes("node_modules\\@openai\\codex\\bin\\codex.js") ||
+			currentContent.includes("node_modules/@openai/codex/bin/codex.js");
+		if (looksLikeStockOpenAiShim) {
+			try {
+				writeFileSync(filePath, desiredContent, { encoding: "utf8", mode: 0o755 });
+				return true;
+			} catch {
+				return false;
+			}
+		}
+		if (!overwriteCustomShim) {
+			return false;
+		}
+	}
+
+	try {
+		writeFileSync(filePath, desiredContent, { encoding: "utf8", mode: 0o755 });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function shouldInstallPowerShellProfileGuard() {
+	if (process.platform !== "win32") return false;
+	const override = (process.env.CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD ?? "1").trim();
+	return override !== "0";
+}
+
+function resolveWindowsUserHomeDir() {
+	const userProfile = (process.env.USERPROFILE ?? "").trim();
+	if (userProfile.length > 0) return userProfile;
+	const homeDrive = (process.env.HOMEDRIVE ?? "").trim();
+	const homePath = (process.env.HOMEPATH ?? "").trim();
+	if (homeDrive.length > 0 && homePath.length > 0) {
+		return `${homeDrive}${homePath}`;
+	}
+	const home = (process.env.HOME ?? "").trim();
+	return home;
+}
+
+function buildPowerShellProfileGuardBlock(shimDirectory) {
+	const codexBatchPath = join(shimDirectory, "codex.bat").replace(/\\/g, "\\\\");
+	return [
+		POWERSHELL_PROFILE_MARKER_START,
+		`$CodexMultiAuthShim = "${codexBatchPath}"`,
+		"if (Test-Path $CodexMultiAuthShim) {",
+		"  function global:codex {",
+		"    & $CodexMultiAuthShim @args",
+		"  }",
+		"}",
+		POWERSHELL_PROFILE_MARKER_END,
+	].join("\r\n");
+}
+
+function upsertPowerShellProfileGuard(profilePath, guardBlock) {
+	let content = "";
+	if (existsSync(profilePath)) {
+		try {
+			content = readFileSync(profilePath, "utf8");
+		} catch {
+			return false;
+		}
+	}
+	const normalizedCurrentContent = content.replace(/\r?\n$/, "");
+
+	const startIndex = content.indexOf(POWERSHELL_PROFILE_MARKER_START);
+	const endIndex = content.indexOf(POWERSHELL_PROFILE_MARKER_END);
+	let nextContent;
+	if (startIndex >= 0 && endIndex >= startIndex) {
+		const endWithMarker = endIndex + POWERSHELL_PROFILE_MARKER_END.length;
+		const prefix = content.slice(0, startIndex).replace(/\s*$/, "");
+		const suffix = content.slice(endWithMarker).replace(/^\s*/, "");
+		nextContent = `${prefix}\r\n\r\n${guardBlock}\r\n\r\n${suffix}`.trimEnd();
+	} else if (normalizedCurrentContent.trim().length === 0) {
+		nextContent = guardBlock;
+	} else {
+		nextContent = `${normalizedCurrentContent.replace(/\s*$/, "")}\r\n\r\n${guardBlock}`;
+	}
+
+	if (nextContent === normalizedCurrentContent) {
+		return false;
+	}
+
+	try {
+		mkdirSync(dirname(profilePath), { recursive: true });
+		writeFileSync(profilePath, `${nextContent}\r\n`, { encoding: "utf8", mode: 0o644 });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function ensurePowerShellProfileGuard(shimDirectory) {
+	if (!shouldInstallPowerShellProfileGuard()) return false;
+	const homeDir = resolveWindowsUserHomeDir();
+	if (!homeDir) return false;
+	const guardBlock = buildPowerShellProfileGuardBlock(shimDirectory);
+	const profilePaths = [
+		join(homeDir, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1"),
+		join(homeDir, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
+	];
+	let changed = false;
+	for (const profilePath of profilePaths) {
+		changed = upsertPowerShellProfileGuard(profilePath, guardBlock) || changed;
+	}
+	return changed;
+}
+
+function ensureWindowsShellShimGuards() {
+	if (!shouldInstallWindowsBatchShimGuard()) return;
+	const shimDirectory = resolveWindowsShimDirectoryFromPath();
+	if (!shimDirectory) return;
+
+	const codexMultiAuthShimPath = join(shimDirectory, "codex-multi-auth.cmd");
+	if (!existsSync(codexMultiAuthShimPath)) return;
+
+	const overwriteCustomShim =
+		(process.env.CODEX_MULTI_AUTH_OVERWRITE_CUSTOM_BATCH_SHIM ?? "0").trim() === "1";
+	const installedBatch = ensureWindowsShellShim(
+		join(shimDirectory, "codex.bat"),
+		buildWindowsBatchShimContent(),
+		{ overwriteCustomShim },
+	);
+	const installedCmd = ensureWindowsShellShim(
+		join(shimDirectory, "codex.cmd"),
+		buildWindowsCmdShimContent(),
+		{ overwriteCustomShim },
+	);
+	const installedPs1 = ensureWindowsShellShim(
+		join(shimDirectory, "codex.ps1"),
+		buildWindowsPowerShellShimContent(),
+		{ overwriteCustomShim },
+	);
+	const installedAny = installedBatch || installedCmd || installedPs1;
+	const installedProfileGuard = ensurePowerShellProfileGuard(shimDirectory);
+	if (installedAny || installedProfileGuard) {
+		console.error(
+			"codex-multi-auth: installed Windows shell guards to keep multi-auth routing after codex npm updates.",
+		);
+	}
+}
+
 async function main() {
+	hydrateCliVersionEnv();
+	ensureWindowsShellShimGuards();
+
 	const rawArgs = process.argv.slice(2);
 	const normalizedArgs = normalizeAuthAlias(rawArgs);
 	const bypass = (process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1";

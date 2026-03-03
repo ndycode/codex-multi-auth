@@ -130,6 +130,9 @@ function toFileUri(pathValue) {
 	return `file:///${normalized}`;
 }
 
+let stopCodexServersQueue = Promise.resolve();
+const spawnedCodexPids = new Set();
+
 function runQuiet(command, commandArgs) {
 	try {
 		spawnSync(command, commandArgs, {
@@ -140,9 +143,6 @@ function runQuiet(command, commandArgs) {
 		// Ignore cleanup failures.
 	}
 }
-
-let stopCodexServersQueue = Promise.resolve();
-const spawnedCodexPids = new Set();
 
 export function registerSpawnedCodex(pid) {
 	if (!Number.isInteger(pid) || pid <= 0) return;
@@ -244,12 +244,11 @@ function enumerateCases(models, smoke, maxCases) {
 	return selected;
 }
 
-function executeModelCase(caseInfo, index) {
+function buildModelCaseArgs(caseInfo, index) {
 	const token = `MODEL_MATRIX_OK_${index}`;
-	const message = token;
 	const args = [
 		"exec",
-		message,
+		token,
 		"--model",
 		caseInfo.model,
 		"--json",
@@ -258,6 +257,15 @@ function executeModelCase(caseInfo, index) {
 	if (caseInfo.variant) {
 		args.push("-c", `model_reasoning_effort="${caseInfo.variant}"`);
 	}
+	return { token, args };
+}
+
+export function __buildModelCaseArgsForTests(caseInfo, index) {
+	return buildModelCaseArgs(caseInfo, index);
+}
+
+function executeModelCase(caseInfo, index) {
+	const { token, args } = buildModelCaseArgs(caseInfo, index);
 
 	const timeoutMs = resolveMatrixTimeoutMs();
 	const commandArgs = [...(CodexExecutable.prefixArgs ?? []), ...args];
@@ -441,7 +449,6 @@ async function main() {
 				smoke,
 				maxCases,
 				pluginRef,
-				portStart: 47000 + i * 500,
 			});
 			allResults.push(...scenarioResults.map((item) => ({ ...item, scenario })));
 		}

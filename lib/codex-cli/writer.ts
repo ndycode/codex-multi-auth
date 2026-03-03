@@ -108,6 +108,73 @@ function extractSelectionFromAccountRecord(record: Record<string, unknown>): Act
 	};
 }
 
+function enrichActiveAccountRecordWithTokens(
+	record: Record<string, unknown>,
+	selection: ActiveSelection,
+): Record<string, unknown> {
+	const auth = isRecord(record.auth) ? { ...record.auth } : {};
+	const tokens = isRecord(auth.tokens) ? { ...auth.tokens } : {};
+
+	const currentAccess =
+		extractTokenFromRecord(record, ["accessToken", "access_token"]) ??
+		extractTokenFromRecord(tokens, ["access_token", "accessToken"]);
+	const currentRefresh =
+		extractTokenFromRecord(record, ["refreshToken", "refresh_token"]) ??
+		extractTokenFromRecord(tokens, ["refresh_token", "refreshToken"]);
+	const currentIdToken =
+		extractTokenFromRecord(record, ["idToken", "id_token"]) ??
+		extractTokenFromRecord(tokens, ["id_token", "idToken"]);
+
+	const selectedAccess = readTrimmedString(selection.accessToken);
+	const selectedRefresh = readTrimmedString(selection.refreshToken);
+	const selectedIdToken = readTrimmedString(selection.idToken);
+	const accountId = selection.accountId?.trim() || readAccountId(record);
+	const email = normalizeEmail(selection.email) ?? normalizeEmail(record.email);
+
+	const accessToken = selectedAccess ?? currentAccess;
+	const refreshToken = selectedRefresh ?? currentRefresh;
+	if (!accessToken || !refreshToken) {
+		return record;
+	}
+
+	const idToken = selectedIdToken ?? currentIdToken ?? accessToken;
+	const next = { ...record } as Record<string, unknown>;
+
+	next.accessToken = accessToken;
+	next.access_token = accessToken;
+	next.refreshToken = refreshToken;
+	next.refresh_token = refreshToken;
+	if (idToken) {
+		next.idToken = idToken;
+		next.id_token = idToken;
+	}
+	if (accountId) {
+		next.accountId = accountId;
+		next.account_id = accountId;
+	}
+	if (email) {
+		next.email = email;
+	}
+
+	const nextTokens = { ...tokens } as Record<string, unknown>;
+	nextTokens.access_token = accessToken;
+	nextTokens.accessToken = accessToken;
+	nextTokens.refresh_token = refreshToken;
+	nextTokens.refreshToken = refreshToken;
+	if (idToken) {
+		nextTokens.id_token = idToken;
+		nextTokens.idToken = idToken;
+	}
+	if (accountId) {
+		nextTokens.account_id = accountId;
+		nextTokens.accountId = accountId;
+	}
+	auth.tokens = nextTokens;
+	next.auth = auth;
+
+	return next;
+}
+
 function resolveMatchIndex(
 	accounts: unknown[],
 	selection: ActiveSelection,
@@ -353,6 +420,7 @@ export async function setCodexCliActiveSelection(
 			selection.accessToken.trim().length > 0 &&
 			typeof selection.refreshToken === "string" &&
 			selection.refreshToken.trim().length > 0;
+		const requireAuthWrite = hasAuthPath || selectionHasTokens;
 
 		if (!hasAccountsPath && !hasAuthPath && !selectionHasTokens) {
 			incrementCodexCliMetric("writeFailures");
@@ -435,7 +503,10 @@ export async function setCodexCliActiveSelection(
 
 							next.accounts = parsed.accounts.map((entry, index) => {
 								if (!isRecord(entry)) return entry;
-								const updated = { ...entry };
+								let updated = { ...entry } as Record<string, unknown>;
+								if (index === matchIndex) {
+									updated = enrichActiveAccountRecordWithTokens(updated, resolvedSelection);
+								}
 								updated.active = index === matchIndex;
 								updated.isActive = index === matchIndex;
 								updated.is_active = index === matchIndex;
@@ -463,10 +534,6 @@ export async function setCodexCliActiveSelection(
 			if (hasAuthPath || wroteAccounts || selectionHasTokens) {
 				wroteAuth = await writeCodexAuthState(authPath, resolvedSelection);
 				if (!wroteAuth) {
-					if (!wroteAccounts) {
-						incrementCodexCliMetric("writeFailures");
-						return false;
-					}
 					log.warn("Codex auth state update skipped after accounts selection update", {
 						operation: "write-active-selection",
 						outcome: "accounts-updated-auth-failed",
@@ -476,6 +543,10 @@ export async function setCodexCliActiveSelection(
 							email: resolvedSelection.email,
 						}),
 					});
+					if (requireAuthWrite || !wroteAccounts) {
+						incrementCodexCliMetric("writeFailures");
+						return false;
+					}
 				} else {
 					log.debug("Persisted Codex auth active selection", {
 						operation: "write-active-selection",

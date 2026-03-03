@@ -1,5 +1,5 @@
 import { promises as fs, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
@@ -114,6 +114,31 @@ type AccountLike = {
   lastUsed?: number;
 };
 
+function looksLikeSyntheticFixtureAccount(account: AccountMetadataV3): boolean {
+	const email = typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
+	const refreshToken =
+		typeof account.refreshToken === "string" ? account.refreshToken.trim().toLowerCase() : "";
+	const accountId = typeof account.accountId === "string" ? account.accountId.trim().toLowerCase() : "";
+	if (!/^account\d+@example\.com$/.test(email)) {
+		return false;
+	}
+	const hasSyntheticRefreshToken =
+		refreshToken.startsWith("fake_refresh") ||
+		/^fake_refresh_token_\d+(_for_testing_only)?$/.test(refreshToken);
+	if (!hasSyntheticRefreshToken) {
+		return false;
+	}
+	if (accountId.length === 0) {
+		return true;
+	}
+	return /^acc(_|-)?\d+$/.test(accountId);
+}
+
+function looksLikeSyntheticFixtureStorage(storage: AccountStorageV3 | null): boolean {
+	if (!storage || storage.accounts.length === 0) return false;
+	return storage.accounts.every((account) => looksLikeSyntheticFixtureAccount(account));
+}
+
 async function ensureGitignore(storagePath: string): Promise<void> {
   if (!currentStoragePath) return;
 
@@ -170,6 +195,41 @@ function getAccountsBackupRecoveryCandidates(path: string): string[] {
 		candidates.push(getAccountsBackupPathAtIndex(path, i));
 	}
 	return candidates;
+}
+
+async function getAccountsBackupRecoveryCandidatesWithDiscovery(path: string): Promise<string[]> {
+	const knownCandidates = getAccountsBackupRecoveryCandidates(path);
+	const discoveredCandidates = new Set<string>();
+	const candidatePrefix = `${basename(path)}.`;
+	const knownCandidateSet = new Set(knownCandidates);
+	const directoryPath = dirname(path);
+
+	try {
+		const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isFile()) continue;
+			if (!entry.name.startsWith(candidatePrefix)) continue;
+			if (entry.name.endsWith(".tmp")) continue;
+			if (entry.name.includes(".rotate.")) continue;
+			if (entry.name.endsWith(ACCOUNTS_WAL_SUFFIX)) continue;
+			const candidatePath = join(directoryPath, entry.name);
+			if (knownCandidateSet.has(candidatePath)) continue;
+			discoveredCandidates.add(candidatePath);
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to discover account backup candidates", {
+				path,
+				error: String(error),
+			});
+		}
+	}
+
+	const discoveredOrdered = Array.from(discoveredCandidates).sort((a, b) =>
+		a.localeCompare(b, undefined, { sensitivity: "base" }),
+	);
+	return [...knownCandidates, ...discoveredOrdered];
 }
 
 function getAccountsWalPath(path: string): string {
@@ -863,6 +923,45 @@ async function loadAccountsInternal(
       }
     }
 
+	const primaryLooksSynthetic = looksLikeSyntheticFixtureStorage(normalized);
+	if (storageBackupEnabled && normalized && primaryLooksSynthetic) {
+		const backupCandidates = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+		for (const backupPath of backupCandidates) {
+			if (backupPath === path) continue;
+			try {
+				const backup = await loadAccountsFromPath(backupPath);
+				if (!backup.normalized) continue;
+				if (looksLikeSyntheticFixtureStorage(backup.normalized)) continue;
+				if (backup.normalized.accounts.length <= 0) continue;
+				log.warn("Detected synthetic primary account storage; promoting backup", {
+					path,
+					backupPath,
+					primaryAccounts: normalized.accounts.length,
+					backupAccounts: backup.normalized.accounts.length,
+				});
+				if (persistMigration) {
+					try {
+						await persistMigration(backup.normalized);
+					} catch (persistError) {
+						log.warn("Failed to persist promoted backup storage", {
+							path,
+							error: String(persistError),
+						});
+					}
+				}
+				return backup.normalized;
+			} catch (backupError) {
+				const backupCode = (backupError as NodeJS.ErrnoException).code;
+				if (backupCode !== "ENOENT") {
+					log.warn("Failed to load candidate backup for synthetic-primary promotion", {
+						path: backupPath,
+						error: String(backupError),
+					});
+				}
+			}
+		}
+	}
+
     return normalized;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -886,7 +985,7 @@ async function loadAccountsInternal(
 	}
 
 	if (storageBackupEnabled) {
-		const backupCandidates = getAccountsBackupRecoveryCandidates(path);
+		const backupCandidates = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
 		for (const backupPath of backupCandidates) {
 			try {
 				const backup = await loadAccountsFromPath(backupPath);
@@ -938,6 +1037,25 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   try {
     await fs.mkdir(dirname(path), { recursive: true });
     await ensureGitignore(path);
+
+	if (looksLikeSyntheticFixtureStorage(storage)) {
+		try {
+			const existing = await loadNormalizedStorageFromPath(path, "existing account storage");
+			if (existing && existing.accounts.length > 0 && !looksLikeSyntheticFixtureStorage(existing)) {
+				throw new StorageError(
+					"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
+					"EINVALID",
+					path,
+					"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
+				);
+			}
+		} catch (error) {
+			if (error instanceof StorageError) {
+				throw error;
+			}
+			// Ignore existing-file probe failures and continue with normal save flow.
+		}
+	}
 
 	if (storageBackupEnabled && existsSync(path)) {
 		try {
