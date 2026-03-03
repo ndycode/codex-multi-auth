@@ -104,4 +104,30 @@ describe('OAuth auth logging', () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it('logs only sanitized metadata for HTTP token exchange failures', async () => {
+		const originalFetch = globalThis.fetch;
+		const rawBody = JSON.stringify({
+			error: 'invalid_request',
+			refresh_token: 'secret-refresh-token',
+			access_token: 'secret-access-token',
+		});
+		globalThis.fetch = vi.fn(async () => new Response(rawBody, { status: 400 })) as never;
+
+		try {
+			const result = await exchangeAuthorizationCode('auth-code', 'verifier-123');
+			expect(result.type).toBe('failed');
+			if (result.type === 'failed') {
+				expect(result.reason).toBe('http_error');
+				expect(result.statusCode).toBe(400);
+				expect(result.message).toBe('OAuth token exchange failed');
+			}
+			expect(vi.mocked(logError)).toHaveBeenCalledWith('code->token failed', {
+				status: 400,
+				bodyLength: rawBody.length,
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
 });

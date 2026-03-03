@@ -198,8 +198,13 @@ export async function exchangeAuthorizationCode(
 		});
 		if (!res.ok) {
 			const text = await res.text().catch(() => "");
-			logError(`code->token failed: ${res.status} ${text}`);
-			return { type: "failed", reason: "http_error", statusCode: res.status, message: text || undefined };
+			logError("code->token failed", { status: res.status, bodyLength: text.length });
+			return {
+				type: "failed",
+				reason: "http_error",
+				statusCode: res.status,
+				message: text ? "OAuth token exchange failed" : undefined,
+			};
 		}
 		const rawJson = (await res.json()) as unknown;
 		const json = safeParseOAuthTokenResponse(rawJson);

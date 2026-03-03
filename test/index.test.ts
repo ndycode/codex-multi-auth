@@ -562,6 +562,7 @@ describe("OpenAIOAuthPlugin", () => {
 				authModule.REDIRECT_URI,
 				{ timeoutMs: expectedTimeoutMs },
 			);
+			expect(vi.mocked(configModule.getFetchTimeoutMs)).toHaveBeenCalledWith(pluginConfig);
 		});
 
 		it("keeps timeout wiring stable under concurrent OAuth authorize calls", async () => {
@@ -572,17 +573,39 @@ describe("OpenAIOAuthPlugin", () => {
 			const expectedTimeoutMs = 2468;
 			vi.mocked(configModule.loadPluginConfig).mockReturnValue({ fetchTimeoutMs: expectedTimeoutMs });
 			vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(expectedTimeoutMs);
-			vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue({
-				pkce: { verifier: "concurrent-verifier", challenge: "concurrent-challenge" },
-				state: "concurrent-state",
-				url: "https://auth.openai.com/oauth/authorize?state=concurrent-state",
-			});
+			vi.mocked(authModule.createAuthorizationFlow)
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-1", challenge: "challenge-1" },
+					state: "state-1",
+					url: "https://auth.openai.com/oauth/authorize?state=state-1",
+				})
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-2", challenge: "challenge-2" },
+					state: "state-2",
+					url: "https://auth.openai.com/oauth/authorize?state=state-2",
+				})
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-3", challenge: "challenge-3" },
+					state: "state-3",
+					url: "https://auth.openai.com/oauth/authorize?state=state-3",
+				});
 			vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
-			vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
-				ready: true,
-				close: vi.fn(),
-				waitForCode: vi.fn(async () => ({ code: "concurrent-code" })),
-			});
+			vi.mocked(serverModule.startLocalOAuthServer)
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-1" })),
+				})
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-2" })),
+				})
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-3" })),
+				});
 
 			const autoMethod = plugin.auth.methods[0] as unknown as {
 				authorize: () => Promise<unknown>;
@@ -590,7 +613,14 @@ describe("OpenAIOAuthPlugin", () => {
 			await Promise.all([autoMethod.authorize(), autoMethod.authorize(), autoMethod.authorize()]);
 
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledTimes(3);
-			for (const call of vi.mocked(authModule.exchangeAuthorizationCode).mock.calls) {
+			const calls = vi.mocked(authModule.exchangeAuthorizationCode).mock.calls;
+			expect(calls.map((call) => call[0])).toEqual(
+				expect.arrayContaining(["code-1", "code-2", "code-3"]),
+			);
+			expect(calls.map((call) => call[1])).toEqual(
+				expect.arrayContaining(["verifier-1", "verifier-2", "verifier-3"]),
+			);
+			for (const call of calls) {
 				expect(call[3]).toEqual({ timeoutMs: expectedTimeoutMs });
 			}
 		});

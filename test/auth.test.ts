@@ -340,7 +340,7 @@ describe('Auth Module', () => {
 				if (result.type === 'failed') {
 					expect(result.reason).toBe('http_error');
 					expect(result.statusCode).toBe(400);
-					expect(result.message).toBe('Bad Request');
+					expect(result.message).toBe('OAuth token exchange failed');
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
@@ -402,6 +402,155 @@ describe('Auth Module', () => {
 			} finally {
 				globalThis.fetch = originalFetch;
 				vi.useRealTimers();
+			}
+		});
+
+		it('short-circuits when upstream signal is already aborted', async () => {
+			const originalFetch = globalThis.fetch;
+			vi.useFakeTimers();
+			const upstream = new AbortController();
+			const abortReason = Object.assign(new Error('upstream-pre-aborted'), {
+				name: 'AbortError',
+				code: 'ABORT_ERR',
+			});
+			const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+			upstream.abort(abortReason);
+			globalThis.fetch = vi.fn(async (_url, init) => {
+				const signal = init?.signal as AbortSignal | undefined;
+				if (signal?.aborted) {
+					throw signal.reason;
+				}
+				throw new Error('fetch should not continue with non-aborted signal');
+			}) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode(
+					'code',
+					'verifier',
+					REDIRECT_URI,
+					{ timeoutMs: 1_000, signal: upstream.signal },
+				);
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toBe('upstream-pre-aborted');
+				}
+				expect(setTimeoutSpy).not.toHaveBeenCalled();
+				await vi.advanceTimersByTimeAsync(5_000);
+				expect(setTimeoutSpy).not.toHaveBeenCalled();
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+				vi.restoreAllMocks();
+			}
+		});
+
+		it('propagates mid-flight upstream abort reason and clears timeout', async () => {
+			const originalFetch = globalThis.fetch;
+			vi.useFakeTimers();
+			const upstream = new AbortController();
+			const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+			const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+			globalThis.fetch = vi.fn((_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					if (signal?.aborted) {
+						reject(signal.reason);
+						return;
+					}
+					signal?.addEventListener(
+						'abort',
+						() => {
+							reject(signal.reason);
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const resultPromise = exchangeAuthorizationCode(
+					'code',
+					'verifier',
+					REDIRECT_URI,
+					{ timeoutMs: 5_000, signal: upstream.signal },
+				);
+				upstream.abort(
+					Object.assign(new Error('upstream-mid-flight'), {
+						name: 'AbortError',
+						code: 'ABORT_ERR',
+					}),
+				);
+				const result = await resultPromise;
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toBe('upstream-mid-flight');
+				}
+				expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+				expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+				vi.restoreAllMocks();
+			}
+		});
+
+		it('cleans upstream listeners and timers across repeated abortable exchanges', async () => {
+			const originalFetch = globalThis.fetch;
+			vi.useFakeTimers();
+			const upstream = new AbortController();
+			const addListenerSpy = vi.spyOn(upstream.signal, 'addEventListener');
+			const removeListenerSpy = vi.spyOn(upstream.signal, 'removeEventListener');
+			const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+			const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+			globalThis.fetch = vi.fn((_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					if (signal?.aborted) {
+						reject(signal.reason);
+						return;
+					}
+					signal?.addEventListener(
+						'abort',
+						() => {
+							reject(signal.reason);
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const first = exchangeAuthorizationCode(
+					'code-1',
+					'verifier-1',
+					REDIRECT_URI,
+					{ timeoutMs: 2_000, signal: upstream.signal },
+				);
+				const second = exchangeAuthorizationCode(
+					'code-2',
+					'verifier-2',
+					REDIRECT_URI,
+					{ timeoutMs: 2_000, signal: upstream.signal },
+				);
+				expect(addListenerSpy).toHaveBeenCalledTimes(2);
+
+				upstream.abort(new Error('shared-upstream-abort'));
+				const [firstResult, secondResult] = await Promise.all([first, second]);
+				expect(firstResult.type).toBe('failed');
+				expect(secondResult.type).toBe('failed');
+				expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
+				expect(clearTimeoutSpy).toHaveBeenCalledTimes(2);
+				expect(removeListenerSpy).toHaveBeenCalledTimes(2);
+
+				const clearTimeoutCallCount = clearTimeoutSpy.mock.calls.length;
+				await vi.advanceTimersByTimeAsync(5_000);
+				expect(clearTimeoutSpy).toHaveBeenCalledTimes(clearTimeoutCallCount);
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+				vi.restoreAllMocks();
 			}
 		});
 

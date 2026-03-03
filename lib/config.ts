@@ -353,7 +353,7 @@ async function withConfigSaveLock(path: string, task: () => Promise<void>): Prom
 function readConfigRecordFromPath(configPath: string): Record<string, unknown> | null {
 	if (!existsSync(configPath)) return null;
 	try {
-		const fileContent = readFileSync(configPath, "utf-8");
+		const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const parsed = JSON.parse(normalizedFileContent) as unknown;
 		return isRecord(parsed) ? parsed : null;

@@ -219,6 +219,27 @@ describe('Plugin Configuration', () => {
 			expect(failedLoadWarnings).toHaveLength(0);
 		});
 
+		it('retries transient config read lock errors (EPERM) and succeeds', () => {
+			mockExistsSync.mockReturnValue(true);
+			const transientReadError = Object.assign(new Error('Operation not permitted'), {
+				code: 'EPERM',
+			});
+			mockReadFileSync
+				.mockImplementationOnce(() => {
+					throw transientReadError;
+				})
+				.mockReturnValueOnce(JSON.stringify({ codexMode: false }));
+
+			const config = loadPluginConfig();
+
+			expect(config.codexMode).toBe(false);
+			expect(mockReadFileSync).toHaveBeenCalledTimes(2);
+			const failedLoadWarnings = vi
+				.mocked(logger.logWarn)
+				.mock.calls.filter(([message]) => String(message).includes('Failed to load config'));
+			expect(failedLoadWarnings).toHaveLength(0);
+		});
+
 		it('should detect CODEX_HOME legacy auth config path before global legacy path', async () => {
 			const runWithCodexHome = async (codexHomePath: string) => {
 				vi.resetModules();
