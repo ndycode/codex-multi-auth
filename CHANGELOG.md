@@ -5,6 +5,33 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's canonical public release line is currently `0.x`.
 
+## [0.1.5] - 2026-03-03
+
+### Fixed
+
+- Removed forced `process.exit(...)` from wrapper entrypoints to prevent Windows libuv shutdown assertions after `codex auth` commands.
+- Updated model-matrix execution for current Codex CLI behavior (`exec`, non-interactive JSON mode, no deprecated `run`/`--port` flow).
+- Tightened model-matrix result classification to avoid false negatives from permissive output text matching.
+
+### Changed
+
+- Windows `.cmd` matrix execution now resolves to Node script entry where possible, preventing shell argument flattening issues.
+
+### Added
+
+- Regression coverage for `.cmd` wrapper resolution and matrix script helper behavior under Windows path formats.
+
+## [0.1.4] - 2026-03-03
+
+### Fixed
+
+- Stabilized `codex auth switch <index>` + host sync reporting so local multi-auth selection remains deterministic under sync failures.
+- Hardened refresh token normalization and refresh queue stale/timeout recovery paths.
+
+### Added
+
+- Expanded regression coverage across auth, refresh queue reliability, docs integrity, retry/backoff handling, and CLI routing.
+
 ## [0.1.3] - 2026-03-03
 
 ### Fixed
@@ -98,3 +125,5 @@ Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
 [0.1.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.1
 [0.1.2]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.2
 [0.1.3]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.3
+[0.1.4]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.4
+[0.1.5]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.5
