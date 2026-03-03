@@ -178,39 +178,43 @@ function normalizeExitCode(value) {
 	return 1;
 }
 
-const rawArgs = process.argv.slice(2);
-const normalizedArgs = normalizeAuthAlias(rawArgs);
-const bypass = (process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1";
+async function main() {
+	const rawArgs = process.argv.slice(2);
+	const normalizedArgs = normalizeAuthAlias(rawArgs);
+	const bypass = (process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1";
 
-if (!bypass && shouldHandleMultiAuthAuth(normalizedArgs)) {
-	try {
-		const runCodexMultiAuthCli = await loadRunCodexMultiAuthCli();
-		if (!runCodexMultiAuthCli) {
-			process.exit(1);
+	if (!bypass && shouldHandleMultiAuthAuth(normalizedArgs)) {
+		try {
+			const runCodexMultiAuthCli = await loadRunCodexMultiAuthCli();
+			if (!runCodexMultiAuthCli) {
+				return 1;
+			}
+			const exitCode = await runCodexMultiAuthCli(normalizedArgs);
+			return normalizeExitCode(exitCode);
+		} catch (error) {
+			console.error(
+				`codex-multi-auth runner failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return 1;
 		}
-		const exitCode = await runCodexMultiAuthCli(normalizedArgs);
-		process.exit(normalizeExitCode(exitCode));
-	} catch (error) {
-		console.error(
-			`codex-multi-auth runner failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		process.exit(1);
 	}
+
+	const realCodexBin = resolveRealCodexBin();
+	if (!realCodexBin) {
+		console.error(
+			[
+				"Could not locate the official Codex CLI binary (@openai/codex).",
+				"Install it globally: npm install -g @openai/codex",
+				"Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to a full bin/codex.js path.",
+			].join("\n"),
+		);
+		return 1;
+	}
+
+	await autoSyncManagerActiveSelectionIfEnabled();
+	const forwardArgs = buildForwardArgs(rawArgs);
+	return forwardToRealCodex(realCodexBin, forwardArgs);
 }
 
-const realCodexBin = resolveRealCodexBin();
-if (!realCodexBin) {
-	console.error(
-		[
-			"Could not locate the official Codex CLI binary (@openai/codex).",
-			"Install it globally: npm install -g @openai/codex",
-			"Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to a full bin/codex.js path.",
-		].join("\n"),
-	);
-	process.exit(1);
-}
-
-await autoSyncManagerActiveSelectionIfEnabled();
-const forwardArgs = buildForwardArgs(rawArgs);
-const forwardExitCode = await forwardToRealCodex(realCodexBin, forwardArgs);
-process.exit(forwardExitCode);
+const exitCode = await main();
+process.exitCode = normalizeExitCode(exitCode);
