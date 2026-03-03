@@ -1,0 +1,23 @@
+branches:
+  - name: main
+    protection:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+        require_code_owner_reviews: false
+        dismiss_stale_reviews: true
+      required_status_checks:
+        strict: true
+        checks:
+          - context: "CI / Test on Node.js 20.x"
+          - context: "CI / Test on Node.js 22.x"
+          - context: "CI / Coverage Gate"
+          - context: "CI / Lint"
+          - context: "CI / Codex Compatibility Smoke"
+          - context: "CI / Cross-Platform Smoke (windows-latest)"
+          - context: "CI / Cross-Platform Smoke (macos-latest)"
+          - context: "CodeQL / Analyze"
+          - context: "Secret Scan / Gitleaks"
+          - context: "Supply Chain / Dependency Review"
+          - context: "Supply Chain / SCA and License Gate"
+      enforce_admins: true
+      restrictions: null

@@ -20,6 +20,7 @@
 | Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` | Primary saved account pool |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` | Accounts with hard auth failures |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` | Cached quota snapshots |
+| Background DLQ | `~/.codex/multi-auth/background-job-dlq.jsonl` | Failed background jobs after retry exhaustion |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` | Optional diagnostics |
 | Prompt/cache files | `~/.codex/multi-auth/cache/` | Cached prompt/template metadata |
 | Codex CLI state | `~/.codex/accounts.json`, `~/.codex/auth.json` | Official Codex CLI files |
@@ -47,6 +48,34 @@ Current external destinations:
 `CODEX_PLUGIN_LOG_BODIES=1` enables raw request/response body logging.
 
 Raw body logs may contain sensitive payload text. Treat logs as sensitive data and rotate/delete as needed.
+
+`CODEX_AUTH_REDACT_JSON_OUTPUT=1` redacts sensitive values from JSON command output for automation logs.
+
+---
+
+## Secret Encryption and Rotation
+
+- Account refresh/access tokens can be encrypted at rest when `CODEX_AUTH_ENCRYPTION_KEY` is set.
+- Key rotation supports staged migration with `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY`.
+- Rotation command:
+
+```bash
+codex auth rotate-secrets --json
+```
+
+Store encryption keys in a secret manager or CI secret store, not in repository files.
+
+---
+
+## Retention
+
+Startup retention cleanup removes expired local artifacts based on:
+
+- `CODEX_AUTH_RETENTION_LOG_DAYS`
+- `CODEX_AUTH_RETENTION_CACHE_DAYS`
+- `CODEX_AUTH_RETENTION_FLAGGED_DAYS`
+- `CODEX_AUTH_RETENTION_QUOTA_CACHE_DAYS`
+- `CODEX_AUTH_RETENTION_DLQ_DAYS`
 
 ---
 

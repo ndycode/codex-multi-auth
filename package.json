@@ -65,6 +65,8 @@
     "audit:all": "npm audit --audit-level=high",
     "audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
     "audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
+    "license:check": "node scripts/license-policy-check.js",
+    "sbom": "npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json --omit dev",
     "prepublishOnly": "npm run build",
     "prepare": "husky"
   },

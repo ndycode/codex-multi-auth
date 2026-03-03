@@ -68,6 +68,9 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | HTTP request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
+| `CODEX_AUTH_ENCRYPTION_KEY=<key>` | Enable at-rest encryption for stored account secrets |
+| `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY=<key>` | Fallback key for staged secret rotation |
+| `CODEX_AUTH_ROLE=admin|operator|viewer` | CLI authorization role baseline |
 
 ---
 
@@ -81,6 +84,9 @@ Use these only when debugging, controlled benchmarking, or maintainer workflows.
 - `CODEX_CLI_ACCOUNTS_PATH`
 - `CODEX_CLI_AUTH_PATH`
 - refresh lease tuning variables (`CODEX_AUTH_REFRESH_LEASE*`)
+- `CODEX_AUTH_BREAK_GLASS`
+- `CODEX_AUTH_REDACT_JSON_OUTPUT`
+- retention tuning variables (`CODEX_AUTH_RETENTION_*`)
 
 Full inventory: [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
 
