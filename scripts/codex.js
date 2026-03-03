@@ -194,6 +194,53 @@ function normalizeExitCode(value) {
 const WINDOWS_SHIM_MARKER = "codex-multi-auth windows shim guardian v1";
 const POWERSHELL_PROFILE_MARKER_START = "# >>> codex-multi-auth shell guard >>>";
 const POWERSHELL_PROFILE_MARKER_END = "# <<< codex-multi-auth shell guard <<<";
+const RETRYABLE_WINDOWS_FS_CODES = new Set(["EBUSY", "EPERM", "EACCES"]);
+
+function sleep(ms) {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
+function getFsErrorCode(error) {
+	if (!error || typeof error !== "object" || !("code" in error)) {
+		return undefined;
+	}
+	const code = error.code;
+	return typeof code === "string" ? code : undefined;
+}
+
+async function runWithWindowsFsRetry(operation, options = {}) {
+	const {
+		maxAttempts = 4,
+		backoffMs = 50,
+	} = options;
+	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		try {
+			return operation();
+		} catch (error) {
+			const code = getFsErrorCode(error);
+			const shouldRetry = code !== undefined && RETRYABLE_WINDOWS_FS_CODES.has(code);
+			if (!shouldRetry || attempt === maxAttempts) {
+				throw error;
+			}
+			await sleep(backoffMs * (2 ** (attempt - 1)));
+		}
+	}
+	return undefined;
+}
+
+async function writeFileSyncWithWindowsRetry(filePath, content, options) {
+	await runWithWindowsFsRetry(() => {
+		writeFileSync(filePath, content, options);
+	}, { maxAttempts: 4, backoffMs: 50 });
+}
+
+async function mkdirSyncWithWindowsRetry(dirPath, options) {
+	await runWithWindowsFsRetry(() => {
+		mkdirSync(dirPath, options);
+	}, { maxAttempts: 4, backoffMs: 50 });
+}
 
 function shouldInstallWindowsBatchShimGuard() {
 	if (process.platform !== "win32") return false;
@@ -320,7 +367,7 @@ function buildWindowsPowerShellShimContent() {
 	].join("\r\n");
 }
 
-function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
+async function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
 	const {
 		overwriteCustomShim = false,
 		shimMarker = WINDOWS_SHIM_MARKER,
@@ -336,7 +383,10 @@ function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
 		if (currentContent === desiredContent || currentContent.includes(shimMarker)) {
 			if (currentContent !== desiredContent) {
 				try {
-					writeFileSync(filePath, desiredContent, { encoding: "utf8", mode: 0o755 });
+					await writeFileSyncWithWindowsRetry(filePath, desiredContent, {
+						encoding: "utf8",
+						mode: 0o755,
+					});
 					return true;
 				} catch {
 					return false;
@@ -349,7 +399,10 @@ function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
 			currentContent.includes("node_modules/@openai/codex/bin/codex.js");
 		if (looksLikeStockOpenAiShim) {
 			try {
-				writeFileSync(filePath, desiredContent, { encoding: "utf8", mode: 0o755 });
+				await writeFileSyncWithWindowsRetry(filePath, desiredContent, {
+					encoding: "utf8",
+					mode: 0o755,
+				});
 				return true;
 			} catch {
 				return false;
@@ -361,7 +414,10 @@ function ensureWindowsShellShim(filePath, desiredContent, options = {}) {
 	}
 
 	try {
-		writeFileSync(filePath, desiredContent, { encoding: "utf8", mode: 0o755 });
+		await writeFileSyncWithWindowsRetry(filePath, desiredContent, {
+			encoding: "utf8",
+			mode: 0o755,
+		});
 		return true;
 	} catch {
 		return false;
@@ -400,7 +456,7 @@ function buildPowerShellProfileGuardBlock(shimDirectory) {
 	].join("\r\n");
 }
 
-function upsertPowerShellProfileGuard(profilePath, guardBlock) {
+async function upsertPowerShellProfileGuard(profilePath, guardBlock) {
 	let content = "";
 	if (existsSync(profilePath)) {
 		try {
@@ -430,15 +486,18 @@ function upsertPowerShellProfileGuard(profilePath, guardBlock) {
 	}
 
 	try {
-		mkdirSync(dirname(profilePath), { recursive: true });
-		writeFileSync(profilePath, `${nextContent}\r\n`, { encoding: "utf8", mode: 0o644 });
+		await mkdirSyncWithWindowsRetry(dirname(profilePath), { recursive: true });
+		await writeFileSyncWithWindowsRetry(profilePath, `${nextContent}\r\n`, {
+			encoding: "utf8",
+			mode: 0o644,
+		});
 		return true;
 	} catch {
 		return false;
 	}
 }
 
-function ensurePowerShellProfileGuard(shimDirectory) {
+async function ensurePowerShellProfileGuard(shimDirectory) {
 	if (!shouldInstallPowerShellProfileGuard()) return false;
 	const homeDir = resolveWindowsUserHomeDir();
 	if (!homeDir) return false;
@@ -449,12 +508,12 @@ function ensurePowerShellProfileGuard(shimDirectory) {
 	];
 	let changed = false;
 	for (const profilePath of profilePaths) {
-		changed = upsertPowerShellProfileGuard(profilePath, guardBlock) || changed;
+		changed = (await upsertPowerShellProfileGuard(profilePath, guardBlock)) || changed;
 	}
 	return changed;
 }
 
-function ensureWindowsShellShimGuards() {
+async function ensureWindowsShellShimGuards() {
 	if (!shouldInstallWindowsBatchShimGuard()) return;
 	const shimDirectory = resolveWindowsShimDirectoryFromPath();
 	if (!shimDirectory) return;
@@ -464,23 +523,23 @@ function ensureWindowsShellShimGuards() {
 
 	const overwriteCustomShim =
 		(process.env.CODEX_MULTI_AUTH_OVERWRITE_CUSTOM_BATCH_SHIM ?? "0").trim() === "1";
-	const installedBatch = ensureWindowsShellShim(
+	const installedBatch = await ensureWindowsShellShim(
 		join(shimDirectory, "codex.bat"),
 		buildWindowsBatchShimContent(),
 		{ overwriteCustomShim },
 	);
-	const installedCmd = ensureWindowsShellShim(
+	const installedCmd = await ensureWindowsShellShim(
 		join(shimDirectory, "codex.cmd"),
 		buildWindowsCmdShimContent(),
 		{ overwriteCustomShim },
 	);
-	const installedPs1 = ensureWindowsShellShim(
+	const installedPs1 = await ensureWindowsShellShim(
 		join(shimDirectory, "codex.ps1"),
 		buildWindowsPowerShellShimContent(),
 		{ overwriteCustomShim },
 	);
 	const installedAny = installedBatch || installedCmd || installedPs1;
-	const installedProfileGuard = ensurePowerShellProfileGuard(shimDirectory);
+	const installedProfileGuard = await ensurePowerShellProfileGuard(shimDirectory);
 	if (installedAny || installedProfileGuard) {
 		console.error(
 			"codex-multi-auth: installed Windows shell guards to keep multi-auth routing after codex npm updates.",
@@ -490,7 +549,7 @@ function ensureWindowsShellShimGuards() {
 
 async function main() {
 	hydrateCliVersionEnv();
-	ensureWindowsShellShimGuards();
+	await ensureWindowsShellShimGuards();
 
 	const rawArgs = process.argv.slice(2);
 	const normalizedArgs = normalizeAuthAlias(rawArgs);
