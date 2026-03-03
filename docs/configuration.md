@@ -88,6 +88,11 @@ Use these only when debugging, controlled benchmarking, or maintainer workflows.
 - `CODEX_CLI_AUTH_PATH`
 - refresh lease tuning variables (`CODEX_AUTH_REFRESH_LEASE*`)
 - `CODEX_AUTH_BREAK_GLASS`
+- `CODEX_AUTH_ABAC_READ_ONLY`
+- `CODEX_AUTH_ABAC_DENY_ACTIONS`
+- `CODEX_AUTH_ABAC_DENY_COMMANDS`
+- `CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE`
+- `CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY`
 - `CODEX_AUTH_REDACT_JSON_OUTPUT`
 - retention tuning variables (`CODEX_AUTH_RETENTION_*`)
 

@@ -2128,4 +2128,54 @@ describe("codex manager cli commands", () => {
 			logSpy.mockRestore();
 		}
 	});
+
+	it("enforces ABAC idempotency-key requirement for rotate-secrets", async () => {
+		const previousRole = process.env.CODEX_AUTH_ROLE;
+		const previousAbacRequirement = process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY;
+		process.env.CODEX_AUTH_ROLE = "admin";
+		process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY = "secrets:rotate";
+		rotateStoredSecretEncryptionMock.mockResolvedValue({
+			accounts: 1,
+			flaggedAccounts: 0,
+		});
+
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const deniedExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--json",
+			]);
+			expect(deniedExitCode).toBe(1);
+			expect(rotateStoredSecretEncryptionMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("idempotency key"),
+			);
+
+			errorSpy.mockClear();
+			const allowedExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--json",
+				"--idempotency-key",
+				"rotation-allowed",
+			]);
+			expect(allowedExitCode).toBe(0);
+			expect(rotateStoredSecretEncryptionMock).toHaveBeenCalledTimes(1);
+			expect(errorSpy).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+			if (previousRole === undefined) {
+				delete process.env.CODEX_AUTH_ROLE;
+			} else {
+				process.env.CODEX_AUTH_ROLE = previousRole;
+			}
+			if (previousAbacRequirement === undefined) {
+				delete process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY;
+			} else {
+				process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY = previousAbacRequirement;
+			}
+		}
+	});
 });

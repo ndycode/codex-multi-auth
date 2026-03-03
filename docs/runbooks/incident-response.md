@@ -31,6 +31,8 @@ Incident response workflow for `codex-multi-auth`.
    - run `codex auth rotate-secrets`
 2. For unauthorized command execution:
    - downgrade role to `CODEX_AUTH_ROLE=viewer` where possible
+   - enable `CODEX_AUTH_ABAC_READ_ONLY=1` until containment is complete
+   - deny high-risk commands with `CODEX_AUTH_ABAC_DENY_COMMANDS=rotate-secrets,fix`
    - reserve `CODEX_AUTH_BREAK_GLASS=1` for explicit emergency changes
 3. For filesystem instability:
    - pause mutation commands (`login`, `switch`, `fix`)

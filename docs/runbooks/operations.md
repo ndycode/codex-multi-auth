@@ -44,7 +44,11 @@ Routine operations checklist for maintainers.
 2. Validate RBAC defaults for deployment environments:
    - `CODEX_AUTH_ROLE=admin|operator|viewer`
    - `CODEX_AUTH_BREAK_GLASS=1` only for emergency windows
-3. Run a restore drill with exported account backups.
+3. Validate ABAC guardrails for automation and production:
+   - `CODEX_AUTH_ABAC_READ_ONLY=1` for read-only diagnostics environments
+   - `CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE=accounts:write,accounts:repair` for interactive-only mutation paths
+   - `CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY=secrets:rotate` for safe retryable secret rotation
+4. Run a restore drill with exported account backups.
 
 ---
 

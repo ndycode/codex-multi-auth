@@ -78,7 +78,7 @@ import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, resolveMen
 import { auditLog, AuditAction, AuditOutcome } from "./audit.js";
 import { checkAuthRateLimit, recordAuthAttempt, resetAuthRateLimit } from "./auth-rate-limit.js";
 import { redactForExternalOutput } from "./data-redaction.js";
-import { authorizeAction, type AuthAction } from "./authorization.js";
+import { authorizeAction, type AuthAction, type AuthorizationContext } from "./authorization.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 type TokenSuccessWithAccount = TokenSuccess & {
@@ -137,8 +137,23 @@ function maybeRedactJsonOutput<T>(value: T): T {
 	return shouldRedact ? redactForExternalOutput(value) : value;
 }
 
-function ensureAuthorized(action: AuthAction): boolean {
-	const auth = authorizeAction(action);
+function hasOptionFlag(args: readonly string[], flag: string): boolean {
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === flag) {
+			const next = args[index + 1];
+			return typeof next === "string" && next.trim().length > 0;
+		}
+		if (arg?.startsWith(`${flag}=`)) {
+			const value = arg.slice(flag.length + 1).trim();
+			return value.length > 0;
+		}
+	}
+	return false;
+}
+
+function ensureAuthorized(action: AuthAction, context: AuthorizationContext = {}): boolean {
+	const auth = authorizeAction(action, context);
 	if (auth.allowed) return true;
 	console.error(`Authorization denied: ${auth.reason}`);
 	return false;
@@ -4536,43 +4551,55 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return 0;
 	}
 	if (command === "login") {
-		if (!ensureAuthorized("accounts:write")) return 1;
+		if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) return 1;
 		return runAuthLogin();
 	}
 	if (command === "list" || command === "status") {
+		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
 		return showAccountStatus(rest);
 	}
 	if (command === "switch") {
-		if (!ensureAuthorized("accounts:write")) return 1;
+		if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) return 1;
 		return runSwitch(rest);
 	}
 	if (command === "check") {
+		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
 		await runHealthCheck({ liveProbe: true });
 		return 0;
 	}
 	if (command === "features") {
+		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
 		return runFeaturesReport();
 	}
 	if (command === "verify-flagged") {
-		if (!ensureAuthorized("accounts:repair")) return 1;
+		if (!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) return 1;
 		return runVerifyFlagged(rest);
 	}
 	if (command === "forecast") {
+		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
 		return runForecast(rest);
 	}
 	if (command === "report") {
+		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
 		return runReport(rest);
 	}
 	if (command === "fix") {
-		if (!ensureAuthorized("accounts:repair")) return 1;
+		if (!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) return 1;
 		return runFix(rest);
 	}
 	if (command === "doctor") {
-		if (rest.includes("--fix") && !ensureAuthorized("accounts:repair")) return 1;
+		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
+		if (rest.includes("--fix") && !ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) return 1;
 		return runDoctor(rest);
 	}
 	if (command === "rotate-secrets") {
-		if (!ensureAuthorized("secrets:rotate")) return 1;
+		if (!ensureAuthorized("secrets:rotate", {
+			command,
+			interactive: output.isTTY,
+			idempotencyKeyPresent: hasOptionFlag(rest, "--idempotency-key"),
+		})) {
+			return 1;
+		}
 		return runRotateSecrets(rest);
 	}
 
