@@ -3,6 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
+import { acquireFileLock } from "./file-lock.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 import {
@@ -41,6 +42,12 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const ACCOUNT_STORAGE_LOCK_OPTIONS = {
+	maxAttempts: 80,
+	baseDelayMs: 15,
+	maxDelayMs: 800,
+	staleAfterMs: 120_000,
+} as const;
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -305,6 +312,20 @@ async function getAccountsBackupRecoveryCandidatesWithDiscovery(path: string): P
 
 function getAccountsWalPath(path: string): string {
 	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
+}
+
+function getAccountsLockPath(path: string): string {
+	return `${path}.lock`;
+}
+
+async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	await fs.mkdir(dirname(path), { recursive: true });
+	const lock = await acquireFileLock(getAccountsLockPath(path), ACCOUNT_STORAGE_LOCK_OPTIONS);
+	try {
+		return await fn();
+	} finally {
+		await lock.release();
+	}
 }
 
 async function copyFileWithRetry(
@@ -1220,10 +1241,13 @@ export async function withAccountStorageTransaction<T>(
     persist: (storage: AccountStorageV3) => Promise<void>,
   ) => Promise<T>,
 ): Promise<T> {
-  return withStorageLock(async () => {
-    const current = await loadAccountsInternal(saveAccountsUnlocked);
-    return handler(current, saveAccountsUnlocked);
-  });
+	const path = getStoragePath();
+	return withAccountFileLock(path, () =>
+		withStorageLock(async () => {
+			const current = await loadAccountsInternal(saveAccountsUnlocked);
+			return handler(current, saveAccountsUnlocked);
+		}),
+	);
 }
 
 /**
@@ -1234,9 +1258,12 @@ export async function withAccountStorageTransaction<T>(
  * @throws StorageError with platform-aware hints on failure
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
-  return withStorageLock(async () => {
-    await saveAccountsUnlocked(storage);
-  });
+	const path = getStoragePath();
+	return withAccountFileLock(path, () =>
+		withStorageLock(async () => {
+			await saveAccountsUnlocked(storage);
+		}),
+	);
 }
 
 /**
@@ -1244,9 +1271,10 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * Silently ignores if file doesn't exist.
  */
 export async function clearAccounts(): Promise<void> {
-  return withStorageLock(async () => {
-    const path = getStoragePath();
-    const walPath = getAccountsWalPath(path);
+	const path = getStoragePath();
+	return withAccountFileLock(path, () =>
+		withStorageLock(async () => {
+			const walPath = getAccountsWalPath(path);
 	const backupPaths = getAccountsBackupRecoveryCandidates(path);
     const clearPath = async (targetPath: string): Promise<void> => {
       try {
@@ -1267,7 +1295,8 @@ export async function clearAccounts(): Promise<void> {
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.
     }
-  });
+		}),
+	);
 }
 
 function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
