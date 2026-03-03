@@ -118,6 +118,11 @@ import {
 	isCodexCliSyncEnabled,
 } from "./lib/accounts.js";
 import {
+	resolveActiveIndex,
+	getRateLimitResetTimeForFamily,
+	formatRateLimitEntry,
+} from "./lib/accounts/account-view.js";
+import {
 	getStoragePath,
 	loadAccounts,
 	saveAccounts,
@@ -676,21 +681,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 }
         };
 
-		const resolveActiveIndex = (
-				storage: {
-						activeIndex: number;
-						activeIndexByFamily?: Partial<Record<ModelFamily, number>>;
-						accounts: unknown[];
-				},
-				family: ModelFamily = "codex",
-		): number => {
-				const total = storage.accounts.length;
-				if (total === 0) return 0;
-				const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-				const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-				return Math.max(0, Math.min(raw, total - 1));
-		};
-
 	const hydrateEmails = async (
 			storage: AccountStorageV3 | null,
 	): Promise<AccountStorageV3 | null> => {
@@ -754,40 +744,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 }
                 return storage;
         };
-
-		const getRateLimitResetTimeForFamily = (
-				account: { rateLimitResetTimes?: Record<string, number | undefined> },
-				now: number,
-				family: ModelFamily,
-		): number | null => {
-				const times = account.rateLimitResetTimes;
-				if (!times) return null;
-
-				let minReset: number | null = null;
-				const prefix = `${family}:`;
-				for (const [key, value] of Object.entries(times)) {
-						if (typeof value !== "number") continue;
-						if (value <= now) continue;
-						if (key !== family && !key.startsWith(prefix)) continue;
-						if (minReset === null || value < minReset) {
-								minReset = value;
-						}
-				}
-
-				return minReset;
-		};
-
-		const formatRateLimitEntry = (
-				account: { rateLimitResetTimes?: Record<string, number | undefined> },
-				now: number,
-				family: ModelFamily = "codex",
-		): string | null => {
-				const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-				if (typeof resetAt !== "number") return null;
-				const remaining = resetAt - now;
-				if (remaining <= 0) return null;
-				return `resets in ${formatWaitTime(remaining)}`;
-		};
 
 		const applyUiRuntimeFromConfig = (
 			pluginConfig: ReturnType<typeof loadPluginConfig>,

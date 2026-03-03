@@ -731,13 +731,20 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it("shows detailed status for accounts", async () => {
+			const now = Date.now();
 			mockStorage.accounts = [
-				{ refreshToken: "r1", email: "user@example.com", lastUsed: Date.now() - 60000 },
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					lastUsed: now - 60000,
+					rateLimitResetTimes: { codex: now + 120000 },
+				},
 			];
 			mockStorage.activeIndexByFamily = { codex: 0 };
 			const result = await plugin.tool["codex-status"].execute();
 			expect(result).toContain("Account Status");
 			expect(result).toContain("Active index by model family");
+			expect(result).toContain("resets in");
 		});
 	});
 
