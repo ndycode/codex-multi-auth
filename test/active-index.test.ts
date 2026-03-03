@@ -4,6 +4,7 @@ import {
 	createActiveIndexByFamily,
 	setActiveIndexForAllFamilies,
 	normalizeActiveIndexByFamily,
+	removeAccountAndReconcileActiveIndexes,
 } from "../lib/accounts/active-index.js";
 
 describe("active-index helpers", () => {
@@ -114,5 +115,45 @@ describe("active-index helpers", () => {
 		for (const family of MODEL_FAMILIES) {
 			expect(storage.activeIndexByFamily?.[family]).toBe(0);
 		}
+	});
+
+	it("removes accounts and reconciles active indexes for remaining entries", () => {
+		const storage: {
+			accounts: unknown[];
+			activeIndex: number;
+			activeIndexByFamily?: Partial<Record<(typeof MODEL_FAMILIES)[number], number>>;
+		} = {
+			accounts: [{ id: 1 }, { id: 2 }, { id: 3 }],
+			activeIndex: 2,
+			activeIndexByFamily: {
+				codex: 2,
+				"gpt-5.1": 2,
+			},
+		};
+
+		const changed = removeAccountAndReconcileActiveIndexes(storage, 0);
+
+		expect(changed).toBe(true);
+		expect(storage.accounts).toHaveLength(2);
+		expect(storage.activeIndex).toBe(0);
+		expect(storage.activeIndexByFamily?.codex).toBe(0);
+		expect(storage.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
+	});
+
+	it("returns false and keeps storage unchanged for out-of-range removals", () => {
+		const storage: {
+			accounts: unknown[];
+			activeIndex: number;
+			activeIndexByFamily?: Record<string, number>;
+		} = {
+			accounts: [{ id: 1 }],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		expect(removeAccountAndReconcileActiveIndexes(storage, 2)).toBe(false);
+		expect(storage.accounts).toHaveLength(1);
+		expect(storage.activeIndex).toBe(0);
+		expect(storage.activeIndexByFamily).toEqual({ codex: 0 });
 	});
 });

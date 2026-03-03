@@ -5,6 +5,10 @@ export interface ActiveIndexFamilyStorage {
 	activeIndexByFamily?: Partial<Record<ModelFamily, number>>;
 }
 
+export interface AccountListActiveIndexStorage extends ActiveIndexFamilyStorage {
+	accounts: unknown[];
+}
+
 interface NormalizeActiveIndexOptions {
 	clearFamilyMapWhenEmpty?: boolean;
 	families?: readonly ModelFamily[];
@@ -79,4 +83,42 @@ export function normalizeActiveIndexByFamily(
 	}
 
 	return changed;
+}
+
+export function removeAccountAndReconcileActiveIndexes(
+	storage: AccountListActiveIndexStorage,
+	targetIndex: number,
+	families: readonly ModelFamily[] = MODEL_FAMILIES,
+): boolean {
+	if (targetIndex < 0 || targetIndex >= storage.accounts.length) {
+		return false;
+	}
+
+	storage.accounts.splice(targetIndex, 1);
+
+	if (storage.accounts.length === 0) {
+		storage.activeIndex = 0;
+		storage.activeIndexByFamily = {};
+		return true;
+	}
+
+	if (storage.activeIndex >= storage.accounts.length) {
+		storage.activeIndex = 0;
+	} else if (storage.activeIndex > targetIndex) {
+		storage.activeIndex -= 1;
+	}
+
+	if (storage.activeIndexByFamily) {
+		for (const family of families) {
+			const idx = storage.activeIndexByFamily[family];
+			if (typeof idx !== "number") continue;
+			if (idx >= storage.accounts.length) {
+				storage.activeIndexByFamily[family] = 0;
+			} else if (idx > targetIndex) {
+				storage.activeIndexByFamily[family] = idx - 1;
+			}
+		}
+	}
+
+	return true;
 }

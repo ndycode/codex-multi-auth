@@ -126,6 +126,7 @@ import {
 import {
 	setActiveIndexForAllFamilies,
 	normalizeActiveIndexByFamily,
+	removeAccountAndReconcileActiveIndexes,
 } from "./lib/accounts/active-index.js";
 import {
 	getStoragePath,
@@ -3861,31 +3862,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					const label = formatAccountLabel(account, targetIndex);
 
-					storage.accounts.splice(targetIndex, 1);
-
-					if (storage.accounts.length === 0) {
-						storage.activeIndex = 0;
-						storage.activeIndexByFamily = {};
-					} else {
-						if (storage.activeIndex >= storage.accounts.length) {
-							storage.activeIndex = 0;
-						} else if (storage.activeIndex > targetIndex) {
-							storage.activeIndex -= 1;
-						}
-
-						if (storage.activeIndexByFamily) {
-							for (const family of MODEL_FAMILIES) {
-								const idx = storage.activeIndexByFamily[family];
-								if (typeof idx === "number") {
-									if (idx >= storage.accounts.length) {
-										storage.activeIndexByFamily[family] = 0;
-									} else if (idx > targetIndex) {
-										storage.activeIndexByFamily[family] = idx - 1;
-									}
-								}
-							}
-						}
-					}
+					removeAccountAndReconcileActiveIndexes(storage, targetIndex);
 
 					try {
 					await saveAccounts(storage);
