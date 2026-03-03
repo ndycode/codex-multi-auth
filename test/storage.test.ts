@@ -1561,14 +1561,250 @@ describe("storage", () => {
         }
         return originalCopy(src as string, dest as string);
       });
+      try {
+        await saveAccounts({
+          ...storage,
+          accounts: [{ refreshToken: "token-next", addedAt: now, lastUsed: now }],
+        });
+
+        expect(copyAttempts).toBe(2);
+      } finally {
+        copySpy.mockRestore();
+      }
+    });
+
+    it("retries backup copyFile on transient EPERM and succeeds", async () => {
+      const now = Date.now();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+      };
+
+      // Seed a primary file so backup creation path runs on next save.
+      await saveAccounts(storage);
+
+      const originalCopy = fs.copyFile.bind(fs);
+      let copyAttempts = 0;
+      const copySpy = vi.spyOn(fs, "copyFile").mockImplementation(async (src, dest) => {
+        copyAttempts += 1;
+        if (copyAttempts === 1) {
+          const err = new Error("EPERM copy") as NodeJS.ErrnoException;
+          err.code = "EPERM";
+          throw err;
+        }
+        return originalCopy(src as string, dest as string);
+      });
+      try {
+        await saveAccounts({
+          ...storage,
+          accounts: [{ refreshToken: "token-next", addedAt: now, lastUsed: now }],
+        });
+
+        expect(copyAttempts).toBe(2);
+      } finally {
+        copySpy.mockRestore();
+      }
+    });
+
+    it("retries staged backup rename on transient EBUSY and succeeds", async () => {
+      const now = Date.now();
+      const storagePath = getStoragePath();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+      };
+
+      // Seed a primary file so backup creation path runs on next save.
+      await saveAccounts(storage);
+
+      const originalRename = fs.rename.bind(fs);
+      let stagedRenameAttempts = 0;
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+        const sourcePath = String(oldPath);
+        if (sourcePath.includes(".rotate.")) {
+          stagedRenameAttempts += 1;
+          if (stagedRenameAttempts === 1) {
+            const err = new Error("EBUSY staged rename") as NodeJS.ErrnoException;
+            err.code = "EBUSY";
+            throw err;
+          }
+        }
+        return originalRename(oldPath as string, newPath as string);
+      });
+      try {
+        await saveAccounts({
+          ...storage,
+          accounts: [{ refreshToken: "token-next", addedAt: now + 1, lastUsed: now + 1 }],
+        });
+
+        expect(stagedRenameAttempts).toBe(2);
+        const latestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak`, "utf-8")) as {
+          accounts?: Array<{ refreshToken?: string }>;
+        };
+        expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token");
+      } finally {
+        renameSpy.mockRestore();
+      }
+    });
+
+    it("rotates backups and retains historical snapshots", async () => {
+      const now = Date.now();
+      const storagePath = getStoragePath();
 
       await saveAccounts({
-        ...storage,
-        accounts: [{ refreshToken: "token-next", addedAt: now, lastUsed: now }],
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-2", addedAt: now + 1, lastUsed: now + 1 }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-3", addedAt: now + 2, lastUsed: now + 2 }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-4", addedAt: now + 3, lastUsed: now + 3 }],
       });
 
-      expect(copyAttempts).toBe(2);
-      copySpy.mockRestore();
+      const latestBackupRaw = await fs.readFile(`${storagePath}.bak`, "utf-8");
+      const historicalBackupRaw = await fs.readFile(`${storagePath}.bak.1`, "utf-8");
+      const oldestBackupRaw = await fs.readFile(`${storagePath}.bak.2`, "utf-8");
+      const latestBackup = JSON.parse(latestBackupRaw) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const historicalBackup = JSON.parse(historicalBackupRaw) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const oldestBackup = JSON.parse(oldestBackupRaw) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+
+      expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-3");
+      expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
+      expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
+    });
+
+    it("preserves historical backups when creating the latest backup fails", async () => {
+      const now = Date.now();
+      const storagePath = getStoragePath();
+
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-2", addedAt: now + 1, lastUsed: now + 1 }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-3", addedAt: now + 2, lastUsed: now + 2 }],
+      });
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-4", addedAt: now + 3, lastUsed: now + 3 }],
+      });
+
+      const originalCopy = fs.copyFile.bind(fs);
+      const copySpy = vi.spyOn(fs, "copyFile").mockImplementation(async (src, dest) => {
+        if (src === storagePath) {
+          const err = new Error("ENOSPC backup copy") as NodeJS.ErrnoException;
+          err.code = "ENOSPC";
+          throw err;
+        }
+        return originalCopy(src as string, dest as string);
+      });
+      try {
+        await saveAccounts({
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "token-5", addedAt: now + 4, lastUsed: now + 4 }],
+        });
+      } finally {
+        copySpy.mockRestore();
+      }
+
+      const primary = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const latestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const historicalBackup = JSON.parse(await fs.readFile(`${storagePath}.bak.1`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const oldestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak.2`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+
+      expect(primary.accounts?.[0]?.refreshToken).toBe("token-5");
+      expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-3");
+      expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
+      expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
+    });
+
+    it("keeps rotating backup order deterministic across parallel saves", async () => {
+      const now = Date.now();
+      const storagePath = getStoragePath();
+
+      await saveAccounts({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-0", addedAt: now, lastUsed: now }],
+      });
+
+      await Promise.all([
+        saveAccounts({
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "token-1", addedAt: now + 1, lastUsed: now + 1 }],
+        }),
+        saveAccounts({
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "token-2", addedAt: now + 2, lastUsed: now + 2 }],
+        }),
+        saveAccounts({
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "token-3", addedAt: now + 3, lastUsed: now + 3 }],
+        }),
+        saveAccounts({
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "token-4", addedAt: now + 4, lastUsed: now + 4 }],
+        }),
+      ]);
+
+      const latestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const primary = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const historicalBackup = JSON.parse(await fs.readFile(`${storagePath}.bak.1`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+      const oldestBackup = JSON.parse(await fs.readFile(`${storagePath}.bak.2`, "utf-8")) as {
+        accounts?: Array<{ refreshToken?: string }>;
+      };
+
+      expect(primary.accounts?.[0]?.refreshToken).toBe("token-4");
+      expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-3");
+      expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
+      expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
     });
   });
 
@@ -1584,16 +1820,22 @@ describe("storage", () => {
       const storagePath = getStoragePath();
       await saveAccounts(storage);
       await fs.writeFile(`${storagePath}.bak`, JSON.stringify(storage), "utf-8");
+      await fs.writeFile(`${storagePath}.bak.1`, JSON.stringify(storage), "utf-8");
+      await fs.writeFile(`${storagePath}.bak.2`, JSON.stringify(storage), "utf-8");
       await fs.writeFile(`${storagePath}.wal`, JSON.stringify(storage), "utf-8");
 
       expect(existsSync(storagePath)).toBe(true);
       expect(existsSync(`${storagePath}.bak`)).toBe(true);
+      expect(existsSync(`${storagePath}.bak.1`)).toBe(true);
+      expect(existsSync(`${storagePath}.bak.2`)).toBe(true);
       expect(existsSync(`${storagePath}.wal`)).toBe(true);
 
       await clearAccounts();
 
       expect(existsSync(storagePath)).toBe(false);
       expect(existsSync(`${storagePath}.bak`)).toBe(false);
+      expect(existsSync(`${storagePath}.bak.1`)).toBe(false);
+      expect(existsSync(`${storagePath}.bak.2`)).toBe(false);
       expect(existsSync(`${storagePath}.wal`)).toBe(false);
     });
 

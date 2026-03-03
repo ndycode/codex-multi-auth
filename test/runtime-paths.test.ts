@@ -7,16 +7,39 @@ const homedir = vi.fn(() => "/home/neil");
 vi.mock("node:fs", () => ({ existsSync }));
 vi.mock("node:os", () => ({ homedir }));
 
+const ENV_KEYS = [
+	"CODEX_HOME",
+	"CODEX_MULTI_AUTH_DIR",
+	"USERPROFILE",
+	"HOME",
+	"HOMEDRIVE",
+	"HOMEPATH",
+] as const;
+
+type EnvKey = (typeof ENV_KEYS)[number];
+
 describe("runtime-paths", () => {
+	const originalEnv: Partial<Record<EnvKey, string | undefined>> = {};
+
 	beforeEach(() => {
 		vi.resetModules();
 		vi.clearAllMocks();
-		delete process.env.CODEX_HOME;
-		delete process.env.CODEX_MULTI_AUTH_DIR;
+		for (const key of ENV_KEYS) {
+			originalEnv[key] = process.env[key];
+			delete process.env[key];
+		}
 		homedir.mockReturnValue("/home/neil");
 	});
 
 	afterEach(() => {
+		for (const key of ENV_KEYS) {
+			const value = originalEnv[key];
+			if (typeof value === "string") {
+				process.env[key] = value;
+			} else {
+				delete process.env[key];
+			}
+		}
 		vi.restoreAllMocks();
 	});
 
@@ -64,6 +87,57 @@ describe("runtime-paths", () => {
 
 			const mod = await import("../lib/runtime-paths.js");
 			expect(mod.getCodexMultiAuthDir()).toBe("C:\\USERS\\NEIL\\.codex\\multi-auth");
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("prefers USERPROFILE over os.homedir on Windows when CODEX_HOME is unset", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
+			process.env.USERPROFILE = "C:\\Users\\Alice";
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexHomeDir()).toBe("C:\\Users\\Alice\\.codex");
+			expect(mod.getLegacyCodexDir()).toBe("C:\\Users\\Alice\\.codex");
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("falls back to HOME when USERPROFILE is missing on Windows", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
+			process.env.HOME = "D:\\Users\\Bob";
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexHomeDir()).toBe("D:\\Users\\Bob\\.codex");
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("falls back to HOMEDRIVE and HOMEPATH when USERPROFILE and HOME are missing on Windows", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
+			process.env.HOMEDRIVE = "E:";
+			process.env.HOMEPATH = "\\Users\\Carol";
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexHomeDir()).toBe("E:\\Users\\Carol\\.codex");
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("normalizes HOMEPATH without a leading slash on Windows", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Windows\\System32\\config\\systemprofile");
+			process.env.HOMEDRIVE = "E:";
+			process.env.HOMEPATH = "Users\\Carol";
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexHomeDir()).toBe("E:\\Users\\Carol\\.codex");
 		} finally {
 			platformSpy.mockRestore();
 		}

@@ -31,6 +31,7 @@ const FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-flagged-accounts.json";
 const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
 const ACCOUNTS_BACKUP_SUFFIX = ".bak";
 const ACCOUNTS_WAL_SUFFIX = ".wal";
+const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
 
@@ -156,8 +157,174 @@ function getAccountsBackupPath(path: string): string {
 	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
 }
 
+function getAccountsBackupPathAtIndex(path: string, index: number): string {
+	if (index <= 0) {
+		return getAccountsBackupPath(path);
+	}
+	return `${path}${ACCOUNTS_BACKUP_SUFFIX}.${index}`;
+}
+
+function getAccountsBackupRecoveryCandidates(path: string): string[] {
+	const candidates: string[] = [];
+	for (let i = 0; i < ACCOUNTS_BACKUP_HISTORY_DEPTH; i += 1) {
+		candidates.push(getAccountsBackupPathAtIndex(path, i));
+	}
+	return candidates;
+}
+
 function getAccountsWalPath(path: string): string {
 	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
+}
+
+async function copyFileWithRetry(
+	sourcePath: string,
+	destinationPath: string,
+	options?: { allowMissingSource?: boolean },
+): Promise<void> {
+	const allowMissingSource = options?.allowMissingSource ?? false;
+	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.copyFile(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (allowMissingSource && code === "ENOENT") {
+				return;
+			}
+			const canRetry =
+				(code === "EPERM" || code === "EBUSY") &&
+				attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+			if (canRetry) {
+				await new Promise((resolve) =>
+					setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt),
+				);
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
+async function renameFileWithRetry(sourcePath: string, destinationPath: string): Promise<void> {
+	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.rename(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			const canRetry =
+				(code === "EPERM" || code === "EBUSY" || code === "EAGAIN") &&
+				attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+			if (!canRetry) {
+				throw error;
+			}
+			const jitterMs = Math.floor(Math.random() * BACKUP_COPY_BASE_DELAY_MS);
+			await new Promise((resolve) =>
+				setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt + jitterMs),
+			);
+		}
+	}
+}
+
+async function createRotatingAccountsBackup(path: string): Promise<void> {
+	const candidates = getAccountsBackupRecoveryCandidates(path);
+	const rotationNonce = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const stagedWrites: Array<{ targetPath: string; stagedPath: string }> = [];
+	const buildStagedPath = (targetPath: string, label: string): string =>
+		`${targetPath}.rotate.${rotationNonce}.${label}.tmp`;
+
+	try {
+		for (let i = candidates.length - 1; i > 0; i -= 1) {
+			const previousPath = candidates[i - 1];
+			const currentPath = candidates[i];
+			if (!previousPath || !currentPath || !existsSync(previousPath)) {
+				continue;
+			}
+			const stagedPath = buildStagedPath(currentPath, `slot-${i}`);
+			await copyFileWithRetry(previousPath, stagedPath, { allowMissingSource: true });
+			if (existsSync(stagedPath)) {
+				stagedWrites.push({ targetPath: currentPath, stagedPath });
+			}
+		}
+
+		const latestBackupPath = candidates[0];
+		if (!latestBackupPath) {
+			return;
+		}
+		const latestStagedPath = buildStagedPath(latestBackupPath, "latest");
+		await copyFileWithRetry(path, latestStagedPath);
+		if (existsSync(latestStagedPath)) {
+			stagedWrites.push({ targetPath: latestBackupPath, stagedPath: latestStagedPath });
+		}
+
+		for (const stagedWrite of stagedWrites) {
+			await renameFileWithRetry(stagedWrite.stagedPath, stagedWrite.targetPath);
+		}
+	} finally {
+		for (const stagedWrite of stagedWrites) {
+			if (!existsSync(stagedWrite.stagedPath)) {
+				continue;
+			}
+			try {
+				await fs.unlink(stagedWrite.stagedPath);
+			} catch {
+				// Best effort cleanup for staged rotation artifacts.
+			}
+		}
+	}
+}
+
+function isRotatingBackupTempArtifact(storagePath: string, candidatePath: string): boolean {
+	const backupPrefix = `${storagePath}${ACCOUNTS_BACKUP_SUFFIX}`;
+	if (!candidatePath.startsWith(backupPrefix) || !candidatePath.endsWith(".tmp")) {
+		return false;
+	}
+
+	const suffix = candidatePath.slice(backupPrefix.length);
+	const rotateSeparatorIndex = suffix.indexOf(".rotate.");
+	if (rotateSeparatorIndex === -1) {
+		return false;
+	}
+
+	const backupIndexSuffix = suffix.slice(0, rotateSeparatorIndex);
+	if (backupIndexSuffix.length > 0 && !/^\.\d+$/.test(backupIndexSuffix)) {
+		return false;
+	}
+
+	return true;
+}
+
+async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> {
+	const directoryPath = dirname(path);
+	try {
+		const directoryEntries = await fs.readdir(directoryPath, { withFileTypes: true });
+		const staleArtifacts = directoryEntries
+			.filter((entry) => entry.isFile())
+			.map((entry) => join(directoryPath, entry.name))
+			.filter((entryPath) => isRotatingBackupTempArtifact(path, entryPath));
+
+		for (const staleArtifactPath of staleArtifacts) {
+			try {
+				await fs.unlink(staleArtifactPath);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.warn("Failed to remove stale rotating backup artifact", {
+						path: staleArtifactPath,
+						error: String(error),
+					});
+				}
+			}
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to scan for stale rotating backup artifacts", {
+				path,
+				error: String(error),
+			});
+		}
+	}
 }
 
 function computeSha256(value: string): string {
@@ -675,6 +842,7 @@ async function loadAccountsInternal(
   persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
 ): Promise<AccountStorageV3 | null> {
 	const path = getStoragePath();
+	await cleanupStaleRotatingBackupArtifacts(path);
 	const migratedLegacyStorage = persistMigration
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;
@@ -718,36 +886,38 @@ async function loadAccountsInternal(
 	}
 
 	if (storageBackupEnabled) {
-		const backupPath = getAccountsBackupPath(path);
-		try {
-			const backup = await loadAccountsFromPath(backupPath);
-			if (backup.schemaErrors.length > 0) {
-				log.warn("Backup account storage schema validation warnings", {
-					path: backupPath,
-					errors: backup.schemaErrors.slice(0, 5),
-				});
-			}
-			if (backup.normalized) {
-				log.warn("Recovered account storage from backup file", { path, backupPath });
-				if (persistMigration) {
-					try {
-						await persistMigration(backup.normalized);
-					} catch (persistError) {
-						log.warn("Failed to persist recovered backup storage", {
-							path,
-							error: String(persistError),
-						});
-					}
+		const backupCandidates = getAccountsBackupRecoveryCandidates(path);
+		for (const backupPath of backupCandidates) {
+			try {
+				const backup = await loadAccountsFromPath(backupPath);
+				if (backup.schemaErrors.length > 0) {
+					log.warn("Backup account storage schema validation warnings", {
+						path: backupPath,
+						errors: backup.schemaErrors.slice(0, 5),
+					});
 				}
-				return backup.normalized;
-			}
-		} catch (backupError) {
-			const backupCode = (backupError as NodeJS.ErrnoException).code;
-			if (backupCode !== "ENOENT") {
-				log.warn("Failed to load backup account storage", {
-					path: backupPath,
-					error: String(backupError),
-				});
+				if (backup.normalized) {
+					log.warn("Recovered account storage from backup file", { path, backupPath });
+					if (persistMigration) {
+						try {
+							await persistMigration(backup.normalized);
+						} catch (persistError) {
+							log.warn("Failed to persist recovered backup storage", {
+								path,
+								error: String(persistError),
+							});
+						}
+					}
+					return backup.normalized;
+				}
+			} catch (backupError) {
+				const backupCode = (backupError as NodeJS.ErrnoException).code;
+				if (backupCode !== "ENOENT") {
+					log.warn("Failed to load backup account storage", {
+						path: backupPath,
+						error: String(backupError),
+					});
+				}
 			}
 		}
 	}
@@ -770,29 +940,12 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
     await ensureGitignore(path);
 
 	if (storageBackupEnabled && existsSync(path)) {
-		const backupPath = getAccountsBackupPath(path);
 		try {
-			for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
-				try {
-					await fs.copyFile(path, backupPath);
-					break;
-				} catch (backupError) {
-					const code = (backupError as NodeJS.ErrnoException).code;
-					const canRetry = (code === "EPERM" || code === "EBUSY") &&
-						attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
-					if (canRetry) {
-						await new Promise((resolve) =>
-							setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt)
-						);
-						continue;
-					}
-					throw backupError;
-				}
-			}
+			await createRotatingAccountsBackup(path);
 		} catch (backupError) {
 			log.warn("Failed to create account storage backup", {
 				path,
-				backupPath,
+				backupPath: getAccountsBackupPath(path),
 				error: String(backupError),
 			});
 		}
@@ -902,7 +1055,7 @@ export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
     const path = getStoragePath();
     const walPath = getAccountsWalPath(path);
-    const backupPath = getAccountsBackupPath(path);
+	const backupPaths = getAccountsBackupRecoveryCandidates(path);
     const clearPath = async (targetPath: string): Promise<void> => {
       try {
         await fs.unlink(targetPath);
@@ -918,7 +1071,7 @@ export async function clearAccounts(): Promise<void> {
     };
 
     try {
-      await Promise.all([clearPath(path), clearPath(walPath), clearPath(backupPath)]);
+      await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.
     }

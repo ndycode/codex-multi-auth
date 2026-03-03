@@ -1,6 +1,36 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { existsSync } from "node:fs";
+
+function firstNonEmpty(values: Array<string | undefined>): string | null {
+	for (const value of values) {
+		const trimmed = (value ?? "").trim();
+		if (trimmed.length > 0) {
+			return trimmed;
+		}
+	}
+	return null;
+}
+
+function getResolvedUserHomeDir(): string {
+	if (process.platform === "win32") {
+		const homeDrive = (process.env.HOMEDRIVE ?? "").trim();
+		const homePath = (process.env.HOMEPATH ?? "").trim();
+		const drivePathHome =
+			homeDrive.length > 0 && homePath.length > 0
+				? win32.resolve(`${homeDrive}\\`, homePath)
+				: undefined;
+		return (
+			firstNonEmpty([
+				process.env.USERPROFILE,
+				process.env.HOME,
+				drivePathHome,
+				homedir(),
+			]) ?? homedir()
+		);
+	}
+	return firstNonEmpty([process.env.HOME, homedir()]) ?? homedir();
+}
 
 /**
  * Resolve the Codex home directory path used by the CLI, honoring an environment override or a sensible default.
@@ -12,7 +42,7 @@ import { existsSync } from "node:fs";
 
 export function getCodexHomeDir(): string {
 	const fromEnv = (process.env.CODEX_HOME ?? "").trim();
-	return fromEnv.length > 0 ? fromEnv : join(homedir(), ".codex");
+	return fromEnv.length > 0 ? fromEnv : join(getResolvedUserHomeDir(), ".codex");
 }
 
 /**
@@ -93,10 +123,11 @@ function hasAccountsStorage(dir: string): boolean {
  * @returns An array of unique, trimmed directory paths to probe for Codex home data, in prioritized order.
  */
 function getFallbackCodexHomeDirs(): string[] {
+	const userHome = getResolvedUserHomeDir();
 	return deduplicatePaths([
 		getCodexHomeDir(),
-		join(homedir(), "DevTools", "config", "codex"),
-		join(homedir(), ".codex"),
+		join(userHome, "DevTools", "config", "codex"),
+		join(userHome, ".codex"),
 	]);
 }
 
@@ -189,6 +220,6 @@ export function getCodexLogDir(): string {
  * @returns The filesystem path for the legacy directory (e.g. `/home/alice/.codex`).
  */
 export function getLegacyCodexDir(): string {
-	return join(homedir(), ".codex");
+	return join(getResolvedUserHomeDir(), ".codex");
 }
 
