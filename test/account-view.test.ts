@@ -3,6 +3,7 @@ import {
 	resolveActiveIndex,
 	getRateLimitResetTimeForFamily,
 	formatRateLimitEntry,
+	formatRateLimitStatusByFamily,
 } from "../lib/accounts/account-view.js";
 
 describe("account-view helpers", () => {
@@ -89,5 +90,21 @@ describe("account-view helpers", () => {
 				now,
 			),
 		).toBeNull();
+	});
+
+	it("formats model-family status labels with ok and remaining times", () => {
+		const now = 1_000_000;
+		expect(
+			formatRateLimitStatusByFamily(
+				{
+					rateLimitResetTimes: {
+						codex: now + 30_000,
+						"gpt-5.1": now + 70_000,
+					},
+				},
+				now,
+				["codex", "gpt-5.1", "codex-max"],
+			),
+		).toEqual(["codex=30s", "gpt-5.1=1m 10s", "codex-max=ok"]);
 	});
 });

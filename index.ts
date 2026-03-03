@@ -119,8 +119,8 @@ import {
 } from "./lib/accounts.js";
 import {
 	resolveActiveIndex,
-	getRateLimitResetTimeForFamily,
 	formatRateLimitEntry,
+	formatRateLimitStatusByFamily,
 } from "./lib/accounts/account-view.js";
 import {
 	setActiveIndexForAllFamilies,
@@ -3598,11 +3598,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					lines.push("");
 					lines.push(...formatUiSection(ui, "Rate limits by model family (per account)"));
 					storage.accounts.forEach((account, index) => {
-						const statuses = MODEL_FAMILIES.map((family) => {
-							const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-							if (typeof resetAt !== "number") return `${family}=ok`;
-							return `${family}=${formatWaitTime(resetAt - now)}`;
-						});
+						const statuses = formatRateLimitStatusByFamily(account, now);
 						lines.push(formatUiItem(ui, `Account ${index + 1}: ${statuses.join(" | ")}`));
 					});
 
@@ -3651,11 +3647,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										lines.push("");
 										lines.push("Rate limits by model family (per account):");
 										storage.accounts.forEach((account, index) => {
-												const statuses = MODEL_FAMILIES.map((family) => {
-														const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-														if (typeof resetAt !== "number") return `${family}=ok`;
-														return `${family}=${formatWaitTime(resetAt - now)}`;
-												});
+												const statuses = formatRateLimitStatusByFamily(account, now);
 												lines.push(`  Account ${index + 1}: ${statuses.join(" | ")}`);
 										});
 

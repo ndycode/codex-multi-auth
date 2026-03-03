@@ -1,4 +1,4 @@
-import type { ModelFamily } from "../prompts/codex.js";
+import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { formatWaitTime } from "./rate-limits.js";
 
 export interface ActiveAccountStorageView {
@@ -54,4 +54,16 @@ export function formatRateLimitEntry(
 	const remaining = resetAt - now;
 	if (remaining <= 0) return null;
 	return `resets in ${formatWaitTime(remaining)}`;
+}
+
+export function formatRateLimitStatusByFamily(
+	account: AccountRateLimitView,
+	now: number,
+	families: readonly ModelFamily[] = MODEL_FAMILIES,
+): string[] {
+	return families.map((family) => {
+		const resetAt = getRateLimitResetTimeForFamily(account, now, family);
+		if (typeof resetAt !== "number") return `${family}=ok`;
+		return `${family}=${formatWaitTime(resetAt - now)}`;
+	});
 }
