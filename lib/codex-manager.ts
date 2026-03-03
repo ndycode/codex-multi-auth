@@ -23,6 +23,7 @@ import {
 	selectBestAccountCandidate,
 } from "./accounts.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
+import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
 import {
 	loadDashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
@@ -1251,7 +1252,14 @@ async function runOAuthFlow(forceNewLogin: boolean): Promise<TokenResult> {
 			message: UI_COPY.oauth.cancelled,
 		};
 	}
-	return exchangeAuthorizationCode(code, pkce.verifier, REDIRECT_URI);
+	const authPluginConfig = loadPluginConfig();
+	const oauthFetchTimeoutMs = getFetchTimeoutMs(authPluginConfig);
+	return exchangeAuthorizationCode(
+		code,
+		pkce.verifier,
+		REDIRECT_URI,
+		{ timeoutMs: oauthFetchTimeoutMs },
+	);
 }
 
 async function persistAccountPool(

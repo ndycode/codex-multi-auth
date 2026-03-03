@@ -5,7 +5,7 @@ vi.mock('../lib/logger.js', () => ({
 }));
 
 import { logError } from '../lib/logger.js';
-import { exchangeAuthorizationCode } from '../lib/auth/auth.js';
+import { exchangeAuthorizationCode, REDIRECT_URI } from '../lib/auth/auth.js';
 
 describe('OAuth auth logging', () => {
 	afterEach(() => {
@@ -61,6 +61,47 @@ describe('OAuth auth logging', () => {
 			expect(loggedData).toEqual({ responseType: 'object', keyCount: 2 });
 		} finally {
 			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('logs timeout metadata when token exchange aborts', async () => {
+		const originalFetch = globalThis.fetch;
+		vi.useFakeTimers();
+		globalThis.fetch = vi.fn((_url, init) =>
+			new Promise<Response>((_resolve, reject) => {
+				const signal = init?.signal as AbortSignal | undefined;
+				if (signal?.aborted) {
+					reject(signal.reason);
+					return;
+				}
+				signal?.addEventListener(
+					'abort',
+					() => {
+						reject(signal.reason);
+					},
+					{ once: true },
+				);
+			}),
+		) as never;
+
+		try {
+			const resultPromise = exchangeAuthorizationCode(
+				'auth-code',
+				'verifier-123',
+				REDIRECT_URI,
+				{ timeoutMs: 1000 },
+			);
+			await vi.advanceTimersByTimeAsync(1000);
+			const result = await resultPromise;
+			expect(result.type).toBe('failed');
+
+			expect(vi.mocked(logError)).toHaveBeenCalledWith(
+				'code->token aborted',
+				{ message: 'OAuth token exchange timed out after 1000ms' },
+			);
+		} finally {
+			globalThis.fetch = originalFetch;
+			vi.useRealTimers();
 		}
 	});
 });

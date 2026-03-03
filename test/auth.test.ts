@@ -347,6 +347,64 @@ describe('Auth Module', () => {
 			}
 		});
 
+		it('returns failed for network errors during code exchange', async () => {
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn(async () => {
+				throw new Error('Network failed');
+			}) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode('code', 'verifier');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('network_error');
+					expect(result.message).toBe('Network failed');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it('returns failed when code exchange times out', async () => {
+			const originalFetch = globalThis.fetch;
+			vi.useFakeTimers();
+			globalThis.fetch = vi.fn((_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					if (signal?.aborted) {
+						reject(signal.reason);
+						return;
+					}
+					signal?.addEventListener(
+						'abort',
+						() => {
+							reject(signal.reason);
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const resultPromise = exchangeAuthorizationCode(
+					'code',
+					'verifier',
+					REDIRECT_URI,
+					{ timeoutMs: 1000 },
+				);
+				await vi.advanceTimersByTimeAsync(1000);
+				const result = await resultPromise;
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toContain('timed out');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+			}
+		});
+
 		it('returns failed with undefined message when text read fails', async () => {
 			const originalFetch = globalThis.fetch;
 			const mockResponse = {

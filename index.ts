@@ -460,10 +460,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         message: "OAuth state mismatch. Restart login and try again.",
                                 };
                         }
+                        const authPluginConfig = loadPluginConfig();
+                        const oauthFetchTimeoutMs = getFetchTimeoutMs(authPluginConfig);
                         const tokens = await exchangeAuthorizationCode(
                                 parsed.code,
                                 pkce.verifier,
                                 REDIRECT_URI,
+                                { timeoutMs: oauthFetchTimeoutMs },
                         );
                         if (tokens?.type === "success") {
                                 const resolved = resolveAccountSelection(tokens);
@@ -509,10 +512,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
 		}
 
+                const authPluginConfig = loadPluginConfig();
+                const oauthFetchTimeoutMs = getFetchTimeoutMs(authPluginConfig);
                 return await exchangeAuthorizationCode(
                         result.code,
                         pkce.verifier,
                         REDIRECT_URI,
+                        { timeoutMs: oauthFetchTimeoutMs },
                 );
         };
 
