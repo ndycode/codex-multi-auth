@@ -4,9 +4,9 @@ export interface RetryAttemptInfo {
 	attempt: number;
 	maxAttempts: number;
 	delayMs: number;
-	reason: "error" | "status";
+	reason: "error" | "status" | "timeout";
 	status?: number;
-	error?: string;
+	errorType?: string;
 }
 
 export interface ResilientFetchOptions {
@@ -37,7 +37,25 @@ function createAbortError(message: string): Error {
 }
 
 function isCallerAbort(error: unknown, callerSignal: AbortSignal | undefined): boolean {
-	return callerSignal?.aborted === true && isAbortError(error);
+	if (!callerSignal?.aborted) return false;
+	if (isAbortError(error)) return true;
+	if (callerSignal.reason !== undefined) {
+		return error === callerSignal.reason;
+	}
+	return false;
+}
+
+function getRetryErrorType(error: unknown): string {
+	if (isAbortError(error)) return "AbortError";
+	if (error instanceof Error && error.name) return error.name;
+	return typeof error;
+}
+
+function getAbortReason(signal: AbortSignal): Error {
+	if (signal.reason instanceof Error) {
+		return signal.reason;
+	}
+	return createAbortError("Request aborted by caller");
 }
 
 function computeDelayMs(
@@ -70,6 +88,33 @@ function bindCallerAbortSignal(
 	const onAbort = () => controller.abort(callerSignal.reason);
 	callerSignal.addEventListener("abort", onAbort, { once: true });
 	return () => callerSignal.removeEventListener("abort", onAbort);
+}
+
+async function sleepWithAbort(delayMs: number, signal?: AbortSignal): Promise<void> {
+	const normalizedDelayMs = Math.max(0, Math.floor(delayMs));
+	if (normalizedDelayMs === 0) return;
+	if (!signal) {
+		await sleep(normalizedDelayMs);
+		return;
+	}
+	if (signal.aborted) {
+		throw getAbortReason(signal);
+	}
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, normalizedDelayMs);
+		const onAbort = () => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", onAbort);
+			reject(getAbortReason(signal));
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		if (signal.aborted) {
+			onAbort();
+		}
+	});
 }
 
 /**
@@ -109,9 +154,7 @@ export async function fetchWithTimeoutAndRetry(
 					delayMs,
 				});
 				await response.body?.cancel().catch(() => {});
-				if (delayMs > 0) {
-					await sleep(delayMs);
-				}
+				await sleepWithAbort(delayMs, options.signal);
 				continue;
 			}
 			return {
@@ -128,16 +171,17 @@ export async function fetchWithTimeoutAndRetry(
 				throw error;
 			}
 			const delayMs = computeDelayMs(attempt, baseDelayMs, maxDelayMs, jitterMs);
+			const retryReason: RetryAttemptInfo["reason"] = isAbortError(error)
+				? "timeout"
+				: "error";
 			options.onRetry?.({
 				attempt,
 				maxAttempts,
-				reason: "error",
-				error: error instanceof Error ? error.message : String(error),
+				reason: retryReason,
+				errorType: getRetryErrorType(error),
 				delayMs,
 			});
-			if (delayMs > 0) {
-				await sleep(delayMs);
-			}
+			await sleepWithAbort(delayMs, options.signal);
 		} finally {
 			clearTimeout(timeout);
 			removeAbortListener?.();

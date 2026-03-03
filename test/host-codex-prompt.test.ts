@@ -324,6 +324,47 @@ describe("host-codex-prompt", () => {
       );
     });
 
+    it("deduplicates concurrent stale refresh while retrying a 429 source response", async () => {
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
+      vi.spyOn(Math, "random").mockReturnValue(0);
+
+      const staleMeta = JSON.stringify({
+        etag: '"old-etag"',
+        lastChecked: Date.now() - 20 * 60 * 1000,
+      });
+      vi.mocked(readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).includes("host-codex-prompt-meta.json")) {
+          return staleMeta;
+        }
+        return "Old cached content";
+      });
+
+      mockFetch
+        .mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+        .mockResolvedValueOnce(
+          new Response("Prompt after retry", {
+            status: 200,
+            headers: { etag: '"retry-etag"' },
+          }),
+        );
+
+      const [first, second] = await Promise.all([getHostCodexPrompt(), getHostCodexPrompt()]);
+      expect(first).toBe("Old cached content");
+      expect(second).toBe("Old cached content");
+
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() =>
+        expect(writeFile).toHaveBeenCalledWith(
+          expect.stringContaining("host-codex-prompt.txt"),
+          "Prompt after retry",
+          "utf-8",
+        ),
+      );
+      await vi.waitFor(async () => {
+        await expect(getHostCodexPrompt()).resolves.toBe("Prompt after retry");
+      });
+    });
+
     it("falls back to cache on network error", async () => {
       const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
       

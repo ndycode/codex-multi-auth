@@ -106,6 +106,24 @@ describe("Graceful shutdown", () => {
 		}
 	});
 
+	it("does not leave a pending shutdown timer after fast cleanup", async () => {
+		const originalTimeout = process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+		process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = "5000";
+		vi.useFakeTimers();
+		try {
+			registerCleanup(() => {});
+			await runCleanup();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			if (originalTimeout === undefined) {
+				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+			} else {
+				process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = originalTimeout;
+			}
+			vi.useRealTimers();
+		}
+	});
+
 	describe("process signal integration", () => {
 		it("SIGINT handler runs cleanup and exits with code 0", async () => {
 			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();

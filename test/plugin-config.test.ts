@@ -661,6 +661,21 @@ describe('Plugin Configuration', () => {
 			expect(config.fetchTimeoutMs).toBe(60_000);
 			expect(config.preemptiveQuotaRemainingPercent5h).toBe(5);
 		});
+
+		it('sanitizes out-of-range numeric config fields to safe defaults', () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockReturnValue(
+				JSON.stringify({
+					fetchTimeoutMs: 10,
+					preemptiveQuotaRemainingPercent5h: 500,
+				}),
+			);
+
+			const config = loadPluginConfig();
+
+			expect(config.fetchTimeoutMs).toBe(60_000);
+			expect(config.preemptiveQuotaRemainingPercent5h).toBe(5);
+		});
 	});
 
 	describe('getCodexMode', () => {

@@ -38,30 +38,6 @@ const CONFIG_READ_MAX_ATTEMPTS = 4;
 const CONFIG_READ_RETRY_BASE_DELAY_MS = 10;
 const pluginConfigShape = PluginConfigSchema.shape;
 type PluginConfigShapeKey = keyof typeof pluginConfigShape;
-const NUMERIC_PLUGIN_CONFIG_KEYS: ReadonlySet<string> = new Set([
-	"fastSessionMaxInputItems",
-	"retryAllAccountsMaxWaitMs",
-	"retryAllAccountsMaxRetries",
-	"tokenRefreshSkewMs",
-	"rateLimitToastDebounceMs",
-	"toastDurationMs",
-	"parallelProbingMaxConcurrency",
-	"emptyResponseMaxRetries",
-	"emptyResponseRetryDelayMs",
-	"fetchTimeoutMs",
-	"streamStallTimeoutMs",
-	"liveAccountSyncDebounceMs",
-	"liveAccountSyncPollMs",
-	"sessionAffinityTtlMs",
-	"sessionAffinityMaxEntries",
-	"proactiveRefreshIntervalMs",
-	"proactiveRefreshBufferMs",
-	"networkErrorCooldownMs",
-	"serverErrorCooldownMs",
-	"preemptiveQuotaRemainingPercent5h",
-	"preemptiveQuotaRemainingPercent7d",
-	"preemptiveQuotaMaxDeferralMs",
-]);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -309,14 +285,6 @@ function sanitizePluginConfigRecord(userConfig: unknown): Partial<PluginConfig> 
 		const parsed = pluginConfigShape[key].safeParse(value);
 		if (parsed.success && parsed.data !== undefined) {
 			sanitized[key] = parsed.data;
-			continue;
-		}
-		if (
-			NUMERIC_PLUGIN_CONFIG_KEYS.has(key) &&
-			typeof value === "number" &&
-			Number.isFinite(value)
-		) {
-			sanitized[key] = value;
 		}
 	}
 	return sanitized as Partial<PluginConfig>;

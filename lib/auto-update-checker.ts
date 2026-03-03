@@ -177,8 +177,9 @@ async function fetchLatestVersion(): Promise<string | null> {
         timeoutMs: UPDATE_FETCH_TIMEOUT_MS,
         retries: UPDATE_FETCH_RETRIES,
         retryOnStatuses: UPDATE_FETCH_RETRYABLE_STATUSES,
-        baseDelayMs: 0,
-        jitterMs: 0,
+        baseDelayMs: 100,
+        maxDelayMs: 1_000,
+        jitterMs: 100,
         onRetry: (retry) => {
           log.debug("Retrying npm update check", retry);
         },

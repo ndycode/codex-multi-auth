@@ -231,7 +231,7 @@ export async function exchangeAuthorizationCode(
 		};
 	} catch (error) {
 		const err = error as Error;
-		if (isAbortError(err)) {
+		if (abortContext.signal.aborted || isAbortError(err)) {
 			logError("code->token aborted", { message: err?.message ?? "Request aborted" });
 			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
 		}

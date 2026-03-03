@@ -331,7 +331,9 @@ describe("auto-update-checker", () => {
 		it("handles fetch failure gracefully", async () => {
 			vi.mocked(globalThis.fetch).mockRejectedValue(new Error("Network error"));
 
-			const result = await checkForUpdates(true);
+			const pending = checkForUpdates(true);
+			await vi.runAllTimersAsync();
+			const result = await pending;
 
 			expect(result.hasUpdate).toBe(false);
 			expect(result.latestVersion).toBe(null);
@@ -343,10 +345,32 @@ describe("auto-update-checker", () => {
 				status: 500,
 			} as Response);
 
-			const result = await checkForUpdates(true);
+			const pending = checkForUpdates(true);
+			await vi.runAllTimersAsync();
+			const result = await pending;
 
 			expect(result.hasUpdate).toBe(false);
 			expect(result.latestVersion).toBe(null);
+		});
+
+		it("retries retryable HTTP statuses and succeeds on a later attempt", async () => {
+			vi.mocked(globalThis.fetch)
+				.mockResolvedValueOnce(new Response("busy-1", { status: 500 }))
+				.mockResolvedValueOnce(new Response("busy-2", { status: 500 }))
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ version: "5.0.1" }), {
+						status: 200,
+						headers: { "content-type": "application/json" },
+					}),
+				);
+
+			const pending = checkForUpdates(true);
+			await vi.runAllTimersAsync();
+			const result = await pending;
+
+			expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+			expect(result.latestVersion).toBe("5.0.1");
+			expect(result.hasUpdate).toBe(true);
 		});
 
 		it("saves cache after successful fetch", async () => {
@@ -457,7 +481,9 @@ describe("auto-update-checker", () => {
 			vi.mocked(globalThis.fetch).mockRejectedValue(new Error("Network error"));
 			const showToast = vi.fn().mockResolvedValue(undefined);
 
-			await expect(checkAndNotify(showToast)).resolves.toBeUndefined();
+			const pending = checkAndNotify(showToast);
+			await vi.runAllTimersAsync();
+			await expect(pending).resolves.toBeUndefined();
 			expect(showToast).not.toHaveBeenCalled();
 		});
 

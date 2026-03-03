@@ -540,6 +540,12 @@ describe('Auth Module', () => {
 				const [firstResult, secondResult] = await Promise.all([first, second]);
 				expect(firstResult.type).toBe('failed');
 				expect(secondResult.type).toBe('failed');
+				if (firstResult.type === 'failed') {
+					expect(firstResult.reason).toBe('unknown');
+				}
+				if (secondResult.type === 'failed') {
+					expect(secondResult.reason).toBe('unknown');
+				}
 				expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
 				expect(clearTimeoutSpy).toHaveBeenCalledTimes(2);
 				expect(removeListenerSpy).toHaveBeenCalledTimes(2);
