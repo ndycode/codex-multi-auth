@@ -1,5 +1,30 @@
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { AuditAction, configureAudit, getAuditConfig } from "../lib/audit.js";
 import { authorizeAction, getAuthorizationRole } from "../lib/authorization.js";
+
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
 
 describe("authorization", () => {
 	it("defaults to admin role", () => {
@@ -34,17 +59,44 @@ describe("authorization", () => {
 		}
 	});
 
-	it("allows all actions when break-glass is enabled", () => {
+	it("allows all actions when break-glass is enabled and audits the bypass", async () => {
 		const previousRole = process.env.CODEX_AUTH_ROLE;
 		const previousBreakGlass = process.env.CODEX_AUTH_BREAK_GLASS;
+		const previousAuditConfig = getAuditConfig();
+		const auditDir = await fs.mkdtemp(join(tmpdir(), "codex-auth-audit-"));
 		try {
+			configureAudit({
+				enabled: true,
+				logDir: auditDir,
+				maxFileSizeBytes: 1024 * 1024,
+				maxFiles: 2,
+			});
 			process.env.CODEX_AUTH_ROLE = "viewer";
 			process.env.CODEX_AUTH_BREAK_GLASS = "1";
-			expect(authorizeAction("secrets:rotate")).toEqual({
+			const result = authorizeAction("secrets:rotate");
+			expect(result).toEqual({
 				allowed: true,
 				role: "viewer",
 			});
+
+			const logPath = join(auditDir, "audit.log");
+			const content = await fs.readFile(logPath, "utf8");
+			const entries = content
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as {
+					action?: string;
+					resource?: string;
+					metadata?: { role?: string; breakGlass?: boolean };
+				});
+			const breakGlassEntry = entries.find((entry) => entry.action === AuditAction.AUTH_BREAK_GLASS);
+			expect(breakGlassEntry).toBeDefined();
+			expect(breakGlassEntry?.resource).toBe("secrets:rotate");
+			expect(breakGlassEntry?.metadata?.role).toBe("viewer");
+			expect(breakGlassEntry?.metadata?.breakGlass).toBe(true);
 		} finally {
+			configureAudit(previousAuditConfig);
+			await removeWithRetry(auditDir, { recursive: true, force: true });
 			if (previousRole === undefined) {
 				delete process.env.CODEX_AUTH_ROLE;
 			} else {

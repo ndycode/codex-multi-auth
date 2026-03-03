@@ -1,3 +1,5 @@
+import { auditLog, AuditAction, AuditOutcome } from "./audit.js";
+
 export type AuthRole = "admin" | "operator" | "viewer";
 
 export type AuthAction =
@@ -26,7 +28,18 @@ export function getAuthorizationRole(): AuthRole {
 
 export function authorizeAction(action: AuthAction): { allowed: boolean; role: AuthRole; reason?: string } {
 	if (process.env.CODEX_AUTH_BREAK_GLASS === "1") {
-		return { allowed: true, role: getRoleFromEnv() };
+		const role = getRoleFromEnv();
+		auditLog(
+			AuditAction.AUTH_BREAK_GLASS,
+			"system",
+			action,
+			AuditOutcome.SUCCESS,
+			{
+				role,
+				breakGlass: true,
+			},
+		);
+		return { allowed: true, role };
 	}
 
 	const role = getRoleFromEnv();
