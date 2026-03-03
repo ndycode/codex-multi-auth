@@ -24,8 +24,9 @@ Canonical documentation map for `codex-multi-auth`.
 | [troubleshooting.md](troubleshooting.md) | Deterministic recovery playbooks |
 | [privacy.md](privacy.md) | Data handling and local storage behavior |
 | [upgrade.md](upgrade.md) | Migration from legacy package/path history |
-| [releases/v0.1.1.md](releases/v0.1.1.md) | Stable release notes |
-| [releases/v0.1.0.md](releases/v0.1.0.md) | Previous stable release notes |
+| [releases/v0.1.2.md](releases/v0.1.2.md) | Stable release notes |
+| [releases/v0.1.1.md](releases/v0.1.1.md) | Previous stable release notes |
+| [releases/v0.1.0.md](releases/v0.1.0.md) | Earlier stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease notes |
 
 ---
@@ -37,7 +38,7 @@ Canonical documentation map for `codex-multi-auth`.
 | [reference/commands.md](reference/commands.md) | Commands, flags, and hotkeys |
 | [reference/settings.md](reference/settings.md) | Dashboard/backend settings and defaults |
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
-| [releases/v0.1.0.md](releases/v0.1.0.md) | Current stable release notes |
+| [releases/v0.1.2.md](releases/v0.1.2.md) | Current stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
 | [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |
 

@@ -5,6 +5,28 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's canonical public release line is currently `0.x`.
 
+## [0.1.2] - 2026-03-03
+
+### Fixed
+
+- Added staged rotating backup recovery and startup cleanup for stale `*.bak(.N).rotate.*.tmp` artifacts.
+- Added retry/backoff around staged backup rename commits to tolerate transient Windows locks.
+- Removed invalid filesystem retry codes and constrained backup-copy retries to real Node filesystem errors.
+- Hardened Windows home resolution order and `HOMEPATH` normalization to avoid drive-relative paths.
+- Fixed account storage identity handling across worktree branch changes and covered realpath fallback branches.
+
+### Changed
+
+- Backup rotation now stages candidate snapshots before commit, preserving historical chain integrity if latest-copy fails.
+- Recovery path now prioritizes WAL then backup candidates with deterministic `.bak` -> `.bak.1` -> `.bak.2` cascade.
+- Storage recovery paths and rotation tests expanded for parallel ordering and failure-mode determinism.
+
+### Added
+
+- Regression coverage for `.bak.2` fallback when newer backups are unreadable.
+- Regression coverage for transient `EPERM`/`EBUSY` retry branches in backup copy and staged rename flows.
+- Startup cleanup path for orphaned rotating backup staging artifacts.
+
 ## [0.1.1] - 2026-03-01
 
 ### Fixed
@@ -62,3 +84,4 @@ Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
 
 [0.1.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.0
 [0.1.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.1
+[0.1.2]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.2
