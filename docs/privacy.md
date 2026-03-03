@@ -57,6 +57,7 @@ Raw body logs may contain sensitive payload text. Treat logs as sensitive data a
 
 - Account refresh/access tokens can be encrypted at rest when `CODEX_AUTH_ENCRYPTION_KEY` is set.
 - Key rotation supports staged migration with `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY`.
+- Both key variables should be 32-byte high-entropy key material (not passwords).
 - Rotation command:
 
 ```bash

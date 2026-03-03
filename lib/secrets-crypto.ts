@@ -1,53 +1,123 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import {
+	createCipheriv,
+	createDecipheriv,
+	createHash,
+	randomBytes,
+	scryptSync,
+} from "node:crypto";
 
-const ENCRYPTED_PREFIX = "enc:v1:";
+const ENCRYPTED_PREFIX = "enc:";
+const LEGACY_ENCRYPTED_VERSION = "v1";
+const ENCRYPTED_VERSION = "v2";
+const AES_KEY_LENGTH = 32;
+const AES_GCM_IV_LENGTH = 12;
+const AES_GCM_TAG_LENGTH = 16;
+const SCRYPT_SALT_LENGTH = 16;
 
 export interface SecretEncryptionKeys {
 	primary: string | null;
 	previous: string | null;
 }
 
-function deriveAesKey(input: string): Buffer {
+function deriveLegacyAesKey(input: string): Buffer {
 	return createHash("sha256").update(input, "utf8").digest();
 }
 
-function parseEnvelope(value: string): {
+function deriveAesKey(input: string, salt: Buffer): Buffer {
+	return scryptSync(input, salt, AES_KEY_LENGTH);
+}
+
+type SecretEnvelope = {
+	version: "v1";
 	iv: Buffer;
 	tag: Buffer;
 	ciphertext: Buffer;
-} | null {
-	if (!value.startsWith(ENCRYPTED_PREFIX)) return null;
-	const payload = value.slice(ENCRYPTED_PREFIX.length);
-	const [ivPart, tagPart, cipherPart] = payload.split(":", 3);
-	if (!ivPart || !tagPart || !cipherPart) return null;
+	salt: null;
+} | {
+	version: "v2";
+	iv: Buffer;
+	tag: Buffer;
+	ciphertext: Buffer;
+	salt: Buffer;
+};
+
+function decodeBase64Part(value: string): Buffer | null {
 	try {
-		return {
-			iv: Buffer.from(ivPart, "base64"),
-			tag: Buffer.from(tagPart, "base64"),
-			ciphertext: Buffer.from(cipherPart, "base64"),
-		};
+		const decoded = Buffer.from(value, "base64");
+		return decoded.length > 0 ? decoded : null;
 	} catch {
 		return null;
 	}
 }
 
+function parseEnvelope(value: string): SecretEnvelope | null {
+	if (!value.startsWith(ENCRYPTED_PREFIX)) return null;
+	const payload = value.slice(ENCRYPTED_PREFIX.length);
+	const versionSeparator = payload.indexOf(":");
+	if (versionSeparator <= 0 || versionSeparator === payload.length - 1) return null;
+	const versionPart = payload.slice(0, versionSeparator);
+	const remainder = payload.slice(versionSeparator + 1);
+
+	if (versionPart === LEGACY_ENCRYPTED_VERSION) {
+		const [ivPart, tagPart, cipherPart] = remainder.split(":", 3);
+		if (!ivPart || !tagPart || !cipherPart) return null;
+		const iv = decodeBase64Part(ivPart);
+		const tag = decodeBase64Part(tagPart);
+		const ciphertext = decodeBase64Part(cipherPart);
+		if (!iv || !tag || !ciphertext) return null;
+		if (iv.length !== AES_GCM_IV_LENGTH) return null;
+		if (tag.length !== AES_GCM_TAG_LENGTH) return null;
+		return {
+			version: "v1",
+			iv,
+			tag,
+			ciphertext,
+			salt: null,
+		};
+	}
+
+	if (versionPart === ENCRYPTED_VERSION) {
+		const [saltPart, ivPart, tagPart, cipherPart] = remainder.split(":", 4);
+		if (!saltPart || !ivPart || !tagPart || !cipherPart) return null;
+		const salt = decodeBase64Part(saltPart);
+		const iv = decodeBase64Part(ivPart);
+		const tag = decodeBase64Part(tagPart);
+		const ciphertext = decodeBase64Part(cipherPart);
+		if (!salt || !iv || !tag || !ciphertext) return null;
+		if (salt.length !== SCRYPT_SALT_LENGTH) return null;
+		if (iv.length !== AES_GCM_IV_LENGTH) return null;
+		if (tag.length !== AES_GCM_TAG_LENGTH) return null;
+		return {
+			version: "v2",
+			salt,
+			iv,
+			tag,
+			ciphertext,
+		};
+	}
+
+	return null;
+}
+
 export function isEncryptedSecret(value: string): boolean {
-	return value.startsWith(ENCRYPTED_PREFIX);
+	return value.startsWith(`${ENCRYPTED_PREFIX}${LEGACY_ENCRYPTED_VERSION}:`)
+		|| value.startsWith(`${ENCRYPTED_PREFIX}${ENCRYPTED_VERSION}:`);
 }
 
 export function encryptSecret(value: string, keyMaterial: string): string {
 	if (!value) return value;
 	if (isEncryptedSecret(value)) return value;
 
-	const key = deriveAesKey(keyMaterial);
-	const iv = randomBytes(12);
+	const salt = randomBytes(SCRYPT_SALT_LENGTH);
+	const key = deriveAesKey(keyMaterial, salt);
+	const iv = randomBytes(AES_GCM_IV_LENGTH);
 	const cipher = createCipheriv("aes-256-gcm", key, iv);
 	const encrypted = Buffer.concat([
 		cipher.update(Buffer.from(value, "utf8")),
 		cipher.final(),
 	]);
 	const tag = cipher.getAuthTag();
-	return `${ENCRYPTED_PREFIX}${iv.toString("base64")}:${tag.toString("base64")}:${encrypted.toString("base64")}`;
+	return `${ENCRYPTED_PREFIX}${ENCRYPTED_VERSION}:${salt.toString("base64")}:${iv.toString("base64")}:${tag.toString("base64")}:${encrypted.toString("base64")}`;
 }
 
 export function decryptSecret(
@@ -62,7 +132,9 @@ export function decryptSecret(
 	const tryDecrypt = (keyMaterial: string | null): string | null => {
 		if (!keyMaterial) return null;
 		try {
-			const key = deriveAesKey(keyMaterial);
+			const key = envelope.version === "v1"
+				? deriveLegacyAesKey(keyMaterial)
+				: deriveAesKey(keyMaterial, envelope.salt);
 			const decipher = createDecipheriv("aes-256-gcm", key, envelope.iv);
 			decipher.setAuthTag(envelope.tag);
 			const decrypted = Buffer.concat([

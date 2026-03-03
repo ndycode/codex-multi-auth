@@ -132,6 +132,9 @@ Common operator overrides:
 - `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY`
 - `CODEX_AUTH_ROLE`
 
+Encryption key variables must be high-entropy 32-byte key material (for example,
+from a secret manager). Do not use passwords.
+
 ---
 
 ## Advanced and Internal Overrides

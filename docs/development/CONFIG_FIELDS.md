@@ -195,8 +195,8 @@ Used only for host plugin mode through the host runtime config file.
 | `CODEX_TUI_GLYPHS` | TUI glyph mode |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
-| `CODEX_AUTH_ENCRYPTION_KEY` | Primary key for at-rest secret encryption |
-| `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY` | Previous key for staged secret rotation |
+| `CODEX_AUTH_ENCRYPTION_KEY` | Primary high-entropy 32-byte key for at-rest secret encryption |
+| `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY` | Previous high-entropy 32-byte key for staged secret rotation |
 | `CODEX_AUTH_ROLE` | Authorization role baseline (`admin`, `operator`, `viewer`) |
 | `CODEX_AUTH_BREAK_GLASS` | Emergency authorization bypass toggle |
 | `CODEX_AUTH_REDACT_JSON_OUTPUT` | Redact sensitive values in JSON command output |
