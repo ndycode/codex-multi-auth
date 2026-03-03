@@ -291,8 +291,13 @@ export async function refreshAccessToken(
 
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
-			logError(`Token refresh failed: ${response.status} ${text}`);
-			return { type: "failed", reason: "http_error", statusCode: response.status, message: text || undefined };
+			logError("Token refresh failed", { status: response.status, bodyLength: text.length });
+			return {
+				type: "failed",
+				reason: "http_error",
+				statusCode: response.status,
+				message: text ? "Token refresh failed" : undefined,
+			};
 		}
 
 		const rawJson = (await response.json()) as unknown;

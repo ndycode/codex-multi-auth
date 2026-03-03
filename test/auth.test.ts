@@ -651,6 +651,8 @@ describe('Auth Module', () => {
 				expect(result.type).toBe('failed');
 				if (result.type === 'failed') {
 					expect(result.reason).toBe('http_error');
+					expect(result.statusCode).toBe(400);
+					expect(result.message).toBe('Token refresh failed');
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
