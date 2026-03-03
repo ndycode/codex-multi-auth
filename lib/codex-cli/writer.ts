@@ -5,6 +5,7 @@ import {
 	clearCodexCliStateCache,
 	getCodexCliAccountsPath,
 	getCodexCliAuthPath,
+	getCodexCliConfigPath,
 	isCodexCliSyncEnabled,
 } from "./state.js";
 import {
@@ -140,11 +141,11 @@ function toIsoTime(ms: number | undefined): string {
 	return new Date().toISOString();
 }
 
-async function atomicWriteJson(path: string, payload: Record<string, unknown>): Promise<void> {
+async function atomicWriteText(path: string, content: string): Promise<void> {
 	const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 	await fs.mkdir(dirname(path), { recursive: true });
 	try {
-		await fs.writeFile(tempPath, JSON.stringify(payload, null, 2), {
+		await fs.writeFile(tempPath, content, {
 			encoding: "utf-8",
 			mode: 0o600,
 		});
@@ -174,6 +175,54 @@ async function atomicWriteJson(path: string, payload: Record<string, unknown>): 
 	}
 }
 
+async function atomicWriteJson(path: string, payload: Record<string, unknown>): Promise<void> {
+	return atomicWriteText(path, JSON.stringify(payload, null, 2));
+}
+
+function shouldEnforceCodexCliFileAuthStore(): boolean {
+	const override = (process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE ?? "1").trim();
+	return override !== "0";
+}
+
+function ensureTrailingNewline(value: string): string {
+	return value.endsWith("\n") ? value : `${value}\n`;
+}
+
+async function ensureCodexCliFileAuthStore(configPath: string): Promise<boolean> {
+	if (!shouldEnforceCodexCliFileAuthStore()) return false;
+
+	const desired = 'cli_auth_credentials_store = "file"';
+	const raw = existsSync(configPath) ? await fs.readFile(configPath, "utf-8") : "";
+	const lines = raw.length > 0 ? raw.split(/\r?\n/) : [];
+	const assignmentRegex = /^\s*cli_auth_credentials_store\s*=/;
+
+	let replaced = false;
+	const nextLines = lines.map((line) => {
+		if (!replaced && assignmentRegex.test(line)) {
+			replaced = true;
+			return desired;
+		}
+		return line;
+	});
+
+	if (!replaced) {
+		let insertAt = nextLines.findIndex((line) => /^\s*\[/.test(line));
+		if (insertAt < 0) insertAt = nextLines.length;
+		nextLines.splice(insertAt, 0, desired);
+		if (insertAt < nextLines.length - 1 && nextLines[insertAt + 1]?.trim().length !== 0) {
+			nextLines.splice(insertAt + 1, 0, "");
+		}
+	}
+
+	const nextRaw = ensureTrailingNewline(nextLines.join("\n"));
+	if (nextRaw === ensureTrailingNewline(raw)) {
+		return false;
+	}
+
+	await atomicWriteText(configPath, nextRaw);
+	return true;
+}
+
 async function writeCodexAuthState(
 	path: string,
 	selection: ActiveSelection,
@@ -196,12 +245,34 @@ async function writeCodexAuthState(
 	const syncVersion = Date.now();
 	const selectedAccessToken = readTrimmedString(selection.accessToken);
 	const selectedRefreshToken = readTrimmedString(selection.refreshToken);
-	const accessToken =
-		selectedAccessToken ??
-		(typeof existingTokens.access_token === "string" ? existingTokens.access_token : undefined);
-	const refreshToken =
-		selectedRefreshToken ??
-		(typeof existingTokens.refresh_token === "string" ? existingTokens.refresh_token : undefined);
+	const existingAccessToken =
+		typeof existingTokens.access_token === "string" ? existingTokens.access_token : undefined;
+	const existingRefreshToken =
+		typeof existingTokens.refresh_token === "string" ? existingTokens.refresh_token : undefined;
+	const hasSelectedAccess = typeof selectedAccessToken === "string" && selectedAccessToken.length > 0;
+	const hasSelectedRefresh = typeof selectedRefreshToken === "string" && selectedRefreshToken.length > 0;
+	const selectedTokenPair = hasSelectedAccess && hasSelectedRefresh;
+	let accessToken: string | undefined;
+	let refreshToken: string | undefined;
+
+	if (selectedTokenPair) {
+		accessToken = selectedAccessToken;
+		refreshToken = selectedRefreshToken;
+	} else if (!hasSelectedAccess && !hasSelectedRefresh) {
+		accessToken = existingAccessToken;
+		refreshToken = existingRefreshToken;
+	} else {
+		log.warn("Failed to persist Codex auth selection", {
+			operation: "write-active-selection",
+			outcome: "partial-token-payload",
+			path,
+			accountRef: makeAccountFingerprint({
+				accountId: selection.accountId,
+				email: selection.email,
+			}),
+		});
+		return false;
+	}
 
 	if (!accessToken || !refreshToken) {
 		log.warn("Failed to persist Codex auth selection", {
@@ -224,14 +295,16 @@ async function writeCodexAuthState(
 	}
 	nextTokens.access_token = accessToken;
 	nextTokens.refresh_token = refreshToken;
-	const resolvedIdToken =
-		readTrimmedString(selection.idToken) ??
-		(typeof existingTokens.id_token === "string" ? existingTokens.id_token : undefined);
-	if (resolvedIdToken) {
-		nextTokens.id_token = resolvedIdToken;
-	}
 	if (selection.accountId?.trim()) {
 		nextTokens.account_id = selection.accountId.trim();
+	}
+	const selectedIdToken = readTrimmedString(selection.idToken);
+	const existingIdToken = readTrimmedString(existingTokens.id_token);
+	const fallbackIdToken = selectedTokenPair ? accessToken : (existingIdToken ?? accessToken);
+	if (selectedIdToken) {
+		nextTokens.id_token = selectedIdToken;
+	} else if (fallbackIdToken) {
+		nextTokens.id_token = fallbackIdToken;
 	}
 	next.tokens = nextTokens;
 	next.last_refresh = toIsoTime(selection.expiresAt);
@@ -272,10 +345,16 @@ export async function setCodexCliActiveSelection(
 		incrementCodexCliMetric("writeAttempts");
 		const accountsPath = getCodexCliAccountsPath();
 		const authPath = getCodexCliAuthPath();
+		const configPath = getCodexCliConfigPath();
 		const hasAccountsPath = existsSync(accountsPath);
 		const hasAuthPath = existsSync(authPath);
+		const selectionHasTokens =
+			typeof selection.accessToken === "string" &&
+			selection.accessToken.trim().length > 0 &&
+			typeof selection.refreshToken === "string" &&
+			selection.refreshToken.trim().length > 0;
 
-		if (!hasAccountsPath && !hasAuthPath) {
+		if (!hasAccountsPath && !hasAuthPath && !selectionHasTokens) {
 			incrementCodexCliMetric("writeFailures");
 			return false;
 		}
@@ -284,6 +363,7 @@ export async function setCodexCliActiveSelection(
 			let resolvedSelection: ActiveSelection = { ...selection };
 			let wroteAccounts = false;
 			let wroteAuth = false;
+			let wroteConfig = false;
 
 			if (hasAccountsPath) {
 				const raw = await fs.readFile(accountsPath, "utf-8");
@@ -380,7 +460,7 @@ export async function setCodexCliActiveSelection(
 				}
 			}
 
-			if (hasAuthPath) {
+			if (hasAuthPath || wroteAccounts || selectionHasTokens) {
 				wroteAuth = await writeCodexAuthState(authPath, resolvedSelection);
 				if (!wroteAuth) {
 					if (!wroteAccounts) {
@@ -409,10 +489,29 @@ export async function setCodexCliActiveSelection(
 				}
 			}
 
+			try {
+				wroteConfig = await ensureCodexCliFileAuthStore(configPath);
+			} catch (error) {
+				log.warn("Failed to persist Codex config file auth store", {
+					operation: "write-active-selection",
+					outcome: "config-auth-store-update-failed",
+					path: configPath,
+					error: String(error),
+				});
+			}
+
 			if (wroteAccounts || wroteAuth) {
 				clearCodexCliStateCache();
 				incrementCodexCliMetric("writeSuccesses");
 				return true;
+			}
+
+			if (wroteConfig) {
+				log.debug("Persisted Codex config file auth store override", {
+					operation: "write-active-selection",
+					outcome: "config-updated-only",
+					path: configPath,
+				});
 			}
 
 			incrementCodexCliMetric("writeFailures");

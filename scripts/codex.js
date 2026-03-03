@@ -32,6 +32,25 @@ async function loadRunCodexMultiAuthCli() {
 	}
 }
 
+async function autoSyncManagerActiveSelectionIfEnabled() {
+	const enabled = (process.env.CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP ?? "1").trim() !== "0";
+	if (!enabled) return;
+
+	try {
+		const mod = await import("../dist/lib/codex-manager.js");
+		if (typeof mod.autoSyncActiveAccountToCodex !== "function") {
+			return;
+		}
+		await mod.autoSyncActiveAccountToCodex();
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
+			// Non-auth command path should keep forwarding even if dist is missing.
+			return;
+		}
+		// Best effort only: never block official Codex startup on sync failure.
+	}
+}
+
 function resolveRealCodexBin() {
 	const override = (process.env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
 	if (override.length > 0) {
@@ -113,6 +132,41 @@ function forwardToRealCodex(codexBin, args) {
 	});
 }
 
+function hasCliAuthCredentialsStoreOverride(args) {
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (arg === "-c" || arg === "--config") {
+			const next = args[i + 1];
+			if (!next || !next.includes("=")) continue;
+			const [key] = next.split("=", 1);
+			if ((key ?? "").trim() === "cli_auth_credentials_store") {
+				return true;
+			}
+			continue;
+		}
+		if (typeof arg === "string" && arg.startsWith("--config=")) {
+			const assignment = arg.slice("--config=".length);
+			const [key] = assignment.split("=", 1);
+			if ((key ?? "").trim() === "cli_auth_credentials_store") {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+function buildForwardArgs(rawArgs) {
+	const forceFileAuthStore = (process.env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE ?? "1").trim() !== "0";
+	if (!forceFileAuthStore) return [...rawArgs];
+	if (hasCliAuthCredentialsStoreOverride(rawArgs)) return [...rawArgs];
+
+	return [
+		...rawArgs,
+		"-c",
+		'cli_auth_credentials_store="file"',
+	];
+}
+
 function normalizeExitCode(value) {
 	if (typeof value === "number" && Number.isInteger(value)) {
 		return value;
@@ -156,5 +210,7 @@ if (!realCodexBin) {
 	process.exit(1);
 }
 
-const forwardExitCode = await forwardToRealCodex(realCodexBin, rawArgs);
+await autoSyncManagerActiveSelectionIfEnabled();
+const forwardArgs = buildForwardArgs(rawArgs);
+const forwardExitCode = await forwardToRealCodex(realCodexBin, forwardArgs);
 process.exit(forwardExitCode);

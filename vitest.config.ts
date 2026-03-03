@@ -1,5 +1,17 @@
 import { defineConfig } from 'vitest/config';
 
+const forcePlainTestOutput =
+  process.env.CODEX_PLAIN_LOGS === '1' ||
+  process.env.NO_COLOR === '1' ||
+  process.env.CI === 'true' ||
+  process.env.GITHUB_ACTIONS === 'true' ||
+  !process.stdout.isTTY;
+
+if (forcePlainTestOutput) {
+  process.env.NO_COLOR = '1';
+  process.env.FORCE_COLOR = '0';
+}
+
 export default defineConfig({
   test: {
     globals: true,

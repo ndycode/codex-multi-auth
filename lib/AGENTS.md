@@ -101,7 +101,7 @@ lib/
 ## WHERE TO LOOK
 | Task | Location | Notes |
 | --- | --- | --- |
-| Token exchange/refresh | `auth/auth.ts` | PKCE flow, JWT decode, skew window, `REDIRECT_URI` = `127.0.0.1:1455` |
+| Token exchange/refresh | `auth/auth.ts` | PKCE flow, JWT decode, skew window, `REDIRECT_URI` = `localhost:1455` |
 | Token validation | `auth/token-utils.ts` | expiry checks, parsing |
 | Browser launch | `auth/browser.ts` | platform-specific open |
 | Callback server | `auth/server.ts` | HTTP on port 1455 |

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const projectRoot = resolve(process.cwd());
 
@@ -16,8 +16,13 @@ const userDocs = [
   'docs/privacy.md',
   'docs/upgrade.md',
   'docs/reference/commands.md',
+  'docs/reference/public-api.md',
+  'docs/reference/error-contracts.md',
   'docs/reference/settings.md',
   'docs/reference/storage-paths.md',
+  'docs/releases/v0.1.4.md',
+  'docs/releases/v0.1.3.md',
+  'docs/releases/v0.1.2.md',
   'docs/releases/v0.1.1.md',
   'docs/releases/v0.1.0.md',
   'docs/releases/v0.1.0-beta.0.md',
@@ -33,6 +38,12 @@ const scopedLegacyAllowedFiles = new Set([
   'docs/releases/v0.1.0-beta.0.md',
 ]);
 
+const compatibilityAliasAllowedFiles = new Set([
+  'docs/reference/commands.md',
+  'docs/troubleshooting.md',
+  'docs/upgrade.md',
+]);
+
 function read(filePath: string): string {
   return readFileSync(join(projectRoot, filePath), 'utf-8');
 }
@@ -41,6 +52,27 @@ function extractInternalLinks(markdown: string): string[] {
   return [...markdown.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
     .map((match) => match[1])
     .filter((link) => !link.startsWith('http') && !link.startsWith('#'));
+}
+
+function listMarkdownFiles(rootDir: string): string[] {
+  const entries = readdirSync(rootDir, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const markdownFiles: string[] = [];
+  for (const entry of entries) {
+    const absolutePath = join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      markdownFiles.push(...listMarkdownFiles(absolutePath));
+      continue;
+    }
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      markdownFiles.push(absolutePath);
+    }
+  }
+  return markdownFiles.sort((left, right) => left.localeCompare(right));
+}
+
+function isExternalOrUriSchemeLink(linkPath: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(linkPath) || linkPath.startsWith('//');
 }
 
 function compareSemverDescending(left: string, right: string): number {
@@ -67,10 +99,14 @@ describe('Documentation Integrity', () => {
 
   it('docs portal links to stable, beta, and archived release history', () => {
     const portal = read('docs/README.md');
-    expect(portal).toContain('releases/v0.1.1.md');
-    expect(portal).toContain('releases/v0.1.0.md');
+    expect(portal).toContain('reference/public-api.md');
+    expect(portal).toContain('reference/error-contracts.md');
+    expect(portal).toContain('releases/v0.1.4.md');
+    expect(portal).toContain('releases/v0.1.3.md');
+    expect(portal).toContain('releases/v0.1.2.md');
     expect(portal).toContain('releases/v0.1.0-beta.0.md');
     expect(portal).toContain('releases/legacy-pre-0.1-history.md');
+    expect(portal).toContain('| [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |');
 
     const beta = read('docs/releases/v0.1.0-beta.0.md');
     expect(beta).toContain('Archived');
@@ -117,6 +153,22 @@ describe('Documentation Integrity', () => {
     }
   });
 
+  it('keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs', () => {
+    const files = ['README.md', ...userDocs];
+    const aliasPattern = /\bcodex (multi auth|multi-auth|multiauth)\b/i;
+
+    for (const filePath of files) {
+      const content = read(filePath);
+      const hasAlias = aliasPattern.test(content);
+      if (hasAlias) {
+        expect(
+          compatibilityAliasAllowedFiles.has(filePath),
+          `${filePath} should not include compatibility alias commands`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it('keeps codex auth as the command standard in key docs', () => {
     const keyDocs = [
       'README.md',
@@ -134,6 +186,29 @@ describe('Documentation Integrity', () => {
     }
   });
 
+  it('documents public API stability tiers and error contracts', () => {
+    const publicApi = read('docs/reference/public-api.md').toLowerCase();
+    const errorContracts = read('docs/reference/error-contracts.md').toLowerCase();
+
+    expect(publicApi).toContain('tier a');
+    expect(publicApi).toContain('tier b');
+    expect(publicApi).toContain('tier c');
+    expect(publicApi).toContain('options-object');
+    expect(publicApi).toContain('semver');
+
+    expect(errorContracts).toContain('exit codes');
+    expect(errorContracts).toContain('json mode contract');
+    expect(errorContracts).toContain('entitlement');
+    expect(errorContracts).toContain('rate-limit');
+    expect(errorContracts).toContain('options-object compatibility contract');
+    expect(errorContracts).toContain('selecthybridaccount');
+    expect(errorContracts).toContain('exponentialbackoff');
+    expect(errorContracts).toContain('gettopcandidates');
+    expect(errorContracts).toContain('createcodexheaders');
+    expect(errorContracts).toContain('getratelimitbackoffwithreason');
+    expect(errorContracts).toContain('transformrequestbody');
+  });
+
   it('keeps fix command flag docs aligned across README, reference, and CLI usage text', () => {
     const readme = read('README.md');
     const commandRef = read('docs/reference/commands.md');
@@ -144,7 +219,10 @@ describe('Documentation Integrity', () => {
     expect(readme).toContain('codex auth fix --live --model gpt-5-codex');
     expect(commandRef).toContain('| `--live` | forecast, report, fix |');
     expect(commandRef).toContain('| `--model <model>` | forecast, report, fix |');
-    expect(manager).toContain('codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]');
+    expect(manager).toContain('codex auth login');
+    expect(manager).toContain('codex auth fix [--dry-run] [--json] [--live] [--model <model>]');
+    expect(manager).toContain('Missing index. Usage: codex auth switch <index>');
+    expect(manager).not.toContain('codex-multi-auth auth switch <index>');
   });
 
   it('documents stable overrides separately from advanced and internal overrides', () => {
@@ -280,18 +358,70 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('has valid internal links in docs/README.md', () => {
-    const content = read('docs/README.md');
-    const links = extractInternalLinks(content);
+  it('ignores URI scheme links during docs link validation', () => {
+    const tempDocsRoot = mkdtempSync(join(tmpdir(), 'codex-doc-links-'));
 
-    for (const link of links) {
-      const cleanPath = link.split('#')[0];
-      if (!cleanPath) {
-        continue;
-      }
-      expect(existsSync(join(projectRoot, 'docs', cleanPath)), `Missing docs link: ${cleanPath}`).toBe(
-        true,
+    try {
+      const nestedDir = join(tempDocsRoot, 'nested');
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(
+        join(tempDocsRoot, 'index.md'),
+        [
+          '# Temporary docs',
+          '[Guide](./nested/guide.md)',
+          '[Mail](mailto:support@example.com)',
+          '[Phone](tel:+1234567890)',
+          '[Scheme relative](//example.com/path)',
+        ].join('\n'),
+        'utf-8',
       );
+      writeFileSync(join(nestedDir, 'guide.md'), '# Guide\n', 'utf-8');
+
+      const docsMarkdownFiles = listMarkdownFiles(tempDocsRoot);
+      const missingTargets: string[] = [];
+
+      for (const filePath of docsMarkdownFiles) {
+        const content = readFileSync(filePath, 'utf-8');
+        const links = extractInternalLinks(content);
+        for (const link of links) {
+          const cleanPath = link.split('#')[0];
+          if (!cleanPath || isExternalOrUriSchemeLink(cleanPath)) {
+            continue;
+          }
+          const targetPath = resolve(dirname(filePath), cleanPath);
+          if (!existsSync(targetPath)) {
+            missingTargets.push(`${filePath}: ${cleanPath}`);
+          }
+        }
+      }
+
+      expect(missingTargets).toEqual([]);
+    } finally {
+      rmSync(tempDocsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('has valid internal links in markdown files under docs/', () => {
+    const docsRoot = join(projectRoot, 'docs');
+    const docsMarkdownFiles = listMarkdownFiles(docsRoot);
+
+    for (const filePath of docsMarkdownFiles) {
+      const content = readFileSync(filePath, 'utf-8');
+      const links = extractInternalLinks(content);
+      for (const link of links) {
+        const cleanPath = link.split('#')[0];
+        if (!cleanPath) {
+          continue;
+        }
+        if (isExternalOrUriSchemeLink(cleanPath)) {
+          continue;
+        }
+        const targetPath = resolve(dirname(filePath), cleanPath);
+        expect(
+          existsSync(targetPath),
+          `Missing docs link in ${filePath.replace(projectRoot, '')}: ${cleanPath}`,
+        ).toBe(true);
+      }
     }
   });
 });

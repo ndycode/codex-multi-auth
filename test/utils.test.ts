@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { isRecord, nowMs, toStringValue, sleep } from '../lib/utils.js';
+import { isRecord, isAbortError, nowMs, toStringValue, sleep } from '../lib/utils.js';
 
 describe('Utils Module', () => {
 	describe('isRecord', () => {
@@ -41,6 +41,24 @@ describe('Utils Module', () => {
 		it('should return false for functions', () => {
 			expect(isRecord(() => {})).toBe(false);
 			expect(isRecord(function named() {})).toBe(false);
+		});
+	});
+
+	describe('isAbortError', () => {
+		it('returns true when error name is AbortError', () => {
+			const abortError = Object.assign(new Error('aborted'), { name: 'AbortError' });
+			expect(isAbortError(abortError)).toBe(true);
+		});
+
+		it('returns true when error code is ABORT_ERR', () => {
+			const abortError = Object.assign(new Error('aborted'), { code: 'ABORT_ERR' });
+			expect(isAbortError(abortError)).toBe(true);
+		});
+
+		it('returns false for non-abort values', () => {
+			expect(isAbortError(new Error('network error'))).toBe(false);
+			expect(isAbortError({ name: 'AbortError' })).toBe(false);
+			expect(isAbortError(null)).toBe(false);
 		});
 	});
 

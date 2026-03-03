@@ -12,6 +12,7 @@ import {
 	REDIRECT_URI,
 	SCOPE,
 } from '../lib/auth/auth.js';
+import * as loggerModule from '../lib/logger.js';
 
 describe('Auth Module', () => {
 	describe('createState', () => {
@@ -280,7 +281,7 @@ describe('Auth Module', () => {
 			}
 		});
 
-		it('returns success with empty refresh token when not provided', async () => {
+		it('returns failed when refresh token is missing', async () => {
 			vi.spyOn(Date, 'now').mockReturnValue(1_000);
 			const originalFetch = globalThis.fetch;
 			globalThis.fetch = vi.fn(async () =>
@@ -292,14 +293,35 @@ describe('Auth Module', () => {
 
 			try {
 				const result = await exchangeAuthorizationCode('auth-code', 'verifier-123');
-				expect(result).toEqual({
-					type: 'success',
-					access: 'access-123',
-					refresh: '',
-					expires: 3_601_000,
-					idToken: undefined,
-					multiAccount: true,
-				});
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('invalid_response');
+					expect(result.message).toContain('Missing refresh token');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.restoreAllMocks();
+			}
+		});
+
+		it('returns failed when refresh token is whitespace only', async () => {
+			vi.spyOn(Date, 'now').mockReturnValue(1_000);
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn(async () =>
+				new Response(JSON.stringify({
+					access_token: 'access-123',
+					refresh_token: '   ',
+					expires_in: 3600,
+				}), { status: 200 }),
+			) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode('auth-code', 'verifier-123');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('invalid_response');
+					expect(result.message).toContain('Missing refresh token');
+				}
 			} finally {
 				globalThis.fetch = originalFetch;
 				vi.restoreAllMocks();
@@ -460,6 +482,78 @@ describe('Auth Module', () => {
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it('returns non-network failure for aborted refresh requests', async () => {
+			const originalFetch = globalThis.fetch;
+			const abortError = Object.assign(new Error('Request aborted'), { name: 'AbortError' });
+			globalThis.fetch = vi.fn(async () => {
+				throw abortError;
+			}) as never;
+
+			try {
+				const controller = new AbortController();
+				controller.abort(abortError);
+				const result = await refreshAccessToken('some-token', { signal: controller.signal });
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toBe('Request aborted');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it('returns failed when response refresh token is whitespace only', async () => {
+			const originalFetch = globalThis.fetch;
+			const logErrorSpy = vi.spyOn(loggerModule, 'logError').mockImplementation(() => {});
+			globalThis.fetch = vi.fn(async () =>
+				new Response(JSON.stringify({
+					access_token: 'new-access',
+					refresh_token: '   ',
+					expires_in: 60,
+				}), { status: 200 }),
+			) as never;
+
+			try {
+				const result = await refreshAccessToken('existing-refresh');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('missing_refresh');
+					expect(result.message).toBe('No refresh token in response or input');
+				}
+				expect(logErrorSpy).toHaveBeenCalledWith('Token refresh missing refresh token');
+				expect(logErrorSpy.mock.calls[0]).toEqual(['Token refresh missing refresh token']);
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.restoreAllMocks();
+			}
+		});
+
+		it('returns failed when input refresh token is whitespace only and response omits refresh token', async () => {
+			const originalFetch = globalThis.fetch;
+			const logErrorSpy = vi.spyOn(loggerModule, 'logError').mockImplementation(() => {});
+			globalThis.fetch = vi.fn(async () =>
+				new Response(JSON.stringify({
+					access_token: 'new-access',
+					expires_in: 60,
+				}), { status: 200 }),
+			) as never;
+
+			try {
+				const result = await refreshAccessToken('   ');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('missing_refresh');
+					expect(result.message).toBe('No refresh token in response or input');
+				}
+				expect(logErrorSpy).toHaveBeenCalledWith('Token refresh missing refresh token');
+				expect(logErrorSpy.mock.calls[0]).toEqual(['Token refresh missing refresh token']);
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.restoreAllMocks();
 			}
 		});
 

@@ -61,6 +61,11 @@ import {
 	type FlaggedAccountMetadataV1,
 } from "./storage.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
+import {
+	getCodexCliAuthPath,
+	getCodexCliConfigPath,
+	loadCodexCliState,
+} from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { ANSI } from "./ui/ansi.js";
 import { UI_COPY } from "./ui/copy.js";
@@ -281,17 +286,17 @@ function printUsage(): void {
 			"Codex Multi-Auth CLI",
 			"",
 			"Usage:",
-			"  codex-multi-auth auth login",
-			"  codex-multi-auth auth list",
-			"  codex-multi-auth auth status",
-			"  codex-multi-auth auth switch <index>",
-			"  codex-multi-auth auth check",
-			"  codex-multi-auth auth features",
-			"  codex-multi-auth auth verify-flagged [--dry-run] [--json] [--no-restore]",
-			"  codex-multi-auth auth forecast [--live] [--json] [--model <model>]",
-			"  codex-multi-auth auth report [--live] [--json] [--model <model>] [--out <path>]",
-			"  codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]",
-			"  codex-multi-auth auth doctor [--json] [--fix] [--dry-run]",
+			"  codex auth login",
+			"  codex auth list",
+			"  codex auth status",
+			"  codex auth switch <index>",
+			"  codex auth check",
+			"  codex auth features",
+			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
+			"  codex auth forecast [--live] [--json] [--model <model>]",
+			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
+			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
+			"  codex auth doctor [--json] [--fix] [--dry-run]",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
@@ -3237,6 +3242,109 @@ async function runDoctor(args: string[]): Promise<number> {
 		}
 	}
 
+	const codexAuthPath = getCodexCliAuthPath();
+	const codexConfigPath = getCodexCliConfigPath();
+	let codexAuthEmail: string | undefined;
+	let codexAuthAccountId: string | undefined;
+
+	addCheck({
+		key: "codex-auth-file",
+		severity: existsSync(codexAuthPath) ? "ok" : "warn",
+		message: existsSync(codexAuthPath)
+			? "Codex auth file found"
+			: "Codex auth file does not exist",
+		details: codexAuthPath,
+	});
+
+	if (existsSync(codexAuthPath)) {
+		try {
+			const raw = await fs.readFile(codexAuthPath, "utf-8");
+			const parsed = JSON.parse(raw) as unknown;
+			if (parsed && typeof parsed === "object") {
+				const payload = parsed as Record<string, unknown>;
+				const tokens = payload.tokens && typeof payload.tokens === "object"
+					? (payload.tokens as Record<string, unknown>)
+					: null;
+				const accessToken = tokens && typeof tokens.access_token === "string"
+					? tokens.access_token
+					: undefined;
+				const idToken = tokens && typeof tokens.id_token === "string"
+					? tokens.id_token
+					: undefined;
+				const accountIdFromFile = tokens && typeof tokens.account_id === "string"
+					? tokens.account_id
+					: undefined;
+				const emailFromFile = typeof payload.email === "string" ? payload.email : undefined;
+				codexAuthEmail = sanitizeEmail(emailFromFile ?? extractAccountEmail(accessToken, idToken));
+				codexAuthAccountId = accountIdFromFile ?? extractAccountId(accessToken);
+			}
+			addCheck({
+				key: "codex-auth-readable",
+				severity: "ok",
+				message: "Codex auth file is readable",
+				details:
+					codexAuthEmail || codexAuthAccountId
+						? `email=${codexAuthEmail ?? "unknown"}, accountId=${codexAuthAccountId ?? "unknown"}`
+						: undefined,
+			});
+		} catch (error) {
+			addCheck({
+				key: "codex-auth-readable",
+				severity: "error",
+				message: "Unable to read Codex auth file",
+				details: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	addCheck({
+		key: "codex-config-file",
+		severity: existsSync(codexConfigPath) ? "ok" : "warn",
+		message: existsSync(codexConfigPath)
+			? "Codex config file found"
+			: "Codex config file does not exist",
+		details: codexConfigPath,
+	});
+
+	let codexAuthStoreMode: string | undefined;
+	if (existsSync(codexConfigPath)) {
+		try {
+			const configRaw = await fs.readFile(codexConfigPath, "utf-8");
+			const match = configRaw.match(/^\s*cli_auth_credentials_store\s*=\s*"([^"]+)"\s*$/m);
+			if (match?.[1]) {
+				codexAuthStoreMode = match[1].trim();
+			}
+		} catch (error) {
+			addCheck({
+				key: "codex-auth-store",
+				severity: "warn",
+				message: "Unable to read Codex auth-store config",
+				details: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	if (!checks.some((check) => check.key === "codex-auth-store")) {
+		addCheck({
+			key: "codex-auth-store",
+			severity: codexAuthStoreMode === "file" ? "ok" : "warn",
+			message:
+				codexAuthStoreMode === "file"
+					? "Codex auth storage is set to file"
+					: "Codex auth storage is not explicitly set to file",
+			details: codexAuthStoreMode ? `mode=${codexAuthStoreMode}` : "mode=unset",
+		});
+	}
+
+	const codexCliState = await loadCodexCliState({ forceRefresh: true });
+	addCheck({
+		key: "codex-cli-state",
+		severity: codexCliState ? "ok" : "warn",
+		message: codexCliState
+			? "Codex CLI state loaded"
+			: "Codex CLI state unavailable",
+		details: codexCliState?.path,
+	});
+
 	const storage = await loadAccounts();
 	let fixChanged = false;
 	let fixActions: DoctorFixAction[] = [];
@@ -3371,6 +3479,117 @@ async function runDoctor(args: string[]): Promise<number> {
 				severity: "ok",
 				message: "Current account aligns with forecast recommendation",
 			});
+		}
+
+		if (activeExists) {
+			const activeAccount = storage.accounts[activeIndex];
+			const managerActiveEmail = sanitizeEmail(activeAccount?.email);
+			const managerActiveAccountId = activeAccount?.accountId;
+			const codexActiveEmail = sanitizeEmail(codexCliState?.activeEmail) ?? codexAuthEmail;
+			const codexActiveAccountId = codexCliState?.activeAccountId ?? codexAuthAccountId;
+			const isEmailMismatch =
+				!!managerActiveEmail &&
+				!!codexActiveEmail &&
+				managerActiveEmail !== codexActiveEmail;
+			const isAccountIdMismatch =
+				!!managerActiveAccountId &&
+				!!codexActiveAccountId &&
+				managerActiveAccountId !== codexActiveAccountId;
+
+			addCheck({
+				key: "active-selection-sync",
+				severity: isEmailMismatch || isAccountIdMismatch ? "warn" : "ok",
+				message:
+					isEmailMismatch || isAccountIdMismatch
+						? "Manager active account and Codex active account are not aligned"
+						: "Manager active account and Codex active account are aligned",
+				details: `manager=${managerActiveEmail ?? managerActiveAccountId ?? "unknown"} | codex=${codexActiveEmail ?? codexActiveAccountId ?? "unknown"}`,
+			});
+
+			if (options.fix && activeAccount) {
+				let syncAccessToken = activeAccount.accessToken;
+				let syncRefreshToken = activeAccount.refreshToken;
+				let syncExpiresAt = activeAccount.expiresAt;
+				let syncIdToken: string | undefined;
+				let storageChangedFromDoctorSync = false;
+
+				if (!hasUsableAccessToken(activeAccount, now)) {
+					if (options.dryRun) {
+						fixActions.push({
+							key: "doctor-refresh",
+							message: `Prepared active-account token refresh for account ${activeIndex + 1} (dry-run)`,
+						});
+					} else {
+						const refreshResult = await queuedRefresh(activeAccount.refreshToken);
+						if (refreshResult.type === "success") {
+							const refreshedEmail = sanitizeEmail(
+								extractAccountEmail(refreshResult.access, refreshResult.idToken),
+							);
+							const refreshedAccountId = extractAccountId(refreshResult.access);
+							activeAccount.accessToken = refreshResult.access;
+							activeAccount.refreshToken = refreshResult.refresh;
+							activeAccount.expiresAt = refreshResult.expires;
+							if (refreshedEmail) activeAccount.email = refreshedEmail;
+							if (refreshedAccountId) {
+								activeAccount.accountId = refreshedAccountId;
+								activeAccount.accountIdSource = "token";
+							}
+							syncAccessToken = refreshResult.access;
+							syncRefreshToken = refreshResult.refresh;
+							syncExpiresAt = refreshResult.expires;
+							syncIdToken = refreshResult.idToken;
+							storageChangedFromDoctorSync = true;
+							fixActions.push({
+								key: "doctor-refresh",
+								message: `Refreshed active account tokens for account ${activeIndex + 1}`,
+							});
+						} else {
+							addCheck({
+								key: "doctor-refresh",
+								severity: "warn",
+								message: "Unable to refresh active account before Codex sync",
+								details: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
+							});
+						}
+					}
+				}
+
+				if (storageChangedFromDoctorSync) {
+					fixChanged = true;
+					if (!options.dryRun) {
+						await saveAccounts(storage);
+					}
+				}
+
+				if (!options.dryRun) {
+					const synced = await setCodexCliActiveSelection({
+						accountId: activeAccount.accountId,
+						email: activeAccount.email,
+						accessToken: syncAccessToken,
+						refreshToken: syncRefreshToken,
+						expiresAt: syncExpiresAt,
+						...(syncIdToken ? { idToken: syncIdToken } : {}),
+					});
+					if (synced) {
+						fixChanged = true;
+						fixActions.push({
+							key: "codex-active-sync",
+							message: "Synced manager active account into Codex auth state",
+						});
+					} else {
+						addCheck({
+							key: "codex-active-sync",
+							severity: "warn",
+							message: "Failed to sync manager active account into Codex auth state",
+						});
+					}
+				} else {
+					fixActions.push({
+						key: "codex-active-sync",
+						message: "Prepared Codex active-account sync (dry-run)",
+					});
+				}
+			}
 		}
 	}
 
@@ -3652,7 +3871,7 @@ async function runSwitch(args: string[]): Promise<number> {
 	setStoragePath(null);
 	const indexArg = args[0];
 	if (!indexArg) {
-		console.error("Missing index. Usage: codex-multi-auth auth switch <index>");
+		console.error("Missing index. Usage: codex auth switch <index>");
 		return 1;
 	}
 	const parsed = Number.parseInt(indexArg, 10);
@@ -3687,16 +3906,55 @@ async function runSwitch(args: string[]): Promise<number> {
 	if (wasDisabled) {
 		account.enabled = true;
 	}
-	account.lastUsed = Date.now();
+	const switchNow = Date.now();
+	let syncAccessToken = account.accessToken;
+	let syncRefreshToken = account.refreshToken;
+	let syncExpiresAt = account.expiresAt;
+	let syncIdToken: string | undefined;
+
+	if (!hasUsableAccessToken(account, switchNow)) {
+		const refreshResult = await queuedRefresh(account.refreshToken);
+		if (refreshResult.type === "success") {
+			const tokenAccountId = extractAccountId(refreshResult.access);
+			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
+			if (account.refreshToken !== refreshResult.refresh) {
+				account.refreshToken = refreshResult.refresh;
+			}
+			if (account.accessToken !== refreshResult.access) {
+				account.accessToken = refreshResult.access;
+			}
+			if (account.expiresAt !== refreshResult.expires) {
+				account.expiresAt = refreshResult.expires;
+			}
+			if (nextEmail && nextEmail !== account.email) {
+				account.email = nextEmail;
+			}
+			if (tokenAccountId && tokenAccountId !== account.accountId) {
+				account.accountId = tokenAccountId;
+				account.accountIdSource = "token";
+			}
+			syncAccessToken = refreshResult.access;
+			syncRefreshToken = refreshResult.refresh;
+			syncExpiresAt = refreshResult.expires;
+			syncIdToken = refreshResult.idToken;
+		} else {
+			console.warn(
+				`Switch validation refresh failed for account ${parsed}: ${normalizeFailureDetail(refreshResult.message, refreshResult.reason)}.`,
+			);
+		}
+	}
+
+	account.lastUsed = switchNow;
 	account.lastSwitchReason = "rotation";
 	await saveAccounts(storage);
 
 	const synced = await setCodexCliActiveSelection({
 		accountId: account.accountId,
 		email: account.email,
-		accessToken: account.accessToken,
-		refreshToken: account.refreshToken,
-		expiresAt: account.expiresAt,
+		accessToken: syncAccessToken,
+		refreshToken: syncRefreshToken,
+		expiresAt: syncExpiresAt,
+		...(syncIdToken ? { idToken: syncIdToken } : {}),
 	});
 	if (!synced) {
 		console.warn(
@@ -3708,6 +3966,77 @@ async function runSwitch(args: string[]): Promise<number> {
 		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
 	);
 	return 0;
+}
+
+export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
+	setStoragePath(null);
+	const storage = await loadAccounts();
+	if (!storage || storage.accounts.length === 0) {
+		return false;
+	}
+
+	const activeIndex = resolveActiveIndex(storage, "codex");
+	if (activeIndex < 0 || activeIndex >= storage.accounts.length) {
+		return false;
+	}
+
+	const account = storage.accounts[activeIndex];
+	if (!account) {
+		return false;
+	}
+
+	const now = Date.now();
+	let syncAccessToken = account.accessToken;
+	let syncRefreshToken = account.refreshToken;
+	let syncExpiresAt = account.expiresAt;
+	let syncIdToken: string | undefined;
+	let changed = false;
+
+	if (!hasUsableAccessToken(account, now)) {
+		const refreshResult = await queuedRefresh(account.refreshToken);
+		if (refreshResult.type === "success") {
+			const tokenAccountId = extractAccountId(refreshResult.access);
+			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
+			if (account.refreshToken !== refreshResult.refresh) {
+				account.refreshToken = refreshResult.refresh;
+				changed = true;
+			}
+			if (account.accessToken !== refreshResult.access) {
+				account.accessToken = refreshResult.access;
+				changed = true;
+			}
+			if (account.expiresAt !== refreshResult.expires) {
+				account.expiresAt = refreshResult.expires;
+				changed = true;
+			}
+			if (nextEmail && nextEmail !== account.email) {
+				account.email = nextEmail;
+				changed = true;
+			}
+			if (tokenAccountId && tokenAccountId !== account.accountId) {
+				account.accountId = tokenAccountId;
+				account.accountIdSource = "token";
+				changed = true;
+			}
+			syncAccessToken = refreshResult.access;
+			syncRefreshToken = refreshResult.refresh;
+			syncExpiresAt = refreshResult.expires;
+			syncIdToken = refreshResult.idToken;
+		}
+	}
+
+	if (changed) {
+		await saveAccounts(storage);
+	}
+
+	return setCodexCliActiveSelection({
+		accountId: account.accountId,
+		email: account.email,
+		accessToken: syncAccessToken,
+		refreshToken: syncRefreshToken,
+		expiresAt: syncExpiresAt,
+		...(syncIdToken ? { idToken: syncIdToken } : {}),
+	});
 }
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {

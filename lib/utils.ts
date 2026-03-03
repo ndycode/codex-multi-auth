@@ -13,6 +13,17 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Detects AbortError-compatible failures from fetch/abort-controller flows.
+ * @param error - Unknown thrown value
+ * @returns True when the error should be treated as an abort signal
+ */
+export function isAbortError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const maybe = error as Error & { code?: string };
+	return maybe.name === "AbortError" || maybe.code === "ABORT_ERR";
+}
+
+/**
  * Returns the current timestamp in milliseconds.
  * Wrapper for Date.now() to enable testing with mocked time.
  * @returns Current time in milliseconds since epoch

@@ -3,12 +3,13 @@ import { randomBytes } from "node:crypto";
 import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
 import { safeParseOAuthTokenResponse } from "../schemas.js";
+import { isAbortError } from "../utils.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 export const AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
 export const TOKEN_URL = "https://auth.openai.com/oauth/token";
-export const REDIRECT_URI = "http://127.0.0.1:1455/auth/callback";
+export const REDIRECT_URI = "http://localhost:1455/auth/callback";
 export const SCOPE = "openid profile email offline_access";
 
 const OAUTH_SENSITIVE_QUERY_PARAMS = [
@@ -17,6 +18,22 @@ const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"code_challenge",
 	"code_verifier",
 ] as const;
+
+function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unknown> {
+	if (Array.isArray(rawResponse)) {
+		return { responseType: "array", itemCount: rawResponse.length };
+	}
+
+	if (rawResponse !== null && typeof rawResponse === "object") {
+		const allKeys = Object.keys(rawResponse as Record<string, unknown>);
+		return {
+			responseType: "object",
+			keyCount: allKeys.length,
+		};
+	}
+
+	return { responseType: typeof rawResponse };
+}
 
 /**
  * Redacts sensitive OAuth query parameters for safe logging.
@@ -118,13 +135,22 @@ export async function exchangeAuthorizationCode(
 	const rawJson = (await res.json()) as unknown;
 	const json = safeParseOAuthTokenResponse(rawJson);
 	if (!json) {
-		logError("token response validation failed", rawJson);
+		logError("token response validation failed", getOAuthResponseLogMetadata(rawJson));
 		return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 	}
+	if (!json.refresh_token || json.refresh_token.trim().length === 0) {
+		logError("token response missing refresh token", getOAuthResponseLogMetadata(rawJson));
+		return {
+			type: "failed",
+			reason: "invalid_response",
+			message: "Missing refresh token in authorization code exchange response",
+		};
+	}
+	const normalizedRefreshToken = json.refresh_token.trim();
 	return {
 		type: "success",
 		access: json.access_token,
-		refresh: json.refresh_token ?? "",
+		refresh: normalizedRefreshToken,
 		expires: Date.now() + json.expires_in * 1000,
 		idToken: json.id_token,
 		multiAccount: true,
@@ -158,11 +184,19 @@ export function decodeJWT(token: string): JWTPayload | null {
  * @param refreshToken - Refresh token
  * @returns Token result
  */
-export async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
+type RefreshAccessTokenOptions = {
+	signal?: AbortSignal;
+};
+
+export async function refreshAccessToken(
+	refreshToken: string,
+	options: RefreshAccessTokenOptions = {},
+): Promise<TokenResult> {
 	try {
 		const response = await fetch(TOKEN_URL, {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			signal: options?.signal,
 			body: new URLSearchParams({
 				grant_type: "refresh_token",
 				refresh_token: refreshToken,
@@ -179,11 +213,12 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
 		const rawJson = (await response.json()) as unknown;
 		const json = safeParseOAuthTokenResponse(rawJson);
 		if (!json) {
-			logError("Token refresh response validation failed", rawJson);
+			logError("Token refresh response validation failed", getOAuthResponseLogMetadata(rawJson));
 			return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 		}
 
-		const nextRefresh = json.refresh_token ?? refreshToken;
+		const nextRefreshRaw = json.refresh_token ?? refreshToken;
+		const nextRefresh = nextRefreshRaw.trim();
 		if (!nextRefresh) {
 			logError("Token refresh missing refresh token");
 			return { type: "failed", reason: "missing_refresh", message: "No refresh token in response or input" };
@@ -199,6 +234,9 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
 		};
 	} catch (error) {
 		const err = error as Error;
+		if (isAbortError(err)) {
+			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
+		}
 		logError("Token refresh error", err);
 		return { type: "failed", reason: "network_error", message: err?.message };
 	}

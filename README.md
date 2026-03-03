@@ -129,11 +129,6 @@ codex auth doctor --fix
 | `codex auth fix --live --model gpt-5-codex` | Run repairs with live probe model |
 | `codex auth doctor --fix` | Diagnose and apply safe fixes |
 
-Compatibility aliases are also supported:
-- `codex multi auth ...`
-- `codex multi-auth ...`
-- `codex multiauth ...`
-
 ---
 
 ## Dashboard Hotkeys
@@ -226,7 +221,7 @@ codex auth login
 <details>
 <summary><b>Common symptoms</b></summary>
 
-- `codex auth` unrecognized: run `where codex`, then try `codex multi auth status`
+- `codex auth` unrecognized: run `where codex`, then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account
@@ -259,6 +254,8 @@ codex auth doctor --json
 - Configuration: [docs/configuration.md](docs/configuration.md)
 - Troubleshooting: [docs/troubleshooting.md](docs/troubleshooting.md)
 - Commands reference: [docs/reference/commands.md](docs/reference/commands.md)
+- Public API contract: [docs/reference/public-api.md](docs/reference/public-api.md)
+- Error contracts: [docs/reference/error-contracts.md](docs/reference/error-contracts.md)
 - Settings reference: [docs/reference/settings.md](docs/reference/settings.md)
 - Storage paths: [docs/reference/storage-paths.md](docs/reference/storage-paths.md)
 - Upgrade guide: [docs/upgrade.md](docs/upgrade.md)
@@ -268,9 +265,9 @@ codex auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v0.1.3.md](docs/releases/v0.1.3.md)
-- Previous stable: [docs/releases/v0.1.2.md](docs/releases/v0.1.2.md)
-- Earlier stable: [docs/releases/v0.1.1.md](docs/releases/v0.1.1.md)
+- Current stable: [docs/releases/v0.1.4.md](docs/releases/v0.1.4.md)
+- Previous stable: [docs/releases/v0.1.3.md](docs/releases/v0.1.3.md)
+- Earlier stable: [docs/releases/v0.1.2.md](docs/releases/v0.1.2.md)
 - Archived prerelease: [docs/releases/v0.1.0-beta.0.md](docs/releases/v0.1.0-beta.0.md)
 
 ## License

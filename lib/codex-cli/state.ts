@@ -230,6 +230,20 @@ export function getCodexCliAuthPath(): string {
 }
 
 /**
+ * Resolve the filesystem path for the Codex CLI config TOML file, allowing an environment override.
+ *
+ * If `CODEX_CLI_CONFIG_PATH` is set to a non-empty value (after trimming), that path is returned.
+ * Otherwise, defaults to `$HOME/.codex/config.toml`.
+ *
+ * @returns The resolved path to Codex CLI `config.toml`.
+ */
+export function getCodexCliConfigPath(): string {
+	const override = (process.env.CODEX_CLI_CONFIG_PATH ?? "").trim();
+	if (override.length > 0) return override;
+	return join(homedir(), ".codex", "config.toml");
+}
+
+/**
  * Convert a parsed Codex CLI accounts JSON payload into a CodexCliState snapshot.
  *
  * Parses the provided JSON object expected to contain an `accounts` array and optional metadata, producing a state object that includes accounts, active account/email if present, `syncVersion`, and the optional `sourceUpdatedAtMs`. The supplied `path` is recorded as-is and is not normalized (may be a Unix or Windows path). This function performs no synchronization or locking and may produce stale results relative to on-disk changes. Tokens are copied verbatim from the payload and are not redacted; callers must redact sensitive values before logging or exposing the returned state.

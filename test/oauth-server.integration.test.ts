@@ -25,7 +25,7 @@ describe("OAuth Server Integration", () => {
 
 		// Simulate OAuth callback
 		const testCode = "auth-code-67890";
-		const callbackUrl = `http://127.0.0.1:1455/auth/callback?code=${testCode}&state=${testState}`;
+		const callbackUrl = `http://localhost:1455/auth/callback?code=${testCode}&state=${testState}`;
 
 		const response = await fetch(callbackUrl);
 		expect(response.status).toBe(200);
@@ -42,7 +42,7 @@ describe("OAuth Server Integration", () => {
 
 		expect(serverInfo.ready).toBe(true);
 
-		const callbackUrl = `http://127.0.0.1:1455/auth/callback?code=test&state=wrong-state`;
+		const callbackUrl = `http://localhost:1455/auth/callback?code=test&state=wrong-state`;
 		const response = await fetch(callbackUrl);
 		expect(response.status).toBe(400);
 
@@ -56,7 +56,7 @@ describe("OAuth Server Integration", () => {
 
 		expect(serverInfo.ready).toBe(true);
 
-		const callbackUrl = `http://127.0.0.1:1455/auth/callback?state=${testState}`;
+		const callbackUrl = `http://localhost:1455/auth/callback?state=${testState}`;
 		const response = await fetch(callbackUrl);
 		expect(response.status).toBe(400);
 
@@ -70,7 +70,7 @@ describe("OAuth Server Integration", () => {
 
 		expect(serverInfo.ready).toBe(true);
 
-		const response = await fetch("http://127.0.0.1:1455/other-path");
+		const response = await fetch("http://localhost:1455/other-path");
 		expect(response.status).toBe(404);
 	});
 
@@ -85,7 +85,7 @@ describe("OAuth Server Integration", () => {
 
 		// Subsequent requests should fail (server closed)
 		await expect(
-			fetch("http://127.0.0.1:1455/auth/callback?code=test&state=test")
+			fetch("http://localhost:1455/auth/callback?code=test&state=test")
 		).rejects.toThrow();
 
 		serverInfo = null; // Prevent double-close in afterEach

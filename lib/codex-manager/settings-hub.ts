@@ -517,7 +517,7 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 
 type DashboardSettingKey = keyof DashboardDisplaySettings;
 
-const RETRYABLE_SETTINGS_WRITE_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+const RETRYABLE_SETTINGS_WRITE_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
 const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
 const SETTINGS_WRITE_BASE_DELAY_MS = 20;
 const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
@@ -1061,6 +1061,46 @@ function formatMenuQuotaTtl(ttlMs: number): string {
 	return `${ttlMs}ms`;
 }
 
+function clampBackendNumberForTests(settingKey: string, value: number): number {
+	const option = BACKEND_NUMBER_OPTION_BY_KEY.get(settingKey as BackendNumberSettingKey);
+	if (!option) {
+		throw new Error(`Unknown backend numeric setting key: ${settingKey}`);
+	}
+	return clampBackendNumber(option, value);
+}
+
+async function withQueuedRetryForTests<T>(
+	pathKey: string,
+	task: () => Promise<T>,
+): Promise<T> {
+	return withQueuedRetry(pathKey, task);
+}
+
+async function persistDashboardSettingsSelectionForTests(
+	selected: DashboardDisplaySettings,
+	keys: ReadonlyArray<keyof DashboardDisplaySettings>,
+	scope: string,
+): Promise<DashboardDisplaySettings> {
+	return persistDashboardSettingsSelection(selected, keys as readonly DashboardSettingKey[], scope);
+}
+
+async function persistBackendConfigSelectionForTests(
+	selected: PluginConfig,
+	scope: string,
+): Promise<PluginConfig> {
+	return persistBackendConfigSelection(selected, scope);
+}
+
+const __testOnly = {
+	clampBackendNumber: clampBackendNumberForTests,
+	formatMenuLayoutMode,
+	cloneDashboardSettings,
+	withQueuedRetry: withQueuedRetryForTests,
+	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
+	persistBackendConfigSelection: persistBackendConfigSelectionForTests,
+};
+
+/* c8 ignore start - interactive prompt flows are covered by integration tests */
 async function promptDashboardDisplaySettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
@@ -2054,6 +2094,8 @@ async function promptSettingsHub(
 	});
 }
 
+/* c8 ignore stop */
+
 async function configureUnifiedSettings(
 	initialSettings?: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings> {
@@ -2096,5 +2138,5 @@ async function configureUnifiedSettings(
 	}
 }
 
-export { configureUnifiedSettings, applyUiThemeFromDashboardSettings, resolveMenuLayoutMode };
+export { configureUnifiedSettings, applyUiThemeFromDashboardSettings, resolveMenuLayoutMode, __testOnly };
 

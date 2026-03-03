@@ -52,4 +52,65 @@ describe("SessionAffinityStore", () => {
 		expect(store.getPreferredAccountIndex("s2")).toBe(1);
 		expect(store.getPreferredAccountIndex("s3")).toBe(2);
 	});
+	it("rejects invalid session keys and invalid account indices", () => {
+		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
+		store.remember("   ", 1, 1_000);
+		store.remember("session-x", Number.NaN, 1_000);
+		store.remember("session-y", -1, 1_000);
+
+		expect(store.getPreferredAccountIndex("session-x", 2_000)).toBeNull();
+		expect(store.getPreferredAccountIndex(null, 2_000)).toBeNull();
+		expect(store.size()).toBe(0);
+	});
+
+	it("truncates oversized session keys and can retrieve by truncated form", () => {
+		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 8 });
+		const longKey = `  ${"x".repeat(300)}  `;
+		const truncated = "x".repeat(256);
+		store.remember(longKey, 3, 1_000);
+
+		expect(store.getPreferredAccountIndex(truncated, 2_000)).toBe(3);
+	});
+
+	it("does not evict when updating an existing key at capacity", () => {
+		const store = new SessionAffinityStore({ ttlMs: 60_000, maxEntries: 2 });
+		store.remember("s1", 0, 1_000);
+		store.remember("s2", 1, 2_000);
+		store.remember("s2", 2, 3_000);
+
+		expect(store.getPreferredAccountIndex("s1", 3_500)).toBe(0);
+		expect(store.getPreferredAccountIndex("s2", 3_500)).toBe(2);
+		expect(store.size()).toBe(2);
+	});
+
+	it("forgets a specific session and no-ops on blank session key", () => {
+		const store = new SessionAffinityStore({ ttlMs: 60_000, maxEntries: 10 });
+		store.remember("s1", 0, 1_000);
+		store.forgetSession("   ");
+		store.forgetSession("s1");
+
+		expect(store.getPreferredAccountIndex("s1", 2_000)).toBeNull();
+		expect(store.size()).toBe(0);
+	});
+
+	it("returns zero for invalid forget/reindex requests", () => {
+		const store = new SessionAffinityStore({ ttlMs: 60_000, maxEntries: 10 });
+		store.remember("s1", 0, 1_000);
+
+		expect(store.forgetAccount(Number.NaN)).toBe(0);
+		expect(store.forgetAccount(-1)).toBe(0);
+		expect(store.reindexAfterRemoval(Number.NaN)).toBe(0);
+		expect(store.reindexAfterRemoval(-1)).toBe(0);
+		expect(store.getPreferredAccountIndex("s1", 2_000)).toBe(0);
+	});
+
+	it("prunes expired sessions and keeps non-expired entries", () => {
+		const store = new SessionAffinityStore({ ttlMs: 1_000, maxEntries: 10 });
+		store.remember("s1", 0, 1_000);
+		store.remember("s2", 1, 2_000);
+
+		expect(store.prune(2_001)).toBe(1);
+		expect(store.getPreferredAccountIndex("s1", 2_001)).toBeNull();
+		expect(store.getPreferredAccountIndex("s2", 2_001)).toBe(1);
+	});
 });

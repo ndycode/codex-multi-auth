@@ -3,336 +3,268 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>OpenAI Codex Sign-in Complete</title>
+  <title>OpenAI Codex Callback Received</title>
   <style>
+    /* Space Grotesk import removed to avoid CSP font-src violations; rely on system stack. */
+
     :root {
-      --bg: #040608;
-      --bg2: #0a1210;
-      --card: #0a0f0d;
-      --line: #1f3a2f;
-      --line-soft: #13261f;
-      --text: #e6f6ee;
-      --muted: #9ac3b1;
-      --green: #35d28a;
-      --green-strong: #13b06e;
-      --warn: #f2cc60;
+      --bg: #020403;
+      --bg2: #050908;
+      --surface: rgba(6, 10, 9, 0.92);
+      --border: rgba(255, 255, 255, 0.08);
+      --divider: rgba(255, 255, 255, 0.07);
+      --text: #f5fbf7;
+      --muted: rgba(245, 251, 247, 0.68);
+      --accent: #49f1a8;
+      --accent-soft: rgba(73, 241, 168, 0.15);
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
-    html, body {
+    body {
       margin: 0;
-      width: 100%;
-      height: 100%;
-      font-family: Consolas, "Cascadia Mono", "SFMono-Regular", Menlo, Monaco, monospace;
-      background: radial-gradient(1300px 700px at 20% -10%, #0f2b21 0%, transparent 55%),
-                  radial-gradient(1000px 560px at 100% 0%, #0a2019 0%, transparent 60%),
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, -apple-system, "IBM Plex Sans", sans-serif;
+      background: radial-gradient(circle at top, rgba(73, 241, 168, 0.12), transparent 55%),
                   linear-gradient(180deg, var(--bg), var(--bg2));
       color: var(--text);
-      overflow-x: hidden;
-      overflow-y: auto;
-    }
-
-    .grid {
-      position: fixed;
-      inset: 0;
-      background-image:
-        linear-gradient(to right, rgba(53, 210, 138, 0.06) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(53, 210, 138, 0.05) 1px, transparent 1px);
-      background-size: 28px 28px;
-      mask-image: radial-gradient(circle at center, black 35%, transparent 90%);
-      pointer-events: none;
-      animation: drift 16s linear infinite;
-    }
-
-    .scanline {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      background: linear-gradient(180deg, transparent 0%, rgba(53, 210, 138, 0.07) 48%, transparent 52%, transparent 100%);
-      animation: sweep 5s linear infinite;
-      opacity: 0.45;
-    }
-
-    @keyframes sweep {
-      0% { transform: translateY(-100%); }
-      100% { transform: translateY(100%); }
-    }
-
-    @keyframes drift {
-      from { transform: translateY(0); }
-      to { transform: translateY(28px); }
-    }
-
-    .wrap {
-      position: relative;
-      width: min(860px, calc(100vw - 32px));
-      margin: 24px auto;
-      top: 50%;
-      transform: translateY(-50%);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: linear-gradient(180deg, rgba(10, 16, 13, 0.94), rgba(6, 11, 9, 0.94));
-      box-shadow: 0 28px 80px rgba(0,0,0,0.58), 0 0 0 1px rgba(53,210,138,0.08) inset;
-      overflow: hidden;
-      animation: pop 380ms ease-out;
-    }
-
-    @keyframes pop {
-      from { opacity: 0; transform: translateY(-48%) scale(0.985); }
-      to { opacity: 1; transform: translateY(-50%) scale(1); }
-    }
-
-    .titlebar {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--line-soft);
-      background: rgba(6, 12, 10, 0.9);
-    }
-
-    .lights { display: flex; gap: 6px; }
-    .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: #375a4a;
-      border: 1px solid #2b463b;
-    }
-    .dot.ok {
-      background: var(--green);
-      border-color: #1a6f46;
-      box-shadow: 0 0 8px rgba(53,210,138,0.65);
-      animation: blink 1.6s ease-in-out infinite;
-    }
-
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.55; }
-    }
-
-    .bar-title {
-      font-size: 13px;
-      letter-spacing: 0.02em;
-      color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .content {
-      padding: 20px;
       display: grid;
-      grid-template-columns: 1.15fr 0.85fr;
-      gap: 16px;
+      place-items: center;
+      padding: 32px 16px;
     }
 
-    .left {
-      border: 1px solid var(--line-soft);
-      border-radius: 10px;
-      padding: 18px;
-      background: rgba(8, 14, 11, 0.62);
+    main {
+      width: min(440px, 100%);
+      background: var(--surface);
+      border-radius: 22px;
+      border: 1px solid var(--border);
+      padding: 32px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
     }
 
-    .right {
-      border: 1px solid var(--line-soft);
-      border-radius: 10px;
-      padding: 16px;
-      background: rgba(8, 14, 11, 0.62);
-    }
-
-    .kicker {
-      color: var(--green);
+    .eyebrow {
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 0.11em;
-      margin-bottom: 10px;
+      letter-spacing: 0.22em;
+      color: var(--muted);
+    }
+
+    .icon {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--accent-soft);
+      display: grid;
+      place-items: center;
+      color: var(--accent);
+      margin: 4px 0 6px;
+      position: relative;
+      animation: fade 1s ease both;
+    }
+
+    .icon::after {
+      content: "";
+      width: 20px;
+      height: 12px;
+      border-left: 3px solid currentColor;
+      border-bottom: 3px solid currentColor;
+      transform: rotate(-45deg);
     }
 
     h1 {
-      margin: 0 0 10px;
-      font-size: clamp(22px, 3.2vw, 29px);
-      line-height: 1.2;
+      margin: 0;
+      font-size: clamp(26px, 4vw, 32px);
       letter-spacing: -0.02em;
     }
 
-    .subtitle {
-      margin: 0 0 14px;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.5;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      margin: 0 0 14px;
-      padding: 7px 10px;
-      border-radius: 999px;
-      border: 1px solid rgba(53,210,138,0.4);
-      background: rgba(53,210,138,0.12);
-      color: #d9f9e9;
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-    }
-
-    .badge .pulse {
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: var(--green);
-      box-shadow: 0 0 9px rgba(53,210,138,0.85);
-      animation: ping 1.2s ease-out infinite;
-    }
-
-    @keyframes ping {
-      0% { transform: scale(1); opacity: 1; }
-      100% { transform: scale(1.8); opacity: 0.1; }
-    }
-
-    .steps {
+    .lead {
       margin: 0;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      gap: 8px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.6;
     }
 
-    .steps li {
-      border: 1px solid var(--line-soft);
-      background: rgba(7, 12, 10, 0.72);
-      border-radius: 8px;
-      padding: 9px 10px;
-      color: #cde6db;
+    .state {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding: 16px 18px;
+      border-radius: 16px;
+      background: rgba(8, 14, 11, 0.75);
+      border: 1px solid var(--border);
+    }
+
+    .state span {
       font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--muted);
+    }
+
+    .state strong {
+      font-size: 20px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .status-list {
+      list-style: none;
+      margin: 8px 0 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .status-list li {
       display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--divider);
+      padding-bottom: 8px;
+      font-size: 14px;
     }
 
-    .steps li::before {
-      content: ">";
-      color: var(--green);
-      font-weight: 700;
+    .status-list li:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
     }
 
-    .steps li:last-child::before { content: "*"; }
-
-    .terminal {
-      border: 1px solid var(--line-soft);
-      border-radius: 8px;
-      padding: 12px;
-      background: #060b09;
-      min-height: 180px;
-    }
-
-    .prompt {
-      color: #cde6db;
-      margin: 0;
-      font-size: 12px;
-      line-height: 1.65;
-      white-space: pre-wrap;
-    }
-
-    .prompt .ok { color: var(--green); }
-    .prompt .muted { color: var(--muted); }
-    .prompt .warn { color: var(--warn); }
-
-    .progress {
-      margin-top: 10px;
-      height: 8px;
-      border-radius: 999px;
-      background: #0b1a14;
-      border: 1px solid var(--line-soft);
-      overflow: hidden;
-      position: relative;
-    }
-
-    .progress span {
-      display: block;
-      width: 72%;
-      height: 100%;
-      background: linear-gradient(90deg, var(--green-strong), var(--green));
-      animation: load 1.8s ease-in-out infinite;
-    }
-
-    @keyframes load {
-      0%, 100% { width: 62%; }
-      50% { width: 88%; }
-    }
-
-    .footer {
-      border-top: 1px solid var(--line-soft);
-      padding: 11px 16px;
+    .status-list span {
       color: var(--muted);
-      font-size: 12px;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+    }
+
+    .status-list .ok {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .meta {
+      border-top: 1px solid var(--divider);
+      padding-top: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .meta-row {
       display: flex;
       justify-content: space-between;
-      gap: 8px;
-      flex-wrap: wrap;
-      background: rgba(6, 11, 9, 0.9);
+      align-items: baseline;
+      font-size: 13px;
+      color: var(--muted);
     }
 
-    .footer strong { color: var(--text); font-weight: 700; }
+    .meta-row code {
+      font-family: "Segoe UI", system-ui, -apple-system, "SFMono-Regular", Menlo, monospace;
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 8px;
+      padding: 4px 8px;
+      color: var(--text);
+    }
 
-    @media (max-width: 840px) {
-      .content {
-        grid-template-columns: 1fr;
+    .tip {
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+      border-top: 1px solid var(--divider);
+      padding-top: 14px;
+    }
+
+    .tip strong {
+      color: var(--text);
+    }
+
+    footer {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @keyframes fade {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .icon {
+        animation: none;
+      }
+    }
+
+    @media (max-width: 480px) {
+      main {
+        padding: 24px;
+        border-radius: 18px;
+      }
+
+      .state {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+      }
+
+      .status-list li {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+      }
+
+      .meta-row {
+        flex-direction: column;
+        gap: 4px;
       }
     }
   </style>
 </head>
 <body>
-  <div class="grid" aria-hidden="true"></div>
-  <div class="scanline" aria-hidden="true"></div>
-
-  <main class="wrap" role="main" aria-label="OAuth callback success">
-    <header class="titlebar">
-      <div class="lights">
-        <span class="dot"></span>
-        <span class="dot"></span>
-        <span class="dot ok"></span>
+  <main role="main" aria-label="OAuth callback received">
+    <p class="eyebrow">OpenAI Codex</p>
+    <div class="icon" aria-hidden="true"></div>
+    <h1>Callback received</h1>
+    <p class="lead">Return to your terminal to complete sign-in.</p>
+    <div class="state">
+      <span>Status</span>
+      <strong>Processing</strong>
+    </div>
+    <ul class="status-list" aria-label="OAuth steps">
+      <li>
+        <span>Authorization code</span>
+        <span class="ok">received</span>
+      </li>
+      <li>
+        <span>Token exchange</span>
+        <span>running in terminal</span>
+      </li>
+      <li>
+        <span>Credentials</span>
+        <span>persisting after terminal completes</span>
+      </li>
+      <li>
+        <span>Session</span>
+        <span>activating in terminal</span>
+      </li>
+    </ul>
+    <section class="meta" aria-label="Callback summary">
+      <div class="meta-row">
+        <span>Callback</span>
+        <!-- Port 1455 is fixed by design via REDIRECT_URI -->
+        <code>localhost:1455</code>
       </div>
-      <div class="bar-title">OpenAI Codex - Callback Received</div>
-    </header>
-
-    <section class="content">
-      <article class="left">
-        <p class="kicker">OpenAI Codex</p>
-        <h1>Sign-in Complete</h1>
-        <p class="subtitle">Account connected. Return to terminal.</p>
-
-        <div class="badge"><span class="pulse"></span> Connected</div>
-
-        <ul class="steps" aria-label="Completion steps">
-          <li>Authorization code received</li>
-          <li>Token exchange complete</li>
-          <li>Credentials saved to local Codex auth storage</li>
-          <li>Session ready</li>
-        </ul>
-      </article>
-
-      <aside class="right" aria-label="Terminal status">
-        <div class="terminal">
-          <pre class="prompt"><span class="ok">[ok]</span> callback received on 127.0.0.1:1455
-<span class="ok">[ok]</span> secure token flow complete
-<span class="ok">[ok]</span> account saved
-
-<span class="muted">next:</span> return to terminal
-<span class="warn">tip:</span> close this tab</pre>
-          <div class="progress" aria-hidden="true"><span></span></div>
-        </div>
-      </aside>
+      <div class="meta-row">
+        <span>Tip</span>
+        <span>Close this tab when you are done.</span>
+      </div>
     </section>
-
-    <footer class="footer">
-      <span>Status: <strong>Connected</strong></span>
-      <span>Back to terminal to continue.</span>
-    </footer>
+    <p class="tip"><strong>Next:</strong> return to the terminal window to continue.</p>
+    <footer>Back to terminal to continue.</footer>
   </main>
 </body>
 </html>

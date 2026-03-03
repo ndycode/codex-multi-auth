@@ -93,7 +93,7 @@ describe('OAuth Server Unit Tests', () => {
 			expect(result.ready).toBe(false);
 			expect(result.port).toBe(1455);
 			expect(logError).toHaveBeenCalledWith(
-				expect.stringContaining('Failed to bind http://127.0.0.1:1455')
+				expect.stringContaining('Failed to bind http://localhost:1455')
 			);
 		});
 	});

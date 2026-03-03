@@ -33,7 +33,7 @@ vi.mock("../lib/auth/auth.js", () => ({
 	createAuthorizationFlow: vi.fn(),
 	exchangeAuthorizationCode: vi.fn(),
 	parseAuthorizationInput: vi.fn(),
-	REDIRECT_URI: "http://127.0.0.1:1455/auth/callback",
+	REDIRECT_URI: "http://localhost:1455/auth/callback",
 }));
 
 vi.mock("../lib/auth/browser.js", () => ({
@@ -551,7 +551,7 @@ describe("codex manager cli commands", () => {
 		expect(payload.recommendedSwitchCommand).toBe("codex auth switch 2");
 	});
 
-	it("keeps local switch when Codex auth sync fails", async () => {
+	it("keeps local switch active when Codex auth sync fails", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
@@ -582,6 +582,167 @@ describe("codex manager cli commands", () => {
 		);
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Switched to account 1"),
+		);
+	});
+
+	it("refreshes token pair during switch when cached access token is missing", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-a-next",
+			refresh: "refresh-a-next",
+			expires: now + 3_600_000,
+			idToken: "id-a-next",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "switch", "1"]);
+
+		expect(exitCode).toBe(0);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accessToken: "access-a-next",
+				refreshToken: "refresh-a-next",
+				expiresAt: now + 3_600_000,
+				idToken: "id-a-next",
+			}),
+		);
+	});
+
+	it("warns on switch validation refresh failure and keeps local active index", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 401,
+			message: "refresh revoked",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(false);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "switch", "1"]);
+
+		expect(exitCode).toBe(0);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Switch validation refresh failed"),
+		);
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Codex auth sync did not complete"),
+		);
+	});
+
+	it("autoSyncActiveAccountToCodex syncs active account without refresh when access is valid", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const { autoSyncActiveAccountToCodex } = await import("../lib/codex-manager.js");
+		const synced = await autoSyncActiveAccountToCodex();
+
+		expect(synced).toBe(true);
+		expect(queuedRefreshMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_a",
+				email: "a@example.com",
+				accessToken: "access-a",
+				refreshToken: "refresh-a",
+			}),
+		);
+	});
+
+	it("autoSyncActiveAccountToCodex refreshes missing access token then syncs", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-a-next",
+			refresh: "refresh-a-next",
+			expires: now + 3_600_000,
+			idToken: "id-a-next",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const { autoSyncActiveAccountToCodex } = await import("../lib/codex-manager.js");
+		const synced = await autoSyncActiveAccountToCodex();
+
+		expect(synced).toBe(true);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accessToken: "access-a-next",
+				refreshToken: "refresh-a-next",
+				expiresAt: now + 3_600_000,
+				idToken: "id-a-next",
+			}),
 		);
 	});
 

@@ -44,4 +44,53 @@ describe("capability policy store", () => {
 		const boostFromCanonical = store.getBoost("id:acc_alias", "gpt-5-codex", 1_500);
 		expect(boostFromCanonical).toBeGreaterThan(0);
 	});
+	it("returns zero boost/null snapshot for missing or invalid keys", () => {
+		const store = new CapabilityPolicyStore();
+		expect(store.getBoost("", "gpt-5-codex")).toBe(0);
+		expect(store.getBoost("id:missing", "gpt-5-codex")).toBe(0);
+		expect(store.getSnapshot("", "gpt-5-codex")).toBeNull();
+		expect(store.getSnapshot("id:missing", "gpt-5-codex")).toBeNull();
+	});
+
+	it("normalizes provider-prefixed models and strips quality suffixes", () => {
+		const store = new CapabilityPolicyStore();
+		store.recordSuccess("id:acc_norm", "openai/gpt-5-codex-high", 1_000);
+
+		const snapshot = store.getSnapshot("id:acc_norm", "gpt-5-codex");
+		expect(snapshot).not.toBeNull();
+		expect(snapshot?.successes).toBe(1);
+	});
+
+	it("ignores blank model and blank account writes", () => {
+		const store = new CapabilityPolicyStore();
+		store.recordSuccess("", "gpt-5-codex", 1_000);
+		store.recordFailure("id:acc_blank", "   ", 1_000);
+		store.recordUnsupported("", "   ", 1_000);
+
+		expect(store.getSnapshot("id:acc_blank", "gpt-5-codex")).toBeNull();
+		expect(store.clearAccount("")).toBe(0);
+	});
+
+	it("evicts oldest entries when capacity is exceeded", () => {
+		const store = new CapabilityPolicyStore();
+		for (let i = 0; i < 2055; i += 1) {
+			store.recordSuccess(`id:acc_${i}`, "gpt-5-codex", 1_000 + i);
+		}
+
+		expect(store.getSnapshot("id:acc_0", "gpt-5-codex")).toBeNull();
+		expect(store.getSnapshot("id:acc_2054", "gpt-5-codex")).not.toBeNull();
+	});
+
+	it("clamps boost to score boundaries", () => {
+		const store = new CapabilityPolicyStore();
+		for (let i = 0; i < 20; i += 1) {
+			store.recordSuccess("id:acc_hi", "gpt-5-codex", 1_000 + i);
+		}
+		for (let i = 0; i < 20; i += 1) {
+			store.recordUnsupported("id:acc_lo", "gpt-5-codex", 1_000 + i);
+		}
+
+		expect(store.getBoost("id:acc_hi", "gpt-5-codex", 2_000)).toBeLessThanOrEqual(20);
+		expect(store.getBoost("id:acc_lo", "gpt-5-codex", 2_000)).toBeGreaterThanOrEqual(-30);
+	});
 });

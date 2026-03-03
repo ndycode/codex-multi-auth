@@ -89,8 +89,9 @@ If `codex auth` is not recognized:
 
 ```bash
 where codex
-codex multi auth status
 ```
+
+Then continue with [troubleshooting.md](troubleshooting.md#verify-install-and-routing) for routing fallback commands.
 
 If OAuth callback on `1455` fails:
 

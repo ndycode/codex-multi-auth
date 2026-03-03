@@ -16,7 +16,7 @@ const successHtml = fs.readFileSync(path.join(__dirname, "..", "oauth-success.ht
  * and retains a single authorization code on the server instance until consumed via `waitForCode`.
  * Only one code is stored at a time; call `close` to abort polling and shut down the server.
  *
- * On platforms such as Windows, binding to 127.0.0.1:1455 may fail if another process holds the port
+ * On platforms such as Windows, binding to localhost:1455 may fail if another process holds the port
  * or if firewall/antivirus restrictions prevent local binding; in that case the returned `ready`
  * flag is `false` to allow a manual paste fallback.
  *
@@ -75,7 +75,7 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 
 	return new Promise((resolve) => {
 		server
-			.listen(1455, "127.0.0.1", () => {
+			.listen(1455, "localhost", () => {
 				resolve({
 					port: 1455,
 					ready: true,
@@ -101,7 +101,7 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 			})
 			.on("error", (err: NodeJS.ErrnoException) => {
 				logError(
-					`Failed to bind http://127.0.0.1:1455 (${err?.code}). Falling back to manual paste.`,
+					`Failed to bind http://localhost:1455 (${err?.code}). Falling back to manual paste.`,
 				);
 				resolve({
 					port: 1455,

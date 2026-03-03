@@ -1,12 +1,15 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, readdirSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
+	FILE_RETRY_BASE_DELAY_MS,
+	FILE_RETRY_MAX_ATTEMPTS,
 	normalizePluginList,
 	resolveInstallPaths,
+	withFileOperationRetry,
 } from "../scripts/install-codex-auth-utils.js";
 
 const scriptPath = "scripts/install-codex-auth.js";
@@ -14,6 +17,8 @@ const tempRoots: string[] = [];
 const execFileAsync = promisify(execFile);
 
 afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
 	while (tempRoots.length > 0) {
 		const root = tempRoots.pop();
 		if (root) {
@@ -21,6 +26,12 @@ afterEach(() => {
 		}
 	}
 });
+
+function retryableError(code: string): Error & { code: string } {
+	const error = new Error(`transient ${code}`) as Error & { code: string };
+	error.code = code;
+	return error;
+}
 
 describe("install-codex-auth script", () => {
   it("uses lowercase config template filenames", () => {
@@ -130,5 +141,52 @@ describe("install-codex-auth script", () => {
 		expect(`${result.stdout}\n${result.stderr}`).toContain("[dry-run]");
 		const configPath = path.join(appData, "Codex", "Codex.json");
 		expect(existsSync(configPath)).toBe(false);
+	});
+
+	it("retries transient file-operation errors and eventually succeeds", async () => {
+		vi.useFakeTimers();
+		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+		const operation = vi.fn<() => Promise<string>>()
+			.mockRejectedValueOnce(retryableError("EBUSY"))
+			.mockRejectedValueOnce(retryableError("EPERM"))
+			.mockResolvedValue("ok");
+
+		const pending = withFileOperationRetry(operation);
+		await Promise.resolve();
+		expect(operation).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(FILE_RETRY_BASE_DELAY_MS);
+		expect(operation).toHaveBeenCalledTimes(2);
+
+		await vi.advanceTimersByTimeAsync(FILE_RETRY_BASE_DELAY_MS * 2);
+		await expect(pending).resolves.toBe("ok");
+		expect(operation).toHaveBeenCalledTimes(3);
+
+		randomSpy.mockRestore();
+	});
+
+	it("throws after max retry attempts for persistent transient errors", async () => {
+		vi.useFakeTimers();
+		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+		const operation = vi.fn<() => Promise<void>>().mockRejectedValue(retryableError("EAGAIN"));
+
+		const pending = withFileOperationRetry(operation);
+		pending.catch(() => undefined);
+		for (let attempt = 1; attempt < FILE_RETRY_MAX_ATTEMPTS; attempt += 1) {
+			await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(FILE_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1)));
+		}
+
+		await expect(pending).rejects.toMatchObject({ code: "EAGAIN" });
+		expect(operation).toHaveBeenCalledTimes(FILE_RETRY_MAX_ATTEMPTS);
+
+		randomSpy.mockRestore();
+	});
+
+	it("throws immediately for non-retryable file-operation errors", async () => {
+		const operation = vi.fn<() => Promise<void>>().mockRejectedValue(retryableError("ENOENT"));
+
+		await expect(withFileOperationRetry(operation)).rejects.toMatchObject({ code: "ENOENT" });
+		expect(operation).toHaveBeenCalledTimes(1);
 	});
 });

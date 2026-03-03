@@ -57,6 +57,8 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 	/model is not supported when using codex with a chatgpt account/i;
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
+const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+const CREATE_CODEX_HEADERS_PARAM_KEYS = new Set(["init", "accountId", "accessToken", "opts"]);
 
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
@@ -306,6 +308,24 @@ export interface ErrorDiagnostics {
 	httpStatus?: number;
 }
 
+export interface CreateCodexHeadersOptions {
+	model?: string;
+	promptCacheKey?: string;
+}
+
+export interface CreateCodexHeadersParams {
+	init?: RequestInit;
+	accountId: string;
+	accessToken: string;
+	opts?: CreateCodexHeadersOptions;
+}
+
+function isCreateCodexHeadersNamedParams(value: unknown): value is CreateCodexHeadersParams {
+	if (!isRecord(value)) return false;
+	if (typeof value.accountId !== "string" || typeof value.accessToken !== "string") return false;
+	return Object.keys(value).every((key) => CREATE_CODEX_HEADERS_PARAM_KEYS.has(key));
+}
+
 /**
  * Determines if the current auth token needs to be refreshed
  * @param auth - Current authentication state
@@ -503,19 +523,44 @@ export async function transformRequestForCodex(
  * @returns Headers object with all required Codex headers
  */
 export function createCodexHeaders(
+	params: CreateCodexHeadersParams,
+): Headers;
+export function createCodexHeaders(
     init: RequestInit | undefined,
     accountId: string,
     accessToken: string,
-    opts?: { model?: string; promptCacheKey?: string },
+    opts?: CreateCodexHeadersOptions,
+): Headers;
+export function createCodexHeaders(
+    initOrParams: RequestInit | undefined | CreateCodexHeadersParams,
+    accountId?: string,
+    accessToken?: string,
+    opts?: CreateCodexHeadersOptions,
 ): Headers {
-	const headers = new Headers(init?.headers ?? {});
+	const useNamedParams =
+		typeof accountId === "undefined" &&
+		typeof accessToken === "undefined" &&
+		isCreateCodexHeadersNamedParams(initOrParams);
+	const namedParams = useNamedParams
+		? (initOrParams as CreateCodexHeadersParams)
+		: null;
+	const resolvedInit = useNamedParams
+		? namedParams?.init
+		: (initOrParams as RequestInit | undefined);
+	const resolvedAccountId = useNamedParams ? namedParams?.accountId : accountId;
+	const resolvedAccessToken = useNamedParams ? namedParams?.accessToken : accessToken;
+	const resolvedOpts = useNamedParams ? namedParams?.opts : opts;
+	if (!resolvedAccountId || !resolvedAccessToken) {
+		throw new TypeError("createCodexHeaders requires accountId and accessToken");
+	}
+	const headers = new Headers(resolvedInit?.headers ?? {});
 	headers.delete("x-api-key"); // Remove any existing API key
-	headers.set("Authorization", `Bearer ${accessToken}`);
-	headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+	headers.set("Authorization", `Bearer ${resolvedAccessToken}`);
+	headers.set(OPENAI_HEADERS.ACCOUNT_ID, resolvedAccountId);
 	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
 
-    const cacheKey = opts?.promptCacheKey;
+    const cacheKey = resolvedOpts?.promptCacheKey;
     if (cacheKey) {
         headers.set(OPENAI_HEADERS.CONVERSATION_ID, cacheKey);
         headers.set(OPENAI_HEADERS.SESSION_ID, cacheKey);
@@ -691,15 +736,21 @@ interface RateLimitErrorBody {
 
 function parseRateLimitBody(
 	body: string,
-): { code?: string; resetsAt?: number; retryAfterMs?: number } | undefined {
+): {
+	code?: string;
+	resetsAt?: number;
+	retryAfterMs?: number;
+	retryAfterSeconds?: number;
+} | undefined {
 	if (!body) return undefined;
 	try {
 		const parsed = JSON.parse(body) as RateLimitErrorBody;
 		const error = parsed?.error ?? {};
 		const code = (error.code ?? error.type ?? "").toString();
 		const resetsAt = toNumber(error.resets_at ?? error.reset_at);
-		const retryAfterMs = toNumber(error.retry_after_ms ?? error.retry_after);
-		return { code, resetsAt, retryAfterMs };
+		const retryAfterMs = toNumber(error.retry_after_ms);
+		const retryAfterSeconds = toNumber(error.retry_after);
+		return { code, resetsAt, retryAfterMs, retryAfterSeconds };
 	} catch {
 		return undefined;
 	}
@@ -839,12 +890,18 @@ function ensureJsonErrorResponse(response: Response, payload: ErrorPayload): Res
 }
 
 function parseRetryAfterMs(
-        response: Response,
-        parsedBody?: { resetsAt?: number; retryAfterMs?: number },
+	response: Response,
+	parsedBody?: { resetsAt?: number; retryAfterMs?: number; retryAfterSeconds?: number },
 ): number | null {
-        if (parsedBody?.retryAfterMs !== undefined) {
-                return normalizeRetryAfter(parsedBody.retryAfterMs);
-        }
+	if (parsedBody?.retryAfterMs !== undefined) {
+		const normalized = normalizeRetryAfterMs(parsedBody.retryAfterMs);
+		if (normalized !== null) return normalized;
+	}
+
+	if (parsedBody?.retryAfterSeconds !== undefined) {
+		const normalized = normalizeRetryAfterSeconds(parsedBody.retryAfterSeconds);
+		if (normalized !== null) return normalized;
+	}
 
         const retryAfterMsHeader = response.headers.get("retry-after-ms");
         if (retryAfterMsHeader) {
@@ -897,16 +954,18 @@ function parseRetryAfterMs(
         return null;
 }
 
-function normalizeRetryAfter(value: number): number {
-        if (!Number.isFinite(value)) return 60000;
-        let ms: number;
-        if (value > 0 && value < 1000) {
-                ms = Math.floor(value * 1000);
-        } else {
-                ms = Math.floor(value);
-        }
-        const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
-        return Math.min(ms, MAX_RETRY_DELAY_MS);
+function normalizeRetryAfterMs(value: number): number | null {
+	if (!Number.isFinite(value)) return null;
+	const ms = Math.floor(value);
+	if (ms <= 0) return null;
+	return Math.min(ms, MAX_RETRY_DELAY_MS);
+}
+
+function normalizeRetryAfterSeconds(value: number): number | null {
+	if (!Number.isFinite(value)) return null;
+	const ms = Math.floor(value * 1000);
+	if (ms <= 0) return null;
+	return Math.min(ms, MAX_RETRY_DELAY_MS);
 }
 
 function toNumber(value: unknown): number | undefined {

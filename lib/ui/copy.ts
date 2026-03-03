@@ -41,7 +41,7 @@ export const UI_COPY = {
 		pastePrompt: "Paste callback URL or code here (Q to cancel):",
 		browserOpened: "Browser opened.",
 		browserOpenFail: "Could not open browser. Use this link:",
-		waitingCallback: "Waiting for login callback on 127.0.0.1:1455...",
+		waitingCallback: "Waiting for login callback on localhost:1455...",
 		callbackMissed: "No callback received. Paste manually.",
 		cancelled: "Sign-in cancelled.",
 		cancelledBackToMenu: "Sign-in cancelled. Going back to menu.",

@@ -301,6 +301,18 @@ export interface HybridSelectionOptions {
 }
 
 /**
+ * Named-parameter alternative for selectHybridAccount to avoid brittle positional arguments.
+ */
+export interface SelectHybridAccountParams {
+  accounts: AccountWithMetrics[];
+  healthTracker: HealthScoreTracker;
+  tokenTracker: TokenBucketTracker;
+  quotaKey?: string;
+  config?: Partial<HybridSelectionConfig>;
+  options?: HybridSelectionOptions;
+}
+
+/**
  * Selects the best account from a set using a weighted hybrid score composed of health, token availability, and freshness.
  *
  * @param accounts - Candidate accounts with availability (`isAvailable`) and last-used timestamp (`lastUsed`); when none are available the least-recently-used account is returned.
@@ -316,21 +328,52 @@ export interface HybridSelectionOptions {
  * - The function is purely in-memory and performs no filesystem operations (no Windows filesystem considerations).
  */
 export function selectHybridAccount(
+  params: SelectHybridAccountParams,
+): AccountWithMetrics | null;
+export function selectHybridAccount(
   accounts: AccountWithMetrics[],
   healthTracker: HealthScoreTracker,
   tokenTracker: TokenBucketTracker,
   quotaKey?: string,
+  config?: Partial<HybridSelectionConfig>,
+  options?: HybridSelectionOptions,
+): AccountWithMetrics | null;
+export function selectHybridAccount(
+  accountsOrParams: AccountWithMetrics[] | SelectHybridAccountParams,
+  healthTracker?: HealthScoreTracker,
+  tokenTracker?: TokenBucketTracker,
+  quotaKey?: string,
   config: Partial<HybridSelectionConfig> = {},
   options: HybridSelectionOptions = {},
 ): AccountWithMetrics | null {
-  const cfg = { ...DEFAULT_HYBRID_SELECTION_CONFIG, ...config };
-  const available = accounts.filter((a) => a.isAvailable);
+  const namedParams =
+    !Array.isArray(accountsOrParams) &&
+    accountsOrParams !== null &&
+    typeof accountsOrParams === "object"
+      ? accountsOrParams
+      : null;
+  const resolvedAccounts = namedParams ? namedParams.accounts : accountsOrParams;
+  const resolvedHealthTracker = namedParams ? namedParams.healthTracker : healthTracker;
+  const resolvedTokenTracker = namedParams ? namedParams.tokenTracker : tokenTracker;
+  const resolvedQuotaKey = namedParams ? namedParams.quotaKey : quotaKey;
+  const resolvedConfig = namedParams ? (namedParams.config ?? {}) : config;
+  const resolvedOptions = namedParams ? (namedParams.options ?? {}) : options;
+
+  if (!Array.isArray(resolvedAccounts)) {
+    throw new TypeError("selectHybridAccount requires accounts to be an array");
+  }
+  if (!resolvedHealthTracker || !resolvedTokenTracker) {
+    throw new TypeError("selectHybridAccount requires healthTracker and tokenTracker");
+  }
+
+  const cfg = { ...DEFAULT_HYBRID_SELECTION_CONFIG, ...resolvedConfig };
+  const available = resolvedAccounts.filter((a) => a.isAvailable);
 
   if (available.length === 0) {
-    if (accounts.length === 0) return null;
+    if (resolvedAccounts.length === 0) return null;
     let leastRecentlyUsed: AccountWithMetrics | null = null;
     let oldestTime = Infinity;
-    for (const account of accounts) {
+    for (const account of resolvedAccounts) {
       if (account.lastUsed < oldestTime) {
         oldestTime = account.lastUsed;
         leastRecentlyUsed = account;
@@ -347,16 +390,16 @@ export function selectHybridAccount(
 
   // PID offset: distribute account selection across parallel processes
   // Each process gets a small deterministic bonus based on its PID
-  const pidBonus = options.pidOffsetEnabled ? (process.pid % 100) * 0.01 : 0;
+  const pidBonus = resolvedOptions.pidOffsetEnabled ? (process.pid % 100) * 0.01 : 0;
 
   for (const account of available) {
-    const health = healthTracker.getScore(account.index, quotaKey);
-    const tokens = tokenTracker.getTokens(account.index, quotaKey);
+    const health = resolvedHealthTracker.getScore(account.index, resolvedQuotaKey);
+    const tokens = resolvedTokenTracker.getTokens(account.index, resolvedQuotaKey);
     const hoursSinceUsed = (now - account.lastUsed) / (1000 * 60 * 60);
 
     const capabilityBoost =
-      typeof options.scoreBoostByAccount?.[account.index] === "number"
-        ? options.scoreBoostByAccount[account.index] ?? 0
+      typeof resolvedOptions.scoreBoostByAccount?.[account.index] === "number"
+        ? resolvedOptions.scoreBoostByAccount[account.index] ?? 0
         : 0;
     const safeCapabilityBoost = Number.isFinite(capabilityBoost) ? capabilityBoost : 0;
 
@@ -367,7 +410,7 @@ export function selectHybridAccount(
       safeCapabilityBoost;
 
     // PID-based offset distributes selection across parallel agents
-    if (options.pidOffsetEnabled) {
+    if (resolvedOptions.pidOffsetEnabled) {
       score += ((account.index * 0.131 + pidBonus) % 1) * cfg.freshnessWeight * 0.1;
     }
 
@@ -378,8 +421,8 @@ export function selectHybridAccount(
   }
 
   if (bestAccount && available.length > 1) {
-    const health = healthTracker.getScore(bestAccount.index, quotaKey);
-    const tokens = tokenTracker.getTokens(bestAccount.index, quotaKey);
+    const health = resolvedHealthTracker.getScore(bestAccount.index, resolvedQuotaKey);
+    const tokens = resolvedTokenTracker.getTokens(bestAccount.index, resolvedQuotaKey);
     log.debug("Selected account", {
       index: bestAccount.index,
       health: Math.round(health),
@@ -417,6 +460,13 @@ export function randomDelay(minMs: number, maxMs: number): number {
   return Math.floor(minMs + Math.random() * (maxMs - minMs));
 }
 
+export interface ExponentialBackoffOptions {
+  attempt: number;
+  baseMs?: number;
+  maxMs?: number;
+  jitterFactor?: number;
+}
+
 /**
  * Calculates exponential backoff with jitter.
  * @param attempt - Attempt number (1-based)
@@ -425,14 +475,54 @@ export function randomDelay(minMs: number, maxMs: number): number {
  * @param jitterFactor - Jitter factor (0-1)
  * @returns Backoff delay with jitter
  */
+export function exponentialBackoff(options: ExponentialBackoffOptions): number;
 export function exponentialBackoff(
   attempt: number,
+  baseMs?: number,
+  maxMs?: number,
+  jitterFactor?: number,
+): number;
+export function exponentialBackoff(
+  attemptOrOptions: number | ExponentialBackoffOptions,
   baseMs: number = 1000,
   maxMs: number = 60000,
   jitterFactor: number = 0.1,
 ): number {
-  const delay = Math.min(baseMs * Math.pow(2, attempt - 1), maxMs);
-  return addJitter(delay, jitterFactor);
+  const useNamedParams =
+    typeof attemptOrOptions === "object" && attemptOrOptions !== null;
+  const normalizedAttempt = useNamedParams
+    ? (attemptOrOptions as ExponentialBackoffOptions).attempt
+    : attemptOrOptions;
+  const normalizedBaseMs = useNamedParams
+    ? ((attemptOrOptions as ExponentialBackoffOptions).baseMs ?? 1000)
+    : baseMs;
+  const normalizedMaxMs = useNamedParams
+    ? ((attemptOrOptions as ExponentialBackoffOptions).maxMs ?? 60000)
+    : maxMs;
+  const normalizedJitterFactor = useNamedParams
+    ? ((attemptOrOptions as ExponentialBackoffOptions).jitterFactor ?? 0.1)
+    : jitterFactor;
+  if (!Number.isInteger(normalizedAttempt) || normalizedAttempt < 1) {
+    throw new TypeError("exponentialBackoff requires attempt to be a positive integer");
+  }
+  if (!Number.isFinite(normalizedBaseMs) || normalizedBaseMs < 0) {
+    throw new TypeError("exponentialBackoff requires baseMs to be a finite non-negative number");
+  }
+  if (!Number.isFinite(normalizedMaxMs) || normalizedMaxMs < 0) {
+    throw new TypeError("exponentialBackoff requires maxMs to be a finite non-negative number");
+  }
+  if (
+    !Number.isFinite(normalizedJitterFactor) ||
+    normalizedJitterFactor < 0 ||
+    normalizedJitterFactor > 1
+  ) {
+    throw new TypeError("exponentialBackoff requires jitterFactor to be between 0 and 1");
+  }
+  const delay = Math.min(
+    normalizedBaseMs * Math.pow(2, normalizedAttempt - 1),
+    normalizedMaxMs,
+  );
+  return addJitter(delay, normalizedJitterFactor);
 }
 
 // ============================================================================

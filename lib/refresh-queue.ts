@@ -12,6 +12,7 @@ import { refreshAccessToken } from "./auth/auth.js";
 import type { TokenResult } from "./types.js";
 import { createLogger } from "./logger.js";
 import { RefreshLeaseCoordinator } from "./refresh-lease.js";
+import { isAbortError } from "./utils.js";
 
 const log = createLogger("refresh-queue");
 
@@ -21,6 +22,9 @@ const log = createLogger("refresh-queue");
 interface RefreshEntry {
   promise: Promise<TokenResult>;
   startedAt: number;
+  stage: "acquire" | "refresh";
+  generation: number;
+  staleWarningLogged?: boolean;
 }
 
 /**
@@ -57,6 +61,7 @@ interface RefreshEntry {
 export class RefreshQueue {
   private pending: Map<string, RefreshEntry> = new Map();
   private readonly leaseCoordinator: RefreshLeaseCoordinator;
+  private nextGeneration = 0;
   
   /**
    * Maps old refresh tokens to new tokens after rotation.
@@ -66,9 +71,7 @@ export class RefreshQueue {
   private tokenRotationMap: Map<string, string> = new Map();
 
   /**
-   * Maximum time to keep a refresh entry in the queue (prevents memory leaks
-   * from stuck requests). After this timeout, the entry is removed and new
-   * callers will trigger a fresh refresh.
+   * Age threshold for stale pending refresh operations.
    */
   private readonly maxEntryAgeMs: number;
 
@@ -124,6 +127,26 @@ export class RefreshQueue {
     // Start a new refresh immediately so local state reflects "in-flight"
     // without waiting on cross-process lease checks.
     const startedAt = Date.now();
+    const generation = ++this.nextGeneration;
+    const markStage = (stage: "acquire" | "refresh") => {
+      const entry = this.pending.get(refreshToken);
+      if (!entry || entry.generation !== generation) return;
+      entry.stage = stage;
+      entry.startedAt = Date.now();
+      entry.staleWarningLogged = false;
+    };
+    const getSupersedingPromise = (): Promise<TokenResult> | undefined => {
+      const current = this.pending.get(refreshToken);
+      if (!current || current.generation === generation) {
+        return undefined;
+      }
+      log.info("Refresh generation superseded; joining newer in-flight refresh", {
+        tokenSuffix: refreshToken.slice(-6),
+        staleGeneration: generation,
+        activeGeneration: current.generation,
+      });
+      return current.promise;
+    };
     const promise = (async (): Promise<TokenResult> => {
       let lease: Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>;
       try {
@@ -133,6 +156,11 @@ export class RefreshQueue {
           tokenSuffix: refreshToken.slice(-6),
           error: (error as Error)?.message ?? String(error),
         });
+        const supersedingPromise = getSupersedingPromise();
+        if (supersedingPromise) {
+          return supersedingPromise;
+        }
+        markStage("refresh");
         return this.executeRefreshWithRotationTracking(refreshToken);
       }
       if (lease.role === "follower" && lease.result) {
@@ -143,6 +171,11 @@ export class RefreshQueue {
       }
 
       try {
+        const supersedingPromise = getSupersedingPromise();
+        if (supersedingPromise) {
+          return supersedingPromise;
+        }
+        markStage("refresh");
         const result = await this.executeRefreshWithRotationTracking(refreshToken);
         try {
           await lease.release(result);
@@ -164,13 +197,21 @@ export class RefreshQueue {
         }
       }
     })();
-    this.pending.set(refreshToken, { promise, startedAt });
+    this.pending.set(refreshToken, {
+      promise,
+      startedAt,
+      stage: "acquire",
+      generation,
+    });
 
     try {
       return await promise;
     } finally {
-      this.pending.delete(refreshToken);
-      this.cleanupRotationMapping(refreshToken);
+      const entry = this.pending.get(refreshToken);
+      if (!entry || entry.generation === generation) {
+        this.pending.delete(refreshToken);
+        this.cleanupRotationMapping(refreshToken);
+      }
     }
   }
 
@@ -212,9 +253,25 @@ export class RefreshQueue {
   private async executeRefresh(refreshToken: string): Promise<TokenResult> {
     const startTime = Date.now();
     log.info("Starting token refresh", { tokenSuffix: refreshToken.slice(-6) });
+    const timeoutMs = Math.max(1_000, this.maxEntryAgeMs);
+    const timeoutController = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      const result = await refreshAccessToken(refreshToken);
+      const timeoutErrorMessage = `Refresh timeout after ${timeoutMs}ms`;
+      const timeoutPromise = new Promise<TokenResult>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          const timeoutError = new Error(timeoutErrorMessage) as Error & { code?: string };
+          timeoutError.name = "AbortError";
+          timeoutError.code = "ABORT_ERR";
+          timeoutController.abort(timeoutError);
+          reject(timeoutError);
+        }, timeoutMs);
+      });
+      const refreshPromise = refreshAccessToken(refreshToken, {
+        signal: timeoutController.signal,
+      });
+      const result = await Promise.race([refreshPromise, timeoutPromise]);
       const duration = Date.now() - startTime;
 
       if (result.type === "success") {
@@ -233,6 +290,18 @@ export class RefreshQueue {
       return result;
     } catch (error) {
       const duration = Date.now() - startTime;
+      if (isAbortError(error)) {
+        log.warn("Token refresh aborted", {
+          tokenSuffix: refreshToken.slice(-6),
+          error: (error as Error)?.message ?? String(error),
+          durationMs: duration,
+        });
+        return {
+          type: "failed",
+          reason: "unknown",
+          message: (error as Error)?.message ?? "Refresh aborted",
+        };
+      }
       log.error("Token refresh threw exception", {
         tokenSuffix: refreshToken.slice(-6),
         error: (error as Error)?.message ?? String(error),
@@ -244,31 +313,38 @@ export class RefreshQueue {
         reason: "network_error",
         message: (error as Error)?.message ?? "Unknown error during refresh",
       };
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 
   /**
-   * Remove stale entries that have been pending too long.
-   * This prevents memory leaks from stuck or abandoned refresh operations.
+   * Cleanup stale entries that have been pending too long.
+   * Acquire-stage entries are evicted to prevent deadlocked refresh lanes.
    */
   private cleanup(): void {
     const now = Date.now();
-    const staleTokens: string[] = [];
-
     for (const [token, entry] of this.pending.entries()) {
-      if (now - entry.startedAt > this.maxEntryAgeMs) {
-        staleTokens.push(token);
+      const ageMs = now - entry.startedAt;
+      if (ageMs <= this.maxEntryAgeMs) continue;
+      if (entry.stage === "acquire") {
+        log.warn("Evicting stale refresh entry during lease acquire stage", {
+          tokenSuffix: token.slice(-6),
+          ageMs,
+        });
+        this.pending.delete(token);
+        this.cleanupRotationMapping(token);
+        continue;
       }
-    }
-
-    for (const token of staleTokens) {
-      // istanbul ignore next -- defensive: token always exists in pending at this point (not yet deleted)
-      const ageMs = now - (this.pending.get(token)?.startedAt ?? now);
-      log.warn("Removing stale refresh entry", {
-        tokenSuffix: token.slice(-6),
-        ageMs,
-      });
-      this.pending.delete(token);
+      if (!entry.staleWarningLogged) {
+        log.warn("Refresh entry exceeded stale warning threshold", {
+          tokenSuffix: token.slice(-6),
+          ageMs,
+        });
+        entry.staleWarningLogged = true;
+      }
     }
   }
 

@@ -34,6 +34,9 @@ jobs:
       - name: Security audit (CI policy)
         run: npm run audit:ci
 
+      - name: Lockfile floor guard
+        run: npm run test -- test/lockfile-version-floor.test.ts
+
       - name: Security audit (full dependency tree, non-blocking)
         continue-on-error: true
         run: npm run audit:all

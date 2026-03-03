@@ -489,5 +489,56 @@ describe("CLI Module", () => {
 			expect(result).toEqual(candidates[1]);
 		});
 	});
-});
+	describe("additional fallback and env branches", () => {
+		it("returns check/deep-check/cancel for fallback aliases", async () => {
+			const { promptLoginMode } = await import("../lib/cli.js");
 
+			mockRl.question.mockResolvedValueOnce("check");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "check" });
+
+			mockRl.question.mockResolvedValueOnce("deep");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "deep-check" });
+
+			mockRl.question.mockResolvedValueOnce("quit");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "cancel" });
+		});
+
+		it("evaluates CODEX_TUI/CODEX_DESKTOP/TERM_PROGRAM/ELECTRON branches when TTY is true", async () => {
+			delete process.env.FORCE_INTERACTIVE_MODE;
+			const { stdin, stdout } = await import("node:process");
+			const origInputTTY = stdin.isTTY;
+			const origOutputTTY = stdout.isTTY;
+			Object.defineProperty(stdin, "isTTY", { value: true, writable: true, configurable: true });
+			Object.defineProperty(stdout, "isTTY", { value: true, writable: true, configurable: true });
+
+			try {
+				process.env.CODEX_TUI = "1";
+				let mod = await import("../lib/cli.js");
+				expect(mod.isNonInteractiveMode()).toBe(true);
+				delete process.env.CODEX_TUI;
+
+				process.env.CODEX_DESKTOP = "1";
+				mod = await import("../lib/cli.js");
+				expect(mod.isNonInteractiveMode()).toBe(true);
+				delete process.env.CODEX_DESKTOP;
+
+				process.env.TERM_PROGRAM = " codex ";
+				mod = await import("../lib/cli.js");
+				expect(mod.isNonInteractiveMode()).toBe(true);
+				delete process.env.TERM_PROGRAM;
+
+				process.env.ELECTRON_RUN_AS_NODE = "1";
+				mod = await import("../lib/cli.js");
+				expect(mod.isNonInteractiveMode()).toBe(true);
+				delete process.env.ELECTRON_RUN_AS_NODE;
+			} finally {
+				delete process.env.CODEX_TUI;
+				delete process.env.CODEX_DESKTOP;
+				delete process.env.TERM_PROGRAM;
+				delete process.env.ELECTRON_RUN_AS_NODE;
+				Object.defineProperty(stdin, "isTTY", { value: origInputTTY, writable: true, configurable: true });
+				Object.defineProperty(stdout, "isTTY", { value: origOutputTTY, writable: true, configurable: true });
+			}
+		});
+	});
+});

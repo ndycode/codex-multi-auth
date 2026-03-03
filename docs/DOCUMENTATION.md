@@ -29,11 +29,14 @@ Canonical governance for repository documentation quality and consistency.
 | Privacy and data handling | `docs/privacy.md` |
 | Upgrade and migration | `docs/upgrade.md` |
 | Command reference | `docs/reference/commands.md` |
+| Public API contract | `docs/reference/public-api.md` |
+| Error contract reference | `docs/reference/error-contracts.md` |
 | Settings reference | `docs/reference/settings.md` |
 | Storage path reference | `docs/reference/storage-paths.md` |
 | Docs style contract | `docs/STYLE_GUIDE.md` |
 | Docs governance (this file) | `docs/DOCUMENTATION.md` |
 | Architecture internals | `docs/development/ARCHITECTURE.md` |
+| IA/findability audit (2026-03-01) | `docs/development/IA_FINDABILITY_AUDIT_2026-03-01.md` |
 | Config fields internals | `docs/development/CONFIG_FIELDS.md` |
 | Config flow internals | `docs/development/CONFIG_FLOW.md` |
 | Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` |
@@ -48,8 +51,9 @@ Canonical governance for repository documentation quality and consistency.
 1. Canonical package name: `codex-multi-auth`.
 2. Canonical account command family: `codex auth ...`.
 3. Canonical storage root: `~/.codex/multi-auth` unless explicitly overridden.
-4. Legacy paths/flows belong only in migration and compatibility sections.
-5. Public release line is `0.x`; historical pre-`0.1.0` entries are archived separately.
+4. Compatibility aliases (`codex multi auth`, `codex multi-auth`, `codex multiauth`) belong only in command reference, troubleshooting, or migration sections.
+5. Legacy paths/flows and scoped package references belong only in migration and compatibility sections.
+6. Public release line is `0.x`; historical pre-`0.1.0` entries are archived separately.
 
 ---
 

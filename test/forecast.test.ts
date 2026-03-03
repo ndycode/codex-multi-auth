@@ -73,7 +73,9 @@ describe("forecast helpers", () => {
 		});
 
 		expect(result.riskScore).toBeGreaterThanOrEqual(30);
-		expect(result.reasons.some((reason) => reason.includes("primary quota"))).toBe(true);
+		expect(
+			result.reasons.some((reason) => reason.includes("primary quota")),
+		).toBe(true);
 	});
 
 	it("recommends the best ready account", () => {
@@ -132,7 +134,9 @@ describe("forecast helpers", () => {
 			},
 		});
 
-		expect(result.reasons.some((reason) => reason.includes("refresh warning:"))).toBe(true);
+		expect(
+			result.reasons.some((reason) => reason.includes("refresh warning:")),
+		).toBe(true);
 		expect(result.reasons.join(" ")).not.toContain("user@example.com");
 		expect(result.reasons.join(" ")).not.toContain("verysecrettoken12345");
 		expect(result.reasons.join(" ")).not.toContain("sk-1234567890abcdef");
@@ -185,8 +189,12 @@ describe("forecast helpers", () => {
 
 		expect(result.availability).toBe("delayed");
 		expect(result.waitMs).toBe(rateLimitMs);
-		expect(result.reasons.some((reason) => reason.includes("cooldown remaining"))).toBe(true);
-		expect(result.reasons.some((reason) => reason.includes("rate limit resets in"))).toBe(true);
+		expect(
+			result.reasons.some((reason) => reason.includes("cooldown remaining")),
+		).toBe(true);
+		expect(
+			result.reasons.some((reason) => reason.includes("rate limit resets in")),
+		).toBe(true);
 	});
 
 	it("marks delayed on live 429 and tracks quota reset wait", () => {
@@ -218,7 +226,11 @@ describe("forecast helpers", () => {
 
 		expect(result.availability).toBe("delayed");
 		expect(result.waitMs).toBe(120_000);
-		expect(result.reasons.some((reason) => reason.includes("live probe returned 429"))).toBe(true);
+		expect(
+			result.reasons.some((reason) =>
+				reason.includes("live probe returned 429"),
+			),
+		).toBe(true);
 	});
 
 	it("does not delay healthy accounts only because quota reset headers exist", () => {
@@ -281,7 +293,11 @@ describe("forecast helpers", () => {
 			index: 0,
 			now,
 			isCurrent: false,
-			account: { refreshToken: "r70", addedAt: now - 1_000, lastUsed: now - 1_000 },
+			account: {
+				refreshToken: "r70",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+			},
 			liveQuota: {
 				status: 200,
 				model: "gpt-5-codex",
@@ -293,7 +309,11 @@ describe("forecast helpers", () => {
 			index: 1,
 			now,
 			isCurrent: false,
-			account: { refreshToken: "r80", addedAt: now - 1_000, lastUsed: now - 1_000 },
+			account: {
+				refreshToken: "r80",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+			},
 			liveQuota: {
 				status: 200,
 				model: "gpt-5-codex",
@@ -305,7 +325,11 @@ describe("forecast helpers", () => {
 			index: 2,
 			now,
 			isCurrent: false,
-			account: { refreshToken: "r90", addedAt: now - 1_000, lastUsed: now - 1_000 },
+			account: {
+				refreshToken: "r90",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+			},
 			liveQuota: {
 				status: 200,
 				model: "gpt-5-codex",
@@ -317,7 +341,11 @@ describe("forecast helpers", () => {
 			index: 3,
 			now,
 			isCurrent: false,
-			account: { refreshToken: "r98", addedAt: now - 1_000, lastUsed: now - 1_000 },
+			account: {
+				refreshToken: "r98",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+			},
 			liveQuota: {
 				status: 200,
 				model: "gpt-5-codex",
@@ -400,6 +428,123 @@ describe("forecast helpers", () => {
 		expect(recommendation.reason).toContain("No account is immediately ready");
 	});
 
+	it("uses redacted fallback refresh messages when reason code is blank", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "r1",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+			},
+			refreshFailure: {
+				type: "failed",
+				reason: "   ",
+				message:
+					"Bearer supersecrettoken123 for dev@example.com using key sk-1234567890abcdef",
+			},
+		});
+
+		const joined = result.reasons.join(" ");
+		expect(joined).toContain("refresh warning:");
+		expect(joined).toContain("Bearer ***");
+		expect(joined).not.toContain("dev@example.com");
+		expect(joined).not.toContain("supersecrettoken123");
+		expect(joined).not.toContain("sk-1234567890abcdef");
+	});
+
+	it("uses codex-family reset keys and ignores stale or invalid entries", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 1,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "r2",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+				rateLimitResetTimes: {
+					codex: now - 10,
+					"codex:5h": now + 60_000,
+					"codex:7d": "bad" as unknown as number,
+					"other-family": now + 5_000,
+				},
+			},
+		});
+
+		expect(result.availability).toBe("delayed");
+		expect(result.waitMs).toBe(60_000);
+	});
+
+	it("keeps unavailable state when live quota returns 429 on an unavailable account", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 2,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "r3",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+				enabled: false,
+			},
+			liveQuota: {
+				status: 429,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 95,
+					windowMinutes: 300,
+					resetAtMs: now + 30_000,
+				},
+				secondary: {
+					usedPercent: 0,
+					windowMinutes: 10080,
+					resetAtMs: now + 5_000,
+				},
+			},
+		});
+
+		expect(result.availability).toBe("unavailable");
+		expect(
+			result.reasons.some((reason) =>
+				reason.includes("live probe returned 429"),
+			),
+		).toBe(true);
+	});
+
+	it("breaks delayed recommendation ties in favor of the current account", () => {
+		const now = 1_700_000_000_000;
+		const results = evaluateForecastAccounts([
+			{
+				index: 5,
+				now,
+				isCurrent: false,
+				account: {
+					refreshToken: "x",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					coolingDownUntil: now + 45_000,
+				},
+			},
+			{
+				index: 3,
+				now,
+				isCurrent: true,
+				account: {
+					refreshToken: "y",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					coolingDownUntil: now + 45_000,
+				},
+			},
+		]);
+
+		const recommendation = recommendForecastAccount(results);
+		expect(recommendation.recommendedIndex).toBe(3);
+	});
+
 	it("returns null recommendation when all candidates are disabled or hard-failed", () => {
 		const now = 1_700_000_000_000;
 		const results = evaluateForecastAccounts([
@@ -434,6 +579,8 @@ describe("forecast helpers", () => {
 
 		const recommendation = recommendForecastAccount(results);
 		expect(recommendation.recommendedIndex).toBeNull();
-		expect(recommendation.reason).toContain("No healthy accounts are available");
+		expect(recommendation.reason).toContain(
+			"No healthy accounts are available",
+		);
 	});
 });
