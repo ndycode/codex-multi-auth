@@ -120,6 +120,7 @@ import {
 import {
 	resolveActiveIndex,
 	formatRateLimitEntry,
+	formatActiveIndexByFamilyLabels,
 	formatRateLimitStatusByFamily,
 } from "./lib/accounts/account-view.js";
 import {
@@ -3588,11 +3589,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					lines.push("");
 					lines.push(...formatUiSection(ui, "Active index by model family"));
-					for (const family of MODEL_FAMILIES) {
-						const idx = storage.activeIndexByFamily?.[family];
-						const familyIndexLabel =
-							typeof idx === "number" && Number.isFinite(idx) ? String(idx + 1) : "-";
-						lines.push(formatUiItem(ui, `${family}: ${familyIndexLabel}`));
+					for (const line of formatActiveIndexByFamilyLabels(storage.activeIndexByFamily)) {
+						lines.push(formatUiItem(ui, line));
 					}
 
 					lines.push("");
@@ -3637,11 +3635,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										lines.push("");
 										lines.push("Active index by model family:");
-										for (const family of MODEL_FAMILIES) {
-												const idx = storage.activeIndexByFamily?.[family];
-												const familyIndexLabel =
-													typeof idx === "number" && Number.isFinite(idx) ? String(idx + 1) : "-";
-												lines.push(`  ${family}: ${familyIndexLabel}`);
+										for (const line of formatActiveIndexByFamilyLabels(storage.activeIndexByFamily)) {
+												lines.push(`  ${line}`);
 										}
 
 										lines.push("");

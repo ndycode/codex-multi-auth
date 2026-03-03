@@ -3,6 +3,7 @@ import {
 	resolveActiveIndex,
 	getRateLimitResetTimeForFamily,
 	formatRateLimitEntry,
+	formatActiveIndexByFamilyLabels,
 	formatRateLimitStatusByFamily,
 } from "../lib/accounts/account-view.js";
 
@@ -106,5 +107,20 @@ describe("account-view helpers", () => {
 				["codex", "gpt-5.1", "codex-max"],
 			),
 		).toEqual(["codex=30s", "gpt-5.1=1m 10s", "codex-max=ok"]);
+	});
+
+	it("formats active-index labels with 1-based values and fallback placeholders", () => {
+		expect(
+			formatActiveIndexByFamilyLabels({
+				codex: 0,
+				"gpt-5.1": 2,
+			}),
+		).toEqual([
+			"gpt-5-codex: -",
+			"codex-max: -",
+			"codex: 1",
+			"gpt-5.2: -",
+			"gpt-5.1: 3",
+		]);
 	});
 });

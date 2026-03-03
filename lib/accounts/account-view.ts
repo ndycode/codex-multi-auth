@@ -11,6 +11,8 @@ export interface AccountRateLimitView {
 	rateLimitResetTimes?: Record<string, number | undefined>;
 }
 
+export type ActiveIndexByFamilyView = Partial<Record<ModelFamily, number>> | undefined;
+
 export function resolveActiveIndex(
 	storage: ActiveAccountStorageView,
 	family: ModelFamily = "codex",
@@ -65,5 +67,16 @@ export function formatRateLimitStatusByFamily(
 		const resetAt = getRateLimitResetTimeForFamily(account, now, family);
 		if (typeof resetAt !== "number") return `${family}=ok`;
 		return `${family}=${formatWaitTime(resetAt - now)}`;
+	});
+}
+
+export function formatActiveIndexByFamilyLabels(
+	activeIndexByFamily: ActiveIndexByFamilyView,
+	families: readonly ModelFamily[] = MODEL_FAMILIES,
+): string[] {
+	return families.map((family) => {
+		const idx = activeIndexByFamily?.[family];
+		const label = typeof idx === "number" && Number.isFinite(idx) ? String(idx + 1) : "-";
+		return `${family}: ${label}`;
 	});
 }
