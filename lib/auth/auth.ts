@@ -146,10 +146,11 @@ function buildExchangeAbortContext(
 		);
 	};
 
-	if (upstreamSignal?.aborted) {
-		onUpstreamAbort();
-	} else if (upstreamSignal) {
+	if (upstreamSignal) {
 		upstreamSignal.addEventListener("abort", onUpstreamAbort, { once: true });
+		if (upstreamSignal.aborted) {
+			onUpstreamAbort();
+		}
 	}
 
 	if (!controller.signal.aborted) {

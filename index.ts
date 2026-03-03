@@ -422,6 +422,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 };
         };
 
+        const resolveOAuthFetchTimeoutMs = (): number => {
+                return getFetchTimeoutMs(loadPluginConfig());
+        };
+
         const buildManualOAuthFlow = (
                 pkce: { verifier: string },
                 url: string,
@@ -460,8 +464,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         message: "OAuth state mismatch. Restart login and try again.",
                                 };
                         }
-                        const authPluginConfig = loadPluginConfig();
-                        const oauthFetchTimeoutMs = getFetchTimeoutMs(authPluginConfig);
+                        const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
                         const tokens = await exchangeAuthorizationCode(
                                 parsed.code,
                                 pkce.verifier,
@@ -512,8 +515,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
 		}
 
-                const authPluginConfig = loadPluginConfig();
-                const oauthFetchTimeoutMs = getFetchTimeoutMs(authPluginConfig);
+                const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
                 return await exchangeAuthorizationCode(
                         result.code,
                         pkce.verifier,

@@ -34,6 +34,8 @@ const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const CONFIG_READ_MAX_ATTEMPTS = 4;
+const CONFIG_READ_RETRY_BASE_DELAY_MS = 10;
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -193,7 +195,7 @@ export function loadPluginConfig(): PluginConfig {
 				return { ...DEFAULT_PLUGIN_CONFIG };
 			}
 
-			const fileContent = readFileSync(configPath, "utf-8");
+			const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 			const normalizedFileContent = stripUtf8Bom(fileContent);
 			userConfig = JSON.parse(normalizedFileContent) as unknown;
 			sourceKind = "file";
@@ -271,6 +273,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function readFileSyncWithRetry(path: string, encoding: BufferEncoding): string {
+	for (let attempt = 0; attempt < CONFIG_READ_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			return readFileSync(path, encoding);
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= CONFIG_READ_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			sleepSync(CONFIG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+	throw new Error(`Failed to read config file after ${CONFIG_READ_MAX_ATTEMPTS} attempts`);
 }
 
 function sleep(ms: number): Promise<void> {

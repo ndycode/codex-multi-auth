@@ -834,6 +834,8 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce({ mode: "add" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		promptAddAnotherAccountMock.mockResolvedValue(false);
+		const expectedTimeoutMs = 4321;
+		loadPluginConfigMock.mockReturnValue({ fetchTimeoutMs: expectedTimeoutMs });
 
 		const authModule = await import("../lib/auth/auth.js");
 		const createAuthorizationFlowMock = vi.mocked(authModule.createAuthorizationFlow);
@@ -874,6 +876,12 @@ describe("codex manager cli commands", () => {
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		expect(exchangeAuthorizationCodeMock).toHaveBeenCalledWith(
+			"oauth-code",
+			"pkce-verifier",
+			authModule.REDIRECT_URI,
+			{ timeoutMs: expectedTimeoutMs },
+		);
 	});
 
 	it("runs full refresh test from login menu deep-check mode", async () => {
