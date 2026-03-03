@@ -124,6 +124,10 @@ import {
 	formatRateLimitStatusByFamily,
 } from "./lib/accounts/account-view.js";
 import {
+	cloneAccountStorage,
+	createEmptyAccountStorage,
+} from "./lib/accounts/storage-view.js";
+import {
 	setActiveIndexForAllFamilies,
 	normalizeActiveIndexByFamily,
 	removeAccountAndReconcileActiveIndexes,
@@ -2653,14 +2657,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 							const runAccountCheck = async (deepProbe: boolean): Promise<void> => {
 								const loadedStorage = await hydrateEmails(await loadAccounts());
 								const workingStorage = loadedStorage
-									? {
-										...loadedStorage,
-										accounts: loadedStorage.accounts.map((account) => ({ ...account })),
-										activeIndexByFamily: loadedStorage.activeIndexByFamily
-											? { ...loadedStorage.activeIndexByFamily }
-											: {},
-									}
-									: { version: 3 as const, accounts: [], activeIndex: 0, activeIndexByFamily: {} };
+									? cloneAccountStorage(loadedStorage)
+									: createEmptyAccountStorage();
 
 								if (workingStorage.accounts.length === 0) {
 									console.log("\nNo accounts to check.\n");
@@ -3006,14 +3004,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 								while (true) {
 									const loadedStorage = await hydrateEmails(await loadAccounts());
 									const workingStorage = loadedStorage
-										? {
-											...loadedStorage,
-											accounts: loadedStorage.accounts.map((account) => ({ ...account })),
-											activeIndexByFamily: loadedStorage.activeIndexByFamily
-												? { ...loadedStorage.activeIndexByFamily }
-												: {},
-										}
-										: { version: 3 as const, accounts: [], activeIndex: 0, activeIndexByFamily: {} };
+										? cloneAccountStorage(loadedStorage)
+										: createEmptyAccountStorage();
 									const flaggedStorage = await loadFlaggedAccounts();
 
 									if (workingStorage.accounts.length === 0 && flaggedStorage.accounts.length === 0) {

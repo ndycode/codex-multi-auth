@@ -31,6 +31,9 @@ import {
 	setActiveIndexForAllFamilies,
 	normalizeActiveIndexByFamily,
 } from "./accounts/active-index.js";
+import {
+	createEmptyAccountStorage as createEmptyAccountStorageBase,
+} from "./accounts/storage-view.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
 	loadDashboardDisplaySettings,
@@ -2346,13 +2349,7 @@ interface VerifyFlaggedReport {
 }
 
 function createEmptyAccountStorage(): AccountStorageV3 {
-	const activeIndexByFamily = createActiveIndexByFamily(0);
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily,
-	};
+	return createEmptyAccountStorageBase({ initializeFamilyIndexes: true });
 }
 
 function findExistingAccountIndexForFlagged(
@@ -3589,12 +3586,7 @@ async function runDoctor(args: string[]): Promise<number> {
 }
 
 async function clearAccountsAndReset(): Promise<void> {
-	await saveAccounts({
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-	});
+	await saveAccounts(createEmptyAccountStorageBase());
 }
 
 async function handleManageAction(
