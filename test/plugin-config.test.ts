@@ -639,6 +639,28 @@ describe('Plugin Configuration', () => {
 			);
 			expect(validationWarnings).toHaveLength(1);
 		});
+
+		it('sanitizes invalid config fields while preserving valid settings', () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockReturnValue(
+				JSON.stringify({
+					codexMode: false,
+					unsupportedCodexPolicy: 'fallback',
+					emptyResponseMaxRetries: 4,
+					fetchTimeoutMs: 'invalid-timeout',
+					preemptiveQuotaRemainingPercent5h: 'invalid-percent',
+				}),
+			);
+
+			const config = loadPluginConfig();
+
+			expect(config.codexMode).toBe(false);
+			expect(config.unsupportedCodexPolicy).toBe('fallback');
+			expect(config.emptyResponseMaxRetries).toBe(4);
+			// Invalid values should be dropped and defaulted safely.
+			expect(config.fetchTimeoutMs).toBe(60_000);
+			expect(config.preemptiveQuotaRemainingPercent5h).toBe(5);
+		});
 	});
 
 	describe('getCodexMode', () => {

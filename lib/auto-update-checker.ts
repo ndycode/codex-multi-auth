@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "./logger.js";
+import { fetchWithTimeoutAndRetry } from "./network.js";
 import { getCodexCacheDir } from "./runtime-paths.js";
 
 const log = createLogger("update-checker");
@@ -10,6 +11,9 @@ const NPM_REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const CACHE_DIR = getCodexCacheDir();
 const CACHE_FILE = join(CACHE_DIR, "update-check-cache.json");
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const UPDATE_FETCH_TIMEOUT_MS = 5_000;
+const UPDATE_FETCH_RETRIES = 2;
+const UPDATE_FETCH_RETRYABLE_STATUSES = [429, 500, 502, 503, 504] as const;
 
 interface UpdateCheckCache {
   lastCheck: number;
@@ -164,15 +168,28 @@ function compareVersions(current: string, latest: string): number {
 
 async function fetchLatestVersion(): Promise<string | null> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-
-    const response = await fetch(NPM_REGISTRY_URL, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    });
-
-    clearTimeout(timeout);
+    const { response, attempts, durationMs } = await fetchWithTimeoutAndRetry(
+      NPM_REGISTRY_URL,
+      {
+        headers: { Accept: "application/json" },
+      },
+      {
+        timeoutMs: UPDATE_FETCH_TIMEOUT_MS,
+        retries: UPDATE_FETCH_RETRIES,
+        retryOnStatuses: UPDATE_FETCH_RETRYABLE_STATUSES,
+        baseDelayMs: 0,
+        jitterMs: 0,
+        onRetry: (retry) => {
+          log.debug("Retrying npm update check", retry);
+        },
+      },
+    );
+    if (attempts > 1) {
+      log.debug("Recovered npm update check after retries", {
+        attempts,
+        durationMs,
+      });
+    }
 
     if (!response.ok) {
       log.debug("Failed to fetch npm registry", { status: response.status });

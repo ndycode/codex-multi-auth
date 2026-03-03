@@ -36,6 +36,32 @@ const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 const CONFIG_READ_MAX_ATTEMPTS = 4;
 const CONFIG_READ_RETRY_BASE_DELAY_MS = 10;
+const pluginConfigShape = PluginConfigSchema.shape;
+type PluginConfigShapeKey = keyof typeof pluginConfigShape;
+const NUMERIC_PLUGIN_CONFIG_KEYS: ReadonlySet<string> = new Set([
+	"fastSessionMaxInputItems",
+	"retryAllAccountsMaxWaitMs",
+	"retryAllAccountsMaxRetries",
+	"tokenRefreshSkewMs",
+	"rateLimitToastDebounceMs",
+	"toastDurationMs",
+	"parallelProbingMaxConcurrency",
+	"emptyResponseMaxRetries",
+	"emptyResponseRetryDelayMs",
+	"fetchTimeoutMs",
+	"streamStallTimeoutMs",
+	"liveAccountSyncDebounceMs",
+	"liveAccountSyncPollMs",
+	"sessionAffinityTtlMs",
+	"sessionAffinityMaxEntries",
+	"proactiveRefreshIntervalMs",
+	"proactiveRefreshBufferMs",
+	"networkErrorCooldownMs",
+	"serverErrorCooldownMs",
+	"preemptiveQuotaRemainingPercent5h",
+	"preemptiveQuotaRemainingPercent7d",
+	"preemptiveQuotaMaxDeferralMs",
+]);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -224,6 +250,7 @@ export function loadPluginConfig(): PluginConfig {
 				`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
 			);
 		}
+		const sanitizedConfig = sanitizePluginConfigRecord(userConfig);
 
 		if (
 			sourceKind === "file" &&
@@ -237,7 +264,7 @@ export function loadPluginConfig(): PluginConfig {
 
 		return {
 			...DEFAULT_PLUGIN_CONFIG,
-			...(userConfig as Partial<PluginConfig>),
+			...sanitizedConfig,
 		};
 	} catch (error) {
 		const configPath = resolvePluginConfigPath() ?? CONFIG_PATH;
@@ -268,6 +295,31 @@ function stripUtf8Bom(content: string): string {
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPluginConfigShapeKey(key: string): key is PluginConfigShapeKey {
+	return Object.hasOwn(pluginConfigShape, key);
+}
+
+function sanitizePluginConfigRecord(userConfig: unknown): Partial<PluginConfig> {
+	if (!isRecord(userConfig)) return {};
+	const sanitized: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(userConfig)) {
+		if (!isPluginConfigShapeKey(key)) continue;
+		const parsed = pluginConfigShape[key].safeParse(value);
+		if (parsed.success && parsed.data !== undefined) {
+			sanitized[key] = parsed.data;
+			continue;
+		}
+		if (
+			NUMERIC_PLUGIN_CONFIG_KEYS.has(key) &&
+			typeof value === "number" &&
+			Number.isFinite(value)
+		) {
+			sanitized[key] = value;
+		}
+	}
+	return sanitized as Partial<PluginConfig>;
 }
 
 function isRetryableFsError(error: unknown): boolean {

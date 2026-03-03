@@ -1,0 +1,150 @@
+import { isAbortError, sleep } from "./utils.js";
+
+export interface RetryAttemptInfo {
+	attempt: number;
+	maxAttempts: number;
+	delayMs: number;
+	reason: "error" | "status";
+	status?: number;
+	error?: string;
+}
+
+export interface ResilientFetchOptions {
+	timeoutMs: number;
+	retries?: number;
+	baseDelayMs?: number;
+	maxDelayMs?: number;
+	jitterMs?: number;
+	retryOnStatuses?: readonly number[];
+	signal?: AbortSignal;
+	onRetry?: (info: RetryAttemptInfo) => void;
+}
+
+export interface ResilientFetchResult {
+	response: Response;
+	attempts: number;
+	durationMs: number;
+}
+
+const DEFAULT_BASE_DELAY_MS = 250;
+const DEFAULT_MAX_DELAY_MS = 5_000;
+const DEFAULT_JITTER_MS = 100;
+
+function createAbortError(message: string): Error {
+	const error = new Error(message);
+	error.name = "AbortError";
+	return error;
+}
+
+function isCallerAbort(error: unknown, callerSignal: AbortSignal | undefined): boolean {
+	return callerSignal?.aborted === true && isAbortError(error);
+}
+
+function computeDelayMs(
+	attempt: number,
+	baseDelayMs: number,
+	maxDelayMs: number,
+	jitterMs: number,
+): number {
+	const cappedBase = Math.max(0, Math.floor(baseDelayMs));
+	const cappedMax = Math.max(0, Math.floor(maxDelayMs));
+	const cappedJitter = Math.max(0, Math.floor(jitterMs));
+	const exponential = Math.min(cappedMax, cappedBase * 2 ** Math.max(0, attempt - 1));
+	const jitter = cappedJitter > 0 ? Math.floor(Math.random() * (cappedJitter + 1)) : 0;
+	return exponential + jitter;
+}
+
+function shouldRetryStatus(status: number, retryOnStatuses: ReadonlySet<number>): boolean {
+	return retryOnStatuses.has(status);
+}
+
+function bindCallerAbortSignal(
+	callerSignal: AbortSignal | undefined,
+	controller: AbortController,
+): (() => void) | null {
+	if (!callerSignal) return null;
+	if (callerSignal.aborted) {
+		controller.abort(callerSignal.reason);
+		return null;
+	}
+	const onAbort = () => controller.abort(callerSignal.reason);
+	callerSignal.addEventListener("abort", onAbort, { once: true });
+	return () => callerSignal.removeEventListener("abort", onAbort);
+}
+
+/**
+ * Execute a fetch request with a per-attempt timeout and bounded retry/backoff.
+ * Caller-provided abort signals are always honored and never retried.
+ */
+export async function fetchWithTimeoutAndRetry(
+	input: URL | string | Request,
+	init: RequestInit = {},
+	options: ResilientFetchOptions,
+): Promise<ResilientFetchResult> {
+	const timeoutMs = Math.max(1_000, Math.floor(options.timeoutMs));
+	const maxAttempts = Math.max(1, Math.floor((options.retries ?? 0) + 1));
+	const baseDelayMs = options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+	const maxDelayMs = options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
+	const jitterMs = options.jitterMs ?? DEFAULT_JITTER_MS;
+	const retryOnStatuses = new Set(options.retryOnStatuses ?? []);
+	const startedAt = Date.now();
+	let lastError: unknown = null;
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		const controller = new AbortController();
+		const removeAbortListener = bindCallerAbortSignal(options.signal, controller);
+		const timeout = setTimeout(() => {
+			controller.abort(createAbortError(`Request timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+
+		try {
+			const response = await fetch(input, { ...init, signal: controller.signal });
+			if (attempt < maxAttempts && shouldRetryStatus(response.status, retryOnStatuses)) {
+				const delayMs = computeDelayMs(attempt, baseDelayMs, maxDelayMs, jitterMs);
+				options.onRetry?.({
+					attempt,
+					maxAttempts,
+					reason: "status",
+					status: response.status,
+					delayMs,
+				});
+				await response.body?.cancel().catch(() => {});
+				if (delayMs > 0) {
+					await sleep(delayMs);
+				}
+				continue;
+			}
+			return {
+				response,
+				attempts: attempt,
+				durationMs: Date.now() - startedAt,
+			};
+		} catch (error) {
+			lastError = error;
+			if (isCallerAbort(error, options.signal)) {
+				throw error;
+			}
+			if (attempt >= maxAttempts) {
+				throw error;
+			}
+			const delayMs = computeDelayMs(attempt, baseDelayMs, maxDelayMs, jitterMs);
+			options.onRetry?.({
+				attempt,
+				maxAttempts,
+				reason: "error",
+				error: error instanceof Error ? error.message : String(error),
+				delayMs,
+			});
+			if (delayMs > 0) {
+				await sleep(delayMs);
+			}
+		} finally {
+			clearTimeout(timeout);
+			removeAbortListener?.();
+		}
+	}
+
+	throw (lastError instanceof Error
+		? lastError
+		: new Error("Request failed after all retry attempts"));
+}
