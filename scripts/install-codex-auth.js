@@ -145,8 +145,8 @@ async function clearCache() {
 		log(`[dry-run] Would remove ${cacheBunLock}`);
 	} else {
 		try {
-			await rm(cacheNodeModules, { recursive: true, force: true });
-			await rm(cacheBunLock, { force: true });
+			await withFileOperationRetry(() => rm(cacheNodeModules, { recursive: true, force: true }));
+			await withFileOperationRetry(() => rm(cacheBunLock, { force: true }));
 		} catch (error) {
 			log(
 				`Warning: Could not fully clear cache (${error instanceof Error ? error.message : String(error)}). You may need to restart Codex.`,
