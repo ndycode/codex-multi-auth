@@ -119,6 +119,10 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
   return previousMutex.then(fn).finally(() => releaseLock());
 }
 
+async function withStorageSerializedFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	return withStorageLock(() => withAccountFileLock(path, fn));
+}
+
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 
 type AccountLike = {
@@ -318,16 +322,70 @@ function getAccountsLockPath(path: string): string {
 	return `${path}.lock`;
 }
 
-async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-	await fs.mkdir(dirname(path), { recursive: true });
-	const lock = await acquireFileLock(getAccountsLockPath(path), ACCOUNT_STORAGE_LOCK_OPTIONS);
+async function releaseStorageLockFallback(lockPath: string): Promise<void> {
 	try {
-		return await fn();
-	} finally {
-		await lock.release();
+		await fs.rm(lockPath, { force: true });
+	} catch {
+		// Best-effort lock cleanup fallback.
 	}
 }
 
+async function cleanupDeadProcessStorageLock(lockPath: string): Promise<void> {
+	try {
+		const raw = await fs.readFile(lockPath, "utf-8");
+		const parsed = JSON.parse(raw) as { pid?: number; acquiredAt?: number };
+		const lockPid = Number(parsed?.pid);
+		const lockAcquiredAt = Number(parsed?.acquiredAt);
+
+		if (Number.isFinite(lockPid) && lockPid > 0) {
+			let isDeadProcess = false;
+			try {
+				process.kill(lockPid, 0);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				isDeadProcess = code === "ESRCH";
+			}
+
+			if (isDeadProcess) {
+				await releaseStorageLockFallback(lockPath);
+				return;
+			}
+		}
+
+		if (Number.isFinite(lockAcquiredAt) && Date.now() - lockAcquiredAt > ACCOUNT_STORAGE_LOCK_OPTIONS.staleAfterMs) {
+			await releaseStorageLockFallback(lockPath);
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return;
+		}
+		await releaseStorageLockFallback(lockPath);
+	}
+}
+
+async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	const lockPath = getAccountsLockPath(path);
+	await cleanupDeadProcessStorageLock(lockPath);
+	await fs.mkdir(dirname(path), { recursive: true });
+	const lock = await acquireFileLock(lockPath, ACCOUNT_STORAGE_LOCK_OPTIONS);
+	try {
+		return await fn();
+	} finally {
+		try {
+			await lock.release();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				log.warn("Failed to release account storage lock", {
+					path: lockPath,
+					error: String(error),
+				});
+			}
+		}
+		await releaseStorageLockFallback(lockPath);
+	}
+}
 async function copyFileWithRetry(
 	sourcePath: string,
 	destinationPath: string,
@@ -1242,13 +1300,12 @@ export async function withAccountStorageTransaction<T>(
   ) => Promise<T>,
 ): Promise<T> {
 	const path = getStoragePath();
-	return withAccountFileLock(path, () =>
-		withStorageLock(async () => {
-			const current = await loadAccountsInternal(saveAccountsUnlocked);
-			return handler(current, saveAccountsUnlocked);
-		}),
-	);
+	return withStorageSerializedFileLock(path, async () => {
+		const current = await loadAccountsInternal(saveAccountsUnlocked);
+		return handler(current, saveAccountsUnlocked);
+	});
 }
+
 
 /**
  * Persists account storage to disk using atomic write (temp file + rename).
@@ -1259,12 +1316,11 @@ export async function withAccountStorageTransaction<T>(
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
 	const path = getStoragePath();
-	return withAccountFileLock(path, () =>
-		withStorageLock(async () => {
-			await saveAccountsUnlocked(storage);
-		}),
-	);
+	return withStorageSerializedFileLock(path, async () => {
+		await saveAccountsUnlocked(storage);
+	});
 }
+
 
 /**
  * Deletes the account storage file from disk.
@@ -1272,10 +1328,9 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  */
 export async function clearAccounts(): Promise<void> {
 	const path = getStoragePath();
-	return withAccountFileLock(path, () =>
-		withStorageLock(async () => {
-			const walPath = getAccountsWalPath(path);
-	const backupPaths = getAccountsBackupRecoveryCandidates(path);
+	return withStorageSerializedFileLock(path, async () => {
+		const walPath = getAccountsWalPath(path);
+		const backupPaths = getAccountsBackupRecoveryCandidates(path);
     const clearPath = async (targetPath: string): Promise<void> => {
       try {
         await fs.unlink(targetPath);
@@ -1295,9 +1350,9 @@ export async function clearAccounts(): Promise<void> {
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.
     }
-		}),
-	);
+	});
 }
+
 
 function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 	if (!isRecord(data) || data.version !== 1 || !Array.isArray(data.accounts)) {
@@ -1597,3 +1652,5 @@ export async function rotateStoredSecretEncryption(): Promise<{
 		flaggedAccounts: flaggedCount,
 	};
 }
+
+
