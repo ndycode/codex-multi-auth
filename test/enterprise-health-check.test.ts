@@ -36,6 +36,12 @@ function parseJsonStdout(output: string): Record<string, unknown> {
 	return JSON.parse(output) as Record<string, unknown>;
 }
 
+function pathsEqual(left: string, right: string): boolean {
+	const normalizedLeft = process.platform === "win32" ? left.replaceAll("/", "\\").toLowerCase() : left;
+	const normalizedRight = process.platform === "win32" ? right.replaceAll("/", "\\").toLowerCase() : right;
+	return normalizedLeft === normalizedRight;
+}
+
 describe("enterprise-health-check script", () => {
 	const fixtures: string[] = [];
 
@@ -101,7 +107,50 @@ describe("enterprise-health-check script", () => {
 		} else {
 			expect(payloadRoot).toBe(fallbackRoot);
 		}
-		expect(payload.auditDir).toBe(path.join(fallbackRoot, "logs"));
+		expect(pathsEqual(String(payload.auditDir), path.join(fallbackRoot, "logs"))).toBe(true);
 		expect(payload.status).toBe("pass");
+	});
+
+	it("evaluates stale audit checks from fallback audit directory", async () => {
+		const homeRoot = mkdtempSync(path.join(tmpdir(), "health-check-stale-fallback-"));
+		fixtures.push(homeRoot);
+
+		const fallbackRoot = path.join(homeRoot, "DevTools", "config", "codex", "multi-auth");
+		const fallbackAuditDir = path.join(fallbackRoot, "logs");
+		await fs.mkdir(fallbackAuditDir, { recursive: true });
+		await fs.writeFile(
+			path.join(fallbackRoot, "openai-codex-accounts.json"),
+			'{"version":3,"accounts":[],"activeIndex":0}\n',
+			"utf8",
+		);
+		await fs.writeFile(
+			path.join(fallbackRoot, "settings.json"),
+			'{"version":1,"pluginConfig":{},"dashboardDisplaySettings":{}}\n',
+			"utf8",
+		);
+
+		const staleAuditPath = path.join(fallbackAuditDir, "audit.log");
+		await fs.writeFile(staleAuditPath, '{"timestamp":"2025-01-01T00:00:00Z"}\n', "utf8");
+		const staleMtimeMs = Date.now() - 9 * 24 * 60 * 60 * 1000;
+		const staleDate = new Date(staleMtimeMs);
+		await fs.utimes(staleAuditPath, staleDate, staleDate);
+
+		const result = runHealthCheck([], {
+			HOME: homeRoot,
+			USERPROFILE: homeRoot,
+			CODEX_HOME: "",
+			CODEX_MULTI_AUTH_DIR: "",
+		});
+
+		expect(result.status).toBe(0);
+		const payload = parseJsonStdout(result.stdout);
+		expect(pathsEqual(String(payload.auditDir), fallbackAuditDir)).toBe(true);
+
+		const findings = Array.isArray(payload.findings) ? payload.findings : [];
+		const staleAuditFinding = findings.find((entry) => (entry as { code?: string }).code === "stale-audit-log") as
+			| { path?: string }
+			| undefined;
+		expect(staleAuditFinding).toBeDefined();
+		expect(pathsEqual(String(staleAuditFinding?.path ?? ""), fallbackAuditDir)).toBe(true);
 	});
 });

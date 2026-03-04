@@ -151,6 +151,7 @@ function resolveRoot() {
 }
 
 function getAuditDir(root) {
+	// Mirrors getCodexLogDir() from lib/runtime-paths.ts by deriving logs from the resolved multi-auth root.
 	return join(root, "logs");
 }
 
