@@ -2,9 +2,6 @@ import {
 	existsSync,
 	promises as fs,
 	readdirSync,
-	renameSync,
-	statSync,
-	unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 import { getCorrelationId, maskEmail } from "./logger.js";
@@ -83,6 +80,9 @@ const TOKEN_PATTERNS = [
 	/sk-[A-Za-z0-9]{20,}/g,
 	/Bearer\s+\S+/gi,
 ];
+const RETRYABLE_FILE_OP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const FILE_OP_MAX_ATTEMPTS = 6;
+const FILE_OP_BASE_DELAY_MS = 25;
 
 let telemetryConfig: TelemetryConfig = { ...DEFAULT_TELEMETRY_CONFIG };
 let appendQueue: Promise<void> = Promise.resolve();
@@ -144,21 +144,70 @@ function parseArchiveSuffix(fileName: string): number | null {
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
-function rotateLogsIfNeeded(): void {
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error;
+}
+
+function shouldRetryFileOperation(error: unknown): boolean {
+	if (!isErrnoException(error)) return false;
+	return Boolean(error.code && RETRYABLE_FILE_OP_CODES.has(error.code));
+}
+
+function waitForRetryDelay(attempt: number): Promise<void> {
+	return new Promise((resolve) =>
+		setTimeout(resolve, FILE_OP_BASE_DELAY_MS * 2 ** attempt),
+	);
+}
+
+async function runFileOperationWithRetry<T>(operation: () => Promise<T>): Promise<T> {
+	let attempt = 0;
+	while (true) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (!shouldRetryFileOperation(error) || attempt >= FILE_OP_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			await waitForRetryDelay(attempt);
+			attempt += 1;
+		}
+	}
+}
+
+function isErrnoCode(error: unknown, code: string): boolean {
+	if (!isErrnoException(error)) return false;
+	return error.code === code;
+}
+
+async function rotateLogsIfNeeded(): Promise<void> {
 	const logPath = getTelemetryPath();
 	if (!existsSync(logPath)) return;
 
-	const size = statSync(logPath).size;
+	let size = 0;
+	try {
+		size = (await runFileOperationWithRetry(() => fs.stat(logPath))).size;
+	} catch (error) {
+		if (isErrnoCode(error, "ENOENT")) return;
+		throw error;
+	}
 	if (size < telemetryConfig.maxFileSizeBytes) return;
 
 	for (let i = telemetryConfig.maxFiles - 1; i >= 1; i -= 1) {
 		const target = `${logPath}.${i}`;
 		const source = i === 1 ? logPath : `${logPath}.${i - 1}`;
 		if (i === telemetryConfig.maxFiles - 1 && existsSync(target)) {
-			unlinkSync(target);
+			try {
+				await runFileOperationWithRetry(() => fs.unlink(target));
+			} catch (error) {
+				if (!isErrnoCode(error, "ENOENT")) throw error;
+			}
 		}
 		if (existsSync(source)) {
-			renameSync(source, target);
+			try {
+				await runFileOperationWithRetry(() => fs.rename(source, target));
+			} catch (error) {
+				if (!isErrnoCode(error, "ENOENT")) throw error;
+			}
 		}
 	}
 }
@@ -253,7 +302,7 @@ export async function recordTelemetryEvent(input: TelemetryEventInput): Promise<
 	try {
 		await queueAppend(async () => {
 			await ensureLogDir();
-			rotateLogsIfNeeded();
+			await rotateLogsIfNeeded();
 			const line = `${JSON.stringify(entry)}\n`;
 			await fs.appendFile(getTelemetryPath(), line, "utf8");
 		});

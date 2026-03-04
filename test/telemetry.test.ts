@@ -1,7 +1,7 @@
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	configureTelemetry,
 	getTelemetryConfig,
@@ -174,5 +174,46 @@ describe("telemetry module", () => {
 
 		expect(existsSync(getTelemetryLogPath())).toBe(true);
 		expect(existsSync(`${getTelemetryLogPath()}.1`)).toBe(true);
+	});
+
+	it("retries transient Windows lock errors during telemetry rotation", async () => {
+		configureTelemetry({ maxFileSizeBytes: 64, maxFiles: 3 });
+		const logPath = getTelemetryLogPath();
+		await fs.writeFile(logPath, `${"x".repeat(256)}\n`, "utf8");
+
+		const originalRename = fs.rename.bind(fs);
+		let renameAttempts = 0;
+		const renameSpy = vi
+			.spyOn(fs, "rename")
+			.mockImplementation(async (oldPath, newPath) => {
+				if (
+					oldPath === logPath &&
+					newPath === `${logPath}.1` &&
+					renameAttempts === 0
+				) {
+					renameAttempts += 1;
+					const err = new Error("busy") as NodeJS.ErrnoException;
+					err.code = "EBUSY";
+					throw err;
+				}
+				renameAttempts += 1;
+				await originalRename(oldPath, newPath);
+			});
+
+		try {
+			await recordTelemetryEvent({
+				source: "plugin",
+				event: "request.retry_rotation",
+				outcome: "failure",
+				details: { reason: "simulated lock" },
+			});
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		expect(renameAttempts).toBeGreaterThanOrEqual(2);
+		expect(existsSync(`${logPath}.1`)).toBe(true);
+		const events = await queryTelemetryEvents({ limit: 20 });
+		expect(events.some((event) => event.event === "request.retry_rotation")).toBe(true);
 	});
 });
