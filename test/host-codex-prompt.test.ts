@@ -212,6 +212,26 @@ describe("host-codex-prompt", () => {
       expect(writeFile).toHaveBeenCalledTimes(2);
     });
 
+    it("falls back to next source when first source times out", async () => {
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
+
+      vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
+      mockFetch
+        .mockRejectedValueOnce(Object.assign(new Error("request timeout"), { name: "AbortError" }))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve("Prompt from timeout fallback source"),
+          headers: new Map([["etag", '"fallback-timeout-etag"']]),
+        });
+
+      const result = await getHostCodexPrompt();
+
+      expect(result).toBe("Prompt from timeout fallback source");
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch.mock.calls[0]?.[0]).not.toBe(mockFetch.mock.calls[1]?.[0]);
+    });
+
     it("uses CODEX_CODEX_PROMPT_URL override before default sources", async () => {
       const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
 

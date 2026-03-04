@@ -263,6 +263,7 @@ describe("unified settings", () => {
 			readSpy.mockRestore();
 		}
 
+		expect(settingsReadCount).toBeGreaterThanOrEqual(3);
 		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 2 });
 	});
 
