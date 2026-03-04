@@ -20,6 +20,13 @@ Coverage thresholds in `vitest.config.ts`: statements/branches/functions/lines >
 ## Core Commands
 
 ```bash
+npm run doctor:dev
+npm run setup:dev
+```
+
+Component commands:
+
+```bash
 npm run typecheck
 npm run lint
 npm test
@@ -39,11 +46,10 @@ npm run bench:edit-formats:smoke
 
 ## Recommended Local Gate Before PR
 
-1. `npm run typecheck`
-2. `npm run lint`
-3. `npm test`
-4. `npm run build`
-5. run docs command checks for newly documented command paths
+1. `npm run doctor:dev`
+2. `npm run setup:dev`
+3. `npm run test -- test/documentation.test.ts`
+4. run docs command checks for newly documented command paths
 
 * * *
 

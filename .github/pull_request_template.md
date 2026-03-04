@@ -8,10 +8,12 @@
 
 ## Validation
 
+- [ ] `npm run doctor:dev`
+- [ ] `npm run setup:dev`
+- [ ] `npm test -- test/documentation.test.ts`
 - [ ] `npm run lint`
 - [ ] `npm run typecheck`
 - [ ] `npm test`
-- [ ] `npm test -- test/documentation.test.ts`
 - [ ] `npm run build`
 
 ## Docs and Governance Checklist

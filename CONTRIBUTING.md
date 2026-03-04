@@ -22,11 +22,8 @@ If a proposal conflicts with OpenAI policy boundaries, it will be declined.
 ## Local Setup
 
 ```bash
-npm ci
-npm run typecheck
-npm run lint
-npm test
-npm run build
+npm run doctor:dev
+npm run setup:dev
 ```
 
 Node requirement: `>=18`.
@@ -56,13 +53,17 @@ Documentation requirements for behavior changes:
 1. Create a focused branch from `main`.
 2. Keep commits atomic and reviewable.
 3. Run full local gate:
+   - `npm run doctor:dev`
+   - `npm run setup:dev`
+   - `npm run test -- test/documentation.test.ts`
+4. If triaging failures, run component gates directly:
    - `npm run typecheck`
    - `npm run lint`
    - `npm test`
    - `npm run build`
-4. Include command output evidence in the PR description.
-5. Document behavior changes and migration notes when needed.
-6. Ensure no secrets or local runtime data are committed.
+5. Include command output evidence in the PR description.
+6. Document behavior changes and migration notes when needed.
+7. Ensure no secrets or local runtime data are committed.
 
 Use `.github/pull_request_template.md` when opening the PR.
 

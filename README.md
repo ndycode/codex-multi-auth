@@ -93,6 +93,20 @@ codex auth check
 
 ---
 
+## Local Development (Contributors)
+
+From repo root:
+
+```bash
+npm run doctor:dev
+npm run setup:dev
+```
+
+`doctor:dev` validates local prerequisites and required project files.
+`setup:dev` runs install plus the local quality gate (`lint`, `typecheck`, `build`, `test`).
+
+---
+
 ## Quick Start
 
 ```bash

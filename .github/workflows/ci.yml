@@ -68,6 +68,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Dev doctor sanity check
+        run: npm run doctor:dev
+
       - name: Run ESLint
         run: npm run lint
 
