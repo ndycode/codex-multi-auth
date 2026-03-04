@@ -17,6 +17,8 @@ export const UNIFIED_SETTINGS_VERSION = 1 as const;
 
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const SECURE_DIR_MODE = 0o700;
+const SECURE_FILE_MODE = 0o600;
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 
 function isRetryableFsError(error: unknown): boolean {
@@ -121,11 +123,11 @@ function normalizeForWrite(record: JsonRecord): JsonRecord {
  * @param record - The settings object to persist; it will be normalized to include the unified settings version.
  */
 function writeSettingsRecordSync(record: JsonRecord): void {
-	mkdirSync(getCodexMultiAuthDir(), { recursive: true });
+	mkdirSync(getCodexMultiAuthDir(), { recursive: true, mode: SECURE_DIR_MODE });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
-	writeFileSync(tempPath, data, "utf8");
+	writeFileSync(tempPath, data, { encoding: "utf8", mode: SECURE_FILE_MODE });
 	let moved = false;
 	try {
 		for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -172,11 +174,11 @@ function writeSettingsRecordSync(record: JsonRecord): void {
  * @param record - The settings object to persist; it will be normalized (version set)
  */
 async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
-	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
+	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true, mode: SECURE_DIR_MODE });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.writeFile(tempPath, data, "utf8");
+	await fs.writeFile(tempPath, data, { encoding: "utf8", mode: SECURE_FILE_MODE });
 	let moved = false;
 	try {
 		for (let attempt = 0; attempt < 5; attempt += 1) {

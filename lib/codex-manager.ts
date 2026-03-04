@@ -67,6 +67,7 @@ import {
 	loadCodexCliState,
 } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import { auditLog, AuditAction, AuditOutcome } from "./audit.js";
 import { ANSI } from "./ui/ansi.js";
 import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
@@ -4039,6 +4040,54 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	});
 }
 
+function auditActionForCommand(command: string): AuditAction {
+	switch (command) {
+		case "login":
+			return AuditAction.AUTH_LOGIN;
+		case "switch":
+			return AuditAction.ACCOUNT_SWITCH;
+		case "check":
+			return AuditAction.REQUEST_START;
+		case "verify-flagged":
+			return AuditAction.ACCOUNT_REFRESH;
+		case "forecast":
+		case "report":
+			return AuditAction.REQUEST_SUCCESS;
+		case "fix":
+		case "doctor":
+			return AuditAction.CONFIG_CHANGE;
+		case "list":
+		case "status":
+			return AuditAction.CONFIG_LOAD;
+		default:
+			return AuditAction.REQUEST_FAILURE;
+	}
+}
+
+async function runWithAudit(
+	command: string,
+	runner: () => Promise<number>,
+): Promise<number> {
+	const action = auditActionForCommand(command);
+	const resource = `codex auth ${command}`;
+	try {
+		const code = await runner();
+		auditLog(
+			action,
+			"cli-user",
+			resource,
+			code === 0 ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE,
+			{ exitCode: code },
+		);
+		return code;
+	} catch (error) {
+		auditLog(action, "cli-user", resource, AuditOutcome.FAILURE, {
+			error: String(error),
+		});
+		throw error;
+	}
+}
+
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
@@ -4065,36 +4114,40 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return 0;
 	}
 	if (command === "login") {
-		return runAuthLogin();
+		return runWithAudit(command, () => runAuthLogin());
 	}
 	if (command === "list" || command === "status") {
-		await showAccountStatus();
-		return 0;
+		return runWithAudit(command, async () => {
+			await showAccountStatus();
+			return 0;
+		});
 	}
 	if (command === "switch") {
-		return runSwitch(rest);
+		return runWithAudit(command, () => runSwitch(rest));
 	}
 	if (command === "check") {
-		await runHealthCheck({ liveProbe: true });
-		return 0;
+		return runWithAudit(command, async () => {
+			await runHealthCheck({ liveProbe: true });
+			return 0;
+		});
 	}
 	if (command === "features") {
 		return runFeaturesReport();
 	}
 	if (command === "verify-flagged") {
-		return runVerifyFlagged(rest);
+		return runWithAudit(command, () => runVerifyFlagged(rest));
 	}
 	if (command === "forecast") {
-		return runForecast(rest);
+		return runWithAudit(command, () => runForecast(rest));
 	}
 	if (command === "report") {
-		return runReport(rest);
+		return runWithAudit(command, () => runReport(rest));
 	}
 	if (command === "fix") {
-		return runFix(rest);
+		return runWithAudit(command, () => runFix(rest));
 	}
 	if (command === "doctor") {
-		return runDoctor(rest);
+		return runWithAudit(command, () => runDoctor(rest));
 	}
 
 	console.error(`Unknown command: ${command}`);

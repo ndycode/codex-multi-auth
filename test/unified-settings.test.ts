@@ -3,6 +3,12 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+async function expectSecureFileMode(path: string): Promise<void> {
+	if (process.platform === "win32") return;
+	const stats = await fs.stat(path);
+	expect(stats.mode & 0o777).toBe(0o600);
+}
+
 describe("unified settings", () => {
 	let tempDir: string;
 	let originalDir: string | undefined;
@@ -51,6 +57,7 @@ describe("unified settings", () => {
 		expect(fileContent).toContain("\"version\": 1");
 		expect(fileContent).toContain("\"pluginConfig\"");
 		expect(fileContent).toContain("\"dashboardDisplaySettings\"");
+		await expectSecureFileMode(getUnifiedSettingsPath());
 	});
 
 	it("returns null sections for invalid JSON", async () => {
@@ -82,6 +89,7 @@ describe("unified settings", () => {
 		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 4 });
 		const fileContent = await fs.readFile(getUnifiedSettingsPath(), "utf8");
 		expect(fileContent).toContain("\"version\": 1");
+		await expectSecureFileMode(getUnifiedSettingsPath());
 	});
 
 	it("returns null for missing pluginConfig section", async () => {

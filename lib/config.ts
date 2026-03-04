@@ -34,6 +34,8 @@ const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const SECURE_DIR_MODE = 0o700;
+const SECURE_FILE_MODE = 0o600;
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -282,8 +284,11 @@ async function writeJsonFileAtomicWithRetry(
 	payload: Record<string, unknown>,
 ): Promise<void> {
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.mkdir(dirname(filePath), { recursive: true });
-	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	await fs.mkdir(dirname(filePath), { recursive: true, mode: SECURE_DIR_MODE });
+	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+		encoding: "utf8",
+		mode: SECURE_FILE_MODE,
+	});
 	let renamed = false;
 	try {
 		for (let attempt = 0; attempt < 5; attempt += 1) {

@@ -50,6 +50,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Enterprise health check
+        run: npm run ops:health-check
+
+      - name: Performance budget check
+        run: npm run perf:budget-check
+
   lint:
     name: Lint
 

@@ -66,6 +66,7 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_TUI_V2=0/1` | Disable or enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | Color profile selection |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
+| `CODEX_SECRET_STORAGE_MODE=keychain|plaintext|auto` | Secret-at-rest backend mode (`keychain` default) |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | HTTP request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
 

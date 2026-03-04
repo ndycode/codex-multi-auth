@@ -48,6 +48,14 @@ Current external destinations:
 
 Raw body logs may contain sensitive payload text. Treat logs as sensitive data and rotate/delete as needed.
 
+Retention control:
+
+```bash
+npm run ops:retention-cleanup
+```
+
+Default retention window is 90 days.
+
 ---
 
 ## Data Cleanup

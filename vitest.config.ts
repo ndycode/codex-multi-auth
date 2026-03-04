@@ -12,6 +12,10 @@ if (forcePlainTestOutput) {
   process.env.FORCE_COLOR = '0';
 }
 
+if (!process.env.CODEX_SECRET_STORAGE_MODE) {
+  process.env.CODEX_SECRET_STORAGE_MODE = 'plaintext';
+}
+
 export default defineConfig({
   test: {
     globals: true,

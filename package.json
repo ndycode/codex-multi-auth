@@ -59,8 +59,11 @@
     "bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
     "bench:runtime-path": "npm run build && node scripts/benchmark-runtime-path.mjs",
     "bench:runtime-path:quick": "node scripts/benchmark-runtime-path.mjs",
+    "perf:budget-check": "node scripts/performance-budget-check.js",
     "test:coverage": "vitest run --coverage",
     "coverage": "npm run build && vitest run --coverage",
+    "ops:health-check": "node scripts/enterprise-health-check.js",
+    "ops:retention-cleanup": "node scripts/retention-cleanup.js",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "audit:all": "npm audit --audit-level=high",
     "audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
@@ -120,6 +123,9 @@
     "@codex-ai/plugin": "file:vendor/codex-ai-plugin",
     "hono": "4.12.3",
     "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "keytar": "^7.9.0"
   },
   "overrides": {
     "hono": "4.12.3",

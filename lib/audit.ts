@@ -44,13 +44,16 @@ export interface AuditConfig {
 	logDir: string;
 	maxFileSizeBytes: number;
 	maxFiles: number;
+	retentionDays: number;
 }
 
+const DEFAULT_AUDIT_RETENTION_DAYS = 90;
 const DEFAULT_CONFIG: AuditConfig = {
 	enabled: true,
 	logDir: getCodexLogDir(),
 	maxFileSizeBytes: 10 * 1024 * 1024,
 	maxFiles: 5,
+	retentionDays: DEFAULT_AUDIT_RETENTION_DAYS,
 };
 
 let auditConfig: AuditConfig = { ...DEFAULT_CONFIG };
@@ -93,6 +96,27 @@ function rotateLogsIfNeeded(): void {
 	}
 }
 
+function purgeExpiredLogs(): void {
+	const retentionDays =
+		Number.isFinite(auditConfig.retentionDays) && auditConfig.retentionDays >= 1
+			? Math.floor(auditConfig.retentionDays)
+			: DEFAULT_AUDIT_RETENTION_DAYS;
+	const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+	const files = readdirSync(auditConfig.logDir);
+	for (const file of files) {
+		if (!file.startsWith("audit") || !file.endsWith(".log")) continue;
+		const target = join(auditConfig.logDir, file);
+		try {
+			const stats = statSync(target);
+			if (stats.mtimeMs < cutoffMs) {
+				unlinkSync(target);
+			}
+		} catch {
+			// Best-effort purge.
+		}
+	}
+}
+
 function sanitizeActor(actor: string): string {
 	if (actor.includes("@")) {
 		return maskEmail(actor);
@@ -130,6 +154,7 @@ export function auditLog(
 
 	try {
 		ensureLogDir();
+		purgeExpiredLogs();
 		rotateLogsIfNeeded();
 
 		const entry: AuditEntry = {
@@ -145,7 +170,7 @@ export function auditLog(
 		const logPath = getLogFilePath();
 		const line = JSON.stringify(entry) + "\n";
 		
-		writeFileSync(logPath, line, { flag: "a" });
+		writeFileSync(logPath, line, { encoding: "utf8", flag: "a", mode: 0o600 });
 	} catch {
 		// Audit logging should never break the application
 	}

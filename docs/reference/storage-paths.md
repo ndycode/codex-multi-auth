@@ -31,6 +31,11 @@ Override root:
 | Codex CLI accounts | `~/.codex/accounts.json` |
 | Codex CLI auth | `~/.codex/auth.json` |
 
+Security note:
+
+- Current secure format (`version: 4`) stores keychain references (`refreshTokenRef`, `accessTokenRef`) instead of raw token values in account storage files.
+- Set `CODEX_SECRET_STORAGE_MODE=plaintext` only for controlled migration/testing environments.
+
 Ownership note:
 
 - `~/.codex/multi-auth/*` is managed by this project.

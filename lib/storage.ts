@@ -4,7 +4,11 @@ import { createHash } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
-import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
+import {
+	AnyAccountStorageSchema,
+	AccountStorageV4Schema,
+	getValidationErrors,
+} from "./schemas.js";
 import {
 	getConfigDir,
 	getProjectConfigDir,
@@ -15,15 +19,35 @@ import {
 } from "./storage/paths.js";
 import {
   migrateV1ToV3,
+  migrateV3ToV4,
   type CooldownReason,
   type RateLimitStateV3,
   type AccountMetadataV1,
   type AccountStorageV1,
   type AccountMetadataV3,
   type AccountStorageV3,
+  type AccountMetadataV4,
+  type AccountStorageV4,
 } from "./storage/migrations.js";
+import {
+	deleteAccountSecrets,
+	deriveAccountSecretRef,
+	ensureSecretStorageBackendAvailable,
+	getEffectiveSecretStorageMode,
+	loadAccountSecrets,
+	persistAccountSecrets,
+} from "./secrets/token-store.js";
 
-export type { CooldownReason, RateLimitStateV3, AccountMetadataV1, AccountStorageV1, AccountMetadataV3, AccountStorageV3 };
+export type {
+	CooldownReason,
+	RateLimitStateV3,
+	AccountMetadataV1,
+	AccountStorageV1,
+	AccountMetadataV3,
+	AccountStorageV3,
+	AccountMetadataV4,
+	AccountStorageV4,
+};
 
 const log = createLogger("storage");
 const ACCOUNTS_FILE_NAME = "openai-codex-accounts.json";
@@ -104,7 +128,7 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
   return previousMutex.then(fn).finally(() => releaseLock());
 }
 
-type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
+type AnyAccountStorage = AccountStorageV1 | AccountStorageV3 | AccountStorageV4;
 
 type AccountLike = {
   accountId?: string;
@@ -849,14 +873,64 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
   return loadAccountsInternal(saveAccounts);
 }
 
-function parseAndNormalizeStorage(data: unknown): {
+async function hydrateV4Storage(data: AccountStorageV4): Promise<AccountStorageV3 | null> {
+	const mode = await getEffectiveSecretStorageMode();
+	if (mode === "plaintext") {
+		log.warn("Cannot load v4 keychain-backed account storage in plaintext mode");
+		return null;
+	}
+
+	const hydratedAccounts: AccountMetadataV3[] = [];
+	for (const rawAccount of data.accounts) {
+		const secrets = await loadAccountSecrets({
+			refreshTokenRef: rawAccount.refreshTokenRef,
+			accessTokenRef: rawAccount.accessTokenRef,
+		});
+		if (!secrets || !secrets.refreshToken) {
+			log.warn("Skipping v4 account with missing keychain secret", {
+				accountId: rawAccount.accountId,
+				email: rawAccount.email,
+			});
+			continue;
+		}
+		const {
+			refreshTokenRef,
+			accessTokenRef,
+			...rest
+		} = rawAccount;
+		void refreshTokenRef;
+		void accessTokenRef;
+		hydratedAccounts.push({
+			...rest,
+			refreshToken: secrets.refreshToken,
+			accessToken: secrets.accessToken,
+		});
+	}
+
+	return normalizeAccountStorage({
+		version: 3,
+		accounts: hydratedAccounts,
+		activeIndex: data.activeIndex,
+		activeIndexByFamily: data.activeIndexByFamily,
+	});
+}
+
+async function parseAndNormalizeStorage(data: unknown): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
-} {
+}> {
 	const schemaErrors = getValidationErrors(AnyAccountStorageSchema, data);
-	const normalized = normalizeAccountStorage(data);
 	const storedVersion = isRecord(data) ? (data as { version?: unknown }).version : undefined;
+	if (storedVersion === 4 && isRecord(data)) {
+		const parsedV4 = AccountStorageV4Schema.safeParse(data);
+		if (!parsedV4.success) {
+			return { normalized: null, storedVersion, schemaErrors };
+		}
+		const normalized = await hydrateV4Storage(parsedV4.data);
+		return { normalized, storedVersion, schemaErrors };
+	}
+	const normalized = normalizeAccountStorage(data);
 	return { normalized, storedVersion, schemaErrors };
 }
 
@@ -867,7 +941,7 @@ async function loadAccountsFromPath(path: string): Promise<{
 }> {
 	const content = await fs.readFile(path, "utf-8");
 	const data = JSON.parse(content) as unknown;
-	return parseAndNormalizeStorage(data);
+	return await parseAndNormalizeStorage(data);
 }
 
 async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 | null> {
@@ -885,7 +959,7 @@ async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 |
 			return null;
 		}
 		const data = JSON.parse(entry.content) as unknown;
-		const { normalized } = parseAndNormalizeStorage(data);
+		const { normalized } = await parseAndNormalizeStorage(data);
 		if (!normalized) return null;
 		log.warn("Recovered account storage from WAL journal", { path, walPath });
 		return normalized;
@@ -912,7 +986,7 @@ async function loadAccountsInternal(
     if (schemaErrors.length > 0) {
       log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
     }
-    if (normalized && storedVersion !== normalized.version) {
+    if (normalized && storedVersion !== normalized.version && storedVersion !== 4) {
       log.info("Migrating account storage to v3", { from: storedVersion, to: normalized.version });
       if (persistMigration) {
         try {
@@ -1028,6 +1102,43 @@ async function loadAccountsInternal(
   }
 }
 
+async function serializeStorageForPersist(storage: AccountStorageV3): Promise<string> {
+	const mode = await getEffectiveSecretStorageMode();
+	if (mode === "plaintext") {
+		return JSON.stringify(storage, null, 2);
+	}
+
+	await ensureSecretStorageBackendAvailable();
+	const refsByIndex: Array<{ refreshTokenRef: string; accessTokenRef?: string }> = [];
+	for (let index = 0; index < storage.accounts.length; index += 1) {
+		const account = storage.accounts[index];
+		if (!account) continue;
+		const baseRef = `acct-${deriveAccountSecretRef({
+			accountId: account.accountId,
+			email: account.email,
+			addedAt: account.addedAt,
+			refreshToken: account.refreshToken,
+		})}`;
+		const refs = await persistAccountSecrets(baseRef, {
+			refreshToken: account.refreshToken,
+			accessToken: account.accessToken,
+		});
+		if (!refs) {
+			throw new Error("Keychain mode selected but no secret refs were returned");
+		}
+		refsByIndex[index] = refs;
+	}
+
+	const storageV4 = migrateV3ToV4(storage, (_account, index) => {
+		const refs = refsByIndex[index];
+		if (!refs) {
+			throw new Error(`Missing keychain refs for account index ${index}`);
+		}
+		return refs;
+	});
+	return JSON.stringify(storageV4, null, 2);
+}
+
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   const path = getStoragePath();
   const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
@@ -1035,7 +1146,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   const walPath = getAccountsWalPath(path);
 
   try {
-    await fs.mkdir(dirname(path), { recursive: true });
+    await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await ensureGitignore(path);
 
 	if (looksLikeSyntheticFixtureStorage(storage)) {
@@ -1069,7 +1180,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 		}
 	}
 
-    const content = JSON.stringify(storage, null, 2);
+    const content = await serializeStorageForPersist(storage);
 	const journalEntry: AccountsJournalEntry = {
 		version: 1,
 		createdAt: Date.now(),
@@ -1165,6 +1276,37 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
   });
 }
 
+async function clearPersistedAccountSecrets(path: string): Promise<void> {
+	try {
+		const raw = await fs.readFile(path, "utf-8");
+		const parsed = JSON.parse(raw) as unknown;
+		if (!isRecord(parsed) || parsed.version !== 4 || !Array.isArray(parsed.accounts)) {
+			return;
+		}
+		for (const rawAccount of parsed.accounts) {
+			if (!isRecord(rawAccount)) continue;
+			const refreshTokenRef =
+				typeof rawAccount.refreshTokenRef === "string"
+					? rawAccount.refreshTokenRef.trim()
+					: "";
+			if (!refreshTokenRef) continue;
+			const accessTokenRef =
+				typeof rawAccount.accessTokenRef === "string"
+					? rawAccount.accessTokenRef.trim()
+					: undefined;
+			await deleteAccountSecrets({ refreshTokenRef, accessTokenRef });
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to clear persisted account secrets", {
+				path,
+				error: String(error),
+			});
+		}
+	}
+}
+
 /**
  * Deletes the account storage file from disk.
  * Silently ignores if file doesn't exist.
@@ -1189,6 +1331,11 @@ export async function clearAccounts(): Promise<void> {
     };
 
     try {
+      await clearPersistedAccountSecrets(path);
+      await clearPersistedAccountSecrets(walPath);
+      for (const backupPath of backupPaths) {
+        await clearPersistedAccountSecrets(backupPath);
+      }
       await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.
