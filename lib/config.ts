@@ -129,6 +129,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	retryAllAccountsRateLimited: true,
 	retryAllAccountsMaxWaitMs: 0,
 	retryAllAccountsMaxRetries: Infinity,
+	retryAllAccountsAbsoluteCeilingMs: 0,
 	unsupportedCodexPolicy: "strict",
 	fallbackOnUnsupportedCodexModel: false,
 	fallbackToGpt52OnUnsupportedGpt53: true,
@@ -627,6 +628,15 @@ export function getRetryAllAccountsMaxRetries(pluginConfig: PluginConfig): numbe
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
 		pluginConfig.retryAllAccountsMaxRetries,
 		Infinity,
+		{ min: 0 },
+	);
+}
+
+export function getRetryAllAccountsAbsoluteCeilingMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS",
+		pluginConfig.retryAllAccountsAbsoluteCeilingMs,
+		0,
 		{ min: 0 },
 	);
 }

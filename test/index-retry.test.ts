@@ -146,6 +146,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		"CODEX_AUTH_RETRY_ALL_RATE_LIMITED",
 		"CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS",
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
+		"CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS",
 		"CODEX_AUTH_TOKEN_REFRESH_SKEW_MS",
 		"CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS",
 		"CODEX_AUTH_PREWARM",
@@ -160,6 +161,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED = "1";
 		process.env.CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS = "5000";
 		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "1";
+		process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = "0";
 		process.env.CODEX_AUTH_TOKEN_REFRESH_SKEW_MS = "0";
 		process.env.CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS = "0";
 		process.env.CODEX_AUTH_PREWARM = "0";
@@ -212,6 +214,34 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const response = await fetchPromise;
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 		expect(response.status).toBe(200);
+	});
+
+	it("stops retrying when absolute retry wait ceiling would be exceeded", async () => {
+		process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = "500";
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(response.status).toBe(429);
+
+		const metrics = await plugin.tool["codex-metrics"].execute();
+		const plainMetrics = String(metrics).replace(/\u001b\[[0-9;]*m/g, "");
+		expect(plainMetrics).toContain("Retry governor stops (absolute ceiling): 1");
 	});
 });
 

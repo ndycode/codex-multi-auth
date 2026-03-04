@@ -1402,6 +1402,7 @@ describe("codex manager cli commands", () => {
 			{ type: "open-category", key: "rotation-quota" },
 			{ type: "toggle", key: "preemptiveQuotaEnabled" },
 			{ type: "bump", key: "preemptiveQuotaRemainingPercent5h", direction: 1 },
+			{ type: "bump", key: "retryAllAccountsAbsoluteCeilingMs", direction: 1 },
 			{ type: "back" },
 			{ type: "save" },
 			{ type: "back" },
@@ -1418,6 +1419,7 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				preemptiveQuotaEnabled: expect.any(Boolean),
 				preemptiveQuotaRemainingPercent5h: expect.any(Number),
+				retryAllAccountsAbsoluteCeilingMs: expect.any(Number),
 			}),
 		);
 	});

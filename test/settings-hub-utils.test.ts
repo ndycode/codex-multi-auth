@@ -64,6 +64,10 @@ describe("settings-hub utility coverage", () => {
 		const api = await loadSettingsHubTestApi();
 		expect(api.clampBackendNumber("fetchTimeoutMs", 250)).toBe(1_000);
 		expect(api.clampBackendNumber("fetchTimeoutMs", 999_999)).toBe(600_000);
+		expect(api.clampBackendNumber("retryAllAccountsAbsoluteCeilingMs", -1)).toBe(0);
+		expect(api.clampBackendNumber("retryAllAccountsAbsoluteCeilingMs", 999_999_999)).toBe(
+			24 * 60 * 60_000,
+		);
 		expect(() => api.clampBackendNumber("unknown-setting", 5)).toThrow(
 			"Unknown backend numeric setting key",
 		);
