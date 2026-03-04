@@ -211,6 +211,75 @@ describe("RefreshLeaseCoordinator", () => {
     expect(fsOps.unlink).toHaveBeenCalled();
     await handle.release(sampleSuccessResult);
   });
+
+  it("returns follower on wait-timeout when a fresh result appears", async () => {
+    const refreshToken = "token-timeout-follower";
+    const tokenHash = hashToken(refreshToken);
+    const resultPath = join(leaseDir, `${tokenHash}.result.json`);
+    const originalUnlink = fsPromises.unlink.bind(fsPromises);
+    const fsOps = {
+      mkdir: fsPromises.mkdir.bind(fsPromises),
+      open: fsPromises.open.bind(fsPromises),
+      writeFile: fsPromises.writeFile.bind(fsPromises),
+      rename: fsPromises.rename.bind(fsPromises),
+      unlink: vi.fn(async (path: Parameters<typeof fsPromises.unlink>[0]) => {
+        if (String(path).endsWith(".lock")) {
+          const error = new Error("busy") as NodeJS.ErrnoException;
+          error.code = "EBUSY";
+          throw error;
+        }
+        return originalUnlink(path);
+      }),
+      readFile: fsPromises.readFile.bind(fsPromises),
+      stat: fsPromises.stat.bind(fsPromises),
+      readdir: fsPromises.readdir.bind(fsPromises),
+    };
+
+    const coordinator = new RefreshLeaseCoordinator({
+      enabled: true,
+      leaseDir,
+      leaseTtlMs: 2_000,
+      waitTimeoutMs: 140,
+      pollIntervalMs: 25,
+      resultTtlMs: 2_000,
+      fsOps,
+    });
+
+    await mkdir(leaseDir, { recursive: true });
+    const lockPath = join(leaseDir, `${tokenHash}.lock`);
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        tokenHash,
+        pid: 3333,
+        acquiredAt: Date.now() - 10_000,
+        expiresAt: Date.now() - 5_000,
+      }),
+      "utf8",
+    );
+
+    const publishResult = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await writeFile(
+        resultPath,
+        JSON.stringify({
+          tokenHash,
+          createdAt: Date.now(),
+          result: sampleSuccessResult,
+        }),
+        "utf8",
+      );
+    })();
+
+    const handle = await coordinator.acquire(refreshToken);
+    await publishResult;
+
+    expect(handle.role).toBe("follower");
+    expect(handle.result).toEqual(sampleSuccessResult);
+    expect(fsOps.unlink).toHaveBeenCalled();
+    await handle.release(sampleSuccessResult);
+    await expect(fsPromises.stat(lockPath)).resolves.toBeTruthy();
+  });
   it("treats empty refresh token as bypass", async () => {
     const coordinator = new RefreshLeaseCoordinator({
       enabled: true,

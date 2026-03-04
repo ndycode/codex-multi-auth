@@ -413,6 +413,13 @@ function forgetKnownStorageRevision(path: string): void {
 	knownStorageRevisionByPath.delete(path);
 }
 
+function rememberKnownStorageRevisionForStorage(
+	path: string,
+	storage: AccountStorageV3,
+): void {
+	rememberKnownStorageRevision(path, computeSha256(JSON.stringify(storage, null, 2)));
+}
+
 type AccountsJournalEntry = {
 	version: 1;
 	createdAt: number;
@@ -981,7 +988,7 @@ async function loadAccountsInternal(
 						});
 					}
 				}
-				forgetKnownStorageRevision(path);
+				rememberKnownStorageRevisionForStorage(path, backup.normalized);
 				return backup.normalized;
 			} catch (backupError) {
 				const backupCode = (backupError as NodeJS.ErrnoException).code;
@@ -1000,7 +1007,7 @@ async function loadAccountsInternal(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" && migratedLegacyStorage) {
-      forgetKnownStorageRevision(path);
+      rememberKnownStorageRevisionForStorage(path, migratedLegacyStorage);
       return migratedLegacyStorage;
     }
 
@@ -1016,7 +1023,7 @@ async function loadAccountsInternal(
 				});
 			}
 		}
-		forgetKnownStorageRevision(path);
+		rememberKnownStorageRevisionForStorage(path, recoveredFromWal);
 		return recoveredFromWal;
 	}
 
@@ -1043,7 +1050,7 @@ async function loadAccountsInternal(
 							});
 						}
 					}
-					forgetKnownStorageRevision(path);
+					rememberKnownStorageRevisionForStorage(path, backup.normalized);
 					return backup.normalized;
 				}
 			} catch (backupError) {
@@ -1179,6 +1186,10 @@ async function saveAccountsUnlocked(
     } catch {
       // Ignore cleanup failure.
     }
+
+	if (error instanceof StorageError) {
+		throw error;
+	}
 
     const err = error as NodeJS.ErrnoException;
     const code = err?.code || "UNKNOWN";

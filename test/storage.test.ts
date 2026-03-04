@@ -758,7 +758,10 @@ describe("storage", () => {
         ],
       };
 
-      await expect(saveAccounts(staleWrite)).rejects.toMatchObject({ code: "ECONFLICT" });
+      await expect(saveAccounts(staleWrite)).rejects.toMatchObject({
+        code: "ECONFLICT",
+        message: expect.stringContaining("Detected concurrent account storage modification"),
+      });
 
       const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
       const persistedTokens = new Set(persisted.accounts.map((account) => account.refreshToken));
