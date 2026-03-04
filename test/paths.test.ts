@@ -654,6 +654,22 @@ describe("Storage Paths Module", () => {
 				expect(resolved).toBe(projectRoot);
 			});
 
+			it("falls back when .git entry exists but is neither file nor directory", () => {
+				const projectRoot = "/repo/weird";
+				const gitEntry = path.join(projectRoot, ".git");
+
+				mockedExistsSync.mockImplementation((candidate) => candidate === gitEntry);
+				mockedStatSync.mockImplementation((candidate) => {
+					expect(candidate).toBe(gitEntry);
+					return buildMockStat({ isDirectory: false, isFile: false });
+				});
+
+				const resolved = resolveProjectStorageIdentityRoot(projectRoot);
+
+				expect(resolved).toBe(projectRoot);
+				expect(mockedReadFileSync).not.toHaveBeenCalled();
+			});
+
 			it("keeps project root when .git file does not point to worktrees", () => {
 				const projectRoot = "/repo/submodule";
 				const gitEntry = path.join(projectRoot, ".git");
