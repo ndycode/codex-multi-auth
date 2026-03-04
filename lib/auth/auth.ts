@@ -118,17 +118,26 @@ export async function exchangeAuthorizationCode(
 	verifier: string,
 	redirectUri: string = REDIRECT_URI,
 ): Promise<TokenResult> {
-	const res = await fetchWithTimeout(TOKEN_URL, {
-		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded" },
-		body: new URLSearchParams({
-			grant_type: "authorization_code",
-			client_id: CLIENT_ID,
-			code,
-			code_verifier: verifier,
-			redirect_uri: redirectUri,
-		}),
-	}, OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS);
+	let res: Response;
+	try {
+		res = await fetchWithTimeout(TOKEN_URL, {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: CLIENT_ID,
+				code,
+				code_verifier: verifier,
+				redirect_uri: redirectUri,
+			}),
+		}, OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS);
+	} catch (error) {
+		const err = error instanceof Error ? error : new Error(String(error));
+		if (isAbortError(err) || /timeout/i.test(err.message)) {
+			return { type: "failed", reason: "unknown", message: err.message };
+		}
+		return { type: "failed", reason: "network_error", message: err.message };
+	}
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
 		logError(`code->token failed: ${res.status} ${text}`);

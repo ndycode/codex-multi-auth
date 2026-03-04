@@ -93,10 +93,10 @@ export async function convertSseToJson(
 					},
 				}),
 				{
-				status: response.status,
-				statusText: response.statusText,
-				headers: jsonHeaders,
-			},
+					status: 502,
+					statusText: "Bad Gateway",
+					headers: jsonHeaders,
+				},
 			);
 		}
 

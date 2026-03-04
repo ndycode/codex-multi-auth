@@ -387,6 +387,27 @@ describe('Auth Module', () => {
 			}
 		});
 
+		it('returns failed token result for timeout/abort exchange errors', async () => {
+			const originalFetch = globalThis.fetch;
+			const abortError = Object.assign(new Error('OAuth exchange timeout'), {
+				name: 'AbortError',
+			});
+			globalThis.fetch = vi.fn(async () => {
+				throw abortError;
+			}) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode('code', 'verifier');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toContain('timeout');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		});
+
 		it('uses custom redirect URI when provided', async () => {
 			const originalFetch = globalThis.fetch;
 			let capturedBody: URLSearchParams | undefined;

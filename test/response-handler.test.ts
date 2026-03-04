@@ -77,6 +77,25 @@ data: {"type":"chunk","delta":"text"}
 					type: 'stream_parse_error',
 				},
 			});
+			expect(result.status).toBe(502);
+			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
+		});
+
+		it('should handle CRLF line endings for stream parse errors', async () => {
+			const sseContent = `data: {"type":"response.started"}\r\ndata: {"type":"chunk","delta":"text"}\r\n`;
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json();
+
+			expect(body).toEqual({
+				error: {
+					message: 'No response.done event found in SSE stream',
+					type: 'stream_parse_error',
+				},
+			});
+			expect(result.status).toBe(502);
 			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
 		});
 
@@ -106,6 +125,8 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 					type: 'stream_parse_error',
 				},
 			});
+			expect(result.status).toBe(502);
+			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
 		});
 
 		it('should preserve response status and statusText', async () => {
