@@ -8,6 +8,7 @@ import {
     createCodexHeaders,
     handleErrorResponse,
     handleSuccessResponse,
+    handleSuccessResponseDetailed,
     isEntitlementError,
     createEntitlementErrorResponse,
 	getUnsupportedCodexModelInfo,
@@ -503,6 +504,27 @@ describe('Fetch Helpers Module', () => {
 			expect(result.status).toBe(200);
 			const text = await result.text();
 			expect(text).toBe('stream body');
+		});
+
+		it('returns parsedBody metadata for non-streaming success responses', async () => {
+			const sseContent = `data: {"type":"response.done","response":{"id":"resp_meta","output":"done"}}`;
+			const response = new Response(sseContent, { status: 200 });
+
+			const result = await handleSuccessResponseDetailed(response, false);
+
+			expect(result.parsedBody).toEqual({ id: 'resp_meta', output: 'done' });
+			expect(await result.response.json()).toEqual({ id: 'resp_meta', output: 'done' });
+		});
+
+		it('parses CRLF-framed SSE payloads for non-streaming success responses', async () => {
+			const sseContent =
+				`data: {"type":"response.done","response":{"id":"resp_meta_crlf","output":"done"}}\r\n\r\n`;
+			const response = new Response(sseContent, { status: 200 });
+
+			const result = await handleSuccessResponseDetailed(response, false);
+
+			expect(result.parsedBody).toEqual({ id: 'resp_meta_crlf', output: 'done' });
+			expect(await result.response.json()).toEqual({ id: 'resp_meta_crlf', output: 'done' });
 		});
 	});
 

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ensureContentType, convertSseToJson, isEmptyResponse } from '../lib/request/response-handler.js';
+import {
+	ensureContentType,
+	convertSseToJson,
+	convertSseToJsonWithDetails,
+	isEmptyResponse,
+} from '../lib/request/response-handler.js';
 
 describe('Response Handler Module', () => {
 	describe('ensureContentType', () => {
@@ -46,6 +51,29 @@ data: {"type":"response.done","response":{"id":"resp_123","output":"test"}}
 
 			expect(body).toEqual({ id: 'resp_123', output: 'test' });
 			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
+		});
+
+		it('returns parsedBody metadata when response.done is found', async () => {
+			const sseContent = `data: {"type":"response.done","response":{"id":"resp_meta","output":"ok"}}`;
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJsonWithDetails(response, headers);
+			expect(result.parsedBody).toEqual({ id: 'resp_meta', output: 'ok' });
+			expect(await result.response.json()).toEqual({ id: 'resp_meta', output: 'ok' });
+		});
+
+		it("returns undefined parsedBody and preserves raw SSE when no final event exists", async () => {
+			const sseContent = `data: {"type":"response.started"}
+data: {"type":"chunk","delta":"partial"}
+`;
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJsonWithDetails(response, headers);
+
+			expect(result.parsedBody).toBeUndefined();
+			expect(await result.response.text()).toBe(sseContent);
 		});
 
 		it('should parse SSE stream with response.completed event', async () => {

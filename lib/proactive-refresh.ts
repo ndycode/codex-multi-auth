@@ -22,6 +22,7 @@ export const DEFAULT_PROACTIVE_BUFFER_MS = 5 * 60 * 1000;
 
 /** Minimum buffer to prevent unnecessary refreshes (30 seconds) */
 export const MIN_PROACTIVE_BUFFER_MS = 30 * 1000;
+export const DEFAULT_PROACTIVE_REFRESH_MAX_CONCURRENCY = 4;
 
 /**
  * Result of a proactive refresh operation.
@@ -135,7 +136,9 @@ export async function proactiveRefreshAccount(
 export async function refreshExpiringAccounts(
 	accounts: ManagedAccount[],
 	bufferMs: number = DEFAULT_PROACTIVE_BUFFER_MS,
+	maxConcurrency: number = DEFAULT_PROACTIVE_REFRESH_MAX_CONCURRENCY,
 ): Promise<Map<number, ProactiveRefreshResult>> {
+	const batchStart = performance.now();
 	const results = new Map<number, ProactiveRefreshResult>();
 	const accountsToRefresh = accounts.filter((a) =>
 		shouldRefreshProactively(a, bufferMs),
@@ -147,16 +150,28 @@ export async function refreshExpiringAccounts(
 	}
 
 	log.info(`Proactively refreshing ${accountsToRefresh.length} account(s)`);
+	const safeConcurrency = Math.max(1, Math.floor(maxConcurrency));
+	const workerCount = Math.min(safeConcurrency, accountsToRefresh.length);
+	const outcomes: Array<{ index: number; result: ProactiveRefreshResult } | undefined> =
+		new Array(accountsToRefresh.length);
+	let nextIndex = 0;
 
-	// Refresh in parallel for efficiency
-	const refreshPromises = accountsToRefresh.map(async (account) => {
-		const result = await proactiveRefreshAccount(account, bufferMs);
-		return { index: account.index, result };
+	const workers = Array.from({ length: workerCount }, async () => {
+		while (nextIndex < accountsToRefresh.length) {
+			const position = nextIndex;
+			nextIndex += 1;
+			const account = accountsToRefresh[position];
+			if (!account) continue;
+			const result = await proactiveRefreshAccount(account, bufferMs);
+			outcomes[position] = { index: account.index, result };
+		}
 	});
 
-	const outcomes = await Promise.all(refreshPromises);
+	await Promise.all(workers);
 
-	for (const { index, result } of outcomes) {
+	for (const outcome of outcomes) {
+		if (!outcome) continue;
+		const { index, result } = outcome;
 		results.set(index, result);
 	}
 
@@ -175,6 +190,11 @@ export async function refreshExpiringAccounts(
 			failed,
 		});
 	}
+	log.debug("Proactive refresh timing", {
+		total: accountsToRefresh.length,
+		concurrency: workerCount,
+		durationMs: Math.round(performance.now() - batchStart),
+	});
 
 	return results;
 }

@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS = "1";
 
+const shouldRefreshTokenMock = vi.fn(() => false);
+const refreshAndUpdateTokenMock = vi.fn(async (auth: unknown) => auth);
+const handleSuccessResponseDetailedMock = vi.fn(async (response: Response) => ({
+	response,
+	parsedBody: undefined,
+}));
+
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -22,13 +29,14 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	extractRequestUrl: (input: any) => (typeof input === "string" ? input : String(input)),
 	rewriteUrlForCodex: (url: string) => url,
 	transformRequestForCodex: async (init: any) => ({ updatedInit: init, body: { model: "gpt-5.1" } }),
-	shouldRefreshToken: () => false,
-	refreshAndUpdateToken: async (auth: any) => auth,
+	shouldRefreshToken: shouldRefreshTokenMock,
+	refreshAndUpdateToken: refreshAndUpdateTokenMock,
 	createCodexHeaders: () => new Headers(),
 	handleErrorResponse: async (response: Response) => ({ response }),
 	resolveUnsupportedCodexFallbackModel: () => undefined,
 	shouldFallbackToGpt52OnUnsupportedGpt53: () => false,
 	handleSuccessResponse: async (response: Response) => response,
+	handleSuccessResponseDetailed: handleSuccessResponseDetailedMock,
 }));
 
 vi.mock("../lib/request/request-transformer.js", () => ({
@@ -80,6 +88,12 @@ vi.mock("../lib/accounts.js", () => {
 
 	updateFromAuth() {}
 
+	clearAuthFailures() {}
+
+	incrementAuthFailures() {
+		return 1;
+	}
+
 		async saveToDisk() {}
 
 		markAccountCoolingDown() {}
@@ -97,6 +111,8 @@ vi.mock("../lib/accounts.js", () => {
 		}
 
 		markSwitched() {}
+
+		removeAccount() {}
 
 		getMinWaitTimeForFamily() {
 			return 1000;
@@ -169,6 +185,15 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		vi.useFakeTimers();
 		originalFetch = globalThis.fetch;
 		globalThis.fetch = vi.fn(async () => new Response("ok", { status: 200 })) as any;
+		shouldRefreshTokenMock.mockReset();
+		shouldRefreshTokenMock.mockReturnValue(false);
+		refreshAndUpdateTokenMock.mockReset();
+		refreshAndUpdateTokenMock.mockImplementation(async (auth: unknown) => auth);
+		handleSuccessResponseDetailedMock.mockReset();
+		handleSuccessResponseDetailedMock.mockImplementation(async (response: Response) => ({
+			response,
+			parsedBody: undefined,
+		}));
 	});
 
 	afterEach(() => {
@@ -223,7 +248,6 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 			tui: { showToast: vi.fn() },
 			auth: { set: vi.fn() },
 		} as any;
-
 		const plugin = await OpenAIAuthPlugin({ client });
 		const getAuth = async () => ({
 			type: "oauth" as const,
@@ -242,6 +266,70 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const metrics = await plugin.tool["codex-metrics"].execute();
 		const plainMetrics = String(metrics).replace(/\u001b\[[0-9;]*m/g, "");
 		expect(plainMetrics).toContain("Retry governor stops (absolute ceiling): 1");
+	});
+
+	it("deduplicates refresh endpoint work for concurrent sdk.fetch retries", async () => {
+		shouldRefreshTokenMock.mockReturnValue(true);
+		let releaseRefresh: (() => void) | undefined;
+		const refreshEndpoint = vi.fn(async () => {
+			await new Promise<void>((resolve) => {
+				releaseRefresh = resolve;
+			});
+			return {
+				type: "oauth",
+				access: "refreshed-access",
+				refresh: "refreshed-refresh",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			};
+		});
+		let refreshInFlight: Promise<unknown> | null = null;
+		refreshAndUpdateTokenMock.mockImplementation(async (auth: unknown) => {
+			if (!refreshInFlight) {
+				refreshInFlight = (async () => {
+					const refreshed = await refreshEndpoint();
+					if (auth && typeof auth === "object") {
+						Object.assign(auth as Record<string, unknown>, refreshed);
+					}
+					return auth;
+				})().finally(() => {
+					refreshInFlight = null;
+				});
+			}
+			return refreshInFlight;
+		});
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+
+		const pending = Promise.all(
+			Array.from({ length: 10 }, () => sdk.fetch("https://example.com", {})),
+		);
+		await vi.advanceTimersByTimeAsync(1500);
+		await Promise.resolve();
+
+		expect(refreshEndpoint).toHaveBeenCalledTimes(1);
+		expect(releaseRefresh).toBeTypeOf("function");
+		releaseRefresh?.();
+
+		const responses = await pending;
+		expect(responses).toHaveLength(10);
+		for (const response of responses) {
+			expect(response.status).toBe(200);
+		}
+		expect(refreshEndpoint).toHaveBeenCalledTimes(1);
 	});
 });
 

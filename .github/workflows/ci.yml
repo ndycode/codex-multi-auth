@@ -54,6 +54,9 @@ jobs:
 
       - name: Run tests
         run: npm test
+      - name: Runtime performance regression gate
+        if: matrix.node-version == '20.x'
+        run: npm run perf:runtime:ci
 
   coverage-gate:
     name: Coverage Gate
