@@ -8,6 +8,7 @@ import {
 	promises as fs,
 } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { sleep } from "./utils.js";
 import { acquireFileLock, acquireFileLockSync } from "./file-lock.js";
@@ -20,6 +21,12 @@ const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
 const UNIFIED_SETTINGS_LOCK_PATH = `${UNIFIED_SETTINGS_PATH}.lock`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 let settingsWriteQueue: Promise<void> = Promise.resolve();
+const SETTINGS_CONFLICT_RETRY_LIMIT = 3;
+
+type SettingsSnapshot = {
+	record: JsonRecord | null;
+	revision: string | null;
+};
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -47,6 +54,66 @@ function cloneRecord(value: unknown): JsonRecord | null {
 	return { ...value };
 }
 
+function computeSha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function createSettingsConflictError(): Error & { code: string } {
+	return Object.assign(
+		new Error(
+			"Detected concurrent unified settings modification; reload and retry",
+		),
+		{ code: "ECONFLICT" as const },
+	);
+}
+
+function isConflictError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === "ECONFLICT";
+}
+
+function readCurrentSettingsRevisionSync(): string | null {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return null;
+	}
+	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
+	return computeSha256(raw);
+}
+
+async function readCurrentSettingsRevisionAsync(): Promise<string | null> {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return null;
+	}
+	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	return computeSha256(raw);
+}
+
+function readSettingsSnapshotSync(): SettingsSnapshot {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return { record: null, revision: null };
+	}
+
+	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
+	const parsed = cloneRecord(JSON.parse(raw));
+	if (!parsed) {
+		throw new Error("Unified settings must contain a JSON object at the root.");
+	}
+	return { record: parsed, revision: computeSha256(raw) };
+}
+
+async function readSettingsSnapshotAsync(): Promise<SettingsSnapshot> {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return { record: null, revision: null };
+	}
+
+	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	const parsed = cloneRecord(JSON.parse(raw));
+	if (!parsed) {
+		throw new Error("Unified settings must contain a JSON object at the root.");
+	}
+	return { record: parsed, revision: computeSha256(raw) };
+}
+
 /**
  * Reads and parses the unified settings JSON file from disk.
  *
@@ -58,16 +125,7 @@ function cloneRecord(value: unknown): JsonRecord | null {
  * - Sensitive data: this function performs no token or secret redaction; any sensitive values present in the file are returned as-is and callers are responsible for redaction before logging or external exposure.
  */
 function readSettingsRecordSync(): JsonRecord | null {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
-	}
-
-	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
-	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
-	}
-	return parsed;
+	return readSettingsSnapshotSync().record;
 }
 
 /**
@@ -78,16 +136,8 @@ function readSettingsRecordSync(): JsonRecord | null {
  * @returns The parsed settings record as an object clone, or `null` if unavailable or invalid.
  */
 async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
-	}
-
-	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
-	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
-	}
-	return parsed;
+	const snapshot = await readSettingsSnapshotAsync();
+	return snapshot.record;
 }
 
 /**
@@ -122,7 +172,18 @@ function normalizeForWrite(record: JsonRecord): JsonRecord {
  *
  * @param record - The settings object to persist; it will be normalized to include the unified settings version.
  */
-function writeSettingsRecordSync(record: JsonRecord): void {
+function writeSettingsRecordSync(
+	record: JsonRecord,
+	options?: { expectedRevision?: string | null },
+): void {
+	const expectedRevision = options?.expectedRevision;
+	if (expectedRevision !== undefined) {
+		const currentRevision = readCurrentSettingsRevisionSync();
+		if (currentRevision !== expectedRevision) {
+			throw createSettingsConflictError();
+		}
+	}
+
 	mkdirSync(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
@@ -183,7 +244,18 @@ function writeSettingsRecordSync(record: JsonRecord): void {
  *
  * @param record - The settings object to persist; it will be normalized (version set)
  */
-async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
+async function writeSettingsRecordAsync(
+	record: JsonRecord,
+	options?: { expectedRevision?: string | null },
+): Promise<void> {
+	const expectedRevision = options?.expectedRevision;
+	if (expectedRevision !== undefined) {
+		const currentRevision = await readCurrentSettingsRevisionAsync();
+		if (currentRevision !== expectedRevision) {
+			throw createSettingsConflictError();
+		}
+	}
+
 	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
@@ -276,9 +348,22 @@ export function loadUnifiedPluginConfigSync(): JsonRecord | null {
  * @param pluginConfig - Key/value map representing plugin configuration to persist
  */
 export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
-	const record = readSettingsRecordSync() ?? {};
-	record.pluginConfig = { ...pluginConfig };
-	writeSettingsRecordSync(record);
+	let lastError: unknown;
+	for (let attempt = 0; attempt < SETTINGS_CONFLICT_RETRY_LIMIT; attempt += 1) {
+		const snapshot = readSettingsSnapshotSync();
+		const record = snapshot.record ?? {};
+		record.pluginConfig = { ...pluginConfig };
+		try {
+			writeSettingsRecordSync(record, { expectedRevision: snapshot.revision });
+			return;
+		} catch (error) {
+			lastError = error;
+			if (!isConflictError(error) || attempt >= SETTINGS_CONFLICT_RETRY_LIMIT - 1) {
+				throw error;
+			}
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error("Failed to save unified plugin config");
 }
 
 /**
@@ -293,9 +378,22 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.pluginConfig = { ...pluginConfig };
-		await writeSettingsRecordAsync(record);
+		let lastError: unknown;
+		for (let attempt = 0; attempt < SETTINGS_CONFLICT_RETRY_LIMIT; attempt += 1) {
+			const snapshot = await readSettingsSnapshotAsync();
+			const record = snapshot.record ?? {};
+			record.pluginConfig = { ...pluginConfig };
+			try {
+				await writeSettingsRecordAsync(record, { expectedRevision: snapshot.revision });
+				return;
+			} catch (error) {
+				lastError = error;
+				if (!isConflictError(error) || attempt >= SETTINGS_CONFLICT_RETRY_LIMIT - 1) {
+					throw error;
+				}
+			}
+		}
+		throw lastError instanceof Error ? lastError : new Error("Failed to save unified plugin config");
 	});
 }
 
@@ -336,8 +434,21 @@ export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
-		await writeSettingsRecordAsync(record);
+		let lastError: unknown;
+		for (let attempt = 0; attempt < SETTINGS_CONFLICT_RETRY_LIMIT; attempt += 1) {
+			const snapshot = await readSettingsSnapshotAsync();
+			const record = snapshot.record ?? {};
+			record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
+			try {
+				await writeSettingsRecordAsync(record, { expectedRevision: snapshot.revision });
+				return;
+			} catch (error) {
+				lastError = error;
+				if (!isConflictError(error) || attempt >= SETTINGS_CONFLICT_RETRY_LIMIT - 1) {
+					throw error;
+				}
+			}
+		}
+		throw lastError instanceof Error ? lastError : new Error("Failed to save unified dashboard settings");
 	});
 }

@@ -319,6 +319,7 @@ export interface ErrorDiagnostics {
 export interface CreateCodexHeadersOptions {
 	model?: string;
 	promptCacheKey?: string;
+	idempotencyKey?: string;
 }
 
 export interface CreateCodexHeadersParams {
@@ -576,6 +577,12 @@ export function createCodexHeaders(
         headers.delete(OPENAI_HEADERS.CONVERSATION_ID);
         headers.delete(OPENAI_HEADERS.SESSION_ID);
     }
+	const idempotencyKey = resolvedOpts?.idempotencyKey?.trim();
+	if (idempotencyKey) {
+		headers.set("Idempotency-Key", idempotencyKey);
+	} else {
+		headers.delete("Idempotency-Key");
+	}
     headers.set("accept", "text/event-stream");
     return headers;
 }

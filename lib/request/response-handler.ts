@@ -1,4 +1,4 @@
-import { createLogger, logRequest, LOGGING_ENABLED } from "../logger.js";
+import { createLogger, logRequest } from "../logger.js";
 import { PLUGIN_NAME } from "../constants.js";
 
 import type { SSEEventData } from "../types.js";
@@ -89,10 +89,6 @@ export async function convertSseToJsonWithDetails(
 			}
 		}
 
-		if (LOGGING_ENABLED) {
-			logRequest("stream-full", { fullContent: fullText });
-		}
-
 		// Parse SSE events to extract the final response
 		const finalResponse = parseSseStream(fullText);
 
@@ -101,13 +97,22 @@ export async function convertSseToJsonWithDetails(
 
 			logRequest("stream-error", { error: "No response.done event found" });
 
-			// Return original stream if we can't parse
+			const jsonHeaders = new Headers(headers);
+			jsonHeaders.set("content-type", "application/json; charset=utf-8");
 			return {
-				response: new Response(fullText, {
-					status: response.status,
-					statusText: response.statusText,
-					headers: headers,
-				}),
+				response: new Response(
+					JSON.stringify({
+						error: {
+							message: "No response.done event found in SSE stream",
+							type: "stream_parse_error",
+						},
+					}),
+					{
+						status: response.status,
+						statusText: response.statusText,
+						headers: jsonHeaders,
+					},
+				),
 			};
 		}
 

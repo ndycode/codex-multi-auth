@@ -109,7 +109,7 @@ describe('Plugin Configuration', () => {
 				fastSessionMaxInputItems: 30,
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsMaxRetries: 12,
 				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
@@ -169,7 +169,7 @@ describe('Plugin Configuration', () => {
 				fastSessionMaxInputItems: 30,
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsMaxRetries: 12,
 				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
@@ -466,7 +466,7 @@ describe('Plugin Configuration', () => {
 				fastSessionMaxInputItems: 30,
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsMaxRetries: 12,
 				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
@@ -532,7 +532,7 @@ describe('Plugin Configuration', () => {
 		fastSessionMaxInputItems: 30,
 		retryAllAccountsRateLimited: true,
 		retryAllAccountsMaxWaitMs: 0,
-		retryAllAccountsMaxRetries: Infinity,
+		retryAllAccountsMaxRetries: 12,
 		retryAllAccountsAbsoluteCeilingMs: 0,
 		unsupportedCodexPolicy: 'strict',
 		fallbackOnUnsupportedCodexModel: false,
@@ -592,7 +592,7 @@ describe('Plugin Configuration', () => {
 			fastSessionMaxInputItems: 30,
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 0,
-			retryAllAccountsMaxRetries: Infinity,
+			retryAllAccountsMaxRetries: 12,
 			retryAllAccountsAbsoluteCeilingMs: 0,
 			unsupportedCodexPolicy: 'strict',
 			fallbackOnUnsupportedCodexModel: false,
@@ -1058,6 +1058,13 @@ describe('Plugin Configuration', () => {
 			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = '12000';
 			const config: PluginConfig = { retryAllAccountsAbsoluteCeilingMs: 5000 };
 			expect(getRetryAllAccountsAbsoluteCeilingMs(config)).toBe(12000);
+		});
+
+		it('should clamp all-account retry max to hard upper bound', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = '10000';
+			const result = getRetryAllAccountsMaxRetries({});
+			expect(result).toBe(100);
+			delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
 		});
 
 		it('should return env value without min constraint', () => {

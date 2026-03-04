@@ -5,6 +5,7 @@ import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { fetchWithTimeoutAndRetry } from "../network.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
+import { fetchWithTimeout } from "../utils.js";
 
 const GITHUB_API_RELEASES =
 	"https://api.github.com/repos/openai/codex/releases/latest";
@@ -26,6 +27,7 @@ const MAX_CACHE_SIZE = 50;
 const memoryCache = new Map<string, { content: string; timestamp: number }>();
 const refreshPromises = new Map<ModelFamily, Promise<void>>();
 const RELEASE_TAG_TTL_MS = 5 * 60 * 1000;
+const PROMPT_FETCH_TIMEOUT_MS = 15_000;
 let latestReleaseTagCache: { tag: string; checkedAt: number } | null = null;
 
 /**

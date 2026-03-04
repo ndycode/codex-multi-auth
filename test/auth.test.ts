@@ -721,6 +721,41 @@ describe('Auth Module', () => {
 			}
 		});
 
+		it('enforces refresh timeout when refresh endpoint stalls', async () => {
+			vi.useFakeTimers();
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						'abort',
+						() => {
+							const reason = init.signal?.reason;
+							if (reason instanceof Error) {
+								reject(reason);
+								return;
+							}
+							reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const resultPromise = refreshAccessToken('slow-token', { timeoutMs: 1_000 });
+				await vi.advanceTimersByTimeAsync(1_200);
+				const result = await resultPromise;
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toContain('timeout');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+			}
+		});
+
 		it('returns failed when response refresh token is whitespace only', async () => {
 			const originalFetch = globalThis.fetch;
 			const logErrorSpy = vi.spyOn(loggerModule, 'logError').mockImplementation(() => {});

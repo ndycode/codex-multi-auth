@@ -376,7 +376,8 @@ describe("RefreshLeaseCoordinator", () => {
       pollIntervalMs: 20,
     });
     let handle = await coordinator.acquire(refreshToken);
-    expect(handle.role).toBe("bypass");
+    expect(handle.role).toBe("owner");
+    await handle.release();
 
     await writeFile(
       lockPath,

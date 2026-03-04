@@ -218,7 +218,7 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
  * @param data - The quota cache data (byAccountId and byEmail maps) to persist; callers
  *               should pass normalized QuotaCacheData.
  */
-export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
+export async function saveQuotaCache(data: QuotaCacheData): Promise<boolean> {
 	const payload: QuotaCacheFile = {
 		version: 1,
 		byAccountId: data.byAccountId,
@@ -263,11 +263,13 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 		} finally {
 			await lock.release();
 		}
+		return true;
 	} catch (error) {
 		logWarn(
 			`Failed to save quota cache to ${QUOTA_CACHE_LABEL}: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
+		return false;
 	}
 }
