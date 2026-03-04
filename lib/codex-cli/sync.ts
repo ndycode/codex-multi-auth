@@ -3,7 +3,7 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "../storage.js";
-import { type ModelFamily } from "../prompts/codex.js";
+import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import {
 	setActiveIndexForAllFamilies,
 	normalizeActiveIndexByFamily,

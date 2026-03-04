@@ -602,7 +602,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
 		}
 
-                return await exchangeAuthorizationCodeWithRateLimit(
                 const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
                 return await exchangeAuthorizationCodeWithRateLimit(
                         result.code,

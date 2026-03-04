@@ -63,7 +63,7 @@ data: {"type":"response.done","response":{"id":"resp_123","output":"test"}}
 			expect(await result.response.json()).toEqual({ id: 'resp_meta', output: 'ok' });
 		});
 
-		it("returns undefined parsedBody and preserves raw SSE when no final event exists", async () => {
+		it("returns undefined parsedBody and surfaces stream parse error when no final event exists", async () => {
 			const sseContent = `data: {"type":"response.started"}
 data: {"type":"chunk","delta":"partial"}
 `;
@@ -73,7 +73,12 @@ data: {"type":"chunk","delta":"partial"}
 			const result = await convertSseToJsonWithDetails(response, headers);
 
 			expect(result.parsedBody).toBeUndefined();
-			expect(await result.response.text()).toBe(sseContent);
+			expect(await result.response.json()).toEqual({
+				error: {
+					message: 'No response.done event found in SSE stream',
+					type: 'stream_parse_error',
+				},
+			});
 		});
 
 		it('should parse SSE stream with response.completed event', async () => {

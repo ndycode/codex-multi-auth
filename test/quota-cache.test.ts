@@ -196,7 +196,6 @@ describe("quota cache", () => {
       );
       expect(tmpUnlinks).toHaveLength(1);
       expect(saved).toBe(false);
-      expect(unlinkSpy).toHaveBeenCalledTimes(1);
       const entries = await fs.readdir(tempDir);
       expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
     } finally {

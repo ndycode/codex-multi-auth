@@ -35,7 +35,7 @@ import {
 	createEmptyAccountStorage as createEmptyAccountStorageBase,
 } from "./accounts/storage-view.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
-import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
+import { getFetchTimeoutMs, getTelemetryEnabled, loadPluginConfig } from "./config.js";
 import {
 	loadDashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
@@ -55,7 +55,6 @@ import {
 	type CodexQuotaSnapshot,
 } from "./quota-probe.js";
 import { queuedRefresh } from "./refresh-queue.js";
-import { getTelemetryEnabled, loadPluginConfig } from "./config.js";
 import {
 	loadQuotaCache,
 	saveQuotaCache,

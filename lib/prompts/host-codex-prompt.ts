@@ -10,7 +10,7 @@ import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { logDebug } from "../logger.js";
 import { fetchWithTimeoutAndRetry } from "../network.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
-import { fetchWithTimeout, sleep } from "../utils.js";
+import { sleep } from "../utils.js";
 
 const DEFAULT_HOST_CODEX_PROMPT_URLS = [
 	"https://raw.githubusercontent.com/anomalyco/Codex/dev/packages/Codex/src/session/prompt/codex.txt",
