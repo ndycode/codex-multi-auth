@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { filterInput } from "../dist/lib/request/request-transformer.js";
 import { cleanupToolDefinitions } from "../dist/lib/request/helpers/tool-utils.js";
 import { AccountManager } from "../dist/lib/accounts.js";
+import { syncAccountStorageFromCodexCli } from "../dist/lib/codex-cli/sync.js";
+import { clearCodexCliStateCache } from "../dist/lib/codex-cli/state.js";
+import {
+	handleErrorResponse,
+	handleSuccessResponseDetailed,
+} from "../dist/lib/request/fetch-helpers.js";
 
 function argValue(args, name) {
 	const prefix = `${name}=`;
@@ -28,6 +35,22 @@ function benchmarkCase(name, iterations, fn) {
 	const start = performance.now();
 	for (let i = 0; i < iterations; i += 1) {
 		fn();
+	}
+	const end = performance.now();
+	return {
+		name,
+		iterations,
+		avgMs: Number(((end - start) / iterations).toFixed(6)),
+	};
+}
+
+async function benchmarkCaseAsync(name, iterations, fn) {
+	for (let i = 0; i < 3; i += 1) {
+		await fn();
+	}
+	const start = performance.now();
+	for (let i = 0; i < iterations; i += 1) {
+		await fn();
 	}
 	const end = performance.now();
 	return {
@@ -104,7 +127,88 @@ function buildManager(accountCount) {
 	});
 }
 
-function run() {
+function buildSyncSnapshots(accountCount) {
+	const accounts = [];
+	for (let i = 0; i < accountCount; i += 1) {
+		accounts.push({
+			accountId: `acc_${i}`,
+			email: `sync${i}@example.com`,
+			auth: {
+				tokens: {
+					access_token: `sync.access.${i}`,
+					refresh_token: `sync.refresh.${i}`,
+				},
+			},
+		});
+	}
+	return accounts;
+}
+
+function buildSyncStorage(accountCount) {
+	const accounts = [];
+	for (let i = 0; i < accountCount; i += 1) {
+		accounts.push({
+			accountId: `acc_${i}`,
+			email: `sync${i}@example.com`,
+			refreshToken: `sync.refresh.${i}`,
+			accessToken: `sync.access.${i}`,
+			addedAt: 1,
+			lastUsed: 0,
+			enabled: true,
+		});
+	}
+	return {
+		version: 3,
+		accounts,
+		activeIndex: 0,
+		activeIndexByFamily: {},
+	};
+}
+
+async function withCodexCliState(accountCount, fn) {
+	const tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-perf-"));
+	const accountsPath = join(tempDir, "accounts.json");
+	const authPath = join(tempDir, "auth.json");
+	const configPath = join(tempDir, "config.toml");
+	const snapshots = buildSyncSnapshots(accountCount);
+	await writeFile(
+		accountsPath,
+		`${JSON.stringify({ activeAccountId: "acc_0", accounts: snapshots }, null, 2)}\n`,
+		"utf8",
+	);
+
+	const previousEnv = {
+		CODEX_CLI_ACCOUNTS_PATH: process.env.CODEX_CLI_ACCOUNTS_PATH,
+		CODEX_CLI_AUTH_PATH: process.env.CODEX_CLI_AUTH_PATH,
+		CODEX_CLI_CONFIG_PATH: process.env.CODEX_CLI_CONFIG_PATH,
+		CODEX_MULTI_AUTH_SYNC_CODEX_CLI: process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI,
+		CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE:
+			process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE,
+	};
+
+	process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
+	process.env.CODEX_CLI_AUTH_PATH = authPath;
+	process.env.CODEX_CLI_CONFIG_PATH = configPath;
+	process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
+	process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
+	clearCodexCliStateCache();
+
+	try {
+		return await fn();
+	} finally {
+		clearCodexCliStateCache();
+		for (const [key, value] of Object.entries(previousEnv)) {
+			if (value === undefined) {
+				delete process.env[key];
+			} else {
+				process.env[key] = value;
+			}
+		}
+		await rm(tempDir, { recursive: true, force: true });
+	}
+}
+
+async function run() {
 	const args = process.argv.slice(2);
 	const iterations = parsePositiveInt(argValue(args, "--iterations"), 30);
 	const outputPath = argValue(args, "--output");
@@ -139,11 +243,61 @@ function run() {
 		}),
 	];
 
+	const asyncResults = await withCodexCliState(1000, async () => {
+		const current = buildSyncStorage(1000);
+		const syncResult = await benchmarkCaseAsync(
+			"codexCliSync_merge_1000",
+			iterations,
+			async () => {
+				const reconciled = await syncAccountStorageFromCodexCli(current);
+				if (!reconciled.storage) throw new Error("codexCliSync_merge_1000 failed");
+			},
+		);
+
+		const errorBodyText = JSON.stringify({
+			error: {
+				code: "usage_limit_reached",
+				message: "usage limit reached",
+				retry_after_ms: 1200,
+			},
+		});
+		const errorResult = await benchmarkCaseAsync(
+			"handleErrorResponse_usageLimit",
+			iterations,
+			async () => {
+				const result = await handleErrorResponse(
+					new Response(errorBodyText, { status: 404 }),
+				);
+				if (result.response.status !== 429) {
+					throw new Error("handleErrorResponse_usageLimit failed");
+				}
+			},
+		);
+
+		const sseSuccess =
+			'data: {"type":"response.done","response":{"id":"resp_perf","output":"ok"}}\n';
+		const successResult = await benchmarkCaseAsync(
+			"handleSuccessResponseDetailed_nonstream",
+			iterations,
+			async () => {
+				const result = await handleSuccessResponseDetailed(
+					new Response(sseSuccess, { status: 200 }),
+					false,
+				);
+				if (!result.parsedBody) {
+					throw new Error("handleSuccessResponseDetailed_nonstream failed");
+				}
+			},
+		);
+
+		return [syncResult, errorResult, successResult];
+	});
+
 	const payload = {
 		generatedAt: new Date().toISOString(),
 		node: process.version,
 		iterations,
-		results,
+		results: [...results, ...asyncResults],
 	};
 
 	if (outputPath) {

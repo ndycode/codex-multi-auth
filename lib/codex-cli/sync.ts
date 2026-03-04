@@ -40,39 +40,78 @@ function cloneStorage(storage: AccountStorageV3): AccountStorageV3 {
 	};
 }
 
-function buildIndexByAccountId(accounts: AccountMetadataV3[]): Map<string, number> {
-	const map = new Map<string, number>();
+interface AccountIndexes {
+	byAccountId: Map<string, number>;
+	byRefreshToken: Map<string, number>;
+	byEmail: Map<string, number>;
+}
+
+function createAccountIndexes(accounts: AccountMetadataV3[]): AccountIndexes {
+	const indexes: AccountIndexes = {
+		byAccountId: new Map<string, number>(),
+		byRefreshToken: new Map<string, number>(),
+		byEmail: new Map<string, number>(),
+	};
 	for (let i = 0; i < accounts.length; i += 1) {
 		const account = accounts[i];
-		if (!account?.accountId) continue;
-		map.set(account.accountId, i);
+		if (!account) continue;
+		indexAccount(indexes, account, i);
 	}
-	return map;
+	return indexes;
 }
 
-function buildIndexByRefresh(accounts: AccountMetadataV3[]): Map<string, number> {
-	const map = new Map<string, number>();
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account?.refreshToken) continue;
-		map.set(account.refreshToken, i);
+function indexAccount(
+	indexes: AccountIndexes,
+	account: AccountMetadataV3,
+	index: number,
+): void {
+	if (account.accountId) {
+		indexes.byAccountId.set(account.accountId, index);
 	}
-	return map;
+	if (account.refreshToken) {
+		indexes.byRefreshToken.set(account.refreshToken, index);
+	}
+	const email = normalizeEmail(account.email);
+	if (email) {
+		indexes.byEmail.set(email, index);
+	}
 }
 
-function buildIndexByEmail(accounts: AccountMetadataV3[]): Map<string, number> {
-	const map = new Map<string, number>();
-	for (let i = 0; i < accounts.length; i += 1) {
-		const email = normalizeEmail(accounts[i]?.email);
-		if (!email) continue;
-		map.set(email, i);
+function clearAccountIndexEntries(
+	indexes: AccountIndexes,
+	account: AccountMetadataV3,
+	index: number,
+): void {
+	if (account.accountId && indexes.byAccountId.get(account.accountId) === index) {
+		indexes.byAccountId.delete(account.accountId);
 	}
-	return map;
+	if (
+		account.refreshToken &&
+		indexes.byRefreshToken.get(account.refreshToken) === index
+	) {
+		indexes.byRefreshToken.delete(account.refreshToken);
+	}
+	const email = normalizeEmail(account.email);
+	if (email && indexes.byEmail.get(email) === index) {
+		indexes.byEmail.delete(email);
+	}
 }
 
-function toStorageAccount(snapshot: CodexCliAccountSnapshot): AccountMetadataV3 | null {
+function updateAccountIndexes(
+	indexes: AccountIndexes,
+	index: number,
+	previous: AccountMetadataV3,
+	next: AccountMetadataV3,
+): void {
+	clearAccountIndexEntries(indexes, previous, index);
+	indexAccount(indexes, next, index);
+}
+
+function toStorageAccount(
+	snapshot: CodexCliAccountSnapshot,
+	now: number,
+): AccountMetadataV3 | null {
 	if (!snapshot.refreshToken) return null;
-	const now = Date.now();
 	return {
 		accountId: snapshot.accountId,
 		accountIdSource: snapshot.accountId ? "token" : undefined,
@@ -88,74 +127,112 @@ function toStorageAccount(snapshot: CodexCliAccountSnapshot): AccountMetadataV3 
 
 function upsertFromSnapshot(
 	accounts: AccountMetadataV3[],
+	indexes: AccountIndexes,
 	snapshot: CodexCliAccountSnapshot,
+	now: number,
 ): boolean {
-	const nextAccount = toStorageAccount(snapshot);
+	const nextAccount = toStorageAccount(snapshot, now);
 	if (!nextAccount) return false;
 
-	const byAccountId = buildIndexByAccountId(accounts);
-	const byRefresh = buildIndexByRefresh(accounts);
-	const byEmail = buildIndexByEmail(accounts);
 	const normalizedEmail = normalizeEmail(snapshot.email);
 
 	let targetIndex: number | undefined;
-	if (snapshot.accountId && byAccountId.has(snapshot.accountId)) {
-		targetIndex = byAccountId.get(snapshot.accountId);
-	} else if (snapshot.refreshToken && byRefresh.has(snapshot.refreshToken)) {
-		targetIndex = byRefresh.get(snapshot.refreshToken);
-	} else if (normalizedEmail && byEmail.has(normalizedEmail)) {
-		targetIndex = byEmail.get(normalizedEmail);
+	if (snapshot.accountId && indexes.byAccountId.has(snapshot.accountId)) {
+		targetIndex = indexes.byAccountId.get(snapshot.accountId);
+	} else if (
+		snapshot.refreshToken &&
+		indexes.byRefreshToken.has(snapshot.refreshToken)
+	) {
+		targetIndex = indexes.byRefreshToken.get(snapshot.refreshToken);
+	} else if (normalizedEmail && indexes.byEmail.has(normalizedEmail)) {
+		targetIndex = indexes.byEmail.get(normalizedEmail);
 	}
 
 	if (targetIndex === undefined) {
 		accounts.push(nextAccount);
+		indexAccount(indexes, nextAccount, accounts.length - 1);
 		return true;
 	}
 
 	const current = accounts[targetIndex];
 	if (!current) return false;
 
+	const mergedAccountId = snapshot.accountId ?? current.accountId;
+	const mergedAccountIdSource =
+		snapshot.accountId ? current.accountIdSource ?? "token" : current.accountIdSource;
+	const mergedEmail = snapshot.email ?? current.email;
+	const mergedRefreshToken = snapshot.refreshToken ?? current.refreshToken;
+	const mergedAccessToken = snapshot.accessToken ?? current.accessToken;
+	const mergedExpiresAt = snapshot.expiresAt ?? current.expiresAt;
+
+	const changed =
+		mergedAccountId !== current.accountId ||
+		mergedAccountIdSource !== current.accountIdSource ||
+		mergedEmail !== current.email ||
+		mergedRefreshToken !== current.refreshToken ||
+		mergedAccessToken !== current.accessToken ||
+		mergedExpiresAt !== current.expiresAt;
+	if (!changed) {
+		return false;
+	}
+
 	const merged: AccountMetadataV3 = {
 		...current,
-		accountId: snapshot.accountId ?? current.accountId,
-		accountIdSource:
-			snapshot.accountId
-				? current.accountIdSource ?? "token"
-				: current.accountIdSource,
-		email: snapshot.email ?? current.email,
-		refreshToken: snapshot.refreshToken ?? current.refreshToken,
-		accessToken: snapshot.accessToken ?? current.accessToken,
-		expiresAt: snapshot.expiresAt ?? current.expiresAt,
+		accountId: mergedAccountId,
+		accountIdSource: mergedAccountIdSource,
+		email: mergedEmail,
+		refreshToken: mergedRefreshToken,
+		accessToken: mergedAccessToken,
+		expiresAt: mergedExpiresAt,
 	};
 
-	const changed = JSON.stringify(current) !== JSON.stringify(merged);
-	if (changed) {
-		accounts[targetIndex] = merged;
-	}
-	return changed;
+	accounts[targetIndex] = merged;
+	updateAccountIndexes(indexes, targetIndex, current, merged);
+	return true;
 }
 
 function resolveActiveIndex(
 	accounts: AccountMetadataV3[],
+	indexes: AccountIndexes,
 	activeAccountId: string | undefined,
 	activeEmail: string | undefined,
 ): number {
 	if (accounts.length === 0) return 0;
 
 	if (activeAccountId) {
-		const byId = accounts.findIndex((account) => account.accountId === activeAccountId);
-		if (byId >= 0) return byId;
+		const byId = indexes.byAccountId.get(activeAccountId);
+		if (byId !== undefined) return byId;
 	}
 
 	const normalizedEmail = normalizeEmail(activeEmail);
 	if (normalizedEmail) {
-		const byEmail = accounts.findIndex(
-			(account) => normalizeEmail(account.email) === normalizedEmail,
-		);
-		if (byEmail >= 0) return byEmail;
+		const byEmail = indexes.byEmail.get(normalizedEmail);
+		if (byEmail !== undefined) return byEmail;
 	}
 
 	return 0;
+}
+
+function captureFamilyIndexSnapshot(
+	activeIndexByFamily: AccountStorageV3["activeIndexByFamily"] | undefined,
+): Record<ModelFamily, number | undefined> {
+	const snapshot = {} as Record<ModelFamily, number | undefined>;
+	for (const family of MODEL_FAMILIES) {
+		snapshot[family] = activeIndexByFamily?.[family];
+	}
+	return snapshot;
+}
+
+function didFamilyIndexSnapshotChange(
+	before: Record<ModelFamily, number | undefined>,
+	after: AccountStorageV3["activeIndexByFamily"] | undefined,
+): boolean {
+	for (const family of MODEL_FAMILIES) {
+		if (!Object.is(before[family], after?.[family])) {
+			return true;
+		}
+	}
+	return false;
 }
 
 function writeFamilyIndexes(
@@ -282,9 +359,11 @@ export async function syncAccountStorageFromCodexCli(
 
 		const next = current ? cloneStorage(current) : createEmptyStorage();
 		let changed = false;
+		const now = Date.now();
+		const indexes = createAccountIndexes(next.accounts);
 
 		for (const snapshot of state.accounts) {
-			const updated = upsertFromSnapshot(next.accounts, snapshot);
+			const updated = upsertFromSnapshot(next.accounts, indexes, snapshot, now);
 			if (updated) changed = true;
 		}
 
@@ -306,28 +385,29 @@ export async function syncAccountStorageFromCodexCli(
 		if (applyActiveFromCodex) {
 			const desiredIndex = resolveActiveIndex(
 				next.accounts,
+				indexes,
 				state.activeAccountId ?? activeFromSnapshots.accountId,
 				state.activeEmail ?? activeFromSnapshots.email,
 			);
 
 			const previousActive = next.activeIndex;
-			const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
+			const previousFamilies = captureFamilyIndexSnapshot(next.activeIndexByFamily);
 			writeFamilyIndexes(next, desiredIndex);
 			normalizeStoredFamilyIndexes(next);
 			if (previousActive !== next.activeIndex) {
 				changed = true;
 			}
-			if (previousFamilies !== JSON.stringify(next.activeIndexByFamily ?? {})) {
+			if (didFamilyIndexSnapshotChange(previousFamilies, next.activeIndexByFamily)) {
 				changed = true;
 			}
 		} else {
 			const previousActive = next.activeIndex;
-			const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
+			const previousFamilies = captureFamilyIndexSnapshot(next.activeIndexByFamily);
 			normalizeStoredFamilyIndexes(next);
 			if (previousActive !== next.activeIndex) {
 				changed = true;
 			}
-			if (previousFamilies !== JSON.stringify(next.activeIndexByFamily ?? {})) {
+			if (didFamilyIndexSnapshotChange(previousFamilies, next.activeIndexByFamily)) {
 				changed = true;
 			}
 			log.debug("Skipped Codex CLI active selection overwrite due to newer local state", {

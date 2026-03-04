@@ -29,6 +29,10 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	resolveUnsupportedCodexFallbackModel: () => undefined,
 	shouldFallbackToGpt52OnUnsupportedGpt53: () => false,
 	handleSuccessResponse: async (response: Response) => response,
+	handleSuccessResponseDetailed: async (response: Response) => ({
+		response,
+		parsedBody: undefined,
+	}),
 }));
 
 vi.mock("../lib/request/request-transformer.js", () => ({

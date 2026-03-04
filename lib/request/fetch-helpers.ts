@@ -8,7 +8,10 @@ import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
-import { convertSseToJson, ensureContentType } from "./response-handler.js";
+import {
+	convertSseToJsonWithDetails,
+	ensureContentType,
+} from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
 import { CodexAuthError } from "../errors.js";
 import { isRecord } from "../utils.js";
@@ -293,6 +296,11 @@ export interface ErrorHandlingResult {
         response: Response;
         rateLimit?: RateLimitInfo;
         errorBody?: unknown;
+}
+
+export interface SuccessHandlingResult {
+	response: Response;
+	parsedBody?: unknown;
 }
 
 export interface ErrorHandlingOptions {
@@ -581,8 +589,8 @@ export async function handleErrorResponse(
         response: Response,
         options?: ErrorHandlingOptions,
 ): Promise<ErrorHandlingResult> {
-        const bodyText = await safeReadBody(response);
-        const mapped = mapUsageLimit404WithBody(response, bodyText);
+        const { bodyText, parsedBody } = await readBodyForErrorHandling(response);
+        const mapped = mapUsageLimit404WithBody(response, bodyText, parsedBody);
         
         // Entitlement errors return a ready-to-use Response with 403 status
         if (mapped && mapped.status === HTTP_STATUS.FORBIDDEN) {
@@ -590,14 +598,8 @@ export async function handleErrorResponse(
         }
         
         const finalResponse = mapped ?? response;
-        const rateLimit = extractRateLimitInfoFromBody(finalResponse, bodyText);
-
-        let errorBody: unknown;
-        try {
-                errorBody = bodyText ? JSON.parse(bodyText) : undefined;
-        } catch {
-                errorBody = { message: bodyText };
-        }
+        const rateLimit = extractRateLimitInfoFromBody(finalResponse, bodyText, parsedBody);
+        const errorBody = parsedBody;
 
         const diagnostics = extractErrorDiagnostics(finalResponse, options);
         const normalizedError = normalizeErrorPayload(
@@ -635,6 +637,15 @@ export async function handleSuccessResponse(
     isStreaming: boolean,
     options?: { streamStallTimeoutMs?: number },
 ): Promise<Response> {
+	const result = await handleSuccessResponseDetailed(response, isStreaming, options);
+	return result.response;
+}
+
+export async function handleSuccessResponseDetailed(
+	response: Response,
+	isStreaming: boolean,
+	options?: { streamStallTimeoutMs?: number },
+): Promise<SuccessHandlingResult> {
     // Check for deprecation headers (RFC 8594)
     const deprecation = response.headers.get("Deprecation");
     const sunset = response.headers.get("Sunset");
@@ -646,15 +657,22 @@ export async function handleSuccessResponse(
 
 	// For non-streaming requests (generateText), convert SSE to JSON
 	if (!isStreaming) {
-		return await convertSseToJson(response, responseHeaders, options);
+		const converted = await convertSseToJsonWithDetails(
+			response,
+			responseHeaders,
+			options,
+		);
+		return { response: converted.response, parsedBody: converted.parsedBody };
 	}
 
 	// For streaming requests (streamText), return stream as-is
-	return new Response(response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: responseHeaders,
-	});
+	return {
+		response: new Response(response.body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: responseHeaders,
+		}),
+	};
 }
 
 async function safeReadBody(response: Response): Promise<string> {
@@ -665,16 +683,31 @@ async function safeReadBody(response: Response): Promise<string> {
         }
 }
 
-function mapUsageLimit404WithBody(response: Response, bodyText: string): Response | null {
+async function readBodyForErrorHandling(
+	response: Response,
+): Promise<{ bodyText: string; parsedBody: unknown }> {
+	const bodyText = await safeReadBody(response);
+	if (!bodyText) {
+		return { bodyText, parsedBody: undefined };
+	}
+	try {
+		return { bodyText, parsedBody: JSON.parse(bodyText) as unknown };
+	} catch {
+		return { bodyText, parsedBody: { message: bodyText } };
+	}
+}
+
+function mapUsageLimit404WithBody(
+	response: Response,
+	bodyText: string,
+	parsedBody: unknown,
+): Response | null {
         if (response.status !== HTTP_STATUS.NOT_FOUND) return null;
         if (!bodyText) return null;
 
 	let code = "";
-	try {
-		const parsed = JSON.parse(bodyText) as { error?: { code?: string | number; type?: string } };
-		code = (parsed?.error?.code ?? parsed?.error?.type ?? "").toString();
-	} catch {
-		code = "";
+	if (isRecord(parsedBody) && isRecord(parsedBody.error)) {
+		code = (parsedBody.error.code ?? parsedBody.error.type ?? "").toString();
 	}
 
 	// Check for entitlement errors first - these should NOT be treated as rate limits
@@ -698,10 +731,11 @@ function mapUsageLimit404WithBody(response: Response, bodyText: string): Respons
 function extractRateLimitInfoFromBody(
         response: Response,
         bodyText: string,
+	parsedBody: unknown,
 ): RateLimitInfo | undefined {
         const isStatusRateLimit =
                 response.status === HTTP_STATUS.TOO_MANY_REQUESTS;
-        const parsed = parseRateLimitBody(bodyText);
+        const parsed = parseRateLimitBody(bodyText, parsedBody);
 
         const haystack = `${parsed?.code ?? ""} ${bodyText}`.toLowerCase();
         
@@ -736,24 +770,24 @@ interface RateLimitErrorBody {
 
 function parseRateLimitBody(
 	body: string,
+	parsedBody: unknown,
 ): {
 	code?: string;
 	resetsAt?: number;
 	retryAfterMs?: number;
 	retryAfterSeconds?: number;
 } | undefined {
-	if (!body) return undefined;
-	try {
-		const parsed = JSON.parse(body) as RateLimitErrorBody;
-		const error = parsed?.error ?? {};
-		const code = (error.code ?? error.type ?? "").toString();
-		const resetsAt = toNumber(error.resets_at ?? error.reset_at);
-		const retryAfterMs = toNumber(error.retry_after_ms);
-		const retryAfterSeconds = toNumber(error.retry_after);
-		return { code, resetsAt, retryAfterMs, retryAfterSeconds };
-	} catch {
+	if (!body || !isRecord(parsedBody)) return undefined;
+	const source = parsedBody as RateLimitErrorBody;
+	if (!isRecord(source.error)) {
 		return undefined;
 	}
+	const error = source.error;
+	const code = (error.code ?? error.type ?? "").toString();
+	const resetsAt = toNumber(error.resets_at ?? error.reset_at);
+	const retryAfterMs = toNumber(error.retry_after_ms);
+	const retryAfterSeconds = toNumber(error.retry_after);
+	return { code, resetsAt, retryAfterMs, retryAfterSeconds };
 }
 
 type ErrorPayload = {

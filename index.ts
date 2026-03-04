@@ -140,7 +140,7 @@ import {
 	createCodexHeaders,
 	extractRequestUrl,
         handleErrorResponse,
-        handleSuccessResponse,
+        handleSuccessResponseDetailed,
 	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
         refreshAndUpdateToken,
@@ -2280,15 +2280,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 								},
 							);
 						}
-						const successResponse = await handleSuccessResponse(responseForSuccess, isStreaming, {
+						const successResult = await handleSuccessResponseDetailed(responseForSuccess, isStreaming, {
 							streamStallTimeoutMs,
 						});
+						const successResponse = successResult.response;
 
 					if (!isStreaming && emptyResponseMaxRetries > 0) {
-						const clonedResponse = successResponse.clone();
+						let parsedBody = successResult.parsedBody;
 						try {
-							const bodyText = await clonedResponse.text();
-							const parsedBody = bodyText ? JSON.parse(bodyText) as unknown : null;
+							if (parsedBody === undefined) {
+								const clonedResponse = successResponse.clone();
+								const bodyText = await clonedResponse.text();
+								parsedBody = bodyText ? JSON.parse(bodyText) as unknown : null;
+							}
 							if (isEmptyResponse(parsedBody)) {
 								if (emptyResponseRetries < emptyResponseMaxRetries) {
 									emptyResponseRetries++;

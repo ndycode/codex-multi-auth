@@ -212,6 +212,10 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 	resolveUnsupportedCodexFallbackModel: vi.fn(() => undefined),
 	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
 	handleSuccessResponse: vi.fn(async (response: Response) => response),
+	handleSuccessResponseDetailed: vi.fn(async (response: Response) => ({
+		response,
+		parsedBody: undefined,
+	})),
 }));
 
 const mockStorage = {
