@@ -48,9 +48,9 @@ npm run bench:edit-formats:smoke
 
 ## Recommended Local Gate Before PR
 
-1. `npm run verify`
-2. `npm run test -- test/documentation.test.ts`
-3. for first clone setup: `npm run setup:dev`
+1. for first clone setup: `npm run setup:dev`
+2. `npm run verify`
+3. `npm run test -- test/documentation.test.ts`
 4. run docs command checks for newly documented command paths
 
 ## Release Gate

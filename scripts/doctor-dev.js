@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -177,6 +175,7 @@ export function runDevDoctor(options = {}) {
 	const cwd = resolve(options.cwd ?? process.cwd());
 	const platform = options.platform ?? process.platform;
 	const env = options.env ?? process.env;
+	const execPath = options.execPath ?? process.execPath;
 	const nodeVersion = options.nodeVersion ?? process.version;
 	const pathExists = options.pathExists ?? existsSync;
 	const readFile = options.readFile ?? readFileSync;
@@ -205,7 +204,16 @@ export function runDevDoctor(options = {}) {
 	if (!npmPath) {
 		failures.push("npm is required but was not found in PATH.");
 	} else {
-		details.push(`npm entrypoint detected at ${npmPath}`);
+		const npmCheck =
+			npmExecPathFromEnv.length > 0
+				? runCommand(execPath, [npmExecPathFromEnv, "--version"], spawnFn)
+				: runCommand(npmPath, ["--version"], spawnFn);
+		const npmOutput = `${npmCheck.stdout ?? ""}`.trim();
+		if (npmCheck.status === 0 && npmOutput.length > 0) {
+			details.push(`npm ${npmOutput} OK`);
+		} else {
+			failures.push(`npm entrypoint detected at ${npmPath} but could not be executed.`);
+		}
 	}
 
 	const gitPath = findCommandInPath("git", { env, platform, pathExists });
@@ -216,7 +224,7 @@ export function runDevDoctor(options = {}) {
 		if (gitCheck.status === 0 && gitCheck.stdout.trim().length > 0) {
 			details.push(`${gitCheck.stdout.trim()} OK`);
 		} else {
-			details.push(`git entrypoint detected at ${gitPath}`);
+			failures.push(`git entrypoint detected at ${gitPath} but could not be executed.`);
 		}
 	}
 
@@ -239,7 +247,7 @@ export function runDevDoctor(options = {}) {
 	}
 
 	const scripts = readPackageScripts(cwd, { platform, pathExists, readFile });
-	const requiredScripts = ["typecheck", "lint", "test", "build"];
+	const requiredScripts = ["typecheck", "lint", "test", "build", "verify"];
 	if (!scripts) {
 		failures.push(
 			"Unable to read package.json scripts. Re-run doctor:dev if Windows EBUSY/EPERM file locks are transient.",

@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import process from "node:process";

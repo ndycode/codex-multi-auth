@@ -7,7 +7,13 @@ import {
 	runDevDoctor,
 } from "../../scripts/doctor-dev.js";
 
-function createDoctorFixture(scripts = { build: "echo build", lint: "echo lint", test: "echo test", typecheck: "echo typecheck" }) {
+function createDoctorFixture(scripts: Record<string, string> = {
+	build: "echo build",
+	lint: "echo lint",
+	test: "echo test",
+	typecheck: "echo typecheck",
+	verify: "echo verify",
+}) {
 	const root = mkdtempSync(join(tmpdir(), "codex-doctor-dev-"));
 	const binDir = join(root, "bin");
 	mkdirSync(binDir, { recursive: true });
@@ -50,6 +56,12 @@ describe("doctor-dev script", () => {
 				npm_execpath: "",
 			},
 			nodeVersion: "v20.9.0",
+			spawnSync: (command) => {
+				if (String(command).toLowerCase().includes("git")) {
+					return { status: 0, stdout: "git version 2.40.0\n", stderr: "" };
+				}
+				return { status: 0, stdout: "10.9.0\n", stderr: "" };
+			},
 			log: (message) => logs.push(String(message)),
 			warn: (message) => warnings.push(String(message)),
 			error: (message) => errors.push(String(message)),
@@ -58,7 +70,7 @@ describe("doctor-dev script", () => {
 		expect(code).toBe(0);
 		expect(errors).toEqual([]);
 		expect(warnings).toEqual([]);
-		expect(logs.some((line) => line.includes("npm entrypoint detected"))).toBe(true);
+		expect(logs.some((line) => line.includes("npm 10.9.0 OK"))).toBe(true);
 		expect(logs.some((line) => line.includes("Dev doctor passed."))).toBe(true);
 	});
 
@@ -127,5 +139,31 @@ describe("doctor-dev script", () => {
 
 		expect(scripts).toEqual({ build: "ok" });
 		expect(attempts).toBe(2);
+	});
+
+	it("fails when verify script is missing from package.json", () => {
+		const fixture = createDoctorFixture({
+			build: "echo build",
+			lint: "echo lint",
+			test: "echo test",
+			typecheck: "echo typecheck",
+		});
+		tempDirs.push(fixture.root);
+
+		const errors: string[] = [];
+		const code = runDevDoctor({
+			cwd: fixture.root,
+			platform: "linux",
+			env: {
+				PATH: fixture.binDir,
+				npm_execpath: "/tmp/npm-cli.js",
+			},
+			error: (message) => errors.push(String(message)),
+			warn: () => {},
+			log: () => {},
+		});
+
+		expect(code).toBe(1);
+		expect(errors.some((line) => line.includes("Missing required npm script: verify"))).toBe(true);
 	});
 });
