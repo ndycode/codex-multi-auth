@@ -451,5 +451,61 @@ describe("accounts edge branches", () => {
     const refreshTokens = retriedPayload.accounts.map((account) => account.refreshToken);
     expect(refreshTokens).toContain("refresh-local");
     expect(refreshTokens).toContain("refresh-concurrent");
+
+    await manager.saveToDisk();
+    const postConflictPayload = mockSaveAccounts.mock.calls[2]?.[0] as {
+      accounts: Array<{ refreshToken: string }>;
+    };
+    const persistedTokens = postConflictPayload.accounts.map((account) => account.refreshToken);
+    expect(persistedTokens).toContain("refresh-local");
+    expect(persistedTokens).toContain("refresh-concurrent");
+  });
+
+  it("does not let undefined local fields clobber concrete disk values during conflict merge", async () => {
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+      }),
+    ]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+        enabled: false,
+        rateLimitResetTimes: {
+          "gpt-5-codex:requests": { resetAt: Date.now() + 60_000, reason: "quota-limit" },
+        },
+      }),
+    ]);
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{
+        refreshToken: string;
+        enabled?: boolean;
+        rateLimitResetTimes?: Record<string, unknown>;
+      }>;
+    };
+    const mergedLocal = retriedPayload.accounts.find(
+      (account) => account.refreshToken === "refresh-local",
+    );
+    expect(mergedLocal?.enabled).toBe(false);
+    expect(mergedLocal?.rateLimitResetTimes).toEqual(
+      latestDisk.accounts[0]?.rateLimitResetTimes,
+    );
   });
 });

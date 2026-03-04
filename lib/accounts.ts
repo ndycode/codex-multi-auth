@@ -16,7 +16,7 @@ import {
 	type AccountWithMetrics,
 	type HybridSelectionOptions,
 } from "./rotation.js";
-import { nowMs, sleep } from "./utils.js";
+import { isRecord, nowMs, sleep } from "./utils.js";
 import {
 	loadCodexCliState,
 	type CodexCliTokenCacheEntry,
@@ -803,7 +803,10 @@ export class AccountManager {
 		for (const account of local.accounts) {
 			const idx = claimIndex(account);
 			if (idx >= 0) {
-				mergedAccounts[idx] = { ...mergedAccounts[idx], ...account };
+				const current = mergedAccounts[idx];
+				if (current) {
+					mergedAccounts[idx] = this.mergeStoredAccountRecords(current, account);
+				}
 			} else {
 				mergedAccounts.push({ ...account });
 			}
@@ -846,6 +849,49 @@ export class AccountManager {
 		};
 	}
 
+	private mergeStoredAccountRecords(current: StoredAccount, incoming: StoredAccount): StoredAccount {
+		const next: StoredAccount = { ...current };
+		for (const [rawKey, rawValue] of Object.entries(incoming)) {
+			const key = rawKey as keyof StoredAccount;
+			const value = rawValue as StoredAccount[keyof StoredAccount];
+			if (value === undefined) {
+				continue;
+			}
+			const currentValue = next[key];
+			if (isRecord(currentValue) && isRecord(value)) {
+				next[key] = {
+					...currentValue,
+					...value,
+				} as StoredAccount[keyof StoredAccount];
+				continue;
+			}
+			next[key] = value;
+		}
+		return next;
+	}
+
+	private applyPersistedStorageSnapshot(storage: AccountStorageV3): void {
+		const previousByRefreshToken = new Map(
+			this.accounts.map((account) => [account.refreshToken, account] as const),
+		);
+		const rehydrated = new AccountManager(undefined, storage);
+		this.accounts = rehydrated.accounts.map((account) => {
+			const previous = previousByRefreshToken.get(account.refreshToken);
+			if (!previous) {
+				return account;
+			}
+			return {
+				...account,
+				lastRateLimitReason: previous.lastRateLimitReason,
+				consecutiveAuthFailures: previous.consecutiveAuthFailures,
+			};
+		});
+		this.cursorByFamily = { ...rehydrated.cursorByFamily };
+		this.currentAccountIndexByFamily = {
+			...rehydrated.currentAccountIndexByFamily,
+		};
+	}
+
 	private async persistStorageWithConflictRecovery(storage?: AccountStorageV3): Promise<void> {
 		const maxAttempts = 3;
 		const baseStorage = storage ?? this.buildStorageSnapshot();
@@ -853,6 +899,9 @@ export class AccountManager {
 		for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 			try {
 				await saveAccounts(mergedCandidate);
+				if (attempt > 0) {
+					this.applyPersistedStorageSnapshot(mergedCandidate);
+				}
 				return;
 			} catch (error) {
 				if (!this.isStorageConflictError(error) || attempt + 1 >= maxAttempts) {

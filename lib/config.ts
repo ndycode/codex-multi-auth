@@ -36,6 +36,10 @@ const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 const CONFIG_CONFLICT_RETRY_LIMIT = 3;
+const CONFIG_IO_RETRY_ATTEMPTS = 5;
+const CONFIG_IO_RETRY_BASE_MS = 10;
+const CONFIG_LOCK_STALE_MS = 30_000;
+const CONFIG_LOCK_WAIT_TIMEOUT_MS = 5_000;
 const RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES = 12;
 const RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES = 100;
 
@@ -299,6 +303,20 @@ function isConfigConflictError(error: unknown): boolean {
 	return code === "ECONFLICT";
 }
 
+async function readFileUtf8WithRetry(path: string): Promise<string> {
+	for (let attempt = 0; attempt < CONFIG_IO_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			return await fs.readFile(path, "utf-8");
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt + 1 >= CONFIG_IO_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			await sleep(CONFIG_IO_RETRY_BASE_MS * 2 ** attempt);
+		}
+	}
+	throw new Error(`Failed to read config file after ${CONFIG_IO_RETRY_ATTEMPTS} attempts`);
+}
+
 type JsonRecordSnapshot = {
 	record: Record<string, unknown> | null;
 	revision: string | null;
@@ -310,7 +328,7 @@ async function readConfigSnapshotFromPath(
 	if (!existsSync(configPath)) {
 		return { record: null, revision: null };
 	}
-	const fileContent = await fs.readFile(configPath, "utf-8");
+	const fileContent = await readFileUtf8WithRetry(configPath);
 	const normalizedFileContent = stripUtf8Bom(fileContent);
 	const revision = computeSha256(normalizedFileContent);
 	let record: Record<string, unknown> | null = null;
@@ -369,13 +387,87 @@ async function writeJsonFileAtomicWithRetry(
 
 async function withConfigSaveLock(path: string, task: () => Promise<void>): Promise<void> {
 	const previous = configSaveQueues.get(path) ?? Promise.resolve();
-	const queued = previous.catch(() => {}).then(task);
+	const queued = previous.catch(() => {}).then(async () => {
+		await fs.mkdir(dirname(path), { recursive: true });
+		const lockPath = await acquireConfigSaveFileLock(path);
+		try {
+			await task();
+		} finally {
+			await releaseConfigSaveFileLock(lockPath);
+		}
+	});
 	configSaveQueues.set(path, queued);
 	try {
 		await queued;
 	} finally {
 		if (configSaveQueues.get(path) === queued) {
 			configSaveQueues.delete(path);
+		}
+	}
+}
+
+async function acquireConfigSaveFileLock(path: string): Promise<string> {
+	const lockPath = `${path}.lock`;
+	const waitDeadline = Date.now() + CONFIG_LOCK_WAIT_TIMEOUT_MS;
+	let attempt = 0;
+	while (true) {
+		try {
+			const handle = await fs.open(lockPath, "wx");
+			try {
+				await handle.writeFile(`${process.pid}\n`, "utf8");
+			} finally {
+				await handle.close();
+			}
+			return lockPath;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "EEXIST") {
+				try {
+					const stat = await fs.stat(lockPath);
+					if (Date.now() - stat.mtimeMs >= CONFIG_LOCK_STALE_MS) {
+						await fs.unlink(lockPath);
+						continue;
+					}
+				} catch (statError) {
+					const statCode = (statError as NodeJS.ErrnoException | undefined)?.code;
+					if (statCode === "ENOENT") {
+						continue;
+					}
+					if (!isRetryableFsError(statError)) {
+						throw statError;
+					}
+				}
+				if (Date.now() >= waitDeadline) {
+					throw new Error(`Timed out waiting for config save lock at ${lockPath}`);
+				}
+				await sleep(CONFIG_IO_RETRY_BASE_MS * 2 ** Math.min(attempt, 6));
+				attempt += 1;
+				continue;
+			}
+			if (isRetryableFsError(error) && Date.now() < waitDeadline) {
+				await sleep(CONFIG_IO_RETRY_BASE_MS * 2 ** Math.min(attempt, 6));
+				attempt += 1;
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
+async function releaseConfigSaveFileLock(lockPath: string): Promise<void> {
+	for (let attempt = 0; attempt < CONFIG_IO_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.unlink(lockPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (!isRetryableFsError(error) || attempt + 1 >= CONFIG_IO_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			await sleep(CONFIG_IO_RETRY_BASE_MS * 2 ** attempt);
 		}
 	}
 }
@@ -434,10 +526,10 @@ function sanitizePluginConfigForSave(config: Partial<PluginConfig>): Record<stri
  * Persist a partial plugin configuration to disk, merging it with existing stored settings.
  *
  * This writes the sanitized patch either to the path specified by the CODEX_MULTI_AUTH_CONFIG_PATH
- * environment variable (if set) or into the unified settings store. The function does not take
- * internal locks; callers should avoid concurrent invocations that might overwrite each other.
- * On Windows and other platforms the write behavior follows the Node.js filesystem semantics and may
- * not be atomic across processes. Callers are responsible for redacting any sensitive values
+ * environment variable (if set) or into the unified settings store. Saves are serialized both
+ * in-process and across processes with a lock file to prevent stale CAS races.
+ * On Windows and other platforms the write behavior follows Node.js filesystem semantics.
+ * Callers are responsible for redacting any sensitive values
  * (tokens, secrets) before calling if redaction is required; this function writes merged values as-is.
  *
  * @param configPatch - Partial PluginConfig containing changes to persist; undefined fields are ignored.
