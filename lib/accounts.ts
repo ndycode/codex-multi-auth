@@ -851,21 +851,21 @@ export class AccountManager {
 
 	private mergeStoredAccountRecords(current: StoredAccount, incoming: StoredAccount): StoredAccount {
 		const next: StoredAccount = { ...current };
+		const nextRecord = next as unknown as Record<string, unknown>;
 		for (const [rawKey, rawValue] of Object.entries(incoming)) {
-			const key = rawKey as keyof StoredAccount;
-			const value = rawValue as StoredAccount[keyof StoredAccount];
+			const value = rawValue as unknown;
 			if (value === undefined) {
 				continue;
 			}
-			const currentValue = next[key];
+			const currentValue = nextRecord[rawKey];
 			if (isRecord(currentValue) && isRecord(value)) {
-				next[key] = {
+				nextRecord[rawKey] = {
 					...currentValue,
 					...value,
-				} as StoredAccount[keyof StoredAccount];
+				};
 				continue;
 			}
-			next[key] = value;
+			nextRecord[rawKey] = value;
 		}
 		return next;
 	}

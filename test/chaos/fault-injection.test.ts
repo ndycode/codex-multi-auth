@@ -313,21 +313,21 @@ describe("SSE Parsing Edge Cases", () => {
 		it("handles empty stream", async () => {
 			const response = new Response("", { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
-			expect(result.status).toBe(200);
+			expect(result.status).toBe(502);
 		});
 
 		it("handles [DONE] marker only", async () => {
 			const sseText = "data: [DONE]\n\n";
 			const response = new Response(sseText, { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
-			expect(result.status).toBe(200);
+			expect(result.status).toBe(502);
 		});
 
 		it("handles malformed JSON in SSE event", async () => {
 			const sseText = 'data: {"invalid json\n\ndata: [DONE]\n\n';
 			const response = new Response(sseText, { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
-			expect(result.status).toBe(200);
+			expect(result.status).toBe(502);
 		});
 
 		it("handles response.done event", async () => {
@@ -359,7 +359,7 @@ describe("SSE Parsing Edge Cases", () => {
 				'data: {"type":"error","error":{"message":"Something went wrong"}}\n\n';
 			const response = new Response(sseText, { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
-			expect(result.status).toBe(200);
+			expect(result.status).toBe(502);
 		});
 
 		it("handles multiple events, extracts last response.done", async () => {
