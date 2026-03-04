@@ -18,6 +18,12 @@ const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const selectMock = vi.fn();
+const recordTelemetryEventMock = vi.fn();
+const queryTelemetryEventsMock = vi.fn();
+const summarizeTelemetryEventsMock = vi.fn();
+const getTelemetryLogPathMock = vi.fn(
+	() => "/mock/logs/product-telemetry.jsonl",
+);
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -131,6 +137,13 @@ vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
 }));
 
+vi.mock("../lib/telemetry.js", () => ({
+	recordTelemetryEvent: recordTelemetryEventMock,
+	queryTelemetryEvents: queryTelemetryEventsMock,
+	summarizeTelemetryEvents: summarizeTelemetryEventsMock,
+	getTelemetryLogPath: getTelemetryLogPathMock,
+}));
+
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 
@@ -198,6 +211,10 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		selectMock.mockReset();
+		recordTelemetryEventMock.mockReset();
+		queryTelemetryEventsMock.mockReset();
+		summarizeTelemetryEventsMock.mockReset();
+		getTelemetryLogPathMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -227,6 +244,17 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
 		selectMock.mockResolvedValue(undefined);
+		recordTelemetryEventMock.mockResolvedValue(undefined);
+		queryTelemetryEventsMock.mockResolvedValue([]);
+		summarizeTelemetryEventsMock.mockReturnValue({
+			total: 0,
+			bySource: { cli: 0, plugin: 0 },
+			byOutcome: { start: 0, success: 0, failure: 0, recovery: 0, info: 0 },
+			byEvent: [],
+			firstTimestamp: null,
+			lastTimestamp: null,
+		});
+		getTelemetryLogPathMock.mockReturnValue("/mock/logs/product-telemetry.jsonl");
 		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
@@ -304,6 +332,97 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(errorSpy).not.toHaveBeenCalled();
 		expect(logSpy.mock.calls[0]?.[0]).toContain("Codex Multi-Auth CLI");
+	});
+
+	it("prints telemetry report in json mode", async () => {
+		const now = Date.now();
+		const events = [
+			{
+				timestamp: new Date(now - 5_000).toISOString(),
+				source: "plugin",
+				event: "request.network_error",
+				outcome: "failure",
+				correlationId: null,
+				details: { status: 503 },
+			},
+		];
+		queryTelemetryEventsMock.mockResolvedValueOnce(events);
+		summarizeTelemetryEventsMock.mockReturnValueOnce({
+			total: 1,
+			bySource: { cli: 0, plugin: 1 },
+			byOutcome: { start: 0, success: 0, failure: 1, recovery: 0, info: 0 },
+			byEvent: [{ event: "request.network_error", count: 1 }],
+			firstTimestamp: events[0].timestamp,
+			lastTimestamp: events[0].timestamp,
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"telemetry",
+			"--json",
+			"--since-hours",
+			"12",
+			"--limit",
+			"5",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(queryTelemetryEventsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sinceMs: expect.any(Number),
+				limit: 5,
+			}),
+		);
+		const sinceMs = (queryTelemetryEventsMock.mock.calls[0]?.[0] as { sinceMs: number }).sinceMs;
+		expect(Math.abs(sinceMs - (now - 12 * 60 * 60_000))).toBeLessThan(5_000);
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			limit: number;
+			sinceHours: number;
+			summary: { total: number };
+		};
+		expect(payload.command).toBe("telemetry");
+		expect(payload.limit).toBe(5);
+		expect(payload.sinceHours).toBe(12);
+		expect(payload.summary.total).toBe(1);
+	});
+
+	it("validates telemetry arguments", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "telemetry", "--limit", "abc"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Invalid value for --limit: abc");
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex auth telemetry");
+	});
+
+	it("emits telemetry events for command lifecycle", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "features"]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalled();
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "cli",
+				event: "cli.command.start",
+				outcome: "start",
+				details: expect.objectContaining({ command: "features" }),
+			}),
+		);
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "cli",
+				event: "cli.command.finish",
+				outcome: "success",
+				details: expect.objectContaining({ command: "features", exitCode: 0 }),
+			}),
+		);
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {

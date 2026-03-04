@@ -43,12 +43,20 @@ import {
 	type CodexQuotaSnapshot,
 } from "./quota-probe.js";
 import { queuedRefresh } from "./refresh-queue.js";
+import { getTelemetryEnabled, loadPluginConfig } from "./config.js";
 import {
 	loadQuotaCache,
 	saveQuotaCache,
 	type QuotaCacheData,
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
+import {
+	getTelemetryLogPath,
+	queryTelemetryEvents,
+	recordTelemetryEvent,
+	summarizeTelemetryEvents,
+	type TelemetryOutcome,
+} from "./telemetry.js";
 import {
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -297,6 +305,7 @@ function printUsage(): void {
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
 			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
+			"  codex auth telemetry [--json] [--since-hours <hours>] [--limit <n>]",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
@@ -1666,6 +1675,12 @@ interface ReportCliOptions {
 	outPath?: string;
 }
 
+interface TelemetryCliOptions {
+	json: boolean;
+	sinceHours: number;
+	limit: number;
+}
+
 interface VerifyFlaggedCliOptions {
 	dryRun: boolean;
 	json: boolean;
@@ -1903,6 +1918,34 @@ function printReportUsage(): void {
 	);
 }
 
+function printTelemetryUsage(): void {
+	console.log(
+		[
+			"Usage:",
+			"  codex auth telemetry [--json] [--since-hours <hours>] [--limit <n>]",
+			"",
+			"Options:",
+			"  --json, -j            Print machine-readable JSON output",
+			"  --since-hours <hours> Include events newer than this many hours (default: 24)",
+			"  --limit <n>           Maximum events to return (default: 50, max: 500)",
+		].join("\n"),
+	);
+}
+
+function parsePositiveIntegerOption(
+	value: string | undefined,
+	optionName: string,
+): ParsedArgsResult<number> {
+	if (!value || !/^\d+$/.test(value)) {
+		return { ok: false, message: `Invalid value for ${optionName}: ${value ?? ""}` };
+	}
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		return { ok: false, message: `Invalid value for ${optionName}: ${value}` };
+	}
+	return { ok: true, options: parsed };
+}
+
 function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 	const options: ReportCliOptions = {
 		live: false,
@@ -1958,6 +2001,59 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		return { ok: false, message: `Unknown option: ${arg}` };
 	}
 
+	return { ok: true, options };
+}
+
+function parseTelemetryArgs(args: string[]): ParsedArgsResult<TelemetryCliOptions> {
+	const options: TelemetryCliOptions = {
+		json: false,
+		sinceHours: 24,
+		limit: 50,
+	};
+
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (!arg) continue;
+		if (arg === "--json" || arg === "-j") {
+			options.json = true;
+			continue;
+		}
+		if (arg === "--since-hours") {
+			const parsed = parsePositiveIntegerOption(args[i + 1], "--since-hours");
+			if (!parsed.ok) return parsed;
+			options.sinceHours = parsed.options;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--since-hours=")) {
+			const parsed = parsePositiveIntegerOption(
+				arg.slice("--since-hours=".length).trim(),
+				"--since-hours",
+			);
+			if (!parsed.ok) return parsed;
+			options.sinceHours = parsed.options;
+			continue;
+		}
+		if (arg === "--limit") {
+			const parsed = parsePositiveIntegerOption(args[i + 1], "--limit");
+			if (!parsed.ok) return parsed;
+			options.limit = parsed.options;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--limit=")) {
+			const parsed = parsePositiveIntegerOption(
+				arg.slice("--limit=".length).trim(),
+				"--limit",
+			);
+			if (!parsed.ok) return parsed;
+			options.limit = parsed.options;
+			continue;
+		}
+		return { ok: false, message: `Unknown option: ${arg}` };
+	}
+
+	options.limit = Math.max(1, Math.min(500, options.limit));
 	return { ok: true, options };
 }
 
@@ -2192,6 +2288,98 @@ async function runForecast(args: string[]): Promise<number> {
 		await saveQuotaCache(quotaCache);
 	}
 
+	return 0;
+}
+
+function formatTelemetryDetail(details: Record<string, unknown> | undefined): string {
+	if (!details) return "";
+	const chunks: string[] = [];
+	for (const [key, value] of Object.entries(details)) {
+		if (value === undefined || value === null) continue;
+		if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+			chunks.push(`${key}=${String(value)}`);
+			continue;
+		}
+		const serialized = JSON.stringify(value);
+		if (serialized) {
+			chunks.push(`${key}=${serialized}`);
+		}
+	}
+	return chunks.join(" ");
+}
+
+async function runTelemetry(args: string[]): Promise<number> {
+	if (args.includes("--help") || args.includes("-h")) {
+		printTelemetryUsage();
+		return 0;
+	}
+
+	const parsedArgs = parseTelemetryArgs(args);
+	if (!parsedArgs.ok) {
+		console.error(parsedArgs.message);
+		printTelemetryUsage();
+		return 1;
+	}
+	const options = parsedArgs.options;
+	const sinceMs = Date.now() - options.sinceHours * 60 * 60_000;
+	const events = await queryTelemetryEvents({
+		sinceMs,
+		limit: options.limit,
+	});
+	const summary = summarizeTelemetryEvents(events);
+	const logPath = getTelemetryLogPath();
+
+	if (options.json) {
+		console.log(
+			JSON.stringify(
+				{
+					command: "telemetry",
+					logPath,
+					sinceHours: options.sinceHours,
+					limit: options.limit,
+					summary,
+					events,
+				},
+				null,
+				2,
+			),
+		);
+		return 0;
+	}
+
+	console.log(`Telemetry report (last ${options.sinceHours}h, limit ${options.limit})`);
+	console.log(`Log file: ${logPath}`);
+	console.log(`Total events: ${summary.total}`);
+	console.log(`By source: cli=${summary.bySource.cli}, plugin=${summary.bySource.plugin}`);
+	console.log(
+		`By outcome: start=${summary.byOutcome.start}, success=${summary.byOutcome.success}, failure=${summary.byOutcome.failure}, recovery=${summary.byOutcome.recovery}, info=${summary.byOutcome.info}`,
+	);
+	if (summary.firstTimestamp && summary.lastTimestamp) {
+		console.log(`Window: ${summary.firstTimestamp} -> ${summary.lastTimestamp}`);
+	}
+	if (summary.byEvent.length > 0) {
+		console.log("");
+		console.log("Top events:");
+		for (const item of summary.byEvent.slice(0, 5)) {
+			console.log(`  - ${item.event}: ${item.count}`);
+		}
+	}
+
+	const recent = events.slice(Math.max(0, events.length - 10));
+	if (recent.length === 0) {
+		console.log("");
+		console.log("No telemetry events found for the selected window.");
+		return 0;
+	}
+
+	console.log("");
+	console.log("Recent events:");
+	for (const event of recent) {
+		const detail = formatTelemetryDetail(event.details);
+		console.log(
+			`  - ${event.timestamp} [${event.source}] ${event.outcome} ${event.event}${detail ? ` | ${detail}` : ""}`,
+		);
+	}
 	return 0;
 }
 
@@ -4042,6 +4230,8 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
+	const pluginConfig = loadPluginConfig();
+	const telemetryEnabled = getTelemetryEnabled(pluginConfig);
 
 	const args = [...rawArgs];
 	if (args.length === 0) {
@@ -4060,44 +4250,68 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 
 	const command = sub ?? "login";
+	const emitTelemetry = (
+		outcome: TelemetryOutcome,
+		event: string,
+		details?: Record<string, unknown>,
+	): void => {
+		if (!telemetryEnabled) return;
+		void recordTelemetryEvent({
+			source: "cli",
+			event,
+			outcome,
+			details: {
+				command,
+				...details,
+			},
+		});
+	};
+
 	if (command === "--help" || command === "-h") {
 		printUsage();
 		return 0;
 	}
-	if (command === "login") {
-		return runAuthLogin();
-	}
-	if (command === "list" || command === "status") {
-		await showAccountStatus();
-		return 0;
-	}
-	if (command === "switch") {
-		return runSwitch(rest);
-	}
-	if (command === "check") {
-		await runHealthCheck({ liveProbe: true });
-		return 0;
-	}
-	if (command === "features") {
-		return runFeaturesReport();
-	}
-	if (command === "verify-flagged") {
-		return runVerifyFlagged(rest);
-	}
-	if (command === "forecast") {
-		return runForecast(rest);
-	}
-	if (command === "report") {
-		return runReport(rest);
-	}
-	if (command === "fix") {
-		return runFix(rest);
-	}
-	if (command === "doctor") {
-		return runDoctor(rest);
-	}
+	emitTelemetry("start", "cli.command.start", { argCount: rest.length });
+	try {
+		let exitCode = 0;
+		if (command === "login") {
+			exitCode = await runAuthLogin();
+		} else if (command === "list" || command === "status") {
+			await showAccountStatus();
+			exitCode = 0;
+		} else if (command === "switch") {
+			exitCode = await runSwitch(rest);
+		} else if (command === "check") {
+			await runHealthCheck({ liveProbe: true });
+			exitCode = 0;
+		} else if (command === "features") {
+			exitCode = runFeaturesReport();
+		} else if (command === "verify-flagged") {
+			exitCode = await runVerifyFlagged(rest);
+		} else if (command === "forecast") {
+			exitCode = await runForecast(rest);
+		} else if (command === "report") {
+			exitCode = await runReport(rest);
+		} else if (command === "fix") {
+			exitCode = await runFix(rest);
+		} else if (command === "doctor") {
+			exitCode = await runDoctor(rest);
+		} else if (command === "telemetry") {
+			exitCode = await runTelemetry(rest);
+		} else {
+			console.error(`Unknown command: ${command}`);
+			printUsage();
+			exitCode = 1;
+		}
 
-	console.error(`Unknown command: ${command}`);
-	printUsage();
-	return 1;
+		emitTelemetry(exitCode === 0 ? "success" : "failure", "cli.command.finish", {
+			exitCode,
+		});
+		return exitCode;
+	} catch (error) {
+		emitTelemetry("failure", "cli.command.exception", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	}
 }

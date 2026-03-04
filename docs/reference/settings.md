@@ -74,6 +74,7 @@ Examples:
 - `sessionAffinityTtlMs`
 - `sessionAffinityMaxEntries`
 - `perProjectAccounts`
+- `telemetryEnabled`
 
 ### Rotation and Quota
 
@@ -128,6 +129,7 @@ Common operator overrides:
 - `CODEX_TUI_GLYPHS`
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
+- `CODEX_AUTH_TELEMETRY_ENABLED`
 
 ---
 

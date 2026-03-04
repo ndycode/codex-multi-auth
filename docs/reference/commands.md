@@ -38,6 +38,7 @@ Compatibility aliases are supported:
 | `codex auth report` | Generate full health report |
 | `codex auth fix` | Apply safe account storage fixes |
 | `codex auth doctor` | Run diagnostics and optional repairs |
+| `codex auth telemetry` | Show local telemetry summary and recent events |
 
 ---
 
@@ -45,13 +46,15 @@ Compatibility aliases are supported:
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
-| `--json` | verify-flagged, forecast, report, fix, doctor | Print machine-readable output |
+| `--json` | verify-flagged, forecast, report, fix, doctor, telemetry | Print machine-readable output |
 | `--live` | forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
 | `--model <model>` | forecast, report, fix | Specify model for live probe paths |
 | `--out <path>` | report | Write report output to file |
 | `--fix` | doctor | Apply safe repairs |
 | `--no-restore` | verify-flagged | Verify only; do not restore healthy flagged accounts |
+| `--since-hours <hours>` | telemetry | Include events newer than this many hours |
+| `--limit <n>` | telemetry | Max events to include in report |
 
 ---
 

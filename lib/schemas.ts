@@ -32,6 +32,7 @@ export const PluginConfigSchema = z.object({
 	rateLimitToastDebounceMs: z.number().min(0).optional(),
 	toastDurationMs: z.number().min(1000).optional(),
 	perProjectAccounts: z.boolean().optional(),
+	telemetryEnabled: z.boolean().optional(),
 	sessionRecovery: z.boolean().optional(),
 	autoResume: z.boolean().optional(),
 	parallelProbing: z.boolean().optional(),
