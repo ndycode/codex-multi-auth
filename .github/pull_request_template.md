@@ -8,11 +8,10 @@
 
 ## Validation
 
-- [ ] `npm run lint`
-- [ ] `npm run typecheck`
-- [ ] `npm test`
+- [ ] `npm run verify`
+- [ ] `npm run verify:ci`
 - [ ] `npm test -- test/documentation.test.ts`
-- [ ] `npm run build`
+- [ ] if triaging failures, validated component gates: `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`
 
 ## Docs and Governance Checklist
 

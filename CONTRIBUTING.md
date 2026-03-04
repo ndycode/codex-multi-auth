@@ -23,13 +23,14 @@ If a proposal conflicts with OpenAI policy boundaries, it will be declined.
 
 ```bash
 npm ci
-npm run typecheck
-npm run lint
-npm test
-npm run build
+npm run verify
 ```
 
 Node requirement: `>=18`.
+
+`npm run verify` runs the full local gate: `npm run lint`, `npm run verify:repo`, and
+`npm run verify:quality` (`npm run typecheck` + `npm run coverage`, where coverage already
+runs `npm run build`).
 
 ---
 
@@ -56,10 +57,13 @@ Documentation requirements for behavior changes:
 1. Create a focused branch from `main`.
 2. Keep commits atomic and reviewable.
 3. Run full local gate:
-   - `npm run typecheck`
-   - `npm run lint`
-   - `npm test`
-   - `npm run build`
+   - `npm run verify`
+   - `npm run test -- test/documentation.test.ts`
+   - if triaging failures, run component gates directly:
+     - `npm run lint`
+     - `npm run typecheck`
+     - `npm test`
+     - `npm run build`
 4. Include command output evidence in the PR description.
 5. Document behavior changes and migration notes when needed.
 6. Ensure no secrets or local runtime data are committed.
