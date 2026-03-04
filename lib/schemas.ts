@@ -146,7 +146,7 @@ export const AccountMetadataV4Schema = z.object({
 	accountLabel: z.string().optional(),
 	email: z.string().optional(),
 	refreshTokenRef: z.string().min(1),
-	accessTokenRef: z.string().optional(),
+	accessTokenRef: z.string().min(1).optional(),
 	expiresAt: z.number().optional(),
 	enabled: z.boolean().optional(),
 	addedAt: z.number(),

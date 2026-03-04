@@ -37,7 +37,13 @@ Required evidence:
 2. If status is `fail`, block release or rollback active release candidate.
 3. If stale WAL is reported, run `codex auth doctor --fix --dry-run` first, then `codex auth doctor --fix`.
 4. If auth failures persist, rotate account via `codex auth switch <index>` and re-run `codex auth check`.
-5. Record timeline with absolute UTC timestamps.
+5. If all accounts are exhausted/disabled, escalate immediately to `SEV-1`, stop automated retries, and switch to fallback credentials via incident commander approval.
+6. Record timeline with absolute UTC timestamps.
+
+Windows operator note:
+
+- Default path is `%USERPROFILE%\\.codex\\multi-auth`; if `CODEX_HOME` is set, use `%CODEX_HOME%\\multi-auth`.
+- When deleting WAL artifacts manually, close shells/editors first to avoid `EPERM`/`EBUSY` locks.
 
 ---
 
@@ -45,7 +51,7 @@ Required evidence:
 
 1. Disable debug body logging unless actively diagnosing:
    - ensure `CODEX_PLUGIN_LOG_BODIES` is unset
-2. Run retention cleanup to reduce stale sensitive artifacts:
+2. Run containment commands serially (do not run concurrently):
    - `npm run ops:retention-cleanup`
 3. Re-run verification pack:
    - `npm run ops:health-check`

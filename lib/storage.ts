@@ -881,15 +881,20 @@ async function hydrateV4Storage(data: AccountStorageV4): Promise<AccountStorageV
 	}
 
 	const hydratedAccounts: AccountMetadataV3[] = [];
-	for (const rawAccount of data.accounts) {
+	let skippedBeforeActiveIndex = 0;
+	for (let index = 0; index < data.accounts.length; index += 1) {
+		const rawAccount = data.accounts[index];
+		if (!rawAccount) continue;
 		const secrets = await loadAccountSecrets({
 			refreshTokenRef: rawAccount.refreshTokenRef,
 			accessTokenRef: rawAccount.accessTokenRef,
 		});
 		if (!secrets || !secrets.refreshToken) {
+			if (index < data.activeIndex) {
+				skippedBeforeActiveIndex += 1;
+			}
 			log.warn("Skipping v4 account with missing keychain secret", {
 				accountId: rawAccount.accountId,
-				email: rawAccount.email,
 			});
 			continue;
 		}
@@ -906,11 +911,12 @@ async function hydrateV4Storage(data: AccountStorageV4): Promise<AccountStorageV
 			accessToken: secrets.accessToken,
 		});
 	}
+	const adjustedActiveIndex = Math.max(0, data.activeIndex - skippedBeforeActiveIndex);
 
 	return normalizeAccountStorage({
 		version: 3,
 		accounts: hydratedAccounts,
-		activeIndex: data.activeIndex,
+		activeIndex: adjustedActiveIndex,
 		activeIndexByFamily: data.activeIndexByFamily,
 	});
 }
@@ -1102,41 +1108,63 @@ async function loadAccountsInternal(
   }
 }
 
-async function serializeStorageForPersist(storage: AccountStorageV3): Promise<string> {
+type PersistedSecretRef = { refreshTokenRef: string; accessTokenRef?: string };
+
+type SerializedStoragePayload = {
+	content: string;
+	persistedSecretRefs: PersistedSecretRef[];
+};
+
+async function serializeStorageForPersist(storage: AccountStorageV3): Promise<SerializedStoragePayload> {
 	const mode = await getEffectiveSecretStorageMode();
 	if (mode === "plaintext") {
-		return JSON.stringify(storage, null, 2);
+		return {
+			content: JSON.stringify(storage, null, 2),
+			persistedSecretRefs: [],
+		};
 	}
 
 	await ensureSecretStorageBackendAvailable();
-	const refsByIndex: Array<{ refreshTokenRef: string; accessTokenRef?: string }> = [];
-	for (let index = 0; index < storage.accounts.length; index += 1) {
-		const account = storage.accounts[index];
-		if (!account) continue;
-		const baseRef = `acct-${deriveAccountSecretRef({
-			accountId: account.accountId,
-			email: account.email,
-			addedAt: account.addedAt,
-			refreshToken: account.refreshToken,
-		})}`;
-		const refs = await persistAccountSecrets(baseRef, {
-			refreshToken: account.refreshToken,
-			accessToken: account.accessToken,
-		});
-		if (!refs) {
-			throw new Error("Keychain mode selected but no secret refs were returned");
+	const refsByIndex: Array<PersistedSecretRef> = [];
+	const persistedSecretRefs: PersistedSecretRef[] = [];
+	try {
+		for (let index = 0; index < storage.accounts.length; index += 1) {
+			const account = storage.accounts[index];
+			if (!account) continue;
+			const baseRef = `acct-${deriveAccountSecretRef({
+				accountId: account.accountId,
+				email: account.email,
+				addedAt: account.addedAt,
+				refreshToken: account.refreshToken,
+			})}`;
+			const refs = await persistAccountSecrets(baseRef, {
+				refreshToken: account.refreshToken,
+				accessToken: account.accessToken,
+			});
+			if (!refs) {
+				throw new Error("Keychain mode selected but no secret refs were returned");
+			}
+			persistedSecretRefs.push(refs);
+			refsByIndex[index] = refs;
 		}
-		refsByIndex[index] = refs;
-	}
 
-	const storageV4 = migrateV3ToV4(storage, (_account, index) => {
-		const refs = refsByIndex[index];
-		if (!refs) {
-			throw new Error(`Missing keychain refs for account index ${index}`);
-		}
-		return refs;
-	});
-	return JSON.stringify(storageV4, null, 2);
+		const storageV4 = migrateV3ToV4(storage, (_account, index) => {
+			const refs = refsByIndex[index];
+			if (!refs) {
+				throw new Error(`Missing keychain refs for account index ${index}`);
+			}
+			return refs;
+		});
+		return {
+			content: JSON.stringify(storageV4, null, 2),
+			persistedSecretRefs,
+		};
+	} catch (error) {
+		await Promise.allSettled(
+			persistedSecretRefs.map((refs) => deleteAccountSecrets(refs, { force: true })),
+		);
+		throw error;
+	}
 }
 
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
@@ -1144,6 +1172,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   const tempPath = `${path}.${uniqueSuffix}.tmp`;
   const walPath = getAccountsWalPath(path);
+  let persistedSecretRefs: PersistedSecretRef[] = [];
 
   try {
     await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -1180,7 +1209,9 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 		}
 	}
 
-    const content = await serializeStorageForPersist(storage);
+    const serialized = await serializeStorageForPersist(storage);
+	const content = serialized.content;
+	persistedSecretRefs = serialized.persistedSecretRefs;
 	const journalEntry: AccountsJournalEntry = {
 		version: 1,
 		createdAt: Date.now(),
@@ -1206,6 +1237,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
       try {
         await fs.rename(tempPath, path);
 		lastAccountsSaveTimestamp = Date.now();
+		persistedSecretRefs = [];
 		try {
 			await fs.unlink(walPath);
 		} catch {
@@ -1229,6 +1261,11 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
     } catch {
       // Ignore cleanup failure.
     }
+	if (persistedSecretRefs.length > 0) {
+		await Promise.allSettled(
+			persistedSecretRefs.map((refs) => deleteAccountSecrets(refs, { force: true })),
+		);
+	}
 
     const err = error as NodeJS.ErrnoException;
     const code = err?.code || "UNKNOWN";
@@ -1276,25 +1313,63 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
   });
 }
 
+function collectSecretRefsFromV4Payload(payload: unknown): PersistedSecretRef[] {
+	if (!isRecord(payload) || payload.version !== 4 || !Array.isArray(payload.accounts)) {
+		return [];
+	}
+	const refs: PersistedSecretRef[] = [];
+	for (const rawAccount of payload.accounts) {
+		if (!isRecord(rawAccount)) continue;
+		const refreshTokenRef =
+			typeof rawAccount.refreshTokenRef === "string"
+				? rawAccount.refreshTokenRef.trim()
+				: "";
+		if (!refreshTokenRef) continue;
+		const accessTokenRef =
+			typeof rawAccount.accessTokenRef === "string"
+				? rawAccount.accessTokenRef.trim()
+				: undefined;
+		refs.push({ refreshTokenRef, accessTokenRef });
+	}
+	return refs;
+}
+
+function collectPersistedSecretRefs(payload: unknown): PersistedSecretRef[] {
+	const directRefs = collectSecretRefsFromV4Payload(payload);
+	if (directRefs.length > 0) {
+		return directRefs;
+	}
+	if (
+		!isRecord(payload) ||
+		payload.version !== 1 ||
+		typeof payload.content !== "string" ||
+		payload.content.trim().length === 0
+	) {
+		return [];
+	}
+	try {
+		const journalPayload = JSON.parse(payload.content) as unknown;
+		return collectSecretRefsFromV4Payload(journalPayload);
+	} catch {
+		return [];
+	}
+}
+
 async function clearPersistedAccountSecrets(path: string): Promise<void> {
 	try {
 		const raw = await fs.readFile(path, "utf-8");
 		const parsed = JSON.parse(raw) as unknown;
-		if (!isRecord(parsed) || parsed.version !== 4 || !Array.isArray(parsed.accounts)) {
-			return;
-		}
-		for (const rawAccount of parsed.accounts) {
-			if (!isRecord(rawAccount)) continue;
-			const refreshTokenRef =
-				typeof rawAccount.refreshTokenRef === "string"
-					? rawAccount.refreshTokenRef.trim()
-					: "";
-			if (!refreshTokenRef) continue;
-			const accessTokenRef =
-				typeof rawAccount.accessTokenRef === "string"
-					? rawAccount.accessTokenRef.trim()
-					: undefined;
-			await deleteAccountSecrets({ refreshTokenRef, accessTokenRef });
+		const refs = collectPersistedSecretRefs(parsed);
+		for (const ref of refs) {
+			try {
+				await deleteAccountSecrets(ref, { force: true });
+			} catch (error) {
+				log.warn("Failed to clear keychain secret reference", {
+					path,
+					refreshTokenRef: ref.refreshTokenRef,
+					error: String(error),
+				});
+			}
 		}
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;

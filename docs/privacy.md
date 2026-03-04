@@ -52,6 +52,7 @@ Retention control:
 
 ```bash
 npm run ops:retention-cleanup
+npm run ops:retention-cleanup -- --days=30
 ```
 
 Default retention window is 90 days.

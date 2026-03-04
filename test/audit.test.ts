@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
 	AuditAction,
@@ -207,6 +207,7 @@ describe("Audit logging", () => {
 
 			expect(lines.length).toBe(2);
 		});
+
 	});
 
 	describe("log rotation", () => {
@@ -229,6 +230,24 @@ describe("Audit logging", () => {
 
 			const files = listAuditLogFiles();
 			expect(files.length).toBeLessThanOrEqual(3);
+		});
+
+		it("purges stale rotated logs during write cycle", () => {
+			configureAudit({ retentionDays: 1 });
+			const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Number.MAX_SAFE_INTEGER - 1_000);
+			const staleLogPath = join(testLogDir, "audit.1.log");
+			writeFileSync(staleLogPath, "old\n", "utf8");
+			const staleMs = Date.now() - 3 * 24 * 60 * 60 * 1000;
+			const staleDate = new Date(staleMs);
+			utimesSync(staleLogPath, staleDate, staleDate);
+
+			try {
+				auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+			} finally {
+				nowSpy.mockRestore();
+			}
+
+			expect(existsSync(staleLogPath)).toBe(false);
 		});
 	});
 
@@ -254,6 +273,7 @@ describe("Audit logging", () => {
 			expect(AuditAction.CONFIG_LOAD).toBe("config.load");
 			expect(AuditAction.REQUEST_START).toBe("request.start");
 			expect(AuditAction.CIRCUIT_OPEN).toBe("circuit.open");
+			expect(AuditAction.COMMAND_RUN).toBe("command.run");
 		});
 	});
 

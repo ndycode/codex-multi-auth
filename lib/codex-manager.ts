@@ -4052,15 +4052,13 @@ function auditActionForCommand(command: string): AuditAction {
 			return AuditAction.ACCOUNT_REFRESH;
 		case "forecast":
 		case "report":
-			return AuditAction.REQUEST_SUCCESS;
 		case "fix":
 		case "doctor":
-			return AuditAction.CONFIG_CHANGE;
 		case "list":
 		case "status":
-			return AuditAction.CONFIG_LOAD;
+			return AuditAction.COMMAND_RUN;
 		default:
-			return AuditAction.REQUEST_FAILURE;
+			return AuditAction.COMMAND_RUN;
 	}
 }
 
@@ -4077,11 +4075,12 @@ async function runWithAudit(
 			"cli-user",
 			resource,
 			code === 0 ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE,
-			{ exitCode: code },
+			{ command, exitCode: code },
 		);
 		return code;
 	} catch (error) {
 		auditLog(action, "cli-user", resource, AuditOutcome.FAILURE, {
+			command,
 			error: String(error),
 		});
 		throw error;

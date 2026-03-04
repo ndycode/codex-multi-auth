@@ -1,4 +1,5 @@
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	renameSync,
@@ -123,7 +124,15 @@ function normalizeForWrite(record: JsonRecord): JsonRecord {
  * @param record - The settings object to persist; it will be normalized to include the unified settings version.
  */
 function writeSettingsRecordSync(record: JsonRecord): void {
-	mkdirSync(getCodexMultiAuthDir(), { recursive: true, mode: SECURE_DIR_MODE });
+	const settingsDir = getCodexMultiAuthDir();
+	mkdirSync(settingsDir, { recursive: true, mode: SECURE_DIR_MODE });
+	if (process.platform !== "win32") {
+		try {
+			chmodSync(settingsDir, SECURE_DIR_MODE);
+		} catch {
+			// Best-effort hardening.
+		}
+	}
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
@@ -133,6 +142,13 @@ function writeSettingsRecordSync(record: JsonRecord): void {
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				renameSync(tempPath, UNIFIED_SETTINGS_PATH);
+				if (process.platform !== "win32") {
+					try {
+						chmodSync(UNIFIED_SETTINGS_PATH, SECURE_FILE_MODE);
+					} catch {
+						// Best-effort hardening.
+					}
+				}
 				moved = true;
 				return;
 			} catch (error) {
@@ -174,7 +190,15 @@ function writeSettingsRecordSync(record: JsonRecord): void {
  * @param record - The settings object to persist; it will be normalized (version set)
  */
 async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
-	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true, mode: SECURE_DIR_MODE });
+	const settingsDir = getCodexMultiAuthDir();
+	await fs.mkdir(settingsDir, { recursive: true, mode: SECURE_DIR_MODE });
+	if (process.platform !== "win32") {
+		try {
+			await fs.chmod(settingsDir, SECURE_DIR_MODE);
+		} catch {
+			// Best-effort hardening.
+		}
+	}
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
@@ -184,6 +208,13 @@ async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				await fs.rename(tempPath, UNIFIED_SETTINGS_PATH);
+				if (process.platform !== "win32") {
+					try {
+						await fs.chmod(UNIFIED_SETTINGS_PATH, SECURE_FILE_MODE);
+					} catch {
+						// Best-effort hardening.
+					}
+				}
 				moved = true;
 				return;
 			} catch (error) {

@@ -1,0 +1,107 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import process from "node:process";
+import { spawnSync } from "node:child_process";
+
+const scriptPath = path.resolve(process.cwd(), "scripts", "enterprise-health-check.js");
+
+async function removeWithRetry(targetPath: string): Promise<void> {
+	const retryableCodes = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !retryableCodes.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
+
+function runHealthCheck(args: string[], env: NodeJS.ProcessEnv = {}) {
+	return spawnSync(process.execPath, [scriptPath, ...args], {
+		encoding: "utf8",
+		env: { ...process.env, ...env },
+	});
+}
+
+function parseJsonStdout(output: string): Record<string, unknown> {
+	return JSON.parse(output) as Record<string, unknown>;
+}
+
+describe("enterprise-health-check script", () => {
+	const fixtures: string[] = [];
+
+	afterEach(async () => {
+		while (fixtures.length > 0) {
+			const fixture = fixtures.pop();
+			if (!fixture) continue;
+			await removeWithRetry(fixture);
+		}
+	});
+
+	it("fails require-files mode when runtime artifacts are missing", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "health-check-missing-"));
+		fixtures.push(root);
+
+		const result = runHealthCheck(["--require-files", `--root=${root}`]);
+		expect(result.status).toBe(1);
+		expect(result.stdout).not.toBe("");
+
+		const payload = parseJsonStdout(result.stdout);
+		expect(payload.status).toBe("fail");
+		const findings = Array.isArray(payload.findings) ? payload.findings : [];
+		expect(findings.some((finding) => (finding as { code?: string }).code === "missing-storage-file")).toBe(
+			true,
+		);
+		expect(findings.some((finding) => (finding as { code?: string }).code === "missing-audit-events")).toBe(
+			true,
+		);
+	});
+
+	it("resolves fallback multi-auth root for audit checks when account storage exists there", async () => {
+		const homeRoot = mkdtempSync(path.join(tmpdir(), "health-check-home-"));
+		fixtures.push(homeRoot);
+
+		const primaryRoot = path.join(homeRoot, ".codex", "multi-auth");
+		const fallbackRoot = path.join(homeRoot, "DevTools", "config", "codex", "multi-auth");
+		await fs.mkdir(path.join(primaryRoot), { recursive: true });
+		await fs.mkdir(path.join(fallbackRoot, "logs"), { recursive: true });
+		await fs.writeFile(
+			path.join(fallbackRoot, "openai-codex-accounts.json"),
+			'{"version":3,"accounts":[],"activeIndex":0}\n',
+			"utf8",
+		);
+		await fs.writeFile(
+			path.join(fallbackRoot, "settings.json"),
+			'{"version":1,"pluginConfig":{},"dashboardDisplaySettings":{}}\n',
+			"utf8",
+		);
+		await fs.writeFile(path.join(fallbackRoot, "logs", "audit.log"), '{"timestamp":"2026-03-01T00:00:00Z"}\n');
+
+		const result = runHealthCheck([], {
+			HOME: homeRoot,
+			USERPROFILE: homeRoot,
+			CODEX_HOME: "",
+			CODEX_MULTI_AUTH_DIR: "",
+		});
+		expect(result.status).toBe(0);
+
+		const payload = parseJsonStdout(result.stdout);
+		const payloadRoot = String(payload.root ?? "");
+		if (process.platform === "win32") {
+			expect(payloadRoot.toLowerCase()).toBe(fallbackRoot.toLowerCase());
+		} else {
+			expect(payloadRoot).toBe(fallbackRoot);
+		}
+		expect(payload.auditDir).toBe(path.join(fallbackRoot, "logs"));
+		expect(payload.status).toBe("pass");
+	});
+});

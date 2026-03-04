@@ -187,10 +187,12 @@ async function main() {
 		line: last?.line ?? checkpoint.line,
 		updatedAt: new Date().toISOString(),
 	};
-	await writeFile(checkpointPath, `${JSON.stringify(checkpointNext, null, 2)}\n`, {
-		encoding: "utf8",
-		mode: 0o600,
-	});
+	if (!dryRun) {
+		await writeFile(checkpointPath, `${JSON.stringify(checkpointNext, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+	}
 
 	const newestMtime = (() => {
 		const newest = files[files.length - 1];

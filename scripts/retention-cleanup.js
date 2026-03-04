@@ -82,8 +82,18 @@ async function run() {
 		await collectExpiredFiles(target, cutoffMs, expired);
 	}
 
+	let deletedFiles = 0;
+	const failed = [];
 	for (const targetPath of expired) {
-		await removeWithRetry(targetPath, { force: true });
+		try {
+			await removeWithRetry(targetPath, { force: true });
+			deletedFiles += 1;
+		} catch (error) {
+			failed.push({
+				path: targetPath,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	const payload = {
@@ -91,7 +101,10 @@ async function run() {
 		root,
 		retentionDays,
 		cutoffIso: new Date(cutoffMs).toISOString(),
-		deletedFiles: expired.length,
+		deletedFiles,
+		failedFiles: failed.length,
+		failures: failed,
+		status: failed.length === 0 ? "pass" : "partial",
 	};
 	console.log(JSON.stringify(payload, null, 2));
 }

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Runtime Performance Budgets",
+  "description": "Performance budget thresholds for runtime path benchmarks. All values are milliseconds.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "filterInput_small",
+    "filterInput_large",
+    "cleanupToolDefinitions_medium",
+    "cleanupToolDefinitions_large",
+    "accountHybridSelection_200",
+    "resolveRequestAccountId_1000",
+    "normalizeAccountStorage_240"
+  ],
+  "properties": {
+    "filterInput_small": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Maximum average runtime in milliseconds for small filterInput benchmark."
+    },
+    "filterInput_large": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Maximum average runtime in milliseconds for large filterInput benchmark."
+    },
+    "cleanupToolDefinitions_medium": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Maximum average runtime in milliseconds for medium cleanupToolDefinitions benchmark."
+    },
+    "cleanupToolDefinitions_large": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Maximum average runtime in milliseconds for large cleanupToolDefinitions benchmark."
+    },
+    "accountHybridSelection_200": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Maximum average runtime in milliseconds for accountHybridSelection benchmark with 200 accounts."
+    },
+    "resolveRequestAccountId_1000": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Maximum average runtime in milliseconds for resolveRequestAccountId benchmark with 1000 accounts."
+    },
+    "normalizeAccountStorage_240": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Maximum average runtime in milliseconds for normalizeAccountStorage benchmark with 240 accounts."
+    }
+  }
+}

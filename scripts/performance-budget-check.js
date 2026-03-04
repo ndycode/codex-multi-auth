@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+// Every threshold in config/performance-budgets.json is interpreted in milliseconds.
 const projectRoot = process.cwd();
 const outputPath = resolve(projectRoot, ".tmp", "runtime-budget-report.json");
 const budgetPath = resolve(projectRoot, "config", "performance-budgets.json");
@@ -23,18 +24,42 @@ function runBenchmark() {
 	);
 }
 
+function isRecord(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonFile(path, label) {
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`invalid ${label} json at ${path}: ${message}`);
+	}
+}
+
 function main() {
 	runBenchmark();
-	const budgets = JSON.parse(readFileSync(budgetPath, "utf8"));
-	const report = JSON.parse(readFileSync(outputPath, "utf8"));
+	if (!existsSync(budgetPath)) {
+		throw new Error(`budget file not found: ${budgetPath}`);
+	}
+	if (!existsSync(outputPath)) {
+		throw new Error(`benchmark report not found: ${outputPath}`);
+	}
+	const budgetsRaw = parseJsonFile(budgetPath, "budget");
+	if (!isRecord(budgetsRaw)) {
+		throw new Error(`invalid budget json at ${budgetPath}: root must be an object`);
+	}
+	const reportRaw = parseJsonFile(outputPath, "benchmark report");
+	const results = isRecord(reportRaw) && Array.isArray(reportRaw.results) ? reportRaw.results : [];
 	const violations = [];
 	const seen = new Set();
 
-	for (const result of report.results ?? []) {
-		if (typeof result?.name === "string") {
-			seen.add(result.name);
+	for (const result of results) {
+		if (!isRecord(result) || typeof result.name !== "string") {
+			continue;
 		}
-		const budget = budgets[result.name];
+		seen.add(result.name);
+		const budget = budgetsRaw[result.name];
 		if (typeof budget !== "number") continue;
 		if (typeof result.avgMs !== "number") continue;
 		if (result.avgMs > budget) {
@@ -45,7 +70,8 @@ function main() {
 			});
 		}
 	}
-	for (const [name, budgetMs] of Object.entries(budgets)) {
+	for (const [name, budgetMs] of Object.entries(budgetsRaw)) {
+		if (typeof budgetMs !== "number") continue;
 		if (!seen.has(name)) {
 			violations.push({
 				name,

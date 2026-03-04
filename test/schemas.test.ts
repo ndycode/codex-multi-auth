@@ -259,6 +259,14 @@ describe("AccountStorageV4Schema", () => {
 		});
 		expect(result.success).toBe(false);
 	});
+
+	it("rejects empty accessTokenRef when provided", () => {
+		const result = AccountStorageV4Schema.safeParse({
+			...validStorage,
+			accounts: [{ refreshTokenRef: "acct-1:refresh", accessTokenRef: "", addedAt: Date.now(), lastUsed: Date.now() }],
+		});
+		expect(result.success).toBe(false);
+	});
 });
 
 describe("AccountStorageV1Schema", () => {

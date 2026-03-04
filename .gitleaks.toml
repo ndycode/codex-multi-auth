@@ -1,15 +1,17 @@
 title = "codex-multi-auth gitleaks config"
 
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Allowlisted fixtures and historical docs with synthetic credentials"
 paths = [
-  '''^test/''',
-  '''^docs/releases/''',
-  '''^docs/development/DEEP_AUDIT_2026-03-01\.md$'''
+  '''^test[\\/]''',
+  '''^docs[\\/]releases[\\/]''',
+  '''^docs[\\/]development[\\/]DEEP_AUDIT_2026-03-01\.md$'''
 ]
 regexes = [
   '''fake_refresh_token_[0-9]+''',
   '''secret-(access|refresh)-token''',
-  '''top secret prompt''',
-  '''sk-[A-Za-z0-9]{20,}'''
+  '''top secret prompt'''
 ]
