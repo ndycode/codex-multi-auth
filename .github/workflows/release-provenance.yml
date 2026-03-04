@@ -33,6 +33,16 @@ jobs:
           npm run typecheck
           npm run build
           npm test
+          npm run ops:keychain-assert
+          npm run sbom:generate
+          npm run sbom:verify
+          node scripts/compliance-evidence-bundle.js --profile=quick --out-dir=.tmp/compliance-evidence-release
+
+      - name: Upload release evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-bundle
+          path: .tmp/compliance-evidence-release
 
       - name: Publish package with provenance
         run: npm publish --provenance --access public

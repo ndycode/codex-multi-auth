@@ -3,5 +3,7 @@
   "filterInput_large": 10.0,
   "cleanupToolDefinitions_medium": 10.0,
   "cleanupToolDefinitions_large": 20.0,
-  "accountHybridSelection_200": 30.0
+  "accountHybridSelection_200": 30.0,
+  "resolveRequestAccountId_1000": 3.0,
+  "normalizeAccountStorage_240": 20.0
 }

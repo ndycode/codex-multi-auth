@@ -130,6 +130,10 @@ Common operator overrides:
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
 
+Enterprise recommendation:
+
+- pin `CODEX_SECRET_STORAGE_MODE=keychain` for production.
+
 ---
 
 ## Advanced and Internal Overrides

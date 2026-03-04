@@ -1,0 +1,45 @@
+name: Recovery Drill
+
+on:
+  schedule:
+    - cron: "30 3 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recovery-drill:
+    name: Monthly Storage Recovery Drill
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run recovery drill tests
+        run: |
+          mkdir -p .tmp
+          npm run test -- test/storage-recovery-paths.test.ts test/storage.test.ts --reporter=default --reporter=json --outputFile=.tmp/recovery-drill-vitest.json
+
+      - name: Run health check snapshot
+        run: node scripts/enterprise-health-check.js > .tmp/recovery-drill-health.json
+
+      - name: Upload recovery drill artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-drill-artifacts
+          path: |
+            .tmp/recovery-drill-vitest.json
+            .tmp/recovery-drill-health.json

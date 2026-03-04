@@ -1,0 +1,47 @@
+name: Retention Maintenance
+
+on:
+  schedule:
+    - cron: "15 2 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retention:
+    name: Weekly Retention Cleanup Drill
+    runs-on: ubuntu-latest
+    env:
+      CODEX_MULTI_AUTH_DIR: ${{ runner.temp }}/codex-retention-root
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare retention fixture
+        run: |
+          node -e "const fs=require('fs'); const path=require('path'); const root=process.env.CODEX_MULTI_AUTH_DIR; const logs=path.join(root,'logs','codex-plugin'); const cache=path.join(root,'cache'); const recovery=path.join(root,'recovery'); fs.mkdirSync(logs,{recursive:true}); fs.mkdirSync(cache,{recursive:true}); fs.mkdirSync(recovery,{recursive:true}); const oldFile=path.join(logs,'old-audit.log'); const newFile=path.join(cache,'fresh-cache.json'); fs.writeFileSync(oldFile,'old'); fs.writeFileSync(newFile,'new'); const oldTime=new Date(Date.now()-120*24*60*60*1000); fs.utimesSync(oldFile,oldTime,oldTime);"
+
+      - name: Run retention cleanup
+        run: |
+          mkdir -p .tmp
+          node scripts/retention-cleanup.js --days=90 > .tmp/retention-report.json
+
+      - name: Verify retention fixture cleanup
+        run: |
+          node -e "const fs=require('fs'); const path=require('path'); const root=process.env.CODEX_MULTI_AUTH_DIR; const oldFile=path.join(root,'logs','codex-plugin','old-audit.log'); const newFile=path.join(root,'cache','fresh-cache.json'); if(fs.existsSync(oldFile)){console.error('expected old file to be deleted'); process.exit(1);} if(!fs.existsSync(newFile)){console.error('expected fresh file to remain'); process.exit(1);} console.log('retention verification passed');"
+
+      - name: Upload retention report
+        uses: actions/upload-artifact@v4
+        with:
+          name: retention-maintenance-report
+          path: .tmp/retention-report.json

@@ -69,3 +69,11 @@ Recovery exit criteria:
    - prevention tasks with owners and due dates
 2. Add/adjust regression tests in `test/` for the failure mode.
 3. Update this runbook if manual steps were required.
+
+---
+
+## Drill Cadence
+
+- Run a tabletop drill monthly.
+- Use [incident-drill-template.md](incident-drill-template.md) for drill evidence.
+- Track unresolved drill actions as release blockers when severity is `SEV-1` equivalent.

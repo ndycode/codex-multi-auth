@@ -24,9 +24,12 @@ Release governance for `codex-multi-auth` with provenance and rollback controls.
 2. Publish GitHub release.
 3. Trigger workflow:
    - `.github/workflows/release-provenance.yml`
+   - `.github/workflows/sbom-attestation.yml`
 4. Validate published package integrity:
-   - `npm view codex-multi-auth version`
-   - verify provenance is attached to the publish event.
+    - `npm view codex-multi-auth version`
+    - verify provenance is attached to the publish event.
+5. Capture compliance evidence bundle:
+   - `node scripts/compliance-evidence-bundle.js --profile=release --out-dir=.tmp/compliance-evidence-release`
 
 Required release record:
 
@@ -34,6 +37,8 @@ Required release record:
 - commit SHA
 - workflow run URL
 - test evidence timestamp
+- SBOM artifact reference
+- compliance evidence bundle path
 
 ---
 

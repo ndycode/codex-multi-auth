@@ -44,11 +44,19 @@ jobs:
       - name: Run type check
         run: npm run typecheck
 
+      - name: Generate and verify SBOM
+        run: |
+          npm run sbom:generate
+          npm run sbom:verify
+
       - name: Run tests with coverage
         run: npm run coverage
 
       - name: Build
         run: npm run build
+
+      - name: Assert keychain mode storage contract
+        run: npm run ops:keychain-assert
 
       - name: Enterprise health check
         run: npm run ops:health-check

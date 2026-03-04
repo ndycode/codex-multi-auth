@@ -28,8 +28,12 @@ function main() {
 	const budgets = JSON.parse(readFileSync(budgetPath, "utf8"));
 	const report = JSON.parse(readFileSync(outputPath, "utf8"));
 	const violations = [];
+	const seen = new Set();
 
 	for (const result of report.results ?? []) {
+		if (typeof result?.name === "string") {
+			seen.add(result.name);
+		}
 		const budget = budgets[result.name];
 		if (typeof budget !== "number") continue;
 		if (typeof result.avgMs !== "number") continue;
@@ -38,6 +42,16 @@ function main() {
 				name: result.name,
 				avgMs: result.avgMs,
 				budgetMs: budget,
+			});
+		}
+	}
+	for (const [name, budgetMs] of Object.entries(budgets)) {
+		if (!seen.has(name)) {
+			violations.push({
+				name,
+				avgMs: null,
+				budgetMs,
+				reason: "missing benchmark metric",
 			});
 		}
 	}

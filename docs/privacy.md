@@ -56,6 +56,12 @@ npm run ops:retention-cleanup
 
 Default retention window is 90 days.
 
+Audit forwarding (for central SIEM ingestion):
+
+```bash
+npm run ops:audit-forwarder -- --dry-run
+```
+
 ---
 
 ## Data Cleanup
