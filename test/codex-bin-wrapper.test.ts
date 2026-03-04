@@ -185,11 +185,7 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain("FORWARDED:--version");
 	});
 
-	it("installs Windows codex shell guards to survive shim takeover", () => {
-		if (process.platform !== "win32") {
-			return;
-		}
-
+	it.skipIf(process.platform !== "win32")("installs Windows codex shell guards to survive shim takeover", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const shimDir = join(fixtureRoot, "shim-bin");
@@ -249,11 +245,7 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(pwshProfilePath, "utf8")).toContain("CodexMultiAuthShim");
 	});
 
-	it("prefers invocation-derived shim directory over PATH-decoy shim entries", () => {
-		if (process.platform !== "win32") {
-			return;
-		}
-
+	it.skipIf(process.platform !== "win32")("prefers invocation-derived shim directory over PATH-decoy shim entries", () => {
 		const fixtureRoot = mkdtempSync(join(tmpdir(), "codex-wrapper-invoke-fixture-"));
 		createdDirs.push(fixtureRoot);
 		const globalShimDir = join(fixtureRoot, "global-bin");

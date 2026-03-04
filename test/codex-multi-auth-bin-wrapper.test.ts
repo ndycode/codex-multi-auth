@@ -16,7 +16,7 @@ function isRetriableFsError(error: unknown): boolean {
 		return false;
 	}
 	const { code } = error as { code?: unknown };
-	return code === "EBUSY" || code === "EPERM";
+	return code === "EBUSY" || code === "EPERM" || code === "EACCES";
 }
 
 async function removeDirectoryWithRetry(dir: string): Promise<void> {
@@ -104,5 +104,23 @@ describe("codex-multi-auth bin wrapper", () => {
 
 		const result = runWrapper(fixtureRoot, ["auth", "status"]);
 		expect(result.status).toBe(1);
+	});
+
+	it("propagates numeric-string exit codes", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli() {",
+				'\treturn "7";',
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["auth", "status"]);
+		expect(result.status).toBe(7);
 	});
 });
