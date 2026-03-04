@@ -37,6 +37,7 @@ const BACKUP_COPY_BASE_DELAY_MS = 10;
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
+const knownStorageRevisionByPath = new Map<string, string | null>();
 
 export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
 	flaggedAt: number;
@@ -391,6 +392,27 @@ function computeSha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+async function readStorageRevision(path: string): Promise<string | null> {
+	try {
+		const content = await fs.readFile(path, "utf-8");
+		return computeSha256(content);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+function rememberKnownStorageRevision(path: string, revision: string | null): void {
+	knownStorageRevisionByPath.set(path, revision);
+}
+
+function forgetKnownStorageRevision(path: string): void {
+	knownStorageRevisionByPath.delete(path);
+}
+
 type AccountsJournalEntry = {
 	version: 1;
 	createdAt: number;
@@ -404,6 +426,9 @@ export function getLastAccountsSaveTimestamp(): number {
 }
 
 export function setStoragePath(projectPath: string | null): void {
+  if (currentStoragePath) {
+    forgetKnownStorageRevision(currentStoragePath);
+  }
   if (!projectPath) {
     currentStoragePath = null;
     currentLegacyProjectStoragePath = null;
@@ -433,6 +458,9 @@ export function setStoragePath(projectPath: string | null): void {
 }
 
 export function setStoragePathDirect(path: string | null): void {
+  if (currentStoragePath) {
+    forgetKnownStorageRevision(currentStoragePath);
+  }
   currentStoragePath = path;
   currentLegacyProjectStoragePath = null;
   currentLegacyWorktreeStoragePath = null;
@@ -864,10 +892,14 @@ async function loadAccountsFromPath(path: string): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
+	rawChecksum: string;
 }> {
 	const content = await fs.readFile(path, "utf-8");
 	const data = JSON.parse(content) as unknown;
-	return parseAndNormalizeStorage(data);
+	return {
+		...parseAndNormalizeStorage(data),
+		rawChecksum: computeSha256(content),
+	};
 }
 
 async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 | null> {
@@ -908,7 +940,7 @@ async function loadAccountsInternal(
 		: null;
 
   try {
-    const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
+    const { normalized, storedVersion, schemaErrors, rawChecksum } = await loadAccountsFromPath(path);
     if (schemaErrors.length > 0) {
       log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
     }
@@ -949,6 +981,7 @@ async function loadAccountsInternal(
 						});
 					}
 				}
+				forgetKnownStorageRevision(path);
 				return backup.normalized;
 			} catch (backupError) {
 				const backupCode = (backupError as NodeJS.ErrnoException).code;
@@ -962,10 +995,12 @@ async function loadAccountsInternal(
 		}
 	}
 
+	rememberKnownStorageRevision(path, rawChecksum);
     return normalized;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" && migratedLegacyStorage) {
+      forgetKnownStorageRevision(path);
       return migratedLegacyStorage;
     }
 
@@ -981,6 +1016,7 @@ async function loadAccountsInternal(
 				});
 			}
 		}
+		forgetKnownStorageRevision(path);
 		return recoveredFromWal;
 	}
 
@@ -1007,6 +1043,7 @@ async function loadAccountsInternal(
 							});
 						}
 					}
+					forgetKnownStorageRevision(path);
 					return backup.normalized;
 				}
 			} catch (backupError) {
@@ -1023,12 +1060,18 @@ async function loadAccountsInternal(
 
     if (code !== "ENOENT") {
       log.error("Failed to load account storage", { error: String(error) });
+      forgetKnownStorageRevision(path);
+      return null;
     }
+	rememberKnownStorageRevision(path, null);
     return null;
   }
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
+async function saveAccountsUnlocked(
+	storage: AccountStorageV3,
+	options?: { expectedRevision?: string | null },
+): Promise<void> {
   const path = getStoragePath();
   const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -1037,6 +1080,23 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   try {
     await fs.mkdir(dirname(path), { recursive: true });
     await ensureGitignore(path);
+	const expectedRevision =
+		options && Object.hasOwn(options, "expectedRevision")
+			? options.expectedRevision
+			: knownStorageRevisionByPath.has(path)
+				? knownStorageRevisionByPath.get(path)
+				: undefined;
+	if (expectedRevision !== undefined) {
+		const currentRevision = await readStorageRevision(path);
+		if (currentRevision !== expectedRevision) {
+			throw new StorageError(
+				"Detected concurrent account storage modification; refusing stale overwrite",
+				"ECONFLICT",
+				path,
+				"Account storage changed on disk since it was loaded. Reload accounts and retry.",
+			);
+		}
+	}
 
 	if (looksLikeSyntheticFixtureStorage(storage)) {
 		try {
@@ -1095,6 +1155,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
       try {
         await fs.rename(tempPath, path);
 		lastAccountsSaveTimestamp = Date.now();
+		rememberKnownStorageRevision(path, computeSha256(content));
 		try {
 			await fs.unlink(walPath);
 		} catch {
@@ -1190,6 +1251,7 @@ export async function clearAccounts(): Promise<void> {
 
     try {
       await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
+	  rememberKnownStorageRevision(path, null);
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.
     }

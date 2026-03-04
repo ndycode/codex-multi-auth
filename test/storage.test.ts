@@ -18,6 +18,7 @@ import {
   exportAccounts,
   importAccounts,
   withAccountStorageTransaction,
+  type AccountStorageV3,
 } from "../lib/storage.js";
 
 // Mocking the behavior we're about to implement for TDD
@@ -725,6 +726,44 @@ describe("storage", () => {
       const content = await fs.readFile(testStoragePath, "utf-8");
       const parsed = JSON.parse(content);
       expect(parsed.version).toBe(3);
+    });
+
+    it("rejects stale overwrite when storage changed on disk after load", async () => {
+      const initial: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-initial", accountId: "acct-initial", addedAt: 1, lastUsed: 1 }],
+      };
+      await saveAccounts(initial);
+
+      const loaded = await loadAccounts();
+      if (!loaded) {
+        throw new Error("expected loaded storage");
+      }
+
+      const externalUpdate: AccountStorageV3 = {
+        ...loaded,
+        accounts: [
+          ...loaded.accounts,
+          { refreshToken: "t-external", accountId: "acct-external", addedAt: 2, lastUsed: 2 },
+        ],
+      };
+      await fs.writeFile(testStoragePath, JSON.stringify(externalUpdate, null, 2), "utf-8");
+
+      const staleWrite: AccountStorageV3 = {
+        ...loaded,
+        accounts: [
+          ...loaded.accounts,
+          { refreshToken: "t-stale", accountId: "acct-stale", addedAt: 3, lastUsed: 3 },
+        ],
+      };
+
+      await expect(saveAccounts(staleWrite)).rejects.toMatchObject({ code: "ECONFLICT" });
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      const persistedTokens = new Set(persisted.accounts.map((account) => account.refreshToken));
+      expect(persistedTokens.has("t-external")).toBe(true);
+      expect(persistedTokens.has("t-stale")).toBe(false);
     });
   });
 

@@ -897,6 +897,31 @@ describe("RefreshQueue", () => {
 			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
 		});
 
+		it("fails closed when lease returns wait-timeout bypass", async () => {
+			const leaseCoordinator = {
+				acquire: vi.fn().mockResolvedValue({
+					role: "bypass" as const,
+					reason: "wait-timeout",
+					release: vi.fn().mockResolvedValue(undefined),
+				}),
+			} as unknown as RefreshLeaseCoordinator;
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue({
+				type: "success",
+				access: "unexpected-access",
+				refresh: "unexpected-refresh",
+				expires: Date.now() + 3_600_000,
+			});
+
+			const queue = new RefreshQueue(30_000, leaseCoordinator);
+			const result = await queue.refresh("token-wait-timeout");
+
+			expect(result.type).toBe("failed");
+			if (result.type === "failed") {
+				expect(result.message).toContain("lease timeout");
+			}
+			expect(authModule.refreshAccessToken).not.toHaveBeenCalled();
+		});
+
 		it("swallows lease release errors and still returns token result", async () => {
 			const mockResult = {
 				type: "success" as const,

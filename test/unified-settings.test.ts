@@ -225,6 +225,47 @@ describe("unified settings", () => {
 		});
 	});
 
+	it("retries plugin save when optimistic conflict is detected", async () => {
+		const {
+			saveUnifiedPluginConfig,
+			loadUnifiedPluginConfigSync,
+			getUnifiedSettingsPath,
+		} = await import("../lib/unified-settings.js");
+		const settingsPath = getUnifiedSettingsPath();
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ version: 1, pluginConfig: { codexMode: true } }),
+			"utf8",
+		);
+
+		const originalReadFile = fs.readFile.bind(fs);
+		let settingsReadCount = 0;
+		const readSpy = vi.spyOn(fs, "readFile");
+		readSpy.mockImplementation(async (...args) => {
+			const target = args[0];
+			const asPath =
+				typeof target === "string" ? target : target instanceof URL ? target.pathname : "";
+			if (asPath === settingsPath) {
+				settingsReadCount += 1;
+				if (settingsReadCount === 2) {
+					return JSON.stringify({
+						version: 1,
+						pluginConfig: { codexMode: true, concurrentUpdate: true },
+					});
+				}
+			}
+			return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+		});
+
+		try {
+			await saveUnifiedPluginConfig({ codexMode: false, retries: 2 });
+		} finally {
+			readSpy.mockRestore();
+		}
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 2 });
+	});
+
 	it("refuses overwriting settings sections when a read fails", async () => {
 		const {
 			saveUnifiedPluginConfig,

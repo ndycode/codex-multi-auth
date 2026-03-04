@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
 import { safeParseOAuthTokenResponse } from "../schemas.js";
-import { isAbortError } from "../utils.js";
+import { fetchWithTimeout, isAbortError } from "../utils.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -18,6 +18,8 @@ const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"code_challenge",
 	"code_verifier",
 ] as const;
+const OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS = 30_000;
+const OAUTH_REFRESH_TIMEOUT_MS = 30_000;
 
 function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unknown> {
 	if (Array.isArray(rawResponse)) {
@@ -116,7 +118,7 @@ export async function exchangeAuthorizationCode(
 	verifier: string,
 	redirectUri: string = REDIRECT_URI,
 ): Promise<TokenResult> {
-	const res = await fetch(TOKEN_URL, {
+	const res = await fetchWithTimeout(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({
@@ -126,7 +128,7 @@ export async function exchangeAuthorizationCode(
 			code_verifier: verifier,
 			redirect_uri: redirectUri,
 		}),
-	});
+	}, OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS);
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
 		logError(`code->token failed: ${res.status} ${text}`);
@@ -186,6 +188,7 @@ export function decodeJWT(token: string): JWTPayload | null {
  */
 type RefreshAccessTokenOptions = {
 	signal?: AbortSignal;
+	timeoutMs?: number;
 };
 
 export async function refreshAccessToken(
@@ -193,7 +196,7 @@ export async function refreshAccessToken(
 	options: RefreshAccessTokenOptions = {},
 ): Promise<TokenResult> {
 	try {
-		const response = await fetch(TOKEN_URL, {
+		const response = await fetchWithTimeout(TOKEN_URL, {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			signal: options?.signal,
@@ -202,7 +205,7 @@ export async function refreshAccessToken(
 				refresh_token: refreshToken,
 				client_id: CLIENT_ID,
 			}),
-		});
+		}, options.timeoutMs ?? OAUTH_REFRESH_TIMEOUT_MS);
 
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
@@ -233,8 +236,8 @@ export async function refreshAccessToken(
 			multiAccount: true,
 		};
 	} catch (error) {
-		const err = error as Error;
-		if (isAbortError(err)) {
+		const err = error instanceof Error ? error : new Error(String(error));
+		if (isAbortError(err) || /timeout/i.test(err.message)) {
 			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
 		}
 		logError("Token refresh error", err);

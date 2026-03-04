@@ -602,6 +602,17 @@ function countMenuQuotaRefreshTargets(
 	return count;
 }
 
+async function persistQuotaCache(
+	cache: QuotaCacheData,
+	options: { notify?: boolean } = {},
+): Promise<boolean> {
+	const saved = await saveQuotaCache(cache);
+	if (!saved && options.notify && output.isTTY && process.env.VITEST !== "true") {
+		console.log(stylePromptText("Warning: failed to persist quota cache changes.", "warning"));
+	}
+	return saved;
+}
+
 async function refreshQuotaCacheForMenu(
 	storage: AccountStorageV3,
 	cache: QuotaCacheData,
@@ -635,7 +646,7 @@ async function refreshQuotaCacheForMenu(
 	}
 
 	if (changed) {
-		await saveQuotaCache(cache);
+		await persistQuotaCache(cache, { notify: true });
 	}
 
 	return cache;
@@ -1618,7 +1629,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		console.log(stylePromptText("Per-account lines are hidden in dashboard settings.", "muted"));
 	}
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		await persistQuotaCache(quotaCache, { notify: true });
 	}
 
 	if (changed) {
@@ -2100,7 +2111,7 @@ async function runForecast(args: string[]): Promise<number> {
 
 	if (options.json) {
 		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+			await persistQuotaCache(quotaCache);
 		}
 		console.log(
 			JSON.stringify(
@@ -2189,7 +2200,7 @@ async function runForecast(args: string[]): Promise<number> {
 		}
 	}
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		await persistQuotaCache(quotaCache, { notify: true });
 	}
 
 	return 0;
@@ -2976,7 +2987,7 @@ async function runFix(args: string[]): Promise<number> {
 
 	if (options.json) {
 		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+			await persistQuotaCache(quotaCache);
 		}
 		console.log(
 			JSON.stringify(
@@ -3053,7 +3064,7 @@ async function runFix(args: string[]): Promise<number> {
 		}
 	}
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		await persistQuotaCache(quotaCache, { notify: true });
 	}
 
 	if (changed && options.dryRun) {

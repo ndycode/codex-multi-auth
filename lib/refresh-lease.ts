@@ -44,6 +44,7 @@ export interface RefreshLeaseCoordinatorOptions {
 
 export interface RefreshLeaseHandle {
 	role: "owner" | "follower" | "bypass";
+	reason?: string;
 	result?: TokenResult;
 	release: (result?: TokenResult) => Promise<void>;
 }
@@ -251,6 +252,16 @@ export class RefreshLeaseCoordinator {
 					const removed = await safeUnlink(lockPath, undefined, this.fsOps);
 					if (removed) continue;
 					if (Date.now() >= deadline) {
+						const finalResult = await this.readFreshResult(resultPath, tokenHash);
+						if (finalResult) {
+							return {
+								role: "follower",
+								result: finalResult,
+								release: async () => {
+									// Follower does not own lock.
+								},
+							};
+						}
 						log.warn("Refresh lease wait timeout while stale lock could not be removed", {
 							waitTimeoutMs: this.waitTimeoutMs,
 						});
@@ -261,6 +272,16 @@ export class RefreshLeaseCoordinator {
 				}
 
 				if (Date.now() >= deadline) {
+					const finalResult = await this.readFreshResult(resultPath, tokenHash);
+					if (finalResult) {
+						return {
+							role: "follower",
+							result: finalResult,
+							release: async () => {
+								// Follower does not own lock.
+							},
+						};
+					}
 					log.warn("Refresh lease wait timeout; proceeding without lease", {
 						waitTimeoutMs: this.waitTimeoutMs,
 					});
@@ -275,6 +296,7 @@ export class RefreshLeaseCoordinator {
 		log.debug("Bypassing refresh lease", { reason });
 		return {
 			role: "bypass",
+			reason,
 			release: async () => {
 				// No-op
 			},
@@ -353,10 +375,10 @@ export class RefreshLeaseCoordinator {
 
 		const parsed = parseLeasePayload(raw);
 		if (!parsed) {
-			return { state: "unknown", reason: "invalid-payload" };
+			return { state: "stale", reason: "invalid-payload" };
 		}
 		if (parsed.tokenHash !== tokenHash) {
-			return { state: "unknown", reason: "token-mismatch" };
+			return { state: "stale", reason: "token-mismatch" };
 		}
 		if (parsed.expiresAt <= Date.now()) {
 			return { state: "stale", reason: "expired" };

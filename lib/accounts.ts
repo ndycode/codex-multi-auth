@@ -16,7 +16,7 @@ import {
 	type AccountWithMetrics,
 	type HybridSelectionOptions,
 } from "./rotation.js";
-import { nowMs } from "./utils.js";
+import { nowMs, sleep } from "./utils.js";
 import {
 	loadCodexCliState,
 	type CodexCliTokenCacheEntry,
@@ -72,6 +72,7 @@ import {
 } from "./accounts/rate-limits.js";
 
 const log = createLogger("accounts");
+type StoredAccount = AccountStorageV3["accounts"][number];
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
@@ -724,7 +725,7 @@ export class AccountManager {
 		return account;
 	}
 
-	async saveToDisk(): Promise<void> {
+	private buildStorageSnapshot(): AccountStorageV3 {
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
 			const raw = this.currentAccountIndexByFamily[family];
@@ -755,8 +756,121 @@ export class AccountManager {
 			activeIndex,
 			activeIndexByFamily,
 		};
+		return storage;
+	}
 
-		await saveAccounts(storage);
+	private isStorageConflictError(error: unknown): boolean {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		return code === "ECONFLICT";
+	}
+
+	private mergeIntoLatestStorage(
+		latest: AccountStorageV3 | null,
+		local: AccountStorageV3,
+	): AccountStorageV3 {
+		if (!latest) {
+			return local;
+		}
+
+		const mergedAccounts = latest.accounts.map((account) => ({ ...account }));
+		const claimIndex = (candidate: StoredAccount): number => {
+			const token = candidate.refreshToken.trim();
+			const accountId = candidate.accountId?.trim();
+			const email = sanitizeEmail(candidate.email);
+
+			const byToken = mergedAccounts.findIndex(
+				(account) => account.refreshToken.trim() === token,
+			);
+			if (byToken >= 0) return byToken;
+
+			if (accountId) {
+				const byAccountId = mergedAccounts.findIndex(
+					(account) => (account.accountId?.trim() ?? "") === accountId,
+				);
+				if (byAccountId >= 0) return byAccountId;
+			}
+
+			if (email) {
+				const byEmail = mergedAccounts.findIndex(
+					(account) => sanitizeEmail(account.email) === email,
+				);
+				if (byEmail >= 0) return byEmail;
+			}
+
+			return -1;
+		};
+
+		for (const account of local.accounts) {
+			const idx = claimIndex(account);
+			if (idx >= 0) {
+				mergedAccounts[idx] = { ...mergedAccounts[idx], ...account };
+			} else {
+				mergedAccounts.push({ ...account });
+			}
+		}
+
+		const localActiveTokensByFamily = Object.fromEntries(
+			MODEL_FAMILIES.map((family) => {
+				const localIndex = local.activeIndexByFamily?.[family];
+				const token =
+					typeof localIndex === "number" && localIndex >= 0
+						? local.accounts[localIndex]?.refreshToken
+						: undefined;
+				return [family, token];
+			}),
+		) as Partial<Record<ModelFamily, string | undefined>>;
+
+		const mergedActiveIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+		for (const family of MODEL_FAMILIES) {
+			const token = localActiveTokensByFamily[family];
+			if (token) {
+				const index = mergedAccounts.findIndex(
+					(account) => account.refreshToken === token,
+				);
+				if (index >= 0) {
+					mergedActiveIndexByFamily[family] = index;
+					continue;
+				}
+			}
+			mergedActiveIndexByFamily[family] = clampNonNegativeInt(
+				latest.activeIndexByFamily?.[family],
+				0,
+			);
+		}
+
+		return {
+			version: 3,
+			accounts: mergedAccounts,
+			activeIndex: clampNonNegativeInt(mergedActiveIndexByFamily.codex, 0),
+			activeIndexByFamily: mergedActiveIndexByFamily,
+		};
+	}
+
+	private async persistStorageWithConflictRecovery(storage?: AccountStorageV3): Promise<void> {
+		const maxAttempts = 3;
+		const baseStorage = storage ?? this.buildStorageSnapshot();
+		let mergedCandidate = baseStorage;
+		for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+			try {
+				await saveAccounts(mergedCandidate);
+				return;
+			} catch (error) {
+				if (!this.isStorageConflictError(error) || attempt + 1 >= maxAttempts) {
+					throw error;
+				}
+				log.warn("Account save conflict detected; retrying with merged disk snapshot", {
+					attempt: attempt + 1,
+					maxAttempts,
+				});
+				const latest = await loadAccounts();
+				mergedCandidate = this.mergeIntoLatestStorage(latest, baseStorage);
+				await sleep(20 * 2 ** attempt);
+			}
+		}
+	}
+
+	async saveToDisk(): Promise<void> {
+		await this.persistStorageWithConflictRecovery(this.buildStorageSnapshot());
 	}
 
 	saveToDiskDebounced(delayMs = 500): void {

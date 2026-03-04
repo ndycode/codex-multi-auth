@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
+import { fetchWithTimeout } from "../utils.js";
 
 const GITHUB_API_RELEASES =
 	"https://api.github.com/repos/openai/codex/releases/latest";
@@ -19,6 +20,7 @@ const MAX_CACHE_SIZE = 50;
 const memoryCache = new Map<string, { content: string; timestamp: number }>();
 const refreshPromises = new Map<ModelFamily, Promise<void>>();
 const RELEASE_TAG_TTL_MS = 5 * 60 * 1000;
+const PROMPT_FETCH_TIMEOUT_MS = 15_000;
 let latestReleaseTagCache: { tag: string; checkedAt: number } | null = null;
 
 /**
@@ -142,7 +144,11 @@ async function getLatestReleaseTag(): Promise<string> {
 	}
 
 	try {
-		const response = await fetch(GITHUB_API_RELEASES);
+		const response = await fetchWithTimeout(
+			GITHUB_API_RELEASES,
+			{},
+			PROMPT_FETCH_TIMEOUT_MS,
+		);
 		if (response.ok) {
 			const data = (await response.json()) as GitHubRelease;
 			if (data.tag_name) {
@@ -157,7 +163,11 @@ async function getLatestReleaseTag(): Promise<string> {
 		// Fall through to HTML fallback
 	}
 
-	const htmlResponse = await fetch(GITHUB_HTML_RELEASES);
+	const htmlResponse = await fetchWithTimeout(
+		GITHUB_HTML_RELEASES,
+		{},
+		PROMPT_FETCH_TIMEOUT_MS,
+	);
 	if (!htmlResponse.ok) {
 		throw new Error(
 			`Failed to fetch latest release: ${htmlResponse.status}`,
@@ -313,7 +323,11 @@ async function fetchAndPersistInstructions(
 		headers["If-None-Match"] = cachedETag;
 	}
 
-	const response = await fetch(instructionsUrl, { headers });
+	const response = await fetchWithTimeout(
+		instructionsUrl,
+		{ headers },
+		PROMPT_FETCH_TIMEOUT_MS,
+	);
 	if (response.status === 304) {
 		const diskContent = await readFileOrNull(cacheFile);
 		if (diskContent) {

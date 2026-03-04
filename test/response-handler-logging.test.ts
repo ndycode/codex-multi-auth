@@ -14,7 +14,7 @@ vi.mock("../lib/logger.js", () => ({
 }));
 
 describe("response handler logging branch", () => {
-	it("logs full stream content when logging is enabled", async () => {
+	it("does not log full stream content for successful SSE conversion", async () => {
 		const { convertSseToJson } = await import("../lib/request/response-handler.js");
 		const response = new Response(
 			'data: {"type":"response.done","response":{"id":"resp_logging"}}\n',
@@ -23,10 +23,6 @@ describe("response handler logging branch", () => {
 		const result = await convertSseToJson(response, new Headers());
 		expect(result.status).toBe(200);
 		expect(result.headers.get("content-type")).toContain("application/json");
-		expect(logRequestMock).toHaveBeenCalledTimes(1);
-		expect(logRequestMock).toHaveBeenCalledWith(
-			"stream-full",
-			expect.objectContaining({ fullContent: expect.stringContaining("response.done") }),
-		);
+		expect(logRequestMock).not.toHaveBeenCalled();
 	});
 });

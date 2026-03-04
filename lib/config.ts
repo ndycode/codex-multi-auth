@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import type { PluginConfig } from "./types.js";
 import { logWarn } from "./logger.js";
 import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
@@ -34,6 +35,9 @@ const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const CONFIG_CONFLICT_RETRY_LIMIT = 3;
+const RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES = 12;
+const RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES = 100;
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -124,7 +128,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	fastSessionMaxInputItems: 30,
 	retryAllAccountsRateLimited: true,
 	retryAllAccountsMaxWaitMs: 0,
-	retryAllAccountsMaxRetries: Infinity,
+	retryAllAccountsMaxRetries: RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES,
 	unsupportedCodexPolicy: "strict",
 	fallbackOnUnsupportedCodexModel: false,
 	fallbackToGpt52OnUnsupportedGpt53: true,
@@ -277,10 +281,64 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function computeSha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function createConfigConflictError(path: string): Error & { code: string } {
+	return Object.assign(
+		new Error(
+			`Detected concurrent config modification at ${path}; reload and retry`,
+		),
+		{ code: "ECONFLICT" as const },
+	);
+}
+
+function isConfigConflictError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === "ECONFLICT";
+}
+
+type JsonRecordSnapshot = {
+	record: Record<string, unknown> | null;
+	revision: string | null;
+};
+
+async function readConfigSnapshotFromPath(
+	configPath: string,
+): Promise<JsonRecordSnapshot> {
+	if (!existsSync(configPath)) {
+		return { record: null, revision: null };
+	}
+	const fileContent = await fs.readFile(configPath, "utf-8");
+	const normalizedFileContent = stripUtf8Bom(fileContent);
+	const revision = computeSha256(normalizedFileContent);
+	let record: Record<string, unknown> | null = null;
+	try {
+		const parsed = JSON.parse(normalizedFileContent) as unknown;
+		record = isRecord(parsed) ? parsed : null;
+	} catch {
+		record = null;
+	}
+	return {
+		record,
+		revision,
+	};
+}
+
 async function writeJsonFileAtomicWithRetry(
 	filePath: string,
 	payload: Record<string, unknown>,
+	options?: { expectedRevision?: string | null },
 ): Promise<void> {
+	const expectedRevision = options?.expectedRevision;
+	if (expectedRevision !== undefined) {
+		const currentSnapshot = await readConfigSnapshotFromPath(filePath);
+		if (currentSnapshot.revision !== expectedRevision) {
+			throw createConfigConflictError(filePath);
+		}
+	}
+
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 	await fs.mkdir(dirname(filePath), { recursive: true });
 	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -391,11 +449,29 @@ export async function savePluginConfig(configPatch: Partial<PluginConfig>): Prom
 
 	if (envPath.length > 0) {
 		await withConfigSaveLock(envPath, async () => {
-			const merged = {
-				...(readConfigRecordFromPath(envPath) ?? {}),
-				...sanitizedPatch,
-			};
-			await writeJsonFileAtomicWithRetry(envPath, merged);
+			let lastError: unknown;
+			for (let attempt = 0; attempt < CONFIG_CONFLICT_RETRY_LIMIT; attempt += 1) {
+				const snapshot = await readConfigSnapshotFromPath(envPath);
+				const merged = {
+					...(snapshot.record ?? {}),
+					...sanitizedPatch,
+				};
+				try {
+					await writeJsonFileAtomicWithRetry(envPath, merged, {
+						expectedRevision: snapshot.revision,
+					});
+					return;
+				} catch (error) {
+					lastError = error;
+					if (
+						!isConfigConflictError(error) ||
+						attempt >= CONFIG_CONFLICT_RETRY_LIMIT - 1
+					) {
+						throw error;
+					}
+				}
+			}
+			throw lastError instanceof Error ? lastError : new Error("Failed to save plugin config");
 		});
 		return;
 	}
@@ -586,8 +662,8 @@ export function getRetryAllAccountsMaxRetries(pluginConfig: PluginConfig): numbe
 	return resolveNumberSetting(
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
 		pluginConfig.retryAllAccountsMaxRetries,
-		Infinity,
-		{ min: 0 },
+		RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES,
+		{ min: 0, max: RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES },
 	);
 }
 
