@@ -130,9 +130,8 @@ function withAccountFileMutex<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function withStorageSerializedFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-	// Serialize file-lock acquisition to keep save ordering deterministic, then
-	// preserve the historical lock order (file lock -> in-process mutex) so all
-	// account-storage mutation paths share the same acquisition sequence.
+	// Serialize file-lock acquisition to keep save ordering deterministic.
+	// Acquisition order: file-queue mutex -> file lock -> storage mutex.
 	return withAccountFileMutex(() =>
 		withAccountFileLock(path, () => withStorageLock(fn)),
 	);
@@ -340,48 +339,16 @@ function getAccountsLockPath(path: string): string {
 async function releaseStorageLockFallback(lockPath: string): Promise<void> {
 	try {
 		await fs.rm(lockPath, { force: true });
-	} catch {
-		// Best-effort lock cleanup fallback.
-	}
-}
-
-async function cleanupDeadProcessStorageLock(lockPath: string): Promise<void> {
-	try {
-		const raw = await fs.readFile(lockPath, "utf-8");
-		const parsed = JSON.parse(raw) as { pid?: number; acquiredAt?: number };
-		const lockPid = Number(parsed?.pid);
-		const lockAcquiredAt = Number(parsed?.acquiredAt);
-
-		if (Number.isFinite(lockPid) && lockPid > 0) {
-			let isDeadProcess = false;
-			try {
-				process.kill(lockPid, 0);
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				isDeadProcess = code === "ESRCH";
-			}
-
-			if (isDeadProcess) {
-				await releaseStorageLockFallback(lockPath);
-				return;
-			}
-		}
-
-		if (Number.isFinite(lockAcquiredAt) && Date.now() - lockAcquiredAt > ACCOUNT_STORAGE_LOCK_OPTIONS.staleAfterMs) {
-			await releaseStorageLockFallback(lockPath);
-		}
 	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return;
-		}
-		await releaseStorageLockFallback(lockPath);
+		log.debug("Best-effort lock cleanup fallback failed", {
+			path: lockPath,
+			error: String(error),
+		});
 	}
 }
 
 async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
 	const lockPath = getAccountsLockPath(path);
-	await cleanupDeadProcessStorageLock(lockPath);
 	await fs.mkdir(dirname(path), { recursive: true });
 	const lock = await acquireFileLock(lockPath, ACCOUNT_STORAGE_LOCK_OPTIONS);
 	try {
@@ -396,9 +363,9 @@ async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promi
 					path: lockPath,
 					error: String(error),
 				});
+				await releaseStorageLockFallback(lockPath);
 			}
 		}
-		await releaseStorageLockFallback(lockPath);
 	}
 }
 async function copyFileWithRetry(
