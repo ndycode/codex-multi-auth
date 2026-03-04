@@ -2110,25 +2110,30 @@ async function runForecast(args: string[]): Promise<number> {
 	const recommendation = recommendForecastAccount(forecastResults);
 
 	if (options.json) {
+		let quotaCachePersisted = true;
 		if (quotaCache && quotaCacheChanged) {
-			await persistQuotaCache(quotaCache);
+			quotaCachePersisted = await persistQuotaCache(quotaCache);
 		}
+		const payload = {
+			command: "forecast",
+			model: options.model,
+			liveProbe: options.live,
+			summary,
+			recommendation,
+			probeErrors: quotaCachePersisted
+				? probeErrors
+				: [...probeErrors, "Failed to persist quota cache changes"],
+			quotaCachePersisted,
+			accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
+		};
 		console.log(
 			JSON.stringify(
-				{
-					command: "forecast",
-					model: options.model,
-					liveProbe: options.live,
-					summary,
-					recommendation,
-					probeErrors,
-					accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
-				},
+				payload,
 				null,
 				2,
 			),
 		);
-		return 0;
+		return quotaCachePersisted ? 0 : 1;
 	}
 
 	console.log(
@@ -2986,31 +2991,34 @@ async function runFix(args: string[]): Promise<number> {
 	}
 
 	if (options.json) {
+		let quotaCachePersisted = true;
 		if (quotaCache && quotaCacheChanged) {
-			await persistQuotaCache(quotaCache);
+			quotaCachePersisted = await persistQuotaCache(quotaCache);
 		}
+		const payload = {
+			command: "fix",
+			dryRun: options.dryRun,
+			liveProbe: options.live,
+			model: options.model,
+			changed,
+			summary: reportSummary,
+			recommendation,
+			recommendedSwitchCommand:
+				recommendation.recommendedIndex !== null &&
+					recommendation.recommendedIndex !== activeIndex
+					? `codex auth switch ${recommendation.recommendedIndex + 1}`
+					: null,
+			reports,
+			quotaCachePersisted,
+		};
 		console.log(
 			JSON.stringify(
-				{
-					command: "fix",
-					dryRun: options.dryRun,
-					liveProbe: options.live,
-					model: options.model,
-					changed,
-					summary: reportSummary,
-					recommendation,
-					recommendedSwitchCommand:
-						recommendation.recommendedIndex !== null &&
-							recommendation.recommendedIndex !== activeIndex
-							? `codex auth switch ${recommendation.recommendedIndex + 1}`
-							: null,
-					reports,
-				},
+				payload,
 				null,
 				2,
 			),
 		);
-		return 0;
+		return quotaCachePersisted ? 0 : 1;
 	}
 
 	console.log(stylePromptText(`Auto-fix scan (${options.dryRun ? "preview" : "apply"})`, "accent"));
