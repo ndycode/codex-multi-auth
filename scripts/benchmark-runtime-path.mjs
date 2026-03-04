@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { assertSyncBenchmarkMergeResult } from "./benchmark-runtime-path-helpers.mjs";
 import { filterInput } from "../dist/lib/request/request-transformer.js";
 import { cleanupToolDefinitions } from "../dist/lib/request/helpers/tool-utils.js";
 import { AccountManager } from "../dist/lib/accounts.js";
@@ -324,15 +325,18 @@ async function run() {
 	];
 
 	const asyncResults = await withCodexCliState(1000, async () => {
-		const current = buildSyncStorage(0);
+		const current = buildSyncStorage(1000);
+		current.accounts[0].refreshToken = "stale.refresh.token";
 		const syncResult = await benchmarkCaseAsync(
 			"codexCliSync_merge_1000",
 			iterations,
 			async () => {
 				const reconciled = await syncAccountStorageFromCodexCli(current);
-				if (!reconciled.storage || reconciled.storage.accounts.length < 1000) {
-					throw new Error("codexCliSync_merge_1000 failed");
-				}
+				assertSyncBenchmarkMergeResult(reconciled, {
+					caseName: "codexCliSync_merge_1000",
+					minimumAccounts: 1000,
+					expectedRefreshToken: "sync.refresh.0",
+				});
 			},
 		);
 

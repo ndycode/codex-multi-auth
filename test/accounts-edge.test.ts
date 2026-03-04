@@ -453,6 +453,43 @@ describe("accounts edge branches", () => {
     expect(refreshTokens).toContain("refresh-concurrent");
   });
 
+  it("retries on transient EBUSY saves and merges concurrent disk accounts", async () => {
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+      }),
+    ]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-concurrent",
+        email: "concurrent@example.com",
+      }),
+    ]);
+
+    const busyError = Object.assign(new Error("busy"), {
+      code: "EBUSY",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(busyError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{ refreshToken: string }>;
+    };
+    const refreshTokens = retriedPayload.accounts.map((account) => account.refreshToken);
+    expect(refreshTokens).toContain("refresh-local");
+    expect(refreshTokens).toContain("refresh-concurrent");
+  });
+
   it("preserves existing rate-limit map entries when conflict merge receives empty map", async () => {
     const now = Date.now();
     const stored = buildStored([

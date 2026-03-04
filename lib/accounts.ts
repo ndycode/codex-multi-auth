@@ -762,7 +762,7 @@ export class AccountManager {
 
 	private isStorageConflictError(error: unknown): boolean {
 		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		return code === "ECONFLICT";
+		return code === "ECONFLICT" || code === "EBUSY";
 	}
 
 	private mergeIntoLatestStorage(

@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AuditAction, configureAudit, getAuditConfig } from "../lib/audit.js";
 import { authorizeAction, getAuthorizationRole } from "../lib/authorization.js";
+import { removeWithRetry } from "./helpers/fs-retry.js";
 
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const AUTH_ENV_KEYS = [
 	"CODEX_AUTH_ROLE",
 	"CODEX_AUTH_BREAK_GLASS",
@@ -31,25 +31,6 @@ function restoreAuthEnv(snapshot: Record<(typeof AUTH_ENV_KEYS)[number], string 
 			delete process.env[key];
 		} else {
 			process.env[key] = previous;
-		}
-	}
-}
-
-async function removeWithRetry(
-	targetPath: string,
-	options: { recursive?: boolean; force?: boolean },
-): Promise<void> {
-	for (let attempt = 0; attempt < 6; attempt += 1) {
-		try {
-			await fs.rm(targetPath, options);
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") return;
-			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
-				throw error;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
 		}
 	}
 }

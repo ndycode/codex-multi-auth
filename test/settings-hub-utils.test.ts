@@ -20,6 +20,9 @@ type SettingsHubTestApi = {
 		config: PluginConfig,
 		focus?: string | null,
 	) => { label: string; hint: string };
+	getBackendSettingMetadata: (
+		settingKey: string,
+	) => { label: string; categoryKey: string; categoryLabel: string };
 };
 
 let tempRoot = "";
@@ -290,6 +293,16 @@ describe("settings-hub utility coverage", () => {
 		selected.retryAllAccountsAbsoluteCeilingMs = 0;
 		const preview = api.buildBackendSettingsPreview(selected, "retryAllAccountsAbsoluteCeilingMs");
 		expect(preview.hint).toContain("retry ceiling unlimited");
+	});
+
+	it("keeps retry-all ceiling metadata in the Rotation & Quota category", async () => {
+		const api = await loadSettingsHubTestApi();
+		const metadata = api.getBackendSettingMetadata("retryAllAccountsAbsoluteCeilingMs");
+		expect(metadata).toEqual({
+			label: "Retry-All Absolute Wait Ceiling",
+			categoryKey: "rotation-quota",
+			categoryLabel: "Rotation & Quota",
+		});
 	});
 
 	it("persists retry-all absolute ceiling value of zero without coercion", async () => {

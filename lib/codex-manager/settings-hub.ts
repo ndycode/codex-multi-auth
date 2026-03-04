@@ -1123,6 +1123,29 @@ function buildBackendSettingsPreviewForTests(
 	return buildBackendSettingsPreview(config, getUiRuntimeOptions(), focus);
 }
 
+function getBackendSettingMetadataForTests(
+	settingKey: string,
+): { label: string; categoryKey: string; categoryLabel: string } {
+	const numberOption = BACKEND_NUMBER_OPTION_BY_KEY.get(settingKey as BackendNumberSettingKey);
+	const toggleOption = BACKEND_TOGGLE_OPTION_BY_KEY.get(settingKey as BackendToggleSettingKey);
+	const option = numberOption ?? toggleOption;
+	if (!option) {
+		throw new Error(`Unknown backend setting key: ${settingKey}`);
+	}
+	const category = BACKEND_CATEGORY_OPTIONS.find((candidate) =>
+		candidate.numberKeys.includes(settingKey as BackendNumberSettingKey)
+		|| candidate.toggleKeys.includes(settingKey as BackendToggleSettingKey)
+	);
+	if (!category) {
+		throw new Error(`Missing backend category for setting key: ${settingKey}`);
+	}
+	return {
+		label: option.label,
+		categoryKey: category.key,
+		categoryLabel: category.label,
+	};
+}
+
 const __testOnly = {
 	clampBackendNumber: clampBackendNumberForTests,
 	formatMenuLayoutMode,
@@ -1131,6 +1154,7 @@ const __testOnly = {
 	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
 	persistBackendConfigSelection: persistBackendConfigSelectionForTests,
 	buildBackendSettingsPreview: buildBackendSettingsPreviewForTests,
+	getBackendSettingMetadata: getBackendSettingMetadataForTests,
 };
 
 /* c8 ignore start - interactive prompt flows are covered by integration tests */

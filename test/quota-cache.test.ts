@@ -167,6 +167,42 @@ describe("quota cache", () => {
     },
   );
 
+  it("omits unix mode when writing temp cache files on win32", async () => {
+    const { saveQuotaCache } = await import("../lib/quota-cache.js");
+    const writeSpy = vi.spyOn(fs, "writeFile");
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    try {
+      const saved = await saveQuotaCache({
+        byAccountId: {
+          acc_1: {
+            updatedAt: Date.now(),
+            status: 200,
+            model: "gpt-5-codex",
+            primary: { usedPercent: 40, windowMinutes: 300 },
+            secondary: { usedPercent: 20, windowMinutes: 10080 },
+          },
+        },
+        byEmail: {},
+      });
+      expect(saved).toBe(true);
+      const tempWriteCall = writeSpy.mock.calls.find((call) =>
+        String(call[0]).endsWith(".tmp"),
+      );
+      expect(tempWriteCall).toBeDefined();
+      const options = tempWriteCall?.[2] as
+        | {
+            encoding?: string;
+            mode?: number;
+          }
+        | undefined;
+      expect(options?.encoding).toBe("utf8");
+      expect(options && "mode" in options).toBe(false);
+    } finally {
+      platformSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+  });
+
   it("cleans up temp files when rename keeps failing", async () => {
     const { saveQuotaCache } = await import("../lib/quota-cache.js");
     const renameSpy = vi.spyOn(fs, "rename");

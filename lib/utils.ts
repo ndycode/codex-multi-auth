@@ -111,10 +111,20 @@ export async function fetchWithTimeout(
 	}
 
 	try {
-		return await fetch(input, {
-			...init,
-			signal: controller.signal,
-		});
+		try {
+			return await fetch(input, {
+				...init,
+				signal: controller.signal,
+			});
+		} catch (error) {
+			if (userSignal?.aborted) {
+				throw normalizeAbortReason(userSignal.reason);
+			}
+			if (controller.signal.aborted) {
+				throw normalizeAbortReason(controller.signal.reason);
+			}
+			throw error;
+		}
 	} finally {
 		clearTimeout(timeoutId);
 		if (userSignal) {

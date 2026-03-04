@@ -3,6 +3,8 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
+import { evaluateRuntimeBudgetGate } from "./check-runtime-budgets-helpers.mjs";
 
 function argValue(args, name) {
 	const prefix = `${name}=`;
@@ -24,56 +26,15 @@ async function run() {
 
 	const benchmarkPayload = await readJson(inputPath);
 	const budgetPayload = await readJson(budgetPath);
-	const benchmarkResults = new Map(
-		Array.isArray(benchmarkPayload.results)
-			? benchmarkPayload.results
-					.filter((entry) => entry && typeof entry.name === "string")
-					.map((entry) => [entry.name, entry])
-			: [],
+	const { budgetEntriesCount, failures, reportLines } = evaluateRuntimeBudgetGate(
+		benchmarkPayload,
+		budgetPayload,
 	);
-	const budgetEntries = Object.entries(budgetPayload.cases ?? {});
-	if (budgetEntries.length === 0) {
+	for (const line of reportLines) {
+		console.log(line);
+	}
+	if (budgetEntriesCount === 0) {
 		throw new Error(`No budget cases defined in ${budgetPath}`);
-	}
-
-	const failures = [];
-	for (const caseName of benchmarkResults.keys()) {
-		if (!Object.prototype.hasOwnProperty.call(budgetPayload.cases ?? {}, caseName)) {
-			failures.push(`unbudgeted benchmark case: ${caseName}`);
-		}
-	}
-	for (const [caseName, caseBudget] of budgetEntries) {
-		const result = benchmarkResults.get(caseName);
-		if (!result) {
-			failures.push(`missing benchmark case: ${caseName}`);
-			continue;
-		}
-
-		const maxAvgMs =
-			typeof caseBudget?.maxAvgMs === "number" && Number.isFinite(caseBudget.maxAvgMs)
-				? caseBudget.maxAvgMs
-				: null;
-		if (maxAvgMs === null || maxAvgMs <= 0) {
-			failures.push(`invalid budget maxAvgMs for case: ${caseName}`);
-			continue;
-		}
-
-		const avgMs = typeof result.avgMs === "number" ? result.avgMs : NaN;
-		if (!Number.isFinite(avgMs)) {
-			failures.push(`invalid avgMs for case: ${caseName}`);
-			continue;
-		}
-
-		const ratio = avgMs / maxAvgMs;
-		const ratioLabel = `${(ratio * 100).toFixed(1)}%`;
-		console.log(
-			`${caseName}: avg=${avgMs.toFixed(6)}ms budget=${maxAvgMs.toFixed(6)}ms (${ratioLabel})`,
-		);
-		if (avgMs > maxAvgMs) {
-			failures.push(
-				`${caseName}: avg ${avgMs.toFixed(6)}ms exceeds budget ${maxAvgMs.toFixed(6)}ms`,
-			);
-		}
 	}
 
 	if (failures.length > 0) {
@@ -84,14 +45,22 @@ async function run() {
 		process.exit(1);
 	}
 
-	console.log(`Runtime benchmark regression gate passed (${budgetEntries.length} cases).`);
+	console.log(`Runtime benchmark regression gate passed (${budgetEntriesCount} cases).`);
 }
 
-run().catch((error) => {
-	console.error(
-		`Runtime benchmark regression gate failed: ${
-			error instanceof Error ? error.message : String(error)
-		}`,
-	);
-	process.exit(1);
-});
+function isDirectExecution() {
+	const scriptArg = process.argv[1];
+	if (!scriptArg) return false;
+	return import.meta.url === pathToFileURL(resolve(scriptArg)).href;
+}
+
+if (isDirectExecution()) {
+	run().catch((error) => {
+		console.error(
+			`Runtime benchmark regression gate failed: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+		process.exit(1);
+	});
+}

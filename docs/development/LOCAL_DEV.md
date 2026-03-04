@@ -67,7 +67,8 @@ npm run format
 - `setup:dev`/`doctor:dev` on Windows fails with transient `EBUSY`/`EPERM` lock errors:
   - retry `npm ci` first (transient antivirus/file contention is common)
   - if it persists, pause antivirus or exclude the repository, then re-run in an elevated PowerShell/CMD session
-  - if exclusions are required, prioritize repository-local paths: `node_modules`, `.codex`, and `%USERPROFILE%\\.codex\\multi-auth`
+  - if exclusions are required, prioritize repository-local paths: `node_modules`, `.codex`, `dist`, `.cache`, and `%USERPROFILE%\\.codex\\multi-auth`
+  - Windows Defender path: Windows Security -> Virus & threat protection -> Manage settings -> Exclusions -> Add or remove exclusions
   - if state looks corrupted, run `git clean -fdx` then run `npm ci` again
   - if lock contention still stalls installs, try `npm ci --no-audit` or run setup from WSL2
 - `test/documentation.test.ts` fails with missing `dist/lib/*.js`:

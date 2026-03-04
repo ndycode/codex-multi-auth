@@ -101,6 +101,10 @@ async function sleepWithAbort(delayMs: number, signal?: AbortSignal): Promise<vo
 		throw getAbortReason(signal);
 	}
 	await new Promise<void>((resolve, reject) => {
+		if (signal.aborted) {
+			reject(getAbortReason(signal));
+			return;
+		}
 		const timer = setTimeout(() => {
 			signal.removeEventListener("abort", onAbort);
 			resolve();
@@ -111,9 +115,6 @@ async function sleepWithAbort(delayMs: number, signal?: AbortSignal): Promise<vo
 			reject(getAbortReason(signal));
 		};
 		signal.addEventListener("abort", onAbort, { once: true });
-		if (signal.aborted) {
-			onAbort();
-		}
 	});
 }
 

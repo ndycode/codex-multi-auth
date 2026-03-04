@@ -8,6 +8,8 @@ const handleSuccessResponseDetailedMock = vi.fn(async (response: Response) => ({
 	response,
 	parsedBody: undefined,
 }));
+const addJitterMock = vi.fn((delayMs: number) => delayMs);
+let unavailableSelectionCount = 1;
 
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
@@ -43,6 +45,14 @@ vi.mock("../lib/request/request-transformer.js", () => ({
 	applyFastSessionDefaults: <T>(config: T) => config,
 }));
 
+vi.mock("../lib/rotation.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/rotation.js")>();
+	return {
+		...actual,
+		addJitter: (delayMs: number, jitterRatio: number) => addJitterMock(delayMs, jitterRatio),
+	};
+});
+
 vi.mock("../lib/accounts.js", () => {
 	class AccountManager {
 		private calls = 0;
@@ -57,7 +67,7 @@ vi.mock("../lib/accounts.js", () => {
 
 		getCurrentOrNextForFamily() {
 			this.calls += 1;
-			if (this.calls === 1) return null;
+			if (this.calls <= unavailableSelectionCount) return null;
 			return { index: 0, accountId: "account-1", email: "user@example.com" };
 		}
 
@@ -194,6 +204,9 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 			response,
 			parsedBody: undefined,
 		}));
+		unavailableSelectionCount = 1;
+		addJitterMock.mockReset();
+		addJitterMock.mockImplementation((delayMs: number) => delayMs);
 	});
 
 	afterEach(() => {
@@ -260,6 +273,40 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
 		const response = await sdk.fetch("https://example.com", {});
 
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(response.status).toBe(429);
+
+		const metrics = await plugin.tool["codex-metrics"].execute();
+		const plainMetrics = String(metrics).replace(/\u001b\[[0-9;]*m/g, "");
+		expect(plainMetrics).toContain("Retry governor stops (absolute ceiling): 1");
+	});
+
+	it("counts jittered wait toward absolute ceiling across retries", async () => {
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "4";
+		process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = "2100";
+		unavailableSelectionCount = 2;
+		addJitterMock.mockImplementation((delayMs: number) => delayMs + 200);
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const fetchPromise = sdk.fetch("https://example.com", {});
+		await vi.advanceTimersByTimeAsync(1_300);
+		const response = await fetchPromise;
+
+		expect(addJitterMock).toHaveBeenCalled();
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 		expect(response.status).toBe(429);
 

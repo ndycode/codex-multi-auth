@@ -235,10 +235,11 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<boolean> {
 		});
 		try {
 			const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
-				encoding: "utf8",
-				mode: 0o600,
-			});
+			const writeOptions: { encoding: "utf8"; mode?: number } = { encoding: "utf8" };
+			if (process.platform !== "win32") {
+				writeOptions.mode = 0o600;
+			}
+			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, writeOptions);
 			let renamed = false;
 			try {
 				for (let attempt = 0; attempt < 5; attempt += 1) {
