@@ -6,60 +6,120 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { runDevDoctor } from "./doctor-dev.js";
 
-function resolveNpmInvocation() {
-	const npmExecPath = (process.env.npm_execpath ?? "").trim();
+const WINDOWS_INSTALL_RETRY_ATTEMPTS = 3;
+const WINDOWS_INSTALL_RETRY_BASE_DELAY_MS = 300;
+
+async function waitForMilliseconds(milliseconds, waitFn) {
+	if (typeof waitFn === "function") {
+		await waitFn(milliseconds);
+		return;
+	}
+	await new Promise((resolveDelay) => {
+		setTimeout(resolveDelay, milliseconds);
+	});
+}
+
+export function resolveNpmInvocation(options = {}) {
+	const platform = options.platform ?? process.platform;
+	const npmExecPath = (options.npmExecPath ?? process.env.npm_execpath ?? "").trim();
+	const execPath = options.execPath ?? process.execPath;
+
 	if (npmExecPath.length > 0) {
 		return {
-			command: process.execPath,
+			command: execPath,
 			prefixArgs: [npmExecPath],
 		};
 	}
 
 	return {
-		command: process.platform === "win32" ? "npm.cmd" : "npm",
+		command: platform === "win32" ? "npm.cmd" : "npm",
 		prefixArgs: [],
 	};
 }
 
-function runCommand(command, args = [], cwd = process.cwd()) {
+export function runCommand(command, args = [], cwd = process.cwd(), options = {}) {
+	const spawnFactory = options.spawnFactory ?? spawn;
+	const env = options.env ?? process.env;
+
 	return new Promise((resolveExitCode) => {
-		const child = spawn(command, args, {
+		let settled = false;
+		const settle = (exitCode) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			resolveExitCode(exitCode);
+		};
+
+		const child = spawnFactory(command, args, {
 			cwd,
 			stdio: "inherit",
-			env: process.env,
+			env,
 		});
 
 		child.once("error", (error) => {
 			console.error(`Failed to run command: ${command} ${args.join(" ")}`);
 			console.error(String(error));
-			resolveExitCode(1);
+			settle(1);
 		});
 
 		child.once("exit", (code, signal) => {
 			if (signal) {
-				resolveExitCode(signal === "SIGINT" ? 130 : 1);
+				settle(signal === "SIGINT" ? 130 : 1);
 				return;
 			}
-			resolveExitCode(typeof code === "number" ? code : 1);
+			settle(typeof code === "number" ? code : 1);
 		});
 	});
 }
 
 export async function runSetupDev(options = {}) {
 	const cwd = resolve(options.cwd ?? process.cwd());
+	const platform = options.platform ?? process.platform;
+	const runDoctor = options.runDevDoctorFn ?? runDevDoctor;
+	const runCommandFn = options.runCommandFn ?? ((command, args, commandCwd) => runCommand(command, args, commandCwd));
+	const installRetryAttempts =
+		typeof options.installRetryAttempts === "number"
+			? options.installRetryAttempts
+			: platform === "win32"
+				? WINDOWS_INSTALL_RETRY_ATTEMPTS
+				: 1;
+	const installRetryBaseDelayMs =
+		typeof options.installRetryBaseDelayMs === "number"
+			? options.installRetryBaseDelayMs
+			: WINDOWS_INSTALL_RETRY_BASE_DELAY_MS;
+	const npmInvocation =
+		options.npmInvocation ??
+		resolveNpmInvocation({
+			platform,
+			npmExecPath: options.npmExecPath,
+			execPath: options.execPath,
+		});
 
 	console.log("Running dev environment checks...");
-	const doctorExitCode = runDevDoctor({ cwd });
+	const doctorExitCode = runDoctor({ cwd });
 	if (doctorExitCode !== 0) {
 		return doctorExitCode;
 	}
 
-	const npmInvocation = resolveNpmInvocation();
 	const runNpm = (args) =>
-		runCommand(npmInvocation.command, [...npmInvocation.prefixArgs, ...args], cwd);
+		runCommandFn(npmInvocation.command, [...npmInvocation.prefixArgs, ...args], cwd);
 
 	console.log("Installing dependencies with npm ci...");
-	const installExitCode = await runNpm(["ci"]);
+	let installExitCode = 1;
+	for (let attempt = 1; attempt <= installRetryAttempts; attempt += 1) {
+		installExitCode = await runNpm(["ci"]);
+		if (installExitCode === 0) {
+			break;
+		}
+		if (attempt < installRetryAttempts) {
+			const delayMs = installRetryBaseDelayMs * 2 ** (attempt - 1);
+			console.warn(
+				`npm ci failed (attempt ${attempt}/${installRetryAttempts}). Retrying in ${delayMs}ms to tolerate transient EBUSY/EPERM Windows file locks...`,
+			);
+			await waitForMilliseconds(delayMs, options.waitFn);
+		}
+	}
 	if (installExitCode !== 0) {
 		console.error("setup:dev failed during npm ci.");
 		return installExitCode;

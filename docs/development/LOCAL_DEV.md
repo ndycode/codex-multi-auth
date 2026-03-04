@@ -64,6 +64,11 @@ npm run format
   - ensure shell `PATH` includes Node.js and git executables
 - `verify` fails on audit policy:
   - run `npm run audit:ci` to inspect blocking advisory output
+- `setup:dev`/`doctor:dev` on Windows fails with transient `EBUSY`/`EPERM` lock errors:
+  - retry `npm ci` first (transient antivirus/file contention is common)
+  - if it persists, pause antivirus or exclude the repository, then re-run in an elevated PowerShell/CMD session
+  - if state looks corrupted, run `git clean -fdx` then run `npm ci` again
+  - if lock contention still stalls installs, try `npm ci --no-audit` or run setup from WSL2
 - `test/documentation.test.ts` fails with missing `dist/lib/*.js`:
   - run `npm run build` and re-run the docs test
 

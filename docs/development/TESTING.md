@@ -21,6 +21,7 @@ Coverage thresholds in `vitest.config.ts`: statements/branches/functions/lines >
 
 ```bash
 npm run setup:dev
+npm run doctor:dev
 npm run verify
 npm run verify:ci
 ```
