@@ -32,7 +32,7 @@ function getRoleFromEnv(): AuthRole {
 	if (raw === "operator" || raw === "viewer" || raw === "admin") {
 		return raw;
 	}
-	return "admin";
+	return "viewer";
 }
 
 export function getAuthorizationRole(): AuthRole {

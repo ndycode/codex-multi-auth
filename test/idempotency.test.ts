@@ -40,12 +40,73 @@ describe("idempotency store", () => {
 
 	it("expires entries based on ttl", async () => {
 		const { checkAndRecordIdempotencyKey } = await import("../lib/idempotency.js");
-		expect(
-			await checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-2", 5),
-		).toEqual({ replayed: false });
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(
-			await checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-2", 5),
-		).toEqual({ replayed: false });
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-03-05T00:00:00.000Z"));
+			expect(
+				await checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-2", 5),
+			).toEqual({ replayed: false });
+			vi.advanceTimersByTime(10);
+			expect(
+				await checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-2", 5),
+			).toEqual({ replayed: false });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("serializes concurrent duplicate key checks", async () => {
+		const { checkAndRecordIdempotencyKey } = await import("../lib/idempotency.js");
+		const [first, second] = await Promise.all([
+			checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "shared-key"),
+			checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "shared-key"),
+		]);
+		const results = [first, second];
+		expect(results.filter((result) => result.replayed)).toHaveLength(1);
+		expect(results.filter((result) => !result.replayed)).toHaveLength(1);
+	});
+
+	it("recovers from malformed persisted store content", async () => {
+		const { checkAndRecordIdempotencyKey, getIdempotencyStorePath } = await import(
+			"../lib/idempotency.js"
+		);
+		await fs.writeFile(getIdempotencyStorePath(), "{ malformed json", "utf8");
+		await expect(
+			checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-malformed"),
+		).resolves.toEqual({ replayed: false });
+	});
+
+	it("retries transient rename failures while saving store", async () => {
+		const { checkAndRecordIdempotencyKey } = await import("../lib/idempotency.js");
+		const renameSpy = vi.spyOn(fs, "rename");
+		renameSpy.mockImplementationOnce(async () => {
+			const error = new Error("busy") as NodeJS.ErrnoException;
+			error.code = "EBUSY";
+			throw error;
+		});
+		try {
+			await expect(
+				checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-retry"),
+			).resolves.toEqual({ replayed: false });
+			expect(renameSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			renameSpy.mockRestore();
+		}
+	});
+
+	it("normalizes non-finite ttl values to a safe minimum", async () => {
+		const { checkAndRecordIdempotencyKey } = await import("../lib/idempotency.js");
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-03-05T00:00:00.000Z"));
+			await expect(
+				checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-non-finite", Number.NaN),
+			).resolves.toEqual({ replayed: false });
+			await expect(
+				checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-non-finite", Number.NaN),
+			).resolves.toEqual({ replayed: true });
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

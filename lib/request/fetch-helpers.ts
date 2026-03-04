@@ -5,7 +5,7 @@
 
 import type { Auth, CodexClient } from "@codex-ai/sdk";
 import { queuedRefresh } from "../refresh-queue.js";
-import { logRequest, logError, logWarn } from "../logger.js";
+import { logRequest, logError, logWarn, logDebug } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
 import {
@@ -674,6 +674,7 @@ export async function handleSuccessResponseDetailed(
 
 	// For streaming requests (streamText), return stream as-is
 	return {
+		// Streaming mode intentionally preserves the body stream and skips parsedBody extraction.
 		response: new Response(response.body, {
 			status: response.status,
 			statusText: response.statusText,
@@ -700,6 +701,7 @@ async function readBodyForErrorHandling(
 	try {
 		return { bodyText, parsedBody: JSON.parse(bodyText) as unknown };
 	} catch {
+		logDebug("Failed to parse error response body as JSON; using raw text message");
 		return { bodyText, parsedBody: { message: bodyText } };
 	}
 }

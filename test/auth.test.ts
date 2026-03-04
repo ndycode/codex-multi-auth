@@ -396,8 +396,8 @@ describe('Auth Module', () => {
 				const result = await resultPromise;
 				expect(result.type).toBe('failed');
 				if (result.type === 'failed') {
-					expect(result.reason).toBe('unknown');
-					expect(result.message).toContain('timed out');
+					expect(result.reason).toBe('network_error');
+					expect(result.message).toMatch(/timed out|timeout/i);
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
@@ -432,7 +432,7 @@ describe('Auth Module', () => {
 				);
 				expect(result.type).toBe('failed');
 				if (result.type === 'failed') {
-					expect(result.reason).toBe('unknown');
+					expect(result.reason).toBe('network_error');
 					expect(result.message).toBe('upstream-pre-aborted');
 				}
 				expect(setTimeoutSpy).not.toHaveBeenCalled();
@@ -484,7 +484,7 @@ describe('Auth Module', () => {
 				const result = await resultPromise;
 				expect(result.type).toBe('failed');
 				if (result.type === 'failed') {
-					expect(result.reason).toBe('unknown');
+					expect(result.reason).toBe('network_error');
 					expect(result.message).toBe('upstream-mid-flight');
 				}
 				expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
@@ -541,10 +541,10 @@ describe('Auth Module', () => {
 				expect(firstResult.type).toBe('failed');
 				expect(secondResult.type).toBe('failed');
 				if (firstResult.type === 'failed') {
-					expect(firstResult.reason).toBe('unknown');
+					expect(firstResult.reason).toBe('network_error');
 				}
 				if (secondResult.type === 'failed') {
-					expect(secondResult.reason).toBe('unknown');
+					expect(secondResult.reason).toBe('network_error');
 				}
 				expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
 				expect(clearTimeoutSpy).toHaveBeenCalledTimes(2);
@@ -713,7 +713,7 @@ describe('Auth Module', () => {
 				const result = await refreshAccessToken('some-token', { signal: controller.signal });
 				expect(result.type).toBe('failed');
 				if (result.type === 'failed') {
-					expect(result.reason).toBe('unknown');
+					expect(result.reason).toBe('network_error');
 					expect(result.message).toBe('Request aborted');
 				}
 			} finally {
@@ -747,8 +747,77 @@ describe('Auth Module', () => {
 				const result = await resultPromise;
 				expect(result.type).toBe('failed');
 				if (result.type === 'failed') {
-					expect(result.reason).toBe('unknown');
+					expect(result.reason).toBe('network_error');
 					expect(result.message).toContain('timeout');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+			}
+		});
+
+		it('isolates concurrent refresh abort paths for shared and independent signals', async () => {
+			vi.useFakeTimers();
+			const originalFetch = globalThis.fetch;
+			const observedSignals: AbortSignal[] = [];
+			globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal;
+					if (!signal) {
+						reject(new Error('missing signal'));
+						return;
+					}
+					observedSignals.push(signal);
+					const rejectWithAbort = () => {
+						const reason = signal.reason;
+						if (reason instanceof Error) {
+							reject(reason);
+							return;
+						}
+						reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+					};
+					if (signal.aborted) {
+						rejectWithAbort();
+						return;
+					}
+					signal.addEventListener('abort', rejectWithAbort, { once: true });
+				}),
+			) as never;
+
+			try {
+				const sharedController = new AbortController();
+				const independentController = new AbortController();
+
+				const sharedPromise = refreshAccessToken('slow-shared', {
+					signal: sharedController.signal,
+					timeoutMs: 5_000,
+				});
+				const independentPromise = refreshAccessToken('slow-independent', {
+					signal: independentController.signal,
+					timeoutMs: 1_000,
+				});
+
+				await vi.advanceTimersByTimeAsync(1_100);
+				const independentResult = await independentPromise;
+				expect(independentResult.type).toBe('failed');
+				if (independentResult.type === 'failed') {
+					expect(independentResult.reason).toBe('network_error');
+					expect(independentResult.message).toContain('timeout');
+				}
+
+				expect(observedSignals).toHaveLength(2);
+
+				sharedController.abort(
+					Object.assign(new Error('shared-controller-abort'), {
+						name: 'AbortError',
+						code: 'ABORT_ERR',
+					}),
+				);
+				const sharedResult = await sharedPromise;
+				expect(sharedResult.type).toBe('failed');
+				if (sharedResult.type === 'failed') {
+					expect(sharedResult.reason).toBe('network_error');
+					expect(sharedResult.message).toContain('shared-controller-abort');
 				}
 			} finally {
 				globalThis.fetch = originalFetch;

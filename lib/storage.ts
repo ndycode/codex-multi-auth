@@ -1453,7 +1453,11 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		let refreshToken: string;
 		try {
 			refreshToken = decryptStorageSecret(refreshTokenRaw, "flagged refresh token").value;
-		} catch {
+		} catch (error) {
+			log.warn("Skipping flagged account entry due to decrypt failure", {
+				reason: "flagged refresh token",
+				error: String(error),
+			});
 			continue;
 		}
 
@@ -1594,7 +1598,7 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 			const normalized = normalizeFlaggedStorage(storage);
 			const content = JSON.stringify(cloneFlaggedStorageForPersist(normalized), null, 2);
 			await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-			await fs.rename(tempPath, path);
+			await renameFileWithRetry(tempPath, path);
 		} catch (error) {
 			try {
 				await fs.unlink(tempPath);
@@ -1719,15 +1723,52 @@ export async function rotateStoredSecretEncryption(): Promise<{
 		throw new Error("CODEX_AUTH_ENCRYPTION_KEY is required to rotate stored secrets");
 	}
 
+	const fileExists = async (path: string): Promise<boolean> => {
+		try {
+			await fs.access(path);
+			return true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return false;
+			}
+			throw error;
+		}
+	};
+
+	const accountsPath = getStoragePath();
+	const flaggedPath = getFlaggedAccountsPath();
 	let accountCount = 0;
+	const accountsFileExists = await fileExists(accountsPath);
 	const accounts = await loadAccounts();
 	if (accounts) {
 		accountCount = accounts.accounts.length;
 		await saveAccounts(accounts);
+	} else if (accountsFileExists) {
+		throw new Error(`Failed to load account storage for secret rotation (${accountsPath})`);
 	}
 
+	const flaggedFileExists = await fileExists(flaggedPath);
 	const flagged = await loadFlaggedAccounts();
 	const flaggedCount = flagged.accounts.length;
+	if (flaggedCount === 0 && flaggedFileExists) {
+		try {
+			const raw = await fs.readFile(flaggedPath, "utf-8");
+			const parsed = JSON.parse(raw) as unknown;
+			if (isRecord(parsed) && Array.isArray(parsed.accounts) && parsed.accounts.length > 0) {
+				throw new Error(
+					`Failed to load flagged account storage for secret rotation (${flaggedPath})`,
+				);
+			}
+		} catch (error) {
+			if (error instanceof Error && error.message.includes("Failed to load flagged account storage")) {
+				throw error;
+			}
+			throw new Error(
+				`Failed to validate flagged account storage for secret rotation (${flaggedPath})`,
+			);
+		}
+	}
 	if (flaggedCount > 0) {
 		await saveFlaggedAccounts(flagged);
 	}

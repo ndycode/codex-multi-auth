@@ -86,6 +86,25 @@ describe("fetchWithTimeoutAndRetry", () => {
 		);
 	});
 
+	it("retries on HTTP 429 when configured", async () => {
+		fetchMock
+			.mockResolvedValueOnce(new Response("rate-limited", { status: 429 }))
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+		const resultPromise = fetchWithTimeoutAndRetry("https://example.com", undefined, {
+			timeoutMs: 2_000,
+			retries: 1,
+			baseDelayMs: 25,
+			jitterMs: 0,
+			retryOnStatuses: [429],
+		});
+		await vi.runAllTimersAsync();
+		const result = await resultPromise;
+
+		expect(result.attempts).toBe(2);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("does not retry caller-aborted requests", async () => {
 		const controller = new AbortController();
 		const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });

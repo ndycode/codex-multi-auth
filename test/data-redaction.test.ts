@@ -31,4 +31,21 @@ describe("data redaction", () => {
 		};
 		expect(redactForExternalOutput(value)).toEqual(value);
 	});
+
+	it("preserves non-plain objects and prevents infinite recursion on cycles", () => {
+		const timestamp = new Date("2026-03-05T00:00:00.000Z");
+		const error = new Error("boom");
+		const cyclic: Record<string, unknown> = {
+			issuedAt: timestamp,
+			failure: error,
+			token: "secret",
+		};
+		cyclic.self = cyclic;
+
+		const redacted = redactForExternalOutput(cyclic);
+		expect(redacted.token).toBe("***REDACTED***");
+		expect(redacted.issuedAt).toBe(timestamp);
+		expect(redacted.failure).toBe(error);
+		expect(redacted.self).toBe("[Circular]");
+	});
 });

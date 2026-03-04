@@ -11,6 +11,9 @@ import {
   loadAccounts, 
   saveAccounts,
   clearAccounts,
+  loadFlaggedAccounts,
+  saveFlaggedAccounts,
+  rotateStoredSecretEncryption,
   getStoragePath,
   setStoragePath,
   setStoragePathDirect,
@@ -2105,6 +2108,78 @@ describe("storage", () => {
 
       expect(unlinkSpy).toHaveBeenCalled();
       unlinkSpy.mockRestore();
+    });
+  });
+
+  describe("flagged storage and secret rotation resilience", () => {
+    const workDir = join(tmpdir(), `codex-storage-flagged-${Math.random().toString(36).slice(2)}`);
+    let storagePath: string;
+
+    beforeEach(async () => {
+      await fs.mkdir(workDir, { recursive: true });
+      storagePath = join(workDir, `accounts-${Math.random().toString(36).slice(2)}.json`);
+      setStoragePathDirect(storagePath);
+      delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+    });
+
+    afterEach(async () => {
+      setStoragePathDirect(null);
+      delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
+      delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+      await fs.rm(workDir, { recursive: true, force: true });
+    });
+
+    it("retries flagged storage rename on transient EBUSY", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "test-encryption-key";
+      const originalRename = fs.rename.bind(fs);
+      let renameAttempts = 0;
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (fromPath, toPath) => {
+        if (String(toPath).includes("openai-codex-flagged-accounts.json") && renameAttempts === 0) {
+          renameAttempts += 1;
+          const error = new Error("busy") as NodeJS.ErrnoException;
+          error.code = "EBUSY";
+          throw error;
+        }
+        renameAttempts += 1;
+        return originalRename(fromPath as string, toPath as string);
+      });
+
+      try {
+        await saveFlaggedAccounts({
+          version: 1,
+          accounts: [{ refreshToken: "flagged-token", flaggedAt: Date.now() }],
+        });
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(renameAttempts).toBeGreaterThanOrEqual(2);
+      const flagged = await loadFlaggedAccounts();
+      expect(flagged.accounts).toHaveLength(1);
+    });
+
+    it("throws secret rotation when account storage exists but cannot be loaded", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "rotation-primary";
+      await fs.writeFile(getStoragePath(), "{ invalid", "utf8");
+
+      await expect(rotateStoredSecretEncryption()).rejects.toThrow(
+        "Failed to load account storage for secret rotation",
+      );
+    });
+
+    it("throws secret rotation when flagged storage has undecryptable entries", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "old-key";
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [{ refreshToken: "flagged-token", flaggedAt: Date.now() }],
+      });
+
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "new-key";
+      delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+
+      await expect(rotateStoredSecretEncryption()).rejects.toThrow(
+        "Failed to load flagged account storage for secret rotation",
+      );
     });
   });
 });

@@ -85,10 +85,11 @@ describe("Graceful shutdown", () => {
 		process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = "1000";
 		vi.useFakeTimers();
 		try {
+			let resolveHanging: (() => void) | undefined;
 			const hangingFn = vi.fn(
 				() =>
-					new Promise<void>(() => {
-						// Intentionally unresolved.
+					new Promise<void>((resolve) => {
+						resolveHanging = resolve;
 					}),
 			);
 			registerCleanup(hangingFn);
@@ -96,6 +97,8 @@ describe("Graceful shutdown", () => {
 			await vi.advanceTimersByTimeAsync(1000);
 			await cleanupPromise;
 			expect(hangingFn).toHaveBeenCalledTimes(1);
+			resolveHanging?.();
+			await runCleanup();
 		} finally {
 			if (originalTimeout === undefined) {
 				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
@@ -114,6 +117,78 @@ describe("Graceful shutdown", () => {
 			registerCleanup(() => {});
 			await runCleanup();
 			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			if (originalTimeout === undefined) {
+				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+			} else {
+				process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = originalTimeout;
+			}
+			vi.useRealTimers();
+		}
+	});
+
+	it("defaults to 8s timeout for non-positive and non-numeric values", async () => {
+		const originalTimeout = process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+		vi.useFakeTimers();
+		try {
+			const runCase = async (value: string) => {
+				process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = value;
+				let resolved = false;
+				let releaseCleanup: (() => void) | undefined;
+				registerCleanup(
+					() =>
+						new Promise<void>((resolve) => {
+							releaseCleanup = resolve;
+						}),
+				);
+				const cleanupPromise = runCleanup().then(() => {
+					resolved = true;
+				});
+				await vi.advanceTimersByTimeAsync(7_999);
+				expect(resolved).toBe(false);
+				await vi.advanceTimersByTimeAsync(1);
+				await cleanupPromise;
+				expect(resolved).toBe(true);
+				releaseCleanup?.();
+				await runCleanup();
+			};
+
+			await runCase("0");
+			await runCase("-1");
+			await runCase("not-a-number");
+		} finally {
+			if (originalTimeout === undefined) {
+				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+			} else {
+				process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = originalTimeout;
+			}
+			vi.useRealTimers();
+		}
+	});
+
+	it("clamps oversized timeout values to 120000ms", async () => {
+		const originalTimeout = process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+		process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = "999999";
+		vi.useFakeTimers();
+		try {
+			let resolved = false;
+			let releaseCleanup: (() => void) | undefined;
+			registerCleanup(
+				() =>
+					new Promise<void>((resolve) => {
+						releaseCleanup = resolve;
+					}),
+			);
+			const cleanupPromise = runCleanup().then(() => {
+				resolved = true;
+			});
+			await vi.advanceTimersByTimeAsync(119_999);
+			expect(resolved).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			await cleanupPromise;
+			expect(resolved).toBe(true);
+			releaseCleanup?.();
+			await runCleanup();
 		} finally {
 			if (originalTimeout === undefined) {
 				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;

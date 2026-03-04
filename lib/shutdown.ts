@@ -46,19 +46,21 @@ export async function runCleanup(): Promise<void> {
 			}
 		}
 	})();
+	cleanupInFlight = runner.finally(() => {
+		cleanupInFlight = null;
+	});
 	let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 	const timeoutPromise = new Promise<void>((resolve) => {
 		timeoutHandle = setTimeout(resolve, timeoutMs);
 	});
 
-	cleanupInFlight = Promise.race([runner, timeoutPromise]).finally(() => {
+	try {
+		await Promise.race([cleanupInFlight, timeoutPromise]);
+	} finally {
 		if (timeoutHandle) {
 			clearTimeout(timeoutHandle);
 		}
-		cleanupInFlight = null;
-	});
-
-	await cleanupInFlight;
+	}
 }
 
 function ensureShutdownHandler(): void {

@@ -1060,6 +1060,18 @@ describe('Plugin Configuration', () => {
 			expect(getRetryAllAccountsAbsoluteCeilingMs(config)).toBe(12000);
 		});
 
+		it('should clamp retry-all absolute ceiling to non-negative values', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = '-10';
+			expect(getRetryAllAccountsAbsoluteCeilingMs({})).toBe(0);
+			delete process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS;
+		});
+
+		it('should clamp retry-all absolute ceiling to a 24h hard maximum', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = '999999999';
+			expect(getRetryAllAccountsAbsoluteCeilingMs({})).toBe(24 * 60 * 60_000);
+			delete process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS;
+		});
+
 		it('should clamp all-account retry max to hard upper bound', () => {
 			process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = '10000';
 			const result = getRetryAllAccountsMaxRetries({});

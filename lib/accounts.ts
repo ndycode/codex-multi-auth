@@ -801,10 +801,20 @@ export class AccountManager {
 			return -1;
 		};
 
+		const mergeStoredAccount = (base: StoredAccount, incoming: StoredAccount): StoredAccount => {
+			const merged: StoredAccount = { ...base, ...incoming };
+			merged.rateLimitResetTimes = {
+				...(base.rateLimitResetTimes ?? {}),
+				...(incoming.rateLimitResetTimes ?? {}),
+			};
+			return merged;
+		};
+
 		for (const account of local.accounts) {
 			const idx = claimIndex(account);
 			if (idx >= 0) {
-				mergedAccounts[idx] = { ...mergedAccounts[idx], ...account };
+				const existing = mergedAccounts[idx];
+				mergedAccounts[idx] = existing ? mergeStoredAccount(existing, account) : { ...account };
 			} else {
 				mergedAccounts.push({ ...account });
 			}

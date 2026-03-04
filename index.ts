@@ -2569,11 +2569,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 										}
 
 										const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
+										const jitteredWaitMs = addJitter(waitMs, 0.2);
 										const count = accountManager.getAccountCount();
 								const retryDecision = decideRetryAllAccountsRateLimited({
 									enabled: retryAllAccountsRateLimited,
 									accountCount: count,
-									waitMs,
+									waitMs: jitteredWaitMs,
 									maxWaitMs: retryAllAccountsMaxWaitMs,
 									currentRetryCount: allRateLimitedRetries,
 									maxRetries: retryAllAccountsMaxRetries,
@@ -2583,9 +2584,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 								if (retryDecision.shouldRetry) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
-									await sleepWithCountdown(addJitter(waitMs, 0.2), countdownMessage);
+									await sleepWithCountdown(jitteredWaitMs, countdownMessage);
 									allRateLimitedRetries++;
-									accumulatedAllRateLimitedWaitMs += waitMs;
+									accumulatedAllRateLimitedWaitMs += jitteredWaitMs;
 									continue;
 								}
 								recordRetryGovernorStopReason(retryDecision.reason);

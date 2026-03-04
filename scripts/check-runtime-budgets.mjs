@@ -37,6 +37,11 @@ async function run() {
 	}
 
 	const failures = [];
+	for (const caseName of benchmarkResults.keys()) {
+		if (!Object.prototype.hasOwnProperty.call(budgetPayload.cases ?? {}, caseName)) {
+			failures.push(`unbudgeted benchmark case: ${caseName}`);
+		}
+	}
 	for (const [caseName, caseBudget] of budgetEntries) {
 		const result = benchmarkResults.get(caseName);
 		if (!result) {
@@ -48,7 +53,7 @@ async function run() {
 			typeof caseBudget?.maxAvgMs === "number" && Number.isFinite(caseBudget.maxAvgMs)
 				? caseBudget.maxAvgMs
 				: null;
-		if (maxAvgMs === null) {
+		if (maxAvgMs === null || maxAvgMs <= 0) {
 			failures.push(`invalid budget maxAvgMs for case: ${caseName}`);
 			continue;
 		}

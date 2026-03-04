@@ -278,7 +278,7 @@ describe('OAuth Server Unit Tests', () => {
 			);
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
-			const code = await result.waitForCode('test-state');
+			const code = await result.waitForCode();
 
 			expect(code).toBeNull();
 		});
@@ -296,7 +296,7 @@ describe('OAuth Server Unit Tests', () => {
 			
 			mockServer._lastCode = 'the-code';
 			
-			const code = await result.waitForCode('test-state');
+			const code = await result.waitForCode();
 			expect(code).toEqual({ code: 'the-code' });
 		});
 
@@ -313,7 +313,7 @@ describe('OAuth Server Unit Tests', () => {
 				(mockServer.close as ReturnType<typeof vi.fn>).mockImplementation(() => undefined);
 
 				const result = await startLocalOAuthServer({ state: 'test-state' });
-				const codePromise = result.waitForCode('test-state');
+				const codePromise = result.waitForCode();
 				result.close();
 
 				await vi.advanceTimersByTimeAsync(200);
@@ -338,7 +338,7 @@ describe('OAuth Server Unit Tests', () => {
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
 			
-			const codePromise = result.waitForCode('test-state');
+			const codePromise = result.waitForCode();
 			
 			await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 100);
 			

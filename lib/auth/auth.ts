@@ -125,78 +125,36 @@ function resolveExchangeTimeoutMs(timeoutMs: number | undefined): number {
 	return Math.max(1_000, Math.floor(timeoutMs));
 }
 
-function createAbortError(message: string): Error & { code?: string } {
-	const error = new Error(message) as Error & { code?: string };
-	error.name = "AbortError";
-	error.code = "ABORT_ERR";
-	return error;
-}
-
-function buildExchangeAbortContext(
-	options: ExchangeAuthorizationCodeOptions,
-): { signal: AbortSignal; cleanup: () => void } {
-	const controller = new AbortController();
-	const timeoutMs = resolveExchangeTimeoutMs(options.timeoutMs);
-	const upstreamSignal = options.signal;
-	let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-	const onUpstreamAbort = () => {
-		const reason = upstreamSignal?.reason;
-		controller.abort(
-			reason instanceof Error ? reason : createAbortError("Request aborted"),
-		);
-	};
-
-	if (upstreamSignal) {
-		upstreamSignal.addEventListener("abort", onUpstreamAbort, { once: true });
-		if (upstreamSignal.aborted) {
-			onUpstreamAbort();
-		}
-	}
-
-	if (!controller.signal.aborted) {
-		timeoutId = setTimeout(() => {
-			controller.abort(
-				createAbortError(
-					`OAuth token exchange timed out after ${timeoutMs}ms`,
-				),
-			);
-		}, timeoutMs);
-	}
-
-	return {
-		signal: controller.signal,
-		cleanup: () => {
-			if (timeoutId !== undefined) {
-				clearTimeout(timeoutId);
-			}
-			if (upstreamSignal) {
-				upstreamSignal.removeEventListener("abort", onUpstreamAbort);
-			}
-		},
-	};
-}
-
 export async function exchangeAuthorizationCode(
 	code: string,
 	verifier: string,
 	redirectUri: string = REDIRECT_URI,
 	options: ExchangeAuthorizationCodeOptions = {},
 ): Promise<TokenResult> {
-	const abortContext = buildExchangeAbortContext(options);
+	if (options.signal?.aborted) {
+		const reason = options.signal.reason;
+		const message = reason instanceof Error ? reason.message : "Request aborted";
+		logError("code->token aborted", { message });
+		return { type: "failed", reason: "network_error", message };
+	}
+	const timeoutMs = resolveExchangeTimeoutMs(options.timeoutMs);
 	try {
-		const res = await fetch(TOKEN_URL, {
-			method: "POST",
-			headers: { "Content-Type": "application/x-www-form-urlencoded" },
-			signal: abortContext.signal,
-			body: new URLSearchParams({
-				grant_type: "authorization_code",
-				client_id: CLIENT_ID,
-				code,
-				code_verifier: verifier,
-				redirect_uri: redirectUri,
-			}),
-		});
+		const res = await fetchWithTimeout(
+			TOKEN_URL,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				signal: options.signal,
+				body: new URLSearchParams({
+					grant_type: "authorization_code",
+					client_id: CLIENT_ID,
+					code,
+					code_verifier: verifier,
+					redirect_uri: redirectUri,
+				}),
+			},
+			timeoutMs,
+		);
 		if (!res.ok) {
 			const text = await res.text().catch(() => "");
 			logError("code->token failed", { status: res.status, bodyLength: text.length });
@@ -232,14 +190,17 @@ export async function exchangeAuthorizationCode(
 		};
 	} catch (error) {
 		const err = error as Error;
-		if (abortContext.signal.aborted || isAbortError(err)) {
-			logError("code->token aborted", { message: err?.message ?? "Request aborted" });
-			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
+		if (isAbortError(err) || /timeout/i.test(err?.message ?? "")) {
+			const rawMessage = err?.message ?? "Request aborted";
+			const timeoutMatch = rawMessage.match(/^Fetch timeout after (\d+)ms$/);
+			const message = timeoutMatch
+				? `OAuth token exchange timed out after ${timeoutMatch[1]}ms`
+				: rawMessage;
+			logError("code->token aborted", { message });
+			return { type: "failed", reason: "network_error", message };
 		}
 		logError("code->token error", { message: err?.message ?? String(err) });
 		return { type: "failed", reason: "network_error", message: err?.message ?? "Network request failed" };
-	} finally {
-		abortContext.cleanup();
 	}
 }
 
@@ -327,7 +288,7 @@ export async function refreshAccessToken(
 	} catch (error) {
 		const err = error instanceof Error ? error : new Error(String(error));
 		if (isAbortError(err) || /timeout/i.test(err.message)) {
-			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
+			return { type: "failed", reason: "network_error", message: err?.message ?? "Request aborted" };
 		}
 		logError("Token refresh error", err);
 		return { type: "failed", reason: "network_error", message: err?.message };

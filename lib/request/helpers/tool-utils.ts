@@ -28,8 +28,11 @@ function cloneJsonRecord(value: Record<string, unknown>): Record<string, unknown
 function cloneJsonValue(value: unknown, seen: WeakSet<object>): unknown {
 	if (value === null) return null;
 	const valueType = typeof value;
-	if (valueType === "string" || valueType === "number" || valueType === "boolean") {
+	if (valueType === "string" || valueType === "boolean") {
 		return value;
+	}
+	if (valueType === "number") {
+		return Number.isFinite(value) ? value : null;
 	}
 	if (valueType === "bigint") {
 		// Keep current behavior parity with JSON.stringify, which throws on bigint.

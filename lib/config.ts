@@ -10,6 +10,7 @@ import {
 	loadUnifiedPluginConfigSync,
 	saveUnifiedPluginConfig,
 } from "./unified-settings.js";
+import { acquireFileLock } from "./file-lock.js";
 
 const CONFIG_DIR = getCodexMultiAuthDir();
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
@@ -42,6 +43,7 @@ type PluginConfigShapeKey = keyof typeof pluginConfigShape;
 const CONFIG_CONFLICT_RETRY_LIMIT = 3;
 const RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES = 12;
 const RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES = 100;
+const RETRY_ALL_ACCOUNTS_ABSOLUTE_CEILING_HARD_MAX_MS = 24 * 60 * 60_000;
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -349,10 +351,16 @@ type JsonRecordSnapshot = {
 async function readConfigSnapshotFromPath(
 	configPath: string,
 ): Promise<JsonRecordSnapshot> {
-	if (!existsSync(configPath)) {
-		return { record: null, revision: null };
+	let fileContent: string;
+	try {
+		fileContent = await fs.readFile(configPath, "utf-8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return { record: null, revision: null };
+		}
+		throw error;
 	}
-	const fileContent = await fs.readFile(configPath, "utf-8");
 	const normalizedFileContent = stripUtf8Bom(fileContent);
 	const revision = computeSha256(normalizedFileContent);
 	let record: Record<string, unknown> | null = null;
@@ -373,39 +381,48 @@ async function writeJsonFileAtomicWithRetry(
 	payload: Record<string, unknown>,
 	options?: { expectedRevision?: string | null },
 ): Promise<void> {
-	const expectedRevision = options?.expectedRevision;
-	if (expectedRevision !== undefined) {
-		const currentSnapshot = await readConfigSnapshotFromPath(filePath);
-		if (currentSnapshot.revision !== expectedRevision) {
-			throw createConfigConflictError(filePath);
-		}
-	}
-
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.mkdir(dirname(filePath), { recursive: true });
-	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-	let renamed = false;
+	const lock = await acquireFileLock(`${filePath}.lock`, {
+		maxAttempts: 80,
+		baseDelayMs: 15,
+		maxDelayMs: 800,
+		staleAfterMs: 120_000,
+	});
 	try {
-		for (let attempt = 0; attempt < 5; attempt += 1) {
-			try {
-				await fs.rename(tempPath, filePath);
-				renamed = true;
-				return;
-			} catch (error) {
-				if (!isRetryableFsError(error) || attempt >= 4) {
-					throw error;
+		const expectedRevision = options?.expectedRevision;
+		if (expectedRevision !== undefined) {
+			const currentSnapshot = await readConfigSnapshotFromPath(filePath);
+			if (currentSnapshot.revision !== expectedRevision) {
+				throw createConfigConflictError(filePath);
+			}
+		}
+		await fs.mkdir(dirname(filePath), { recursive: true });
+		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+		let renamed = false;
+		try {
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rename(tempPath, filePath);
+					renamed = true;
+					return;
+				} catch (error) {
+					if (!isRetryableFsError(error) || attempt >= 4) {
+						throw error;
+					}
+					await sleep(10 * 2 ** attempt);
 				}
-				await sleep(10 * 2 ** attempt);
+			}
+		} finally {
+			if (!renamed) {
+				try {
+					await fs.unlink(tempPath);
+				} catch {
+					// Best-effort temp cleanup.
+				}
 			}
 		}
 	} finally {
-		if (!renamed) {
-			try {
-				await fs.unlink(tempPath);
-			} catch {
-				// Best-effort temp cleanup.
-			}
-		}
+		await lock.release();
 	}
 }
 
@@ -431,13 +448,16 @@ async function withConfigSaveLock(path: string, task: () => Promise<void>): Prom
  * @returns The parsed top-level JSON object as a Record<string, unknown> when the file exists and contains an object, or `null` if the file is missing, malformed, or could not be read.
  */
 function readConfigRecordFromPath(configPath: string): Record<string, unknown> | null {
-	if (!existsSync(configPath)) return null;
 	try {
 		const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const parsed = JSON.parse(normalizedFileContent) as unknown;
 		return isRecord(parsed) ? parsed : null;
 	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
 		logConfigWarnOnce(
 			`Failed to read config from ${configPath}: ${
 				error instanceof Error ? error.message : String(error)
@@ -714,7 +734,7 @@ export function getRetryAllAccountsAbsoluteCeilingMs(pluginConfig: PluginConfig)
 		"CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS",
 		pluginConfig.retryAllAccountsAbsoluteCeilingMs,
 		0,
-		{ min: 0 },
+		{ min: 0, max: RETRY_ALL_ACCOUNTS_ABSOLUTE_CEILING_HARD_MAX_MS },
 	);
 }
 

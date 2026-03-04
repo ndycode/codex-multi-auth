@@ -88,8 +88,20 @@ export async function fetchWithTimeout(
 		controller.abort(timeoutError);
 	}, timeout);
 
+	const normalizeAbortReason = (reason: unknown): Error & { code?: string } => {
+		if (reason instanceof Error && isAbortError(reason)) {
+			return reason as Error & { code?: string };
+		}
+		const normalized = new Error(reason instanceof Error ? reason.message : "Aborted") as Error & {
+			code?: string;
+		};
+		normalized.name = "AbortError";
+		normalized.code = "ABORT_ERR";
+		return normalized;
+	};
+
 	const onAbort = () => {
-		controller.abort(userSignal?.reason ?? new Error("Aborted"));
+		controller.abort(normalizeAbortReason(userSignal?.reason));
 	};
 
 	if (userSignal?.aborted) {

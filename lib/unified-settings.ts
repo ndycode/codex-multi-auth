@@ -1,5 +1,4 @@
 import {
-	existsSync,
 	mkdirSync,
 	renameSync,
 	readFileSync,
@@ -72,28 +71,47 @@ function isConflictError(error: unknown): boolean {
 	return code === "ECONFLICT";
 }
 
-function readCurrentSettingsRevisionSync(): string | null {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
+function readFileUtf8IfExistsSync(path: string): string | null {
+	try {
+		return readFileSync(path, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
 	}
-	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
+}
+
+async function readFileUtf8IfExistsAsync(path: string): Promise<string | null> {
+	try {
+		return await fs.readFile(path, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+function readCurrentSettingsRevisionSync(): string | null {
+	const raw = readFileUtf8IfExistsSync(UNIFIED_SETTINGS_PATH);
+	if (raw === null) return null;
 	return computeSha256(raw);
 }
 
 async function readCurrentSettingsRevisionAsync(): Promise<string | null> {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
-	}
-	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	const raw = await readFileUtf8IfExistsAsync(UNIFIED_SETTINGS_PATH);
+	if (raw === null) return null;
 	return computeSha256(raw);
 }
 
 function readSettingsSnapshotSync(): SettingsSnapshot {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+	const raw = readFileUtf8IfExistsSync(UNIFIED_SETTINGS_PATH);
+	if (raw === null) {
 		return { record: null, revision: null };
 	}
-
-	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
 	const parsed = cloneRecord(JSON.parse(raw));
 	if (!parsed) {
 		throw new Error("Unified settings must contain a JSON object at the root.");
@@ -102,11 +120,10 @@ function readSettingsSnapshotSync(): SettingsSnapshot {
 }
 
 async function readSettingsSnapshotAsync(): Promise<SettingsSnapshot> {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+	const raw = await readFileUtf8IfExistsAsync(UNIFIED_SETTINGS_PATH);
+	if (raw === null) {
 		return { record: null, revision: null };
 	}
-
-	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
 	const parsed = cloneRecord(JSON.parse(raw));
 	if (!parsed) {
 		throw new Error("Unified settings must contain a JSON object at the root.");
@@ -176,14 +193,6 @@ function writeSettingsRecordSync(
 	record: JsonRecord,
 	options?: { expectedRevision?: string | null },
 ): void {
-	const expectedRevision = options?.expectedRevision;
-	if (expectedRevision !== undefined) {
-		const currentRevision = readCurrentSettingsRevisionSync();
-		if (currentRevision !== expectedRevision) {
-			throw createSettingsConflictError();
-		}
-	}
-
 	mkdirSync(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
@@ -195,6 +204,13 @@ function writeSettingsRecordSync(
 		staleAfterMs: 120_000,
 	});
 	try {
+		const expectedRevision = options?.expectedRevision;
+		if (expectedRevision !== undefined) {
+			const currentRevision = readCurrentSettingsRevisionSync();
+			if (currentRevision !== expectedRevision) {
+				throw createSettingsConflictError();
+			}
+		}
 		writeFileSync(tempPath, data, "utf8");
 		let moved = false;
 		try {
@@ -248,14 +264,6 @@ async function writeSettingsRecordAsync(
 	record: JsonRecord,
 	options?: { expectedRevision?: string | null },
 ): Promise<void> {
-	const expectedRevision = options?.expectedRevision;
-	if (expectedRevision !== undefined) {
-		const currentRevision = await readCurrentSettingsRevisionAsync();
-		if (currentRevision !== expectedRevision) {
-			throw createSettingsConflictError();
-		}
-	}
-
 	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
@@ -267,6 +275,13 @@ async function writeSettingsRecordAsync(
 		staleAfterMs: 120_000,
 	});
 	try {
+		const expectedRevision = options?.expectedRevision;
+		if (expectedRevision !== undefined) {
+			const currentRevision = await readCurrentSettingsRevisionAsync();
+			if (currentRevision !== expectedRevision) {
+				throw createSettingsConflictError();
+			}
+		}
 		await fs.writeFile(tempPath, data, "utf8");
 		let moved = false;
 		try {

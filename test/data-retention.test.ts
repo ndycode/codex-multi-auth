@@ -76,4 +76,40 @@ describe("data retention", () => {
 		expect(await fs.readFile(freshLog, "utf8")).toBe("fresh");
 		expect(await fs.readFile(freshCache, "utf8")).toBe("fresh");
 	});
+
+	it("rethrows non-ENOENT errors during recursive prune", async () => {
+		const { enforceDataRetention } = await import("../lib/data-retention.js");
+		const logsDir = join(tempDir, "logs");
+		await fs.mkdir(logsDir, { recursive: true });
+		const lockedLog = join(logsDir, "locked.log");
+		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+		await fs.writeFile(lockedLog, "locked", "utf8");
+		await fs.utimes(lockedLog, oldDate, oldDate);
+
+		const unlinkSpy = vi.spyOn(fs, "unlink");
+		const originalUnlink = fs.unlink.bind(fs);
+		unlinkSpy.mockImplementation(async (...args) => {
+			const path = args[0];
+			if (typeof path === "string" && path.endsWith("locked.log")) {
+				const error = new Error("locked") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			}
+			return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+		});
+
+		try {
+			await expect(
+				enforceDataRetention({
+					logDays: 1,
+					cacheDays: 1,
+					flaggedDays: 1,
+					quotaCacheDays: 1,
+					dlqDays: 1,
+				}),
+			).rejects.toMatchObject({ code: "EPERM" });
+		} finally {
+			unlinkSpy.mockRestore();
+		}
+	});
 });

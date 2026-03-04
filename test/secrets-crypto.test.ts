@@ -56,7 +56,17 @@ describe("secrets crypto", () => {
 				primary: "wrong-key",
 				previous: null,
 			}),
-		).toThrow("Unable to decrypt secret with configured keys");
+		).toThrow("Unable to decrypt v2 secret with configured keys");
+	});
+
+	it("throws when both configured keys are null for encrypted payloads", () => {
+		const encrypted = encryptSecret("secret", "correct-key");
+		expect(() =>
+			decryptSecret(encrypted, {
+				primary: null,
+				previous: null,
+			}),
+		).toThrow("Unable to decrypt v2 secret with configured keys");
 	});
 
 	it("recognizes legacy and current encrypted prefixes", () => {

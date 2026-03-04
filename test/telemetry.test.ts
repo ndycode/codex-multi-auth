@@ -216,4 +216,28 @@ describe("telemetry module", () => {
 		const events = await queryTelemetryEvents({ limit: 20 });
 		expect(events.some((event) => event.event === "request.retry_rotation")).toBe(true);
 	});
+
+	it("serializes concurrent telemetry writes without dropping events", async () => {
+		const total = 30;
+		await Promise.all(
+			Array.from({ length: total }, (_, index) =>
+				recordTelemetryEvent({
+					source: "plugin",
+					event: "request.concurrent",
+					outcome: "info",
+					details: {
+						index,
+						token: `sk-concurrent-token-${String(index).padStart(4, "0")}`,
+					},
+				}),
+			),
+		);
+
+		const raw = await fs.readFile(getTelemetryLogPath(), "utf8");
+		const lines = raw.trim().split("\n");
+		expect(lines).toHaveLength(total);
+
+		const parsed = lines.map((line) => JSON.parse(line) as { details?: Record<string, unknown> });
+		expect(parsed.every((entry) => entry.details?.token === "***MASKED***")).toBe(true);
+	});
 });

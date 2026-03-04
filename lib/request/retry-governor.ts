@@ -30,6 +30,7 @@ function clampNonNegative(value: number): number {
 
 function normalizeRetryLimit(value: number): number {
 	if (!Number.isFinite(value)) return Number.POSITIVE_INFINITY;
+	// Negative finite values are treated as "no retries allowed".
 	return clampNonNegative(value);
 }
 

@@ -16,7 +16,21 @@ interface NormalizeActiveIndexOptions {
 
 function clampIndex(index: number, count: number): number {
 	if (count <= 0) return 0;
-	return Math.max(0, Math.min(index, count - 1));
+	if (!Number.isFinite(index)) return 0;
+	return Math.max(0, Math.min(Math.floor(index), count - 1));
+}
+
+function reconcileIndexAfterRemoval(index: number, targetIndex: number, nextCount: number): number {
+	if (nextCount <= 0) return 0;
+	if (!Number.isFinite(index)) return 0;
+	const normalized = Math.floor(index);
+	if (normalized > targetIndex) {
+		return clampIndex(normalized - 1, nextCount);
+	}
+	if (normalized === targetIndex) {
+		return Math.min(targetIndex, nextCount - 1);
+	}
+	return clampIndex(normalized, nextCount);
 }
 
 export function createActiveIndexByFamily(
@@ -102,21 +116,21 @@ export function removeAccountAndReconcileActiveIndexes(
 		return true;
 	}
 
-	if (storage.activeIndex >= storage.accounts.length) {
-		storage.activeIndex = 0;
-	} else if (storage.activeIndex > targetIndex) {
-		storage.activeIndex -= 1;
-	}
+	storage.activeIndex = reconcileIndexAfterRemoval(
+		storage.activeIndex,
+		targetIndex,
+		storage.accounts.length,
+	);
 
 	if (storage.activeIndexByFamily) {
 		for (const family of families) {
 			const idx = storage.activeIndexByFamily[family];
 			if (typeof idx !== "number") continue;
-			if (idx >= storage.accounts.length) {
-				storage.activeIndexByFamily[family] = 0;
-			} else if (idx > targetIndex) {
-				storage.activeIndexByFamily[family] = idx - 1;
-			}
+			storage.activeIndexByFamily[family] = reconcileIndexAfterRemoval(
+				idx,
+				targetIndex,
+				storage.accounts.length,
+			);
 		}
 	}
 

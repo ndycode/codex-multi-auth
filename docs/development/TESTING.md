@@ -59,7 +59,7 @@ npm run bench:edit-formats:smoke
 7. `npm run license:check`
 8. `npm run verify`
 9. `npm run test -- test/documentation.test.ts`
-10. run docs command checks for newly documented command paths
+10. run command-path docs parity check: `npm run test -- test/documentation.test.ts`
 
 ## Release Gate
 

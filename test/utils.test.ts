@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { isRecord, isAbortError, nowMs, toStringValue, sleep } from '../lib/utils.js';
+import { isRecord, isAbortError, nowMs, toStringValue, sleep, fetchWithTimeout } from '../lib/utils.js';
 
 describe('Utils Module', () => {
 	describe('isRecord', () => {
@@ -188,6 +188,50 @@ describe('Utils Module', () => {
 			vi.advanceTimersByTime(100);
 			const result = await promise;
 			expect(result).toBeUndefined();
+		});
+	});
+
+	describe('fetchWithTimeout', () => {
+		afterEach(() => {
+			vi.unstubAllGlobals();
+		});
+
+		it('normalizes caller abort reasons to AbortError shape', async () => {
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (_input: unknown, init?: RequestInit) => {
+					throw init?.signal?.reason ?? new Error('missing abort reason');
+				}),
+			);
+			const controller = new AbortController();
+			const request = fetchWithTimeout('https://example.com', { signal: controller.signal }, 5_000);
+			controller.abort('caller canceled');
+			await expect(request).rejects.toMatchObject({
+				name: 'AbortError',
+				code: 'ABORT_ERR',
+				message: 'Aborted',
+			});
+		});
+
+		it('preserves AbortError reasons from caller signal', async () => {
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (_input: unknown, init?: RequestInit) => {
+					throw init?.signal?.reason ?? new Error('missing abort reason');
+				}),
+			);
+			const controller = new AbortController();
+			const abortError = Object.assign(new Error('caller timeout'), {
+				name: 'AbortError',
+				code: 'ABORT_ERR',
+			});
+			const request = fetchWithTimeout('https://example.com', { signal: controller.signal }, 5_000);
+			controller.abort(abortError);
+			await expect(request).rejects.toMatchObject({
+				name: 'AbortError',
+				code: 'ABORT_ERR',
+				message: 'caller timeout',
+			});
 		});
 	});
 });

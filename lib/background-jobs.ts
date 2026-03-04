@@ -75,7 +75,9 @@ export async function runBackgroundJobWithRetry<T>(options: BackgroundJobRetryOp
 	const retryable = options.retryable ?? isRetryableByDefault;
 
 	let lastError: unknown;
+	let attemptsMade = 0;
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		attemptsMade = attempt;
 		try {
 			return await options.task();
 		} catch (error) {
@@ -92,7 +94,7 @@ export async function runBackgroundJobWithRetry<T>(options: BackgroundJobRetryOp
 		version: 1,
 		timestamp: new Date().toISOString(),
 		job: options.name,
-		attempts: maxAttempts,
+		attempts: attemptsMade,
 		error: errorMessage,
 		...(options.context ? { context: redactForExternalOutput(options.context) } : {}),
 	};
@@ -108,7 +110,7 @@ export async function runBackgroundJobWithRetry<T>(options: BackgroundJobRetryOp
 
 	logWarn("Background job failed after retries", {
 		job: options.name,
-		attempts: maxAttempts,
+		attempts: attemptsMade,
 		error: errorMessage,
 	});
 	throw (lastError instanceof Error ? lastError : new Error(errorMessage));

@@ -1,5 +1,4 @@
 import {
-	existsSync,
 	promises as fs,
 	readdirSync,
 } from "node:fs";
@@ -92,15 +91,11 @@ function getTelemetryPath(): string {
 }
 
 async function ensureLogDir(): Promise<void> {
-	if (existsSync(telemetryConfig.logDir)) return;
 	await fs.mkdir(telemetryConfig.logDir, { recursive: true, mode: 0o700 });
 }
 
 function maskToken(value: string): string {
-	if (value.length <= 12) {
-		return "***MASKED***";
-	}
-	return `${value.slice(0, 6)}...${value.slice(-4)}`;
+	return value.length > 0 ? "***MASKED***" : value;
 }
 
 function sanitizeString(value: string): string {
@@ -145,7 +140,8 @@ function parseArchiveSuffix(fileName: string): number | null {
 }
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error;
+	if (!(error instanceof Error)) return false;
+	return typeof (error as NodeJS.ErrnoException | undefined)?.code === "string";
 }
 
 function shouldRetryFileOperation(error: unknown): boolean {
@@ -181,7 +177,6 @@ function isErrnoCode(error: unknown, code: string): boolean {
 
 async function rotateLogsIfNeeded(): Promise<void> {
 	const logPath = getTelemetryPath();
-	if (!existsSync(logPath)) return;
 
 	let size = 0;
 	try {
@@ -195,19 +190,17 @@ async function rotateLogsIfNeeded(): Promise<void> {
 	for (let i = telemetryConfig.maxFiles - 1; i >= 1; i -= 1) {
 		const target = `${logPath}.${i}`;
 		const source = i === 1 ? logPath : `${logPath}.${i - 1}`;
-		if (i === telemetryConfig.maxFiles - 1 && existsSync(target)) {
+		if (i === telemetryConfig.maxFiles - 1) {
 			try {
 				await runFileOperationWithRetry(() => fs.unlink(target));
 			} catch (error) {
 				if (!isErrnoCode(error, "ENOENT")) throw error;
 			}
 		}
-		if (existsSync(source)) {
-			try {
-				await runFileOperationWithRetry(() => fs.rename(source, target));
-			} catch (error) {
-				if (!isErrnoCode(error, "ENOENT")) throw error;
-			}
+		try {
+			await runFileOperationWithRetry(() => fs.rename(source, target));
+		} catch (error) {
+			if (!isErrnoCode(error, "ENOENT")) throw error;
 		}
 	}
 }

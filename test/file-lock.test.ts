@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { acquireFileLock } from "../lib/file-lock.js";
 
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
@@ -80,54 +81,91 @@ describe("file lock", () => {
 		await lock.release();
 	});
 
+	it("does not let stale owner release remove a newer lock owner", async () => {
+		const lockPath = join(tempDir, "stale-release.lock");
+		const first = await acquireFileLock(lockPath, {
+			maxAttempts: 3,
+			baseDelayMs: 1,
+			maxDelayMs: 2,
+			staleAfterMs: 120_000,
+		});
+
+		const staleDate = new Date(Date.now() - 10 * 60_000);
+		await fs.utimes(lockPath, staleDate, staleDate);
+
+		const second = await acquireFileLock(lockPath, {
+			maxAttempts: 5,
+			baseDelayMs: 1,
+			maxDelayMs: 2,
+			staleAfterMs: 1_000,
+		});
+
+		await first.release();
+		await expect(fs.readFile(lockPath, "utf8")).resolves.toContain("ownerId");
+
+		await second.release();
+		await expect(fs.access(lockPath)).rejects.toBeTruthy();
+	});
+
+	it("closes descriptors and removes partial locks when initialization write fails", async () => {
+		const lockPath = join(tempDir, "init-failure.lock");
+		const closeMock = vi.fn(async () => {});
+		const writeError = Object.assign(new Error("simulated write failure"), { code: "EIO" });
+		const openSpy = vi.spyOn(fs, "open").mockResolvedValueOnce({
+			writeFile: vi.fn(async () => {
+				throw writeError;
+			}),
+			close: closeMock,
+		} as unknown as Awaited<ReturnType<typeof fs.open>>);
+
+		try {
+			await expect(
+				acquireFileLock(lockPath, {
+					maxAttempts: 1,
+					baseDelayMs: 1,
+					maxDelayMs: 2,
+					staleAfterMs: 10_000,
+				}),
+			).rejects.toThrow("simulated write failure");
+			expect(closeMock).toHaveBeenCalledTimes(1);
+			await expect(fs.access(lockPath)).rejects.toBeTruthy();
+		} finally {
+			openSpy.mockRestore();
+		}
+	});
+
 	it("serializes concurrent writes from multiple processes under contention", async () => {
 		const lockPath = join(tempDir, "contention.lock");
 		const sharedFilePath = join(tempDir, "shared.txt");
 		const workerScriptPath = join(tempDir, "lock-writer-worker.mjs");
+		const fileLockModuleUrl = pathToFileURL(
+			join(process.cwd(), "lib", "file-lock.js"),
+		).href;
 		const workerCount = 6;
 		const iterationsPerWorker = 10;
 		await fs.writeFile(sharedFilePath, "", "utf8");
 		await fs.writeFile(
 			workerScriptPath,
 			`import { promises as fs } from "node:fs";
-const [lockPath, sharedFilePath, workerId, iterationsRaw] = process.argv.slice(2);
+const [moduleUrl, lockPath, sharedFilePath, workerId, iterationsRaw] = process.argv.slice(2);
 const iterations = Number(iterationsRaw);
-const RETRYABLE = new Set(["EEXIST", "EBUSY", "EPERM"]);
+const { acquireFileLock } = await import(moduleUrl);
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-async function acquireLock(path) {
-  for (let attempt = 0; attempt < 1000; attempt += 1) {
-    try {
-      const handle = await fs.open(path, "wx", 0o600);
-      await handle.writeFile(String(process.pid), "utf8");
-      await handle.close();
-      return async () => {
-        try {
-          await fs.unlink(path);
-        } catch (error) {
-          if (error && error.code !== "ENOENT") {
-            throw error;
-          }
-        }
-      };
-    } catch (error) {
-      if (!error || !RETRYABLE.has(error.code)) {
-        throw error;
-      }
-      await sleep(2);
-    }
-  }
-  throw new Error("Failed to acquire lock under contention");
-}
 for (let i = 0; i < iterations; i += 1) {
-  const release = await acquireLock(lockPath);
+  const lock = await acquireFileLock(lockPath, {
+    maxAttempts: 1000,
+    baseDelayMs: 1,
+    maxDelayMs: 10,
+    staleAfterMs: 60_000,
+  });
   try {
     const existing = await fs.readFile(sharedFilePath, "utf8");
     await sleep(2);
     await fs.writeFile(sharedFilePath, existing + workerId + ":" + i + "\\n", "utf8");
   } finally {
-    await release();
+    await lock.release();
   }
 }
 `,
@@ -140,6 +178,7 @@ for (let i = 0; i < iterations; i += 1) {
 					process.execPath,
 					[
 						workerScriptPath,
+						fileLockModuleUrl,
 						lockPath,
 						sharedFilePath,
 						String(workerId),

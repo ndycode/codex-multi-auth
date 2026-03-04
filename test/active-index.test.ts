@@ -78,6 +78,23 @@ describe("active-index helpers", () => {
 		expect(storage.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
 	});
 
+	it("normalizes non-finite active indexes to zero", () => {
+		const storage: {
+			activeIndex: number;
+			activeIndexByFamily?: Partial<Record<(typeof MODEL_FAMILIES)[number], number>>;
+		} = {
+			activeIndex: Number.NaN,
+		};
+
+		const changed = normalizeActiveIndexByFamily(storage, 3);
+
+		expect(changed).toBe(true);
+		expect(storage.activeIndex).toBe(0);
+		for (const family of MODEL_FAMILIES) {
+			expect(storage.activeIndexByFamily?.[family]).toBe(0);
+		}
+	});
+
 	it("clears family map when empty accounts are requested to clear", () => {
 		const storage: {
 			activeIndex: number;
@@ -135,9 +152,30 @@ describe("active-index helpers", () => {
 
 		expect(changed).toBe(true);
 		expect(storage.accounts).toHaveLength(2);
-		expect(storage.activeIndex).toBe(0);
-		expect(storage.activeIndexByFamily?.codex).toBe(0);
-		expect(storage.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
+		expect(storage.activeIndex).toBe(1);
+		expect(storage.activeIndexByFamily?.codex).toBe(1);
+		expect(storage.activeIndexByFamily?.["gpt-5.1"]).toBe(1);
+	});
+
+	it("moves active index to nearest valid slot when removing the active account", () => {
+		const storage: {
+			accounts: unknown[];
+			activeIndex: number;
+			activeIndexByFamily?: Partial<Record<(typeof MODEL_FAMILIES)[number], number>>;
+		} = {
+			accounts: [{ id: 1 }, { id: 2 }, { id: 3 }],
+			activeIndex: 1,
+			activeIndexByFamily: {
+				codex: 1,
+			},
+		};
+
+		const changed = removeAccountAndReconcileActiveIndexes(storage, 1);
+
+		expect(changed).toBe(true);
+		expect(storage.accounts).toHaveLength(2);
+		expect(storage.activeIndex).toBe(1);
+		expect(storage.activeIndexByFamily?.codex).toBe(1);
 	});
 
 	it("returns false and keeps storage unchanged for out-of-range removals", () => {

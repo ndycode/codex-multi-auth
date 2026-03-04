@@ -452,4 +452,44 @@ describe("accounts edge branches", () => {
     expect(refreshTokens).toContain("refresh-local");
     expect(refreshTokens).toContain("refresh-concurrent");
   });
+
+  it("preserves existing rate-limit map entries when conflict merge receives empty map", async () => {
+    const now = Date.now();
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+        rateLimitResetTimes: { codex: now + 60_000 },
+      }),
+    ]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+        rateLimitResetTimes: {},
+      }),
+    ]);
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{ refreshToken: string; rateLimitResetTimes?: Record<string, number> }>;
+    };
+    const mergedLocal = retriedPayload.accounts.find(
+      (account) => account.refreshToken === "refresh-local",
+    );
+    expect(mergedLocal?.rateLimitResetTimes?.codex).toBe(now + 60_000);
+  });
 });

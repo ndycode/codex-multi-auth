@@ -66,7 +66,9 @@ export function formatRateLimitStatusByFamily(
 	return families.map((family) => {
 		const resetAt = getRateLimitResetTimeForFamily(account, now, family);
 		if (typeof resetAt !== "number") return `${family}=ok`;
-		return `${family}=${formatWaitTime(resetAt - now)}`;
+		const remaining = resetAt - now;
+		if (remaining <= 0) return `${family}=ok`;
+		return `${family}=${formatWaitTime(remaining)}`;
 	});
 }
 

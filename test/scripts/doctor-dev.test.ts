@@ -148,6 +148,40 @@ describe("doctor-dev script", () => {
 		expect(attempts).toBe(2);
 	});
 
+	it("fails when npm/git version probes return non-zero status or invalid output", () => {
+		const fixture = createDoctorFixture();
+		tempDirs.push(fixture.root);
+
+		const errors: string[] = [];
+		const code = runDevDoctor({
+			cwd: fixture.root,
+			platform: "win32",
+			env: {
+				PATH: fixture.binDir,
+				PATHEXT: ".CMD",
+				npm_execpath: "",
+			},
+			spawnSync: (command) => {
+				const lower = String(command).toLowerCase();
+				if (lower.includes("git")) {
+					return { status: 1, stdout: "garbage", stderr: "git failed" };
+				}
+				return { status: 1, stdout: "", stderr: "npm failed" };
+			},
+			error: (message) => errors.push(String(message)),
+			warn: () => {},
+			log: () => {},
+		});
+
+		expect(code).toBe(1);
+		expect(
+			errors.some((line) => line.includes("npm entrypoint detected") && line.includes("could not be executed")),
+		).toBe(true);
+		expect(
+			errors.some((line) => line.includes("git entrypoint detected") && line.includes("could not be executed")),
+		).toBe(true);
+	});
+
 	it("fails when verify script is missing from package.json", () => {
 		const fixture = createDoctorFixture({
 			build: "echo build",

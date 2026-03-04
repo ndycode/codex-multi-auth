@@ -86,4 +86,28 @@ describe("background jobs", () => {
 			note: "keep-visible",
 		});
 	});
+
+	it("records actual attempts when retry predicate stops early", async () => {
+		const { runBackgroundJobWithRetry, getBackgroundJobDlqPath } =
+			await import("../lib/background-jobs.js");
+		let attempts = 0;
+		await expect(
+			runBackgroundJobWithRetry({
+				name: "test.retry-stop-early",
+				task: async () => {
+					attempts += 1;
+					throw new Error("fatal");
+				},
+				retryable: () => false,
+				maxAttempts: 5,
+				baseDelayMs: 1,
+				maxDelayMs: 2,
+			}),
+		).rejects.toThrow("fatal");
+
+		expect(attempts).toBe(1);
+		const dlqContent = await fs.readFile(getBackgroundJobDlqPath(), "utf8");
+		const entry = JSON.parse(dlqContent.trim()) as { attempts: number };
+		expect(entry.attempts).toBe(1);
+	});
 });

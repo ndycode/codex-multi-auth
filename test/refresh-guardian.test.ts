@@ -72,7 +72,11 @@ describe("refresh-guardian", () => {
       intervalMs: 5_000,
     });
     await expect(missingManagerGuardian.tick()).resolves.toBeUndefined();
-    expect(missingManagerGuardian.getStats().runs).toBe(0);
+    const missingStats = missingManagerGuardian.getStats();
+    expect(missingStats.runs).toBe(0);
+    expect(missingStats.lastTickDurationMs).toBeGreaterThanOrEqual(0);
+    expect(missingStats.maxTickDurationMs).toBe(0);
+    expect(missingStats.avgTickDurationMs).toBe(0);
 
     const disabledManager = createManagerMock([
       { ...createManagedAccount(0), enabled: false },
@@ -84,7 +88,11 @@ describe("refresh-guardian", () => {
     });
     await expect(disabledGuardian.tick()).resolves.toBeUndefined();
     expect(refreshExpiringAccountsMock).not.toHaveBeenCalled();
-    expect(disabledGuardian.getStats().runs).toBe(0);
+    const disabledStats = disabledGuardian.getStats();
+    expect(disabledStats.runs).toBe(0);
+    expect(disabledStats.lastTickDurationMs).toBeGreaterThanOrEqual(0);
+    expect(disabledStats.maxTickDurationMs).toBe(0);
+    expect(disabledStats.avgTickDurationMs).toBe(0);
   });
 
   it("records run stats when no accounts require proactive refresh", async () => {

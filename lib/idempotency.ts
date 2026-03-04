@@ -6,6 +6,8 @@ import { acquireFileLock } from "./file-lock.js";
 const IDEMPOTENCY_PATH = join(getCodexMultiAuthDir(), "idempotency-keys.json");
 const IDEMPOTENCY_LOCK_PATH = `${IDEMPOTENCY_PATH}.lock`;
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60_000;
+const IDEMPOTENCY_RENAME_RETRYABLE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const IDEMPOTENCY_RENAME_MAX_ATTEMPTS = 5;
 
 interface IdempotencyEntry {
 	scope: string;
@@ -52,6 +54,9 @@ async function loadFile(): Promise<IdempotencyFile> {
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException | undefined)?.code;
 		if (code === "ENOENT") return { ...EMPTY_FILE };
+		if (error instanceof SyntaxError) {
+			return { ...EMPTY_FILE };
+		}
 		throw error;
 	}
 }
@@ -64,7 +69,18 @@ async function saveFile(file: IdempotencyFile): Promise<void> {
 		mode: 0o600,
 	});
 	try {
-		await fs.rename(tempPath, IDEMPOTENCY_PATH);
+		for (let attempt = 0; attempt < IDEMPOTENCY_RENAME_MAX_ATTEMPTS; attempt += 1) {
+			try {
+				await fs.rename(tempPath, IDEMPOTENCY_PATH);
+				return;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException | undefined)?.code ?? "";
+				if (!IDEMPOTENCY_RENAME_RETRYABLE_CODES.has(code) || attempt >= IDEMPOTENCY_RENAME_MAX_ATTEMPTS - 1) {
+					throw error;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+			}
+		}
 	} finally {
 		try {
 			await fs.unlink(tempPath);
@@ -77,6 +93,10 @@ async function saveFile(file: IdempotencyFile): Promise<void> {
 function pruneExpired(entries: IdempotencyEntry[], nowMs: number, ttlMs: number): IdempotencyEntry[] {
 	const cutoff = nowMs - ttlMs;
 	return entries.filter((entry) => entry.createdAtMs >= cutoff);
+}
+
+function normalizeTtlMs(ttlMs: number): number {
+	return Number.isFinite(ttlMs) && ttlMs > 0 ? Math.floor(ttlMs) : 1;
 }
 
 export function getIdempotencyStorePath(): string {
@@ -106,7 +126,7 @@ export async function checkAndRecordIdempotencyKey(
 	});
 	try {
 		const file = await loadFile();
-		const entries = pruneExpired(file.entries, nowMs, Math.max(1, ttlMs));
+		const entries = pruneExpired(file.entries, nowMs, normalizeTtlMs(ttlMs));
 		const replayed = entries.some(
 			(entry) => entry.scope === normalizedScope && entry.key === normalizedKey,
 		);

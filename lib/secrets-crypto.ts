@@ -157,7 +157,7 @@ export function decryptSecret(
 		return { value: withPrevious, usedPreviousKey: true };
 	}
 
-	throw new Error("Unable to decrypt secret with configured keys");
+	throw new Error(`Unable to decrypt ${envelope.version} secret with configured keys`);
 }
 
 function getTrimmedEnv(name: string): string | null {

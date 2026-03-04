@@ -1,4 +1,12 @@
-import { openSync, writeFileSync, closeSync, unlinkSync, statSync, promises as fs } from "node:fs";
+import {
+	openSync,
+	writeFileSync,
+	closeSync,
+	unlinkSync,
+	statSync,
+	readFileSync,
+	promises as fs,
+} from "node:fs";
 
 export interface FileLockOptions {
 	maxAttempts?: number;
@@ -22,6 +30,12 @@ const DEFAULT_BASE_DELAY_MS = 25;
 const DEFAULT_MAX_DELAY_MS = 1_000;
 const DEFAULT_STALE_AFTER_MS = 5 * 60_000;
 const RETRYABLE_CODES = new Set(["EEXIST", "EBUSY", "EPERM"]);
+
+interface LockMetadata {
+	pid: number;
+	acquiredAt: number;
+	ownerId: string;
+}
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,6 +68,79 @@ async function removeIfStale(path: string, staleAfterMs: number): Promise<boolea
 	}
 }
 
+function createLockMetadata(): LockMetadata {
+	return {
+		pid: process.pid,
+		acquiredAt: Date.now(),
+		ownerId: `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
+	};
+}
+
+function createLockPayload(metadata: LockMetadata): string {
+	return `${JSON.stringify(metadata)}\n`;
+}
+
+function parseOwnerId(raw: string): string | null {
+	try {
+		const parsed = JSON.parse(raw) as { ownerId?: unknown };
+		return typeof parsed.ownerId === "string" && parsed.ownerId.length > 0
+			? parsed.ownerId
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+async function releaseOwnedLock(path: string, ownerId: string): Promise<void> {
+	let currentOwnerId: string | null = null;
+	try {
+		const raw = await fs.readFile(path, "utf8");
+		currentOwnerId = parseOwnerId(raw);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return;
+		}
+		throw error;
+	}
+	if (currentOwnerId !== ownerId) {
+		return;
+	}
+	try {
+		await fs.unlink(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			throw error;
+		}
+	}
+}
+
+function releaseOwnedLockSync(path: string, ownerId: string): void {
+	let currentOwnerId: string | null = null;
+	try {
+		const raw = readFileSync(path, "utf8");
+		currentOwnerId = parseOwnerId(raw);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return;
+		}
+		throw error;
+	}
+	if (currentOwnerId !== ownerId) {
+		return;
+	}
+	try {
+		unlinkSync(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			throw error;
+		}
+	}
+}
+
 export async function acquireFileLock(
 	path: string,
 	options: FileLockOptions = {},
@@ -65,26 +152,38 @@ export async function acquireFileLock(
 
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
+			const metadata = createLockMetadata();
 			const handle = await fs.open(path, "wx", 0o600);
-			await handle.writeFile(
-				`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
-				"utf8",
-			);
-			await handle.close();
+			let closed = false;
+			try {
+				await handle.writeFile(createLockPayload(metadata), "utf8");
+				await handle.close();
+				closed = true;
+			} catch (writeError) {
+				if (!closed) {
+					try {
+						await handle.close();
+					} catch {
+						// Best-effort descriptor cleanup.
+					}
+				}
+				try {
+					await fs.unlink(path);
+				} catch (cleanupError) {
+					const code = (cleanupError as NodeJS.ErrnoException).code;
+					if (code !== "ENOENT") {
+						throw cleanupError;
+					}
+				}
+				throw writeError;
+			}
 			let released = false;
 			return {
 				path,
 				release: async () => {
 					if (released) return;
 					released = true;
-					try {
-						await fs.unlink(path);
-					} catch (error) {
-						const code = (error as NodeJS.ErrnoException).code;
-						if (code !== "ENOENT") {
-							throw error;
-						}
-					}
+					await releaseOwnedLock(path, metadata.ownerId);
 				},
 			};
 		} catch (error) {
@@ -134,27 +233,38 @@ export function acquireFileLockSync(
 
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
+			const metadata = createLockMetadata();
 			const fd = openSync(path, "wx", 0o600);
-			writeFileSync(
-				fd,
-				`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
-				"utf8",
-			);
-			closeSync(fd);
+			let closed = false;
+			try {
+				writeFileSync(fd, createLockPayload(metadata), "utf8");
+				closeSync(fd);
+				closed = true;
+			} catch (writeError) {
+				if (!closed) {
+					try {
+						closeSync(fd);
+					} catch {
+						// Best-effort descriptor cleanup.
+					}
+				}
+				try {
+					unlinkSync(path);
+				} catch (cleanupError) {
+					const code = (cleanupError as NodeJS.ErrnoException).code;
+					if (code !== "ENOENT") {
+						throw cleanupError;
+					}
+				}
+				throw writeError;
+			}
 			let released = false;
 			return {
 				path,
 				release: () => {
 					if (released) return;
 					released = true;
-					try {
-						unlinkSync(path);
-					} catch (error) {
-						const code = (error as NodeJS.ErrnoException).code;
-						if (code !== "ENOENT") {
-							throw error;
-						}
-					}
+					releaseOwnedLockSync(path, metadata.ownerId);
 				},
 			};
 		} catch (error) {

@@ -16,6 +16,9 @@ import {
 } from "../dist/lib/request/fetch-helpers.js";
 import { normalizeAccountStorage } from "../dist/lib/storage.js";
 
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+let processStateMutationQueue = Promise.resolve();
+
 function argValue(args, name) {
 	const prefix = `${name}=`;
 	const match = args.find((arg) => arg.startsWith(prefix));
@@ -27,6 +30,36 @@ function parsePositiveInt(value, fallback) {
 	const parsed = Number.parseInt(value, 10);
 	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
 	return parsed;
+}
+
+async function removeWithRetry(path, options) {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await rm(path, options);
+			return;
+		} catch (error) {
+			const code = error?.code;
+			if (code === "ENOENT") return;
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await sleep(25 * 2 ** attempt);
+		}
+	}
+}
+
+async function withProcessStateMutationLock(fn) {
+	const previous = processStateMutationQueue;
+	let release;
+	processStateMutationQueue = new Promise((resolve) => {
+		release = resolve;
+	});
+	await previous;
+	try {
+		return await fn();
+	} finally {
+		release?.();
+	}
 }
 
 function benchmarkCase(name, iterations, fn) {
@@ -204,46 +237,48 @@ function buildNormalizationStorage(accountCount) {
 }
 
 async function withCodexCliState(accountCount, fn) {
-	const tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-perf-"));
-	const accountsPath = join(tempDir, "accounts.json");
-	const authPath = join(tempDir, "auth.json");
-	const configPath = join(tempDir, "config.toml");
-	const snapshots = buildSyncSnapshots(accountCount);
-	await writeFile(
-		accountsPath,
-		`${JSON.stringify({ activeAccountId: "acc_0", accounts: snapshots }, null, 2)}\n`,
-		"utf8",
-	);
+	return withProcessStateMutationLock(async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-perf-"));
+		const accountsPath = join(tempDir, "accounts.json");
+		const authPath = join(tempDir, "auth.json");
+		const configPath = join(tempDir, "config.toml");
+		const snapshots = buildSyncSnapshots(accountCount);
+		await writeFile(
+			accountsPath,
+			`${JSON.stringify({ activeAccountId: "acc_0", accounts: snapshots }, null, 2)}\n`,
+			"utf8",
+		);
 
-	const previousEnv = {
-		CODEX_CLI_ACCOUNTS_PATH: process.env.CODEX_CLI_ACCOUNTS_PATH,
-		CODEX_CLI_AUTH_PATH: process.env.CODEX_CLI_AUTH_PATH,
-		CODEX_CLI_CONFIG_PATH: process.env.CODEX_CLI_CONFIG_PATH,
-		CODEX_MULTI_AUTH_SYNC_CODEX_CLI: process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI,
-		CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE:
-			process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE,
-	};
+		const previousEnv = {
+			CODEX_CLI_ACCOUNTS_PATH: process.env.CODEX_CLI_ACCOUNTS_PATH,
+			CODEX_CLI_AUTH_PATH: process.env.CODEX_CLI_AUTH_PATH,
+			CODEX_CLI_CONFIG_PATH: process.env.CODEX_CLI_CONFIG_PATH,
+			CODEX_MULTI_AUTH_SYNC_CODEX_CLI: process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI,
+			CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE:
+				process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE,
+		};
 
-	process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
-	process.env.CODEX_CLI_AUTH_PATH = authPath;
-	process.env.CODEX_CLI_CONFIG_PATH = configPath;
-	process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
-	process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
-	clearCodexCliStateCache();
-
-	try {
-		return await fn();
-	} finally {
+		process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
+		process.env.CODEX_CLI_AUTH_PATH = authPath;
+		process.env.CODEX_CLI_CONFIG_PATH = configPath;
+		process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
+		process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
 		clearCodexCliStateCache();
-		for (const [key, value] of Object.entries(previousEnv)) {
-			if (value === undefined) {
-				delete process.env[key];
-			} else {
-				process.env[key] = value;
+
+		try {
+			return await fn();
+		} finally {
+			clearCodexCliStateCache();
+			for (const [key, value] of Object.entries(previousEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
 			}
+			await removeWithRetry(tempDir, { recursive: true, force: true });
 		}
-		await rm(tempDir, { recursive: true, force: true });
-	}
+	});
 }
 
 async function run() {
@@ -289,13 +324,15 @@ async function run() {
 	];
 
 	const asyncResults = await withCodexCliState(1000, async () => {
-		const current = buildSyncStorage(1000);
+		const current = buildSyncStorage(0);
 		const syncResult = await benchmarkCaseAsync(
 			"codexCliSync_merge_1000",
 			iterations,
 			async () => {
 				const reconciled = await syncAccountStorageFromCodexCli(current);
-				if (!reconciled.storage) throw new Error("codexCliSync_merge_1000 failed");
+				if (!reconciled.storage || reconciled.storage.accounts.length < 1000) {
+					throw new Error("codexCliSync_merge_1000 failed");
+				}
 			},
 		);
 

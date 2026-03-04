@@ -87,6 +87,22 @@ describe("authorization", () => {
 		}
 	});
 
+	it("fails closed for invalid role overrides", () => {
+		const previousRole = process.env.CODEX_AUTH_ROLE;
+		try {
+			process.env.CODEX_AUTH_ROLE = "root";
+			const auth = authorizeAction("accounts:write");
+			expect(auth.allowed).toBe(false);
+			expect(auth.role).toBe("viewer");
+		} finally {
+			if (previousRole === undefined) {
+				delete process.env.CODEX_AUTH_ROLE;
+			} else {
+				process.env.CODEX_AUTH_ROLE = previousRole;
+			}
+		}
+	});
+
 	it("allows all actions when break-glass is enabled and audits the bypass", async () => {
 		const previousRole = process.env.CODEX_AUTH_ROLE;
 		const previousBreakGlass = process.env.CODEX_AUTH_BREAK_GLASS;

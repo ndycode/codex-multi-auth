@@ -1206,8 +1206,8 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 	});
 
 	it("adjusts activeIndex when removing account before it", async () => {
-		// When activeIndex=2 and we remove index 0 (1-based: 1), the remaining accounts
-		// have length 2. Since activeIndex (2) >= length (2), it resets to 0.
+		// When activeIndex=2 and we remove index 0 (1-based: 1), selection should shift
+		// to keep pointing at the same logical account after compaction.
 		mockStorage.accounts = [
 			{ refreshToken: "r1", email: "user1@example.com" },
 			{ refreshToken: "r2", email: "user2@example.com" },
@@ -1222,10 +1222,8 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
 		await plugin.tool["codex-remove"].execute({ index: 1 });
-		// After removing account at 0-based index 0, length is 2.
-		// activeIndex (2) >= length (2), so it resets to 0
-		expect(mockStorage.activeIndex).toBe(0);
-		expect(mockStorage.activeIndexByFamily.codex).toBe(0);
+		expect(mockStorage.activeIndex).toBe(1);
+		expect(mockStorage.activeIndexByFamily.codex).toBe(1);
 	});
 
 	it("resets activeIndex when removing active account at end", async () => {
@@ -2207,6 +2205,60 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		await plugin.event({
 			event: { type: "account.select", properties: { index: "invalid" } },
 		});
+	});
+});
+
+describe("OpenAIOAuthPlugin telemetry hygiene", () => {
+	it("does not emit raw token values in telemetry payloads", async () => {
+		recordTelemetryEventMock.mockClear();
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error("forced-network-error"));
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "sk-live-sensitive-access-token-1234567890",
+			refresh: "refresh-sensitive-token-1234567890",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		try {
+			const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			expect(response.status).toBe(503);
+
+			expect(recordTelemetryEventMock).toHaveBeenCalled();
+			const serializedCalls = JSON.stringify(recordTelemetryEventMock.mock.calls);
+			expect(serializedCalls).not.toContain("sk-live-sensitive-access-token-1234567890");
+			expect(serializedCalls).not.toContain("refresh-sensitive-token-1234567890");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+});
+
+describe("lib/index barrel exports", () => {
+	it("re-exports hardened runtime modules", async () => {
+		const api = await vi.importActual<Record<string, unknown>>("../lib/index.js");
+		expect(api).toEqual(
+			expect.objectContaining({
+				acquireFileLock: expect.any(Function),
+				encryptSecret: expect.any(Function),
+				decryptSecret: expect.any(Function),
+				enforceDataRetention: expect.any(Function),
+				redactForExternalOutput: expect.any(Function),
+				authorizeAction: expect.any(Function),
+				runBackgroundJobWithRetry: expect.any(Function),
+				checkAndRecordIdempotencyKey: expect.any(Function),
+				recordTelemetryEvent: expect.any(Function),
+			}),
+		);
 	});
 });
 

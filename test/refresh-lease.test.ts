@@ -448,6 +448,38 @@ describe("RefreshLeaseCoordinator", () => {
     expect(handle.role).toBe("bypass");
   });
 
+  it("treats token-hash mismatches as stale and reclaims ownership", async () => {
+    const refreshToken = "token-mismatch-reclaim";
+    const tokenHash = hashToken(refreshToken);
+    const lockPath = join(leaseDir, `${tokenHash}.lock`);
+    await mkdir(leaseDir, { recursive: true });
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        tokenHash: "different-hash-value",
+        pid: process.pid,
+        acquiredAt: Date.now(),
+        expiresAt: Date.now() + 5_000,
+      }),
+      "utf8",
+    );
+
+    const coordinator = new RefreshLeaseCoordinator({
+      enabled: true,
+      leaseDir,
+      leaseTtlMs: 5_000,
+      waitTimeoutMs: 120,
+      pollIntervalMs: 20,
+    });
+
+    const handle = await coordinator.acquire(refreshToken);
+    expect(handle.role).toBe("owner");
+    await handle.release();
+    await expect(fsPromises.stat(lockPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("prunes stale artifacts while keeping non-file entries", async () => {
     await mkdir(leaseDir, { recursive: true });
     const staleLock = join(leaseDir, "stale.lock");

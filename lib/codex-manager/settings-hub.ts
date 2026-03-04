@@ -996,6 +996,12 @@ function buildBackendSettingsPreview(
 	);
 	const fetchTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("fetchTimeoutMs");
 	const stallTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("streamStallTimeoutMs");
+	const retryAllAbsoluteCeilingLabel =
+		retryAllAbsoluteCeilingMs <= 0
+			? "unlimited"
+			: retryAllAbsoluteCeilingOption
+				? formatBackendNumberValue(retryAllAbsoluteCeilingOption, retryAllAbsoluteCeilingMs)
+				: `${retryAllAbsoluteCeilingMs}ms`;
 
 	const highlightIfFocused = (key: BackendSettingFocusKey, text: string): string => {
 		if (focus !== key) return text;
@@ -1011,7 +1017,7 @@ function buildBackendSettingsPreview(
 	const hint = [
 		`thresholds 5h<=${highlightIfFocused("preemptiveQuotaRemainingPercent5h", `${threshold5h}%`)}`,
 		`7d<=${highlightIfFocused("preemptiveQuotaRemainingPercent7d", `${threshold7d}%`)}`,
-		`retry ceiling ${highlightIfFocused("retryAllAccountsAbsoluteCeilingMs", retryAllAbsoluteCeilingOption ? formatBackendNumberValue(retryAllAbsoluteCeilingOption, retryAllAbsoluteCeilingMs) : `${retryAllAbsoluteCeilingMs}ms`)}`,
+		`retry ceiling ${highlightIfFocused("retryAllAccountsAbsoluteCeilingMs", retryAllAbsoluteCeilingLabel)}`,
 		`timeouts ${highlightIfFocused("fetchTimeoutMs", fetchTimeoutOption ? formatBackendNumberValue(fetchTimeoutOption, fetchTimeout) : `${fetchTimeout}ms`)}/${highlightIfFocused("streamStallTimeoutMs", stallTimeoutOption ? formatBackendNumberValue(stallTimeoutOption, stallTimeout) : `${stallTimeout}ms`)}`,
 	].join(" | ");
 
@@ -1110,6 +1116,13 @@ async function persistBackendConfigSelectionForTests(
 	return persistBackendConfigSelection(selected, scope);
 }
 
+function buildBackendSettingsPreviewForTests(
+	config: PluginConfig,
+	focus: BackendSettingFocusKey = null,
+): { label: string; hint: string } {
+	return buildBackendSettingsPreview(config, getUiRuntimeOptions(), focus);
+}
+
 const __testOnly = {
 	clampBackendNumber: clampBackendNumberForTests,
 	formatMenuLayoutMode,
@@ -1117,6 +1130,7 @@ const __testOnly = {
 	withQueuedRetry: withQueuedRetryForTests,
 	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
 	persistBackendConfigSelection: persistBackendConfigSelectionForTests,
+	buildBackendSettingsPreview: buildBackendSettingsPreviewForTests,
 };
 
 /* c8 ignore start - interactive prompt flows are covered by integration tests */

@@ -137,7 +137,11 @@ Common operator overrides:
 - `CODEX_AUTH_TELEMETRY_ENABLED`
 
 Encryption key variables must be high-entropy 32-byte key material (for example,
-from a secret manager). Do not use passwords.
+from a secret manager). Do not use passwords. Example generation command:
+
+```bash
+openssl rand -hex 32
+```
 
 ---
 

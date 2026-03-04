@@ -353,7 +353,11 @@ describe("codex manager cli commands", () => {
 				event: "request.network_error",
 				outcome: "failure",
 				correlationId: null,
-				details: { status: 503 },
+				details: {
+					status: 503,
+					token: "sk-live-telemetry-secret",
+					email: "person@example.com",
+				},
 			},
 		];
 		queryTelemetryEventsMock.mockResolvedValueOnce(events);
@@ -392,11 +396,19 @@ describe("codex manager cli commands", () => {
 			limit: number;
 			sinceHours: number;
 			summary: { total: number };
+			events: Array<{
+				details?: {
+					token?: string;
+					email?: string;
+				};
+			}>;
 		};
 		expect(payload.command).toBe("telemetry");
 		expect(payload.limit).toBe(5);
 		expect(payload.sinceHours).toBe(12);
 		expect(payload.summary.total).toBe(1);
+		expect(payload.events[0]?.details?.token).toBe("***REDACTED***");
+		expect(payload.events[0]?.details?.email).toBe("***REDACTED***");
 	});
 
 	it("validates telemetry arguments", async () => {
@@ -1037,6 +1049,154 @@ describe("codex manager cli commands", () => {
 			authModule.REDIRECT_URI,
 			{ timeoutMs: expectedTimeoutMs },
 		);
+	});
+
+	it("applies minimum timeout clamp when plugin fetch timeout is below 1000ms", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "old@example.com",
+					accountId: "acc_old",
+					refreshToken: "refresh-old",
+					accessToken: "access-old",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "add" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+		loadPluginConfigMock.mockReturnValue({ fetchTimeoutMs: 5 });
+
+		const authModule = await import("../lib/auth/auth.js");
+		const createAuthorizationFlowMock = vi.mocked(authModule.createAuthorizationFlow);
+		const exchangeAuthorizationCodeMock = vi.mocked(authModule.exchangeAuthorizationCode);
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		const startLocalOAuthServerMock = vi.mocked(serverModule.startLocalOAuthServer);
+
+		createAuthorizationFlowMock.mockResolvedValue({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		exchangeAuthorizationCodeMock.mockResolvedValue({
+			type: "success",
+			access: "access-new",
+			refresh: "refresh-new",
+			expires: now + 7_200_000,
+			idToken: "id-token-new",
+			multiAccount: true,
+		});
+		openBrowserUrlMock.mockReturnValue(true);
+		startLocalOAuthServerMock.mockResolvedValue({
+			ready: true,
+			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			close: vi.fn(),
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(exchangeAuthorizationCodeMock).toHaveBeenCalledWith(
+			"oauth-code",
+			"pkce-verifier",
+			authModule.REDIRECT_URI,
+			{ timeoutMs: 1_000 },
+		);
+	});
+
+	it("uses CODEX_AUTH_FETCH_TIMEOUT_MS override for OAuth code exchange", async () => {
+		const previousEnv = process.env.CODEX_AUTH_FETCH_TIMEOUT_MS;
+		process.env.CODEX_AUTH_FETCH_TIMEOUT_MS = "3456";
+		try {
+			const now = Date.now();
+			let storageState = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "old@example.com",
+						accountId: "acc_old",
+						refreshToken: "refresh-old",
+						accessToken: "access-old",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						enabled: true,
+					},
+				],
+			};
+			loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+			saveAccountsMock.mockImplementation(async (nextStorage) => {
+				storageState = structuredClone(nextStorage);
+			});
+			promptLoginModeMock
+				.mockResolvedValueOnce({ mode: "add" })
+				.mockResolvedValueOnce({ mode: "cancel" });
+			promptAddAnotherAccountMock.mockResolvedValue(false);
+			loadPluginConfigMock.mockReturnValue({ fetchTimeoutMs: 9_999 });
+
+			const authModule = await import("../lib/auth/auth.js");
+			const createAuthorizationFlowMock = vi.mocked(authModule.createAuthorizationFlow);
+			const exchangeAuthorizationCodeMock = vi.mocked(authModule.exchangeAuthorizationCode);
+			const browserModule = await import("../lib/auth/browser.js");
+			const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+			const serverModule = await import("../lib/auth/server.js");
+			const startLocalOAuthServerMock = vi.mocked(serverModule.startLocalOAuthServer);
+
+			createAuthorizationFlowMock.mockResolvedValue({
+				pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+				state: "oauth-state",
+				url: "https://auth.openai.com/mock",
+			});
+			exchangeAuthorizationCodeMock.mockResolvedValue({
+				type: "success",
+				access: "access-new",
+				refresh: "refresh-new",
+				expires: now + 7_200_000,
+				idToken: "id-token-new",
+				multiAccount: true,
+			});
+			openBrowserUrlMock.mockReturnValue(true);
+			startLocalOAuthServerMock.mockResolvedValue({
+				ready: true,
+				waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+				close: vi.fn(),
+			});
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(exchangeAuthorizationCodeMock).toHaveBeenCalledWith(
+				"oauth-code",
+				"pkce-verifier",
+				authModule.REDIRECT_URI,
+				{ timeoutMs: 3_456 },
+			);
+		} finally {
+			if (previousEnv === undefined) {
+				delete process.env.CODEX_AUTH_FETCH_TIMEOUT_MS;
+			} else {
+				process.env.CODEX_AUTH_FETCH_TIMEOUT_MS = previousEnv;
+			}
+		}
 	});
 
 	it("runs full refresh test from login menu deep-check mode", async () => {
@@ -2107,6 +2267,52 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe("first@example.com");
 	});
 
+	it("reconciles active indexes when deleting a non-active account from manage mode", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 2,
+			activeIndexByFamily: { codex: 2 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "third@example.com",
+					refreshToken: "refresh-third",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const saved = saveAccountsMock.mock.calls[0]?.[0];
+		expect(saved.accounts).toHaveLength(2);
+		expect(saved.accounts[0]?.email).toBe("second@example.com");
+		expect(saved.accounts[1]?.email).toBe("third@example.com");
+		expect(saved.activeIndex).toBe(1);
+		expect(saved.activeIndexByFamily?.codex).toBe(1);
+	});
+
 	it("toggles account enabled state from manage mode", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
@@ -2233,6 +2439,92 @@ describe("codex manager cli commands", () => {
 			expect(secondPayload.pagination.hasMore).toBe(false);
 			expect(secondPayload.pagination.nextCursor).toBeNull();
 		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
+	it("returns non-zero when list cursor is invalid in json mode", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "one@example.com",
+					accountId: "acc_one",
+					refreshToken: "refresh-one",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+			],
+		});
+
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--cursor",
+				"not-base64",
+			]);
+			expect(exitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("Invalid --cursor value");
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("continues account checks when auth rate-limit guard rejects one account", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc_first",
+					refreshToken: "refresh-first",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					accountId: "acc_second",
+					refreshToken: "refresh-second",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValue({
+			type: "success",
+			access: "access-second",
+			refresh: "refresh-second-next",
+			expires: now + 7_200_000,
+			idToken: "id-second",
+			multiAccount: true,
+		});
+		const { recordAuthAttempt, resetAllAuthRateLimits } = await import("../lib/auth-rate-limit.js");
+		for (let index = 0; index < 5; index += 1) {
+			recordAuthAttempt("refresh:acc_first");
+		}
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "check"]);
+			expect(exitCode).toBe(0);
+			expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+			expect(queuedRefreshMock).toHaveBeenCalledWith("refresh-second");
+		} finally {
+			resetAllAuthRateLimits();
 			logSpy.mockRestore();
 		}
 	});

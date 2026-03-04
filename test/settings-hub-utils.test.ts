@@ -16,6 +16,10 @@ type SettingsHubTestApi = {
 		scope: string,
 	) => Promise<DashboardDisplaySettings>;
 	persistBackendConfigSelection: (selected: PluginConfig, scope: string) => Promise<PluginConfig>;
+	buildBackendSettingsPreview: (
+		config: PluginConfig,
+		focus?: string | null,
+	) => { label: string; hint: string };
 };
 
 let tempRoot = "";
@@ -277,5 +281,24 @@ describe("settings-hub utility coverage", () => {
 		const reloaded = freshConfigModule.loadPluginConfig();
 		expect(reloaded.fetchTimeoutMs).toBe(12_345);
 		expect(reloaded.streamStallTimeoutMs).toBe(23_456);
+	});
+
+	it("renders retry-all absolute ceiling of zero as unlimited", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const selected = configModule.getDefaultPluginConfig();
+		selected.retryAllAccountsAbsoluteCeilingMs = 0;
+		const preview = api.buildBackendSettingsPreview(selected, "retryAllAccountsAbsoluteCeilingMs");
+		expect(preview.hint).toContain("retry ceiling unlimited");
+	});
+
+	it("persists retry-all absolute ceiling value of zero without coercion", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const selected = configModule.getDefaultPluginConfig();
+		selected.retryAllAccountsAbsoluteCeilingMs = 0;
+
+		const saved = await api.persistBackendConfigSelection(selected, "backend");
+		expect(saved.retryAllAccountsAbsoluteCeilingMs).toBe(0);
 	});
 });

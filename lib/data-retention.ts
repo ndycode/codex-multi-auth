@@ -72,6 +72,7 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 			if (code === "ENOENT") {
 				continue;
 			}
+			throw error;
 		}
 	}
 	return removed;

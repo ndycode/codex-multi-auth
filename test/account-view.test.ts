@@ -6,6 +6,7 @@ import {
 	formatActiveIndexByFamilyLabels,
 	formatRateLimitStatusByFamily,
 } from "../lib/accounts/account-view.js";
+import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 
 describe("account-view helpers", () => {
 	it("resolves active index from family mapping and clamps to bounds", () => {
@@ -110,17 +111,15 @@ describe("account-view helpers", () => {
 	});
 
 	it("formats active-index labels with 1-based values and fallback placeholders", () => {
-		expect(
-			formatActiveIndexByFamilyLabels({
-				codex: 0,
-				"gpt-5.1": 2,
-			}),
-		).toEqual([
-			"gpt-5-codex: -",
-			"codex-max: -",
-			"codex: 1",
-			"gpt-5.2: -",
-			"gpt-5.1: 3",
-		]);
+		const labels = formatActiveIndexByFamilyLabels({
+			codex: 0,
+			"gpt-5.1": 2,
+		});
+		const expected = MODEL_FAMILIES.map((family) => {
+			if (family === "codex") return "codex: 1";
+			if (family === "gpt-5.1") return "gpt-5.1: 3";
+			return `${family}: -`;
+		});
+		expect(labels).toEqual(expected);
 	});
 });

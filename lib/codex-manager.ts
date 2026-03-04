@@ -30,6 +30,7 @@ import {
 	createActiveIndexByFamily,
 	setActiveIndexForAllFamilies,
 	normalizeActiveIndexByFamily,
+	removeAccountAndReconcileActiveIndexes,
 } from "./accounts/active-index.js";
 import {
 	createEmptyAccountStorage as createEmptyAccountStorageBase,
@@ -67,6 +68,7 @@ import {
 	recordTelemetryEvent,
 	summarizeTelemetryEvents,
 	type TelemetryOutcome,
+	type TelemetryEvent,
 } from "./telemetry.js";
 import {
 	getStoragePath,
@@ -95,7 +97,12 @@ import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { select, type MenuItem } from "./ui/select.js";
 import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, resolveMenuLayoutMode } from "./codex-manager/settings-hub.js";
 import { auditLog, AuditAction, AuditOutcome } from "./audit.js";
-import { checkAuthRateLimit, recordAuthAttempt, resetAuthRateLimit } from "./auth-rate-limit.js";
+import {
+	AuthRateLimitError,
+	checkAuthRateLimit,
+	recordAuthAttempt,
+	resetAuthRateLimit,
+} from "./auth-rate-limit.js";
 import { redactForExternalOutput } from "./data-redaction.js";
 import { authorizeAction, type AuthAction, type AuthorizationContext } from "./authorization.js";
 
@@ -142,7 +149,18 @@ async function queuedRefreshWithAuthRateLimit(
 	context: { accountId?: string; email?: string },
 ): Promise<TokenResult> {
 	const rateLimitKey = buildRefreshRateLimitKey(refreshToken, context.accountId, context.email);
-	checkAuthRateLimit(rateLimitKey);
+	try {
+		checkAuthRateLimit(rateLimitKey);
+	} catch (error) {
+		if (error instanceof AuthRateLimitError) {
+			return {
+				type: "failed",
+				reason: "unknown",
+				message: error.message,
+			};
+		}
+		throw error;
+	}
 	recordAuthAttempt(rateLimitKey);
 	const result = await queuedRefresh(refreshToken);
 	if (result.type === "success") {
@@ -2602,6 +2620,10 @@ function formatTelemetryDetail(details: Record<string, unknown> | undefined): st
 	return chunks.join(" ");
 }
 
+function redactTelemetryEventForOutput(event: TelemetryEvent): TelemetryEvent {
+	return redactForExternalOutput(event);
+}
+
 async function runTelemetry(args: string[]): Promise<number> {
 	if (args.includes("--help") || args.includes("-h")) {
 		printTelemetryUsage();
@@ -2620,20 +2642,22 @@ async function runTelemetry(args: string[]): Promise<number> {
 		sinceMs,
 		limit: options.limit,
 	});
-	const summary = summarizeTelemetryEvents(events);
+	const redactedEvents = events.map((event) => redactTelemetryEventForOutput(event));
+	const summary = summarizeTelemetryEvents(redactedEvents);
 	const logPath = getTelemetryLogPath();
 
 	if (options.json) {
+		const payload = maybeRedactJsonOutput({
+			command: "telemetry",
+			logPath,
+			sinceHours: options.sinceHours,
+			limit: options.limit,
+			summary,
+			events: redactedEvents,
+		});
 		console.log(
 			JSON.stringify(
-				{
-					command: "telemetry",
-					logPath,
-					sinceHours: options.sinceHours,
-					limit: options.limit,
-					summary,
-					events,
-				},
+				payload,
 				null,
 				2,
 			),
@@ -2659,7 +2683,7 @@ async function runTelemetry(args: string[]): Promise<number> {
 		}
 	}
 
-	const recent = events.slice(Math.max(0, events.length - 10));
+	const recent = redactedEvents.slice(Math.max(0, redactedEvents.length - 10));
 	if (recent.length === 0) {
 		console.log("");
 		console.log("No telemetry events found for the selected window.");
@@ -4250,7 +4274,7 @@ async function runRotateSecrets(args: string[]): Promise<number> {
 }
 
 async function clearAccountsAndReset(): Promise<void> {
-	await saveAccounts(createEmptyAccountStorageBase());
+	await saveAccounts(createEmptyAccountStorage());
 }
 
 async function handleManageAction(
@@ -4265,9 +4289,7 @@ async function handleManageAction(
 
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
-		if (idx >= 0 && idx < storage.accounts.length) {
-			storage.accounts.splice(idx, 1);
-			setActiveIndexForAllFamilies(storage, 0);
+		if (removeAccountAndReconcileActiveIndexes(storage, idx)) {
 			await saveAccounts(storage);
 			console.log(`Deleted account ${idx + 1}.`);
 		}
@@ -4706,8 +4728,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			exitCode = await runAuthLogin();
 		} else if (command === "list" || command === "status") {
 			if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
-			await showAccountStatus(rest);
-			exitCode = 0;
+			exitCode = await showAccountStatus(rest);
 		} else if (command === "switch") {
 			if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) return 1;
 			exitCode = await runSwitch(rest);
