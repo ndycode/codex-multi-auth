@@ -47,6 +47,15 @@ describe("Graceful shutdown", () => {
 		expect(fn).toHaveBeenCalledTimes(1);
 	});
 
+	it("deduplicates concurrent cleanup execution", async () => {
+		const fn = vi.fn(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		});
+		registerCleanup(fn);
+		await Promise.all([runCleanup(), runCleanup()]);
+		expect(fn).toHaveBeenCalledTimes(1);
+	});
+
 	it("continues cleanup even if one function throws", async () => {
 		const fn1 = vi.fn(() => { throw new Error("fail"); });
 		const fn2 = vi.fn();
@@ -69,6 +78,50 @@ describe("Graceful shutdown", () => {
 		const fn = vi.fn();
 		unregisterCleanup(fn);
 		expect(getCleanupCount()).toBe(0);
+	});
+
+	it("returns after configured shutdown timeout when cleanup hangs", async () => {
+		const originalTimeout = process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+		process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = "1000";
+		vi.useFakeTimers();
+		try {
+			const hangingFn = vi.fn(
+				() =>
+					new Promise<void>(() => {
+						// Intentionally unresolved.
+					}),
+			);
+			registerCleanup(hangingFn);
+			const cleanupPromise = runCleanup();
+			await vi.advanceTimersByTimeAsync(1000);
+			await cleanupPromise;
+			expect(hangingFn).toHaveBeenCalledTimes(1);
+		} finally {
+			if (originalTimeout === undefined) {
+				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+			} else {
+				process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = originalTimeout;
+			}
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not leave a pending shutdown timer after fast cleanup", async () => {
+		const originalTimeout = process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+		process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = "5000";
+		vi.useFakeTimers();
+		try {
+			registerCleanup(() => {});
+			await runCleanup();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			if (originalTimeout === undefined) {
+				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+			} else {
+				process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = originalTimeout;
+			}
+			vi.useRealTimers();
+		}
 	});
 
 	describe("process signal integration", () => {

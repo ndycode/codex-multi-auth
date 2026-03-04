@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
+import { fetchWithTimeoutAndRetry } from "../network.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 
 const GITHUB_API_RELEASES =
@@ -11,6 +12,12 @@ const GITHUB_HTML_RELEASES =
 	"https://github.com/openai/codex/releases/latest";
 const CACHE_DIR = getCodexCacheDir();
 const CACHE_TTL_MS = 15 * 60 * 1000;
+const GITHUB_FETCH_TIMEOUT_MS = 8_000;
+const GITHUB_FETCH_RETRIES = 1;
+const GITHUB_RETRYABLE_STATUSES = [429] as const;
+const GITHUB_FETCH_RETRY_BASE_DELAY_MS = 20;
+const GITHUB_FETCH_RETRY_MAX_DELAY_MS = 200;
+const GITHUB_FETCH_RETRY_JITTER_MS = 10;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -142,7 +149,27 @@ async function getLatestReleaseTag(): Promise<string> {
 	}
 
 	try {
-		const response = await fetch(GITHUB_API_RELEASES);
+		const { response, attempts, durationMs } = await fetchWithTimeoutAndRetry(
+			GITHUB_API_RELEASES,
+			undefined,
+			{
+				timeoutMs: GITHUB_FETCH_TIMEOUT_MS,
+				retries: GITHUB_FETCH_RETRIES,
+				retryOnStatuses: GITHUB_RETRYABLE_STATUSES,
+				baseDelayMs: GITHUB_FETCH_RETRY_BASE_DELAY_MS,
+				maxDelayMs: GITHUB_FETCH_RETRY_MAX_DELAY_MS,
+				jitterMs: GITHUB_FETCH_RETRY_JITTER_MS,
+				onRetry: (retry) => {
+					logDebug("Retrying GitHub release API fetch", retry);
+				},
+			},
+		);
+		if (attempts > 1) {
+			logDebug("Recovered GitHub release API fetch after retries", {
+				attempts,
+				durationMs,
+			});
+		}
 		if (response.ok) {
 			const data = (await response.json()) as GitHubRelease;
 			if (data.tag_name) {
@@ -157,7 +184,24 @@ async function getLatestReleaseTag(): Promise<string> {
 		// Fall through to HTML fallback
 	}
 
-	const htmlResponse = await fetch(GITHUB_HTML_RELEASES);
+	const { response: htmlResponse, attempts: htmlAttempts, durationMs: htmlDurationMs } =
+		await fetchWithTimeoutAndRetry(GITHUB_HTML_RELEASES, undefined, {
+			timeoutMs: GITHUB_FETCH_TIMEOUT_MS,
+			retries: GITHUB_FETCH_RETRIES,
+			retryOnStatuses: GITHUB_RETRYABLE_STATUSES,
+			baseDelayMs: GITHUB_FETCH_RETRY_BASE_DELAY_MS,
+			maxDelayMs: GITHUB_FETCH_RETRY_MAX_DELAY_MS,
+			jitterMs: GITHUB_FETCH_RETRY_JITTER_MS,
+			onRetry: (retry) => {
+				logDebug("Retrying GitHub HTML release fetch", retry);
+			},
+		});
+	if (htmlAttempts > 1) {
+		logDebug("Recovered GitHub HTML release fetch after retries", {
+			attempts: htmlAttempts,
+			durationMs: htmlDurationMs,
+		});
+	}
 	if (!htmlResponse.ok) {
 		throw new Error(
 			`Failed to fetch latest release: ${htmlResponse.status}`,
@@ -313,7 +357,31 @@ async function fetchAndPersistInstructions(
 		headers["If-None-Match"] = cachedETag;
 	}
 
-	const response = await fetch(instructionsUrl, { headers });
+	const { response, attempts, durationMs } = await fetchWithTimeoutAndRetry(
+		instructionsUrl,
+		{ headers },
+		{
+			timeoutMs: GITHUB_FETCH_TIMEOUT_MS,
+			retries: GITHUB_FETCH_RETRIES,
+			retryOnStatuses: GITHUB_RETRYABLE_STATUSES,
+			baseDelayMs: GITHUB_FETCH_RETRY_BASE_DELAY_MS,
+			maxDelayMs: GITHUB_FETCH_RETRY_MAX_DELAY_MS,
+			jitterMs: GITHUB_FETCH_RETRY_JITTER_MS,
+			onRetry: (retry) => {
+				logDebug("Retrying Codex prompt download", {
+					url: instructionsUrl,
+					...retry,
+				});
+			},
+		},
+	);
+	if (attempts > 1) {
+		logDebug("Recovered Codex prompt download after retries", {
+			url: instructionsUrl,
+			attempts,
+			durationMs,
+		});
+	}
 	if (response.status === 304) {
 		const diskContent = await readFileOrNull(cacheFile);
 		if (diskContent) {

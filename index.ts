@@ -271,11 +271,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		code: string,
 		verifier: string,
 		redirectUri: string,
+		options?: { timeoutMs?: number },
 	): Promise<TokenResult> => {
 		const rateLimitKey = "oauth:code-exchange";
 		checkAuthRateLimit(rateLimitKey);
 		recordAuthAttempt(rateLimitKey);
-		const tokens = await exchangeAuthorizationCode(code, verifier, redirectUri);
+		const tokens = await exchangeAuthorizationCode(code, verifier, redirectUri, options);
 		if (tokens.type === "success") {
 			resetAuthRateLimit(rateLimitKey);
 		}
@@ -445,6 +446,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 };
         };
 
+        const resolveOAuthFetchTimeoutMs = (): number => {
+                return getFetchTimeoutMs(loadPluginConfig());
+        };
+
         const buildManualOAuthFlow = (
                 pkce: { verifier: string },
                 url: string,
@@ -483,11 +488,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         message: "OAuth state mismatch. Restart login and try again.",
                                 };
                         }
-						const tokens = await exchangeAuthorizationCodeWithRateLimit(
-							parsed.code,
-							pkce.verifier,
-							REDIRECT_URI,
-						);
+                        const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
+                        const tokens = await exchangeAuthorizationCodeWithRateLimit(
+                                parsed.code,
+                                pkce.verifier,
+                                REDIRECT_URI,
+                                { timeoutMs: oauthFetchTimeoutMs },
+                        );
                         if (tokens?.type === "success") {
                                 const resolved = resolveAccountSelection(tokens);
                                 if (onSuccess) {
@@ -533,9 +540,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		}
 
                 return await exchangeAuthorizationCodeWithRateLimit(
+                const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
+                return await exchangeAuthorizationCodeWithRateLimit(
                         result.code,
                         pkce.verifier,
                         REDIRECT_URI,
+                        { timeoutMs: oauthFetchTimeoutMs },
                 );
         };
 
