@@ -24,8 +24,6 @@ function createDoctorFixture(scripts: Record<string, string> = {
 		join(root, "package.json"),
 		`${JSON.stringify({ name: "fixture", version: "1.0.0", scripts }, null, 2)}\n`,
 	);
-	writeFileSync(join(binDir, "npm"), "");
-	writeFileSync(join(binDir, "git"), "");
 	writeFileSync(join(binDir, "npm.cmd"), "");
 	writeFileSync(join(binDir, "git.cmd"), "");
 	return { root, binDir };

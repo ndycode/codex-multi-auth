@@ -221,8 +221,9 @@ export function runDevDoctor(options = {}) {
 		failures.push("git is required but was not found in PATH.");
 	} else {
 		const gitCheck = runCommand(gitPath, ["--version"], spawnFn);
-		if (gitCheck.status === 0 && gitCheck.stdout.trim().length > 0) {
-			details.push(`${gitCheck.stdout.trim()} OK`);
+		const gitOutput = `${gitCheck.stdout ?? ""}`.trim();
+		if (gitCheck.status === 0 && gitOutput.length > 0) {
+			details.push(`${gitOutput} OK`);
 		} else {
 			failures.push(`git entrypoint detected at ${gitPath} but could not be executed.`);
 		}

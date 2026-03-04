@@ -96,6 +96,29 @@ describe("setup-dev script", () => {
 		);
 	});
 
+	it("awaits async doctor hook before running install and validation gates", async () => {
+		const runDevDoctorFn = vi.fn(async () => 0);
+		const runCommandFn = vi.fn().mockResolvedValue(0);
+		const exitCode = await runSetupDev({
+			cwd: process.cwd(),
+			platform: "linux",
+			runDevDoctorFn,
+			runCommandFn,
+			npmInvocation: { command: "npm", prefixArgs: [] },
+		});
+
+		expect(exitCode).toBe(0);
+		expect(runDevDoctorFn).toHaveBeenCalledTimes(1);
+		expect(runCommandFn).toHaveBeenNthCalledWith(1, "npm", ["ci"], expect.any(String));
+		expect(runCommandFn).toHaveBeenNthCalledWith(2, "npm", ["run", "verify"], expect.any(String));
+		expect(runCommandFn).toHaveBeenNthCalledWith(
+			3,
+			"npm",
+			["test", "--", "test/documentation.test.ts"],
+			expect.any(String),
+		);
+	});
+
 	it("runSetupDev short-circuits when doctor fails", async () => {
 		const runDevDoctorFn = vi.fn().mockReturnValue(2);
 		const runCommandFn = vi.fn();

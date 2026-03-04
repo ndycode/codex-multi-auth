@@ -95,7 +95,7 @@ export async function runSetupDev(options = {}) {
 		});
 
 	console.log("Running dev environment checks...");
-	const doctorExitCode = runDoctor({ cwd });
+	const doctorExitCode = await runDoctor({ cwd });
 	if (doctorExitCode !== 0) {
 		return doctorExitCode;
 	}
