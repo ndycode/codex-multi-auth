@@ -67,10 +67,8 @@ export async function runSetupDev(options = {}) {
 
 	console.log("Running local validation gate...");
 	const gateCommands = [
-		["run", "lint"],
-		["run", "typecheck"],
-		["run", "build"],
-		["test"],
+		["run", "verify"],
+		["test", "--", "test/documentation.test.ts"],
 	];
 
 	for (const gateCommand of gateCommands) {

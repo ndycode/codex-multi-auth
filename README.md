@@ -98,12 +98,20 @@ codex auth check
 From repo root:
 
 ```bash
-npm run doctor:dev
 npm run setup:dev
 ```
 
-`doctor:dev` validates local prerequisites and required project files.
-`setup:dev` runs install plus the local quality gate (`lint`, `typecheck`, `build`, `test`).
+Daily validation:
+
+```bash
+npm run doctor:dev
+npm run verify
+```
+
+- `doctor:dev` validates local prerequisites and required project files.
+- `setup:dev` runs install plus the local validation gate.
+- `verify` is the canonical local and CI gate.
+- `format` applies Biome formatting for repo config files (JSON/JSONC/YAML).
 
 ---
 

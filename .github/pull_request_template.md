@@ -8,13 +8,15 @@
 
 ## Validation
 
-- [ ] `npm run doctor:dev`
-- [ ] `npm run setup:dev`
+- [ ] `npm run verify`
+- [ ] `npm run verify:ci`
 - [ ] `npm test -- test/documentation.test.ts`
 - [ ] `npm run lint`
 - [ ] `npm run typecheck`
 - [ ] `npm test`
 - [ ] `npm run build`
+- [ ] `npm run doctor:dev` (when troubleshooting setup/environment issues)
+- [ ] `npm run setup:dev` (for first-clone reproducibility checks)
 
 ## Docs and Governance Checklist
 

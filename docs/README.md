@@ -56,6 +56,8 @@ Canonical documentation map for `codex-multi-auth`.
 | [development/IA_FINDABILITY_AUDIT_2026-03-01.md](development/IA_FINDABILITY_AUDIT_2026-03-01.md) | IA/findability baseline, mismatches, and migration plan |
 | [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Complete field and env inventory |
 | [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Configuration resolution flow |
+| [development/LOCAL_DEV.md](development/LOCAL_DEV.md) | Local contributor setup and validation runbook |
+| [development/RELEASE_RUNBOOK.md](development/RELEASE_RUNBOOK.md) | Maintainer release gate and checklist |
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |
 | [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Dashboard UX parity checklist |

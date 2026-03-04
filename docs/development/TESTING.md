@@ -20,8 +20,9 @@ Coverage thresholds in `vitest.config.ts`: statements/branches/functions/lines >
 ## Core Commands
 
 ```bash
-npm run doctor:dev
 npm run setup:dev
+npm run verify
+npm run verify:ci
 ```
 
 Component commands:
@@ -46,10 +47,18 @@ npm run bench:edit-formats:smoke
 
 ## Recommended Local Gate Before PR
 
-1. `npm run doctor:dev`
-2. `npm run setup:dev`
-3. `npm run test -- test/documentation.test.ts`
+1. `npm run verify`
+2. `npm run test -- test/documentation.test.ts`
+3. for first clone setup: `npm run setup:dev`
 4. run docs command checks for newly documented command paths
+
+## Release Gate
+
+Run before version bump, tag, or publish workflow:
+
+1. `npm run release:check`
+2. verify changelog and release notes alignment
+3. confirm PR checks are green on the release branch
 
 * * *
 

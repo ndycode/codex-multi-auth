@@ -6,10 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test on Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     strategy:
       matrix:
@@ -28,32 +33,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Repository hygiene check
-        run: npm run clean:repo:check
-
-      - name: Security audit (CI policy)
-        run: npm run audit:ci
-
-      - name: Lockfile floor guard
-        run: npm run test -- test/lockfile-version-floor.test.ts
+      - name: Run CI verify pipeline
+        run: npm run verify:ci
 
       - name: Security audit (full dependency tree, non-blocking)
         continue-on-error: true
         run: npm run audit:all
 
-      - name: Run type check
-        run: npm run typecheck
-
-      - name: Run tests with coverage
-        run: npm run coverage
-
-      - name: Build
-        run: npm run build
-
   lint:
     name: Lint
 
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -71,12 +62,13 @@ jobs:
       - name: Dev doctor sanity check
         run: npm run doctor:dev
 
-      - name: Run ESLint
+      - name: Run lint and format checks
         run: npm run lint
 
   codex-compat:
     name: Codex Compatibility Smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
