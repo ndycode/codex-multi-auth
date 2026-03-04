@@ -29,6 +29,13 @@ function createDoctorFixture(scripts: Record<string, string> = {
 	return { root, binDir };
 }
 
+const spawnSyncVersionStub = (command: unknown) => {
+	if (String(command).toLowerCase().includes("git")) {
+		return { status: 0, stdout: "git version 2.40.0\n", stderr: "" };
+	}
+	return { status: 0, stdout: "10.9.0\n", stderr: "" };
+};
+
 describe("doctor-dev script", () => {
 	const tempDirs: string[] = [];
 
@@ -88,6 +95,7 @@ describe("doctor-dev script", () => {
 				PATH: fixture.binDir,
 				npm_execpath: "/tmp/npm-cli.js",
 			},
+			spawnSync: spawnSyncVersionStub,
 			error: (message) => errors.push(String(message)),
 			warn: () => {},
 			log: () => {},
@@ -110,6 +118,7 @@ describe("doctor-dev script", () => {
 				npm_execpath: "/tmp/npm-cli.js",
 			},
 			nodeVersion: "v16.20.0",
+			spawnSync: spawnSyncVersionStub,
 			error: (message) => errors.push(String(message)),
 			warn: () => {},
 			log: () => {},
@@ -156,6 +165,7 @@ describe("doctor-dev script", () => {
 				PATH: fixture.binDir,
 				npm_execpath: "/tmp/npm-cli.js",
 			},
+			spawnSync: spawnSyncVersionStub,
 			error: (message) => errors.push(String(message)),
 			warn: () => {},
 			log: () => {},
