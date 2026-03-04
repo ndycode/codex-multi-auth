@@ -109,6 +109,7 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
+let accountFileMutex: Promise<void> = Promise.resolve();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
   const previousMutex = storageMutex;
@@ -119,8 +120,22 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
   return previousMutex.then(fn).finally(() => releaseLock());
 }
 
+function withAccountFileMutex<T>(fn: () => Promise<T>): Promise<T> {
+	const previousMutex = accountFileMutex;
+	let releaseLock: () => void;
+	accountFileMutex = new Promise<void>((resolve) => {
+		releaseLock = resolve;
+	});
+	return previousMutex.then(fn).finally(() => releaseLock());
+}
+
 async function withStorageSerializedFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-	return withStorageLock(() => withAccountFileLock(path, fn));
+	// Serialize file-lock acquisition to keep save ordering deterministic, then
+	// preserve the historical lock order (file lock -> in-process mutex) so all
+	// account-storage mutation paths share the same acquisition sequence.
+	return withAccountFileMutex(() =>
+		withAccountFileLock(path, () => withStorageLock(fn)),
+	);
 }
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
