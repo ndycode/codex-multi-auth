@@ -190,6 +190,8 @@ export class RefreshGuardian {
 			});
 		} finally {
 			const durationMs = Math.round(performance.now() - tickStart);
+			// Track the most recent tick duration even when no account work was counted,
+			// so diagnostics can still surface event-loop stalls or no-op overhead.
 			this.stats.lastTickDurationMs = durationMs;
 			if (countedRun) {
 				this.stats.maxTickDurationMs = Math.max(this.stats.maxTickDurationMs, durationMs);

@@ -746,13 +746,97 @@ describe("OpenAIOAuthPlugin", () => {
 	});
 
 	describe("codex-metrics tool", () => {
-		it("shows runtime metrics", async () => {
-			const result = await plugin.tool["codex-metrics"].execute();
-			expect(result).toContain("Codex Plugin Metrics");
-			expect(result).toContain("Total upstream requests");
-			expect(result).toContain("Email hydration runs");
-			expect(result).toContain("Email hydration avg duration");
-			expect(result).toContain("Refresh guardian");
+		it("shows runtime metrics with numeric formatting and parallel aggregation", async () => {
+			const readNumericMetric = (
+				report: string,
+				label: string,
+				options: { suffix?: string; allowDecimal?: boolean } = {},
+			): number => {
+				const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const numberPattern = options.allowDecimal ? "(\\d+(?:\\.\\d+)?)" : "(\\d+)";
+				const suffixPattern = options.suffix ? options.suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "";
+				const metricPattern = new RegExp(
+					`^${escapedLabel}: ${numberPattern}${suffixPattern}$`,
+					"m",
+				);
+				const match = report.match(metricPattern);
+				expect(match, `missing metric line for ${label}`).not.toBeNull();
+				return Number(match?.[1] ?? "NaN");
+			};
+
+			const baseline = await plugin.tool["codex-metrics"].execute();
+			expect(baseline).toContain("Codex Plugin Metrics");
+			expect(baseline).toMatch(/^Total upstream requests: \d+$/m);
+			expect(baseline).toMatch(/^Email hydration runs: \d+$/m);
+			expect(baseline).toMatch(/^Email hydration avg duration: \d+ms$/m);
+			expect(baseline).toMatch(
+				/^Refresh guardian: (on|off) \(\d+ refreshed, \d+ failed, avg tick \d+ms\)$/m,
+			);
+
+			const baselineTotal = readNumericMetric(baseline, "Total upstream requests");
+			const baselineSuccess = readNumericMetric(baseline, "Successful responses");
+			const baselineFailed = readNumericMetric(baseline, "Failed responses");
+			const baselineHydrationRuns = readNumericMetric(baseline, "Email hydration runs");
+			const baselineHydrationAvg = readNumericMetric(baseline, "Email hydration avg duration", {
+				suffix: "ms",
+			});
+			const baselineSuccessRate = readNumericMetric(baseline, "Success rate", {
+				suffix: "%",
+				allowDecimal: true,
+			});
+			expect(baselineTotal).toBeGreaterThanOrEqual(0);
+			expect(baselineSuccess).toBeGreaterThanOrEqual(0);
+			expect(baselineFailed).toBeGreaterThanOrEqual(0);
+			expect(baselineHydrationRuns).toBeGreaterThanOrEqual(0);
+			expect(baselineHydrationAvg).toBeGreaterThanOrEqual(0);
+			expect(baselineSuccessRate).toBeGreaterThanOrEqual(0);
+
+			const originalFetch = globalThis.fetch;
+			try {
+				globalThis.fetch = vi
+					.fn()
+					.mockResolvedValue(new Response(JSON.stringify({ id: "resp_test", output: "ok" }), { status: 200 }));
+
+				const getAuth = async () => ({
+					type: "oauth" as const,
+					access: "a",
+					refresh: "r",
+					expires: Date.now() + 60_000,
+					multiAccount: true,
+				});
+				const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as {
+					fetch: (input: string, init: RequestInit) => Promise<Response>;
+				};
+
+				const parallelRuns = 3;
+				const responses = await Promise.all(
+					Array.from({ length: parallelRuns }, () => {
+						return sdk.fetch("https://api.openai.com/v1/responses", {
+							method: "POST",
+							body: JSON.stringify({ model: "gpt-5.1", input: "ping" }),
+						});
+					}),
+				);
+				for (const response of responses) {
+					expect(response.status).toBe(200);
+				}
+
+				const afterParallel = await plugin.tool["codex-metrics"].execute();
+				const totalAfter = readNumericMetric(afterParallel, "Total upstream requests");
+				const successAfter = readNumericMetric(afterParallel, "Successful responses");
+				const failedAfter = readNumericMetric(afterParallel, "Failed responses");
+				const successRateAfter = readNumericMetric(afterParallel, "Success rate", {
+					suffix: "%",
+					allowDecimal: true,
+				});
+
+				expect(totalAfter - baselineTotal).toBe(parallelRuns);
+				expect(successAfter - baselineSuccess).toBe(parallelRuns);
+				expect(failedAfter).toBe(baselineFailed);
+				expect(successRateAfter).toBeGreaterThan(0);
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
 		});
 	});
 

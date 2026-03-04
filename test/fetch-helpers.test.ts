@@ -515,6 +515,17 @@ describe('Fetch Helpers Module', () => {
 			expect(result.parsedBody).toEqual({ id: 'resp_meta', output: 'done' });
 			expect(await result.response.json()).toEqual({ id: 'resp_meta', output: 'done' });
 		});
+
+		it('parses CRLF-framed SSE payloads for non-streaming success responses', async () => {
+			const sseContent =
+				`data: {"type":"response.done","response":{"id":"resp_meta_crlf","output":"done"}}\r\n\r\n`;
+			const response = new Response(sseContent, { status: 200 });
+
+			const result = await handleSuccessResponseDetailed(response, false);
+
+			expect(result.parsedBody).toEqual({ id: 'resp_meta_crlf', output: 'done' });
+			expect(await result.response.json()).toEqual({ id: 'resp_meta_crlf', output: 'done' });
+		});
 	});
 
 	describe('handleErrorResponse error normalization', () => {

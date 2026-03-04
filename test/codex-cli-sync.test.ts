@@ -653,6 +653,57 @@ describe("codex-cli sync", () => {
     expect(result.storage?.accounts[0]?.email).toBe("updated@example.com");
   });
 
+  it("preserves manual accountId when snapshot matches by refresh token", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              accountId: "snapshot-account-id",
+              email: "updated@example.com",
+              auth: {
+                tokens: {
+                  access_token: "new-access",
+                  refresh_token: "refresh-a",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const current: AccountStorageV3 = {
+      version: 3,
+      accounts: [
+        {
+          accountId: "manual-local-id",
+          accountIdSource: "manual",
+          email: "manual@example.com",
+          refreshToken: "refresh-a",
+          accessToken: "old-access",
+          enabled: true,
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+    };
+
+    const result = await syncAccountStorageFromCodexCli(current);
+
+    expect(result.changed).toBe(true);
+    expect(result.storage?.accounts[0]?.accountId).toBe("manual-local-id");
+    expect(result.storage?.accounts[0]?.accountIdSource).toBe("manual");
+    expect(result.storage?.accounts[0]?.accessToken).toBe("new-access");
+    expect(result.storage?.accounts[0]?.email).toBe("updated@example.com");
+  });
+
   it("returns unchanged when Codex state and local selection are already aligned", async () => {
     await writeFile(
       accountsPath,
