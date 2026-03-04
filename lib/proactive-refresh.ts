@@ -138,6 +138,7 @@ export async function refreshExpiringAccounts(
 	bufferMs: number = DEFAULT_PROACTIVE_BUFFER_MS,
 	maxConcurrency: number = DEFAULT_PROACTIVE_REFRESH_MAX_CONCURRENCY,
 ): Promise<Map<number, ProactiveRefreshResult>> {
+	const batchStart = performance.now();
 	const results = new Map<number, ProactiveRefreshResult>();
 	const accountsToRefresh = accounts.filter((a) =>
 		shouldRefreshProactively(a, bufferMs),
@@ -189,6 +190,11 @@ export async function refreshExpiringAccounts(
 			failed,
 		});
 	}
+	log.debug("Proactive refresh timing", {
+		total: accountsToRefresh.length,
+		concurrency: workerCount,
+		durationMs: Math.round(performance.now() - batchStart),
+	});
 
 	return results;
 }

@@ -106,6 +106,8 @@ describe("refresh-guardian", () => {
     const stats = guardian.getStats();
     expect(stats.runs).toBe(1);
     expect(stats.lastRunAt).not.toBeNull();
+    expect(stats.lastTickDurationMs).toBeGreaterThanOrEqual(0);
+    expect(stats.avgTickDurationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("applies refresh outcomes and updates stats", async () => {
@@ -176,6 +178,8 @@ describe("refresh-guardian", () => {
     expect(stats.notNeeded).toBe(0);
     expect(stats.noRefreshToken).toBe(0);
     expect(stats.lastRunAt).not.toBeNull();
+    expect(stats.lastTickDurationMs).toBeGreaterThanOrEqual(0);
+    expect(stats.avgTickDurationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("skips overlapping tick executions", async () => {
@@ -363,6 +367,8 @@ describe("refresh-guardian", () => {
     expect(stats.rateLimited).toBe(1);
     expect(stats.networkFailed).toBe(1);
     expect(stats.authFailed).toBe(2);
+    expect(stats.lastTickDurationMs).toBeGreaterThanOrEqual(0);
+    expect(stats.avgTickDurationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("covers additional failure-classification and skip branches", async () => {
@@ -523,6 +529,8 @@ describe("refresh-guardian", () => {
     expect(stats.rateLimited).toBe(0);
     expect(stats.authFailed).toBe(2);
     expect(stats.networkFailed).toBe(3);
+    expect(stats.lastTickDurationMs).toBeGreaterThanOrEqual(0);
+    expect(stats.avgTickDurationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("handles thrown errors in tick and always resets running state", async () => {

@@ -21,6 +21,10 @@ export interface RefreshGuardianStats {
 	networkFailed: number;
 	authFailed: number;
 	lastRunAt: number | null;
+	lastTickDurationMs: number;
+	maxTickDurationMs: number;
+	cumulativeTickDurationMs: number;
+	avgTickDurationMs: number;
 }
 
 const DEFAULT_INTERVAL_MS = 60_000;
@@ -41,6 +45,10 @@ export class RefreshGuardian {
 		networkFailed: 0,
 		authFailed: 0,
 		lastRunAt: null,
+		lastTickDurationMs: 0,
+		maxTickDurationMs: 0,
+		cumulativeTickDurationMs: 0,
+		avgTickDurationMs: 0,
 	};
 
 	constructor(
@@ -73,7 +81,14 @@ export class RefreshGuardian {
 	}
 
 	getStats(): RefreshGuardianStats {
-		return { ...this.stats };
+		const avgTickDurationMs =
+			this.stats.runs > 0
+				? Math.round(this.stats.cumulativeTickDurationMs / this.stats.runs)
+				: 0;
+		return {
+			...this.stats,
+			avgTickDurationMs,
+		};
 	}
 
 	private classifyFailureReason(tokenResult: TokenResult | undefined): CooldownReason {
@@ -100,6 +115,8 @@ export class RefreshGuardian {
 		const manager = this.getAccountManager();
 		if (!manager) return;
 		this.running = true;
+		const tickStart = performance.now();
+		let countedRun = false;
 		try {
 			const snapshot = manager.getAccountsSnapshot().filter((account) => account.enabled !== false);
 			if (snapshot.length === 0) {
@@ -109,6 +126,7 @@ export class RefreshGuardian {
 			const refreshResults = await refreshExpiringAccounts(snapshot, this.bufferMs);
 			if (refreshResults.size === 0) {
 				this.stats.runs += 1;
+				countedRun = true;
 				this.stats.lastRunAt = Date.now();
 				return;
 			}
@@ -171,12 +189,19 @@ export class RefreshGuardian {
 
 			manager.saveToDiskDebounced();
 			this.stats.runs += 1;
+			countedRun = true;
 			this.stats.lastRunAt = Date.now();
 		} catch (error) {
 			log.warn("Refresh guardian tick failed", {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		} finally {
+			const durationMs = Math.round(performance.now() - tickStart);
+			this.stats.lastTickDurationMs = durationMs;
+			if (countedRun) {
+				this.stats.maxTickDurationMs = Math.max(this.stats.maxTickDurationMs, durationMs);
+				this.stats.cumulativeTickDurationMs += durationMs;
+			}
 			this.running = false;
 		}
 	}
