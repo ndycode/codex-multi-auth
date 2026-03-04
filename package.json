@@ -40,7 +40,7 @@
   "scripts": {
     "build": "tsc && node scripts/copy-oauth-success.js",
     "typecheck": "tsc --noEmit",
-    "lint": "npm run lint:ts && npm run lint:scripts",
+    "lint": "npm run lint:ts && npm run lint:scripts && npm run format:check",
     "lint:ts": "eslint . --ext .ts",
     "lint:scripts": "eslint scripts --ext .js",
     "lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
@@ -71,7 +71,16 @@
     "license:check": "node scripts/license-policy-check.js",
     "sbom": "npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json --omit dev",
     "prepublishOnly": "npm run build",
-    "prepare": "husky"
+    "prepare": "husky",
+    "doctor:dev": "node scripts/doctor-dev.js",
+    "setup:dev": "node scripts/setup-dev.js",
+    "format": "biome format . --write",
+    "format:check": "biome format .",
+    "verify:repo": "npm run clean:repo:check && npm run audit:ci && npm run test -- test/lockfile-version-floor.test.ts",
+    "verify:quality": "npm run lint && npm run typecheck && npm run coverage",
+    "verify": "npm run verify:repo && npm run verify:quality",
+    "verify:ci": "npm run verify:repo && npm run verify:quality",
+    "release:check": "npm run verify && npm run test -- test/documentation.test.ts && npm pack --dry-run"
   },
   "bin": {
     "codex": "scripts/codex.js",
@@ -96,6 +105,9 @@
     ],
     "scripts/**/*.js": [
       "eslint --max-warnings=0 --fix --no-warn-ignored"
+    ],
+    "*.{json,jsonc,yml,yaml}": [
+      "biome format --write --files-ignore-unknown=true"
     ]
   },
   "engines": {
@@ -118,7 +130,8 @@
     "lint-staged": "^16.2.7",
     "typescript": "^5.9.3",
     "typescript-language-server": "^5.1.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "@biomejs/biome": "^2.4.2"
   },
   "dependencies": {
     "@openauthjs/openauth": "^0.4.3",

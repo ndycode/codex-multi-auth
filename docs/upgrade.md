@@ -49,6 +49,18 @@ codex auth forecast --live --model gpt-5-codex
 
 ---
 
+## Contributor Workflow Upgrade (`doctor:dev` / `setup:dev`)
+
+Repository contributors should adopt the bootstrap workflow documented in `README.md`:
+
+- `npm run doctor:dev`: validates local prerequisites and repository shape before running gates.
+- `npm run setup:dev`: runs `doctor:dev`, installs with `npm ci`, then executes the local validation gate.
+- `npm run verify`: canonical local parity gate used by CI (`verify:ci`).
+
+After pulling this change set, run `npm run setup:dev` once per clone/worktree to align local tooling expectations.
+
+---
+
 ## Configuration Upgrade Notes
 
 During upgrades, runtime config source precedence is:
