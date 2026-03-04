@@ -24,6 +24,8 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
+npm run audit:ci
+npm run license:check
 ```
 
 Optional:
@@ -42,8 +44,11 @@ npm run bench:edit-formats:smoke
 1. `npm run typecheck`
 2. `npm run lint`
 3. `npm test`
-4. `npm run build`
-5. run docs command checks for newly documented command paths
+4. `npm run coverage`
+5. `npm run build`
+6. `npm run audit:ci`
+7. `npm run license:check`
+8. run docs command checks for newly documented command paths
 
 * * *
 

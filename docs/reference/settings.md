@@ -128,6 +128,12 @@ Common operator overrides:
 - `CODEX_TUI_GLYPHS`
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
+- `CODEX_AUTH_ENCRYPTION_KEY`
+- `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY`
+- `CODEX_AUTH_ROLE`
+
+Encryption key variables must be high-entropy 32-byte key material (for example,
+from a secret manager). Do not use passwords.
 
 ---
 
@@ -141,6 +147,14 @@ Maintainer/debug-focused overrides include:
 - `CODEX_CLI_ACCOUNTS_PATH`
 - `CODEX_CLI_AUTH_PATH`
 - refresh lease controls (`CODEX_AUTH_REFRESH_LEASE*`)
+- `CODEX_AUTH_BREAK_GLASS`
+- `CODEX_AUTH_ABAC_READ_ONLY`
+- `CODEX_AUTH_ABAC_DENY_ACTIONS`
+- `CODEX_AUTH_ABAC_DENY_COMMANDS`
+- `CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE`
+- `CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY`
+- `CODEX_AUTH_REDACT_JSON_OUTPUT`
+- retention controls (`CODEX_AUTH_RETENTION_*`)
 
 Full inventory: [../development/CONFIG_FIELDS.md](../development/CONFIG_FIELDS.md)
 

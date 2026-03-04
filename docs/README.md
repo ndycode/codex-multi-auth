@@ -59,6 +59,7 @@ Canonical documentation map for `codex-multi-auth`.
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |
 | [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Dashboard UX parity checklist |
+| [runbooks/README.md](runbooks/README.md) | Operations and incident response playbooks |
 | [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark methodology and outputs |
 
 ---

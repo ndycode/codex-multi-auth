@@ -68,6 +68,12 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | HTTP request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
+| `CODEX_AUTH_ENCRYPTION_KEY=<32-byte-random-key>` | Enable at-rest encryption for stored account secrets (high-entropy key material only) |
+| `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY=<32-byte-random-key>` | Previous high-entropy key used during staged secret rotation |
+| `CODEX_AUTH_ROLE=admin|operator|viewer` | CLI authorization role baseline |
+
+For `CODEX_AUTH_ENCRYPTION_KEY` and `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY`, use 32-byte
+random key material from a secret manager. Do not use user-memorable passwords.
 
 ---
 
@@ -81,6 +87,14 @@ Use these only when debugging, controlled benchmarking, or maintainer workflows.
 - `CODEX_CLI_ACCOUNTS_PATH`
 - `CODEX_CLI_AUTH_PATH`
 - refresh lease tuning variables (`CODEX_AUTH_REFRESH_LEASE*`)
+- `CODEX_AUTH_BREAK_GLASS`
+- `CODEX_AUTH_ABAC_READ_ONLY`
+- `CODEX_AUTH_ABAC_DENY_ACTIONS`
+- `CODEX_AUTH_ABAC_DENY_COMMANDS`
+- `CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE`
+- `CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY`
+- `CODEX_AUTH_REDACT_JSON_OUTPUT`
+- retention tuning variables (`CODEX_AUTH_RETENTION_*`)
 
 Full inventory: [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
 

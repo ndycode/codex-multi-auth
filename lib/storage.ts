@@ -3,8 +3,16 @@ import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
+import { acquireFileLock } from "./file-lock.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
+import {
+	decryptSecret,
+	encryptSecret,
+	getSecretEncryptionKeysFromEnv,
+	isEncryptedSecret,
+	type SecretEncryptionKeys,
+} from "./secrets-crypto.js";
 import {
 	getConfigDir,
 	getProjectConfigDir,
@@ -34,9 +42,16 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const ACCOUNT_STORAGE_LOCK_OPTIONS = {
+	maxAttempts: 80,
+	baseDelayMs: 15,
+	maxDelayMs: 800,
+	staleAfterMs: 120_000,
+} as const;
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
+const missingEncryptionKeyWarnings = new Set<string>();
 
 export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
 	flaggedAt: number;
@@ -94,6 +109,7 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
+let accountFileMutex: Promise<void> = Promise.resolve();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
   const previousMutex = storageMutex;
@@ -102,6 +118,23 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
     releaseLock = resolve;
   });
   return previousMutex.then(fn).finally(() => releaseLock());
+}
+
+function withAccountFileMutex<T>(fn: () => Promise<T>): Promise<T> {
+	const previousMutex = accountFileMutex;
+	let releaseLock: () => void;
+	accountFileMutex = new Promise<void>((resolve) => {
+		releaseLock = resolve;
+	});
+	return previousMutex.then(fn).finally(() => releaseLock());
+}
+
+async function withStorageSerializedFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	// Serialize file-lock acquisition to keep save ordering deterministic.
+	// Acquisition order: file-queue mutex -> file lock -> storage mutex.
+	return withAccountFileMutex(() =>
+		withAccountFileLock(path, () => withStorageLock(fn)),
+	);
 }
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
@@ -113,6 +146,69 @@ type AccountLike = {
   addedAt?: number;
   lastUsed?: number;
 };
+
+function getConfiguredSecretKeys(): SecretEncryptionKeys {
+	return getSecretEncryptionKeysFromEnv();
+}
+
+function warnMissingEncryptionKeyOnce(fieldName: string): void {
+	const message = `Encrypted ${fieldName} detected but CODEX_AUTH_ENCRYPTION_KEY is not configured`;
+	if (missingEncryptionKeyWarnings.has(message)) return;
+	missingEncryptionKeyWarnings.add(message);
+	log.warn(message);
+}
+
+function decryptStorageSecret(value: string, fieldName: string): { value: string; usedPreviousKey: boolean } {
+	if (!isEncryptedSecret(value)) {
+		return { value, usedPreviousKey: false };
+	}
+
+	const keys = getConfiguredSecretKeys();
+	if (!keys.primary && !keys.previous) {
+		warnMissingEncryptionKeyOnce(fieldName);
+		throw new Error(`Encrypted ${fieldName} cannot be read without CODEX_AUTH_ENCRYPTION_KEY`);
+	}
+	return decryptSecret(value, keys);
+}
+
+function encryptStorageSecret(value: string): string {
+	if (!value) return value;
+	const keys = getConfiguredSecretKeys();
+	if (!keys.primary) return value;
+	return encryptSecret(value, keys.primary);
+}
+
+function decryptAccountSensitiveFields(account: AccountMetadataV3): AccountMetadataV3 {
+	const refreshResult = decryptStorageSecret(account.refreshToken, "refresh token");
+	const accessResult =
+		typeof account.accessToken === "string" && account.accessToken.length > 0
+			? decryptStorageSecret(account.accessToken, "access token")
+			: null;
+
+	return {
+		...account,
+		refreshToken: refreshResult.value,
+		...(accessResult ? { accessToken: accessResult.value } : {}),
+	};
+}
+
+function encryptAccountSensitiveFields(account: AccountMetadataV3): AccountMetadataV3 {
+	return {
+		...account,
+		refreshToken: encryptStorageSecret(account.refreshToken),
+		...(typeof account.accessToken === "string" && account.accessToken.length > 0
+			? { accessToken: encryptStorageSecret(account.accessToken) }
+			: {}),
+	};
+}
+
+function cloneStorageForPersist(storage: AccountStorageV3): AccountStorageV3 {
+	return {
+		...storage,
+		accounts: storage.accounts.map((account) => encryptAccountSensitiveFields({ ...account })),
+		activeIndexByFamily: storage.activeIndexByFamily ? { ...storage.activeIndexByFamily } : {},
+	};
+}
 
 function looksLikeSyntheticFixtureAccount(account: AccountMetadataV3): boolean {
 	const email = typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
@@ -236,6 +332,42 @@ function getAccountsWalPath(path: string): string {
 	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
 }
 
+function getAccountsLockPath(path: string): string {
+	return `${path}.lock`;
+}
+
+async function releaseStorageLockFallback(lockPath: string): Promise<void> {
+	try {
+		await fs.rm(lockPath, { force: true });
+	} catch (error) {
+		log.debug("Best-effort lock cleanup fallback failed", {
+			path: lockPath,
+			error: String(error),
+		});
+	}
+}
+
+async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	const lockPath = getAccountsLockPath(path);
+	await fs.mkdir(dirname(path), { recursive: true });
+	const lock = await acquireFileLock(lockPath, ACCOUNT_STORAGE_LOCK_OPTIONS);
+	try {
+		return await fn();
+	} finally {
+		try {
+			await lock.release();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				log.warn("Failed to release account storage lock", {
+					path: lockPath,
+					error: String(error),
+				});
+				await releaseStorageLockFallback(lockPath);
+			}
+		}
+	}
+}
 async function copyFileWithRetry(
 	sourcePath: string,
 	destinationPath: string,
@@ -782,10 +914,12 @@ export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null 
       ? migrateV1ToV3(data as unknown as AccountStorageV1)
       : (data as unknown as AccountStorageV3);
 
-  const validAccounts = rawAccounts.filter(
-    (account): account is AccountMetadataV3 =>
-      isRecord(account) && typeof account.refreshToken === "string" && !!account.refreshToken.trim(),
-  );
+  const validAccounts = rawAccounts
+    .filter(
+      (account): account is AccountMetadataV3 =>
+        isRecord(account) && typeof account.refreshToken === "string" && !!account.refreshToken.trim(),
+    )
+    .map((account) => decryptAccountSensitiveFields(account));
 
   const deduplicatedAccounts = deduplicateAccountsByEmail(
     deduplicateAccountsByKey(validAccounts),
@@ -1069,7 +1203,8 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 		}
 	}
 
-    const content = JSON.stringify(storage, null, 2);
+	const persistedStorage = cloneStorageForPersist(storage);
+    const content = JSON.stringify(persistedStorage, null, 2);
 	const journalEntry: AccountsJournalEntry = {
 		version: 1,
 		createdAt: Date.now(),
@@ -1146,11 +1281,13 @@ export async function withAccountStorageTransaction<T>(
     persist: (storage: AccountStorageV3) => Promise<void>,
   ) => Promise<T>,
 ): Promise<T> {
-  return withStorageLock(async () => {
-    const current = await loadAccountsInternal(saveAccountsUnlocked);
-    return handler(current, saveAccountsUnlocked);
-  });
+	const path = getStoragePath();
+	return withStorageSerializedFileLock(path, async () => {
+		const current = await loadAccountsInternal(saveAccountsUnlocked);
+		return handler(current, saveAccountsUnlocked);
+	});
 }
+
 
 /**
  * Persists account storage to disk using atomic write (temp file + rename).
@@ -1160,20 +1297,22 @@ export async function withAccountStorageTransaction<T>(
  * @throws StorageError with platform-aware hints on failure
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
-  return withStorageLock(async () => {
-    await saveAccountsUnlocked(storage);
-  });
+	const path = getStoragePath();
+	return withStorageSerializedFileLock(path, async () => {
+		await saveAccountsUnlocked(storage);
+	});
 }
+
 
 /**
  * Deletes the account storage file from disk.
  * Silently ignores if file doesn't exist.
  */
 export async function clearAccounts(): Promise<void> {
-  return withStorageLock(async () => {
-    const path = getStoragePath();
-    const walPath = getAccountsWalPath(path);
-	const backupPaths = getAccountsBackupRecoveryCandidates(path);
+	const path = getStoragePath();
+	return withStorageSerializedFileLock(path, async () => {
+		const walPath = getAccountsWalPath(path);
+		const backupPaths = getAccountsBackupRecoveryCandidates(path);
     const clearPath = async (targetPath: string): Promise<void> => {
       try {
         await fs.unlink(targetPath);
@@ -1193,8 +1332,9 @@ export async function clearAccounts(): Promise<void> {
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.
     }
-  });
+	});
 }
+
 
 function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 	if (!isRecord(data) || data.version !== 1 || !Array.isArray(data.accounts)) {
@@ -1204,9 +1344,15 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 	const byRefreshToken = new Map<string, FlaggedAccountMetadataV1>();
 	for (const rawAccount of data.accounts) {
 		if (!isRecord(rawAccount)) continue;
-		const refreshToken =
+		const refreshTokenRaw =
 			typeof rawAccount.refreshToken === "string" ? rawAccount.refreshToken.trim() : "";
-		if (!refreshToken) continue;
+		if (!refreshTokenRaw) continue;
+		let refreshToken: string;
+		try {
+			refreshToken = decryptStorageSecret(refreshTokenRaw, "flagged refresh token").value;
+		} catch {
+			continue;
+		}
 
 		const flaggedAt = typeof rawAccount.flaggedAt === "number" ? rawAccount.flaggedAt : Date.now();
 		const isAccountIdSource = (
@@ -1272,6 +1418,19 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 	};
 }
 
+function cloneFlaggedStorageForPersist(storage: FlaggedAccountStorageV1): FlaggedAccountStorageV1 {
+	return {
+		version: 1,
+		accounts: storage.accounts.map((account) => ({
+			...account,
+			refreshToken: encryptStorageSecret(account.refreshToken),
+			...(typeof account.accessToken === "string" && account.accessToken.length > 0
+				? { accessToken: encryptStorageSecret(account.accessToken) }
+				: {}),
+		})),
+	};
+}
+
 export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	const path = getFlaggedAccountsPath();
 	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
@@ -1329,7 +1488,8 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 
 		try {
 			await fs.mkdir(dirname(path), { recursive: true });
-			const content = JSON.stringify(normalizeFlaggedStorage(storage), null, 2);
+			const normalized = normalizeFlaggedStorage(storage);
+			const content = JSON.stringify(cloneFlaggedStorageForPersist(normalized), null, 2);
 			await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 			await fs.rename(tempPath, path);
 		} catch (error) {
@@ -1377,7 +1537,7 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
   
   await fs.mkdir(dirname(resolvedPath), { recursive: true });
   
-  const content = JSON.stringify(storage, null, 2);
+  const content = JSON.stringify(cloneStorageForPersist(storage), null, 2);
   await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
   log.info("Exported accounts", { path: resolvedPath, count: storage.accounts.length });
 }
@@ -1446,3 +1606,33 @@ export async function importAccounts(filePath: string): Promise<{ imported: numb
 
   return { imported: importedCount, total, skipped: skippedCount };
 }
+
+export async function rotateStoredSecretEncryption(): Promise<{
+	accounts: number;
+	flaggedAccounts: number;
+}> {
+	const keys = getConfiguredSecretKeys();
+	if (!keys.primary) {
+		throw new Error("CODEX_AUTH_ENCRYPTION_KEY is required to rotate stored secrets");
+	}
+
+	let accountCount = 0;
+	const accounts = await loadAccounts();
+	if (accounts) {
+		accountCount = accounts.accounts.length;
+		await saveAccounts(accounts);
+	}
+
+	const flagged = await loadFlaggedAccounts();
+	const flaggedCount = flagged.accounts.length;
+	if (flaggedCount > 0) {
+		await saveFlaggedAccounts(flagged);
+	}
+
+	return {
+		accounts: accountCount,
+		flaggedAccounts: flaggedCount,
+	};
+}
+
+

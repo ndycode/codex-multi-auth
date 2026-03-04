@@ -195,6 +195,21 @@ Used only for host plugin mode through the host runtime config file.
 | `CODEX_TUI_GLYPHS` | TUI glyph mode |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
+| `CODEX_AUTH_ENCRYPTION_KEY` | Primary high-entropy 32-byte key for at-rest secret encryption |
+| `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY` | Previous high-entropy 32-byte key for staged secret rotation |
+| `CODEX_AUTH_ROLE` | Authorization role baseline (`admin`, `operator`, `viewer`) |
+| `CODEX_AUTH_BREAK_GLASS` | Emergency authorization bypass toggle |
+| `CODEX_AUTH_ABAC_READ_ONLY` | Deny mutating actions while allowing read-only command paths |
+| `CODEX_AUTH_ABAC_DENY_ACTIONS` | Comma-separated action denies (`accounts:write`, etc.) |
+| `CODEX_AUTH_ABAC_DENY_COMMANDS` | Comma-separated command denies (`rotate-secrets`, etc.) |
+| `CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE` | Comma-separated actions that require interactive terminal |
+| `CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY` | Comma-separated actions that require idempotency key context |
+| `CODEX_AUTH_REDACT_JSON_OUTPUT` | Redact sensitive values in JSON command output |
+| `CODEX_AUTH_RETENTION_LOG_DAYS` | Log retention window |
+| `CODEX_AUTH_RETENTION_CACHE_DAYS` | Cache retention window |
+| `CODEX_AUTH_RETENTION_FLAGGED_DAYS` | Flagged-account file retention window |
+| `CODEX_AUTH_RETENTION_QUOTA_CACHE_DAYS` | Quota cache retention window |
+| `CODEX_AUTH_RETENTION_DLQ_DAYS` | Dead-letter queue retention window |
 | `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |
 | `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force official Codex binary path |
 | `CODEX_MULTI_AUTH_BYPASS` | Bypass local auth handling |

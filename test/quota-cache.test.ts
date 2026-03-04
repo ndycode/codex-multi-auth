@@ -190,7 +190,10 @@ describe("quota cache", () => {
         byEmail: {},
       });
 
-      expect(unlinkSpy).toHaveBeenCalledTimes(1);
+      const tmpUnlinks = unlinkSpy.mock.calls.filter((call) =>
+        String(call[0]).endsWith(".tmp"),
+      );
+      expect(tmpUnlinks).toHaveLength(1);
       const entries = await fs.readdir(tempDir);
       expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
     } finally {

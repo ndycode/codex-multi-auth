@@ -10,12 +10,14 @@ import {
 import { join } from "node:path";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { sleep } from "./utils.js";
+import { acquireFileLock, acquireFileLockSync } from "./file-lock.js";
 
 type JsonRecord = Record<string, unknown>;
 
 export const UNIFIED_SETTINGS_VERSION = 1 as const;
 
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
+const UNIFIED_SETTINGS_LOCK_PATH = `${UNIFIED_SETTINGS_PATH}.lock`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 
@@ -125,29 +127,39 @@ function writeSettingsRecordSync(record: JsonRecord): void {
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
-	writeFileSync(tempPath, data, "utf8");
-	let moved = false;
+	const lock = acquireFileLockSync(UNIFIED_SETTINGS_LOCK_PATH, {
+		maxAttempts: 80,
+		baseDelayMs: 15,
+		maxDelayMs: 800,
+		staleAfterMs: 120_000,
+	});
 	try {
-		for (let attempt = 0; attempt < 5; attempt += 1) {
-			try {
-				renameSync(tempPath, UNIFIED_SETTINGS_PATH);
-				moved = true;
-				return;
-			} catch (error) {
-				if (!isRetryableFsError(error) || attempt >= 4) {
-					throw error;
+		writeFileSync(tempPath, data, "utf8");
+		let moved = false;
+		try {
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					renameSync(tempPath, UNIFIED_SETTINGS_PATH);
+					moved = true;
+					return;
+				} catch (error) {
+					if (!isRetryableFsError(error) || attempt >= 4) {
+						throw error;
+					}
+					Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
 				}
-				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+			}
+		} finally {
+			if (!moved) {
+				try {
+					unlinkSync(tempPath);
+				} catch {
+					// Best-effort temp cleanup.
+				}
 			}
 		}
 	} finally {
-		if (!moved) {
-			try {
-				unlinkSync(tempPath);
-			} catch {
-				// Best-effort temp cleanup.
-			}
-		}
+		lock.release();
 	}
 }
 
@@ -176,29 +188,39 @@ async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.writeFile(tempPath, data, "utf8");
-	let moved = false;
+	const lock = await acquireFileLock(UNIFIED_SETTINGS_LOCK_PATH, {
+		maxAttempts: 80,
+		baseDelayMs: 15,
+		maxDelayMs: 800,
+		staleAfterMs: 120_000,
+	});
 	try {
-		for (let attempt = 0; attempt < 5; attempt += 1) {
-			try {
-				await fs.rename(tempPath, UNIFIED_SETTINGS_PATH);
-				moved = true;
-				return;
-			} catch (error) {
-				if (!isRetryableFsError(error) || attempt >= 4) {
-					throw error;
+		await fs.writeFile(tempPath, data, "utf8");
+		let moved = false;
+		try {
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rename(tempPath, UNIFIED_SETTINGS_PATH);
+					moved = true;
+					return;
+				} catch (error) {
+					if (!isRetryableFsError(error) || attempt >= 4) {
+						throw error;
+					}
+					await sleep(10 * 2 ** attempt);
 				}
-				await sleep(10 * 2 ** attempt);
+			}
+		} finally {
+			if (!moved) {
+				try {
+					await fs.unlink(tempPath);
+				} catch {
+					// Best-effort temp cleanup.
+				}
 			}
 		}
 	} finally {
-		if (!moved) {
-			try {
-				await fs.unlink(tempPath);
-			} catch {
-				// Best-effort temp cleanup.
-			}
-		}
+		await lock.release();
 	}
 }
 

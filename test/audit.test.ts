@@ -251,6 +251,7 @@ describe("Audit logging", () => {
 		it("should have all expected actions", () => {
 			expect(AuditAction.ACCOUNT_ADD).toBe("account.add");
 			expect(AuditAction.AUTH_LOGIN).toBe("auth.login");
+			expect(AuditAction.AUTH_BREAK_GLASS).toBe("auth.break_glass");
 			expect(AuditAction.CONFIG_LOAD).toBe("config.load");
 			expect(AuditAction.REQUEST_START).toBe("request.start");
 			expect(AuditAction.CIRCUIT_OPEN).toBe("circuit.open");
