@@ -44,6 +44,7 @@ import {
 	getFastSessionMaxInputItems,
 	getRateLimitToastDebounceMs,
 	getRetryAllAccountsMaxRetries,
+	getRetryAllAccountsAbsoluteCeilingMs,
 	getRetryAllAccountsMaxWaitMs,
 	getRetryAllAccountsRateLimited,
 	getFallbackToGpt52OnUnsupportedGpt53,
@@ -156,6 +157,10 @@ import {
 } from "./lib/request/rate-limit-backoff.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
 import { addJitter } from "./lib/rotation.js";
+import {
+	decideRetryAllAccountsRateLimited,
+	type RetryAllAccountsRateLimitDecisionReason,
+} from "./lib/request/retry-governor.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { LiveAccountSync } from "./lib/live-account-sync.js";
 import { RefreshGuardian } from "./lib/refresh-guardian.js";
@@ -344,6 +349,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		streamFailoverAttempts: number;
 		streamFailoverRecoveries: number;
 		streamFailoverCrossAccountRecoveries: number;
+		retryGovernorStopsWaitExceedsMax: number;
+		retryGovernorStopsRetryLimitReached: number;
+		retryGovernorStopsAbsoluteCeilingExceeded: number;
 		cumulativeLatencyMs: number;
 		lastRequestAt: number | null;
 		lastError: string | null;
@@ -365,9 +373,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		streamFailoverAttempts: 0,
 		streamFailoverRecoveries: 0,
 		streamFailoverCrossAccountRecoveries: 0,
+		retryGovernorStopsWaitExceedsMax: 0,
+		retryGovernorStopsRetryLimitReached: 0,
+		retryGovernorStopsAbsoluteCeilingExceeded: 0,
 		cumulativeLatencyMs: 0,
 		lastRequestAt: null,
 		lastError: null,
+	};
+
+	const recordRetryGovernorStopReason = (
+		reason: RetryAllAccountsRateLimitDecisionReason,
+	): void => {
+		switch (reason) {
+			case "wait-exceeds-max":
+				runtimeMetrics.retryGovernorStopsWaitExceedsMax += 1;
+				return;
+			case "retry-limit-reached":
+				runtimeMetrics.retryGovernorStopsRetryLimitReached += 1;
+				return;
+			case "absolute-ceiling-exceeded":
+				runtimeMetrics.retryGovernorStopsAbsoluteCeilingExceeded += 1;
+				return;
+			default:
+				return;
+		}
 	};
 
         type TokenSuccess = Extract<TokenResult, { type: "success" }>;
@@ -1124,6 +1153,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const retryAllAccountsRateLimited = getRetryAllAccountsRateLimited(pluginConfig);
 				const retryAllAccountsMaxWaitMs = getRetryAllAccountsMaxWaitMs(pluginConfig);
 				const retryAllAccountsMaxRetries = getRetryAllAccountsMaxRetries(pluginConfig);
+				const retryAllAccountsAbsoluteCeilingMs =
+					getRetryAllAccountsAbsoluteCeilingMs(pluginConfig);
 				const unsupportedCodexPolicy = getUnsupportedCodexPolicy(pluginConfig);
 				const fallbackOnUnsupportedCodexModel = unsupportedCodexPolicy === "fallback";
 				const fallbackToGpt52OnUnsupportedGpt53 =
@@ -1397,6 +1428,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					};
 
 							let allRateLimitedRetries = 0;
+							let accumulatedAllRateLimitedWaitMs = 0;
 							let emptyResponseRetries = 0;
 							const attemptedUnsupportedFallbackModels = new Set<string>();
 							if (model) {
@@ -2368,19 +2400,36 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
 										const count = accountManager.getAccountCount();
+								const retryDecision = decideRetryAllAccountsRateLimited({
+									enabled: retryAllAccountsRateLimited,
+									accountCount: count,
+									waitMs,
+									maxWaitMs: retryAllAccountsMaxWaitMs,
+									currentRetryCount: allRateLimitedRetries,
+									maxRetries: retryAllAccountsMaxRetries,
+									accumulatedWaitMs: accumulatedAllRateLimitedWaitMs,
+									absoluteCeilingMs: retryAllAccountsAbsoluteCeilingMs,
+								});
 
-								if (
-									retryAllAccountsRateLimited &&
-									count > 0 &&
-									waitMs > 0 &&
-									(retryAllAccountsMaxWaitMs === 0 ||
-										waitMs <= retryAllAccountsMaxWaitMs) &&
-									allRateLimitedRetries < retryAllAccountsMaxRetries
-								) {
+								if (retryDecision.shouldRetry) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
 									await sleepWithCountdown(addJitter(waitMs, 0.2), countdownMessage);
 									allRateLimitedRetries++;
+									accumulatedAllRateLimitedWaitMs += waitMs;
 									continue;
+								}
+								recordRetryGovernorStopReason(retryDecision.reason);
+								if (retryDecision.reason !== "disabled" && retryDecision.reason !== "no-accounts") {
+									logDebug("Retry governor blocked all-rate-limited retry", {
+										reason: retryDecision.reason,
+										accountCount: count,
+										waitMs,
+										retryCount: allRateLimitedRetries,
+										accumulatedWaitMs: accumulatedAllRateLimitedWaitMs,
+										maxWaitMs: retryAllAccountsMaxWaitMs,
+										maxRetries: retryAllAccountsMaxRetries,
+										absoluteCeilingMs: retryAllAccountsAbsoluteCeilingMs,
+									});
 								}
 
 								const waitLabel = waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
@@ -3763,6 +3812,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 						`Stream failover attempts: ${runtimeMetrics.streamFailoverAttempts}`,
 						`Stream failover recoveries: ${runtimeMetrics.streamFailoverRecoveries}`,
 						`Stream failover cross-account recoveries: ${runtimeMetrics.streamFailoverCrossAccountRecoveries}`,
+						`Retry governor stops (wait>max): ${runtimeMetrics.retryGovernorStopsWaitExceedsMax}`,
+						`Retry governor stops (retry limit): ${runtimeMetrics.retryGovernorStopsRetryLimitReached}`,
+						`Retry governor stops (absolute ceiling): ${runtimeMetrics.retryGovernorStopsAbsoluteCeilingExceeded}`,
 						`Empty-response retries: ${runtimeMetrics.emptyResponseRetries}`,
 						`Session affinity entries: ${sessionAffinityEntries}`,
 						`Live sync: ${liveSyncSnapshot?.running ? "on" : "off"} (${liveSyncSnapshot?.reloadCount ?? 0} reloads)`,
@@ -3797,6 +3849,24 @@ while (attempted.size < Math.max(1, accountCount)) {
 								"Stream failover cross-account recoveries",
 								String(runtimeMetrics.streamFailoverCrossAccountRecoveries),
 								"accent",
+							),
+							formatUiKeyValue(
+								ui,
+								"Retry governor stops (wait>max)",
+								String(runtimeMetrics.retryGovernorStopsWaitExceedsMax),
+								"warning",
+							),
+							formatUiKeyValue(
+								ui,
+								"Retry governor stops (retry limit)",
+								String(runtimeMetrics.retryGovernorStopsRetryLimitReached),
+								"warning",
+							),
+							formatUiKeyValue(
+								ui,
+								"Retry governor stops (absolute ceiling)",
+								String(runtimeMetrics.retryGovernorStopsAbsoluteCeilingExceeded),
+								"warning",
 							),
 							formatUiKeyValue(ui, "Empty-response retries", String(runtimeMetrics.emptyResponseRetries), "warning"),
 							formatUiKeyValue(ui, "Session affinity entries", String(sessionAffinityEntries), "muted"),

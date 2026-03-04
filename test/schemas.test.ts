@@ -30,6 +30,7 @@ describe("PluginConfigSchema", () => {
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 5000,
 			retryAllAccountsMaxRetries: 3,
+			retryAllAccountsAbsoluteCeilingMs: 15000,
 			unsupportedCodexPolicy: "strict",
 			fallbackOnUnsupportedCodexModel: true,
 			fallbackToGpt52OnUnsupportedGpt53: false,
@@ -71,6 +72,7 @@ describe("PluginConfigSchema", () => {
 		["sessionAffinityMaxEntries", 7, 8],
 		["proactiveRefreshIntervalMs", 4999, 5000],
 		["proactiveRefreshBufferMs", 29_999, 30_000],
+		["retryAllAccountsAbsoluteCeilingMs", -1, 0],
 		["preemptiveQuotaMaxDeferralMs", 999, 1000],
 	] as const)("enforces minimum for %s", (key, invalidValue, validValue) => {
 		const invalidResult = PluginConfigSchema.safeParse({ [key]: invalidValue });
@@ -109,6 +111,7 @@ describe("PluginConfigSchema", () => {
 		"sessionAffinityMaxEntries",
 		"proactiveRefreshIntervalMs",
 		"proactiveRefreshBufferMs",
+		"retryAllAccountsAbsoluteCeilingMs",
 		"networkErrorCooldownMs",
 		"serverErrorCooldownMs",
 		"preemptiveQuotaRemainingPercent5h",

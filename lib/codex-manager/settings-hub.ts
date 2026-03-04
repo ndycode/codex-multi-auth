@@ -185,6 +185,7 @@ type BackendNumberSettingKey =
 	| "proactiveRefreshBufferMs"
 	| "parallelProbingMaxConcurrency"
 	| "fastSessionMaxInputItems"
+	| "retryAllAccountsAbsoluteCeilingMs"
 	| "networkErrorCooldownMs"
 	| "serverErrorCooldownMs"
 	| "fetchTimeoutMs"
@@ -378,6 +379,15 @@ const BACKEND_NUMBER_OPTIONS: BackendNumberSettingOption[] = [
 		unit: "count",
 	},
 	{
+		key: "retryAllAccountsAbsoluteCeilingMs",
+		label: "Retry-All Absolute Wait Ceiling",
+		description: "Total max wait for retry-all-on-rate-limit. Set 0 for unlimited.",
+		min: 0,
+		max: 24 * 60 * 60_000,
+		step: 30_000,
+		unit: "ms",
+	},
+	{
 		key: "networkErrorCooldownMs",
 		label: "Network Error Cooldown",
 		description: "Wait time after network errors before retry.",
@@ -486,6 +496,7 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 			"preemptiveQuotaRemainingPercent5h",
 			"preemptiveQuotaRemainingPercent7d",
 			"preemptiveQuotaMaxDeferralMs",
+			"retryAllAccountsAbsoluteCeilingMs",
 		],
 	},
 	{
@@ -974,8 +985,15 @@ function buildBackendSettingsPreview(
 		config.preemptiveQuotaRemainingPercent7d ??
 		BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent7d ??
 		5;
+	const retryAllAbsoluteCeilingMs =
+		config.retryAllAccountsAbsoluteCeilingMs ??
+		BACKEND_DEFAULTS.retryAllAccountsAbsoluteCeilingMs ??
+		0;
 	const fetchTimeout = config.fetchTimeoutMs ?? BACKEND_DEFAULTS.fetchTimeoutMs ?? 60_000;
 	const stallTimeout = config.streamStallTimeoutMs ?? BACKEND_DEFAULTS.streamStallTimeoutMs ?? 45_000;
+	const retryAllAbsoluteCeilingOption = BACKEND_NUMBER_OPTION_BY_KEY.get(
+		"retryAllAccountsAbsoluteCeilingMs",
+	);
 	const fetchTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("fetchTimeoutMs");
 	const stallTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("streamStallTimeoutMs");
 
@@ -993,6 +1011,7 @@ function buildBackendSettingsPreview(
 	const hint = [
 		`thresholds 5h<=${highlightIfFocused("preemptiveQuotaRemainingPercent5h", `${threshold5h}%`)}`,
 		`7d<=${highlightIfFocused("preemptiveQuotaRemainingPercent7d", `${threshold7d}%`)}`,
+		`retry ceiling ${highlightIfFocused("retryAllAccountsAbsoluteCeilingMs", retryAllAbsoluteCeilingOption ? formatBackendNumberValue(retryAllAbsoluteCeilingOption, retryAllAbsoluteCeilingMs) : `${retryAllAbsoluteCeilingMs}ms`)}`,
 		`timeouts ${highlightIfFocused("fetchTimeoutMs", fetchTimeoutOption ? formatBackendNumberValue(fetchTimeoutOption, fetchTimeout) : `${fetchTimeout}ms`)}/${highlightIfFocused("streamStallTimeoutMs", stallTimeoutOption ? formatBackendNumberValue(stallTimeoutOption, stallTimeout) : `${stallTimeout}ms`)}`,
 	].join(" | ");
 

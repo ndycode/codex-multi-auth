@@ -12,6 +12,7 @@ import {
 	getUnsupportedCodexPolicy,
 	getFallbackOnUnsupportedCodexModel,
 	getTokenRefreshSkewMs,
+	getRetryAllAccountsAbsoluteCeilingMs,
 	getRetryAllAccountsMaxRetries,
 	getFallbackToGpt52OnUnsupportedGpt53,
 	getUnsupportedCodexFallbackChain,
@@ -63,6 +64,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_UNSUPPORTED_MODEL_POLICY',
 		'CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL',
 		'CODEX_AUTH_FALLBACK_GPT53_TO_GPT52',
+		'CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT',
@@ -106,6 +108,7 @@ describe('Plugin Configuration', () => {
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
 				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
@@ -164,6 +167,7 @@ describe('Plugin Configuration', () => {
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
 				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
@@ -419,6 +423,7 @@ describe('Plugin Configuration', () => {
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
 				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
@@ -483,6 +488,7 @@ describe('Plugin Configuration', () => {
 		retryAllAccountsRateLimited: true,
 		retryAllAccountsMaxWaitMs: 0,
 		retryAllAccountsMaxRetries: Infinity,
+		retryAllAccountsAbsoluteCeilingMs: 0,
 		unsupportedCodexPolicy: 'strict',
 		fallbackOnUnsupportedCodexModel: false,
 		fallbackToGpt52OnUnsupportedGpt53: true,
@@ -541,6 +547,7 @@ describe('Plugin Configuration', () => {
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 0,
 			retryAllAccountsMaxRetries: Infinity,
+			retryAllAccountsAbsoluteCeilingMs: 0,
 			unsupportedCodexPolicy: 'strict',
 			fallbackOnUnsupportedCodexModel: false,
 			fallbackToGpt52OnUnsupportedGpt53: true,
@@ -937,6 +944,17 @@ describe('Plugin Configuration', () => {
 			const config: PluginConfig = { retryAllAccountsMaxRetries: 5 };
 			const result = getRetryAllAccountsMaxRetries(config);
 			expect(result).toBe(5);
+		});
+
+		it('should default retry-all absolute ceiling to zero', () => {
+			delete process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS;
+			expect(getRetryAllAccountsAbsoluteCeilingMs({})).toBe(0);
+		});
+
+		it('should prioritize retry-all absolute ceiling env override', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = '12000';
+			const config: PluginConfig = { retryAllAccountsAbsoluteCeilingMs: 5000 };
+			expect(getRetryAllAccountsAbsoluteCeilingMs(config)).toBe(12000);
 		});
 
 		it('should return env value without min constraint', () => {
