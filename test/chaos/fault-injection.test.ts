@@ -314,6 +314,10 @@ describe("SSE Parsing Edge Cases", () => {
 			const response = new Response("", { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
 			expect(result.status).toBe(502);
+			expect(result.headers.get("content-type")).toContain("application/json");
+			await expect(result.json()).resolves.toMatchObject({
+				error: { type: "stream_parse_error" },
+			});
 		});
 
 		it("handles [DONE] marker only", async () => {
@@ -321,6 +325,10 @@ describe("SSE Parsing Edge Cases", () => {
 			const response = new Response(sseText, { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
 			expect(result.status).toBe(502);
+			expect(result.headers.get("content-type")).toContain("application/json");
+			await expect(result.json()).resolves.toMatchObject({
+				error: { type: "stream_parse_error" },
+			});
 		});
 
 		it("handles malformed JSON in SSE event", async () => {
@@ -328,6 +336,10 @@ describe("SSE Parsing Edge Cases", () => {
 			const response = new Response(sseText, { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
 			expect(result.status).toBe(502);
+			expect(result.headers.get("content-type")).toContain("application/json");
+			await expect(result.json()).resolves.toMatchObject({
+				error: { type: "stream_parse_error" },
+			});
 		});
 
 		it("handles response.done event", async () => {
@@ -360,6 +372,10 @@ describe("SSE Parsing Edge Cases", () => {
 			const response = new Response(sseText, { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
 			expect(result.status).toBe(502);
+			expect(result.headers.get("content-type")).toContain("application/json");
+			await expect(result.json()).resolves.toMatchObject({
+				error: { type: "stream_parse_error" },
+			});
 		});
 
 		it("handles multiple events, extracts last response.done", async () => {

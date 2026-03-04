@@ -30,6 +30,14 @@ function makeErrnoError(message: string, code: string): NodeJS.ErrnoException {
   return error;
 }
 
+function makeLockPayload(token: string): string {
+  return `${JSON.stringify({
+    pid: process.pid,
+    token,
+    acquiredAt: Date.now(),
+  })}\n`;
+}
+
 describe("plugin config save paths", () => {
   let tempDir = "";
   const envKeys = [
@@ -294,6 +302,90 @@ describe("plugin config save paths", () => {
     expect(parsed.codexMode).toBe(false);
     expect(elapsed).toBeGreaterThanOrEqual(50);
   });
+
+  it("fails closed when lockfile is never released before timeout", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    const lockPath = `${configPath}.lock`;
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ codexMode: true }), "utf8");
+    await fs.writeFile(lockPath, makeLockPayload("stuck-owner"), "utf8");
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    await expect(savePluginConfig({ codexMode: false })).rejects.toThrow(
+      "Timed out waiting for config save lock",
+    );
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.codexMode).toBe(true);
+  }, 15_000);
+
+  it("does not remove a lock file when lock ownership changes before release", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    const lockPath = `${configPath}.lock`;
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ codexMode: true }), "utf8");
+
+    const originalRename = fs.rename.bind(fs);
+    let swappedOwnership = false;
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+      const result = await originalRename(...(args as Parameters<typeof fs.rename>));
+      const targetPath = args[1];
+      if (!swappedOwnership && typeof targetPath === "string" && targetPath === configPath) {
+        swappedOwnership = true;
+        await fs.writeFile(lockPath, makeLockPayload("replacement-owner"), "utf8");
+      }
+      return result;
+    });
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    try {
+      await savePluginConfig({ codexMode: false });
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(swappedOwnership).toBe(true);
+    await expect(fs.readFile(lockPath, "utf8")).resolves.toContain("replacement-owner");
+  });
+
+  it("does not evict stale lock when ownership changes during stale-check race", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    const lockPath = `${configPath}.lock`;
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ codexMode: true }), "utf8");
+    await fs.writeFile(lockPath, makeLockPayload("stale-owner"), "utf8");
+    const staleTimestamp = new Date(Date.now() - 60_000);
+    await fs.utimes(lockPath, staleTimestamp, staleTimestamp);
+
+    const originalReadFile = fs.readFile.bind(fs);
+    let lockReadCount = 0;
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const target = args[0];
+      const path = typeof target === "string" ? target : String(target);
+      if (path === lockPath) {
+        lockReadCount += 1;
+        if (lockReadCount === 2) {
+          await fs.writeFile(lockPath, makeLockPayload("fresh-owner"), "utf8");
+          const now = new Date();
+          await fs.utimes(lockPath, now, now);
+        }
+      }
+      return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    });
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    try {
+      await expect(savePluginConfig({ codexMode: false })).rejects.toThrow(
+        "Timed out waiting for config save lock",
+      );
+      await expect(fs.readFile(lockPath, "utf8")).resolves.toContain("fresh-owner");
+    } finally {
+      readSpy.mockRestore();
+    }
+  }, 15_000);
 
   it("cleans temp files when env-path rename target is invalid", async () => {
     const invalidTarget = join(tempDir, "config-target-dir");

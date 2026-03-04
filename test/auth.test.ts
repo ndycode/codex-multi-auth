@@ -562,6 +562,59 @@ describe('Auth Module', () => {
 			}
 		});
 
+		it('concurrent refreshes with one timeout do not corrupt results', async () => {
+			vi.useFakeTimers();
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+				const requestBody = init?.body;
+				const params = requestBody instanceof URLSearchParams ? requestBody : new URLSearchParams(String(requestBody ?? ""));
+				const refreshToken = params.get('refresh_token');
+				if (refreshToken === 'fast-token') {
+					return Promise.resolve(
+						new Response(JSON.stringify({
+							access_token: 'fast-access',
+							refresh_token: 'fast-refresh-next',
+							expires_in: 60,
+						}), { status: 200 }),
+					);
+				}
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						'abort',
+						() => {
+							const reason = init.signal?.reason;
+							if (reason instanceof Error) {
+								reject(reason);
+								return;
+							}
+							reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+						},
+						{ once: true },
+					);
+				});
+			}) as never;
+
+			try {
+				const fastPromise = refreshAccessToken('fast-token');
+				const slowPromise = refreshAccessToken('slow-token', { timeoutMs: 1_000 });
+				await vi.advanceTimersByTimeAsync(1_200);
+				const [fastResult, slowResult] = await Promise.all([fastPromise, slowPromise]);
+				expect(fastResult.type).toBe('success');
+				if (fastResult.type === 'success') {
+					expect(fastResult.access).toBe('fast-access');
+					expect(fastResult.refresh).toBe('fast-refresh-next');
+				}
+				expect(slowResult.type).toBe('failed');
+				if (slowResult.type === 'failed') {
+					expect(slowResult.reason).toBe('unknown');
+					expect(slowResult.message).toContain('timeout');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+			}
+		});
+
 		it('returns failed when response refresh token is whitespace only', async () => {
 			const originalFetch = globalThis.fetch;
 			const logErrorSpy = vi.spyOn(loggerModule, 'logError').mockImplementation(() => {});

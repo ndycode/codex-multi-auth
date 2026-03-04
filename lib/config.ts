@@ -1,6 +1,6 @@
 import { readFileSync, existsSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PluginConfig } from "./types.js";
 import { logWarn } from "./logger.js";
 import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
@@ -322,6 +322,16 @@ type JsonRecordSnapshot = {
 	revision: string | null;
 };
 
+type ConfigSaveFileLock = {
+	lockPath: string;
+	token: string;
+};
+
+type ConfigSaveLockObservation = {
+	token: string | null;
+	fingerprint: string;
+};
+
 async function readConfigSnapshotFromPath(
 	configPath: string,
 ): Promise<JsonRecordSnapshot> {
@@ -385,15 +395,89 @@ async function writeJsonFileAtomicWithRetry(
 	}
 }
 
+function toConfigSaveLockFingerprint(raw: string): string {
+	return computeSha256(raw);
+}
+
+function parseConfigSaveLockToken(raw: string): string | null {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (!isRecord(parsed)) {
+			return null;
+		}
+		const token = parsed.token;
+		if (typeof token !== "string") {
+			return null;
+		}
+		const normalized = token.trim();
+		return normalized.length > 0 ? normalized : null;
+	} catch {
+		return null;
+	}
+}
+
+async function readConfigSaveLockObservation(lockPath: string): Promise<ConfigSaveLockObservation | null> {
+	try {
+		const raw = await fs.readFile(lockPath, "utf8");
+		return {
+			token: parseConfigSaveLockToken(raw),
+			fingerprint: toConfigSaveLockFingerprint(raw),
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function removeConfigSaveLockIfOwnerMatches(
+	lockPath: string,
+	owner: { token?: string; fingerprint?: string },
+): Promise<boolean> {
+	const observation = await readConfigSaveLockObservation(lockPath);
+	if (!observation) {
+		return true;
+	}
+
+	const tokenMatches =
+		typeof owner.token === "string" &&
+		owner.token.length > 0 &&
+		observation.token === owner.token;
+	const fingerprintMatches =
+		typeof owner.fingerprint === "string" &&
+		owner.fingerprint.length > 0 &&
+		observation.fingerprint === owner.fingerprint;
+	if (!tokenMatches && !fingerprintMatches) {
+		return false;
+	}
+
+	try {
+		await fs.unlink(lockPath);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return true;
+		}
+		throw error;
+	}
+}
+
 async function withConfigSaveLock(path: string, task: () => Promise<void>): Promise<void> {
 	const previous = configSaveQueues.get(path) ?? Promise.resolve();
 	const queued = previous.catch(() => {}).then(async () => {
 		await fs.mkdir(dirname(path), { recursive: true });
-		const lockPath = await acquireConfigSaveFileLock(path);
+		const lock = await acquireConfigSaveFileLock(path);
 		try {
 			await task();
 		} finally {
-			await releaseConfigSaveFileLock(lockPath);
+			await releaseConfigSaveFileLock(lock);
 		}
 	});
 	configSaveQueues.set(path, queued);
@@ -406,27 +490,43 @@ async function withConfigSaveLock(path: string, task: () => Promise<void>): Prom
 	}
 }
 
-async function acquireConfigSaveFileLock(path: string): Promise<string> {
+async function acquireConfigSaveFileLock(path: string): Promise<ConfigSaveFileLock> {
 	const lockPath = `${path}.lock`;
 	const waitDeadline = Date.now() + CONFIG_LOCK_WAIT_TIMEOUT_MS;
+	const lockToken = randomUUID();
 	let attempt = 0;
 	while (true) {
 		try {
 			const handle = await fs.open(lockPath, "wx");
 			try {
-				await handle.writeFile(`${process.pid}\n`, "utf8");
+				await handle.writeFile(
+					`${JSON.stringify({
+						pid: process.pid,
+						token: lockToken,
+						acquiredAt: Date.now(),
+					})}\n`,
+					"utf8",
+				);
 			} finally {
 				await handle.close();
 			}
-			return lockPath;
+			return { lockPath, token: lockToken };
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException | undefined)?.code;
 			if (code === "EEXIST") {
 				try {
 					const stat = await fs.stat(lockPath);
 					if (Date.now() - stat.mtimeMs >= CONFIG_LOCK_STALE_MS) {
-						await fs.unlink(lockPath);
-						continue;
+						const staleOwner = await readConfigSaveLockObservation(lockPath);
+						if (!staleOwner) {
+							continue;
+						}
+						const removed = await removeConfigSaveLockIfOwnerMatches(lockPath, {
+							fingerprint: staleOwner.fingerprint,
+						});
+						if (removed) {
+							continue;
+						}
 					}
 				} catch (statError) {
 					const statCode = (statError as NodeJS.ErrnoException | undefined)?.code;
@@ -454,10 +554,10 @@ async function acquireConfigSaveFileLock(path: string): Promise<string> {
 	}
 }
 
-async function releaseConfigSaveFileLock(lockPath: string): Promise<void> {
+async function releaseConfigSaveFileLock(lock: ConfigSaveFileLock): Promise<void> {
 	for (let attempt = 0; attempt < CONFIG_IO_RETRY_ATTEMPTS; attempt += 1) {
 		try {
-			await fs.unlink(lockPath);
+			await removeConfigSaveLockIfOwnerMatches(lock.lockPath, { token: lock.token });
 			return;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException | undefined)?.code;

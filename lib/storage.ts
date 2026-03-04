@@ -34,6 +34,9 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const TRANSIENT_READ_RETRY_ATTEMPTS = 5;
+const TRANSIENT_READ_RETRY_BASE_DELAY_MS = 10;
+const TRANSIENT_READ_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -392,9 +395,35 @@ function computeSha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+function isTransientReadError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && TRANSIENT_READ_RETRY_CODES.has(code);
+}
+
+async function readFileUtf8WithTransientRetry(path: string): Promise<string> {
+	for (let attempt = 0; attempt < TRANSIENT_READ_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			return await fs.readFile(path, "utf-8");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				throw error;
+			}
+			if (!isTransientReadError(error) || attempt + 1 >= TRANSIENT_READ_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, TRANSIENT_READ_RETRY_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
+	}
+
+	throw new Error(`Failed to read file after ${TRANSIENT_READ_RETRY_ATTEMPTS} attempts: ${path}`);
+}
+
 async function readStorageRevision(path: string): Promise<string | null> {
 	try {
-		const content = await fs.readFile(path, "utf-8");
+		const content = await readFileUtf8WithTransientRetry(path);
 		return computeSha256(content);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
@@ -901,7 +930,7 @@ async function loadAccountsFromPath(path: string): Promise<{
 	schemaErrors: string[];
 	rawChecksum: string;
 }> {
-	const content = await fs.readFile(path, "utf-8");
+	const content = await readFileUtf8WithTransientRetry(path);
 	const data = JSON.parse(content) as unknown;
 	return {
 		...parseAndNormalizeStorage(data),

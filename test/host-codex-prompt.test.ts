@@ -232,6 +232,81 @@ describe("host-codex-prompt", () => {
       expect(mockFetch.mock.calls[0]?.[0]).not.toBe(mockFetch.mock.calls[1]?.[0]);
     });
 
+    it("times out first source after 15s and then falls back deterministically", async () => {
+      vi.useFakeTimers();
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
+      vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
+
+      mockFetch
+        .mockImplementationOnce((_url, init) => new Promise((_, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal as AbortSignal | undefined;
+          signal?.addEventListener("abort", () => {
+            const reason = signal.reason;
+            if (reason instanceof Error) {
+              reject(reason);
+              return;
+            }
+            reject(Object.assign(new Error("request timeout"), { name: "AbortError" }));
+          }, { once: true });
+        }))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve("Prompt from timeout fallback source"),
+          headers: new Map([["etag", '"fallback-timeout-etag"']]),
+        });
+
+      try {
+        const resultPromise = getHostCodexPrompt();
+        await vi.advanceTimersByTimeAsync(15_100);
+        await expect(resultPromise).resolves.toBe("Prompt from timeout fallback source");
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps stale-cache concurrent callers deterministic during timeout fallback refresh", async () => {
+      vi.useFakeTimers();
+      const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
+      vi.mocked(readFile)
+        .mockResolvedValueOnce("Old cached content")
+        .mockResolvedValueOnce(JSON.stringify({
+          etag: '"old-etag"',
+          lastChecked: Date.now() - 20 * 60 * 1000,
+        }));
+
+      mockFetch
+        .mockImplementationOnce((_url, init) => new Promise((_, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal as AbortSignal | undefined;
+          signal?.addEventListener("abort", () => {
+            const reason = signal.reason;
+            if (reason instanceof Error) {
+              reject(reason);
+              return;
+            }
+            reject(Object.assign(new Error("request timeout"), { name: "AbortError" }));
+          }, { once: true });
+        }))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve("Prompt from timeout fallback source"),
+          headers: new Map([["etag", '"fallback-timeout-etag"']]),
+        });
+
+      try {
+        const [first, second] = await Promise.all([getHostCodexPrompt(), getHostCodexPrompt()]);
+        expect(first).toBe("Old cached content");
+        expect(["Old cached content", "Prompt from timeout fallback source"]).toContain(second);
+        await vi.advanceTimersByTimeAsync(15_100);
+        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(mockFetch.mock.calls.length).toBeLessThanOrEqual(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("uses CODEX_CODEX_PROMPT_URL override before default sources", async () => {
       const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
 

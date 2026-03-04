@@ -1892,5 +1892,93 @@ describe("storage", () => {
       unlinkSpy.mockRestore();
     });
   });
+
+  describe("read retry hardening", () => {
+    const testWorkDir = join(tmpdir(), "codex-read-retry-" + Math.random().toString(36).slice(2));
+    let testStoragePath: string;
+
+    beforeEach(async () => {
+      await fs.mkdir(testWorkDir, { recursive: true });
+      testStoragePath = join(testWorkDir, "accounts.json");
+      setStoragePathDirect(testStoragePath);
+    });
+
+    afterEach(async () => {
+      vi.restoreAllMocks();
+      setStoragePathDirect(null);
+      await fs.rm(testWorkDir, { recursive: true, force: true });
+    });
+
+    it("retries transient readFile contention when loading account storage", async () => {
+      await fs.writeFile(
+        testStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "retry-token", accountId: "retry-account", addedAt: 1, lastUsed: 1 }],
+        }),
+        "utf-8",
+      );
+
+      const originalReadFile = fs.readFile.bind(fs);
+      let transientFailures = 0;
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path = typeof target === "string" ? target : String(target);
+        if (path === testStoragePath && transientFailures < 2) {
+          transientFailures += 1;
+          const code = transientFailures === 1 ? "EBUSY" : "EPERM";
+          throw Object.assign(new Error(code), { code });
+        }
+        return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        const loaded = await loadAccounts();
+        expect(loaded?.accounts[0]?.accountId).toBe("retry-account");
+        expect(transientFailures).toBe(2);
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
+    it("retries transient revision reads before save conflict checks", async () => {
+      const now = Date.now();
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "initial", accountId: "initial", addedAt: now, lastUsed: now }],
+      });
+
+      const originalReadFile = fs.readFile.bind(fs);
+      let transientFailures = 0;
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path = typeof target === "string" ? target : String(target);
+        if (path === testStoragePath && transientFailures < 2) {
+          transientFailures += 1;
+          const code = transientFailures === 1 ? "EBUSY" : "EAGAIN";
+          throw Object.assign(new Error(code), { code });
+        }
+        return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        await saveAccounts({
+          version: 3,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "next", accountId: "next", addedAt: now + 1, lastUsed: now + 1 }],
+        });
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as {
+        accounts?: Array<{ accountId?: string }>;
+      };
+      expect(persisted.accounts?.[0]?.accountId).toBe("next");
+      expect(transientFailures).toBe(2);
+    });
+  });
 });
 

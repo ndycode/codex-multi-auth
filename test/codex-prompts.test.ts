@@ -374,6 +374,7 @@ describe("Codex Prompts Module", () => {
 			it("should fall back to disk cache when prompt fetch times out", async () => {
 				mockedReadFile.mockImplementation((filePath) => {
 					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						// malformed metadata forces the timeout path instead of stale-while-revalidate.
 						return Promise.resolve("{ malformed");
 					}
 					return Promise.resolve("disk timeout fallback");
@@ -388,6 +389,7 @@ describe("Codex Prompts Module", () => {
 
 				const result = await getCodexInstructions("gpt-5.2");
 				expect(result).toBe("disk timeout fallback");
+				expect(mockFetch).toHaveBeenCalledTimes(2);
 			});
 
 			it("should fall back to bundled instructions when all else fails", async () => {

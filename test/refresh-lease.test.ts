@@ -26,6 +26,7 @@ describe("RefreshLeaseCoordinator", () => {
 
   afterEach(() => {
     leaseDir = "";
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -107,7 +108,9 @@ describe("RefreshLeaseCoordinator", () => {
     expect(lockContent).toBe("{");
   });
 
-  it("retries stale lock cleanup when unlink is temporarily busy", async () => {
+  it.each(["EBUSY", "EPERM"] as const)(
+    "retries stale lock cleanup when unlink fails transiently with %s",
+    async (unlinkCode) => {
     const refreshToken = "token-retry";
     const tokenHash = hashToken(refreshToken);
     let busyCount = 0;
@@ -121,7 +124,7 @@ describe("RefreshLeaseCoordinator", () => {
         if (String(path).endsWith(".lock") && busyCount < 2) {
           busyCount += 1;
           const error = new Error("busy") as NodeJS.ErrnoException;
-          error.code = "EBUSY";
+          error.code = unlinkCode;
           throw error;
         }
         return originalUnlink(path);
@@ -159,7 +162,8 @@ describe("RefreshLeaseCoordinator", () => {
     expect(fsOps.unlink).toHaveBeenCalled();
     expect(busyCount).toBe(2);
     await handle.release(sampleSuccessResult);
-  });
+    },
+  );
 
   it("times out to bypass when stale lock cannot be deleted", async () => {
     const refreshToken = "token-timeout";
@@ -212,74 +216,77 @@ describe("RefreshLeaseCoordinator", () => {
     await handle.release(sampleSuccessResult);
   });
 
-  it("returns follower on wait-timeout when a fresh result appears", async () => {
-    const refreshToken = "token-timeout-follower";
-    const tokenHash = hashToken(refreshToken);
-    const resultPath = join(leaseDir, `${tokenHash}.result.json`);
-    const originalUnlink = fsPromises.unlink.bind(fsPromises);
-    const fsOps = {
-      mkdir: fsPromises.mkdir.bind(fsPromises),
-      open: fsPromises.open.bind(fsPromises),
-      writeFile: fsPromises.writeFile.bind(fsPromises),
-      rename: fsPromises.rename.bind(fsPromises),
-      unlink: vi.fn(async (path: Parameters<typeof fsPromises.unlink>[0]) => {
-        if (String(path).endsWith(".lock")) {
-          const error = new Error("busy") as NodeJS.ErrnoException;
-          error.code = "EBUSY";
-          throw error;
-        }
-        return originalUnlink(path);
-      }),
-      readFile: fsPromises.readFile.bind(fsPromises),
-      stat: fsPromises.stat.bind(fsPromises),
-      readdir: fsPromises.readdir.bind(fsPromises),
-    };
+  it.each(["EBUSY", "EPERM"] as const)(
+    "returns follower on wait-timeout when a fresh result appears (%s stale lock delete)",
+    async (unlinkCode) => {
+      const refreshToken = "token-timeout-follower";
+      const tokenHash = hashToken(refreshToken);
+      const resultPath = join(leaseDir, `${tokenHash}.result.json`);
+      const originalUnlink = fsPromises.unlink.bind(fsPromises);
+      const fsOps = {
+        mkdir: fsPromises.mkdir.bind(fsPromises),
+        open: fsPromises.open.bind(fsPromises),
+        writeFile: fsPromises.writeFile.bind(fsPromises),
+        rename: fsPromises.rename.bind(fsPromises),
+        unlink: vi.fn(async (path: Parameters<typeof fsPromises.unlink>[0]) => {
+          if (String(path).endsWith(".lock")) {
+            const error = new Error("busy") as NodeJS.ErrnoException;
+            error.code = unlinkCode;
+            throw error;
+          }
+          return originalUnlink(path);
+        }),
+        readFile: fsPromises.readFile.bind(fsPromises),
+        stat: fsPromises.stat.bind(fsPromises),
+        readdir: fsPromises.readdir.bind(fsPromises),
+      };
 
-    const coordinator = new RefreshLeaseCoordinator({
-      enabled: true,
-      leaseDir,
-      leaseTtlMs: 2_000,
-      waitTimeoutMs: 140,
-      pollIntervalMs: 25,
-      resultTtlMs: 2_000,
-      fsOps,
-    });
+      const coordinator = new RefreshLeaseCoordinator({
+        enabled: true,
+        leaseDir,
+        leaseTtlMs: 2_000,
+        waitTimeoutMs: 220,
+        pollIntervalMs: 25,
+        resultTtlMs: 2_000,
+        fsOps,
+      });
 
-    await mkdir(leaseDir, { recursive: true });
-    const lockPath = join(leaseDir, `${tokenHash}.lock`);
-    await writeFile(
-      lockPath,
-      JSON.stringify({
-        tokenHash,
-        pid: 3333,
-        acquiredAt: Date.now() - 10_000,
-        expiresAt: Date.now() - 5_000,
-      }),
-      "utf8",
-    );
-
-    const publishResult = (async () => {
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      await mkdir(leaseDir, { recursive: true });
+      const lockPath = join(leaseDir, `${tokenHash}.lock`);
       await writeFile(
-        resultPath,
+        lockPath,
         JSON.stringify({
           tokenHash,
-          createdAt: Date.now(),
-          result: sampleSuccessResult,
+          pid: 3333,
+          acquiredAt: Date.now() - 10_000,
+          expiresAt: Date.now() - 5_000,
         }),
         "utf8",
       );
-    })();
 
-    const handle = await coordinator.acquire(refreshToken);
-    await publishResult;
+      const publishResult = (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        await writeFile(
+          resultPath,
+          JSON.stringify({
+            tokenHash,
+            createdAt: Date.now(),
+            result: sampleSuccessResult,
+          }),
+          "utf8",
+        );
+      })();
 
-    expect(handle.role).toBe("follower");
-    expect(handle.result).toEqual(sampleSuccessResult);
-    expect(fsOps.unlink).toHaveBeenCalled();
-    await handle.release(sampleSuccessResult);
-    await expect(fsPromises.stat(lockPath)).resolves.toBeTruthy();
-  });
+      const handle = await coordinator.acquire(refreshToken);
+      await publishResult;
+
+      expect(handle.role).toBe("follower");
+      expect(handle.result).toEqual(sampleSuccessResult);
+      await handle.release(sampleSuccessResult);
+      await expect(fsPromises.stat(lockPath)).resolves.toBeTruthy();
+    },
+    10_000,
+  );
   it("treats empty refresh token as bypass", async () => {
     const coordinator = new RefreshLeaseCoordinator({
       enabled: true,
