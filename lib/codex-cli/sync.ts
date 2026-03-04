@@ -3,7 +3,15 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "../storage.js";
-import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
+import { type ModelFamily } from "../prompts/codex.js";
+import {
+	setActiveIndexForAllFamilies,
+	normalizeActiveIndexByFamily,
+} from "../accounts/active-index.js";
+import {
+	cloneAccountStorage,
+	createEmptyAccountStorage,
+} from "../accounts/storage-view.js";
 import { createLogger } from "../logger.js";
 import { loadCodexCliState, type CodexCliAccountSnapshot } from "./state.js";
 import {
@@ -18,26 +26,6 @@ function normalizeEmail(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const trimmed = value.trim().toLowerCase();
 	return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function createEmptyStorage(): AccountStorageV3 {
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-	};
-}
-
-function cloneStorage(storage: AccountStorageV3): AccountStorageV3 {
-	return {
-		version: 3,
-		accounts: storage.accounts.map((account) => ({ ...account })),
-		activeIndex: storage.activeIndex,
-		activeIndexByFamily: storage.activeIndexByFamily
-			? { ...storage.activeIndexByFamily }
-			: {},
-	};
 }
 
 function buildIndexByAccountId(accounts: AccountMetadataV3[]): Map<string, number> {
@@ -162,11 +150,7 @@ function writeFamilyIndexes(
 	storage: AccountStorageV3,
 	index: number,
 ): void {
-	storage.activeIndex = index;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = index;
-	}
+	setActiveIndexForAllFamilies(storage, index);
 }
 
 /**
@@ -185,19 +169,7 @@ function writeFamilyIndexes(
  * @param storage - The account storage object whose indexes will be normalized and clamped
  */
 function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
-	const count = storage.accounts.length;
-	const clamped = count === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, count - 1));
-	if (storage.activeIndex !== clamped) {
-		storage.activeIndex = clamped;
-	}
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		const raw = storage.activeIndexByFamily[family];
-		const resolved =
-			typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
-		storage.activeIndexByFamily[family] =
-			count === 0 ? 0 : Math.max(0, Math.min(resolved, count - 1));
-	}
+	normalizeActiveIndexByFamily(storage, storage.accounts.length);
 }
 
 /**
@@ -280,7 +252,7 @@ export async function syncAccountStorageFromCodexCli(
 			return { storage: current, changed: false };
 		}
 
-		const next = current ? cloneStorage(current) : createEmptyStorage();
+		const next = current ? cloneAccountStorage(current) : createEmptyAccountStorage();
 		let changed = false;
 
 		for (const snapshot of state.accounts) {

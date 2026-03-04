@@ -120,6 +120,21 @@ import {
 	isCodexCliSyncEnabled,
 } from "./lib/accounts.js";
 import {
+	resolveActiveIndex,
+	formatRateLimitEntry,
+	formatActiveIndexByFamilyLabels,
+	formatRateLimitStatusByFamily,
+} from "./lib/accounts/account-view.js";
+import {
+	cloneAccountStorage,
+	createEmptyAccountStorage,
+} from "./lib/accounts/storage-view.js";
+import {
+	setActiveIndexForAllFamilies,
+	normalizeActiveIndexByFamily,
+	removeAccountAndReconcileActiveIndexes,
+} from "./lib/accounts/active-index.js";
+import {
 	getStoragePath,
 	loadAccounts,
 	saveAccounts,
@@ -709,21 +724,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 }
         };
 
-		const resolveActiveIndex = (
-				storage: {
-						activeIndex: number;
-						activeIndexByFamily?: Partial<Record<ModelFamily, number>>;
-						accounts: unknown[];
-				},
-				family: ModelFamily = "codex",
-		): number => {
-				const total = storage.accounts.length;
-				if (total === 0) return 0;
-				const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-				const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-				return Math.max(0, Math.min(raw, total - 1));
-		};
-
 	const hydrateEmails = async (
 			storage: AccountStorageV3 | null,
 	): Promise<AccountStorageV3 | null> => {
@@ -787,40 +787,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 }
                 return storage;
         };
-
-		const getRateLimitResetTimeForFamily = (
-				account: { rateLimitResetTimes?: Record<string, number | undefined> },
-				now: number,
-				family: ModelFamily,
-		): number | null => {
-				const times = account.rateLimitResetTimes;
-				if (!times) return null;
-
-				let minReset: number | null = null;
-				const prefix = `${family}:`;
-				for (const [key, value] of Object.entries(times)) {
-						if (typeof value !== "number") continue;
-						if (value <= now) continue;
-						if (key !== family && !key.startsWith(prefix)) continue;
-						if (minReset === null || value < minReset) {
-								minReset = value;
-						}
-				}
-
-				return minReset;
-		};
-
-		const formatRateLimitEntry = (
-				account: { rateLimitResetTimes?: Record<string, number | undefined> },
-				now: number,
-				family: ModelFamily = "codex",
-		): string | null => {
-				const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-				if (typeof resetAt !== "number") return null;
-				const remaining = resetAt - now;
-				if (remaining <= 0) return null;
-				return `resets in ${formatWaitTime(remaining)}`;
-		};
 
 		const applyUiRuntimeFromConfig = (
 			pluginConfig: ReturnType<typeof loadPluginConfig>,
@@ -1032,11 +998,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         account.lastUsed = now;
                                         account.lastSwitchReason = "rotation";
                                 }
-                                storage.activeIndex = index;
-                                storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-                                for (const family of MODEL_FAMILIES) {
-                                        storage.activeIndexByFamily[family] = index;
-                                }
+                                setActiveIndexForAllFamilies(storage, index);
 
                                 await saveAccounts(storage);
 				if (cachedAccountManager) {
@@ -2512,20 +2474,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 							let refreshAccountIndex: number | undefined;
 
 							const clampActiveIndices = (storage: AccountStorageV3): void => {
-								const count = storage.accounts.length;
-								if (count === 0) {
-									storage.activeIndex = 0;
-									storage.activeIndexByFamily = {};
-									return;
-								}
-								storage.activeIndex = Math.max(0, Math.min(storage.activeIndex, count - 1));
-								storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-								for (const family of MODEL_FAMILIES) {
-									const raw = storage.activeIndexByFamily[family];
-									const candidate =
-										typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
-									storage.activeIndexByFamily[family] = Math.max(0, Math.min(candidate, count - 1));
-								}
+								normalizeActiveIndexByFamily(storage, storage.accounts.length, {
+									clearFamilyMapWhenEmpty: true,
+								});
 							};
 
 							const isFlaggableFailure = (failure: Extract<TokenResult, { type: "failed" }>): boolean => {
@@ -2786,14 +2737,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 							const runAccountCheck = async (deepProbe: boolean): Promise<void> => {
 								const loadedStorage = await hydrateEmails(await loadAccounts());
 								const workingStorage = loadedStorage
-									? {
-										...loadedStorage,
-										accounts: loadedStorage.accounts.map((account) => ({ ...account })),
-										activeIndexByFamily: loadedStorage.activeIndexByFamily
-											? { ...loadedStorage.activeIndexByFamily }
-											: {},
-									}
-									: { version: 3 as const, accounts: [], activeIndex: 0, activeIndexByFamily: {} };
+									? cloneAccountStorage(loadedStorage)
+									: createEmptyAccountStorage();
 
 								if (workingStorage.accounts.length === 0) {
 									console.log("\nNo accounts to check.\n");
@@ -3139,14 +3084,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 								while (true) {
 									const loadedStorage = await hydrateEmails(await loadAccounts());
 									const workingStorage = loadedStorage
-										? {
-											...loadedStorage,
-											accounts: loadedStorage.accounts.map((account) => ({ ...account })),
-											activeIndexByFamily: loadedStorage.activeIndexByFamily
-												? { ...loadedStorage.activeIndexByFamily }
-												: {},
-										}
-										: { version: 3 as const, accounts: [], activeIndex: 0, activeIndexByFamily: {} };
+										? cloneAccountStorage(loadedStorage)
+										: createEmptyAccountStorage();
 									const flaggedStorage = await loadFlaggedAccounts();
 
 									if (workingStorage.accounts.length === 0 && flaggedStorage.accounts.length === 0) {
@@ -3646,11 +3585,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                 account.lastSwitchReason = "rotation";
                                         }
 
-					storage.activeIndex = targetIndex;
-					storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-					for (const family of MODEL_FAMILIES) {
-							storage.activeIndexByFamily[family] = targetIndex;
-					}
+					setActiveIndexForAllFamilies(storage, targetIndex);
 					try {
 						await saveAccounts(storage);
 					} catch (saveError) {
@@ -3727,21 +3662,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					lines.push("");
 					lines.push(...formatUiSection(ui, "Active index by model family"));
-					for (const family of MODEL_FAMILIES) {
-						const idx = storage.activeIndexByFamily?.[family];
-						const familyIndexLabel =
-							typeof idx === "number" && Number.isFinite(idx) ? String(idx + 1) : "-";
-						lines.push(formatUiItem(ui, `${family}: ${familyIndexLabel}`));
+					for (const line of formatActiveIndexByFamilyLabels(storage.activeIndexByFamily)) {
+						lines.push(formatUiItem(ui, line));
 					}
 
 					lines.push("");
 					lines.push(...formatUiSection(ui, "Rate limits by model family (per account)"));
 					storage.accounts.forEach((account, index) => {
-						const statuses = MODEL_FAMILIES.map((family) => {
-							const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-							if (typeof resetAt !== "number") return `${family}=ok`;
-							return `${family}=${formatWaitTime(resetAt - now)}`;
-						});
+						const statuses = formatRateLimitStatusByFamily(account, now);
 						lines.push(formatUiItem(ui, `Account ${index + 1}: ${statuses.join(" | ")}`));
 					});
 
@@ -3780,21 +3708,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										lines.push("");
 										lines.push("Active index by model family:");
-										for (const family of MODEL_FAMILIES) {
-												const idx = storage.activeIndexByFamily?.[family];
-												const familyIndexLabel =
-													typeof idx === "number" && Number.isFinite(idx) ? String(idx + 1) : "-";
-												lines.push(`  ${family}: ${familyIndexLabel}`);
+										for (const line of formatActiveIndexByFamilyLabels(storage.activeIndexByFamily)) {
+												lines.push(`  ${line}`);
 										}
 
 										lines.push("");
 										lines.push("Rate limits by model family (per account):");
 										storage.accounts.forEach((account, index) => {
-												const statuses = MODEL_FAMILIES.map((family) => {
-														const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-														if (typeof resetAt !== "number") return `${family}=ok`;
-														return `${family}=${formatWaitTime(resetAt - now)}`;
-												});
+												const statuses = formatRateLimitStatusByFamily(account, now);
 												lines.push(`  Account ${index + 1}: ${statuses.join(" | ")}`);
 										});
 
@@ -4013,31 +3934,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					const label = formatAccountLabel(account, targetIndex);
 
-					storage.accounts.splice(targetIndex, 1);
-
-					if (storage.accounts.length === 0) {
-						storage.activeIndex = 0;
-						storage.activeIndexByFamily = {};
-					} else {
-						if (storage.activeIndex >= storage.accounts.length) {
-							storage.activeIndex = 0;
-						} else if (storage.activeIndex > targetIndex) {
-							storage.activeIndex -= 1;
-						}
-
-						if (storage.activeIndexByFamily) {
-							for (const family of MODEL_FAMILIES) {
-								const idx = storage.activeIndexByFamily[family];
-								if (typeof idx === "number") {
-									if (idx >= storage.accounts.length) {
-										storage.activeIndexByFamily[family] = 0;
-									} else if (idx > targetIndex) {
-										storage.activeIndexByFamily[family] = idx - 1;
-									}
-								}
-							}
-						}
-					}
+					removeAccountAndReconcileActiveIndexes(storage, targetIndex);
 
 					try {
 					await saveAccounts(storage);
