@@ -81,14 +81,7 @@ export class RefreshGuardian {
 	}
 
 	getStats(): RefreshGuardianStats {
-		const avgTickDurationMs =
-			this.stats.runs > 0
-				? Math.round(this.stats.cumulativeTickDurationMs / this.stats.runs)
-				: 0;
-		return {
-			...this.stats,
-			avgTickDurationMs,
-		};
+		return { ...this.stats };
 	}
 
 	private classifyFailureReason(tokenResult: TokenResult | undefined): CooldownReason {
@@ -201,6 +194,9 @@ export class RefreshGuardian {
 			if (countedRun) {
 				this.stats.maxTickDurationMs = Math.max(this.stats.maxTickDurationMs, durationMs);
 				this.stats.cumulativeTickDurationMs += durationMs;
+				this.stats.avgTickDurationMs = Math.round(
+					this.stats.cumulativeTickDurationMs / this.stats.runs,
+				);
 			}
 			this.running = false;
 		}

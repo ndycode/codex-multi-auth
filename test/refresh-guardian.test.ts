@@ -553,6 +553,34 @@ describe("refresh-guardian", () => {
     expect(Reflect.get(guardian, "running")).toBe(false);
   });
 
+  it("tracks guardian tick duration aggregates", async () => {
+    const accountA = createManagedAccount(0);
+    const manager = createManagerMock([accountA]);
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      intervalMs: 5_000,
+      bufferMs: 60_000,
+    });
+    refreshExpiringAccountsMock.mockResolvedValue(new Map());
+
+    const nowSpy = vi.spyOn(performance, "now");
+    nowSpy
+      .mockReturnValueOnce(10)
+      .mockReturnValueOnce(25)
+      .mockReturnValueOnce(30)
+      .mockReturnValueOnce(60);
+
+    await guardian.tick();
+    await guardian.tick();
+
+    const stats = guardian.getStats();
+    expect(stats.runs).toBe(2);
+    expect(stats.lastTickDurationMs).toBe(30);
+    expect(stats.maxTickDurationMs).toBe(30);
+    expect(stats.cumulativeTickDurationMs).toBe(45);
+    expect(stats.avgTickDurationMs).toBe(23);
+  });
+
   it("handles account removal during tick without throwing", async () => {
     const originalA = createManagedAccount(0);
     const originalB = createManagedAccount(1);

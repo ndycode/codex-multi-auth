@@ -750,6 +750,9 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-metrics"].execute();
 			expect(result).toContain("Codex Plugin Metrics");
 			expect(result).toContain("Total upstream requests");
+			expect(result).toContain("Email hydration runs");
+			expect(result).toContain("Email hydration avg duration");
+			expect(result).toContain("Refresh guardian");
 		});
 	});
 
