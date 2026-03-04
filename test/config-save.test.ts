@@ -24,6 +24,12 @@ async function removeWithRetry(
   }
 }
 
+function makeErrnoError(message: string, code: string): NodeJS.ErrnoException {
+  const error = new Error(message) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
 describe("plugin config save paths", () => {
   let tempDir = "";
   const envKeys = [
@@ -107,6 +113,186 @@ describe("plugin config save paths", () => {
     >;
     expect(parsed.codexMode).toBe(false);
     expect(parsed.fastSession).toBe(true);
+  });
+
+  it("retries transient read contention before saving env-path config", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ codexMode: true }), "utf8");
+
+    const originalReadFile = fs.readFile.bind(fs);
+    let busyFailures = 0;
+    const readSpy = vi.spyOn(fs, "readFile");
+    readSpy.mockImplementation(async (...args) => {
+      const target = args[0];
+      const path = typeof target === "string" ? target : String(target);
+      if (path === configPath && busyFailures < 2) {
+        busyFailures += 1;
+        throw makeErrnoError("busy", "EBUSY");
+      }
+      return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    });
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    try {
+      await savePluginConfig({ codexMode: false, retries: 3 });
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.codexMode).toBe(false);
+    expect(parsed.retries).toBe(3);
+    expect(busyFailures).toBe(2);
+  });
+
+  it("retries optimistic config conflicts and eventually succeeds", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ seed: "a" }), "utf8");
+
+    const originalReadFile = fs.readFile.bind(fs);
+    let configReadCount = 0;
+    const readSpy = vi.spyOn(fs, "readFile");
+    readSpy.mockImplementation(async (...args) => {
+      const target = args[0];
+      const path = typeof target === "string" ? target : String(target);
+      if (path === configPath) {
+        configReadCount += 1;
+        if (configReadCount === 2) return JSON.stringify({ seed: "b" });
+        if (configReadCount === 3) return JSON.stringify({ seed: "b" });
+        if (configReadCount === 4) return JSON.stringify({ seed: "c" });
+        if (configReadCount === 5) return JSON.stringify({ seed: "c" });
+        if (configReadCount === 6) return JSON.stringify({ seed: "c" });
+      }
+      return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    });
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    try {
+      await savePluginConfig({ codexMode: false });
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.seed).toBe("c");
+    expect(parsed.codexMode).toBe(false);
+    expect(configReadCount).toBeGreaterThanOrEqual(6);
+  });
+
+  it("throws after exhausting optimistic config conflict retries", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ seed: "a" }), "utf8");
+
+    const originalReadFile = fs.readFile.bind(fs);
+    let configReadCount = 0;
+    const readSpy = vi.spyOn(fs, "readFile");
+    readSpy.mockImplementation(async (...args) => {
+      const target = args[0];
+      const path = typeof target === "string" ? target : String(target);
+      if (path === configPath) {
+        configReadCount += 1;
+        if (configReadCount === 2) return JSON.stringify({ seed: "b" });
+        if (configReadCount === 3) return JSON.stringify({ seed: "b" });
+        if (configReadCount === 4) return JSON.stringify({ seed: "c" });
+        if (configReadCount === 5) return JSON.stringify({ seed: "c" });
+        if (configReadCount >= 6) return JSON.stringify({ seed: "d" });
+      }
+      return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    });
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    try {
+      await expect(savePluginConfig({ codexMode: false })).rejects.toMatchObject({
+        code: "ECONFLICT",
+      });
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it("handles mixed conflict and transient rename contention", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ seed: "a" }), "utf8");
+
+    const originalReadFile = fs.readFile.bind(fs);
+    let configReadCount = 0;
+    const readSpy = vi.spyOn(fs, "readFile");
+    readSpy.mockImplementation(async (...args) => {
+      const target = args[0];
+      const path = typeof target === "string" ? target : String(target);
+      if (path === configPath) {
+        configReadCount += 1;
+        if (configReadCount === 2) return JSON.stringify({ seed: "b" });
+        if (configReadCount === 3) return JSON.stringify({ seed: "b" });
+        if (configReadCount >= 4) return JSON.stringify({ seed: "b" });
+      }
+      return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    });
+
+    const originalRename = fs.rename.bind(fs);
+    let renameAttempts = 0;
+    const renameSpy = vi.spyOn(fs, "rename");
+    renameSpy.mockImplementation(async (...args) => {
+      if (renameAttempts === 0) {
+        renameAttempts += 1;
+        throw makeErrnoError("busy rename", "EBUSY");
+      }
+      renameAttempts += 1;
+      return originalRename(...(args as Parameters<typeof fs.rename>));
+    });
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    try {
+      await savePluginConfig({ codexMode: false, retries: 4 });
+    } finally {
+      readSpy.mockRestore();
+      renameSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.seed).toBe("b");
+    expect(parsed.codexMode).toBe(false);
+    expect(parsed.retries).toBe(4);
+    expect(renameAttempts).toBeGreaterThanOrEqual(2);
+  });
+
+  it("waits for lockfile release before persisting env-path config", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    const lockPath = `${configPath}.lock`;
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ codexMode: true }), "utf8");
+    await fs.writeFile(lockPath, `${process.pid}\n`, "utf8");
+
+    const unlockPromise = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      await fs.unlink(lockPath);
+    })();
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    const startedAt = Date.now();
+    await savePluginConfig({ codexMode: false });
+    const elapsed = Date.now() - startedAt;
+    await unlockPromise;
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.codexMode).toBe(false);
+    expect(elapsed).toBeGreaterThanOrEqual(50);
   });
 
   it("cleans temp files when env-path rename target is invalid", async () => {
