@@ -696,6 +696,124 @@ describe("storage", () => {
       // Restore permissions for cleanup
       await fs.chmod(testStoragePath, 0o644);
     });
+
+    it("throttles stale rotating backup cleanup scans within a 30-second window", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-throttle-${Math.random().toString(36).slice(2)}.json`,
+      );
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "real-refresh-token",
+              accountId: "acct-real",
+              email: "real-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+      const dateNowSpy = vi.spyOn(Date, "now");
+      let now = Date.now();
+      dateNowSpy.mockImplementation(() => now);
+
+      try {
+        await loadAccounts();
+        now += 29_000;
+        await loadAccounts();
+        now += 1_001;
+        await loadAccounts();
+      } finally {
+        dateNowSpy.mockRestore();
+        readdirSpy.mockRestore();
+      }
+
+      expect(cleanupScanCount).toBe(2);
+    });
+
+    it("deduplicates in-flight cleanup scans across concurrent loadAccounts calls", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-concurrent-${Math.random().toString(36).slice(2)}.json`,
+      );
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "concurrent-refresh-token",
+              accountId: "acct-concurrent",
+              email: "concurrent-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      let releaseScan: (() => void) | null = null;
+      const scanGate = new Promise<void>((resolve) => {
+        releaseScan = resolve;
+      });
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+            if (cleanupScanCount === 1) {
+              await scanGate;
+            }
+          }
+          return originalReaddir(...args);
+        });
+
+      try {
+        const firstLoad = loadAccounts();
+        for (let i = 0; i < 20 && cleanupScanCount === 0; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        const secondLoad = loadAccounts();
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(cleanupScanCount).toBe(1);
+
+        releaseScan?.();
+        const [firstResult, secondResult] = await Promise.all([firstLoad, secondLoad]);
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        readdirSpy.mockRestore();
+        releaseScan?.();
+      }
+
+      expect(cleanupScanCount).toBe(1);
+    });
   });
 
   describe("saveAccounts", () => {
