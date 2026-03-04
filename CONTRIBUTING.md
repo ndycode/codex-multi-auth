@@ -61,6 +61,8 @@ Documentation requirements for behavior changes:
    - `npm run test -- test/documentation.test.ts`
    - if triaging failures, run component gates directly:
      - `npm run lint`
+     - `npm run verify:repo`
+     - `npm run verify:quality`
      - `npm run typecheck`
      - `npm test`
      - `npm run build`

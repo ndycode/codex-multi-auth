@@ -8,12 +8,16 @@ on:
 
 jobs:
   test:
-    name: Test on Node.js ${{ matrix.node-version }}
-    runs-on: ubuntu-latest
+    name: Test on Node.js ${{ matrix.node-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
         node-version: [20.x, 22.x]
+        os: [ubuntu-latest]
+        include:
+          - node-version: 20.x
+            os: windows-latest
 
     steps:
       - name: Checkout code
