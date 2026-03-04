@@ -106,6 +106,22 @@ async function releaseOwnedLock(path: string, ownerId: string): Promise<void> {
 	if (currentOwnerId !== ownerId) {
 		return;
 	}
+	// Best effort race-hardening: re-check ownership immediately before delete.
+	// Filesystems do not provide an atomic compare-and-delete primitive here, so
+	// a narrow TOCTOU window still exists between this read and unlink.
+	try {
+		const raw = await fs.readFile(path, "utf8");
+		currentOwnerId = parseOwnerId(raw);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return;
+		}
+		throw error;
+	}
+	if (currentOwnerId !== ownerId) {
+		return;
+	}
 	try {
 		await fs.unlink(path);
 	} catch (error) {
@@ -118,6 +134,22 @@ async function releaseOwnedLock(path: string, ownerId: string): Promise<void> {
 
 function releaseOwnedLockSync(path: string, ownerId: string): void {
 	let currentOwnerId: string | null = null;
+	try {
+		const raw = readFileSync(path, "utf8");
+		currentOwnerId = parseOwnerId(raw);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return;
+		}
+		throw error;
+	}
+	if (currentOwnerId !== ownerId) {
+		return;
+	}
+	// Best effort race-hardening: re-check ownership immediately before delete.
+	// Filesystems do not provide an atomic compare-and-delete primitive here, so
+	// a narrow TOCTOU window still exists between this read and unlink.
 	try {
 		const raw = readFileSync(path, "utf8");
 		currentOwnerId = parseOwnerId(raw);

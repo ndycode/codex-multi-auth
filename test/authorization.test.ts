@@ -36,12 +36,13 @@ function restoreAuthEnv(snapshot: Record<(typeof AUTH_ENV_KEYS)[number], string 
 }
 
 describe("authorization", () => {
-	it("defaults to admin role", () => {
+	it("defaults to viewer role", () => {
 		const previousRole = process.env.CODEX_AUTH_ROLE;
 		try {
 			delete process.env.CODEX_AUTH_ROLE;
-			expect(getAuthorizationRole()).toBe("admin");
-			expect(authorizeAction("secrets:rotate").allowed).toBe(true);
+			expect(getAuthorizationRole()).toBe("viewer");
+			expect(authorizeAction("accounts:read").allowed).toBe(true);
+			expect(authorizeAction("secrets:rotate").allowed).toBe(false);
 		} finally {
 			if (previousRole === undefined) {
 				delete process.env.CODEX_AUTH_ROLE;

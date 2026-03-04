@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -107,6 +108,50 @@ describe("file lock", () => {
 		await expect(fs.access(lockPath)).rejects.toBeTruthy();
 	});
 
+	it("does not remove a replacement lock when ownership changes during release checks", async () => {
+		const lockPath = join(tempDir, "release-race.lock");
+		const first = await acquireFileLock(lockPath, {
+			maxAttempts: 3,
+			baseDelayMs: 1,
+			maxDelayMs: 2,
+			staleAfterMs: 120_000,
+		});
+
+		const originalRaw = await fs.readFile(lockPath, "utf8");
+		const replacementPayload = {
+			pid: process.pid + 1,
+			acquiredAt: Date.now() + 1,
+			ownerId: "replacement-owner-id",
+		};
+		const replacementRaw = `${JSON.stringify(replacementPayload)}\n`;
+		const realRead = fs.readFile.bind(fs);
+		let lockReadCount = 0;
+		const readSpy = vi.spyOn(fs, "readFile");
+		readSpy.mockImplementation(async (...args) => {
+			if (String(args[0]) === lockPath) {
+				lockReadCount += 1;
+				if (lockReadCount === 1) {
+					return originalRaw;
+				}
+				if (lockReadCount === 2) {
+					await fs.writeFile(lockPath, replacementRaw, "utf8");
+					return replacementRaw;
+				}
+			}
+			return realRead(...args);
+		});
+
+		try {
+			await first.release();
+			const persistedRaw = await fs.readFile(lockPath, "utf8");
+			expect(persistedRaw).toBe(replacementRaw);
+			expect(lockReadCount).toBeGreaterThanOrEqual(2);
+		} finally {
+			readSpy.mockRestore();
+			await fs.unlink(lockPath).catch(() => {});
+		}
+	});
+
 	it("closes descriptors and removes partial locks when initialization write fails", async () => {
 		const lockPath = join(tempDir, "init-failure.lock");
 		const closeMock = vi.fn(async () => {});
@@ -138,8 +183,10 @@ describe("file lock", () => {
 		const lockPath = join(tempDir, "contention.lock");
 		const sharedFilePath = join(tempDir, "shared.txt");
 		const workerScriptPath = join(tempDir, "lock-writer-worker.mjs");
+		const sourceModulePath = join(process.cwd(), "lib", "file-lock.js");
+		const distModulePath = join(process.cwd(), "dist", "lib", "file-lock.js");
 		const fileLockModuleUrl = pathToFileURL(
-			join(process.cwd(), "lib", "file-lock.js"),
+			existsSync(sourceModulePath) ? sourceModulePath : distModulePath,
 		).href;
 		const workerCount = 6;
 		const iterationsPerWorker = 10;
