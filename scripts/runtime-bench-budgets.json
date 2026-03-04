@@ -1,0 +1,15 @@
+{
+  "generatedAt": "2026-03-04",
+  "notes": "Budgets include headroom for CI variance while still catching major regressions.",
+  "cases": {
+    "filterInput_small": { "maxAvgMs": 0.12 },
+    "filterInput_large": { "maxAvgMs": 0.6 },
+    "cleanupToolDefinitions_medium": { "maxAvgMs": 1.0 },
+    "cleanupToolDefinitions_large": { "maxAvgMs": 7.0 },
+    "accountHybridSelection_200": { "maxAvgMs": 0.6 },
+    "normalizeAccountStorage_large": { "maxAvgMs": 1.5 },
+    "codexCliSync_merge_1000": { "maxAvgMs": 2.0 },
+    "handleErrorResponse_usageLimit": { "maxAvgMs": 0.25 },
+    "handleSuccessResponseDetailed_nonstream": { "maxAvgMs": 0.15 }
+  }
+}

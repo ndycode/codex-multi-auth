@@ -34,9 +34,14 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const STALE_ROTATING_BACKUP_CLEANUP_INTERVAL_MS = 30_000;
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
+const rotatingBackupCleanupState = new Map<
+	string,
+	{ lastRunAt: number; inFlight: Promise<void> | null }
+>();
 
 export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
 	flaggedAt: number;
@@ -355,35 +360,62 @@ function isRotatingBackupTempArtifact(storagePath: string, candidatePath: string
 }
 
 async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> {
-	const directoryPath = dirname(path);
-	try {
-		const directoryEntries = await fs.readdir(directoryPath, { withFileTypes: true });
-		const staleArtifacts = directoryEntries
-			.filter((entry) => entry.isFile())
-			.map((entry) => join(directoryPath, entry.name))
-			.filter((entryPath) => isRotatingBackupTempArtifact(path, entryPath));
+	const existingState = rotatingBackupCleanupState.get(path);
+	const now = Date.now();
+	if (
+		existingState &&
+		existingState.inFlight === null &&
+		now - existingState.lastRunAt < STALE_ROTATING_BACKUP_CLEANUP_INTERVAL_MS
+	) {
+		return;
+	}
+	if (existingState?.inFlight) {
+		return existingState.inFlight;
+	}
 
-		for (const staleArtifactPath of staleArtifacts) {
-			try {
-				await fs.unlink(staleArtifactPath);
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					log.warn("Failed to remove stale rotating backup artifact", {
-						path: staleArtifactPath,
-						error: String(error),
-					});
+	const cleanupPromise = (async () => {
+		const directoryPath = dirname(path);
+		try {
+			const directoryEntries = await fs.readdir(directoryPath, { withFileTypes: true });
+			const staleArtifacts = directoryEntries
+				.filter((entry) => entry.isFile())
+				.map((entry) => join(directoryPath, entry.name))
+				.filter((entryPath) => isRotatingBackupTempArtifact(path, entryPath));
+
+			for (const staleArtifactPath of staleArtifacts) {
+				try {
+					await fs.unlink(staleArtifactPath);
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (code !== "ENOENT") {
+						log.warn("Failed to remove stale rotating backup artifact", {
+							path: staleArtifactPath,
+							error: String(error),
+						});
+					}
 				}
 			}
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				log.warn("Failed to scan for stale rotating backup artifacts", {
+					path,
+					error: String(error),
+				});
+			}
 		}
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to scan for stale rotating backup artifacts", {
-				path,
-				error: String(error),
-			});
-		}
+	})();
+	rotatingBackupCleanupState.set(path, {
+		lastRunAt: existingState?.lastRunAt ?? 0,
+		inFlight: cleanupPromise,
+	});
+	try {
+		await cleanupPromise;
+	} finally {
+		rotatingBackupCleanupState.set(path, {
+			lastRunAt: Date.now(),
+			inFlight: null,
+		});
 	}
 }
 
@@ -727,6 +759,18 @@ function toAccountKey(account: Pick<AccountMetadataV3, "accountId" | "refreshTok
   return account.accountId || account.refreshToken;
 }
 
+function buildAccountIndexByKey(
+	accounts: Pick<AccountMetadataV3, "accountId" | "refreshToken">[],
+): Map<string, number> {
+	const indexByKey = new Map<string, number>();
+	for (let i = 0; i < accounts.length; i += 1) {
+		const account = accounts[i];
+		if (!account) continue;
+		indexByKey.set(toAccountKey(account), i);
+	}
+	return indexByKey;
+}
+
 function extractActiveKey(accounts: unknown[], activeIndex: number): string | undefined {
   const candidate = accounts[activeIndex];
   if (!isRecord(candidate)) return undefined;
@@ -790,15 +834,14 @@ export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null 
   const deduplicatedAccounts = deduplicateAccountsByEmail(
     deduplicateAccountsByKey(validAccounts),
   );
+  const deduplicatedIndexByKey = buildAccountIndexByKey(deduplicatedAccounts);
 
   const activeIndex = (() => {
     if (deduplicatedAccounts.length === 0) return 0;
 
     if (activeKey) {
-      const mappedIndex = deduplicatedAccounts.findIndex(
-        (account) => toAccountKey(account) === activeKey,
-      );
-      if (mappedIndex >= 0) return mappedIndex;
+      const mappedIndex = deduplicatedIndexByKey.get(activeKey);
+      if (mappedIndex !== undefined) return mappedIndex;
     }
 
     return clampIndex(rawActiveIndex, deduplicatedAccounts.length);
@@ -821,10 +864,8 @@ export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null 
 
     let mappedIndex = clampIndex(rawIndex, deduplicatedAccounts.length);
     if (familyKey && deduplicatedAccounts.length > 0) {
-      const idx = deduplicatedAccounts.findIndex(
-        (account) => toAccountKey(account) === familyKey,
-      );
-      if (idx >= 0) {
+      const idx = deduplicatedIndexByKey.get(familyKey);
+      if (idx !== undefined) {
         mappedIndex = idx;
       }
     }

@@ -50,6 +50,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Runtime performance regression gate
+        if: matrix.node-version == '20.x'
+        run: npm run perf:runtime:ci
+
   lint:
     name: Lint
 

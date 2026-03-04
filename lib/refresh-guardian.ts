@@ -117,15 +117,22 @@ export class RefreshGuardian {
 			for (const candidate of snapshot) {
 				snapshotByIndex.set(candidate.index, candidate);
 			}
+			const liveAccounts = manager.getAccountsSnapshot();
+			const liveIndexByRefreshToken = new Map<string, number>();
+			for (let i = 0; i < liveAccounts.length; i += 1) {
+				const candidate = liveAccounts[i];
+				if (!candidate?.refreshToken) continue;
+				liveIndexByRefreshToken.set(candidate.refreshToken, i);
+			}
 
 			for (const [accountIndex, result] of refreshResults.entries()) {
 				const sourceAccount = snapshotByIndex.get(accountIndex);
 				if (!sourceAccount) continue;
-				const liveAccounts = manager.getAccountsSnapshot();
-				const resolvedIndex = liveAccounts.findIndex(
-					(candidate) => candidate.refreshToken === sourceAccount.refreshToken,
-				);
-				const account = resolvedIndex >= 0 ? manager.getAccountByIndex(resolvedIndex) : null;
+				const resolvedIndex = liveIndexByRefreshToken.get(sourceAccount.refreshToken);
+				const account =
+					typeof resolvedIndex === "number"
+						? manager.getAccountByIndex(resolvedIndex)
+						: null;
 				if (!account) continue;
 
 				switch (result.reason) {

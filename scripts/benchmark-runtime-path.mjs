@@ -14,6 +14,7 @@ import {
 	handleErrorResponse,
 	handleSuccessResponseDetailed,
 } from "../dist/lib/request/fetch-helpers.js";
+import { normalizeAccountStorage } from "../dist/lib/storage.js";
 
 function argValue(args, name) {
 	const prefix = `${name}=`;
@@ -165,6 +166,43 @@ function buildSyncStorage(accountCount) {
 	};
 }
 
+function buildNormalizationStorage(accountCount) {
+	const accounts = [];
+	for (let i = 0; i < accountCount; i += 1) {
+		const emailSuffix = Math.floor(i / 3);
+		accounts.push({
+			accountId: `norm_${i}`,
+			refreshToken: `norm.refresh.${i}`,
+			accessToken: `norm.access.${i}`,
+			email: `norm${emailSuffix}@example.com`,
+			addedAt: 1,
+			lastUsed: 0,
+			enabled: true,
+		});
+		if (i % 25 === 0) {
+			accounts.push({
+				accountId: `norm_${i}`,
+				refreshToken: `norm.refresh.dup.${i}`,
+				accessToken: `norm.access.dup.${i}`,
+				email: `norm${emailSuffix}@example.com`,
+				addedAt: 1,
+				lastUsed: 0,
+				enabled: true,
+			});
+		}
+	}
+
+	return {
+		version: 3,
+		accounts,
+		activeIndex: Math.max(0, accountCount - 1),
+		activeIndexByFamily: {
+			codex: Math.floor(accountCount / 2),
+			gpt5: Math.floor(accountCount / 3),
+		},
+	};
+}
+
 async function withCodexCliState(accountCount, fn) {
 	const tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-perf-"));
 	const accountsPath = join(tempDir, "accounts.json");
@@ -217,6 +255,7 @@ async function run() {
 	const inputLarge = buildInputItems(2000);
 	const toolsMedium = buildTools(40, 12);
 	const toolsLarge = buildTools(140, 25);
+	const normalizationStorage = buildNormalizationStorage(2000);
 
 	const results = [
 		benchmarkCase("filterInput_small", iterations, () => {
@@ -239,6 +278,12 @@ async function run() {
 			const manager = buildManager(200);
 			for (let i = 0; i < 200; i += 1) {
 				manager.getCurrentOrNextForFamilyHybrid("codex", "gpt-5-codex", { pidOffsetEnabled: false });
+			}
+		}),
+		benchmarkCase("normalizeAccountStorage_large", iterations, () => {
+			const out = normalizeAccountStorage(normalizationStorage);
+			if (!out || out.version !== 3) {
+				throw new Error("normalizeAccountStorage_large failed");
 			}
 		}),
 	];

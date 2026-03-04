@@ -6,6 +6,7 @@ import {
 	refreshExpiringAccounts,
 	applyRefreshResult,
 	DEFAULT_PROACTIVE_BUFFER_MS,
+	DEFAULT_PROACTIVE_REFRESH_MAX_CONCURRENCY,
 	MIN_PROACTIVE_BUFFER_MS,
 } from "../lib/proactive-refresh.js";
 import type { ManagedAccount } from "../lib/accounts.js";
@@ -325,6 +326,53 @@ describe("proactive-refresh", () => {
 			expect(refreshQueue.queuedRefresh).toHaveBeenCalledTimes(3);
 		});
 
+		it("respects maxConcurrency and preserves result order", async () => {
+			const accounts = [
+				createMockAccount({ index: 0, access: "access-0", expires: Date.now() + 60_000, refreshToken: "refresh-0" }),
+				createMockAccount({ index: 1, access: "access-1", expires: Date.now() + 120_000, refreshToken: "refresh-1" }),
+				createMockAccount({ index: 2, access: "access-2", expires: Date.now() + 180_000, refreshToken: "refresh-2" }),
+				createMockAccount({ index: 3, access: "access-3", expires: Date.now() + 240_000, refreshToken: "refresh-3" }),
+				createMockAccount({ index: 4, access: "access-4", expires: Date.now() + 300_000, refreshToken: "refresh-4" }),
+			];
+			let active = 0;
+			let maxActive = 0;
+			const releases: Array<() => void> = [];
+			vi.mocked(refreshQueue.queuedRefresh).mockImplementation(
+				() =>
+					new Promise((resolve) => {
+						active += 1;
+						maxActive = Math.max(maxActive, active);
+						releases.push(() => {
+							active -= 1;
+							resolve({
+								type: "success",
+								access: "new-access",
+								refresh: "new-refresh",
+								expires: Date.now() + 3_600_000,
+							});
+						});
+					}),
+			);
+
+			const pending = refreshExpiringAccounts(accounts, DEFAULT_PROACTIVE_BUFFER_MS, 2);
+			await Promise.resolve();
+			expect(maxActive).toBe(2);
+
+			for (let i = 0; i < accounts.length; i += 1) {
+				while (releases.length === 0) {
+					await Promise.resolve();
+				}
+				const release = releases.shift();
+				release?.();
+				await Promise.resolve();
+			}
+
+			const results = await pending;
+			expect(maxActive).toBe(2);
+			expect(results.size).toBe(5);
+			expect(Array.from(results.keys())).toEqual([0, 1, 2, 3, 4]);
+		});
+
 		it("handles mixed success and failure results", async () => {
 			const accounts = [
 				createMockAccount({
@@ -408,6 +456,10 @@ describe("proactive-refresh", () => {
 
 		it("MIN_PROACTIVE_BUFFER_MS is 30 seconds", () => {
 			expect(MIN_PROACTIVE_BUFFER_MS).toBe(30 * 1000);
+		});
+
+		it("DEFAULT_PROACTIVE_REFRESH_MAX_CONCURRENCY is 4", () => {
+			expect(DEFAULT_PROACTIVE_REFRESH_MAX_CONCURRENCY).toBe(4);
 		});
 	});
 });

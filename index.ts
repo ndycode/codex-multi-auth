@@ -251,6 +251,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		balanced: 15_000,
 		conservative: 20_000,
 	};
+	const HYDRATE_EMAILS_MAX_CONCURRENCY = 4;
 
 	const parseFailoverMode = (value: string | undefined): FailoverMode => {
 		const normalized = (value ?? "").trim().toLowerCase();
@@ -710,11 +711,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 if (accountsToHydrate.length === 0) return storage;
 
                 let changed = false;
-                await Promise.all(
-                        accountsToHydrate.map(async (account) => {
+                const workerCount = Math.min(
+                        HYDRATE_EMAILS_MAX_CONCURRENCY,
+                        accountsToHydrate.length,
+                );
+                let nextHydrateIndex = 0;
+                const workers = Array.from({ length: workerCount }, async () => {
+                        while (nextHydrateIndex < accountsToHydrate.length) {
+                                const position = nextHydrateIndex;
+                                nextHydrateIndex += 1;
+                                const account = accountsToHydrate[position];
+                                if (!account) continue;
                                 try {
                                         const refreshed = await queuedRefresh(account.refreshToken);
-                                        if (refreshed.type !== "success") return;
+                                        if (refreshed.type !== "success") continue;
                                         const id = extractAccountId(refreshed.access);
                                         const email = sanitizeEmail(extractAccountEmail(refreshed.access, refreshed.idToken));
                                         if (
@@ -745,8 +755,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				} catch {
 					logWarn(`[${PLUGIN_NAME}] Failed to hydrate email for account`);
 				}
-                        }),
-                );
+                        }
+                });
+                await Promise.all(workers);
 
                 if (changed) {
                         storage.accounts = accountsCopy;
