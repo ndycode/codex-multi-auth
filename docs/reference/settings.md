@@ -74,6 +74,7 @@ Examples:
 - `sessionAffinityTtlMs`
 - `sessionAffinityMaxEntries`
 - `perProjectAccounts`
+- `telemetryEnabled`
 
 ### Rotation and Quota
 
@@ -133,6 +134,7 @@ Common operator overrides:
 - `CODEX_AUTH_ENCRYPTION_KEY`
 - `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY`
 - `CODEX_AUTH_ROLE`
+- `CODEX_AUTH_TELEMETRY_ENABLED`
 
 Encryption key variables must be high-entropy 32-byte key material (for example,
 from a secret manager). Do not use passwords.

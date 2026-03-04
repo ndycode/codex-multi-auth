@@ -18,6 +18,7 @@ import {
 	getUnsupportedCodexFallbackChain,
 	getFetchTimeoutMs,
 	getStreamStallTimeoutMs,
+	getTelemetryEnabled,
 	getPreemptiveQuotaEnabled,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
@@ -61,6 +62,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_FAST_SESSION',
 		'CODEX_AUTH_FAST_SESSION_STRATEGY',
 		'CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS',
+		'CODEX_AUTH_TELEMETRY_ENABLED',
 		'CODEX_AUTH_UNSUPPORTED_MODEL_POLICY',
 		'CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL',
 		'CODEX_AUTH_FALLBACK_GPT53_TO_GPT52',
@@ -117,6 +119,7 @@ describe('Plugin Configuration', () => {
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
 				perProjectAccounts: true,
+				telemetryEnabled: true,
 				sessionRecovery: true,
 				autoResume: true,
 				parallelProbing: false,
@@ -176,6 +179,7 @@ describe('Plugin Configuration', () => {
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
 				perProjectAccounts: true,
+				telemetryEnabled: true,
 				sessionRecovery: true,
 				autoResume: true,
 				parallelProbing: false,
@@ -472,6 +476,7 @@ describe('Plugin Configuration', () => {
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
 				perProjectAccounts: true,
+				telemetryEnabled: true,
 				sessionRecovery: true,
 				autoResume: true,
 				parallelProbing: false,
@@ -537,6 +542,7 @@ describe('Plugin Configuration', () => {
 		rateLimitToastDebounceMs: 60_000,
 		toastDurationMs: 5_000,
 		perProjectAccounts: true,
+		telemetryEnabled: true,
 		sessionRecovery: true,
 		autoResume: true,
 		parallelProbing: false,
@@ -596,6 +602,7 @@ describe('Plugin Configuration', () => {
 			rateLimitToastDebounceMs: 60_000,
 			toastDurationMs: 5_000,
 			perProjectAccounts: true,
+			telemetryEnabled: true,
 			sessionRecovery: true,
 			autoResume: true,
 			parallelProbing: false,
@@ -822,6 +829,25 @@ describe('Plugin Configuration', () => {
 			expect(getFastSession({ fastSession: true })).toBe(false);
 			process.env.CODEX_AUTH_FAST_SESSION = '1';
 			expect(getFastSession({ fastSession: false })).toBe(true);
+		});
+	});
+
+	describe('getTelemetryEnabled', () => {
+		it('should default to true', () => {
+			delete process.env.CODEX_AUTH_TELEMETRY_ENABLED;
+			expect(getTelemetryEnabled({})).toBe(true);
+		});
+
+		it('should use config value when env var not set', () => {
+			delete process.env.CODEX_AUTH_TELEMETRY_ENABLED;
+			expect(getTelemetryEnabled({ telemetryEnabled: false })).toBe(false);
+		});
+
+		it('should prioritize env var over config', () => {
+			process.env.CODEX_AUTH_TELEMETRY_ENABLED = '0';
+			expect(getTelemetryEnabled({ telemetryEnabled: true })).toBe(false);
+			process.env.CODEX_AUTH_TELEMETRY_ENABLED = '1';
+			expect(getTelemetryEnabled({ telemetryEnabled: false })).toBe(true);
 		});
 	});
 

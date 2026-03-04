@@ -109,10 +109,17 @@ vi.mock("../lib/config.js", () => ({
 	getPreemptiveQuotaRemainingPercent5h: () => 5,
 	getPreemptiveQuotaRemainingPercent7d: () => 5,
 	getPreemptiveQuotaMaxDeferralMs: () => 2 * 60 * 60_000,
+	getTelemetryEnabled: () => true,
 	getCodexTuiV2: () => false,
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
 	loadPluginConfig: vi.fn(() => ({})),
+}));
+
+const recordTelemetryEventMock = vi.fn();
+
+vi.mock("../lib/telemetry.js", () => ({
+	recordTelemetryEvent: recordTelemetryEventMock,
 }));
 
 const liveAccountSyncSyncToPathMock = vi.fn(async () => {});
