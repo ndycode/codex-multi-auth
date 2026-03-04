@@ -255,25 +255,22 @@ describe("Codex Prompts Module", () => {
 
 				expect(first).toBe("stale disk content");
 				expect(second).toBe("stale disk content");
-				for (let i = 0; i < 25 && mockFetch.mock.calls.length < 2; i += 1) {
-					await Promise.resolve();
-				}
-				expect(mockFetch).toHaveBeenCalledTimes(2);
+				await vi.waitFor(() => {
+					expect(mockFetch).toHaveBeenCalledTimes(2);
+				});
 
 				resolvePromptText?.("fresh deduped content");
-				for (let i = 0; i < 25 && mockedWriteFile.mock.calls.length === 0; i += 1) {
-					await Promise.resolve();
-				}
-				expect(mockedWriteFile).toHaveBeenCalled();
+				await vi.waitFor(() => {
+					expect(mockedWriteFile).toHaveBeenCalled();
+				});
 				const settledFetchCalls = mockFetch.mock.calls.length;
-				for (let i = 0; i < 25; i += 1) {
-					await Promise.resolve();
-				}
 				expect(settledFetchCalls).toBe(2);
-				expect(mockFetch).toHaveBeenCalledTimes(settledFetchCalls);
 
 				const refreshed = await getCodexInstructions("gpt-5.1-codex");
 				expect(refreshed).toBe("fresh deduped content");
+				await vi.waitFor(() => {
+					expect(mockFetch).toHaveBeenCalledTimes(settledFetchCalls);
+				});
 			});
 		});
 
