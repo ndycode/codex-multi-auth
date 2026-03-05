@@ -20,6 +20,9 @@ const DEFAULT_POLICY: RetentionPolicy = {
 const RETRYABLE_DIRECTORY_CLEANUP_CODES = new Set(["ENOTEMPTY", "EBUSY", "EPERM"]);
 const DIRECTORY_CLEANUP_MAX_ATTEMPTS = 4;
 const DIRECTORY_CLEANUP_BASE_DELAY_MS = 10;
+const RETRYABLE_FILE_UNLINK_CODES = new Set(["EBUSY", "EPERM"]);
+const FILE_UNLINK_MAX_ATTEMPTS = 4;
+const FILE_UNLINK_BASE_DELAY_MS = 25;
 
 function parseEnvDays(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -65,6 +68,25 @@ async function removeEmptyDirectoryWithRetry(path: string): Promise<void> {
 	}
 }
 
+async function unlinkFileWithRetry(path: string): Promise<boolean> {
+	for (let attempt = 0; attempt < FILE_UNLINK_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.unlink(path);
+			return true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return false;
+			if (!code || !RETRYABLE_FILE_UNLINK_CODES.has(code) || attempt === FILE_UNLINK_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, FILE_UNLINK_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
+	}
+	return false;
+}
+
 async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<number> {
 	let removed = 0;
 	let entries: Dirent<string>[] = [];
@@ -88,8 +110,9 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 			if (!entry.isFile()) continue;
 			const stats = await fs.stat(fullPath);
 			if (now - stats.mtimeMs <= maxAgeMs) continue;
-			await fs.unlink(fullPath);
-			removed += 1;
+			if (await unlinkFileWithRetry(fullPath)) {
+				removed += 1;
+			}
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") {
@@ -107,8 +130,7 @@ async function pruneSingleFile(path: string, maxAgeMs: number): Promise<boolean>
 		if (Date.now() - stats.mtimeMs <= maxAgeMs) {
 			return false;
 		}
-		await fs.unlink(path);
-		return true;
+		return await unlinkFileWithRetry(path);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") return false;

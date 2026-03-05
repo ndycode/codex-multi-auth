@@ -37,23 +37,19 @@ function restoreAuthEnv(snapshot: Record<(typeof AUTH_ENV_KEYS)[number], string 
 
 describe("authorization", () => {
 	it("defaults to viewer role", () => {
-		const previousRole = process.env.CODEX_AUTH_ROLE;
+		const previous = captureAuthEnv();
 		try {
 			delete process.env.CODEX_AUTH_ROLE;
 			expect(getAuthorizationRole()).toBe("viewer");
 			expect(authorizeAction("accounts:read").allowed).toBe(true);
 			expect(authorizeAction("secrets:rotate").allowed).toBe(false);
 		} finally {
-			if (previousRole === undefined) {
-				delete process.env.CODEX_AUTH_ROLE;
-			} else {
-				process.env.CODEX_AUTH_ROLE = previousRole;
-			}
+			restoreAuthEnv(previous);
 		}
 	});
 
 	it("denies write actions for viewer role", () => {
-		const previousRole = process.env.CODEX_AUTH_ROLE;
+		const previous = captureAuthEnv();
 		try {
 			process.env.CODEX_AUTH_ROLE = "viewer";
 			const auth = authorizeAction("accounts:write");
@@ -61,27 +57,19 @@ describe("authorization", () => {
 			expect(auth.role).toBe("viewer");
 			expect(auth.reason).toContain("accounts:write");
 		} finally {
-			if (previousRole === undefined) {
-				delete process.env.CODEX_AUTH_ROLE;
-			} else {
-				process.env.CODEX_AUTH_ROLE = previousRole;
-			}
+			restoreAuthEnv(previous);
 		}
 	});
 
 	it("fails closed for invalid role overrides", () => {
-		const previousRole = process.env.CODEX_AUTH_ROLE;
+		const previous = captureAuthEnv();
 		try {
 			process.env.CODEX_AUTH_ROLE = "root";
 			const auth = authorizeAction("accounts:write");
 			expect(auth.allowed).toBe(false);
 			expect(auth.role).toBe("viewer");
 		} finally {
-			if (previousRole === undefined) {
-				delete process.env.CODEX_AUTH_ROLE;
-			} else {
-				process.env.CODEX_AUTH_ROLE = previousRole;
-			}
+			restoreAuthEnv(previous);
 		}
 	});
 

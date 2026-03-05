@@ -26,6 +26,7 @@
 import { tool } from "@codex-ai/plugin/tool";
 import type { Plugin, PluginInput } from "@codex-ai/plugin";
 import type { Auth } from "@codex-ai/sdk";
+import { createHash } from "node:crypto";
 import {
         createAuthorizationFlow,
         exchangeAuthorizationCode,
@@ -1314,8 +1315,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					const email = sanitizeEmail(account.email);
 					if (email) return `email:${email}`;
 					if (account.refreshToken?.trim()) {
-						const suffix = account.refreshToken.trim().slice(-16).toLowerCase();
-						return `refresh:${suffix}`;
+						const tokenHash = createHash("sha256")
+							.update(account.refreshToken.trim(), "utf8")
+							.digest("hex");
+						return `refresh:${tokenHash}`;
 					}
 					return `index:${account.index}`;
 				};

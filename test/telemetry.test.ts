@@ -2,6 +2,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removeWithRetry } from "./helpers/fs-retry.js";
 import {
 	configureTelemetry,
 	getTelemetryConfig,
@@ -10,27 +11,6 @@ import {
 	recordTelemetryEvent,
 	summarizeTelemetryEvents,
 } from "../lib/telemetry.js";
-
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
-
-async function removeWithRetry(
-	targetPath: string,
-	options: { recursive?: boolean; force?: boolean },
-): Promise<void> {
-	for (let attempt = 0; attempt < 6; attempt += 1) {
-		try {
-			await fs.rm(targetPath, options);
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") return;
-			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
-				throw error;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
-		}
-	}
-}
 
 describe("telemetry module", () => {
 	let tempDir = "";
@@ -258,6 +238,22 @@ describe("telemetry module", () => {
 		expect(concurrentEvents).toHaveLength(eventCount);
 	});
 
+	it("clamps runtime telemetry bounds so rotation still runs", async () => {
+		configureTelemetry({ maxFiles: 1, maxFileSizeBytes: 0 });
+		const config = getTelemetryConfig();
+		expect(config.maxFiles).toBe(2);
+		expect(config.maxFileSizeBytes).toBe(64);
+
+		const logPath = getTelemetryLogPath();
+		await fs.writeFile(logPath, `${"x".repeat(2_048)}\n`, "utf8");
+		await recordTelemetryEvent({
+			source: "plugin",
+			event: "request.rotation_clamped",
+			outcome: "info",
+		});
+		expect(existsSync(`${logPath}.1`)).toBe(true);
+	});
+
 		it.each(["EBUSY", "EAGAIN", "EACCES"] as const)(
 			"retries transient Windows lock errors during telemetry rotation (%s)",
 			async (errorCode) => {
@@ -313,7 +309,7 @@ describe("telemetry module", () => {
 						outcome: "info",
 						details: {
 							index,
-							token: `sk-concurrent-token-${String(index).padStart(4, "0")}`,
+							token: `telemetry_token_fixture_${String(index).padStart(4, "0")}`,
 						},
 					}),
 				),

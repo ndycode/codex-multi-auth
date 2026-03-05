@@ -12,11 +12,12 @@ import {
   saveAccounts,
   clearAccounts,
   loadFlaggedAccounts,
-  saveFlaggedAccounts,
-  rotateStoredSecretEncryption,
-  getStoragePath,
-  setStoragePath,
-  setStoragePathDirect,
+   saveFlaggedAccounts,
+   rotateStoredSecretEncryption,
+   getStoragePath,
+   getFlaggedAccountsPath,
+   setStoragePath,
+   setStoragePathDirect,
   StorageError,
   formatStorageErrorHint,
   exportAccounts,
@@ -2069,6 +2070,20 @@ describe("storage", () => {
   });
 
   describe("clearAccounts edge cases", () => {
+    const workDir = join(tmpdir(), `codex-storage-clear-${Math.random().toString(36).slice(2)}`);
+
+    beforeEach(async () => {
+      await fs.mkdir(workDir, { recursive: true });
+      setStoragePathDirect(
+        join(workDir, `accounts-${Math.random().toString(36).slice(2)}.json`),
+      );
+    });
+
+    afterEach(async () => {
+      setStoragePathDirect(null);
+      await fs.rm(workDir, { recursive: true, force: true });
+    });
+
     it("removes primary, backup, and wal artifacts", async () => {
       const now = Date.now();
       const storage = {
@@ -2180,6 +2195,44 @@ describe("storage", () => {
       await expect(rotateStoredSecretEncryption()).rejects.toThrow(
         "Failed to load flagged account storage for secret rotation",
       );
+    });
+
+    it("tolerates ENOENT when flagged file disappears during rotation validation", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "rotation-primary";
+      const flaggedPath = getFlaggedAccountsPath();
+      await fs.writeFile(
+        flaggedPath,
+        JSON.stringify({
+          version: 1,
+          accounts: [],
+        }),
+        "utf8",
+      );
+
+      const originalReadFile = fs.readFile.bind(fs);
+      let flaggedReadCount = 0;
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        const path = args[0];
+        if (typeof path === "string" && path === flaggedPath) {
+          flaggedReadCount += 1;
+          if (flaggedReadCount >= 2) {
+            const error = new Error("missing") as NodeJS.ErrnoException;
+            error.code = "ENOENT";
+            throw error;
+          }
+        }
+        return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        await expect(rotateStoredSecretEncryption()).resolves.toEqual(
+          expect.objectContaining({
+            flaggedAccounts: 0,
+          }),
+        );
+      } finally {
+        readSpy.mockRestore();
+      }
     });
   });
 });

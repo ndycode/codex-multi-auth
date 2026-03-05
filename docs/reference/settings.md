@@ -136,6 +136,8 @@ Common operator overrides:
 - `CODEX_AUTH_ROLE`
 - `CODEX_AUTH_TELEMETRY_ENABLED`
 
+`CODEX_AUTH_ROLE` defaults to `viewer` when unset.
+
 Encryption key variables must be high-entropy 32-byte key material (for example,
 from a secret manager). Do not use passwords. Example generation command:
 

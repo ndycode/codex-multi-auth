@@ -54,6 +54,10 @@ const DEFAULT_TELEMETRY_CONFIG: TelemetryConfig = {
 	maxFileSizeBytes: 1 * 1024 * 1024,
 	maxFiles: 4,
 };
+const TELEMETRY_MIN_FILE_SIZE_BYTES = 64;
+const TELEMETRY_MAX_FILE_SIZE_BYTES = 64 * 1024 * 1024;
+const TELEMETRY_MIN_FILES = 2;
+const TELEMETRY_MAX_FILES = 32;
 const TELEMETRY_SOURCES = new Set<TelemetrySource>(["cli", "plugin"]);
 const TELEMETRY_OUTCOMES = new Set<TelemetryOutcome>([
 	"start",
@@ -287,8 +291,26 @@ function clampLimit(limit: number | undefined): number {
 	return Math.max(1, Math.min(500, Math.floor(limit)));
 }
 
+function clampMaxFiles(maxFiles: number): number {
+	if (!Number.isFinite(maxFiles)) return DEFAULT_TELEMETRY_CONFIG.maxFiles;
+	return Math.max(TELEMETRY_MIN_FILES, Math.min(TELEMETRY_MAX_FILES, Math.floor(maxFiles)));
+}
+
+function clampMaxFileSizeBytes(maxFileSizeBytes: number): number {
+	if (!Number.isFinite(maxFileSizeBytes)) return DEFAULT_TELEMETRY_CONFIG.maxFileSizeBytes;
+	return Math.max(
+		TELEMETRY_MIN_FILE_SIZE_BYTES,
+		Math.min(TELEMETRY_MAX_FILE_SIZE_BYTES, Math.floor(maxFileSizeBytes)),
+	);
+}
+
 export function configureTelemetry(config: Partial<TelemetryConfig>): void {
-	telemetryConfig = { ...telemetryConfig, ...config };
+	const nextConfig = { ...telemetryConfig, ...config };
+	telemetryConfig = {
+		...nextConfig,
+		maxFiles: clampMaxFiles(nextConfig.maxFiles),
+		maxFileSizeBytes: clampMaxFileSizeBytes(nextConfig.maxFileSizeBytes),
+	};
 }
 
 export function getTelemetryConfig(): TelemetryConfig {

@@ -79,7 +79,9 @@ export function formatActiveIndexByFamilyLabels(
 ): string[] {
 	return families.map((family) => {
 		const idx = activeIndexByFamily?.[family];
-		const label = typeof idx === "number" && Number.isFinite(idx) ? String(idx + 1) : "-";
+		const label = typeof idx === "number" && Number.isFinite(idx)
+			? String(Math.floor(idx) + 1)
+			: "-";
 		return `${family}: ${label}`;
 	});
 }

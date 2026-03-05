@@ -61,7 +61,7 @@ Used only for host plugin mode through the host runtime config file.
 | --- | --- |
 | `retryAllAccountsRateLimited` | `true` |
 | `retryAllAccountsMaxWaitMs` | `0` |
-| `retryAllAccountsMaxRetries` | `Infinity` |
+| `retryAllAccountsMaxRetries` | `12` |
 | `retryAllAccountsAbsoluteCeilingMs` | `0` |
 | `unsupportedCodexPolicy` | `strict` |
 | `fallbackOnUnsupportedCodexModel` | `false` |
@@ -201,7 +201,7 @@ Used only for host plugin mode through the host runtime config file.
 | `CODEX_AUTH_TELEMETRY_ENABLED` | Toggle telemetry event recording (`1` = enabled, `0` = disabled) |
 | `CODEX_AUTH_ENCRYPTION_KEY` | Primary high-entropy 32-byte key for at-rest secret encryption (hex/base64 encoded 32-byte secret) |
 | `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY` | Previous high-entropy 32-byte key for staged secret rotation (hex/base64 encoded 32-byte secret) |
-| `CODEX_AUTH_ROLE` | Authorization role baseline (`admin`, `operator`, `viewer`) |
+| `CODEX_AUTH_ROLE` | Authorization role baseline (`admin`, `operator`, `viewer`; defaults to `viewer` when unset) |
 | `CODEX_AUTH_BREAK_GLASS` | Emergency authorization bypass toggle |
 | `CODEX_AUTH_ABAC_READ_ONLY` | Deny mutating actions while allowing read-only command paths |
 | `CODEX_AUTH_ABAC_DENY_ACTIONS` | Comma-separated action denies (`accounts:write`, etc.) |

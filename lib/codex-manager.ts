@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline/promises";
+import { createHash } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
 import { promises as fs, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -140,8 +141,10 @@ function buildRefreshRateLimitKey(
 	if (email && email.trim().length > 0) {
 		return `refresh:${email.trim().toLowerCase()}`;
 	}
-	const suffix = refreshToken.slice(-12).toLowerCase();
-	return `refresh:${suffix}`;
+	const tokenHash = createHash("sha256")
+		.update(refreshToken.trim(), "utf8")
+		.digest("hex");
+	return `refresh:${tokenHash}`;
 }
 
 async function queuedRefreshWithAuthRateLimit(
@@ -4737,6 +4740,8 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 				command,
 				...details,
 			},
+		}).catch(() => {
+			// Best-effort only: telemetry failures must not affect command execution.
 		});
 	};
 

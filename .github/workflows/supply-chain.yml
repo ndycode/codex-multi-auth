@@ -1,5 +1,9 @@
 name: Supply Chain
 
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   pull_request:
     branches: [main]
@@ -30,6 +34,7 @@ jobs:
 
   sca-and-license:
     name: SCA and License Gate
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -54,6 +59,7 @@ jobs:
 
   sbom:
     name: Generate SBOM
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
@@ -70,7 +76,11 @@ jobs:
         run: npm ci
 
       - name: Generate CycloneDX SBOM
-        run: npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json --omit dev
+        run: npx --yes @cyclonedx/cyclonedx-npm@4.2.0 --output-file sbom.cdx.json --omit dev
+
+      - name: Validate SBOM top-level fields
+        run: |
+          node -e "const fs=require('node:fs'); const sbom=JSON.parse(fs.readFileSync('sbom.cdx.json','utf8')); if(sbom.bomFormat!=='CycloneDX' || typeof sbom.specVersion!=='string' || typeof sbom.version!=='number'){ throw new Error('sbom.cdx.json missing required top-level fields'); }"
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

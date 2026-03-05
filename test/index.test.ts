@@ -2241,8 +2241,8 @@ describe("OpenAIOAuthPlugin telemetry hygiene", () => {
 
 		const getAuth = async () => ({
 			type: "oauth" as const,
-			access: "sk-live-sensitive-access-token-1234567890",
-			refresh: "refresh-sensitive-token-1234567890",
+			access: "telemetry_access_token_fixture_1234567890",
+			refresh: "telemetry_refresh_token_fixture_1234567890",
 			expires: Date.now() + 60_000,
 			multiAccount: true,
 		});
@@ -2257,8 +2257,8 @@ describe("OpenAIOAuthPlugin telemetry hygiene", () => {
 
 			expect(recordTelemetryEventMock).toHaveBeenCalled();
 			const serializedCalls = JSON.stringify(recordTelemetryEventMock.mock.calls);
-			expect(serializedCalls).not.toContain("sk-live-sensitive-access-token-1234567890");
-			expect(serializedCalls).not.toContain("refresh-sensitive-token-1234567890");
+			expect(serializedCalls).not.toContain("telemetry_access_token_fixture_1234567890");
+			expect(serializedCalls).not.toContain("telemetry_refresh_token_fixture_1234567890");
 		} finally {
 			globalThis.fetch = originalFetch;
 		}

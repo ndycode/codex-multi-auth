@@ -45,7 +45,7 @@ describe("telemetry lock coordination", () => {
 			source: "plugin",
 			event: "request.locked_write",
 			outcome: "info",
-			details: { token: "sk-live-lock-test-token" },
+			details: { token: "telemetry_lock_placeholder_token" },
 		});
 
 		expect(acquireFileLockMock).toHaveBeenCalledWith(

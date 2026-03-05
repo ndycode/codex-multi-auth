@@ -539,11 +539,16 @@ describe('Fetch Helpers Module', () => {
 			expect(body.error.message).toContain('No response.done event');
 		});
 
-		it('returns undefined parsedBody for streaming success responses in detailed mode', async () => {
-			const response = new Response('streamed output', { status: 200 });
+		it('returns undefined parsedBody and preserves sse payload for streaming success responses in detailed mode', async () => {
+			const sseContent =
+				`data: {"type":"response.output_text.delta","delta":"partial"}\r\n\r\n`;
+			const response = new Response(sseContent, {
+				status: 200,
+				headers: { 'content-type': 'text/event-stream' },
+			});
 			const result = await handleSuccessResponseDetailed(response, true);
 			expect(result.parsedBody).toBeUndefined();
-			expect(await result.response.text()).toBe('streamed output');
+			expect(await result.response.text()).toBe(sseContent);
 		});
 	});
 

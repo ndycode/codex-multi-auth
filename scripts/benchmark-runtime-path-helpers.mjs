@@ -36,11 +36,17 @@ export function assertSyncBenchmarkMergeResult(reconciled, options = {}) {
 	const expectedRefreshToken =
 		typeof options.expectedRefreshToken === "string" ? options.expectedRefreshToken : "";
 	const caseName = typeof options.caseName === "string" ? options.caseName : "codexCliSync_merge_1000";
+	const accounts = reconciled?.storage?.accounts;
 
-	if (!reconciled?.storage || !reconciled.changed || reconciled.storage.accounts.length < minimumAccounts) {
+	if (
+		!reconciled?.storage
+		|| !reconciled.changed
+		|| !Array.isArray(accounts)
+		|| accounts.length < minimumAccounts
+	) {
 		throw new Error(`${caseName} failed`);
 	}
-	if (expectedRefreshToken && reconciled.storage.accounts[0]?.refreshToken !== expectedRefreshToken) {
+	if (expectedRefreshToken && accounts[0]?.refreshToken !== expectedRefreshToken) {
 		throw new Error(`${caseName} failed`);
 	}
 }

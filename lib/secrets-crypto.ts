@@ -102,8 +102,7 @@ function parseEnvelope(value: string): SecretEnvelope | null {
 }
 
 export function isEncryptedSecret(value: string): boolean {
-	return value.startsWith(`${ENCRYPTED_PREFIX}${LEGACY_ENCRYPTED_VERSION}:`)
-		|| value.startsWith(`${ENCRYPTED_PREFIX}${ENCRYPTED_VERSION}:`);
+	return parseEnvelope(value) !== null;
 }
 
 export function encryptSecret(value: string, keyMaterial: string): string {

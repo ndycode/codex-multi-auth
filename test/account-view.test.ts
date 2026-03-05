@@ -119,11 +119,11 @@ describe("account-view helpers", () => {
 
 	it("formats active-index labels with 1-based values and fallback placeholders", () => {
 		const labels = formatActiveIndexByFamilyLabels({
-			codex: 0,
+			codex: 1.8,
 			"gpt-5.1": 2,
 		});
 		const expected = MODEL_FAMILIES.map((family) => {
-			if (family === "codex") return "codex: 1";
+			if (family === "codex") return "codex: 2";
 			if (family === "gpt-5.1") return "gpt-5.1: 3";
 			return `${family}: -`;
 		});

@@ -146,7 +146,7 @@ describe("plugin config save paths", () => {
 	    );
 	    expect(failedReadWarnings).toHaveLength(0);
 	    expect(transientReadFailures).toBe(2);
-	    expect(readAttempts).toBeGreaterThanOrEqual(3);
+	    expect(readAttempts).toBe(6);
 	  });
 
 	  it("retries sync loadPluginConfig reads with exponential backoff for retryable locks", async () => {

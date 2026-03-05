@@ -10,6 +10,13 @@ const handleSuccessResponseDetailedMock = vi.fn(async (response: Response) => ({
 }));
 const addJitterMock = vi.fn((delayMs: number) => delayMs);
 let unavailableSelectionCount = 1;
+type MockSelectedAccount = {
+	index: number;
+	accountId?: string;
+	email?: string;
+	refreshToken?: string;
+};
+let selectedAccountPlan: MockSelectedAccount[] = [];
 
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
@@ -68,7 +75,10 @@ vi.mock("../lib/accounts.js", () => {
 		getCurrentOrNextForFamily() {
 			this.calls += 1;
 			if (this.calls <= unavailableSelectionCount) return null;
-			return { index: 0, accountId: "account-1", email: "user@example.com" };
+			if (selectedAccountPlan.length > 0) {
+				return selectedAccountPlan.shift() as MockSelectedAccount;
+			}
+			return { index: 0, accountId: "account-1", email: "user@example.com", refreshToken: "refresh-token" };
 		}
 
 		getCurrentOrNextForFamilyHybrid() {
@@ -81,14 +91,14 @@ vi.mock("../lib/accounts.js", () => {
 
 		recordFailure() {}
 
-	toAuthDetails() {
-		return {
-			type: "oauth",
-			access: "access-token",
-			refresh: "refresh-token",
-			expires: Date.now() + 60_000,
-		};
-	}
+		toAuthDetails(account?: { refreshToken?: string }) {
+			return {
+				type: "oauth",
+				access: "access-token",
+				refresh: account?.refreshToken ?? "refresh-token",
+				expires: Date.now() + 60_000,
+			};
+		}
 
 	hasRefreshToken(_token: string) {
 		return true;
@@ -207,6 +217,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		unavailableSelectionCount = 1;
 		addJitterMock.mockReset();
 		addJitterMock.mockImplementation((delayMs: number) => delayMs);
+		selectedAccountPlan = [];
 	});
 
 	afterEach(() => {
@@ -371,6 +382,80 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		}
 		expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(1);
 		expect(refreshEndpoint).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not deduplicate refresh calls for different tokens that share a suffix", async () => {
+		shouldRefreshTokenMock.mockReturnValue(true);
+		unavailableSelectionCount = 0;
+		const sharedSuffix = "shared_refresh_suffix_1234";
+		const firstToken = `first_token_prefix_${sharedSuffix}`;
+		const secondToken = `second_token_prefix_${sharedSuffix}`;
+		selectedAccountPlan = [
+			{ index: 0, refreshToken: firstToken },
+			{ index: 1, refreshToken: secondToken },
+		];
+
+		const releaseRefreshes: Array<() => void> = [];
+		const refreshEndpoint = vi.fn(async () => {
+			await new Promise<void>((resolve) => {
+				releaseRefreshes.push(resolve);
+			});
+			return {
+				type: "oauth" as const,
+				access: "refreshed-access",
+				refresh: "refreshed-refresh",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			};
+		});
+		refreshAndUpdateTokenMock.mockImplementation(async (auth: unknown) => {
+			await refreshEndpoint();
+			return auth;
+		});
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+
+		const pendingFetches = Promise.all([
+			sdk.fetch("https://example.com", {}),
+			sdk.fetch("https://example.com", {}),
+		]);
+
+		await vi.advanceTimersByTimeAsync(1_500);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(2);
+		expect(refreshAndUpdateTokenMock).toHaveBeenCalledWith(
+			expect.objectContaining({ refresh: firstToken }),
+			expect.anything(),
+		);
+		expect(refreshAndUpdateTokenMock).toHaveBeenCalledWith(
+			expect.objectContaining({ refresh: secondToken }),
+			expect.anything(),
+		);
+		expect(releaseRefreshes).toHaveLength(2);
+		for (const release of releaseRefreshes) {
+			release();
+		}
+
+		const responses = await pendingFetches;
+		expect(responses).toHaveLength(2);
+		for (const response of responses) {
+			expect(response.status).toBe(200);
+		}
 	});
 });
 

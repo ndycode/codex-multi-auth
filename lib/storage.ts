@@ -1749,12 +1749,19 @@ export async function rotateStoredSecretEncryption(): Promise<{
 				);
 			}
 		} catch (error) {
-			if (error instanceof Error && error.message.includes("Failed to load flagged account storage")) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				// File disappeared after initial existence check; treat as empty.
+			} else if (
+				error instanceof Error
+				&& error.message.includes("Failed to load flagged account storage")
+			) {
 				throw error;
+			} else {
+				throw new Error(
+					`Failed to validate flagged account storage for secret rotation (${flaggedPath})`,
+				);
 			}
-			throw new Error(
-				`Failed to validate flagged account storage for secret rotation (${flaggedPath})`,
-			);
 		}
 	}
 	if (flaggedCount > 0) {

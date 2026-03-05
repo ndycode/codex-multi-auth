@@ -42,7 +42,7 @@ Routine operations checklist for maintainers.
    - `CODEX_AUTH_RETENTION_QUOTA_CACHE_DAYS`
    - `CODEX_AUTH_RETENTION_DLQ_DAYS`
 2. Validate RBAC defaults for deployment environments:
-   - `CODEX_AUTH_ROLE=admin|operator|viewer`
+   - `CODEX_AUTH_ROLE=admin|operator|viewer` (defaults to `viewer` when unset)
    - `CODEX_AUTH_BREAK_GLASS=1` only for emergency windows
 3. Validate ABAC guardrails for automation and production:
    - `CODEX_AUTH_ABAC_READ_ONLY=1` for read-only diagnostics environments
@@ -76,6 +76,8 @@ Routine operations checklist for maintainers.
    - `codex auth doctor --json`
 2. If writes fail under filesystem lock contention:
    - check stale `*.lock` files under runtime root
+   - on Windows, check for `EBUSY`/replacement-race lock logs before manual lock cleanup
+   - if lock contention persists, identify locking processes (for example, Process Explorer/Handle), restart only impacted processes, then remove stale locks
    - inspect DLQ entries for repeated write failures
 3. If CI secret scan fails:
    - rotate exposed secret

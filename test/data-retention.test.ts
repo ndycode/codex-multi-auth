@@ -122,6 +122,54 @@ describe("data retention", () => {
 	});
 
 	it.each(["EPERM", "EBUSY"] as const)(
+		"retries transient %s errors while unlinking stale files",
+		async (errorCode) => {
+			const { enforceDataRetention } = await import("../lib/data-retention.js");
+			const logsDir = join(tempDir, "logs");
+			await fs.mkdir(logsDir, { recursive: true });
+			const oldLog = join(logsDir, "old.log");
+			const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+			await fs.writeFile(oldLog, "old", "utf8");
+			await fs.utimes(oldLog, oldDate, oldDate);
+
+			const originalUnlink = fs.unlink.bind(fs);
+			let attempts = 0;
+			const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
+				const path = args[0];
+				if (typeof path === "string" && path.endsWith("old.log") && attempts === 0) {
+					attempts += 1;
+					const error = new Error("locked") as NodeJS.ErrnoException;
+					error.code = errorCode;
+					throw error;
+				}
+				attempts += 1;
+				return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+			});
+
+			try {
+				await expect(
+					enforceDataRetention({
+						logDays: 1,
+						cacheDays: 1,
+						flaggedDays: 1,
+						quotaCacheDays: 1,
+						dlqDays: 1,
+					}),
+				).resolves.toEqual(
+					expect.objectContaining({
+						removedLogs: 1,
+					}),
+				);
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+
+			expect(attempts).toBe(2);
+			await expect(fs.stat(oldLog)).rejects.toMatchObject({ code: "ENOENT" });
+		},
+	);
+
+	it.each(["EPERM", "EBUSY"] as const)(
 		"rethrows non-ENOENT errors during recursive prune (%s)",
 		async (errorCode) => {
 			const { enforceDataRetention } = await import("../lib/data-retention.js");

@@ -211,6 +211,7 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
+| `CODEX_AUTH_ROLE=admin\|operator\|viewer` | CLI authorization role baseline (defaults to `viewer` when unset) |
 
 Validate config after changes:
 

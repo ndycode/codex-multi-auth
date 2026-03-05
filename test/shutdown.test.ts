@@ -164,7 +164,7 @@ describe("Graceful shutdown", () => {
 		const originalTimeout = process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
 		vi.useFakeTimers();
 		try {
-			const runCase = async (value: string) => {
+			const runCase = async (value: string, expectedMs: number) => {
 				process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = value;
 				let resolved = false;
 				let releaseCleanup: (() => void) | undefined;
@@ -177,7 +177,7 @@ describe("Graceful shutdown", () => {
 				const cleanupPromise = runCleanup().then(() => {
 					resolved = true;
 				});
-				await vi.advanceTimersByTimeAsync(7_999);
+				await vi.advanceTimersByTimeAsync(expectedMs - 1);
 				expect(resolved).toBe(false);
 				await vi.advanceTimersByTimeAsync(1);
 				await cleanupPromise;
@@ -186,9 +186,10 @@ describe("Graceful shutdown", () => {
 				await runCleanup();
 			};
 
-			await runCase("0");
-			await runCase("-1");
-			await runCase("not-a-number");
+			await runCase("0", 8_000);
+			await runCase("-1", 8_000);
+			await runCase("not-a-number", 8_000);
+			await runCase("1", 1_000);
 		} finally {
 			if (originalTimeout === undefined) {
 				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
