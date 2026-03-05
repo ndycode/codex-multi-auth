@@ -110,7 +110,26 @@ describe("decideRetryAllAccountsRateLimited", () => {
 		});
 	});
 
-	it("allows retry when accumulated wait exactly matches the absolute ceiling", () => {
+	it("stops retry when accumulated wait exactly matches the absolute ceiling", () => {
+		const result = decideRetryAllAccountsRateLimited({
+			enabled: true,
+			accountCount: 2,
+			waitMs: 1_000,
+			plannedWaitMs: 0,
+			maxWaitMs: 0,
+			currentRetryCount: 0,
+			maxRetries: Infinity,
+			accumulatedWaitMs: 1_000,
+			absoluteCeilingMs: 1_000,
+		});
+
+		expect(result).toEqual({
+			shouldRetry: false,
+			reason: "absolute-ceiling-exceeded",
+		});
+	});
+
+	it("allows first retry that exactly consumes the absolute ceiling budget", () => {
 		const result = decideRetryAllAccountsRateLimited({
 			enabled: true,
 			accountCount: 2,
@@ -118,8 +137,8 @@ describe("decideRetryAllAccountsRateLimited", () => {
 			maxWaitMs: 0,
 			currentRetryCount: 0,
 			maxRetries: Infinity,
-			accumulatedWaitMs: 1_000,
-			absoluteCeilingMs: 2_000,
+			accumulatedWaitMs: 0,
+			absoluteCeilingMs: 1_000,
 		});
 
 		expect(result).toEqual({ shouldRetry: true, reason: "allowed" });

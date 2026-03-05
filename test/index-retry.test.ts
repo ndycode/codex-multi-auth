@@ -340,6 +340,43 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(plainMetrics).toContain("Retry governor stops (absolute ceiling): 0");
 	});
 
+	it("stops once the absolute ceiling budget is exhausted instead of spinning zero-delay retries", async () => {
+		process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = "1600";
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "10";
+		mockInitialNullCalls = 999;
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const fetchPromise = sdk.fetch("https://example.com", {});
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1600);
+		await vi.advanceTimersByTimeAsync(0);
+
+		const response = await fetchPromise;
+		expect(response.status).toBe(429);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+
+		const metrics = await plugin.tool["codex-metrics"].execute();
+		const plainMetrics = stripVTControlCharacters(String(metrics));
+		expect(plainMetrics).toContain("Retry governor stops (absolute ceiling): 1");
+		expect(plainMetrics).toContain("Retry governor stops (retry limit): 0");
+	});
+
 	it("keeps retry budgets isolated across overlapping requests", async () => {
 		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "1";
 		mockInitialNullCalls = 2;

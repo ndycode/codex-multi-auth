@@ -68,6 +68,9 @@ export function decideRetryAllAccountsRateLimited(
 	if (currentRetryCount >= maxRetries) {
 		return { shouldRetry: false, reason: "retry-limit-reached" };
 	}
+	if (absoluteCeilingMs > 0 && accumulatedWaitMs >= absoluteCeilingMs) {
+		return { shouldRetry: false, reason: "absolute-ceiling-exceeded" };
+	}
 	if (absoluteCeilingMs > 0 && accumulatedWaitMs + ceilingCheckWaitMs > absoluteCeilingMs) {
 		return { shouldRetry: false, reason: "absolute-ceiling-exceeded" };
 	}
