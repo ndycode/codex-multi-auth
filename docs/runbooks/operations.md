@@ -14,8 +14,11 @@ Routine operations checklist for maintainers.
 2. Check recent audit and plugin logs:
    - `~/.codex/multi-auth/logs/audit.log`
    - `~/.codex/multi-auth/logs/codex-plugin/`
+   - `%USERPROFILE%\.codex\multi-auth\logs\audit.log` (Windows)
+   - `%USERPROFILE%\.codex\multi-auth\logs\codex-plugin\` (Windows)
 3. Check dead-letter queue growth:
    - `~/.codex/multi-auth/background-job-dlq.jsonl`
+   - `%USERPROFILE%\.codex\multi-auth\background-job-dlq.jsonl` (Windows)
 
 ---
 
@@ -74,6 +77,12 @@ Routine operations checklist for maintainers.
 2. If writes fail under filesystem lock contention:
    - check stale `*.lock` files under runtime root
    - inspect DLQ entries for repeated write failures
+   - quick log triage:
+     - macOS/Linux: `tail -n 200 ~/.codex/multi-auth/logs/audit.log`
+     - Windows PowerShell: `Get-Content $env:USERPROFILE\.codex\multi-auth\logs\audit.log -Tail 200`
+   - quick DLQ triage:
+     - macOS/Linux: `tail -n 50 ~/.codex/multi-auth/background-job-dlq.jsonl`
+     - Windows PowerShell: `Get-Content $env:USERPROFILE\.codex\multi-auth\background-job-dlq.jsonl -Tail 50`
 3. If CI secret scan fails:
    - rotate exposed secret
    - invalidate related tokens

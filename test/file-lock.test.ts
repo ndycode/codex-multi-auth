@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -163,5 +163,75 @@ for (let i = 0; i < iterations; i += 1) {
 			.filter((line) => line.length > 0);
 		expect(lines).toHaveLength(workerCount * iterationsPerWorker);
 		expect(new Set(lines).size).toBe(lines.length);
+	});
+
+	it("allows release retries after transient unlink failures", async () => {
+		const lockPath = join(tempDir, "release-retry.lock");
+		const lock = await acquireFileLock(lockPath, {
+			maxAttempts: 3,
+			baseDelayMs: 1,
+			maxDelayMs: 2,
+			staleAfterMs: 10_000,
+		});
+
+		const originalUnlink = fs.unlink.bind(fs);
+		const unlinkSpy = vi.spyOn(fs, "unlink");
+		let injectedBusy = false;
+		unlinkSpy.mockImplementation(async (path) => {
+			if (!injectedBusy && path === lockPath) {
+				injectedBusy = true;
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			}
+			return originalUnlink(path);
+		});
+
+		try {
+			await expect(lock.release()).rejects.toMatchObject({ code: "EBUSY" });
+			await expect(lock.release()).resolves.toBeUndefined();
+			expect(injectedBusy).toBe(true);
+			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			unlinkSpy.mockRestore();
+		}
+	});
+
+	it("cleans up lock files when metadata write fails", async () => {
+		const lockPath = join(tempDir, "incomplete.lock");
+		const originalOpen = fs.open.bind(fs);
+		type OpenFn = typeof fs.open;
+		type OpenHandle = Awaited<ReturnType<OpenFn>>;
+		const openSpy = vi.spyOn(fs, "open");
+		const mockOpen: OpenFn = (async (...args: Parameters<OpenFn>) => {
+			const [path] = args;
+			if (String(path) === lockPath) {
+				await fs.writeFile(lockPath, "partial", "utf8");
+				return {
+					writeFile: async () => {
+						const error = new Error("metadata write failed") as NodeJS.ErrnoException;
+						error.code = "EIO";
+						throw error;
+					},
+					close: async () => {},
+				} as unknown as OpenHandle;
+			}
+			return originalOpen(...args);
+		}) as OpenFn;
+		openSpy.mockImplementation(mockOpen);
+
+		try {
+			await expect(
+				acquireFileLock(lockPath, {
+					maxAttempts: 1,
+					baseDelayMs: 1,
+					maxDelayMs: 2,
+					staleAfterMs: 10_000,
+				}),
+			).rejects.toThrow("metadata write failed");
+			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			openSpy.mockRestore();
+		}
 	});
 });

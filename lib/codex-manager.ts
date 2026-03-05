@@ -137,16 +137,26 @@ function maybeRedactJsonOutput<T>(value: T): T {
 	return shouldRedact ? redactForExternalOutput(value) : value;
 }
 
+function looksLikeOptionToken(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return false;
+	return /^-{1,2}[A-Za-z0-9]/.test(trimmed);
+}
+
 function hasOptionFlag(args: readonly string[], flag: string): boolean {
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
 		if (arg === flag) {
 			const next = args[index + 1];
-			return typeof next === "string" && next.trim().length > 0;
+			return (
+				typeof next === "string" &&
+				next.trim().length > 0 &&
+				!looksLikeOptionToken(next)
+			);
 		}
 		if (arg?.startsWith(`${flag}=`)) {
 			const value = arg.slice(flag.length + 1).trim();
-			return value.length > 0;
+			return value.length > 0 && !looksLikeOptionToken(value);
 		}
 	}
 	return false;
@@ -247,6 +257,31 @@ function normalizeFailureDetail(
 	const normalized = collapseWhitespace(structured ?? raw);
 	const bounded = normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
 	return bounded.length > 0 ? bounded : "refresh failed";
+}
+
+function redactFreeformSecretText(message: string): string {
+	return message
+		.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "***REDACTED***")
+		.replace(
+			/\b(?:access|refresh|id)?_?token(?:=|:)?\s*([A-Z0-9._-]+)/gi,
+			"token=***REDACTED***",
+		)
+		.replace(/\b(Bearer)\s+[A-Z0-9._-]+\b/gi, "$1 ***REDACTED***");
+}
+
+function sanitizeCliErrorMessage(error: unknown): string {
+	const raw = error instanceof Error ? error.message : String(error);
+	const redacted = redactForExternalOutput(raw);
+	if (typeof redacted === "string") {
+		const normalized = collapseWhitespace(redactFreeformSecretText(redacted));
+		return normalized.length > 0 ? normalized : "unknown error";
+	}
+	try {
+		const normalized = collapseWhitespace(redactFreeformSecretText(JSON.stringify(redacted)));
+		return normalized.length > 0 ? normalized : "unknown error";
+	} catch {
+		return "unknown error";
+	}
 }
 
 function joinStyledSegments(parts: string[]): string {
@@ -1965,7 +2000,11 @@ function parseListArgs(args: string[]): ParsedArgsResult<ListCliOptions> {
 			if (!value) {
 				return { ok: false, message: "Missing value for --page-size" };
 			}
-			const parsed = Number.parseInt(value, 10);
+			const normalized = value.trim();
+			if (!/^\d+$/.test(normalized)) {
+				return { ok: false, message: "--page-size must be between 1 and 200" };
+			}
+			const parsed = Number.parseInt(normalized, 10);
 			if (!Number.isFinite(parsed) || parsed < 1 || parsed > 200) {
 				return { ok: false, message: "--page-size must be between 1 and 200" };
 			}
@@ -1975,6 +2014,9 @@ function parseListArgs(args: string[]): ParsedArgsResult<ListCliOptions> {
 		}
 		if (arg.startsWith("--page-size=")) {
 			const value = arg.slice("--page-size=".length).trim();
+			if (!/^\d+$/.test(value)) {
+				return { ok: false, message: "--page-size must be between 1 and 200" };
+			}
 			const parsed = Number.parseInt(value, 10);
 			if (!Number.isFinite(parsed) || parsed < 1 || parsed > 200) {
 				return { ok: false, message: "--page-size must be between 1 and 200" };
@@ -2178,7 +2220,7 @@ function parseRotateSecretsArgs(args: string[]): ParsedArgsResult<RotateSecretsC
 		}
 		if (arg === "--idempotency-key") {
 			const value = args[i + 1];
-			if (!value || value.trim().length === 0) {
+			if (!value || value.trim().length === 0 || looksLikeOptionToken(value)) {
 				return { ok: false, message: "Missing value for --idempotency-key" };
 			}
 			options.idempotencyKey = value.trim();
@@ -2187,7 +2229,7 @@ function parseRotateSecretsArgs(args: string[]): ParsedArgsResult<RotateSecretsC
 		}
 		if (arg.startsWith("--idempotency-key=")) {
 			const value = arg.slice("--idempotency-key=".length).trim();
-			if (value.length === 0) {
+			if (value.length === 0 || looksLikeOptionToken(value)) {
 				return { ok: false, message: "Missing value for --idempotency-key" };
 			}
 			options.idempotencyKey = value;
@@ -4081,7 +4123,7 @@ async function runRotateSecrets(args: string[]): Promise<number> {
 		);
 		return 0;
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = sanitizeCliErrorMessage(error);
 		emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.FAILURE, "rotate-secrets", {
 			error: message,
 			...(idempotencyKey ? { idempotencyKey } : {}),

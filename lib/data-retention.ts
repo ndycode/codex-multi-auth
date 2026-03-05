@@ -92,7 +92,7 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 			removed += 1;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
+			if (code === "ENOENT" || code === "ENOTEMPTY") {
 				continue;
 			}
 			throw error;

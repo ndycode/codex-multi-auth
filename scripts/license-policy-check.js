@@ -4,9 +4,13 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const lockPath = resolve(process.cwd(), "package-lock.json");
+function normalizeSpdxToken(value) {
+	return value.trim().toUpperCase().replace(/-(ONLY|OR-LATER)$/g, "");
+}
+
 const denyList = (process.env.CODEX_LICENSE_DENYLIST ?? "GPL-2.0,GPL-3.0,AGPL-3.0")
 	.split(",")
-	.map((value) => value.trim().toUpperCase())
+	.map((value) => normalizeSpdxToken(value))
 	.filter((value) => value.length > 0);
 const failOnUnknown = process.env.CODEX_LICENSE_FAIL_ON_UNKNOWN === "1";
 
@@ -49,7 +53,7 @@ function extractLicenseTokens(rawLicense) {
 	return rawLicense
 		.toUpperCase()
 		.split(/[^A-Z0-9.-]+/)
-		.map((value) => value.trim())
+		.map((value) => normalizeSpdxToken(value))
 		.filter((value) => value.length > 0);
 }
 

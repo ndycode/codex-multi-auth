@@ -1643,12 +1643,13 @@ export async function rotateStoredSecretEncryption(): Promise<{
 		throw new Error("CODEX_AUTH_ENCRYPTION_KEY is required to rotate stored secrets");
 	}
 
-	let accountCount = 0;
-	const accounts = await loadAccounts();
-	if (accounts) {
-		accountCount = accounts.accounts.length;
-		await saveAccounts(accounts);
-	}
+	const accountCount = await withAccountStorageTransaction(async (current, persist) => {
+		if (!current) {
+			return 0;
+		}
+		await persist(current);
+		return current.accounts.length;
+	});
 
 	const flagged = await loadFlaggedAccounts();
 	const flaggedCount = flagged.accounts.length;

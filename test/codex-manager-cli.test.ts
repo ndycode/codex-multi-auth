@@ -2146,6 +2146,25 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("rejects partially numeric --page-size values", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--page-size",
+				"10junk",
+			]);
+			expect(exitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("--page-size must be between 1 and 200");
+			expect(loadAccountsMock).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("applies idempotency key for rotate-secrets automation retries", async () => {
 		checkAndRecordIdempotencyKeyMock
 			.mockResolvedValueOnce({ replayed: false })
@@ -2190,6 +2209,46 @@ describe("codex manager cli commands", () => {
 			expect(rotateStoredSecretEncryptionMock).toHaveBeenCalledTimes(1);
 		} finally {
 			logSpy.mockRestore();
+		}
+	});
+
+	it("rejects option-smuggling for --idempotency-key", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--idempotency-key",
+				"--json",
+			]);
+			expect(exitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("Missing value for --idempotency-key");
+			expect(rotateStoredSecretEncryptionMock).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("redacts rotate-secrets failure details in non-json output", async () => {
+		rotateStoredSecretEncryptionMock.mockRejectedValue(
+			new Error(
+				"failed for person@example.com Bearer sk_test_123 refresh_token=rt_456",
+			),
+		);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "rotate-secrets"]);
+			expect(exitCode).toBe(1);
+			const rendered = String(errorSpy.mock.calls[0]?.[0] ?? "");
+			expect(rendered).toContain("Failed to rotate stored secrets:");
+			expect(rendered).toContain("***REDACTED***");
+			expect(rendered).not.toContain("person@example.com");
+			expect(rendered).not.toContain("sk_test_123");
+			expect(rendered).not.toContain("rt_456");
+		} finally {
+			errorSpy.mockRestore();
 		}
 	});
 

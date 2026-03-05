@@ -154,4 +154,45 @@ describe("data retention", () => {
 			rmdirSpy.mockRestore();
 		}
 	});
+
+	it("treats ENOTEMPTY on directory cleanup as a non-fatal race", async () => {
+		const { enforceDataRetention } = await import("../lib/data-retention.js");
+		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+		const logsDir = join(tempDir, "logs");
+		const nestedDir = join(logsDir, "nested");
+		const staleLog = join(nestedDir, "stale.log");
+
+		await fs.mkdir(nestedDir, { recursive: true });
+		await fs.writeFile(staleLog, "old", "utf8");
+		await fs.utimes(staleLog, oldDate, oldDate);
+
+		const originalRmdir = fs.rmdir.bind(fs);
+		const rmdirSpy = vi.spyOn(fs, "rmdir");
+		let enotemptyInjected = false;
+		rmdirSpy.mockImplementation(async (path) => {
+			if (!enotemptyInjected && path === nestedDir) {
+				enotemptyInjected = true;
+				const error = new Error("directory recreated") as NodeJS.ErrnoException;
+				error.code = "ENOTEMPTY";
+				throw error;
+			}
+			return originalRmdir(path);
+		});
+
+		try {
+			const policy: RetentionPolicy = {
+				logDays: 1,
+				cacheDays: 90,
+				flaggedDays: 90,
+				quotaCacheDays: 90,
+				dlqDays: 90,
+			};
+			const result = await enforceDataRetention(policy);
+			expect(result.removedLogs).toBe(1);
+			expect(enotemptyInjected).toBe(true);
+			await expect(fs.stat(staleLog)).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			rmdirSpy.mockRestore();
+		}
+	});
 });

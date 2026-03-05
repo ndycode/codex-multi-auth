@@ -1684,13 +1684,21 @@ while (attempted.size < Math.max(1, accountCount)) {
 								} else if (abortSignal && onUserAbort) {
 									abortSignal.addEventListener("abort", onUserAbort, { once: true });
 								}
+								const safeAuditResource = (() => {
+									try {
+										const parsed = new URL(url);
+										return `${parsed.origin}${parsed.pathname}`;
+									} catch {
+										return url;
+									}
+								})();
 
 							try {
 								runtimeMetrics.totalRequests++;
 								auditLog(
 									AuditAction.REQUEST_START,
 									account.email ?? `account-${account.index + 1}`,
-									url,
+									safeAuditResource,
 									AuditOutcome.SUCCESS,
 									{
 										model,
@@ -1722,14 +1730,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 										);
 									}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
-								const safeAuditResource = (() => {
-									try {
-										const parsed = new URL(url);
-										return `${parsed.origin}${parsed.pathname}`;
-									} catch {
-										return url;
-									}
-								})();
 								const networkErrorType =
 									networkError instanceof Error ? networkError.name : "unknown_error";
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
@@ -2409,7 +2409,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					auditLog(
 						AuditAction.REQUEST_SUCCESS,
 						successAccountForResponse.email ?? `account-${successAccountForResponse.index + 1}`,
-						url,
+						safeAuditResource,
 						AuditOutcome.SUCCESS,
 						{
 							model,
@@ -2460,10 +2460,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
+								const safePluginAuditResource = (() => {
+									try {
+										const parsed = new URL(url);
+										return `${parsed.origin}${parsed.pathname}`;
+									} catch {
+										return url;
+									}
+								})();
 								auditLog(
 									AuditAction.REQUEST_FAILURE,
 									"plugin",
-									url,
+									safePluginAuditResource,
 									AuditOutcome.FAILURE,
 									{
 										model,

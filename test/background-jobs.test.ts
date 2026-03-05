@@ -138,6 +138,32 @@ describe("background jobs", () => {
 		expect(entry.attempts).toBe(3);
 	});
 
+	it("records actual attempts for non-retryable failures", async () => {
+		const { runBackgroundJobWithRetry, getBackgroundJobDlqPath } =
+			await import("../lib/background-jobs.js");
+		let attempts = 0;
+		await expect(
+			runBackgroundJobWithRetry({
+				name: "test.non-retryable",
+				task: async () => {
+					attempts += 1;
+					const error = Object.assign(new Error("bad request"), { statusCode: 400 });
+					throw error;
+				},
+				maxAttempts: 5,
+				retryable: () => false,
+			}),
+		).rejects.toThrow("bad request");
+		expect(attempts).toBe(1);
+
+		const content = await fs.readFile(getBackgroundJobDlqPath(), "utf8");
+		const lines = content.trim().split("\n");
+		expect(lines).toHaveLength(1);
+		const entry = JSON.parse(lines[0] ?? "{}") as { job?: string; attempts?: number };
+		expect(entry.job).toBe("test.non-retryable");
+		expect(entry.attempts).toBe(1);
+	});
+
 	it("redacts sensitive error text in dead-letter entries and warning logs", async () => {
 		vi.resetModules();
 		const warnMock = vi.fn();

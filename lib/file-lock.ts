@@ -54,6 +54,17 @@ async function removeIfStale(path: string, staleAfterMs: number): Promise<boolea
 	}
 }
 
+async function cleanupIncompleteLockFile(path: string): Promise<void> {
+	try {
+		await fs.unlink(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			throw error;
+		}
+	}
+}
+
 export async function acquireFileLock(
 	path: string,
 	options: FileLockOptions = {},
@@ -81,10 +92,11 @@ export async function acquireFileLock(
 			} catch (error) {
 				closeError = error;
 			}
-			if (writeError !== undefined) {
-				throw writeError;
-			}
-			if (closeError !== undefined) {
+			if (writeError !== undefined || closeError !== undefined) {
+				await cleanupIncompleteLockFile(path);
+				if (writeError !== undefined) {
+					throw writeError;
+				}
 				throw closeError;
 			}
 			let released = false;
@@ -92,14 +104,16 @@ export async function acquireFileLock(
 				path,
 				release: async () => {
 					if (released) return;
-					released = true;
 					try {
 						await fs.unlink(path);
+						released = true;
 					} catch (error) {
 						const code = (error as NodeJS.ErrnoException).code;
-						if (code !== "ENOENT") {
-							throw error;
+						if (code === "ENOENT") {
+							released = true;
+							return;
 						}
+						throw error;
 					}
 				},
 			};
@@ -139,6 +153,17 @@ function removeIfStaleSync(path: string, staleAfterMs: number): boolean {
 	}
 }
 
+function cleanupIncompleteLockFileSync(path: string): void {
+	try {
+		unlinkSync(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			throw error;
+		}
+	}
+}
+
 export function acquireFileLockSync(
 	path: string,
 	options: FileLockOptions = {},
@@ -167,10 +192,11 @@ export function acquireFileLockSync(
 			} catch (error) {
 				closeError = error;
 			}
-			if (writeError !== undefined) {
-				throw writeError;
-			}
-			if (closeError !== undefined) {
+			if (writeError !== undefined || closeError !== undefined) {
+				cleanupIncompleteLockFileSync(path);
+				if (writeError !== undefined) {
+					throw writeError;
+				}
 				throw closeError;
 			}
 			let released = false;
@@ -178,14 +204,16 @@ export function acquireFileLockSync(
 				path,
 				release: () => {
 					if (released) return;
-					released = true;
 					try {
 						unlinkSync(path);
+						released = true;
 					} catch (error) {
 						const code = (error as NodeJS.ErrnoException).code;
-						if (code !== "ENOENT") {
-							throw error;
+						if (code === "ENOENT") {
+							released = true;
+							return;
 						}
+						throw error;
 					}
 				},
 			};
