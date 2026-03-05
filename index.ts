@@ -527,7 +527,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			);
 			const quotaScheduleKey = buildQuotaScheduleKey(
 				snapshotCandidate,
-				appliedModel,
+				requestedModel ?? undefined,
 				modelFamily,
 			);
 			preemptiveQuotaScheduler.update(
