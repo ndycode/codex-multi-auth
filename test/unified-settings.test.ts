@@ -94,6 +94,49 @@ describe("unified settings", () => {
 		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 5 });
 	});
 
+	it("handles ENOENT race between existsSync and sync read during plugin save", async () => {
+		const settingsPath = join(tempDir, "settings.json");
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ version: 1, pluginConfig: { codexMode: true } }),
+			"utf8",
+		);
+
+		let noentInjected = false;
+		vi.doMock("node:fs", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("node:fs")>();
+			return {
+				...actual,
+				readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+					const target = args[0];
+					const asPath =
+						typeof target === "string" ? target : target instanceof URL ? target.pathname : "";
+					if (!noentInjected && asPath === settingsPath) {
+						noentInjected = true;
+						const error = new Error("noent") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					}
+					return actual.readFileSync(...args);
+				}) as typeof actual.readFileSync,
+			};
+		});
+
+		try {
+			const { saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
+				"../lib/unified-settings.js"
+			);
+			expect(() =>
+				saveUnifiedPluginConfigSync({ codexMode: false, retries: 6 }),
+			).not.toThrow();
+
+			expect(noentInjected).toBe(true);
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 6 });
+		} finally {
+			vi.doUnmock("node:fs");
+		}
+	});
+
 	it("returns null when dashboard settings file is missing", async () => {
 		const { loadUnifiedDashboardSettings } = await import("../lib/unified-settings.js");
 		expect(await loadUnifiedDashboardSettings()).toBeNull();
