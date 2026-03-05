@@ -2497,7 +2497,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			);
 			expect(firstHeaders.get("x-test-access-token")).not.toBe("access-acc-2");
 			expect(secondHeaders.get("x-test-access-token")).not.toBe("access-acc-2");
-			expect(thirdHeaders.get("x-test-access-token")).toBeTruthy();
+			expect(thirdHeaders.get("x-test-access-token")).toBe("access-acc-2");
 		} finally {
 			vi.useRealTimers();
 			countSpy.mockRestore();

@@ -341,6 +341,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		return normalized.length > 0 ? normalized : null;
 	};
 
+	const buildQuotaScheduleKey = (
+		account: { accountId?: string; email?: string } | string,
+		model: string | undefined,
+		modelFamily: ModelFamily,
+	): string => {
+		const accountKey =
+			typeof account === "string" ? account : resolveEntitlementAccountKey(account);
+		const normalizedModel = normalizeQuotaCacheModelId(model) ?? modelFamily;
+		return `${accountKey}:${normalizedModel}`;
+	};
+
 	const hasQuotaCacheEntries = (cache: QuotaCacheData): boolean =>
 		Object.keys(cache.byAccountId).length > 0 || Object.keys(cache.byEmail).length > 0;
 
@@ -534,7 +545,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				"quota",
 				appliedModel,
 			);
-			const quotaScheduleKey = `${resolveEntitlementAccountKey(snapshotCandidate)}:${appliedModel}`;
+			const quotaScheduleKey = buildQuotaScheduleKey(
+				snapshotCandidate,
+				appliedModel,
+				modelFamily,
+			);
 			preemptiveQuotaScheduler.update(
 				quotaScheduleKey,
 				toQuotaSchedulerSnapshot(entry),
@@ -1855,7 +1870,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 										promptCacheKey: effectivePromptCacheKey,
 									},
 								);
-								const quotaScheduleKey = `${entitlementAccountKey}:${model ?? modelFamily}`;
+								const quotaScheduleKey = buildQuotaScheduleKey(
+									entitlementAccountKey,
+									model,
+									modelFamily,
+								);
 								const capabilityModelKey = model ?? modelFamily;
 								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);
 								if (quotaDeferral.defer && quotaDeferral.waitMs > 0) {
@@ -2428,7 +2447,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 											);
 											if (fallbackSnapshot) {
 												preemptiveQuotaScheduler.update(
-													`${resolveEntitlementAccountKey(fallbackAccount)}:${model ?? modelFamily}`,
+													buildQuotaScheduleKey(
+														fallbackAccount,
+														model,
+														modelFamily,
+													),
 													fallbackSnapshot,
 												);
 											}
