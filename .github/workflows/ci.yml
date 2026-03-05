@@ -8,11 +8,12 @@ on:
 
 jobs:
   test:
-    name: Test on Node.js ${{ matrix.node-version }}
-    runs-on: ubuntu-latest
+    name: Test on ${{ matrix.os }} Node.js ${{ matrix.node-version }}
+    runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         node-version: [20.x, 22.x]
 
     steps:
@@ -60,10 +61,7 @@ jobs:
 
       - name: Seed enterprise health fixture
         run: |
-          mkdir -p "${GITHUB_WORKSPACE}/.tmp/health-fixture/logs"
-          printf '{"version":3,"accounts":[],"activeIndex":0}\n' > "${GITHUB_WORKSPACE}/.tmp/health-fixture/openai-codex-accounts.json"
-          printf '{"version":1,"pluginConfig":{},"dashboardDisplaySettings":{}}\n' > "${GITHUB_WORKSPACE}/.tmp/health-fixture/settings.json"
-          printf '{"timestamp":"%s","action":"request.start","outcome":"success"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${GITHUB_WORKSPACE}/.tmp/health-fixture/logs/audit.log"
+          node -e "const fs=require('fs'); const path=require('path'); const root=path.join(process.env.GITHUB_WORKSPACE,'.tmp','health-fixture'); const logs=path.join(root,'logs'); fs.mkdirSync(logs,{recursive:true}); fs.writeFileSync(path.join(root,'openai-codex-accounts.json'), JSON.stringify({version:4,accounts:[{refreshTokenRef:'fixture-account:refresh',accessTokenRef:'fixture-account:access',addedAt:1,lastUsed:1}],activeIndex:0,activeIndexByFamily:{codex:0,legacy:0,gpt5:0,o3:0,o4mini:0,oss:0},}, null, 2)+'\\n'); fs.writeFileSync(path.join(root,'settings.json'), JSON.stringify({version:1,pluginConfig:{},dashboardDisplaySettings:{}}, null, 2)+'\\n'); fs.writeFileSync(path.join(logs,'audit.log'), JSON.stringify({timestamp:new Date().toISOString(),action:'request.start',outcome:'success'})+'\\n');"
 
       - name: Enterprise health check
         env:

@@ -12,11 +12,12 @@ jobs:
   retention:
     name: Weekly Retention Cleanup Drill
     runs-on: ubuntu-latest
-    env:
-      CODEX_MULTI_AUTH_DIR: ${{ runner.temp }}/codex-retention-root
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set retention root
+        run: echo "CODEX_MULTI_AUTH_DIR=${{ runner.temp }}/codex-retention-root" >> "$GITHUB_ENV"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

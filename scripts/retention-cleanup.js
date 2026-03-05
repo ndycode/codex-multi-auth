@@ -48,7 +48,16 @@ async function removeWithRetry(targetPath, options) {
 
 async function collectExpiredFiles(rootPath, cutoffMs, output) {
 	if (!existsSync(rootPath)) return;
-	const entries = await readdir(rootPath, { withFileTypes: true });
+	let entries;
+	try {
+		entries = await readdir(rootPath, { withFileTypes: true });
+	} catch (error) {
+		const code = error?.code;
+		if (code === "ENOENT" || code === "ENOTDIR" || code === "EPERM") {
+			return;
+		}
+		throw error;
+	}
 	for (const entry of entries) {
 		const fullPath = join(rootPath, entry.name);
 		if (entry.isDirectory()) {
@@ -107,6 +116,9 @@ async function run() {
 		status: failed.length === 0 ? "pass" : "partial",
 	};
 	console.log(JSON.stringify(payload, null, 2));
+	if (failed.length > 0) {
+		process.exit(1);
+	}
 }
 
 run().catch((error) => {

@@ -270,6 +270,9 @@ describe("storage v4 keychain persistence", () => {
 						},
 					],
 					activeIndex: 1,
+					activeIndexByFamily: {
+						codex: 1,
+					},
 				},
 				null,
 				2,
@@ -281,6 +284,7 @@ describe("storage v4 keychain persistence", () => {
 		expect(loaded?.accounts).toHaveLength(1);
 		expect(loaded?.accounts[0]?.accountId).toBe("acct_2");
 		expect(loaded?.activeIndex).toBe(0);
+		expect(loaded?.activeIndexByFamily?.codex).toBe(0);
 	});
 
 	it("clears keychain refs from WAL payload even when runtime mode flips to plaintext", async () => {

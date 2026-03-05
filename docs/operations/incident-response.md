@@ -81,5 +81,6 @@ Recovery exit criteria:
 ## Drill Cadence
 
 - Run a tabletop drill monthly.
+- Run `npm run ops:recovery-drill` as the drill execution command and archive outputs.
 - Use [incident-drill-template.md](incident-drill-template.md) for drill evidence.
 - Track unresolved drill actions as release blockers when severity is `SEV-1` equivalent.

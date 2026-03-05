@@ -23,7 +23,8 @@ function main() {
 		});
 		return;
 	}
-	execFileSync("npm", args, {
+	const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+	execFileSync(npmBin, args, {
 		cwd: process.cwd(),
 		stdio: "inherit",
 		env,

@@ -153,4 +153,26 @@ describe("enterprise-health-check script", () => {
 		expect(staleAuditFinding).toBeDefined();
 		expect(pathsEqual(String(staleAuditFinding?.path ?? ""), fallbackAuditDir)).toBe(true);
 	});
+
+	it("treats audit directory churn (ENOTDIR) as no-audit-data instead of throwing", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "health-check-churn-"));
+		fixtures.push(root);
+		const auditPath = path.join(root, "logs");
+		await fs.writeFile(auditPath, "not-a-directory", "utf8");
+
+		const result = runHealthCheck([], {
+			CODEX_MULTI_AUTH_DIR: root,
+		});
+
+		expect(result.status).toBe(0);
+		const payload = parseJsonStdout(result.stdout);
+		expect(pathsEqual(String(payload.auditDir), auditPath)).toBe(true);
+		const checks = Array.isArray(payload.checks)
+			? payload.checks
+			: [];
+		const newestAuditCheck = checks.find((entry) => (entry as { name?: string }).name === "newest-audit-mtime-ms") as
+			| { value?: unknown }
+			| undefined;
+		expect(newestAuditCheck?.value ?? null).toBeNull();
+	});
 });

@@ -17,6 +17,16 @@ async function expectSecureFileMode(path: string): Promise<void> {
 	expect(stats.mode & 0o777).toBe(0o600);
 }
 
+async function expectSecureDirectoryMode(path: string): Promise<void> {
+	if (process.platform === "win32") {
+		await expect(fs.access(path)).resolves.toBeUndefined();
+		return;
+	}
+	const stats = await fs.stat(path);
+	expect(stats.isDirectory()).toBe(true);
+	expect(stats.mode & 0o777).toBe(0o700);
+}
+
 describe("unified settings", () => {
 	let tempDir: string;
 	let originalDir: string | undefined;
@@ -66,6 +76,7 @@ describe("unified settings", () => {
 		expect(fileContent).toContain("\"pluginConfig\"");
 		expect(fileContent).toContain("\"dashboardDisplaySettings\"");
 		await expectSecureFileMode(getUnifiedSettingsPath());
+		await expectSecureDirectoryMode(dirname(getUnifiedSettingsPath()));
 	});
 
 	it("returns null sections for invalid JSON", async () => {
@@ -98,6 +109,7 @@ describe("unified settings", () => {
 		const fileContent = await fs.readFile(getUnifiedSettingsPath(), "utf8");
 		expect(fileContent).toContain("\"version\": 1");
 		await expectSecureFileMode(getUnifiedSettingsPath());
+		await expectSecureDirectoryMode(dirname(getUnifiedSettingsPath()));
 	});
 
 	it("preserves secure file mode on repeated sync writes to the same settings file", async () => {

@@ -5,6 +5,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";
 
+const MAX_BUFFER_BYTES = 20 * 1024 * 1024;
+
 async function main() {
 	const npmExecPath = process.env.npm_execpath;
 	const outPath = resolve(".tmp/sbom.cdx.json");
@@ -15,11 +17,13 @@ async function main() {
 				cwd: process.cwd(),
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: MAX_BUFFER_BYTES,
 			})
-		: execFileSync("npm", sbomArgs, {
+		: execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", sbomArgs, {
 				cwd: process.cwd(),
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: MAX_BUFFER_BYTES,
 			});
 	await writeFile(outPath, `${sbom.trim()}\n`, "utf8");
 	console.log(

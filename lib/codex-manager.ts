@@ -4062,6 +4062,15 @@ function auditActionForCommand(command: string): AuditAction {
 	}
 }
 
+function sanitizeAuditError(error: unknown): string {
+	const raw = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+	const masked = raw
+		.replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "***REDACTED***")
+		.replace(/\b(?:refresh|access)_token_[A-Za-z0-9_-]{8,}\b/gi, "***REDACTED***")
+		.replace(/\bsecret-(?:access|refresh)-token\b/gi, "***REDACTED***");
+	return masked.slice(0, 200);
+}
+
 async function runWithAudit(
 	command: string,
 	runner: () => Promise<number>,
@@ -4081,7 +4090,7 @@ async function runWithAudit(
 	} catch (error) {
 		auditLog(action, "cli-user", resource, AuditOutcome.FAILURE, {
 			command,
-			error: String(error),
+			error: sanitizeAuditError(error),
 		});
 		throw error;
 	}

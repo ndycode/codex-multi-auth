@@ -25,6 +25,7 @@ const PROFILES = {
 		{ id: "sbom-verify", args: ["run", "sbom:verify"] },
 	],
 };
+const MAX_BUFFER_BYTES = 20 * 1024 * 1024;
 
 function parseArgValue(name) {
 	const prefix = `${name}=`;
@@ -53,9 +54,15 @@ function runNpm(args, options) {
 		const escaped = args
 			.map((arg) => (/\s/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg))
 			.join(" ");
-		return execFileSync("cmd.exe", ["/d", "/s", "/c", `npm ${escaped}`], options);
+		return execFileSync("cmd.exe", ["/d", "/s", "/c", `npm ${escaped}`], {
+			...options,
+			maxBuffer: MAX_BUFFER_BYTES,
+		});
 	}
-	return execFileSync("npm", args, options);
+	return execFileSync("npm", args, {
+		...options,
+		maxBuffer: MAX_BUFFER_BYTES,
+	});
 }
 
 function runCheck(entry, cwd, dryRun) {

@@ -31,7 +31,7 @@ jobs:
       - name: Run recovery drill tests
         run: |
           mkdir -p .tmp
-          npm run test -- test/storage-recovery-paths.test.ts test/storage.test.ts --reporter=default --reporter=json --outputFile=.tmp/recovery-drill-vitest.json
+          npm run ops:recovery-drill -- --reporter=default --reporter=json --outputFile=.tmp/recovery-drill-vitest.json
 
       - name: Run health check snapshot
         run: node scripts/enterprise-health-check.js > .tmp/recovery-drill-health.json

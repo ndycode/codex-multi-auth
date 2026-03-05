@@ -1,4 +1,13 @@
-import { writeFileSync, mkdirSync, existsSync, statSync, renameSync, readdirSync, unlinkSync } from "node:fs";
+import {
+	chmodSync,
+	writeFileSync,
+	mkdirSync,
+	existsSync,
+	statSync,
+	renameSync,
+	readdirSync,
+	unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 import { getCorrelationId, maskEmail } from "./logger.js";
 import { getCodexLogDir } from "./runtime-paths.js";
@@ -64,6 +73,7 @@ let lastPurgeAttemptMs = 0;
 
 export function configureAudit(config: Partial<AuditConfig>): void {
 	auditConfig = { ...auditConfig, ...config };
+	lastPurgeAttemptMs = 0;
 }
 
 export function getAuditConfig(): AuditConfig {
@@ -125,7 +135,6 @@ function purgeExpiredLogs(): void {
 	if (nowMs - lastPurgeAttemptMs < PURGE_INTERVAL_MS) {
 		return;
 	}
-	lastPurgeAttemptMs = nowMs;
 	const retentionDays =
 		Number.isFinite(auditConfig.retentionDays) && auditConfig.retentionDays >= 1
 			? Math.floor(auditConfig.retentionDays)
@@ -137,6 +146,7 @@ function purgeExpiredLogs(): void {
 	} catch {
 		return;
 	}
+	lastPurgeAttemptMs = nowMs;
 	for (const file of files) {
 		if (!file.startsWith("audit") || !file.endsWith(".log")) continue;
 		const target = join(auditConfig.logDir, file);
@@ -203,8 +213,17 @@ export function auditLog(
 
 		const logPath = getLogFilePath();
 		const line = JSON.stringify(entry) + "\n";
-		
-		writeFileSync(logPath, line, { encoding: "utf8", flag: "a", mode: 0o600 });
+
+		withRetryableAuditFsOperation(() =>
+			writeFileSync(logPath, line, { encoding: "utf8", flag: "a", mode: 0o600 }),
+		);
+		if (process.platform !== "win32") {
+			try {
+				withRetryableAuditFsOperation(() => chmodSync(logPath, 0o600));
+			} catch {
+				// Best-effort hardening.
+			}
+		}
 	} catch {
 		// Audit logging should never break the application
 	}

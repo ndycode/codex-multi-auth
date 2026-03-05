@@ -199,9 +199,21 @@ export async function deleteAccountSecrets(
 	}
 	if (!keytar) return;
 
-	await deleteSecretRefWithRetry(keytar, refs.refreshTokenRef);
+	const deleteErrors: unknown[] = [];
+	try {
+		await deleteSecretRefWithRetry(keytar, refs.refreshTokenRef);
+	} catch (error) {
+		deleteErrors.push(error);
+	}
 	if (refs.accessTokenRef) {
-		await deleteSecretRefWithRetry(keytar, refs.accessTokenRef);
+		try {
+			await deleteSecretRefWithRetry(keytar, refs.accessTokenRef);
+		} catch (error) {
+			deleteErrors.push(error);
+		}
+	}
+	if (deleteErrors.length > 0) {
+		throw deleteErrors[0];
 	}
 }
 

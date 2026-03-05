@@ -104,7 +104,11 @@ async function main() {
 	const requestSuccessRate = requestTotal > 0 ? (requestSuccess * 100) / requestTotal : null;
 
 	const staleWalFindings = Array.isArray(health.findings)
-		? health.findings.filter((finding) => finding && finding.code === "stale-wal").length
+		? health.findings.filter(
+				(finding) =>
+					finding &&
+					(finding.code === "stale-wal" || finding.code === "stale-audit-log"),
+			).length
 		: 0;
 	const healthCheckPass = health.status === "pass";
 

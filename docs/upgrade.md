@@ -62,6 +62,41 @@ After source selection, environment variables still override individual setting 
 For day-to-day operator use, prefer stable overrides documented in [configuration.md](configuration.md).
 For maintainer/debug flows, see advanced/internal controls in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).
 
+### Secret Storage Mode Migration (plaintext -> keychain)
+
+Use this flow when migrating existing deployments that were running with plaintext token storage.
+
+1. Back up runtime state before changing secret storage mode:
+
+```bash
+cp -r ~/.codex/multi-auth ~/.codex/multi-auth.backup
+```
+
+2. Set `CODEX_SECRET_STORAGE_MODE=keychain` in your runtime environment (or use `auto` if keychain availability is guaranteed and verified in your fleet).
+3. Validate keychain backend availability:
+
+```bash
+npm run ops:keychain-assert
+```
+
+4. Trigger a controlled account rewrite so token refs are persisted in v4 format:
+
+```bash
+codex auth check
+codex auth report --live
+```
+
+5. Verify health and storage state:
+
+```bash
+npm run ops:health-check -- --require-files
+```
+
+Windows migration note:
+
+- Close editors/shells that may hold handles on `%CODEX_HOME%\\multi-auth` before migration writes.
+- If you hit transient `EBUSY`/`EPERM` during migration, retry after closing locking processes; storage/settings writes use exponential backoff, but persistent locks still require operator action.
+
 ---
 
 ## Legacy Compatibility

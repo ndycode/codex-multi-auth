@@ -882,6 +882,7 @@ async function hydrateV4Storage(data: AccountStorageV4): Promise<AccountStorageV
 
 	const hydratedAccounts: AccountMetadataV3[] = [];
 	let skippedBeforeActiveIndex = 0;
+	const skippedIndices: number[] = [];
 	for (let index = 0; index < data.accounts.length; index += 1) {
 		const rawAccount = data.accounts[index];
 		if (!rawAccount) continue;
@@ -893,6 +894,7 @@ async function hydrateV4Storage(data: AccountStorageV4): Promise<AccountStorageV
 			if (index < data.activeIndex) {
 				skippedBeforeActiveIndex += 1;
 			}
+			skippedIndices.push(index);
 			log.warn("Skipping v4 account with missing keychain secret", {
 				accountId: rawAccount.accountId,
 			});
@@ -912,12 +914,27 @@ async function hydrateV4Storage(data: AccountStorageV4): Promise<AccountStorageV
 		});
 	}
 	const adjustedActiveIndex = Math.max(0, data.activeIndex - skippedBeforeActiveIndex);
+	const remapFamilyIndex = (rawIndex: number): number => {
+		const droppedBefore = skippedIndices.filter((droppedIndex) => droppedIndex < rawIndex).length;
+		const remapped = Math.max(0, rawIndex - droppedBefore);
+		if (hydratedAccounts.length <= 0) return 0;
+		return Math.min(remapped, hydratedAccounts.length - 1);
+	};
+	const adjustedActiveIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+	if (data.activeIndexByFamily) {
+		for (const family of MODEL_FAMILIES) {
+			const raw = data.activeIndexByFamily[family];
+			if (typeof raw === "number" && Number.isFinite(raw)) {
+				adjustedActiveIndexByFamily[family] = remapFamilyIndex(raw);
+			}
+		}
+	}
 
 	return normalizeAccountStorage({
 		version: 3,
 		accounts: hydratedAccounts,
 		activeIndex: adjustedActiveIndex,
-		activeIndexByFamily: data.activeIndexByFamily,
+		activeIndexByFamily: adjustedActiveIndexByFamily,
 	});
 }
 

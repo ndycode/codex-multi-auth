@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, utimesSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
 	AuditAction,
@@ -208,6 +208,21 @@ describe("Audit logging", () => {
 			expect(lines.length).toBe(2);
 		});
 
+		it("keeps secure 0600 mode on existing audit logs (posix)", () => {
+			if (process.platform === "win32") {
+				expect(true).toBe(true);
+				return;
+			}
+			const logPath = getAuditLogPath();
+			writeFileSync(logPath, "existing\n", "utf8");
+			chmodSync(logPath, 0o644);
+
+			auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+
+			const stats = statSync(logPath);
+			expect(stats.mode & 0o777).toBe(0o600);
+		});
+
 	});
 
 	describe("log rotation", () => {
@@ -234,7 +249,8 @@ describe("Audit logging", () => {
 
 		it("purges stale rotated logs during write cycle", () => {
 			configureAudit({ retentionDays: 1 });
-			const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Number.MAX_SAFE_INTEGER - 1_000);
+			const fixedNowMs = 2_000_000_000_000;
+			const nowSpy = vi.spyOn(Date, "now").mockReturnValue(fixedNowMs);
 			const staleLogPath = join(testLogDir, "audit.1.log");
 			writeFileSync(staleLogPath, "old\n", "utf8");
 			const staleMs = Date.now() - 3 * 24 * 60 * 60 * 1000;
@@ -243,6 +259,37 @@ describe("Audit logging", () => {
 
 			try {
 				auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+			} finally {
+				nowSpy.mockRestore();
+			}
+
+			expect(existsSync(staleLogPath)).toBe(false);
+		});
+
+		it("does not throttle purge when a prior directory read fails", () => {
+			const fixedNowMs = 2_000_000_000_000;
+			const nowSpy = vi.spyOn(Date, "now").mockReturnValue(fixedNowMs);
+			const blockedLogDir = join(testLogDir, "blocked-log-dir");
+			writeFileSync(blockedLogDir, "not-a-directory", "utf8");
+			configureAudit({
+				enabled: true,
+				logDir: blockedLogDir,
+				maxFileSizeBytes: 1024,
+				maxFiles: 3,
+				retentionDays: 1,
+			});
+
+			auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+
+			rmSync(blockedLogDir);
+			mkdirSync(blockedLogDir, { recursive: true });
+			const staleLogPath = join(blockedLogDir, "audit.1.log");
+			writeFileSync(staleLogPath, "stale\n", "utf8");
+			const staleDate = new Date(fixedNowMs - 3 * 24 * 60 * 60 * 1000);
+			utimesSync(staleLogPath, staleDate, staleDate);
+
+			try {
+				auditLog(AuditAction.REQUEST_SUCCESS, "actor", "resource", AuditOutcome.SUCCESS);
 			} finally {
 				nowSpy.mockRestore();
 			}

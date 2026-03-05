@@ -240,6 +240,35 @@ describe("token store", () => {
 		expect(secrets.has("acct-delete:access")).toBe(false);
 	});
 
+	it("attempts access-token cleanup even when refresh-token cleanup fails", async () => {
+		const deletedRefs: string[] = [];
+		mockKeytar({
+			setPassword: async () => {},
+			getPassword: async () => null,
+			deletePassword: async (_service: string, account: string) => {
+				deletedRefs.push(account);
+				if (account === "acct-partial:refresh") {
+					const error = new Error("refresh delete failed") as NodeJS.ErrnoException;
+					error.code = "EACCES";
+					throw error;
+				}
+				return true;
+			},
+		});
+
+		process.env.CODEX_SECRET_STORAGE_MODE = "keychain";
+		const tokenStore = await import("../lib/secrets/token-store.js");
+		await tokenStore.ensureSecretStorageBackendAvailable();
+
+		await expect(
+			tokenStore.deleteAccountSecrets({
+				refreshTokenRef: "acct-partial:refresh",
+				accessTokenRef: "acct-partial:access",
+			}),
+		).rejects.toThrow("refresh delete failed");
+		expect(deletedRefs).toEqual(["acct-partial:refresh", "acct-partial:access"]);
+	});
+
 	it("derives stable secret refs from account identity", async () => {
 		process.env.CODEX_SECRET_STORAGE_MODE = "plaintext";
 		const tokenStore = await import("../lib/secrets/token-store.js");

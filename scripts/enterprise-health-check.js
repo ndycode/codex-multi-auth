@@ -157,7 +157,16 @@ function getAuditDir(root) {
 
 async function newestMtimeMs(dir) {
 	if (!existsSync(dir)) return null;
-	const entries = await readdir(dir, { withFileTypes: true });
+	let entries;
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch (error) {
+		const code = error?.code;
+		if (code === "ENOENT" || code === "ENOTDIR") {
+			return null;
+		}
+		throw error;
+	}
 	let newest = null;
 	for (const entry of entries) {
 		if (!entry.isFile()) continue;

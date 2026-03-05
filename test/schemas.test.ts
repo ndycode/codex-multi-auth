@@ -472,6 +472,16 @@ describe("safeParsePluginConfig", () => {
 });
 
 describe("safeParseAccountStorage", () => {
+	it("returns parsed V4 storage", () => {
+		const result = safeParseAccountStorage({
+			version: 4,
+			accounts: [{ refreshTokenRef: "acct-1:refresh", addedAt: 1, lastUsed: 1 }],
+			activeIndex: 0,
+		});
+		expect(result).not.toBeNull();
+		expect(result?.version).toBe(4);
+	});
+
 	it("returns parsed V1 storage", () => {
 		const result = safeParseAccountStorage({
 			version: 1,
