@@ -269,9 +269,9 @@ async function readEventsFromFile(filePath: string): Promise<TelemetryEvent[]> {
 	}
 }
 
-async function listTelemetryFiles(): Promise<string[]> {
+async function listTelemetryFiles(config: TelemetryConfig): Promise<string[]> {
 	try {
-		const entries = await fs.readdir(telemetryConfig.logDir);
+		const entries = await fs.readdir(config.logDir);
 		const sortable = entries
 			.map((name) => {
 				const archiveIndex = parseArchiveSuffix(name);
@@ -280,7 +280,7 @@ async function listTelemetryFiles(): Promise<string[]> {
 			})
 			.filter((value): value is { name: string; archiveIndex: number } => value !== null)
 			.sort((left, right) => right.archiveIndex - left.archiveIndex);
-		return sortable.map((entry) => join(telemetryConfig.logDir, entry.name));
+		return sortable.map((entry) => join(config.logDir, entry.name));
 	} catch {
 		return [];
 	}
@@ -359,11 +359,12 @@ export async function recordTelemetryEvent(input: TelemetryEventInput): Promise<
 export async function queryTelemetryEvents(
 	options: QueryTelemetryOptions = {},
 ): Promise<TelemetryEvent[]> {
+	const configSnapshot = getTelemetryConfig();
 	const sinceMs = options.sinceMs ?? 0;
 	const limit = clampLimit(options.limit);
 	const events: TelemetryEvent[] = [];
 
-	for (const filePath of await listTelemetryFiles()) {
+	for (const filePath of await listTelemetryFiles(configSnapshot)) {
 		const parsed = await readEventsFromFile(filePath);
 		for (const event of parsed) {
 			const timestampMs = Date.parse(event.timestamp);

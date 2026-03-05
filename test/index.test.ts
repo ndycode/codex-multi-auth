@@ -116,7 +116,7 @@ vi.mock("../lib/config.js", () => ({
 	loadPluginConfig: vi.fn(() => ({})),
 }));
 
-const recordTelemetryEventMock = vi.fn();
+const recordTelemetryEventMock = vi.fn(async () => {});
 
 vi.mock("../lib/telemetry.js", () => ({
 	recordTelemetryEvent: recordTelemetryEventMock,
@@ -1250,6 +1250,66 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		await plugin.tool["codex-remove"].execute({ index: 2 });
 		expect(mockStorage.activeIndex).toBe(0);
 	});
+
+	it("invalidates cached account manager after hydrate persistence", async () => {
+		const previousNodeEnv = process.env.NODE_ENV;
+		const previousWorkerId = process.env.VITEST_WORKER_ID;
+		const previousSkipHydrate = process.env.CODEX_SKIP_EMAIL_HYDRATE;
+		delete process.env.NODE_ENV;
+		delete process.env.VITEST_WORKER_ID;
+		delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
+
+		const { saveAccounts } = await import("../lib/storage.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+		vi.mocked(cliModule.promptLoginMode).mockResolvedValueOnce({ mode: "cancel" } as never);
+
+		mockStorage.accounts = [{ refreshToken: "refresh-hydrate-target" }];
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		try {
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			loadFromDiskSpy.mockClear();
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize();
+			expect(vi.mocked(saveAccounts)).toHaveBeenCalled();
+
+			loadFromDiskSpy.mockClear();
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			loadFromDiskSpy.mockRestore();
+			if (previousNodeEnv === undefined) {
+				delete process.env.NODE_ENV;
+			} else {
+				process.env.NODE_ENV = previousNodeEnv;
+			}
+			if (previousWorkerId === undefined) {
+				delete process.env.VITEST_WORKER_ID;
+			} else {
+				process.env.VITEST_WORKER_ID = previousWorkerId;
+			}
+			if (previousSkipHydrate === undefined) {
+				delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
+			} else {
+				process.env.CODEX_SKIP_EMAIL_HYDRATE = previousSkipHydrate;
+			}
+		}
+	});
 });
 
 describe("OpenAIOAuthPlugin fetch handler", () => {
@@ -2304,6 +2364,60 @@ describe("OpenAIOAuthPlugin telemetry hygiene", () => {
 			expect(serializedCalls).not.toContain("telemetry_refresh_token_fixture_1234567890");
 		} finally {
 			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it("handles rejected telemetry writes without unhandled rejections", async () => {
+		recordTelemetryEventMock.mockRejectedValue(new Error("telemetry-write-failure"));
+		mockStorage.accounts = [
+			{
+				accountId: "acc-1",
+				email: "user@example.com",
+				refreshToken: "refresh-1",
+			},
+		];
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = { codex: 0 };
+
+		const unhandledRejections: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown) => {
+			unhandledRejections.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error("forced-network-error"));
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "telemetry-access-token",
+			refresh: "refresh-1",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		try {
+			const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			const responses = await Promise.all(
+				Array.from({ length: 6 }, () =>
+					sdk.fetch!("https://api.openai.com/v1/chat", {
+						method: "POST",
+						body: JSON.stringify({ model: "gpt-5.1" }),
+					}),
+				),
+			);
+			for (const response of responses) {
+				expect(response.status).toBe(503);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(unhandledRejections).toHaveLength(0);
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+			globalThis.fetch = originalFetch;
+			recordTelemetryEventMock.mockResolvedValue(undefined);
 		}
 	});
 });

@@ -1361,6 +1361,10 @@ async function saveAccountsUnlocked(
       // Ignore cleanup failure.
     }
 
+	if (error instanceof StorageError) {
+		throw error;
+	}
+
     const err = error as NodeJS.ErrnoException;
     const code = err?.code || "UNKNOWN";
     const hint = formatStorageErrorHint(error, path);
@@ -1593,8 +1597,8 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 }
 
 export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Promise<void> {
-	return withStorageLock(async () => {
-		const path = getFlaggedAccountsPath();
+	const path = getFlaggedAccountsPath();
+	return withStorageSerializedFileLock(path, async () => {
 		const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 		const tempPath = `${path}.${uniqueSuffix}.tmp`;
 

@@ -135,7 +135,6 @@ import {
 } from "./lib/accounts/storage-view.js";
 import {
 	setActiveIndexForAllFamilies,
-	normalizeActiveIndexByFamily,
 	removeAccountAndReconcileActiveIndexes,
 } from "./lib/accounts/active-index.js";
 import {
@@ -883,6 +882,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 if (changed) {
                         storage.accounts = accountsCopy;
                         await saveAccounts(storage);
+						invalidateAccountManagerCache();
                 }
                 return storage;
         };
@@ -1262,11 +1262,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					details?: Record<string, unknown>,
 				): void => {
 					if (!telemetryEnabled) return;
-					void recordTelemetryEvent({
+					recordTelemetryEvent({
 						source: "plugin",
 						event,
 						outcome,
 						details,
+					}).catch(() => {
+						// Telemetry must never break plugin execution.
 					});
 				};
 				const effectiveUserConfig = fastSessionEnabled
@@ -2728,12 +2730,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 							let startFresh = explicitLoginMode === "fresh";
 							let refreshAccountIndex: number | undefined;
 
-							const clampActiveIndices = (storage: AccountStorageV3): void => {
-								normalizeActiveIndexByFamily(storage, storage.accounts.length, {
-									clearFamilyMapWhenEmpty: true,
-								});
-							};
-
 							const isFlaggableFailure = (failure: Extract<TokenResult, { type: "failed" }>): boolean => {
 								if (failure.reason === "missing_refresh") return true;
 								if (failure.statusCode === 401) return true;
@@ -3215,11 +3211,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 
 								if (removeFromActive.size > 0) {
-									workingStorage.accounts = workingStorage.accounts.filter(
-										(account) => !removeFromActive.has(account.refreshToken),
-									);
-									clampActiveIndices(workingStorage);
-									storageChanged = true;
+									const removalIndexes = workingStorage.accounts
+										.map((account, index) =>
+											removeFromActive.has(account.refreshToken) ? index : -1,
+										)
+										.filter((index) => index >= 0)
+										.sort((left, right) => right - left);
+									for (const removalIndex of removalIndexes) {
+										removeAccountAndReconcileActiveIndexes(workingStorage, removalIndex);
+									}
+									if (removalIndexes.length > 0) {
+										storageChanged = true;
+									}
 								}
 
 								if (storageChanged) {
@@ -3411,8 +3414,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (typeof menuResult.deleteAccountIndex === "number") {
 											const target = workingStorage.accounts[menuResult.deleteAccountIndex];
 											if (target) {
-												workingStorage.accounts.splice(menuResult.deleteAccountIndex, 1);
-												clampActiveIndices(workingStorage);
+												removeAccountAndReconcileActiveIndexes(
+													workingStorage,
+													menuResult.deleteAccountIndex,
+												);
 												await saveAccounts(workingStorage);
 												await saveFlaggedAccounts({
 													version: 1,

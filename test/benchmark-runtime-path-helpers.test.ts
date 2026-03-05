@@ -75,6 +75,23 @@ describe("benchmark-runtime-path helpers", () => {
 		).toThrow("codexCliSync_merge_1000 failed");
 	});
 
+	it("fails when reconciled storage has fewer accounts than required minimum", () => {
+		expect(() =>
+			assertSyncBenchmarkMergeResult(
+				{
+					storage: {
+						accounts: [],
+					},
+					changed: true,
+				},
+				{
+					caseName: "codexCliSync_merge_1000",
+					minimumAccounts: 1,
+				},
+			),
+		).toThrow("codexCliSync_merge_1000 failed");
+	});
+
 	it.each(["EPERM", "EBUSY", "ENOTEMPTY"] as const)(
 		"retries removeWithRetry on transient lock error %s",
 		async (code) => {

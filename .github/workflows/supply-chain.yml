@@ -32,11 +32,27 @@ jobs:
           fail-on-scopes: runtime
           deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0
 
+  concurrency-group-guard:
+    name: Concurrency Group Guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Assert concurrency.group includes github.event_name
+        run: |
+          node -e "const fs=require('node:fs'); const workflow=fs.readFileSync('.github/workflows/supply-chain.yml','utf8'); const match=workflow.match(/\nconcurrency:\n\s+group:\s*(.+)/); if(!match){ throw new Error('missing concurrency.group'); } if(!match[1].includes('github.event_name')){ throw new Error('concurrency.group must include github.event_name'); }"
+
   sca-and-license:
     name: SCA and License Gate
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -62,6 +78,8 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -87,6 +105,8 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository

@@ -2176,6 +2176,61 @@ describe("storage", () => {
       expect(flagged.accounts).toHaveLength(1);
     });
 
+    it("serializes concurrent flagged writes and recovers from transient rename locks", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "test-encryption-key";
+      const flaggedPath = getFlaggedAccountsPath();
+      const originalRename = fs.rename.bind(fs);
+      let renameAttempts = 0;
+      let injectedLock = false;
+      let activeLocks = 0;
+      let maxActiveLocks = 0;
+
+      const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockImplementation(async (path) => {
+        activeLocks += 1;
+        maxActiveLocks = Math.max(maxActiveLocks, activeLocks);
+        return {
+          path,
+          release: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            activeLocks -= 1;
+          },
+        };
+      });
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (fromPath, toPath) => {
+        renameAttempts += 1;
+        if (!injectedLock && String(toPath) === flaggedPath) {
+          injectedLock = true;
+          const error = new Error("locked") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        }
+        return originalRename(fromPath as string, toPath as string);
+      });
+
+      try {
+        await Promise.all(
+          Array.from({ length: 6 }, (_, index) =>
+            saveFlaggedAccounts({
+              version: 1,
+              accounts: [{ refreshToken: `flagged-token-${index}`, flaggedAt: Date.now() }],
+            }),
+          ),
+        );
+      } finally {
+        renameSpy.mockRestore();
+        acquireSpy.mockRestore();
+      }
+
+      expect(maxActiveLocks).toBe(1);
+      expect(injectedLock).toBe(true);
+      expect(renameAttempts).toBeGreaterThanOrEqual(7);
+      const flagged = await loadFlaggedAccounts();
+      expect(flagged.accounts).toHaveLength(1);
+      const token = flagged.accounts[0]?.refreshToken;
+      expect(typeof token).toBe("string");
+      expect(token).toMatch(/^flagged-token-\d$/);
+    });
+
     it("fails closed when only previous encryption key is configured", async () => {
       process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = "legacy-only-key";
       delete process.env.CODEX_AUTH_ENCRYPTION_KEY;

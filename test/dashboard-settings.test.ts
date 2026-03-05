@@ -15,6 +15,7 @@ describe("dashboard settings", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (originalDir === undefined) {
       delete process.env.CODEX_MULTI_AUTH_DIR;
     } else {
@@ -204,7 +205,10 @@ describe("dashboard settings", () => {
     const loaded = await loadDashboardDisplaySettings();
     expect(loaded.showPerAccountRows).toBe(false);
     expect(loaded.menuShowQuotaSummary).toBe(false);
-    expect(readSpy).toHaveBeenCalled();
+    const legacyReadAttempts = readSpy.mock.calls.filter(
+      ([path]) => String(path) === legacyPath,
+    );
+    expect(legacyReadAttempts).toHaveLength(2);
     readSpy.mockRestore();
   });
 
