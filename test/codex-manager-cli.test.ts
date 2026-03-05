@@ -51,7 +51,7 @@ vi.mock("../lib/cli.js", () => ({
 }));
 
 vi.mock("../lib/prompts/codex.js", () => ({
-	MODEL_FAMILIES: ["codex"] as const,
+	MODEL_FAMILIES: ["codex", "gpt-5.1"] as const,
 }));
 
 vi.mock("../lib/accounts.js", () => ({
@@ -2018,7 +2018,7 @@ describe("codex manager cli commands", () => {
 		expect(saved?.accounts?.[0]?.email).toBe("second@example.com");
 		expect(saved?.activeIndex).toBe(1);
 		expect(saved?.activeIndexByFamily?.codex).toBe(1);
-		expect(saved?.activeIndexByFamily?.["gpt-5.1"]).toBe(2);
+		expect(saved?.activeIndexByFamily?.["gpt-5.1"]).toBe(1);
 	});
 
 	it("toggles account enabled state from manage mode", async () => {
