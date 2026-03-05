@@ -21,6 +21,13 @@ describe("account-view helpers", () => {
 	it("falls back to storage active index and normalizes non-finite candidates", () => {
 		expect(
 			resolveActiveIndex({
+				activeIndex: 5,
+				activeIndexByFamily: { codex: 3 },
+				accounts: [],
+			}),
+		).toBe(0);
+		expect(
+			resolveActiveIndex({
 				activeIndex: Number.NaN,
 				activeIndexByFamily: { codex: Number.NaN },
 				accounts: [{}, {}, {}],
@@ -32,6 +39,16 @@ describe("account-view helpers", () => {
 				accounts: [{}, {}, {}],
 			}),
 		).toBe(2);
+	});
+
+	it("coerces fractional active indexes to bounded integers", () => {
+		const resolved = resolveActiveIndex({
+			activeIndex: 1.8,
+			activeIndexByFamily: { codex: 1.2 },
+			accounts: [{}, {}],
+		});
+		expect(resolved).toBe(1);
+		expect(Number.isInteger(resolved)).toBe(true);
 	});
 
 	it("returns earliest future reset for matching family keys", () => {
@@ -50,6 +67,38 @@ describe("account-view helpers", () => {
 				"codex",
 			),
 		).toBe(now + 30_000);
+	});
+
+	it("ignores non-finite reset timestamps when selecting family reset times", () => {
+		const now = 20_000;
+		expect(
+			getRateLimitResetTimeForFamily(
+				{
+					rateLimitResetTimes: {
+						codex: Number.NaN,
+						"codex:gpt-5.2": Number.POSITIVE_INFINITY,
+						"codex:gpt-5.1": Number.NEGATIVE_INFINITY,
+						"codex:gpt-5.3": now + 4_000,
+					},
+				},
+				now,
+				"codex",
+			),
+		).toBe(now + 4_000);
+		expect(
+			formatRateLimitEntry(
+				{
+					rateLimitResetTimes: {
+						codex: Number.NaN,
+						"codex:gpt-5.2": Number.POSITIVE_INFINITY,
+						"codex:gpt-5.1": Number.NEGATIVE_INFINITY,
+						"codex:gpt-5.3": now + 4_000,
+					},
+				},
+				now,
+				"codex",
+			),
+		).toBe("resets in 4s");
 	});
 
 	it("returns null for missing or expired family reset state", () => {

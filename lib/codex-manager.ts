@@ -30,6 +30,7 @@ import {
 	createActiveIndexByFamily,
 	setActiveIndexForAllFamilies,
 	normalizeActiveIndexByFamily,
+	removeAccountAndReconcileActiveIndexes,
 } from "./accounts/active-index.js";
 import {
 	createEmptyAccountStorage as createEmptyAccountStorageBase,
@@ -1390,13 +1391,14 @@ async function showAccountStatus(): Promise<void> {
 		if (account.enabled === false) markers.push("disabled");
 		const rateLimit = formatRateLimitEntry(account, now, "codex");
 		if (rateLimit) markers.push("rate-limited");
+		const rateLimitDetail = rateLimit ? ` (${rateLimit})` : "";
 		const cooldown = formatCooldown(account, now);
 		if (cooldown) markers.push(`cooldown:${cooldown}`);
 		const markerLabel = markers.length > 0 ? ` [${markers.join(", ")}]` : "";
 		const lastUsed = typeof account.lastUsed === "number" && account.lastUsed > 0
 			? `used ${formatWaitTime(now - account.lastUsed)} ago`
 			: "never used";
-		console.log(`${i + 1}. ${label}${markerLabel} ${lastUsed}`);
+		console.log(`${i + 1}. ${label}${markerLabel}${rateLimitDetail} ${lastUsed}`);
 	}
 }
 
@@ -3586,7 +3588,7 @@ async function runDoctor(args: string[]): Promise<number> {
 }
 
 async function clearAccountsAndReset(): Promise<void> {
-	await saveAccounts(createEmptyAccountStorageBase());
+	await saveAccounts(createEmptyAccountStorage());
 }
 
 async function handleManageAction(
@@ -3602,8 +3604,7 @@ async function handleManageAction(
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
-			storage.accounts.splice(idx, 1);
-			setActiveIndexForAllFamilies(storage, 0);
+			removeAccountAndReconcileActiveIndexes(storage, idx);
 			await saveAccounts(storage);
 			console.log(`Deleted account ${idx + 1}.`);
 		}

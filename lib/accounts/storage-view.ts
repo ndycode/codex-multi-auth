@@ -1,4 +1,4 @@
-import type { AccountStorageV3 } from "../storage.js";
+import type { AccountMetadataV3, AccountStorageV3 } from "../storage.js";
 import { createActiveIndexByFamily } from "./active-index.js";
 
 interface CreateEmptyAccountStorageOptions {
@@ -18,9 +18,16 @@ export function createEmptyAccountStorage(
 }
 
 export function cloneAccountStorage(storage: AccountStorageV3): AccountStorageV3 {
+	const cloneAccount = (account: AccountMetadataV3): AccountMetadataV3 => ({
+		...account,
+		rateLimitResetTimes: account.rateLimitResetTimes
+			? { ...account.rateLimitResetTimes }
+			: undefined,
+	});
+
 	return {
 		version: 3,
-		accounts: storage.accounts.map((account) => ({ ...account })),
+		accounts: storage.accounts.map(cloneAccount),
 		activeIndex: storage.activeIndex,
 		activeIndexByFamily: storage.activeIndexByFamily
 			? { ...storage.activeIndexByFamily }

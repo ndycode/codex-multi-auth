@@ -20,7 +20,7 @@ export function resolveActiveIndex(
 	const total = storage.accounts.length;
 	if (total === 0) return 0;
 	const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-	const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
+	const raw = Number.isFinite(rawCandidate) ? Math.floor(rawCandidate) : 0;
 	return Math.max(0, Math.min(raw, total - 1));
 }
 
@@ -35,7 +35,7 @@ export function getRateLimitResetTimeForFamily(
 	let minReset: number | null = null;
 	const prefix = `${family}:`;
 	for (const [key, value] of Object.entries(times)) {
-		if (typeof value !== "number") continue;
+		if (typeof value !== "number" || !Number.isFinite(value)) continue;
 		if (value <= now) continue;
 		if (key !== family && !key.startsWith(prefix)) continue;
 		if (minReset === null || value < minReset) {

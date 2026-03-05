@@ -14,9 +14,14 @@ interface NormalizeActiveIndexOptions {
 	families?: readonly ModelFamily[];
 }
 
+function toFiniteInteger(index: number): number {
+	return Number.isFinite(index) ? Math.trunc(index) : 0;
+}
+
 function clampIndex(index: number, count: number): number {
 	if (count <= 0) return 0;
-	return Math.max(0, Math.min(index, count - 1));
+	const normalized = toFiniteInteger(index);
+	return Math.max(0, Math.min(normalized, count - 1));
 }
 
 export function createActiveIndexByFamily(
@@ -35,10 +40,11 @@ export function setActiveIndexForAllFamilies(
 	index: number,
 	families: readonly ModelFamily[] = MODEL_FAMILIES,
 ): void {
-	storage.activeIndex = index;
+	const normalized = Math.max(0, toFiniteInteger(index));
+	storage.activeIndex = normalized;
 	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
 	for (const family of families) {
-		storage.activeIndexByFamily[family] = index;
+		storage.activeIndexByFamily[family] = normalized;
 	}
 }
 
@@ -90,10 +96,12 @@ export function removeAccountAndReconcileActiveIndexes(
 	targetIndex: number,
 	families: readonly ModelFamily[] = MODEL_FAMILIES,
 ): boolean {
-	if (targetIndex < 0 || targetIndex >= storage.accounts.length) {
+	if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= storage.accounts.length) {
 		return false;
 	}
 
+	const previousCount = storage.accounts.length;
+	const previousActive = clampIndex(storage.activeIndex, previousCount);
 	storage.accounts.splice(targetIndex, 1);
 
 	if (storage.accounts.length === 0) {
@@ -102,20 +110,27 @@ export function removeAccountAndReconcileActiveIndexes(
 		return true;
 	}
 
-	if (storage.activeIndex >= storage.accounts.length) {
-		storage.activeIndex = 0;
-	} else if (storage.activeIndex > targetIndex) {
-		storage.activeIndex -= 1;
+	if (previousActive > targetIndex) {
+		storage.activeIndex = previousActive - 1;
+	} else if (previousActive === targetIndex) {
+		storage.activeIndex = Math.min(targetIndex, storage.accounts.length - 1);
+	} else {
+		storage.activeIndex = previousActive;
 	}
 
 	if (storage.activeIndexByFamily) {
 		for (const family of families) {
 			const idx = storage.activeIndexByFamily[family];
-			if (typeof idx !== "number") continue;
-			if (idx >= storage.accounts.length) {
-				storage.activeIndexByFamily[family] = 0;
-			} else if (idx > targetIndex) {
-				storage.activeIndexByFamily[family] = idx - 1;
+			const base = typeof idx === "number"
+				? clampIndex(idx, previousCount)
+				: previousActive;
+			const next = base > targetIndex
+				? base - 1
+				: base === targetIndex
+					? Math.min(targetIndex, storage.accounts.length - 1)
+					: base;
+			if (storage.activeIndexByFamily[family] !== next) {
+				storage.activeIndexByFamily[family] = next;
 			}
 		}
 	}

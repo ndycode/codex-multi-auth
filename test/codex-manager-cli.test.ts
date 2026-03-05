@@ -501,7 +501,7 @@ describe("codex manager cli commands", () => {
 
 	it("shows rate-limit reset details in auth status output", async () => {
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValueOnce({
+		const storage = {
 			version: 3,
 			activeIndex: 0,
 			activeIndexByFamily: { codex: 0 },
@@ -516,13 +516,16 @@ describe("codex manager cli commands", () => {
 					},
 				},
 			],
-		});
+		};
+		loadAccountsMock.mockResolvedValueOnce(storage);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const { formatRateLimitEntry } = await import("../lib/accounts/account-view.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "status"]);
 		expect(exitCode).toBe(0);
 		expect(logSpy.mock.calls.some((call) => String(call[0]).includes("rate-limited"))).toBe(true);
+		expect(formatRateLimitEntry(storage.accounts[0]!, now, "codex")).toContain("resets in");
 	});
 
 	it("runs fix apply mode and returns a switch recommendation", async () => {
@@ -1966,6 +1969,56 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(1);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe("first@example.com");
+	});
+
+	it("preserves active selection semantics when deleting a non-active account", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 2,
+			activeIndexByFamily: {
+				codex: 2,
+				"gpt-5.1": 2,
+			},
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "third@example.com",
+					refreshToken: "refresh-third",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		const saved = saveAccountsMock.mock.calls[0]?.[0];
+		expect(saved?.accounts).toHaveLength(2);
+		expect(saved?.accounts?.[0]?.email).toBe("second@example.com");
+		expect(saved?.activeIndex).toBe(1);
+		expect(saved?.activeIndexByFamily?.codex).toBe(1);
+		expect(saved?.activeIndexByFamily?.["gpt-5.1"]).toBe(2);
 	});
 
 	it("toggles account enabled state from manage mode", async () => {

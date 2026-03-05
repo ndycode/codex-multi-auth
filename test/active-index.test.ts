@@ -34,6 +34,27 @@ describe("active-index helpers", () => {
 		}
 	});
 
+	it("normalizes non-finite and fractional set-active values before writing", () => {
+		const storage: {
+			activeIndex: number;
+			activeIndexByFamily?: Partial<Record<(typeof MODEL_FAMILIES)[number], number>>;
+		} = {
+			activeIndex: 0,
+		};
+
+		setActiveIndexForAllFamilies(storage, 1.8);
+		expect(storage.activeIndex).toBe(1);
+		for (const family of MODEL_FAMILIES) {
+			expect(storage.activeIndexByFamily?.[family]).toBe(1);
+		}
+
+		setActiveIndexForAllFamilies(storage, Number.NaN);
+		expect(storage.activeIndex).toBe(0);
+		for (const family of MODEL_FAMILIES) {
+			expect(storage.activeIndexByFamily?.[family]).toBe(0);
+		}
+	});
+
 	it("preserves unrelated keys when reusing existing family map objects", () => {
 		const storage: {
 			activeIndex: number;
@@ -61,8 +82,8 @@ describe("active-index helpers", () => {
 		} = {
 			activeIndex: 99,
 			activeIndexByFamily: {
-				codex: Number.NaN,
-				"gpt-5.1": -3,
+				codex: Number.POSITIVE_INFINITY,
+				"gpt-5.1": -3.2,
 			},
 		};
 
@@ -73,6 +94,7 @@ describe("active-index helpers", () => {
 		for (const family of MODEL_FAMILIES) {
 			expect(storage.activeIndexByFamily?.[family]).toBeGreaterThanOrEqual(0);
 			expect(storage.activeIndexByFamily?.[family]).toBeLessThanOrEqual(1);
+			expect(Number.isInteger(storage.activeIndexByFamily?.[family] ?? Number.NaN)).toBe(true);
 		}
 		expect(storage.activeIndexByFamily?.codex).toBe(1);
 		expect(storage.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
@@ -135,9 +157,9 @@ describe("active-index helpers", () => {
 
 		expect(changed).toBe(true);
 		expect(storage.accounts).toHaveLength(2);
-		expect(storage.activeIndex).toBe(0);
-		expect(storage.activeIndexByFamily?.codex).toBe(0);
-		expect(storage.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
+		expect(storage.activeIndex).toBe(1);
+		expect(storage.activeIndexByFamily?.codex).toBe(1);
+		expect(storage.activeIndexByFamily?.["gpt-5.1"]).toBe(1);
 	});
 
 	it("returns false and keeps storage unchanged for out-of-range removals", () => {
@@ -155,5 +177,22 @@ describe("active-index helpers", () => {
 		expect(storage.accounts).toHaveLength(1);
 		expect(storage.activeIndex).toBe(0);
 		expect(storage.activeIndexByFamily).toEqual({ codex: 0 });
+	});
+
+	it("returns false and keeps storage unchanged for non-integer removals", () => {
+		const storage: {
+			accounts: unknown[];
+			activeIndex: number;
+			activeIndexByFamily?: Record<string, number>;
+		} = {
+			accounts: [{ id: 1 }, { id: 2 }],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		expect(removeAccountAndReconcileActiveIndexes(storage, 0.5)).toBe(false);
+		expect(storage.accounts).toEqual([{ id: 1 }, { id: 2 }]);
+		expect(storage.activeIndex).toBe(1);
+		expect(storage.activeIndexByFamily).toEqual({ codex: 1 });
 	});
 });

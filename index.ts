@@ -952,8 +952,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 return;
                         }
 
-                        const index = props.index ?? props.accountIndex;
-                        if (typeof index === "number") {
+                        const rawIndex = props.index ?? props.accountIndex;
+                        if (typeof rawIndex === "number" && Number.isFinite(rawIndex)) {
+                                const index = Math.floor(rawIndex);
                                 const storage = await loadAccounts();
                                 if (!storage || index < 0 || index >= storage.accounts.length) {
                                         return;

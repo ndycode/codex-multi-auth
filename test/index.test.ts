@@ -987,8 +987,8 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 	});
 
 	it("adjusts activeIndex when removing account before it", async () => {
-		// When activeIndex=2 and we remove index 0 (1-based: 1), the remaining accounts
-		// have length 2. Since activeIndex (2) >= length (2), it resets to 0.
+		// When activeIndex=2 and we remove index 0 (1-based: 1), the active account
+		// should remain selected after reindexing (new index 1).
 		mockStorage.accounts = [
 			{ refreshToken: "r1", email: "user1@example.com" },
 			{ refreshToken: "r2", email: "user2@example.com" },
@@ -1003,10 +1003,8 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
 		await plugin.tool["codex-remove"].execute({ index: 1 });
-		// After removing account at 0-based index 0, length is 2.
-		// activeIndex (2) >= length (2), so it resets to 0
-		expect(mockStorage.activeIndex).toBe(0);
-		expect(mockStorage.activeIndexByFamily.codex).toBe(0);
+		expect(mockStorage.activeIndex).toBe(1);
+		expect(mockStorage.activeIndexByFamily.codex).toBe(1);
 	});
 
 	it("resets activeIndex when removing active account at end", async () => {
@@ -1914,6 +1912,31 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 
 		await plugin.event({
 			event: { type: "account.select", properties: { accountIndex: 1 } },
+		});
+		const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
+		expect(mockStorage.activeIndex).toBe(1);
+		for (const family of MODEL_FAMILIES) {
+			expect(mockStorage.activeIndexByFamily[family]).toBe(1);
+		}
+	});
+
+	it("coerces fractional account.select indexes before applying selection", async () => {
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1.9 } },
 		});
 		const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
 		expect(mockStorage.activeIndex).toBe(1);
