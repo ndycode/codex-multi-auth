@@ -176,6 +176,10 @@ export class RefreshQueue {
         lease.role === "bypass" &&
         lease.reason === REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT
       ) {
+        const supersedingPromise = getSupersedingPromise();
+        if (supersedingPromise) {
+          return supersedingPromise;
+        }
         log.warn("Refresh lease timed out; refusing fail-open token refresh", {
           tokenSuffix: refreshToken.slice(-6),
           waitPolicy: "fail-closed",

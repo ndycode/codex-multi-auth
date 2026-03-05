@@ -172,6 +172,27 @@ describe("RecoveryStorage", () => {
       expect(result[0]?.id).toBe("a");
     });
 
+    it("skips message files when parsed payload is an array", () => {
+      const sessionID = "sess";
+      const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+      fsMock.existsSync.mockImplementation((path: string) => path === MESSAGE_STORAGE || path === messageDir);
+      fsMock.readdirSync.mockReturnValue(["valid.json", "array-payload.json"]);
+      fsMock.readFileSync.mockImplementation((path: string) => {
+        if (path === join(messageDir, "valid.json")) {
+          return JSON.stringify({ id: "a", sessionID, role: "assistant", time: { created: 1 } });
+        }
+        if (path === join(messageDir, "array-payload.json")) {
+          return JSON.stringify([{ id: "array-item" }]);
+        }
+        return "";
+      });
+
+      const result = storage.readMessages(sessionID);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.id).toBe("a");
+    });
+
     it("limits corruption warnings per read and emits one suppression warning", () => {
       const sessionID = "sess";
       const messageDir = join(MESSAGE_STORAGE, sessionID);
@@ -280,6 +301,27 @@ describe("RecoveryStorage", () => {
         }
         if (path === join(partDir, "invalid-shape.json")) {
           return JSON.stringify({ id: "x", type: "text" });
+        }
+        return "";
+      });
+
+      const result = storage.readParts(messageID);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.id).toBe("1");
+    });
+
+    it("skips part files when parsed payload is an array", () => {
+      const messageID = "msg";
+      const partDir = join(PART_STORAGE, messageID);
+
+      fsMock.existsSync.mockImplementation((path: string) => path === partDir);
+      fsMock.readdirSync.mockReturnValue(["valid.json", "array-payload.json"]);
+      fsMock.readFileSync.mockImplementation((path: string) => {
+        if (path === join(partDir, "valid.json")) {
+          return JSON.stringify({ id: "1", messageID, sessionID: "s", type: "text", text: "hi" });
+        }
+        if (path === join(partDir, "array-payload.json")) {
+          return JSON.stringify([{ id: "array-item" }]);
         }
         return "";
       });

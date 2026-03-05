@@ -510,10 +510,13 @@ describe("accounts edge branches", () => {
   });
 
   it("keeps disk-issued credentials when conflict merge matches by account identity", async () => {
+    const localExpiresAt = Date.now() + 1_000;
+    const rotatedExpiresAt = Date.now() + 60_000;
     const stored = buildStored([
       buildStoredAccount({
         refreshToken: "refresh-stale",
         accessToken: "access-stale",
+        expiresAt: localExpiresAt,
         email: "identity@example.com",
         accountId: "account-identity-1",
       }),
@@ -523,6 +526,7 @@ describe("accounts edge branches", () => {
       buildStoredAccount({
         refreshToken: "refresh-rotated",
         accessToken: "access-rotated",
+        expiresAt: rotatedExpiresAt,
         email: "identity@example.com",
         accountId: "account-identity-1",
       }),
@@ -546,6 +550,7 @@ describe("accounts edge branches", () => {
         accountId?: string;
         refreshToken: string;
         accessToken?: string;
+        expiresAt?: number;
       }>;
     };
     const mergedAccount = retriedPayload.accounts.find(
@@ -553,6 +558,7 @@ describe("accounts edge branches", () => {
     );
     expect(mergedAccount?.refreshToken).toBe("refresh-rotated");
     expect(mergedAccount?.accessToken).toBe("access-rotated");
+    expect(mergedAccount?.expiresAt).toBe(rotatedExpiresAt);
     expect(retriedPayload.accounts.some((account) => account.refreshToken === "refresh-stale")).toBe(
       false,
     );

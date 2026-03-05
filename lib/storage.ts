@@ -498,7 +498,7 @@ async function readStorageSaveLockObservation(
 	lockPath: string,
 ): Promise<StorageSaveLockObservation | null> {
 	try {
-		const raw = await fs.readFile(lockPath, "utf8");
+		const raw = await readFileUtf8WithTransientRetry(lockPath);
 		return {
 			token: parseStorageSaveLockToken(raw),
 			fingerprint: computeSha256(raw),
@@ -506,7 +506,7 @@ async function readStorageSaveLockObservation(
 		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code === "ENOENT") {
+		if (code === "ENOENT" || isTransientReadError(error)) {
 			return null;
 		}
 		throw error;
@@ -541,6 +541,9 @@ async function removeStorageSaveLockIfOwnerMatches(
 		const code = (error as NodeJS.ErrnoException | undefined)?.code;
 		if (code === "ENOENT") {
 			return true;
+		}
+		if (isTransientReadError(error)) {
+			return false;
 		}
 		throw error;
 	}
@@ -646,12 +649,13 @@ async function withStorageSaveFileLock<T>(
 					lockPath: lock.lockPath,
 					error: String(releaseError),
 				});
-				throw taskError;
+				// Preserve the original task failure and avoid throwing from finally.
+			} else {
+				log.warn("Failed to release account storage lock after successful save", {
+					lockPath: lock.lockPath,
+					error: String(releaseError),
+				});
 			}
-			log.warn("Failed to release account storage lock after successful save", {
-				lockPath: lock.lockPath,
-				error: String(releaseError),
-			});
 		}
 	}
 }
@@ -1205,6 +1209,8 @@ async function loadAccountsInternal(
 
   try {
     const { normalized, storedVersion, schemaErrors, rawChecksum } = await loadAccountsFromPath(path);
+    const requiresMigrationPersist =
+      normalized !== null && storedVersion !== normalized.version && persistMigration !== null;
     if (schemaErrors.length > 0) {
       log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
     }
@@ -1259,7 +1265,11 @@ async function loadAccountsInternal(
 		}
 	}
 
-	rememberKnownStorageRevision(path, rawChecksum);
+	if (requiresMigrationPersist) {
+		await rememberKnownStorageRevisionFromDisk(path);
+	} else {
+		rememberKnownStorageRevision(path, rawChecksum);
+	}
     return normalized;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

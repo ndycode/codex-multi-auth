@@ -677,6 +677,34 @@ describe("storage", () => {
       expect(saved.version).toBe(3);
     });
 
+    it("allows follow-up save after v1 migration without conflict", async () => {
+      const v1Storage = {
+        version: 1,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t1", accountId: "A", accessToken: "acc", expiresAt: Date.now() + 3600000 }],
+      };
+      await fs.writeFile(testStoragePath, JSON.stringify(v1Storage), "utf-8");
+
+      const migrated = await loadAccounts();
+      expect(migrated?.version).toBe(3);
+
+      const nextStorage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          ...(migrated?.accounts ?? []),
+          { refreshToken: "t2", accountId: "B", addedAt: 2, lastUsed: 2 },
+        ],
+      };
+      await expect(saveAccounts(nextStorage)).resolves.toBeUndefined();
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.version).toBe(3);
+      const accountIds = new Set(persisted.accounts.map((account) => account.accountId));
+      expect(accountIds.has("A")).toBe(true);
+      expect(accountIds.has("B")).toBe(true);
+    });
+
     it("returns migrated data even when save fails (line 422-423 coverage)", async () => {
       const v1Storage = { 
         version: 1, 
@@ -757,6 +785,96 @@ describe("storage", () => {
       expect(releaseFailureInjected).toBe(true);
       const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
       expect(persisted.accounts[0]?.accountId).toBe("A");
+    });
+
+    it("continues waiting when lock observation reads hit transient errors", async () => {
+      const storage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-read-retry", accountId: "read-retry", addedAt: 1, lastUsed: 1 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      await fs.mkdir(dirname(testStoragePath), { recursive: true });
+      await fs.writeFile(
+        lockPath,
+        `${JSON.stringify({ pid: process.pid, token: "other-owner", acquiredAt: Date.now() })}\n`,
+        "utf-8",
+      );
+      let lockPresent = true;
+      const unlockPromise = (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        lockPresent = false;
+        await fs.unlink(lockPath);
+      })();
+
+      const originalReadFile = fs.readFile.bind(fs);
+      let transientReadFailures = 0;
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path = typeof target === "string" ? target : String(target);
+        if (path === lockPath && lockPresent) {
+          transientReadFailures += 1;
+          throw Object.assign(new Error("retry"), { code: "EAGAIN" });
+        }
+        return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        await expect(saveAccounts(storage)).resolves.toBeUndefined();
+      } finally {
+        readSpy.mockRestore();
+        await unlockPromise;
+      }
+
+      expect(transientReadFailures).toBeGreaterThan(0);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("read-retry");
+    });
+
+    it("retries stale lock eviction when transient unlink contention occurs", async () => {
+      const storage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-unlink-retry", accountId: "unlink-retry", addedAt: 1, lastUsed: 1 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      await fs.mkdir(dirname(testStoragePath), { recursive: true });
+      await fs.writeFile(
+        lockPath,
+        `${JSON.stringify({
+          pid: process.pid,
+          token: "stale-owner",
+          acquiredAt: Date.now() - 240_000,
+        })}\n`,
+        "utf-8",
+      );
+      const staleTimestamp = new Date(Date.now() - 240_000);
+      await fs.utimes(lockPath, staleTimestamp, staleTimestamp);
+
+      const originalUnlink = fs.unlink.bind(fs);
+      let lockUnlinkAttempts = 0;
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path =
+          typeof target === "string" ? target : target instanceof URL ? target.pathname : String(target);
+        if (path === lockPath) {
+          lockUnlinkAttempts += 1;
+          if (lockUnlinkAttempts === 1) {
+            throw Object.assign(new Error("busy"), { code: "EBUSY" });
+          }
+        }
+        return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+      });
+
+      try {
+        await expect(saveAccounts(storage)).resolves.toBeUndefined();
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+
+      expect(lockUnlinkAttempts).toBeGreaterThanOrEqual(2);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("unlink-retry");
     });
 
     it("rejects stale overwrite when storage changed on disk after load", async () => {

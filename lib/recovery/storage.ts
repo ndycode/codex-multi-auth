@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { MESSAGE_STORAGE, PART_STORAGE, THINKING_TYPES, META_TYPES } from "./constants.js";
 import type { StoredMessageMeta, StoredPart, StoredTextPart } from "./types.js";
 import { createLogger } from "../logger.js";
+import { isRecord } from "../utils.js";
 
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const CORRUPTION_WARNING_LIMIT = 25;
@@ -18,10 +19,6 @@ function validatePathId(id: string, name: string): void {
   if (!SAFE_ID_PATTERN.test(id)) {
     throw new Error(`Invalid ${name}: contains unsafe characters`);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
 }
 
 function isStoredMessageMeta(value: unknown): value is StoredMessageMeta {

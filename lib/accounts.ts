@@ -73,7 +73,7 @@ import {
 
 const log = createLogger("accounts");
 type StoredAccount = AccountStorageV3["accounts"][number];
-const DISK_PREFERRED_MERGE_KEYS = new Set(["refreshToken", "accessToken"]);
+const DISK_PREFERRED_MERGE_KEYS = new Set(["refreshToken", "accessToken", "expiresAt"]);
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
