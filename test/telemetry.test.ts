@@ -61,7 +61,7 @@ describe("telemetry module", () => {
 			outcome: "failure",
 			details: {
 				email: "user@example.com",
-				accessToken: "sk-1234567890abcdefghij",
+				accessToken: "test_access_token_redaction_fixture",
 				nested: {
 					authorization: "Bearer secret-value",
 				},
@@ -76,6 +76,52 @@ describe("telemetry module", () => {
 			nested: {
 				authorization: "***MASKED***",
 			},
+		});
+	});
+
+	it("ignores malformed telemetry entries with unknown source or outcome", async () => {
+		const filePath = getTelemetryLogPath();
+		await fs.writeFile(
+			filePath,
+			[
+				JSON.stringify({
+					timestamp: "2026-03-01T00:00:00.000Z",
+					source: "plugin",
+					event: "request.ok",
+					outcome: "success",
+					correlationId: null,
+				}),
+				JSON.stringify({
+					timestamp: "2026-03-01T00:00:01.000Z",
+					source: "unknown-source",
+					event: "request.bad_source",
+					outcome: "failure",
+					correlationId: null,
+				}),
+				JSON.stringify({
+					timestamp: "2026-03-01T00:00:02.000Z",
+					source: "cli",
+					event: "request.bad_outcome",
+					outcome: "unknown-outcome",
+					correlationId: null,
+				}),
+			].join("\n") + "\n",
+			"utf8",
+		);
+
+		const events = await queryTelemetryEvents({ limit: 10 });
+		expect(events).toHaveLength(1);
+		expect(events[0]?.event).toBe("request.ok");
+
+		const summary = summarizeTelemetryEvents(events);
+		expect(summary.total).toBe(1);
+		expect(summary.bySource).toEqual({ cli: 0, plugin: 1 });
+		expect(summary.byOutcome).toEqual({
+			start: 0,
+			success: 1,
+			failure: 0,
+			recovery: 0,
+			info: 0,
 		});
 	});
 
@@ -176,6 +222,25 @@ describe("telemetry module", () => {
 		expect(existsSync(`${getTelemetryLogPath()}.1`)).toBe(true);
 	});
 
+	it("serializes concurrent appends without dropping events", async () => {
+		configureTelemetry({ maxFileSizeBytes: 1_000_000, maxFiles: 12 });
+		const eventCount = 50;
+		await Promise.all(
+			Array.from({ length: eventCount }, (_, index) =>
+				recordTelemetryEvent({
+					source: "plugin",
+					event: `request.concurrent.${index}`,
+					outcome: "info",
+					details: { index },
+				}),
+			),
+		);
+
+		const events = await queryTelemetryEvents({ limit: 200 });
+		const concurrentEvents = events.filter((entry) => entry.event.startsWith("request.concurrent."));
+		expect(concurrentEvents).toHaveLength(eventCount);
+	});
+
 	it("retries transient Windows lock errors during telemetry rotation", async () => {
 		configureTelemetry({ maxFileSizeBytes: 64, maxFiles: 3 });
 		const logPath = getTelemetryLogPath();
@@ -215,5 +280,33 @@ describe("telemetry module", () => {
 		expect(existsSync(`${logPath}.1`)).toBe(true);
 		const events = await queryTelemetryEvents({ limit: 20 });
 		expect(events.some((event) => event.event === "request.retry_rotation")).toBe(true);
+	});
+
+	it("retries transient fs.rm errors during cleanup helper", async () => {
+		const lockedError = Object.assign(new Error("busy"), { code: "EPERM" }) as NodeJS.ErrnoException;
+		const fsMutable = fs as unknown as { rm: typeof fs.rm };
+		const originalRm = fsMutable.rm.bind(fs);
+		let attempts = 0;
+		fsMutable.rm = (async (
+			path: Parameters<typeof fs.rm>[0],
+			options?: Parameters<typeof fs.rm>[1],
+		) => {
+			attempts += 1;
+			if (attempts === 1) {
+				throw lockedError;
+			}
+			return originalRm(path, options);
+		}) as typeof fs.rm;
+
+		const target = join(tempDir, "cleanup-target");
+		await fs.mkdir(target, { recursive: true });
+
+		try {
+			await removeWithRetry(target, { recursive: true, force: true });
+		} finally {
+			fsMutable.rm = originalRm;
+		}
+
+		expect(attempts).toBe(2);
 	});
 });

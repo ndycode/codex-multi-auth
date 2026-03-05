@@ -55,6 +55,7 @@ import {
 	queryTelemetryEvents,
 	recordTelemetryEvent,
 	summarizeTelemetryEvents,
+	type TelemetryEvent,
 	type TelemetryOutcome,
 } from "./telemetry.js";
 import {
@@ -2308,6 +2309,11 @@ function formatTelemetryDetail(details: Record<string, unknown> | undefined): st
 	return chunks.join(" ");
 }
 
+function getTelemetryTimestampMs(event: TelemetryEvent): number {
+	const parsed = Date.parse(event.timestamp);
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+
 async function runTelemetry(args: string[]): Promise<number> {
 	if (args.includes("--help") || args.includes("-h")) {
 		printTelemetryUsage();
@@ -2326,7 +2332,10 @@ async function runTelemetry(args: string[]): Promise<number> {
 		sinceMs,
 		limit: options.limit,
 	});
-	const summary = summarizeTelemetryEvents(events);
+	const orderedEvents = [...events].sort(
+		(left, right) => getTelemetryTimestampMs(left) - getTelemetryTimestampMs(right),
+	);
+	const summary = summarizeTelemetryEvents(orderedEvents);
 	const logPath = getTelemetryLogPath();
 
 	if (options.json) {
@@ -2338,7 +2347,7 @@ async function runTelemetry(args: string[]): Promise<number> {
 					sinceHours: options.sinceHours,
 					limit: options.limit,
 					summary,
-					events,
+					events: orderedEvents,
 				},
 				null,
 				2,
@@ -2365,7 +2374,7 @@ async function runTelemetry(args: string[]): Promise<number> {
 		}
 	}
 
-	const recent = events.slice(Math.max(0, events.length - 10));
+	const recent = orderedEvents.slice(Math.max(0, orderedEvents.length - 10));
 	if (recent.length === 0) {
 		console.log("");
 		console.log("No telemetry events found for the selected window.");
@@ -4250,13 +4259,13 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 
 	const command = sub ?? "login";
-	const emitTelemetry = (
+	const emitTelemetry = async (
 		outcome: TelemetryOutcome,
 		event: string,
 		details?: Record<string, unknown>,
-	): void => {
+	): Promise<void> => {
 		if (!telemetryEnabled) return;
-		void recordTelemetryEvent({
+		await recordTelemetryEvent({
 			source: "cli",
 			event,
 			outcome,
@@ -4271,7 +4280,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		printUsage();
 		return 0;
 	}
-	emitTelemetry("start", "cli.command.start", { argCount: rest.length });
+	await emitTelemetry("start", "cli.command.start", { argCount: rest.length });
 	try {
 		let exitCode = 0;
 		if (command === "login") {
@@ -4304,12 +4313,12 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			exitCode = 1;
 		}
 
-		emitTelemetry(exitCode === 0 ? "success" : "failure", "cli.command.finish", {
+		await emitTelemetry(exitCode === 0 ? "success" : "failure", "cli.command.finish", {
 			exitCode,
 		});
 		return exitCode;
 	} catch (error) {
-		emitTelemetry("failure", "cli.command.exception", {
+		await emitTelemetry("failure", "cli.command.exception", {
 			error: error instanceof Error ? error.message : String(error),
 		});
 		throw error;

@@ -56,6 +56,10 @@ Compatibility aliases are supported:
 | `--since-hours <hours>` | telemetry | Include events newer than this many hours |
 | `--limit <n>` | telemetry | Max events to include in report |
 
+Telemetry rollout pointer:
+- Upgrade notes: [../upgrade.md](../upgrade.md)
+- Automation rollout: add a script alias such as `auth:telemetry` -> `codex auth telemetry --json --since-hours 24 --limit 200`
+
 ---
 
 ## Dashboard Hotkeys

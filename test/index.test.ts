@@ -634,6 +634,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 				expect(liveAccountSyncCtorMock).toHaveBeenCalledTimes(1);
 				expect(liveAccountSyncSyncToPathMock).toHaveBeenCalledTimes(1);
+				expect(recordTelemetryEventMock).not.toHaveBeenCalled();
 			} finally {
 				vi.mocked(configModule.getLiveAccountSync).mockReturnValue(false);
 			}
@@ -941,6 +942,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 
 		const result = await plugin.tool["codex-refresh"].execute();
 		expect(result).toContain("Failed");
+		expect(recordTelemetryEventMock).not.toHaveBeenCalled();
 	});
 
 	it("handles refresh throwing errors", async () => {
@@ -957,6 +959,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const result = await plugin.tool["codex-refresh"].execute();
 		expect(result).toContain("Error");
 		expect(result).toContain("Network timeout");
+		expect(recordTelemetryEventMock).not.toHaveBeenCalled();
 	});
 
 	it("handles storage errors in codex-remove", async () => {
@@ -1085,6 +1088,20 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(response.status).toBe(503);
 		expect(await response.text()).toContain("server errors or auth issues");
 		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "plugin",
+				event: "request.network_error",
+				outcome: "failure",
+			}),
+		);
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "plugin",
+				event: "request.accounts_exhausted",
+				outcome: "failure",
+			}),
+		);
 	});
 
 	it("does not penalize account health when fetch is aborted by user", async () => {

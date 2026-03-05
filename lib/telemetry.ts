@@ -55,6 +55,14 @@ const DEFAULT_TELEMETRY_CONFIG: TelemetryConfig = {
 	maxFileSizeBytes: 1 * 1024 * 1024,
 	maxFiles: 4,
 };
+const TELEMETRY_SOURCES = new Set<TelemetrySource>(["cli", "plugin"]);
+const TELEMETRY_OUTCOMES = new Set<TelemetryOutcome>([
+	"start",
+	"success",
+	"failure",
+	"recovery",
+	"info",
+]);
 
 const SENSITIVE_KEYS = new Set([
 	"access",
@@ -221,11 +229,15 @@ function queueAppend(task: () => Promise<void>): Promise<void> {
 function isTelemetryEvent(value: unknown): value is TelemetryEvent {
 	if (!value || typeof value !== "object") return false;
 	const record = value as Record<string, unknown>;
+	const source = record.source;
+	const outcome = record.outcome;
 	return (
 		typeof record.timestamp === "string" &&
-		typeof record.source === "string" &&
+		typeof source === "string" &&
+		TELEMETRY_SOURCES.has(source as TelemetrySource) &&
 		typeof record.event === "string" &&
-		typeof record.outcome === "string"
+		typeof outcome === "string" &&
+		TELEMETRY_OUTCOMES.has(outcome as TelemetryOutcome)
 	);
 }
 
