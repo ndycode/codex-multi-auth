@@ -344,11 +344,25 @@ describe("codex manager cli commands", () => {
 		expect(logSpy.mock.calls[0]?.[0]).toContain("Codex Multi-Auth CLI");
 	});
 
-	it("prints telemetry report in json mode", async () => {
-		const now = Date.now();
+	it.each([
+		["unix path", "/mock/logs/product-telemetry.jsonl"],
+		["windows path", "C:\\Users\\operator\\codex\\logs\\product-telemetry.jsonl"],
+	])("prints telemetry report in json mode (%s)", async (_label, telemetryLogPath) => {
+		vi.useFakeTimers();
+		const fixedNow = new Date("2026-03-05T07:00:00.000Z");
+		vi.setSystemTime(fixedNow);
+		const nowMs = fixedNow.getTime();
 		const events = [
 			{
-				timestamp: new Date(now - 5_000).toISOString(),
+				timestamp: new Date(nowMs - 1_000).toISOString(),
+				source: "cli",
+				event: "cli.command.finish",
+				outcome: "success",
+				correlationId: null,
+				details: { exitCode: 0 },
+			},
+			{
+				timestamp: new Date(nowMs - 5_000).toISOString(),
 				source: "plugin",
 				event: "request.network_error",
 				outcome: "failure",
@@ -360,56 +374,69 @@ describe("codex manager cli commands", () => {
 				},
 			},
 		];
+		const orderedEvents = [...events].sort(
+			(left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
+		);
 		queryTelemetryEventsMock.mockResolvedValueOnce(events);
 		summarizeTelemetryEventsMock.mockReturnValueOnce({
-			total: 1,
-			bySource: { cli: 0, plugin: 1 },
-			byOutcome: { start: 0, success: 0, failure: 1, recovery: 0, info: 0 },
-			byEvent: [{ event: "request.network_error", count: 1 }],
-			firstTimestamp: events[0].timestamp,
-			lastTimestamp: events[0].timestamp,
+			total: 2,
+			bySource: { cli: 1, plugin: 1 },
+			byOutcome: { start: 0, success: 1, failure: 1, recovery: 0, info: 0 },
+			byEvent: [
+				{ event: "request.network_error", count: 1 },
+				{ event: "cli.command.finish", count: 1 },
+			],
+			firstTimestamp: orderedEvents[0].timestamp,
+			lastTimestamp: orderedEvents[1].timestamp,
 		});
+		getTelemetryLogPathMock.mockReturnValueOnce(telemetryLogPath);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli([
-			"auth",
-			"telemetry",
-			"--json",
-			"--since-hours",
-			"12",
-			"--limit",
-			"5",
-		]);
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"telemetry",
+				"--json",
+				"--since-hours",
+				"12",
+				"--limit",
+				"5",
+			]);
 
-		expect(exitCode).toBe(0);
-		expect(queryTelemetryEventsMock).toHaveBeenCalledWith(
-			expect.objectContaining({
-				sinceMs: expect.any(Number),
-				limit: 5,
-			}),
-		);
-		const sinceMs = (queryTelemetryEventsMock.mock.calls[0]?.[0] as { sinceMs: number }).sinceMs;
-		expect(Math.abs(sinceMs - (now - 12 * 60 * 60_000))).toBeLessThan(5_000);
-		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
-			command: string;
-			limit: number;
-			sinceHours: number;
-			summary: { total: number };
-			events: Array<{
-				details?: {
-					token?: string;
-					email?: string;
-				};
-			}>;
-		};
-		expect(payload.command).toBe("telemetry");
-		expect(payload.limit).toBe(5);
-		expect(payload.sinceHours).toBe(12);
-		expect(payload.summary.total).toBe(1);
-		expect(payload.events[0]?.details?.token).toBe("***REDACTED***");
-		expect(payload.events[0]?.details?.email).toBe("***REDACTED***");
-	});
+				expect(exitCode).toBe(0);
+				expect(queryTelemetryEventsMock).toHaveBeenCalledWith(
+					expect.objectContaining({
+						sinceMs: nowMs - 12 * 60 * 60_000,
+					limit: 5,
+				}),
+			);
+			const sinceMs = (queryTelemetryEventsMock.mock.calls[0]?.[0] as { sinceMs: number }).sinceMs;
+			expect(sinceMs).toBe(nowMs - 12 * 60 * 60_000);
+			expect(summarizeTelemetryEventsMock).toHaveBeenCalledWith(orderedEvents);
+			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				command: string;
+				limit: number;
+				sinceHours: number;
+				logPath: string;
+				summary: { total: number };
+				events: Array<{ event: string }>;
+			};
+			expect(payload.command).toBe("telemetry");
+			expect(payload.limit).toBe(5);
+			expect(payload.sinceHours).toBe(12);
+			expect(payload.logPath).toBe(telemetryLogPath);
+			expect(payload.summary.total).toBe(2);
+				expect(payload.events.map((entry) => entry.event)).toEqual([
+					"request.network_error",
+					"cli.command.finish",
+				]);
+				expect(payload.events[0]?.details?.token).toBe("***REDACTED***");
+				expect(payload.events[0]?.details?.email).toBe("***REDACTED***");
+			} finally {
+				vi.useRealTimers();
+			}
+		});
 
 	it("validates telemetry arguments", async () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -443,6 +470,58 @@ describe("codex manager cli commands", () => {
 				event: "cli.command.finish",
 				outcome: "success",
 				details: expect.objectContaining({ command: "features", exitCode: 0 }),
+			}),
+		);
+	});
+
+	it("awaits telemetry write completion before returning", async () => {
+		const deferredFinish = createDeferred<void>();
+		recordTelemetryEventMock.mockImplementation(
+			async (entry: { event: string }) => {
+				if (entry.event === "cli.command.finish") {
+					return deferredFinish.promise;
+				}
+			},
+		);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const pending = runCodexMultiAuthCli(["auth", "features"]);
+		let settled = false;
+		void pending.finally(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(settled).toBe(false);
+		deferredFinish.resolve();
+		expect(await pending).toBe(0);
+	});
+
+	it("does not emit command telemetry when disabled", async () => {
+		loadPluginConfigMock.mockReturnValueOnce({ telemetryEnabled: false });
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "features"]);
+
+		expect(exitCode).toBe(0);
+		expect(recordTelemetryEventMock).not.toHaveBeenCalled();
+	});
+
+	it("emits exception telemetry when command execution throws", async () => {
+		loadAccountsMock.mockRejectedValueOnce(new Error("report storage failure"));
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(runCodexMultiAuthCli(["auth", "report"])).rejects.toThrow(
+			"report storage failure",
+		);
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "cli.command.exception",
+				outcome: "failure",
+				details: expect.objectContaining({
+					command: "report",
+					error: "report storage failure",
+				}),
 			}),
 		);
 	});
