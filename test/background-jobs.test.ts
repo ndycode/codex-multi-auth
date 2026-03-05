@@ -123,9 +123,6 @@ describe("background jobs", () => {
 				maxAttempts: 3,
 				baseDelayMs: 1,
 				maxDelayMs: 2,
-				retryable: (error) =>
-					typeof (error as { statusCode?: unknown }).statusCode === "number" &&
-					(error as { statusCode: number }).statusCode === 429,
 			}),
 		).rejects.toThrow("rate limited");
 		expect(attempts).toBe(3);
@@ -136,6 +133,40 @@ describe("background jobs", () => {
 		const entry = JSON.parse(lines[0] ?? "{}") as { job?: string; attempts?: number };
 		expect(entry.job).toBe("test.retry-429-fail");
 		expect(entry.attempts).toBe(3);
+	});
+
+	it("adds jitter to retry delays to avoid synchronized retries", async () => {
+		vi.resetModules();
+		const sleepMock = vi.fn(async () => {});
+		vi.doMock("../lib/utils.js", () => ({
+			sleep: sleepMock,
+		}));
+		const randomSpy = vi.spyOn(Math, "random");
+		randomSpy.mockReturnValueOnce(0).mockReturnValueOnce(1);
+
+		try {
+			const { runBackgroundJobWithRetry } = await import("../lib/background-jobs.js");
+			let attempts = 0;
+			await expect(
+				runBackgroundJobWithRetry({
+					name: "test.retry-jitter",
+					task: async () => {
+						attempts += 1;
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					},
+					maxAttempts: 3,
+					baseDelayMs: 100,
+					maxDelayMs: 100,
+				}),
+			).rejects.toThrow("busy");
+			expect(attempts).toBe(3);
+			expect(sleepMock.mock.calls.map(([ms]) => ms)).toEqual([80, 120]);
+		} finally {
+			randomSpy.mockRestore();
+			vi.doUnmock("../lib/utils.js");
+		}
 	});
 
 	it("records actual attempts for non-retryable failures", async () => {
@@ -178,7 +209,7 @@ describe("background jobs", () => {
 					name: "test.retry-sensitive-error",
 					task: async () => {
 						throw new Error(
-							"network failed for person@example.com Bearer sk_test_123 refresh_token=rt_456",
+							"network failed for person@example.com Bearer sk_test+/123== refresh_token=rt+/456==",
 						);
 					},
 					maxAttempts: 1,
@@ -191,14 +222,14 @@ describe("background jobs", () => {
 			const entry = JSON.parse(lines[0] ?? "{}") as { error?: string };
 			expect(entry.error).toContain("***REDACTED***");
 			expect(entry.error).not.toContain("person@example.com");
-			expect(entry.error).not.toContain("sk_test_123");
-			expect(entry.error).not.toContain("rt_456");
+			expect(entry.error).not.toContain("sk_test+/123==");
+			expect(entry.error).not.toContain("rt+/456==");
 
 			const warningPayloads = warnMock.mock.calls.map((args) => args[1]);
 			const serializedWarnings = JSON.stringify(warningPayloads);
 			expect(serializedWarnings).not.toContain("person@example.com");
-			expect(serializedWarnings).not.toContain("sk_test_123");
-			expect(serializedWarnings).not.toContain("rt_456");
+			expect(serializedWarnings).not.toContain("sk_test+/123==");
+			expect(serializedWarnings).not.toContain("rt+/456==");
 		} finally {
 			vi.doUnmock("../lib/logger.js");
 		}

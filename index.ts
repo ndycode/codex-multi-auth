@@ -1689,7 +1689,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 										const parsed = new URL(url);
 										return `${parsed.origin}${parsed.pathname}`;
 									} catch {
-										return url;
+										const rawUrl = String(url);
+										const sanitized = rawUrl.split(/[?#]/, 1)[0];
+										return sanitized && sanitized.length > 0 ? sanitized : "unknown";
 									}
 								})();
 
@@ -2465,7 +2467,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 										const parsed = new URL(url);
 										return `${parsed.origin}${parsed.pathname}`;
 									} catch {
-										return url;
+										const rawUrl = String(url);
+										const sanitized = rawUrl.split(/[?#]/, 1)[0];
+										return sanitized && sanitized.length > 0 ? sanitized : "unknown";
 									}
 								})();
 								auditLog(

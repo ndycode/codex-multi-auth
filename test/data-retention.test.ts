@@ -155,6 +155,87 @@ describe("data retention", () => {
 		}
 	});
 
+	it.each(["EPERM", "EACCES", "EAGAIN"] as const)(
+		"retries transient %s during directory entry retention pruning",
+		async (code) => {
+			const { enforceDataRetention } = await import("../lib/data-retention.js");
+			const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+			const logsDir = join(tempDir, "logs");
+			const nestedDir = join(logsDir, "nested");
+			const staleLog = join(nestedDir, "stale.log");
+
+			await fs.mkdir(nestedDir, { recursive: true });
+			await fs.writeFile(staleLog, "old", "utf8");
+			await fs.utimes(staleLog, oldDate, oldDate);
+
+			const originalStat = fs.stat.bind(fs);
+			const statSpy = vi.spyOn(fs, "stat");
+			let injected = false;
+			statSpy.mockImplementation(async (path, options) => {
+				if (!injected && path === staleLog) {
+					injected = true;
+					const error = new Error(code.toLowerCase()) as NodeJS.ErrnoException;
+					error.code = code;
+					throw error;
+				}
+				return originalStat(path, options as { bigint?: boolean });
+			});
+
+			try {
+				const policy: RetentionPolicy = {
+					logDays: 1,
+					cacheDays: 90,
+					flaggedDays: 90,
+					quotaCacheDays: 90,
+					dlqDays: 90,
+				};
+				const result = await enforceDataRetention(policy);
+				expect(result.removedLogs).toBe(1);
+				expect(injected).toBe(true);
+				await expect(fs.stat(staleLog)).rejects.toMatchObject({ code: "ENOENT" });
+			} finally {
+				statSpy.mockRestore();
+			}
+		},
+	);
+
+	it("retries transient unlink failures during single-file retention pruning", async () => {
+		const { enforceDataRetention } = await import("../lib/data-retention.js");
+		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+		const flagged = join(tempDir, "openai-codex-flagged-accounts.json");
+		await fs.writeFile(flagged, "{}", "utf8");
+		await fs.utimes(flagged, oldDate, oldDate);
+
+		const originalUnlink = fs.unlink.bind(fs);
+		const unlinkSpy = vi.spyOn(fs, "unlink");
+		let injected = false;
+		unlinkSpy.mockImplementation(async (path) => {
+			if (!injected && path === flagged) {
+				injected = true;
+				const error = new Error("access denied") as NodeJS.ErrnoException;
+				error.code = "EACCES";
+				throw error;
+			}
+			return originalUnlink(path);
+		});
+
+		try {
+			const policy: RetentionPolicy = {
+				logDays: 90,
+				cacheDays: 90,
+				flaggedDays: 1,
+				quotaCacheDays: 90,
+				dlqDays: 90,
+			};
+			const result = await enforceDataRetention(policy);
+			expect(result.removedStateFiles).toBe(1);
+			expect(injected).toBe(true);
+			await expect(fs.stat(flagged)).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			unlinkSpy.mockRestore();
+		}
+	});
+
 	it("treats ENOTEMPTY on directory cleanup as a non-fatal race", async () => {
 		const { enforceDataRetention } = await import("../lib/data-retention.js");
 		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);

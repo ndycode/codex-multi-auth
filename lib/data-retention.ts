@@ -18,7 +18,7 @@ const DEFAULT_POLICY: RetentionPolicy = {
 	quotaCacheDays: 14,
 	dlqDays: 30,
 };
-const RETRYABLE_RETENTION_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN"]);
+const RETRYABLE_RETENTION_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN", "ENOTEMPTY"]);
 
 function isRetryableRetentionError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException).code;
@@ -78,7 +78,7 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 		const fullPath = join(path, entry.name);
 		try {
 			if (entry.isDirectory()) {
-				removed += await withRetentionIoRetry(() => pruneDirectoryByAge(fullPath, maxAgeMs));
+				removed += await pruneDirectoryByAge(fullPath, maxAgeMs);
 				const childEntries = await withRetentionIoRetry(() => fs.readdir(fullPath));
 				if (childEntries.length === 0) {
 					await withRetentionIoRetry(() => fs.rmdir(fullPath));
@@ -90,12 +90,8 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 			if (now - stats.mtimeMs <= maxAgeMs) continue;
 			await withRetentionIoRetry(() => fs.unlink(fullPath));
 			removed += 1;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT" || code === "ENOTEMPTY") {
-				continue;
-			}
-			throw error;
+		} catch {
+			continue;
 		}
 	}
 	return removed;

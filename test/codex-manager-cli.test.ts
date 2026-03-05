@@ -2233,7 +2233,7 @@ describe("codex manager cli commands", () => {
 	it("redacts rotate-secrets failure details in non-json output", async () => {
 		rotateStoredSecretEncryptionMock.mockRejectedValue(
 			new Error(
-				"failed for person@example.com Bearer sk_test_123 refresh_token=rt_456",
+				"failed for person@example.com Bearer sk_test+/123== refresh_token=rt+/456==",
 			),
 		);
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -2245,8 +2245,8 @@ describe("codex manager cli commands", () => {
 			expect(rendered).toContain("Failed to rotate stored secrets:");
 			expect(rendered).toContain("***REDACTED***");
 			expect(rendered).not.toContain("person@example.com");
-			expect(rendered).not.toContain("sk_test_123");
-			expect(rendered).not.toContain("rt_456");
+			expect(rendered).not.toContain("sk_test+/123==");
+			expect(rendered).not.toContain("rt+/456==");
 		} finally {
 			errorSpy.mockRestore();
 		}

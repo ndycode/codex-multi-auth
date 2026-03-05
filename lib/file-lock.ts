@@ -1,4 +1,4 @@
-import { openSync, writeFileSync, closeSync, unlinkSync, statSync, promises as fs } from "node:fs";
+import { openSync, writeFileSync, closeSync, unlinkSync, statSync, readFileSync, promises as fs } from "node:fs";
 
 export interface FileLockOptions {
 	maxAttempts?: number;
@@ -23,6 +23,28 @@ const DEFAULT_MAX_DELAY_MS = 1_000;
 const DEFAULT_STALE_AFTER_MS = 5 * 60_000;
 const RETRYABLE_CODES = new Set(["EEXIST", "EBUSY", "EPERM"]);
 
+function isPidAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		return code === "EPERM";
+	}
+}
+
+function parseLockPid(rawLock: string): number | undefined {
+	const firstLine = rawLock.split(/\r?\n/, 1)[0] ?? "";
+	if (!firstLine) return undefined;
+	try {
+		const parsed = JSON.parse(firstLine) as { pid?: unknown };
+		return typeof parsed.pid === "number" && Number.isInteger(parsed.pid) ? parsed.pid : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -43,6 +65,14 @@ async function removeIfStale(path: string, staleAfterMs: number): Promise<boolea
 		if (Date.now() - stats.mtimeMs <= staleAfterMs) {
 			return false;
 		}
+		try {
+			const pid = parseLockPid(await fs.readFile(path, "utf8"));
+			if (pid !== undefined && isPidAlive(pid)) {
+				return false;
+			}
+		} catch {
+			// If metadata can't be read, fall back to age-only cleanup.
+		}
 		await fs.unlink(path);
 		return true;
 	} catch (error) {
@@ -54,12 +84,28 @@ async function removeIfStale(path: string, staleAfterMs: number): Promise<boolea
 	}
 }
 
-async function cleanupIncompleteLockFile(path: string): Promise<void> {
+function throwOriginalOrCleanupError(
+	originalError: unknown,
+	cleanupError: unknown,
+): never {
+	if (originalError instanceof Error) {
+		throw originalError;
+	}
+	if (cleanupError instanceof Error) {
+		throw cleanupError;
+	}
+	throw new Error(String(originalError ?? cleanupError));
+}
+
+async function cleanupIncompleteLockFile(path: string, originalError?: unknown): Promise<void> {
 	try {
 		await fs.unlink(path);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
+			if (originalError !== undefined) {
+				throwOriginalOrCleanupError(originalError, error);
+			}
 			throw error;
 		}
 	}
@@ -93,11 +139,9 @@ export async function acquireFileLock(
 				closeError = error;
 			}
 			if (writeError !== undefined || closeError !== undefined) {
-				await cleanupIncompleteLockFile(path);
-				if (writeError !== undefined) {
-					throw writeError;
-				}
-				throw closeError;
+				const originalFailure = writeError ?? closeError;
+				await cleanupIncompleteLockFile(path, originalFailure);
+				throwOriginalOrCleanupError(originalFailure, originalFailure);
 			}
 			let released = false;
 			return {
@@ -142,6 +186,14 @@ function removeIfStaleSync(path: string, staleAfterMs: number): boolean {
 		if (Date.now() - stats.mtimeMs <= staleAfterMs) {
 			return false;
 		}
+		try {
+			const pid = parseLockPid(readFileSync(path, "utf8"));
+			if (pid !== undefined && isPidAlive(pid)) {
+				return false;
+			}
+		} catch {
+			// If metadata can't be read, fall back to age-only cleanup.
+		}
 		unlinkSync(path);
 		return true;
 	} catch (error) {
@@ -153,12 +205,15 @@ function removeIfStaleSync(path: string, staleAfterMs: number): boolean {
 	}
 }
 
-function cleanupIncompleteLockFileSync(path: string): void {
+function cleanupIncompleteLockFileSync(path: string, originalError?: unknown): void {
 	try {
 		unlinkSync(path);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
+			if (originalError !== undefined) {
+				throwOriginalOrCleanupError(originalError, error);
+			}
 			throw error;
 		}
 	}
@@ -193,11 +248,9 @@ export function acquireFileLockSync(
 				closeError = error;
 			}
 			if (writeError !== undefined || closeError !== undefined) {
-				cleanupIncompleteLockFileSync(path);
-				if (writeError !== undefined) {
-					throw writeError;
-				}
-				throw closeError;
+				const originalFailure = writeError ?? closeError;
+				cleanupIncompleteLockFileSync(path, originalFailure);
+				throwOriginalOrCleanupError(originalFailure, originalFailure);
 			}
 			let released = false;
 			return {

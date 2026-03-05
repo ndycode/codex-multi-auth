@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { sleep } from "./utils.js";
 import { acquireFileLock, acquireFileLockSync } from "./file-lock.js";
+import { logWarn } from "./logger.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -30,6 +31,40 @@ let settingsWriteQueue: Promise<void> = Promise.resolve();
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function releaseUnifiedSettingsLockSync(release: () => void): void {
+	try {
+		release();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") return;
+		if (code === "EBUSY" || code === "EPERM") {
+			logWarn("Unified settings lock release failed after write", {
+				lockPath: UNIFIED_SETTINGS_LOCK_PATH,
+				code,
+			});
+			return;
+		}
+		throw error;
+	}
+}
+
+async function releaseUnifiedSettingsLockAsync(release: () => Promise<void>): Promise<void> {
+	try {
+		await release();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") return;
+		if (code === "EBUSY" || code === "EPERM") {
+			logWarn("Unified settings lock release failed after write", {
+				lockPath: UNIFIED_SETTINGS_LOCK_PATH,
+				code,
+			});
+			return;
+		}
+		throw error;
+	}
 }
 
 /**
@@ -268,7 +303,7 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
 		record.pluginConfig = { ...pluginConfig };
 		writeSettingsRecordSync(record);
 	} finally {
-		lock.release();
+		releaseUnifiedSettingsLockSync(() => lock.release());
 	}
 }
 
@@ -290,7 +325,7 @@ export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise
 			record.pluginConfig = { ...pluginConfig };
 			await writeSettingsRecordAsync(record);
 		} finally {
-			await lock.release();
+			await releaseUnifiedSettingsLockAsync(() => lock.release());
 		}
 	});
 }
@@ -338,7 +373,7 @@ export async function saveUnifiedDashboardSettings(
 			record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
 			await writeSettingsRecordAsync(record);
 		} finally {
-			await lock.release();
+			await releaseUnifiedSettingsLockAsync(() => lock.release());
 		}
 	});
 }

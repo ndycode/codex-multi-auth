@@ -39,15 +39,14 @@ function toErrorMessage(error: unknown): string {
 function sanitizeErrorMessage(message: string): string {
 	return message
 		.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "***REDACTED***")
-		.replace(
-			/\b(?:access|refresh|id)?_?token(?:=|:)?\s*([A-Z0-9._-]+)/gi,
-			"token=***REDACTED***",
-		)
-		.replace(/\b(Bearer)\s+[A-Z0-9._-]+\b/gi, "$1 ***REDACTED***");
+		.replace(/\b(?:access|refresh|id)?_?token(?:=|:)?\s*\S+/gi, "token=***REDACTED***")
+		.replace(/\b(Bearer)\s+\S+/gi, "$1 ***REDACTED***");
 }
 
 function getDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
-	return Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));
+	const cappedDelay = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));
+	const jitterFactor = 1 + (Math.random() * 0.4 - 0.2);
+	return Math.max(1, Math.round(cappedDelay * jitterFactor));
 }
 
 function isRetryableByDefault(error: unknown): boolean {

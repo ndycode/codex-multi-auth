@@ -301,6 +301,68 @@ describe("unified settings", () => {
 		}
 	});
 
+	it("does not fail async writes when lock release throws EPERM", async () => {
+		vi.resetModules();
+		const acquireFileLockMock = vi.fn(async () => ({
+			path: "mock-settings.lock",
+			release: async () => {
+				const error = new Error("perm locked") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			},
+		}));
+		const acquireFileLockSyncMock = vi.fn(() => ({
+			path: "mock-settings.lock",
+			release: () => undefined,
+		}));
+		vi.doMock("../lib/file-lock.js", () => ({
+			acquireFileLock: acquireFileLockMock,
+			acquireFileLockSync: acquireFileLockSyncMock,
+		}));
+
+		try {
+			const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
+				"../lib/unified-settings.js"
+			);
+			await expect(saveUnifiedPluginConfig({ codexMode: true, retries: 2 })).resolves.toBeUndefined();
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 2 });
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+			vi.resetModules();
+		}
+	});
+
+	it("does not fail sync writes when lock release throws EBUSY", async () => {
+		vi.resetModules();
+		const acquireFileLockMock = vi.fn(async () => ({
+			path: "mock-settings.lock",
+			release: async () => undefined,
+		}));
+		const acquireFileLockSyncMock = vi.fn(() => ({
+			path: "mock-settings.lock",
+			release: () => {
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			},
+		}));
+		vi.doMock("../lib/file-lock.js", () => ({
+			acquireFileLock: acquireFileLockMock,
+			acquireFileLockSync: acquireFileLockSyncMock,
+		}));
+
+		try {
+			const { saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
+				"../lib/unified-settings.js"
+			);
+			expect(() => saveUnifiedPluginConfigSync({ codexMode: false, retries: 1 })).not.toThrow();
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 1 });
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+			vi.resetModules();
+		}
+	});
+
 	it("refuses overwriting settings sections when a read fails", async () => {
 		const {
 			saveUnifiedPluginConfig,

@@ -98,7 +98,7 @@ describe("file lock", () => {
 		await fs.writeFile(transpiledModulePath, transpiled, "utf8");
 		const moduleUrl = pathToFileURL(transpiledModulePath).href;
 		const workerCount = 6;
-		const iterationsPerWorker = 10;
+		const iterationsPerWorker = 50;
 		await fs.writeFile(sharedFilePath, "", "utf8");
 		await fs.writeFile(
 			workerScriptPath,
@@ -115,7 +115,6 @@ for (let i = 0; i < iterations; i += 1) {
   });
   try {
     const existing = await fs.readFile(sharedFilePath, "utf8");
-    await new Promise((resolve) => setTimeout(resolve, 2));
     await fs.writeFile(sharedFilePath, existing + workerId + ":" + i + "\\n", "utf8");
   } finally {
     await lock.release();
@@ -165,36 +164,56 @@ for (let i = 0; i < iterations; i += 1) {
 		expect(new Set(lines).size).toBe(lines.length);
 	});
 
-	it("allows release retries after transient unlink failures", async () => {
-		const lockPath = join(tempDir, "release-retry.lock");
-		const lock = await acquireFileLock(lockPath, {
-			maxAttempts: 3,
-			baseDelayMs: 1,
-			maxDelayMs: 2,
-			staleAfterMs: 10_000,
-		});
+	it.each(["EBUSY", "EPERM"] as const)(
+		"allows release retries after transient unlink failures (%s)",
+		async (transientCode) => {
+			const lockPath = join(tempDir, "release-retry.lock");
+			const lock = await acquireFileLock(lockPath, {
+				maxAttempts: 3,
+				baseDelayMs: 1,
+				maxDelayMs: 2,
+				staleAfterMs: 10_000,
+			});
 
-		const originalUnlink = fs.unlink.bind(fs);
-		const unlinkSpy = vi.spyOn(fs, "unlink");
-		let injectedBusy = false;
-		unlinkSpy.mockImplementation(async (path) => {
-			if (!injectedBusy && path === lockPath) {
-				injectedBusy = true;
-				const error = new Error("busy") as NodeJS.ErrnoException;
-				error.code = "EBUSY";
-				throw error;
+			const originalUnlink = fs.unlink.bind(fs);
+			const unlinkSpy = vi.spyOn(fs, "unlink");
+			let injectedBusy = false;
+			unlinkSpy.mockImplementation(async (path) => {
+				if (!injectedBusy && path === lockPath) {
+					injectedBusy = true;
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = transientCode;
+					throw error;
+				}
+				return originalUnlink(path);
+			});
+
+			try {
+				await expect(lock.release()).rejects.toMatchObject({ code: transientCode });
+				await expect(lock.release()).resolves.toBeUndefined();
+				expect(injectedBusy).toBe(true);
+				await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+			} finally {
+				unlinkSpy.mockRestore();
 			}
-			return originalUnlink(path);
-		});
+		},
+	);
 
-		try {
-			await expect(lock.release()).rejects.toMatchObject({ code: "EBUSY" });
-			await expect(lock.release()).resolves.toBeUndefined();
-			expect(injectedBusy).toBe(true);
-			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
-		} finally {
-			unlinkSpy.mockRestore();
-		}
+	it("does not evict stale lock files when lock owner PID is still alive", async () => {
+		const lockPath = join(tempDir, "live-owner.lock");
+		await fs.writeFile(lockPath, `${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() - 120_000 })}\n`, "utf8");
+		const staleDate = new Date(Date.now() - 120_000);
+		await fs.utimes(lockPath, staleDate, staleDate);
+
+		await expect(
+			acquireFileLock(lockPath, {
+				maxAttempts: 1,
+				baseDelayMs: 1,
+				maxDelayMs: 2,
+				staleAfterMs: 1_000,
+			}),
+		).rejects.toMatchObject({ code: "EEXIST" });
+		await expect(fs.stat(lockPath)).resolves.toBeTruthy();
 	});
 
 	it("cleans up lock files when metadata write fails", async () => {
@@ -232,6 +251,53 @@ for (let i = 0; i < iterations; i += 1) {
 			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
 		} finally {
 			openSpy.mockRestore();
+		}
+	});
+
+	it("preserves metadata write failure when cleanup unlink also fails", async () => {
+		const lockPath = join(tempDir, "cleanup-error-precedence.lock");
+		const originalOpen = fs.open.bind(fs);
+		type OpenFn = typeof fs.open;
+		type OpenHandle = Awaited<ReturnType<OpenFn>>;
+		const openSpy = vi.spyOn(fs, "open");
+		const unlinkSpy = vi.spyOn(fs, "unlink");
+		const mockOpen: OpenFn = (async (...args: Parameters<OpenFn>) => {
+			const [path] = args;
+			if (String(path) === lockPath) {
+				await fs.writeFile(lockPath, "partial", "utf8");
+				return {
+					writeFile: async () => {
+						const error = new Error("metadata write failed") as NodeJS.ErrnoException;
+						error.code = "EIO";
+						throw error;
+					},
+					close: async () => {},
+				} as unknown as OpenHandle;
+			}
+			return originalOpen(...args);
+		}) as OpenFn;
+		openSpy.mockImplementation(mockOpen);
+		unlinkSpy.mockImplementation(async (path) => {
+			if (String(path) === lockPath) {
+				const error = new Error("cleanup failed") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			}
+			return Promise.resolve();
+		});
+
+		try {
+			await expect(
+				acquireFileLock(lockPath, {
+					maxAttempts: 1,
+					baseDelayMs: 1,
+					maxDelayMs: 2,
+					staleAfterMs: 10_000,
+				}),
+			).rejects.toThrow("metadata write failed");
+		} finally {
+			openSpy.mockRestore();
+			unlinkSpy.mockRestore();
 		}
 	});
 });
