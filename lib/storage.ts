@@ -43,6 +43,13 @@ const rotatingBackupCleanupState = new Map<
 	{ lastRunAt: number; inFlight: Promise<void> | null }
 >();
 
+export function resetRotatingBackupCleanupStateForTesting(): void {
+	if (process.env.VITEST_WORKER_ID === undefined && process.env.NODE_ENV !== "test") {
+		return;
+	}
+	rotatingBackupCleanupState.clear();
+}
+
 export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
 	flaggedAt: number;
 	flaggedReason?: string;
@@ -436,6 +443,7 @@ export function getLastAccountsSaveTimestamp(): number {
 }
 
 export function setStoragePath(projectPath: string | null): void {
+  rotatingBackupCleanupState.clear();
   if (!projectPath) {
     currentStoragePath = null;
     currentLegacyProjectStoragePath = null;
@@ -465,6 +473,7 @@ export function setStoragePath(projectPath: string | null): void {
 }
 
 export function setStoragePathDirect(path: string | null): void {
+  rotatingBackupCleanupState.clear();
   currentStoragePath = path;
   currentLegacyProjectStoragePath = null;
   currentLegacyWorktreeStoragePath = null;

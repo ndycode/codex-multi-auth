@@ -389,7 +389,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const inFlightAuthRefreshByToken = new Map<string, Promise<OAuthAuthDetails>>();
 
 	const refreshAuthWithDedup = async (auth: OAuthAuthDetails): Promise<OAuthAuthDetails> => {
-		const refreshKey = auth.refresh?.trim() || `access:${auth.access.slice(0, 32)}`;
+		const refreshKey = auth.refresh?.trim();
+		if (!refreshKey) {
+			return (await refreshAndUpdateToken(auth, client)) as OAuthAuthDetails;
+		}
 		const existing = inFlightAuthRefreshByToken.get(refreshKey);
 		if (existing) {
 			return existing;

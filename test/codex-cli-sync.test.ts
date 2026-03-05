@@ -281,11 +281,62 @@ describe("codex-cli sync", () => {
       ),
       "utf-8",
     );
+    clearCodexCliStateCache();
 
     const secondSync = await syncAccountStorageFromCodexCli(firstSync.storage ?? current);
+    expect(secondSync.changed).toBe(true);
     expect(secondSync.storage?.accounts).toHaveLength(1);
     expect(secondSync.storage?.accounts[0]?.refreshToken).toBe("refresh-new");
     expect(secondSync.storage?.accounts[0]?.email).toBe("new@example.com");
+    expect(secondSync.storage?.accounts[0]?.accessToken).toBe("new.access.token.v2");
+  });
+
+  it("preserves inferred accountIdSource when snapshot provides accountId", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              accountId: "acc-inferred",
+              email: "inferred@example.com",
+              auth: {
+                tokens: {
+                  access_token: "new.inferred.access",
+                  refresh_token: "refresh-inferred",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const current: AccountStorageV3 = {
+      version: 3,
+      accounts: [
+        {
+          accountId: "acc-inferred",
+          accountIdSource: "inferred",
+          email: "inferred@example.com",
+          accessToken: "old.inferred.access",
+          refreshToken: "refresh-inferred",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+    };
+
+    const result = await syncAccountStorageFromCodexCli(current);
+    expect(result.changed).toBe(true);
+    expect(result.storage?.accounts).toHaveLength(1);
+    expect(result.storage?.accounts[0]?.accountIdSource).toBe("inferred");
+    expect(result.storage?.accounts[0]?.accessToken).toBe("new.inferred.access");
   });
 
   it("returns unchanged storage when sync is disabled", async () => {

@@ -18,6 +18,7 @@ import {
   exportAccounts,
   importAccounts,
   withAccountStorageTransaction,
+  resetRotatingBackupCleanupStateForTesting,
 } from "../lib/storage.js";
 
 // Mocking the behavior we're about to implement for TDD
@@ -32,9 +33,11 @@ describe("storage", () => {
   beforeEach(() => {
     delete process.env.CODEX_HOME;
     delete process.env.CODEX_MULTI_AUTH_DIR;
+    resetRotatingBackupCleanupStateForTesting();
   });
 
   afterEach(() => {
+    resetRotatingBackupCleanupStateForTesting();
     if (_origCODEX_HOME !== undefined) process.env.CODEX_HOME = _origCODEX_HOME; else delete process.env.CODEX_HOME;
     if (_origCODEX_MULTI_AUTH_DIR !== undefined) process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR; else delete process.env.CODEX_MULTI_AUTH_DIR;
   });

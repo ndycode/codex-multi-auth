@@ -165,7 +165,7 @@ function upsertFromSnapshot(
 	const mergedAccountIdSource = keepManualAccountId
 		? "manual"
 		: snapshot.accountId
-			? "token"
+			? current.accountIdSource ?? "token"
 			: current.accountIdSource;
 	const mergedEmail = snapshot.email ?? current.email;
 	const mergedRefreshToken = snapshot.refreshToken ?? current.refreshToken;

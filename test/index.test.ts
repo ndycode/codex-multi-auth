@@ -745,100 +745,179 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 	});
 
-	describe("codex-metrics tool", () => {
-		it("shows runtime metrics with numeric formatting and parallel aggregation", async () => {
-			const readNumericMetric = (
-				report: string,
-				label: string,
-				options: { suffix?: string; allowDecimal?: boolean } = {},
-			): number => {
-				const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-				const numberPattern = options.allowDecimal ? "(\\d+(?:\\.\\d+)?)" : "(\\d+)";
-				const suffixPattern = options.suffix ? options.suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "";
-				const metricPattern = new RegExp(
-					`^${escapedLabel}: ${numberPattern}${suffixPattern}$`,
-					"m",
-				);
-				const match = report.match(metricPattern);
-				expect(match, `missing metric line for ${label}`).not.toBeNull();
-				return Number(match?.[1] ?? "NaN");
-			};
-
-			const baseline = await plugin.tool["codex-metrics"].execute();
-			expect(baseline).toContain("Codex Plugin Metrics");
-			expect(baseline).toMatch(/^Total upstream requests: \d+$/m);
-			expect(baseline).toMatch(/^Email hydration runs: \d+$/m);
-			expect(baseline).toMatch(/^Email hydration avg duration: \d+ms$/m);
-			expect(baseline).toMatch(
-				/^Refresh guardian: (on|off) \(\d+ refreshed, \d+ failed, avg tick \d+ms\)$/m,
-			);
-
-			const baselineTotal = readNumericMetric(baseline, "Total upstream requests");
-			const baselineSuccess = readNumericMetric(baseline, "Successful responses");
-			const baselineFailed = readNumericMetric(baseline, "Failed responses");
-			const baselineHydrationRuns = readNumericMetric(baseline, "Email hydration runs");
-			const baselineHydrationAvg = readNumericMetric(baseline, "Email hydration avg duration", {
-				suffix: "ms",
-			});
-			const baselineSuccessRate = readNumericMetric(baseline, "Success rate", {
-				suffix: "%",
-				allowDecimal: true,
-			});
-			expect(baselineTotal).toBeGreaterThanOrEqual(0);
-			expect(baselineSuccess).toBeGreaterThanOrEqual(0);
-			expect(baselineFailed).toBeGreaterThanOrEqual(0);
-			expect(baselineHydrationRuns).toBeGreaterThanOrEqual(0);
-			expect(baselineHydrationAvg).toBeGreaterThanOrEqual(0);
-			expect(baselineSuccessRate).toBeGreaterThanOrEqual(0);
-
-			const originalFetch = globalThis.fetch;
-			try {
-				globalThis.fetch = vi
-					.fn()
-					.mockResolvedValue(new Response(JSON.stringify({ id: "resp_test", output: "ok" }), { status: 200 }));
-
-				const getAuth = async () => ({
-					type: "oauth" as const,
-					access: "a",
-					refresh: "r",
-					expires: Date.now() + 60_000,
-					multiAccount: true,
-				});
-				const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as {
-					fetch: (input: string, init: RequestInit) => Promise<Response>;
+		describe("codex-metrics tool", () => {
+			it("shows runtime metrics with numeric formatting and parallel aggregation", async () => {
+				const readNumericMetric = (
+					report: string,
+					label: string,
+					options: { suffix?: string; allowDecimal?: boolean } = {},
+				): number => {
+					const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+					const numberPattern = options.allowDecimal ? "(\\d+(?:\\.\\d+)?)" : "(\\d+)";
+					const suffixPattern = options.suffix
+						? options.suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+						: "";
+					const metricPattern = new RegExp(
+						`^${escapedLabel}: ${numberPattern}${suffixPattern}$`,
+						"m",
+					);
+					const match = report.match(metricPattern);
+					expect(match, `missing metric line for ${label}`).not.toBeNull();
+					return Number(match?.[1] ?? "NaN");
 				};
 
-				const parallelRuns = 3;
-				const responses = await Promise.all(
-					Array.from({ length: parallelRuns }, () => {
-						return sdk.fetch("https://api.openai.com/v1/responses", {
-							method: "POST",
-							body: JSON.stringify({ model: "gpt-5.1", input: "ping" }),
-						});
-					}),
+				const baseline = await plugin.tool["codex-metrics"].execute();
+				expect(baseline).toContain("Codex Plugin Metrics");
+				expect(baseline).toMatch(/^Total upstream requests: \d+$/m);
+				expect(baseline).toMatch(/^Email hydration runs: \d+$/m);
+				expect(baseline).toMatch(/^Email hydration avg duration: \d+ms$/m);
+				expect(baseline).toMatch(
+					/^Refresh guardian: (on|off) \(\d+ refreshed, \d+ failed, avg tick \d+ms\)$/m,
 				);
-				for (const response of responses) {
-					expect(response.status).toBe(200);
-				}
 
-				const afterParallel = await plugin.tool["codex-metrics"].execute();
-				const totalAfter = readNumericMetric(afterParallel, "Total upstream requests");
-				const successAfter = readNumericMetric(afterParallel, "Successful responses");
-				const failedAfter = readNumericMetric(afterParallel, "Failed responses");
-				const successRateAfter = readNumericMetric(afterParallel, "Success rate", {
+				const baselineTotal = readNumericMetric(baseline, "Total upstream requests");
+				const baselineSuccess = readNumericMetric(baseline, "Successful responses");
+				const baselineFailed = readNumericMetric(baseline, "Failed responses");
+				const baselineHydrationRuns = readNumericMetric(baseline, "Email hydration runs");
+				const baselineHydrationAvg = readNumericMetric(baseline, "Email hydration avg duration", {
+					suffix: "ms",
+				});
+				const baselineSuccessRate = readNumericMetric(baseline, "Success rate", {
 					suffix: "%",
 					allowDecimal: true,
 				});
+				expect(baselineTotal).toBeGreaterThanOrEqual(0);
+				expect(baselineSuccess).toBeGreaterThanOrEqual(0);
+				expect(baselineFailed).toBeGreaterThanOrEqual(0);
+				expect(baselineHydrationRuns).toBeGreaterThanOrEqual(0);
+				expect(baselineHydrationAvg).toBeGreaterThanOrEqual(0);
+				expect(baselineSuccessRate).toBeGreaterThanOrEqual(0);
 
-				expect(totalAfter - baselineTotal).toBe(parallelRuns);
-				expect(successAfter - baselineSuccess).toBe(parallelRuns);
-				expect(failedAfter).toBe(baselineFailed);
-				expect(successRateAfter).toBeGreaterThan(0);
-			} finally {
-				globalThis.fetch = originalFetch;
-			}
+				const originalFetch = globalThis.fetch;
+				try {
+					globalThis.fetch = vi.fn().mockResolvedValue(
+						new Response(JSON.stringify({ id: "resp_test", output: "ok" }), { status: 200 }),
+					);
+
+					const getAuth = async () => ({
+						type: "oauth" as const,
+						access: "a",
+						refresh: "r",
+						expires: Date.now() + 60_000,
+						multiAccount: true,
+					});
+					const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as {
+						fetch: (input: string, init: RequestInit) => Promise<Response>;
+					};
+
+					const parallelRuns = 3;
+					const responses = await Promise.all(
+						Array.from({ length: parallelRuns }, () =>
+							sdk.fetch("https://api.openai.com/v1/responses", {
+								method: "POST",
+								body: JSON.stringify({ model: "gpt-5.1", input: "ping" }),
+							}),
+						),
+					);
+					for (const response of responses) {
+						expect(response.status).toBe(200);
+					}
+
+					const afterParallel = await plugin.tool["codex-metrics"].execute();
+					const totalAfter = readNumericMetric(afterParallel, "Total upstream requests");
+					const successAfter = readNumericMetric(afterParallel, "Successful responses");
+					const failedAfter = readNumericMetric(afterParallel, "Failed responses");
+					const successRateAfter = readNumericMetric(afterParallel, "Success rate", {
+						suffix: "%",
+						allowDecimal: true,
+					});
+
+					expect(totalAfter - baselineTotal).toBe(parallelRuns);
+					expect(successAfter - baselineSuccess).toBe(parallelRuns);
+					expect(failedAfter).toBe(baselineFailed);
+					expect(successRateAfter).toBeGreaterThan(0);
+				} finally {
+					globalThis.fetch = originalFetch;
+				}
+			});
+
+			it("tracks hydration worker cap and counters when hydration is enabled", async () => {
+				const { queuedRefresh } = await import("../lib/refresh-queue.js");
+				const previousVitestWorkerId = process.env.VITEST_WORKER_ID;
+				const previousNodeEnv = process.env.NODE_ENV;
+				const previousSkipHydrate = process.env.CODEX_SKIP_EMAIL_HYDRATE;
+				delete process.env.VITEST_WORKER_ID;
+				process.env.NODE_ENV = "development";
+				delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
+
+				const metricValue = (report: string, label: string): number => {
+					const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+					const match = report.match(new RegExp(`^${escapedLabel}: (\\d+)$`, "m"));
+					expect(match, `missing metric line for ${label}`).not.toBeNull();
+					return Number(match?.[1] ?? "NaN");
+				};
+
+				mockStorage.accounts = Array.from({ length: 6 }, (_, index) => ({
+					accountId: `acc-${index}`,
+					refreshToken: `refresh-${index}`,
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				}));
+
+				let active = 0;
+				let maxActive = 0;
+				vi.mocked(queuedRefresh).mockImplementation(async (refreshToken: string) => {
+					active += 1;
+					maxActive = Math.max(maxActive, active);
+					await new Promise((resolve) => setTimeout(resolve, 5));
+					active -= 1;
+					return {
+						type: "success" as const,
+						access: `hydrated-access-${refreshToken}`,
+						refresh: refreshToken,
+						expires: Date.now() + 3600_000,
+						idToken: `hydrated-id-${refreshToken}`,
+					};
+				});
+
+				try {
+					const { promptLoginMode } = await import("../lib/cli.js");
+					vi.mocked(promptLoginMode)
+						.mockResolvedValueOnce({ mode: "deep-check" } as never)
+						.mockResolvedValueOnce({ mode: "cancel" } as never);
+					const oauthMethod = plugin.auth.methods[0] as unknown as {
+						authorize: (inputs?: Record<string, string>) => Promise<unknown>;
+					};
+					await oauthMethod.authorize();
+
+					const report = await plugin.tool["codex-metrics"].execute();
+					expect(metricValue(report, "Email hydration runs")).toBe(1);
+					expect(metricValue(report, "Email hydration candidates")).toBe(6);
+					expect(metricValue(report, "Email hydration refreshed")).toBe(6);
+					expect(metricValue(report, "Email hydration updated")).toBe(6);
+					expect(metricValue(report, "Email hydration failures")).toBe(0);
+					expect(metricValue(report, "Email hydration max batch size")).toBe(6);
+					expect(metricValue(report, "Email hydration max concurrency used")).toBeLessThanOrEqual(4);
+					expect(maxActive).toBeLessThanOrEqual(4);
+				} finally {
+					if (previousVitestWorkerId === undefined) {
+						delete process.env.VITEST_WORKER_ID;
+					} else {
+						process.env.VITEST_WORKER_ID = previousVitestWorkerId;
+					}
+					if (previousNodeEnv === undefined) {
+						delete process.env.NODE_ENV;
+					} else {
+						process.env.NODE_ENV = previousNodeEnv;
+					}
+					if (previousSkipHydrate === undefined) {
+						delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
+					} else {
+						process.env.CODEX_SKIP_EMAIL_HYDRATE = previousSkipHydrate;
+					}
+				}
+			});
 		});
-	});
 
 	describe("codex-health tool", () => {
 		it("returns error when no accounts", async () => {
