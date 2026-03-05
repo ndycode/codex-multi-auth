@@ -12,6 +12,7 @@ jobs:
   recovery-drill:
     name: Monthly Storage Recovery Drill
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -44,3 +45,21 @@ jobs:
           path: |
             .tmp/recovery-drill-vitest.json
             .tmp/recovery-drill-health.json
+
+      - name: Notify recovery drill failure
+        if: failure()
+        env:
+          RECOVERY_DRILL_WEBHOOK_URL: ${{ secrets.RECOVERY_DRILL_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          message="Recovery drill failed. Run: ${RUN_URL}. Artifacts: .tmp/recovery-drill-vitest.json and .tmp/recovery-drill-health.json."
+          if [[ -n "${RECOVERY_DRILL_WEBHOOK_URL:-}" ]]; then
+            payload=$(printf '{"text":"%s"}' "${message}")
+            curl --fail --silent --show-error \
+              -X POST \
+              -H "Content-Type: application/json" \
+              --data "${payload}" \
+              "${RECOVERY_DRILL_WEBHOOK_URL}"
+          else
+            echo "::warning::${message} Configure secrets.RECOVERY_DRILL_WEBHOOK_URL for push notifications."
+          fi

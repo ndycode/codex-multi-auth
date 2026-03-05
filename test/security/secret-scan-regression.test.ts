@@ -44,12 +44,19 @@ describe("secret scan regression harness", () => {
 		}
 	});
 
+	it("fixture allowlist regex handles windows paths", () => {
+		expect(/^test[\\/]security[\\/]fixtures[\\/]/i.test("test\\security\\fixtures\\fixture.txt")).toBe(
+			true,
+		);
+		expect("test\\security\\fixtures\\fixture.txt".replace(/\\/g, "/")).toBe(
+			"test/security/fixtures/fixture.txt",
+		);
+	});
+
 	it("keeps fixture allowlist behavior and flags only non-allowlisted secrets", async () => {
 		const repoRoot = process.cwd();
 		const gitleaksConfig = await fs.readFile(path.join(repoRoot, ".gitleaks.toml"), "utf8");
 		expect(gitleaksConfig).toContain("^test[\\\\/]security[\\\\/]fixtures[\\\\/]");
-		expect(/^test[\\/]security[\\/]fixtures[\\/]/i.test("test\\security\\fixtures\\fixture.txt")).toBe(true);
-		expect("test\\security\\fixtures\\fixture.txt".replace(/\\/g, "/")).toBe("test/security/fixtures/fixture.txt");
 
 		const root = mkdtempSync(path.join(tmpdir(), "secret-scan-regression-"));
 		fixtures.push(root);
@@ -64,7 +71,11 @@ describe("secret scan regression harness", () => {
 			"OPENAI_API_KEY=sk-test-placeholder-leak-12345678901234567890\n",
 			"utf8",
 		);
-		await fs.writeFile(path.join(failCase, "test", "security", "fixtures", "fixture.txt"), "fake_refresh_token_12345\n", "utf8");
+		await fs.writeFile(
+			path.join(failCase, "test", "security", "fixtures", "fixture.txt"),
+			"OPENAI_API_KEY=sk-test-allowlist-should-exclude-1234567890\n",
+			"utf8",
+		);
 		await fs.writeFile(
 			path.join(failCase, "test", "security", "fixtures", "real-secret.txt"),
 			"OPENAI_API_KEY=sk-test-placeholder-in-fixture-12345678901234567890\n",

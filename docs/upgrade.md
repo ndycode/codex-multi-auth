@@ -77,6 +77,7 @@ Use this flow when migrating existing deployments that were running with plainte
    ```bash
    npm run ops:keychain-assert
    ```
+   Run this from the project repository root where `package.json` defines enterprise ops scripts, or run your CI/job wrapper that exposes these scripts.
 
 3. Set `CODEX_SECRET_STORAGE_MODE=keychain` in your runtime environment (or use `auto` only after the keychain validation above passes).
 
@@ -92,6 +93,7 @@ Use this flow when migrating existing deployments that were running with plainte
    ```bash
    npm run ops:health-check -- --require-files
    ```
+   Run this from the same repository checkout (or your standard CI/job wrapper).
 
 Windows migration note:
 

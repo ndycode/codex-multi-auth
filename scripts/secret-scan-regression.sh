@@ -28,7 +28,7 @@ cat > "${FAIL_CASE_DIR}/src/leak.txt" <<'EOF'
 OPENAI_API_KEY=sk-test-placeholder-leak-12345678901234567890
 EOF
 cat > "${FAIL_CASE_DIR}/test/security/fixtures/fixture.txt" <<'EOF'
-fake_refresh_token_12345
+OPENAI_API_KEY=sk-test-allowlist-should-exclude-1234567890
 EOF
 cat > "${FAIL_CASE_DIR}/test/security/fixtures/real-secret.txt" <<'EOF'
 OPENAI_API_KEY=sk-test-placeholder-in-fixture-12345678901234567890
