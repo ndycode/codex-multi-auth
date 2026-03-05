@@ -246,72 +246,74 @@ describe("codex bin wrapper", () => {
 	it.skipIf(process.platform !== "win32")(
 		"retries transient shim write failures and still installs guards",
 		() => {
-			const fixtureRoot = createWrapperFixture();
-			const fakeBin = createFakeCodexBin(fixtureRoot);
-			const shimDir = join(fixtureRoot, "shim-bin");
-			mkdirSync(shimDir, { recursive: true });
-			writeFileSync(
-				join(shimDir, "codex-multi-auth.cmd"),
-				"@ECHO OFF\r\nREM fixture codex-multi-auth shim\r\n",
-				"utf8",
-			);
-			writeFileSync(
-				join(shimDir, "codex.cmd"),
-				'@ECHO OFF\r\necho "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js"\r\n',
-				"utf8",
-			);
-			writeFileSync(
-				join(shimDir, "codex.ps1"),
-				'Write-Output "$basedir/node_modules/@openai/codex/bin/codex.js"' + "\r\n",
-				"utf8",
-			);
-			const hookPath = join(fixtureRoot, "fail-once-shim-write.cjs");
-			writeFileSync(
-				hookPath,
-				[
-					'const fs = require("node:fs");',
-					'const { syncBuiltinESMExports } = require("node:module");',
-					"const originalWriteFileSync = fs.writeFileSync;",
-					"let injected = false;",
-					"fs.writeFileSync = (...args) => {",
-					'  const target = String(args[0] ?? "");',
-					"  if (!injected && /codex\\.(bat|cmd|ps1)$/i.test(target)) {",
-					"    injected = true;",
-					'    const error = new Error(\"busy\");',
-					'    error.code = \"EBUSY\";',
-					"    throw error;",
-					"  }",
-					"  return originalWriteFileSync(...args);",
-					"};",
-					"syncBuiltinESMExports();",
-				].join("\n"),
-				"utf8",
-			);
+			for (const retryCode of ["EBUSY", "EPERM", "EACCES"]) {
+				const fixtureRoot = createWrapperFixture();
+				const fakeBin = createFakeCodexBin(fixtureRoot);
+				const shimDir = join(fixtureRoot, "shim-bin");
+				mkdirSync(shimDir, { recursive: true });
+				writeFileSync(
+					join(shimDir, "codex-multi-auth.cmd"),
+					"@ECHO OFF\r\nREM fixture codex-multi-auth shim\r\n",
+					"utf8",
+				);
+				writeFileSync(
+					join(shimDir, "codex.cmd"),
+					'@ECHO OFF\r\necho "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js"\r\n',
+					"utf8",
+				);
+				writeFileSync(
+					join(shimDir, "codex.ps1"),
+					'Write-Output "$basedir/node_modules/@openai/codex/bin/codex.js"' + "\r\n",
+					"utf8",
+				);
+				const hookPath = join(fixtureRoot, `fail-once-shim-write-${retryCode}.cjs`);
+				writeFileSync(
+					hookPath,
+					[
+						'const fs = require("node:fs");',
+						'const { syncBuiltinESMExports } = require("node:module");',
+						"const originalWriteFileSync = fs.writeFileSync;",
+						"let injected = false;",
+						"fs.writeFileSync = (...args) => {",
+						'  const target = String(args[0] ?? "");',
+						"  if (!injected && /codex\\.(bat|cmd|ps1)$/i.test(target)) {",
+						"    injected = true;",
+						'    const error = new Error("busy");',
+						`    error.code = "${retryCode}";`,
+						"    throw error;",
+						"  }",
+						"  return originalWriteFileSync(...args);",
+						"};",
+						"syncBuiltinESMExports();",
+					].join("\n"),
+					"utf8",
+				);
 
-			const existingNodeOptions = (process.env.NODE_OPTIONS ?? "").trim();
-			const preloadOption = `--require=${hookPath}`;
-			const nodeOptions =
-				existingNodeOptions.length > 0
-					? `${existingNodeOptions} ${preloadOption}`
-					: preloadOption;
-			const result = runWrapper(fixtureRoot, ["--version"], {
-				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
-				CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD: "1",
-				PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
-				USERPROFILE: fixtureRoot,
-				HOME: fixtureRoot,
-				NODE_OPTIONS: nodeOptions,
-			});
-			expect(result.status).toBe(0);
-			expect(readFileSync(join(shimDir, "codex.bat"), "utf8")).toContain(
-				"codex-multi-auth windows shim guardian v1",
-			);
-			expect(readFileSync(join(shimDir, "codex.cmd"), "utf8")).toContain(
-				"codex-multi-auth windows shim guardian v1",
-			);
-			expect(readFileSync(join(shimDir, "codex.ps1"), "utf8")).toContain(
-				"codex-multi-auth windows shim guardian v1",
-			);
+				const existingNodeOptions = (process.env.NODE_OPTIONS ?? "").trim();
+				const preloadOption = `--require=${hookPath}`;
+				const nodeOptions =
+					existingNodeOptions.length > 0
+						? `${existingNodeOptions} ${preloadOption}`
+						: preloadOption;
+				const result = runWrapper(fixtureRoot, ["--version"], {
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD: "1",
+					PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
+					USERPROFILE: fixtureRoot,
+					HOME: fixtureRoot,
+					NODE_OPTIONS: nodeOptions,
+				});
+				expect(result.status).toBe(0);
+				expect(readFileSync(join(shimDir, "codex.bat"), "utf8")).toContain(
+					"codex-multi-auth windows shim guardian v1",
+				);
+				expect(readFileSync(join(shimDir, "codex.cmd"), "utf8")).toContain(
+					"codex-multi-auth windows shim guardian v1",
+				);
+				expect(readFileSync(join(shimDir, "codex.ps1"), "utf8")).toContain(
+					"codex-multi-auth windows shim guardian v1",
+				);
+			}
 		},
 	);
 
@@ -476,6 +478,27 @@ describe("codex bin wrapper", () => {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
 		});
 		expect(result.status).toBe(7);
+	});
+
+	it("treats numeric-string zero multi-auth exit code as success", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli() {",
+				'\treturn "0";',
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["auth", "status"], {
+			CODEX_MULTI_AUTH_BYPASS: "",
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+		});
+		expect(result.status).toBe(0);
 	});
 
 	it("prints actionable guidance when real codex bin cannot be found", () => {
