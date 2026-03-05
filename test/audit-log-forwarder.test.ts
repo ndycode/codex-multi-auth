@@ -13,6 +13,7 @@ const scriptPath = path.resolve(process.cwd(), "scripts", "audit-log-forwarder.j
 function runForwarder(
 	args: string[],
 	env: NodeJS.ProcessEnv = {},
+	timeoutMs = 10_000,
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, [scriptPath, ...args], {
@@ -21,15 +22,37 @@ function runForwarder(
 		});
 		let stdout = "";
 		let stderr = "";
+		let timedOut = false;
+		let settled = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			stderr += `${stderr ? "\n" : ""}runForwarder timed out after ${timeoutMs}ms`;
+			child.kill();
+		}, timeoutMs);
+		const finish = (status: number | null): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			resolve({ status, stdout, stderr });
+		};
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk.toString();
 		});
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString();
 		});
-		child.on("error", reject);
+		child.on("error", (error) => {
+			if (timedOut) {
+				finish(null);
+				return;
+			}
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			reject(error);
+		});
 		child.on("close", (status) => {
-			resolve({ status, stdout, stderr });
+			finish(timedOut ? null : status);
 		});
 	});
 }
@@ -209,7 +232,7 @@ describe("audit-log-forwarder script", () => {
 		}, async (endpoint) => {
 			const releaseTimer = setTimeout(async () => {
 				await fs.unlink(checkpointLockPath).catch(() => {});
-			}, 120);
+			}, 50);
 			try {
 				const result = await runForwarder(
 					[
@@ -219,7 +242,9 @@ describe("audit-log-forwarder script", () => {
 					],
 					{
 						CODEX_AUDIT_FORWARDER_MAX_ATTEMPTS: "2",
-						CODEX_AUDIT_FORWARDER_TIMEOUT_MS: "300",
+						CODEX_AUDIT_FORWARDER_TIMEOUT_MS: "2000",
+						CODEX_AUDIT_FORWARDER_MAX_WAIT_MS: "2000",
+						CODEX_AUDIT_FORWARDER_LOCK_MAX_ATTEMPTS: "200",
 					},
 				);
 				expect(result.status).toBe(0);
@@ -268,7 +293,17 @@ describe("audit-log-forwarder script", () => {
 				},
 			);
 			expect(result.status).toBe(0);
+			const payload = parseJsonStdout(result.stdout);
+			expect(payload.status).toBe("sent");
+			expect(payload.sent).toBe(1);
 		});
+
+		const checkpoint = JSON.parse(await fs.readFile(checkpointPath, "utf8")) as {
+			file?: string;
+			line?: number;
+		};
+		expect(checkpoint.file).toBe("audit.log");
+		expect(checkpoint.line).toBe(1);
 	});
 
 	it("fails with a clear timeout when checkpoint lock contention persists", async () => {

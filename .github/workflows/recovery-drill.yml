@@ -13,6 +13,9 @@ jobs:
     name: Monthly Storage Recovery Drill
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,8 +57,9 @@ jobs:
         run: |
           message="Recovery drill failed. Run: ${RUN_URL}. Artifacts: .tmp/recovery-drill-vitest.json and .tmp/recovery-drill-health.json."
           if [[ -n "${RECOVERY_DRILL_WEBHOOK_URL:-}" ]]; then
-            payload=$(printf '{"text":"%s"}' "${message}")
+            payload=$(jq -n --arg msg "${message}" '{"text": $msg}')
             curl --fail --silent --show-error \
+              --max-time 30 \
               -X POST \
               -H "Content-Type: application/json" \
               --data "${payload}" \
