@@ -1,4 +1,4 @@
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import { basename, join } from "node:path";
 import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
@@ -170,10 +170,6 @@ export function getQuotaCachePath(): string {
  *          will be empty if the on-disk file is absent, malformed, or could not be read.
  */
 export async function loadQuotaCache(): Promise<QuotaCacheData> {
-	if (!existsSync(QUOTA_CACHE_PATH)) {
-		return { byAccountId: {}, byEmail: {} };
-	}
-
 	try {
 		const content = await readCacheFileWithRetry(QUOTA_CACHE_PATH);
 		const parsed = JSON.parse(content) as unknown;
@@ -190,6 +186,9 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 			byEmail: normalizeEntryMap(parsed.byEmail),
 		};
 	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { byAccountId: {}, byEmail: {} };
+		}
 		logWarn(
 			`Failed to load quota cache from ${QUOTA_CACHE_LABEL}: ${
 				error instanceof Error ? error.message : String(error)

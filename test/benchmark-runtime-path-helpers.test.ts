@@ -99,13 +99,15 @@ describe("benchmark-runtime-path helpers", () => {
 		const remove = vi
 			.fn()
 			.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: "EACCES_NONRETRY" }));
+		const sleep = vi.fn(async () => {});
 
 		await expect(
 			removeWithRetry("/tmp/benchmark-target", { recursive: true, force: true }, {
 				remove,
-				sleep: async () => {},
+				sleep,
 			}),
 		).rejects.toThrow("denied");
 		expect(remove).toHaveBeenCalledTimes(1);
+		expect(sleep).not.toHaveBeenCalled();
 	});
 });

@@ -49,6 +49,7 @@ const ACCOUNT_STORAGE_LOCK_OPTIONS = {
 	staleAfterMs: 120_000,
 } as const;
 const STALE_ROTATING_BACKUP_CLEANUP_INTERVAL_MS = 30_000;
+const TRANSIENT_ROTATING_BACKUP_SCAN_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -180,7 +181,14 @@ function decryptStorageSecret(value: string, fieldName: string): { value: string
 function encryptStorageSecret(value: string): string {
 	if (!value) return value;
 	const keys = getConfiguredSecretKeys();
-	if (!keys.primary) return value;
+	if (!keys.primary) {
+		if (keys.previous) {
+			throw new Error(
+				"CODEX_AUTH_ENCRYPTION_KEY is required when CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY is set",
+			);
+		}
+		return value;
+	}
 	return encryptSecret(value, keys.primary);
 }
 
@@ -494,6 +502,7 @@ async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> 
 		return existingState.inFlight;
 	}
 
+	let shouldAdvanceLastRunAt = true;
 	const cleanupPromise = (async () => {
 		const directoryPath = dirname(path);
 		try {
@@ -518,6 +527,10 @@ async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> 
 			}
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
+			if (code && TRANSIENT_ROTATING_BACKUP_SCAN_CODES.has(code)) {
+				shouldAdvanceLastRunAt = false;
+				return;
+			}
 			if (code !== "ENOENT") {
 				log.warn("Failed to scan for stale rotating backup artifacts", {
 					path,
@@ -533,8 +546,12 @@ async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> 
 	try {
 		await cleanupPromise;
 	} finally {
+		const currentState = rotatingBackupCleanupState.get(path);
+		if (currentState?.inFlight !== cleanupPromise) {
+			return;
+		}
 		rotatingBackupCleanupState.set(path, {
-			lastRunAt: Date.now(),
+			lastRunAt: shouldAdvanceLastRunAt ? Date.now() : currentState.lastRunAt,
 			inFlight: null,
 		});
 	}

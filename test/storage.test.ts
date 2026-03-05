@@ -2147,15 +2147,17 @@ describe("storage", () => {
     it("retries flagged storage rename on transient EBUSY", async () => {
       process.env.CODEX_AUTH_ENCRYPTION_KEY = "test-encryption-key";
       const originalRename = fs.rename.bind(fs);
+      const flaggedPath = getFlaggedAccountsPath();
       let renameAttempts = 0;
+      let injectedBusy = false;
       const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (fromPath, toPath) => {
-        if (String(toPath).includes("openai-codex-flagged-accounts.json") && renameAttempts === 0) {
-          renameAttempts += 1;
+        renameAttempts += 1;
+        if (!injectedBusy && String(toPath) === flaggedPath) {
+          injectedBusy = true;
           const error = new Error("busy") as NodeJS.ErrnoException;
           error.code = "EBUSY";
           throw error;
         }
-        renameAttempts += 1;
         return originalRename(fromPath as string, toPath as string);
       });
 
@@ -2169,8 +2171,23 @@ describe("storage", () => {
       }
 
       expect(renameAttempts).toBeGreaterThanOrEqual(2);
+      expect(injectedBusy).toBe(true);
       const flagged = await loadFlaggedAccounts();
       expect(flagged.accounts).toHaveLength(1);
+    });
+
+    it("fails closed when only previous encryption key is configured", async () => {
+      process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = "legacy-only-key";
+      delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
+
+      await expect(
+        saveAccounts({
+          version: 3,
+          accounts: [{ refreshToken: "plain-refresh-token", addedAt: Date.now() }],
+        }),
+      ).rejects.toThrow(
+        "CODEX_AUTH_ENCRYPTION_KEY is required when CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY is set",
+      );
     });
 
     it("throws secret rotation when account storage exists but cannot be loaded", async () => {

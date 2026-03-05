@@ -2501,6 +2501,25 @@ while (attempted.size < Math.max(1, accountCount)) {
 							streamStallTimeoutMs,
 						});
 						const successResponse = successResult.response;
+						if (!successResponse.ok) {
+							accountManager.recordFailure(successAccountForResponse, modelFamily, model);
+							capabilityPolicyStore.recordFailure(
+								resolveEntitlementAccountKey(successAccountForResponse),
+								capabilityModelKey,
+							);
+							runtimeMetrics.failedRequests += 1;
+							if (successResponse.status >= 500) {
+								runtimeMetrics.serverErrors += 1;
+							}
+							runtimeMetrics.lastError = `HTTP ${successResponse.status}`;
+							emitPluginTelemetry("request.stream_parse_error", "failure", {
+								accountIndex: successAccountForResponse.index + 1,
+								modelFamily,
+								model,
+								status: successResponse.status,
+							});
+							return successResponse;
+						}
 
 					if (!isStreaming && emptyResponseMaxRetries > 0) {
 						let parsedBody = successResult.parsedBody;

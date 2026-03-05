@@ -1981,6 +1981,49 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 	});
+
+	it("does not count SSE parse failures as successful responses", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "streamed" }), { status: 200 }),
+		);
+		const { handleSuccessResponseDetailed } = await import("../lib/request/fetch-helpers.js");
+		vi.mocked(handleSuccessResponseDetailed).mockImplementationOnce(async () => ({
+			response: new Response(
+				JSON.stringify({
+					error: {
+						message: "No response.done event found in SSE stream",
+						type: "stream_parse_error",
+					},
+				}),
+				{
+					status: 502,
+					statusText: "Bad Gateway",
+					headers: { "content-type": "application/json; charset=utf-8" },
+				},
+			),
+			parsedBody: undefined,
+		}));
+
+		const readNumericMetric = (report: string, label: string): number => {
+			const match = report.match(new RegExp(`^${label}:\\s+([0-9]+)$`, "m"));
+			return Number(match?.[1] ?? Number.NaN);
+		};
+
+		const { plugin, sdk } = await setupPlugin();
+		const baseline = await plugin.tool["codex-metrics"].execute();
+		const baselineSuccess = readNumericMetric(baseline, "Successful responses");
+		const baselineFailed = readNumericMetric(baseline, "Failed responses");
+
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+		});
+		expect(response.status).toBe(502);
+
+		const after = await plugin.tool["codex-metrics"].execute();
+		expect(readNumericMetric(after, "Successful responses")).toBe(baselineSuccess);
+		expect(readNumericMetric(after, "Failed responses")).toBe(baselineFailed + 1);
+	});
 });
 
 describe("OpenAIOAuthPlugin resolveAccountSelection", () => {

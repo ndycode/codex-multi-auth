@@ -70,8 +70,10 @@ describe("secrets crypto", () => {
 	});
 
 	it("recognizes legacy and current encrypted prefixes", () => {
-		expect(isEncryptedSecret("enc:v1:abc:def:ghi")).toBe(true);
-		expect(isEncryptedSecret("enc:v2:abc:def:ghi:jkl")).toBe(true);
+		const legacyEncrypted = createLegacyEncryptedSecret("legacy-token", "legacy-key");
+		const currentEncrypted = encryptSecret("current-token", "current-key");
+		expect(isEncryptedSecret(legacyEncrypted)).toBe(true);
+		expect(isEncryptedSecret(currentEncrypted)).toBe(true);
 		expect(isEncryptedSecret("enc:v3:abc:def:ghi:jkl")).toBe(false);
 	});
 

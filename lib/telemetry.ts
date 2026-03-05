@@ -104,16 +104,16 @@ const FILE_OP_BASE_DELAY_MS = 25;
 let telemetryConfig: TelemetryConfig = { ...DEFAULT_TELEMETRY_CONFIG };
 let appendQueue: Promise<void> = Promise.resolve();
 
-function getTelemetryPath(): string {
-	return join(telemetryConfig.logDir, telemetryConfig.fileName);
+function getTelemetryPath(config: TelemetryConfig = telemetryConfig): string {
+	return join(config.logDir, config.fileName);
 }
 
-function getTelemetryLockPath(): string {
-	return `${getTelemetryPath()}.lock`;
+function getTelemetryLockPath(config: TelemetryConfig = telemetryConfig): string {
+	return `${getTelemetryPath(config)}.lock`;
 }
 
-async function ensureLogDir(): Promise<void> {
-	await fs.mkdir(telemetryConfig.logDir, { recursive: true, mode: 0o700 });
+async function ensureLogDir(config: TelemetryConfig = telemetryConfig): Promise<void> {
+	await fs.mkdir(config.logDir, { recursive: true, mode: 0o700 });
 }
 
 function maskToken(value: string): string {
@@ -151,8 +151,8 @@ function sanitizeValue(value: unknown, depth = 0): unknown {
 	return value;
 }
 
-function parseArchiveSuffix(fileName: string): number | null {
-	const base = telemetryConfig.fileName;
+function parseArchiveSuffix(fileName: string, config: TelemetryConfig = telemetryConfig): number | null {
+	const base = config.fileName;
 	if (fileName === base) return 0;
 	if (!fileName.startsWith(`${base}.`)) return null;
 	const suffix = fileName.slice(base.length + 1).trim();
@@ -197,8 +197,8 @@ function isErrnoCode(error: unknown, code: string): boolean {
 	return error.code === code;
 }
 
-async function rotateLogsIfNeeded(): Promise<void> {
-	const logPath = getTelemetryPath();
+async function rotateLogsIfNeeded(config: TelemetryConfig): Promise<void> {
+	const logPath = getTelemetryPath(config);
 
 	let size = 0;
 	try {
@@ -207,12 +207,12 @@ async function rotateLogsIfNeeded(): Promise<void> {
 		if (isErrnoCode(error, "ENOENT")) return;
 		throw error;
 	}
-	if (size < telemetryConfig.maxFileSizeBytes) return;
+	if (size < config.maxFileSizeBytes) return;
 
-	for (let i = telemetryConfig.maxFiles - 1; i >= 1; i -= 1) {
+	for (let i = config.maxFiles - 1; i >= 1; i -= 1) {
 		const target = `${logPath}.${i}`;
 		const source = i === 1 ? logPath : `${logPath}.${i - 1}`;
-		if (i === telemetryConfig.maxFiles - 1) {
+		if (i === config.maxFiles - 1) {
 			try {
 				await runFileOperationWithRetry(() => fs.unlink(target));
 			} catch (error) {
@@ -322,7 +322,8 @@ export function getTelemetryLogPath(): string {
 }
 
 export async function recordTelemetryEvent(input: TelemetryEventInput): Promise<void> {
-	if (!telemetryConfig.enabled) return;
+	const configSnapshot = getTelemetryConfig();
+	if (!configSnapshot.enabled) return;
 	if (!input.event.trim()) return;
 
 	const entry: TelemetryEvent = {
@@ -338,13 +339,13 @@ export async function recordTelemetryEvent(input: TelemetryEventInput): Promise<
 
 	try {
 		await queueAppend(async () => {
-			await ensureLogDir();
-			const lock = await acquireFileLock(getTelemetryLockPath());
+			await ensureLogDir(configSnapshot);
+			const lock = await acquireFileLock(getTelemetryLockPath(configSnapshot));
 			try {
-				await rotateLogsIfNeeded();
+				await rotateLogsIfNeeded(configSnapshot);
 				const line = `${JSON.stringify(entry)}\n`;
 				await runFileOperationWithRetry(() =>
-					fs.appendFile(getTelemetryPath(), line, "utf8"),
+					fs.appendFile(getTelemetryPath(configSnapshot), line, "utf8"),
 				);
 			} finally {
 				await lock.release();

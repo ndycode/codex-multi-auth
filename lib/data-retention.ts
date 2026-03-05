@@ -1,5 +1,6 @@
 import { promises as fs, type Dirent } from "node:fs";
 import { join } from "node:path";
+import { logWarn } from "./logger.js";
 import { getCodexCacheDir, getCodexLogDir, getCodexMultiAuthDir } from "./runtime-paths.js";
 
 export interface RetentionPolicy {
@@ -59,6 +60,10 @@ async function removeEmptyDirectoryWithRetry(path: string): Promise<void> {
 				throw error;
 			}
 			if (attempt >= DIRECTORY_CLEANUP_MAX_ATTEMPTS - 1) {
+				logWarn("Data retention directory cleanup retries exhausted", {
+					path,
+					code,
+				});
 				return;
 			}
 			await new Promise((resolve) =>
