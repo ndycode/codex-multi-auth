@@ -16,5 +16,9 @@ try {
 
 const exitCode = await runCodexMultiAuthCli(process.argv.slice(2));
 const parsedExitCode =
-	typeof exitCode === "number" && Number.isInteger(exitCode) ? exitCode : Number(exitCode);
+	typeof exitCode === "number" && Number.isInteger(exitCode)
+		? exitCode
+		: typeof exitCode === "string" && exitCode.trim().length > 0
+			? Number(exitCode)
+			: Number.NaN;
 process.exitCode = Number.isInteger(parsedExitCode) ? parsedExitCode : 1;

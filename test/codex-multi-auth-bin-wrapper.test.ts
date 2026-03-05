@@ -123,4 +123,40 @@ describe("codex-multi-auth bin wrapper", () => {
 		const result = runWrapper(fixtureRoot, ["auth", "status"]);
 		expect(result.status).toBe(7);
 	});
+
+	it("normalizes null exit codes to failure", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli() {",
+				"\treturn null;",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["auth", "status"]);
+		expect(result.status).toBe(1);
+	});
+
+	it("normalizes empty-string exit codes to failure", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli() {",
+				'\treturn "";',
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["auth", "status"]);
+		expect(result.status).toBe(1);
+	});
 });
