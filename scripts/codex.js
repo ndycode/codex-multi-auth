@@ -474,7 +474,9 @@ async function upsertPowerShellProfileGuard(profilePath, guardBlock) {
 		const endWithMarker = endIndex + POWERSHELL_PROFILE_MARKER_END.length;
 		const prefix = content.slice(0, startIndex).replace(/\s*$/, "");
 		const suffix = content.slice(endWithMarker).replace(/^\s*/, "");
-		nextContent = `${prefix}\r\n\r\n${guardBlock}\r\n\r\n${suffix}`.trimEnd();
+		const prefixPart = prefix.length > 0 ? `${prefix}\r\n\r\n` : "";
+		const suffixPart = suffix.length > 0 ? `\r\n\r\n${suffix}` : "";
+		nextContent = `${prefixPart}${guardBlock}${suffixPart}`.trimEnd();
 	} else if (normalizedCurrentContent.trim().length === 0) {
 		nextContent = guardBlock;
 	} else {
