@@ -813,6 +813,26 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(mockStorage.activeIndex).toBe(0);
 			expect(mockStorage.activeIndexByFamily).toEqual({});
 		});
+
+		it("normalizes family active-index map after remove when map is undefined", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "r1", email: "user1@example.com" },
+				{ refreshToken: "r2", email: "user2@example.com" },
+				{ refreshToken: "r3", email: "user3@example.com" },
+			];
+			mockStorage.activeIndex = 2;
+			mockStorage.activeIndexByFamily = undefined as unknown as Record<string, number>;
+
+			const mockClient = createMockClient();
+			const { OpenAIOAuthPlugin } = await import("../index.js");
+			const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+			await plugin.tool["codex-remove"].execute({ index: 1 });
+			const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
+			for (const family of MODEL_FAMILIES) {
+				expect(mockStorage.activeIndexByFamily[family]).toBe(1);
+			}
+		});
 	});
 
 	describe("codex-refresh tool", () => {

@@ -3880,7 +3880,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					const label = formatAccountLabel(account, targetIndex);
 
-					removeAccountAndReconcileActiveIndexes(storage, targetIndex);
+					const removed = removeAccountAndReconcileActiveIndexes(storage, targetIndex);
+					if (!removed) {
+						return `Account ${index} not found.`;
+					}
+					normalizeActiveIndexByFamily(storage, storage.accounts.length, {
+						clearFamilyMapWhenEmpty: true,
+					});
 
 					try {
 					await saveAccounts(storage);
