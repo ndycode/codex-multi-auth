@@ -597,7 +597,7 @@ export function getRetryAllAccountsAbsoluteCeilingMs(pluginConfig: PluginConfig)
 		"CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS",
 		pluginConfig.retryAllAccountsAbsoluteCeilingMs,
 		0,
-		{ min: 0 },
+		{ min: 0, max: 24 * 60 * 60_000 },
 	);
 }
 

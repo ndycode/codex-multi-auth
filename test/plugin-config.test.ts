@@ -957,6 +957,23 @@ describe('Plugin Configuration', () => {
 			expect(getRetryAllAccountsAbsoluteCeilingMs(config)).toBe(12000);
 		});
 
+		it('should clamp retry-all absolute ceiling to 24h upper bound', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = String(48 * 60 * 60_000);
+			expect(getRetryAllAccountsAbsoluteCeilingMs({ retryAllAccountsAbsoluteCeilingMs: 5000 }))
+				.toBe(24 * 60 * 60_000);
+		});
+
+		it('clamps negative retry-all absolute ceiling env override to zero', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = '-1';
+			expect(getRetryAllAccountsAbsoluteCeilingMs({ retryAllAccountsAbsoluteCeilingMs: 5000 })).toBe(0);
+		});
+
+		it('falls back to config/default when retry-all absolute ceiling env override is invalid', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = 'not-a-number';
+			expect(getRetryAllAccountsAbsoluteCeilingMs({ retryAllAccountsAbsoluteCeilingMs: 5000 })).toBe(5000);
+			expect(getRetryAllAccountsAbsoluteCeilingMs({})).toBe(0);
+		});
+
 		it('should return env value without min constraint', () => {
 			process.env.CODEX_AUTH_TOKEN_REFRESH_SKEW_MS = '30000';
 			const config: PluginConfig = { tokenRefreshSkewMs: 60000 };

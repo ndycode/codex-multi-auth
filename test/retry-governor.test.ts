@@ -110,6 +110,21 @@ describe("decideRetryAllAccountsRateLimited", () => {
 		});
 	});
 
+	it("allows retry when accumulated wait exactly matches the absolute ceiling", () => {
+		const result = decideRetryAllAccountsRateLimited({
+			enabled: true,
+			accountCount: 2,
+			waitMs: 1_000,
+			maxWaitMs: 0,
+			currentRetryCount: 0,
+			maxRetries: Infinity,
+			accumulatedWaitMs: 1_000,
+			absoluteCeilingMs: 2_000,
+		});
+
+		expect(result).toEqual({ shouldRetry: true, reason: "allowed" });
+	});
+
 	it("treats zero absolute ceiling as unlimited", () => {
 		const result = decideRetryAllAccountsRateLimited({
 			enabled: true,

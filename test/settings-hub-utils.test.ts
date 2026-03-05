@@ -7,6 +7,7 @@ import type { PluginConfig } from "../lib/types.js";
 
 type SettingsHubTestApi = {
 	clampBackendNumber: (settingKey: string, value: number) => number;
+	buildBackendSettingsPreview: (config: PluginConfig) => { label: string; hint: string };
 	formatMenuLayoutMode: (mode: "compact-details" | "expanded-rows") => string;
 	cloneDashboardSettings: (settings: DashboardDisplaySettings) => DashboardDisplaySettings;
 	withQueuedRetry: <T>(pathKey: string, task: () => Promise<T>) => Promise<T>;
@@ -71,6 +72,15 @@ describe("settings-hub utility coverage", () => {
 		expect(() => api.clampBackendNumber("unknown-setting", 5)).toThrow(
 			"Unknown backend numeric setting key",
 		);
+	});
+
+	it("renders retry-all absolute ceiling 0 as unlimited in preview", async () => {
+		const api = await loadSettingsHubTestApi();
+		const preview = api.buildBackendSettingsPreview({
+			retryAllAccountsAbsoluteCeilingMs: 0,
+		});
+		expect(preview.hint).toContain("retry ceiling unlimited");
+		expect(preview.hint).not.toContain("retry ceiling 0ms");
 	});
 
 	it("formats layout mode labels", async () => {

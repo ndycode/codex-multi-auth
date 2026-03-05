@@ -87,6 +87,7 @@ Examples:
 - `retryAllAccountsMaxWaitMs`
 - `retryAllAccountsMaxRetries`
 - `retryAllAccountsAbsoluteCeilingMs`
+  Unit: milliseconds. Bounds: `0` to `24h`. `0` means unlimited.
 
 ### Refresh and Recovery
 
@@ -128,6 +129,7 @@ Common operator overrides:
 - `CODEX_TUI_COLOR_PROFILE`
 - `CODEX_TUI_GLYPHS`
 - `CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS`
+  Rotation & Quota override for `retryAllAccountsAbsoluteCeilingMs` (ms, `0` to `24h`, `0` = unlimited).
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
 

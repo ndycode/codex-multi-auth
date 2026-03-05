@@ -62,7 +62,7 @@ Used only for host plugin mode through the host runtime config file.
 | `retryAllAccountsRateLimited` | `true` |
 | `retryAllAccountsMaxWaitMs` | `0` |
 | `retryAllAccountsMaxRetries` | `Infinity` |
-| `retryAllAccountsAbsoluteCeilingMs` | `0` |
+| `retryAllAccountsAbsoluteCeilingMs` | `0 ms (0–24h; 0 = unlimited)` |
 | `unsupportedCodexPolicy` | `strict` |
 | `fallbackOnUnsupportedCodexModel` | `false` |
 | `fallbackToGpt52OnUnsupportedGpt53` | `true` |
@@ -194,7 +194,7 @@ Used only for host plugin mode through the host runtime config file.
 | `CODEX_TUI_V2` | Toggle TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE` | TUI color profile |
 | `CODEX_TUI_GLYPHS` | TUI glyph mode |
-| `CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS` | Absolute wait ceiling for retry-all-on-rate-limit loop |
+| `CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS` | Absolute wait ceiling in ms for retry-all-on-rate-limit loop (`0–24h`, `0 = unlimited`) |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
 | `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |

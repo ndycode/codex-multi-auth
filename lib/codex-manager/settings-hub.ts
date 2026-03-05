@@ -994,6 +994,11 @@ function buildBackendSettingsPreview(
 	const retryAllAbsoluteCeilingOption = BACKEND_NUMBER_OPTION_BY_KEY.get(
 		"retryAllAccountsAbsoluteCeilingMs",
 	);
+	const retryCeilingLabel = retryAllAbsoluteCeilingMs === 0
+		? "unlimited"
+		: retryAllAbsoluteCeilingOption
+			? formatBackendNumberValue(retryAllAbsoluteCeilingOption, retryAllAbsoluteCeilingMs)
+			: `${retryAllAbsoluteCeilingMs}ms`;
 	const fetchTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("fetchTimeoutMs");
 	const stallTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("streamStallTimeoutMs");
 
@@ -1011,7 +1016,7 @@ function buildBackendSettingsPreview(
 	const hint = [
 		`thresholds 5h<=${highlightIfFocused("preemptiveQuotaRemainingPercent5h", `${threshold5h}%`)}`,
 		`7d<=${highlightIfFocused("preemptiveQuotaRemainingPercent7d", `${threshold7d}%`)}`,
-		`retry ceiling ${highlightIfFocused("retryAllAccountsAbsoluteCeilingMs", retryAllAbsoluteCeilingOption ? formatBackendNumberValue(retryAllAbsoluteCeilingOption, retryAllAbsoluteCeilingMs) : `${retryAllAbsoluteCeilingMs}ms`)}`,
+		`retry ceiling ${highlightIfFocused("retryAllAccountsAbsoluteCeilingMs", retryCeilingLabel)}`,
 		`timeouts ${highlightIfFocused("fetchTimeoutMs", fetchTimeoutOption ? formatBackendNumberValue(fetchTimeoutOption, fetchTimeout) : `${fetchTimeout}ms`)}/${highlightIfFocused("streamStallTimeoutMs", stallTimeoutOption ? formatBackendNumberValue(stallTimeoutOption, stallTimeout) : `${stallTimeout}ms`)}`,
 	].join(" | ");
 
@@ -1088,6 +1093,10 @@ function clampBackendNumberForTests(settingKey: string, value: number): number {
 	return clampBackendNumber(option, value);
 }
 
+function buildBackendSettingsPreviewForTests(config: PluginConfig): { label: string; hint: string } {
+	return buildBackendSettingsPreview(config, getUiRuntimeOptions());
+}
+
 async function withQueuedRetryForTests<T>(
 	pathKey: string,
 	task: () => Promise<T>,
@@ -1112,6 +1121,7 @@ async function persistBackendConfigSelectionForTests(
 
 const __testOnly = {
 	clampBackendNumber: clampBackendNumberForTests,
+	buildBackendSettingsPreview: buildBackendSettingsPreviewForTests,
 	formatMenuLayoutMode,
 	cloneDashboardSettings,
 	withQueuedRetry: withQueuedRetryForTests,

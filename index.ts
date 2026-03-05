@@ -2400,10 +2400,21 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
 										const count = accountManager.getAccountCount();
+								const jitteredWaitMs = waitMs > 0 ? addJitter(waitMs, 0.2) : 0;
+								const plannedWaitMs =
+									retryAllAccountsAbsoluteCeilingMs > 0
+										? Math.min(
+												jitteredWaitMs,
+												Math.max(
+													0,
+													retryAllAccountsAbsoluteCeilingMs - accumulatedAllRateLimitedWaitMs,
+												),
+											)
+										: jitteredWaitMs;
 								const retryDecision = decideRetryAllAccountsRateLimited({
 									enabled: retryAllAccountsRateLimited,
 									accountCount: count,
-									waitMs,
+									waitMs: plannedWaitMs,
 									maxWaitMs: retryAllAccountsMaxWaitMs,
 									currentRetryCount: allRateLimitedRetries,
 									maxRetries: retryAllAccountsMaxRetries,
@@ -2413,28 +2424,22 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 								if (retryDecision.shouldRetry) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
-									const jitteredWaitMs = addJitter(waitMs, 0.2);
-									const boundedWaitMs =
-										retryAllAccountsAbsoluteCeilingMs > 0
-											? Math.min(
-													jitteredWaitMs,
-													Math.max(
-														0,
-														retryAllAccountsAbsoluteCeilingMs - accumulatedAllRateLimitedWaitMs,
-													),
-												)
-											: jitteredWaitMs;
-									await sleepWithCountdown(boundedWaitMs, countdownMessage);
+									await sleepWithCountdown(plannedWaitMs, countdownMessage);
 									allRateLimitedRetries++;
-									accumulatedAllRateLimitedWaitMs += boundedWaitMs;
+									accumulatedAllRateLimitedWaitMs += plannedWaitMs;
 									continue;
 								}
 								recordRetryGovernorStopReason(retryDecision.reason);
-								if (retryDecision.reason !== "disabled" && retryDecision.reason !== "no-accounts") {
+								if (
+									retryDecision.reason !== "disabled" &&
+									retryDecision.reason !== "no-accounts" &&
+									retryDecision.reason !== "no-wait"
+								) {
 									logDebug("Retry governor blocked all-rate-limited retry", {
 										reason: retryDecision.reason,
 										accountCount: count,
 										waitMs,
+										plannedWaitMs,
 										retryCount: allRateLimitedRetries,
 										accumulatedWaitMs: accumulatedAllRateLimitedWaitMs,
 										maxWaitMs: retryAllAccountsMaxWaitMs,

@@ -1375,9 +1375,13 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				preemptiveQuotaEnabled: expect.any(Boolean),
 				preemptiveQuotaRemainingPercent5h: expect.any(Number),
-				retryAllAccountsAbsoluteCeilingMs: expect.any(Number),
+				retryAllAccountsAbsoluteCeilingMs: 30_000,
 			}),
 		);
+		const savedPluginConfig = savePluginConfigMock.mock.calls[0]?.[0] as
+			| { retryAllAccountsAbsoluteCeilingMs?: number }
+			| undefined;
+		expect(savedPluginConfig?.retryAllAccountsAbsoluteCeilingMs).toBe(30_000);
 	});
 
 	it.each([
