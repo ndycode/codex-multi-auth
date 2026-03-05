@@ -2147,6 +2147,33 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		}
 	});
 
+	it("caches valid empty quota bootstrap loads within ttl", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		loadQuotaCacheMock.mockResolvedValueOnce({ byAccountId: {}, byEmail: {} });
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, _accountId, accessToken) =>
+				new Headers({ "x-test-access-token": String(accessToken ?? "") }),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const firstResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+		const secondResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(firstResponse.status).toBe(200);
+		expect(secondResponse.status).toBe(200);
+		expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+	});
+
 	it("handles token refresh races while rotating away from a bootstrap-rate-limited account", async () => {
 		const now = Date.now() + 31 * 60_000;
 		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
@@ -2356,7 +2383,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(secondHeaders.get("x-test-access-token")).toBe("access-token");
 	});
 
-	it("retries quota bootstrap loads after the failure retry interval and recovers within cooldown", async () => {
+	it("retries quota bootstrap loads after the failure cooldown window and recovers", async () => {
 		vi.useFakeTimers();
 		const now = Date.now();
 		const { AccountManager } = await import("../lib/accounts.js");
@@ -2475,7 +2502,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				method: "POST",
 				body: JSON.stringify({ model: "gpt-5.1" }),
 			});
-			await vi.advanceTimersByTimeAsync(5_100);
+			await vi.advanceTimersByTimeAsync(60_100);
 			const thirdResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
 				method: "POST",
 				body: JSON.stringify({ model: "gpt-5.1" }),

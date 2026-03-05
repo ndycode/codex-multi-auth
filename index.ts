@@ -309,11 +309,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const QUOTA_CACHE_BOOTSTRAP_TTL_MS = 30 * 60_000;
 	const QUOTA_CACHE_BOOTSTRAP_MIN_WAIT_MS = 1_000;
 	const QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS = 60_000;
-	const QUOTA_CACHE_BOOTSTRAP_FAILURE_RETRY_INTERVAL_MS = 5_000;
 	let quotaCacheBootstrapData: QuotaCacheData | null = null;
 	let quotaCacheBootstrapLoadedAt = 0;
 	let quotaCacheBootstrapFailureUntil = 0;
-	let quotaCacheBootstrapFailureRetryAt = 0;
 	let quotaCacheBootstrapLoadPromise: Promise<QuotaCacheData> | null = null;
 
 	type QuotaBootstrapAccountCandidate = {
@@ -351,9 +349,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const normalizedModel = normalizeQuotaCacheModelId(model) ?? modelFamily;
 		return `${accountKey}:${normalizedModel}`;
 	};
-
-	const hasQuotaCacheEntries = (cache: QuotaCacheData): boolean =>
-		Object.keys(cache.byAccountId).length > 0 || Object.keys(cache.byEmail).length > 0;
 
 	const createEmptyQuotaCache = (): QuotaCacheData => ({ byAccountId: {}, byEmail: {} });
 
@@ -444,10 +439,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		if (quotaCacheBootstrapData && now - quotaCacheBootstrapLoadedAt < QUOTA_CACHE_BOOTSTRAP_TTL_MS) {
 			return quotaCacheBootstrapData;
 		}
-		if (
-			now < quotaCacheBootstrapFailureUntil &&
-			now < quotaCacheBootstrapFailureRetryAt
-		) {
+		if (now < quotaCacheBootstrapFailureUntil) {
 			return createEmptyQuotaCache();
 		}
 		if (quotaCacheBootstrapLoadPromise) {
@@ -456,27 +448,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		quotaCacheBootstrapLoadPromise = (async () => {
 			try {
 				const loaded = await loadQuotaCache();
-				if (hasQuotaCacheEntries(loaded)) {
-					quotaCacheBootstrapData = loaded;
-					quotaCacheBootstrapLoadedAt = Date.now();
-					quotaCacheBootstrapFailureUntil = 0;
-					quotaCacheBootstrapFailureRetryAt = 0;
-				} else {
-					const failureAt = Date.now();
-					quotaCacheBootstrapData = null;
-					quotaCacheBootstrapLoadedAt = 0;
-					quotaCacheBootstrapFailureUntil = failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS;
-					quotaCacheBootstrapFailureRetryAt =
-						failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_RETRY_INTERVAL_MS;
-				}
+				quotaCacheBootstrapData = loaded;
+				quotaCacheBootstrapLoadedAt = Date.now();
+				quotaCacheBootstrapFailureUntil = 0;
 				return loaded;
 			} catch (error) {
 				const failureAt = Date.now();
 				quotaCacheBootstrapData = null;
 				quotaCacheBootstrapLoadedAt = 0;
 				quotaCacheBootstrapFailureUntil = failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS;
-				quotaCacheBootstrapFailureRetryAt =
-					failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_RETRY_INTERVAL_MS;
 				logWarn(
 					`[${PLUGIN_NAME}] failed to load quota cache bootstrap data: ${
 						error instanceof Error ? error.message : String(error)
