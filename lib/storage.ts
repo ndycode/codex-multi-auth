@@ -664,11 +664,17 @@ function forgetKnownStorageRevision(path: string): void {
 	knownStorageRevisionByPath.delete(path);
 }
 
-function rememberKnownStorageRevisionForStorage(
-	path: string,
-	storage: AccountStorageV3,
-): void {
-	rememberKnownStorageRevision(path, computeSha256(JSON.stringify(storage, null, 2)));
+async function rememberKnownStorageRevisionFromDisk(path: string): Promise<void> {
+	try {
+		const revision = await readStorageRevision(path);
+		rememberKnownStorageRevision(path, revision);
+	} catch (error) {
+		log.warn("Failed to refresh known storage revision from disk", {
+			path,
+			error: String(error),
+		});
+		forgetKnownStorageRevision(path);
+	}
 }
 
 type AccountsJournalEntry = {
@@ -1239,7 +1245,7 @@ async function loadAccountsInternal(
 						});
 					}
 				}
-				rememberKnownStorageRevisionForStorage(path, backup.normalized);
+				await rememberKnownStorageRevisionFromDisk(path);
 				return backup.normalized;
 			} catch (backupError) {
 				const backupCode = (backupError as NodeJS.ErrnoException).code;
@@ -1274,7 +1280,7 @@ async function loadAccountsInternal(
 				});
 			}
 		}
-		rememberKnownStorageRevisionForStorage(path, recoveredFromWal);
+		await rememberKnownStorageRevisionFromDisk(path);
 		return recoveredFromWal;
 	}
 
@@ -1301,7 +1307,7 @@ async function loadAccountsInternal(
 							});
 						}
 					}
-					rememberKnownStorageRevisionForStorage(path, backup.normalized);
+					await rememberKnownStorageRevisionFromDisk(path);
 					return backup.normalized;
 				}
 			} catch (backupError) {
