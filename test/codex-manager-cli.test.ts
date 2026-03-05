@@ -20,6 +20,8 @@ const savePluginConfigMock = vi.fn();
 const selectMock = vi.fn();
 const rotateStoredSecretEncryptionMock = vi.fn();
 const checkAndRecordIdempotencyKeyMock = vi.fn();
+const markIdempotencySucceededMock = vi.fn();
+const clearIdempotencyOnFailureMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -87,6 +89,8 @@ vi.mock("../lib/storage.js", () => ({
 
 vi.mock("../lib/idempotency.js", () => ({
 	checkAndRecordIdempotencyKey: checkAndRecordIdempotencyKeyMock,
+	markIdempotencySucceeded: markIdempotencySucceededMock,
+	clearIdempotencyOnFailure: clearIdempotencyOnFailureMock,
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -207,6 +211,8 @@ describe("codex manager cli commands", () => {
 		selectMock.mockReset();
 		rotateStoredSecretEncryptionMock.mockReset();
 		checkAndRecordIdempotencyKeyMock.mockReset();
+		markIdempotencySucceededMock.mockReset();
+		clearIdempotencyOnFailureMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -2124,8 +2130,44 @@ describe("codex manager cli commands", () => {
 			expect(secondPayload.rotated).toBe(true);
 			expect(secondPayload.replayed).toBe(true);
 			expect(rotateStoredSecretEncryptionMock).toHaveBeenCalledTimes(1);
+			expect(markIdempotencySucceededMock).toHaveBeenCalledTimes(1);
+			expect(clearIdempotencyOnFailureMock).not.toHaveBeenCalled();
 		} finally {
 			logSpy.mockRestore();
+		}
+	});
+
+	it("clears pending idempotency key when rotate-secrets fails", async () => {
+		checkAndRecordIdempotencyKeyMock.mockResolvedValue({ replayed: false });
+		rotateStoredSecretEncryptionMock.mockRejectedValueOnce(new Error("user@example.com"));
+		const previousRedaction = process.env.CODEX_AUTH_REDACT_JSON_OUTPUT;
+		process.env.CODEX_AUTH_REDACT_JSON_OUTPUT = "1";
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--json",
+				"--idempotency-key",
+				"rotation-fail",
+			]);
+			expect(exitCode).toBe(1);
+			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as { error: string };
+			expect(payload.error).not.toContain("user@example.com");
+			expect(markIdempotencySucceededMock).not.toHaveBeenCalled();
+			expect(clearIdempotencyOnFailureMock).toHaveBeenCalledWith(
+				"codex.auth.rotate-secrets",
+				"rotation-fail",
+			);
+		} finally {
+			logSpy.mockRestore();
+			if (previousRedaction === undefined) {
+				delete process.env.CODEX_AUTH_REDACT_JSON_OUTPUT;
+			} else {
+				process.env.CODEX_AUTH_REDACT_JSON_OUTPUT = previousRedaction;
+			}
 		}
 	});
 

@@ -1,4 +1,12 @@
-import { openSync, writeFileSync, closeSync, unlinkSync, statSync, promises as fs } from "node:fs";
+import {
+	openSync,
+	writeFileSync,
+	closeSync,
+	readFileSync,
+	unlinkSync,
+	statSync,
+	promises as fs,
+} from "node:fs";
 
 export interface FileLockOptions {
 	maxAttempts?: number;
@@ -22,6 +30,13 @@ const DEFAULT_BASE_DELAY_MS = 25;
 const DEFAULT_MAX_DELAY_MS = 1_000;
 const DEFAULT_STALE_AFTER_MS = 5 * 60_000;
 const RETRYABLE_CODES = new Set(["EEXIST", "EBUSY", "EPERM"]);
+const LOCK_FILE_ENCODING: BufferEncoding = "utf8";
+
+interface LockFileMetadata {
+	pid: number;
+	acquiredAt: number;
+	token: string;
+}
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,6 +50,62 @@ function getRetryDelayMs(
 	const backoff = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.min(attempt, 8));
 	const jitter = Math.floor(backoff * 0.15 * Math.random());
 	return Math.max(baseDelayMs, backoff - jitter);
+}
+
+function createLockToken(): string {
+	return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function serializeLockMetadata(token: string): string {
+	const metadata: LockFileMetadata = {
+		pid: process.pid,
+		acquiredAt: Date.now(),
+		token,
+	};
+	return `${JSON.stringify(metadata)}\n`;
+}
+
+function parseLockToken(content: string): string | null {
+	const trimmed = content.trim();
+	if (!trimmed) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+		return typeof parsed.token === "string" && parsed.token.length > 0 ? parsed.token : null;
+	} catch {
+		return null;
+	}
+}
+
+async function isOwnedLockFile(path: string, expectedToken: string): Promise<boolean> {
+	let content: string;
+	try {
+		content = await fs.readFile(path, LOCK_FILE_ENCODING);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+	const token = parseLockToken(content);
+	return token === expectedToken;
+}
+
+function isOwnedLockFileSync(path: string, expectedToken: string): boolean {
+	let content: string;
+	try {
+		content = readFileSync(path, LOCK_FILE_ENCODING);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+	const token = parseLockToken(content);
+	return token === expectedToken;
 }
 
 async function removeIfStale(path: string, staleAfterMs: number): Promise<boolean> {
@@ -66,11 +137,22 @@ export async function acquireFileLock(
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
 			const handle = await fs.open(path, "wx", 0o600);
-			await handle.writeFile(
-				`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
-				"utf8",
-			);
-			await handle.close();
+			const token = createLockToken();
+			let writeError: unknown;
+			try {
+				await handle.writeFile(serializeLockMetadata(token), LOCK_FILE_ENCODING);
+			} catch (error) {
+				writeError = error;
+				throw error;
+			} finally {
+				try {
+					await handle.close();
+				} catch (closeError) {
+					if (writeError === undefined) {
+						throw closeError;
+					}
+				}
+			}
 			let released = false;
 			return {
 				path,
@@ -78,6 +160,10 @@ export async function acquireFileLock(
 					if (released) return;
 					released = true;
 					try {
+						const owned = await isOwnedLockFile(path, token);
+						if (!owned) {
+							return;
+						}
 						await fs.unlink(path);
 					} catch (error) {
 						const code = (error as NodeJS.ErrnoException).code;
@@ -135,12 +221,22 @@ export function acquireFileLockSync(
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
 			const fd = openSync(path, "wx", 0o600);
-			writeFileSync(
-				fd,
-				`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
-				"utf8",
-			);
-			closeSync(fd);
+			const token = createLockToken();
+			let writeError: unknown;
+			try {
+				writeFileSync(fd, serializeLockMetadata(token), LOCK_FILE_ENCODING);
+			} catch (error) {
+				writeError = error;
+				throw error;
+			} finally {
+				try {
+					closeSync(fd);
+				} catch (closeError) {
+					if (writeError === undefined) {
+						throw closeError;
+					}
+				}
+			}
 			let released = false;
 			return {
 				path,
@@ -148,6 +244,10 @@ export function acquireFileLockSync(
 					if (released) return;
 					released = true;
 					try {
+						const owned = isOwnedLockFileSync(path, token);
+						if (!owned) {
+							return;
+						}
 						unlinkSync(path);
 					} catch (error) {
 						const code = (error as NodeJS.ErrnoException).code;

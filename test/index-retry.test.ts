@@ -129,6 +129,21 @@ vi.mock("../lib/storage.js", () => ({
 	getStoragePath: () => "",
 	loadAccounts: async () => null,
 	saveAccounts: async () => {},
+	withAccountStorageTransaction: async (
+		handler: (
+			storage: { version: 3; accounts: []; activeIndex: number; activeIndexByFamily: Record<string, number> },
+			persist: (next: { version: 3; accounts: []; activeIndex: number; activeIndexByFamily: Record<string, number> }) => Promise<void>,
+		) => Promise<unknown>,
+	) =>
+		handler(
+			{
+				version: 3,
+				accounts: [],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			},
+			async () => {},
+		),
 	setStoragePath: () => {},
 	setStorageBackupEnabled: () => {},
 	exportAccounts: async () => {},

@@ -16,6 +16,19 @@ const packages = packageLock.packages ?? {};
 const violations = [];
 const unknown = [];
 
+function extractLicenseTokens(licenseExpression) {
+	return licenseExpression
+		.split(/[^A-Z0-9.-]+/g)
+		.map((token) => token.trim())
+		.filter(
+			(token) =>
+				token.length > 0 &&
+				token !== "AND" &&
+				token !== "OR" &&
+				token !== "WITH",
+		);
+}
+
 for (const [packagePath, metadata] of Object.entries(packages)) {
 	if (!metadata || typeof metadata !== "object") continue;
 	if (packagePath === "") continue;
@@ -33,8 +46,9 @@ for (const [packagePath, metadata] of Object.entries(packages)) {
 		unknown.push(`${name}@${version}`);
 		continue;
 	}
+	const licenseTokens = new Set(extractLicenseTokens(normalized));
 	for (const denied of denyList) {
-		if (normalized.includes(denied)) {
+		if (licenseTokens.has(denied)) {
 			violations.push(`${name}@${version} (${rawLicense})`);
 			break;
 		}

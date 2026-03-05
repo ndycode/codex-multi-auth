@@ -28,11 +28,15 @@ const ALL_AUTH_ACTIONS = new Set<AuthAction>([
 ]);
 
 function getRoleFromEnv(): AuthRole {
-	const raw = (process.env.CODEX_AUTH_ROLE ?? "admin").trim().toLowerCase();
+	const rawEnv = process.env.CODEX_AUTH_ROLE;
+	if (rawEnv === undefined || rawEnv.trim().length === 0) {
+		return "admin";
+	}
+	const raw = rawEnv.trim().toLowerCase();
 	if (raw === "operator" || raw === "viewer" || raw === "admin") {
 		return raw;
 	}
-	return "admin";
+	return "viewer";
 }
 
 export function getAuthorizationRole(): AuthRole {

@@ -48,6 +48,30 @@ describe("background jobs", () => {
 		await expect(fs.stat(getBackgroundJobDlqPath())).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
+	it("retries and succeeds on transient 429 rate-limit failures", async () => {
+		const { runBackgroundJobWithRetry, getBackgroundJobDlqPath } =
+			await import("../lib/background-jobs.js");
+		let attempts = 0;
+		const result = await runBackgroundJobWithRetry({
+			name: "test.retry-429-success",
+			task: async () => {
+				attempts += 1;
+				if (attempts < 3) {
+					const error = Object.assign(new Error("rate limited"), { status: 429 });
+					throw error;
+				}
+				return "ok";
+			},
+			maxAttempts: 4,
+			baseDelayMs: 1,
+			maxDelayMs: 2,
+		});
+
+		expect(result).toBe("ok");
+		expect(attempts).toBe(3);
+		await expect(fs.stat(getBackgroundJobDlqPath())).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
 	it("writes a redacted dead-letter entry after retry exhaustion", async () => {
 		const { runBackgroundJobWithRetry, getBackgroundJobDlqPath } =
 			await import("../lib/background-jobs.js");
@@ -85,5 +109,28 @@ describe("background jobs", () => {
 			accessToken: "***REDACTED***",
 			note: "keep-visible",
 		});
+	});
+
+	it("writes dead-letter after exhausting retries on 429 errors", async () => {
+		const { runBackgroundJobWithRetry, getBackgroundJobDlqPath } =
+			await import("../lib/background-jobs.js");
+		let attempts = 0;
+		await expect(
+			runBackgroundJobWithRetry({
+				name: "test.retry-429-fail",
+				task: async () => {
+					attempts += 1;
+					const error = Object.assign(new Error("rate limited"), { statusCode: 429 });
+					throw error;
+				},
+				maxAttempts: 3,
+				baseDelayMs: 1,
+				maxDelayMs: 2,
+			}),
+		).rejects.toThrow("rate limited");
+		expect(attempts).toBe(3);
+
+		const content = await fs.readFile(getBackgroundJobDlqPath(), "utf8");
+		expect(content).toContain('"job":"test.retry-429-fail"');
 	});
 });

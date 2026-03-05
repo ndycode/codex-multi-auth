@@ -227,6 +227,7 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 
 	try {
 		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
+		// Integration coverage for concurrent writers lives in test/quota-cache.test.ts.
 		const lock = await acquireFileLock(QUOTA_CACHE_LOCK_PATH, {
 			maxAttempts: 80,
 			baseDelayMs: 15,

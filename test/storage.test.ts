@@ -1840,9 +1840,15 @@ describe("storage", () => {
     });
 
     it("logs error for non-ENOENT errors during clear", async () => {
-      const unlinkSpy = vi.spyOn(fs, "unlink").mockRejectedValue(
-        Object.assign(new Error("EACCES error"), { code: "EACCES" })
-      );
+      const realUnlink = fs.unlink.bind(fs);
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+        const candidatePath = String(targetPath);
+        if (candidatePath.endsWith(".lock")) {
+          await realUnlink(targetPath);
+          return;
+        }
+        throw Object.assign(new Error("EACCES error"), { code: "EACCES" });
+      });
 
       await clearAccounts();
 

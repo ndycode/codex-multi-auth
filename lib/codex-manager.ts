@@ -61,7 +61,11 @@ import {
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
 } from "./storage.js";
-import { checkAndRecordIdempotencyKey } from "./idempotency.js";
+import {
+	checkAndRecordIdempotencyKey,
+	markIdempotencySucceeded,
+	clearIdempotencyOnFailure,
+} from "./idempotency.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import {
 	getCodexCliAuthPath,
@@ -4017,6 +4021,7 @@ async function runRotateSecrets(args: string[]): Promise<number> {
 		return 1;
 	}
 	const { json: asJson, idempotencyKey } = parsed.options;
+	let shouldClearPendingIdempotency = false;
 	try {
 		if (idempotencyKey) {
 			const idempotency = await checkAndRecordIdempotencyKey(
@@ -4049,9 +4054,14 @@ async function runRotateSecrets(args: string[]): Promise<number> {
 				});
 				return 0;
 			}
+			shouldClearPendingIdempotency = true;
 		}
 
 		const result = await rotateStoredSecretEncryption();
+		if (idempotencyKey) {
+			await markIdempotencySucceeded("codex.auth.rotate-secrets", idempotencyKey);
+			shouldClearPendingIdempotency = false;
+		}
 		emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.SUCCESS, "rotate-secrets", {
 			accounts: result.accounts,
 			flaggedAccounts: result.flaggedAccounts,
@@ -4081,6 +4091,13 @@ async function runRotateSecrets(args: string[]): Promise<number> {
 		return 0;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		if (idempotencyKey && shouldClearPendingIdempotency) {
+			try {
+				await clearIdempotencyOnFailure("codex.auth.rotate-secrets", idempotencyKey);
+			} catch {
+				// Best-effort cleanup: do not mask the original rotate failure.
+			}
+		}
 		emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.FAILURE, "rotate-secrets", {
 			error: message,
 			...(idempotencyKey ? { idempotencyKey } : {}),
@@ -4088,14 +4105,14 @@ async function runRotateSecrets(args: string[]): Promise<number> {
 		if (asJson) {
 			console.log(
 				JSON.stringify(
-					{
+					maybeRedactJsonOutput({
 						command: "rotate-secrets",
 						schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
 						rotated: false,
 						replayed: false,
 						error: message,
 						...(idempotencyKey ? { idempotencyKey } : {}),
-					},
+					}),
 					null,
 					2,
 				),

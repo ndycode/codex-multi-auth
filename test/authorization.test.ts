@@ -87,6 +87,23 @@ describe("authorization", () => {
 		}
 	});
 
+	it("fails closed to viewer for invalid CODEX_AUTH_ROLE values", () => {
+		const previousRole = process.env.CODEX_AUTH_ROLE;
+		try {
+			process.env.CODEX_AUTH_ROLE = "super-admin-typo";
+			expect(getAuthorizationRole()).toBe("viewer");
+			const auth = authorizeAction("secrets:rotate");
+			expect(auth.allowed).toBe(false);
+			expect(auth.role).toBe("viewer");
+		} finally {
+			if (previousRole === undefined) {
+				delete process.env.CODEX_AUTH_ROLE;
+			} else {
+				process.env.CODEX_AUTH_ROLE = previousRole;
+			}
+		}
+	});
+
 	it("allows all actions when break-glass is enabled and audits the bypass", async () => {
 		const previousRole = process.env.CODEX_AUTH_ROLE;
 		const previousBreakGlass = process.env.CODEX_AUTH_BREAK_GLASS;

@@ -28,14 +28,41 @@ function shouldRedactKey(key: string): boolean {
 	return false;
 }
 
+function shouldRedactStringValue(value: string): boolean {
+	if (value.includes("@")) {
+		return true;
+	}
+	const normalized = value.toLowerCase();
+	return (
+		normalized.includes("token=") ||
+		normalized.includes("access_token") ||
+		normalized.includes("refresh_token") ||
+		normalized.includes("authorization:") ||
+		normalized.includes("api_key") ||
+		normalized.includes("secret")
+	);
+}
+
 export function redactForExternalOutput<T>(value: T): T {
+	const seen = new WeakSet<object>();
 	const visit = (node: unknown): unknown => {
+		if (typeof node === "string") {
+			return shouldRedactStringValue(node) ? "***REDACTED***" : node;
+		}
 		if (Array.isArray(node)) {
+			if (seen.has(node)) {
+				return "[Circular]";
+			}
+			seen.add(node);
 			return node.map((item) => visit(item));
 		}
 		if (!isObjectRecord(node)) {
 			return node;
 		}
+		if (seen.has(node)) {
+			return "[Circular]";
+		}
+		seen.add(node);
 		const next: Record<string, unknown> = {};
 		for (const [key, child] of Object.entries(node)) {
 			if (shouldRedactKey(key)) {

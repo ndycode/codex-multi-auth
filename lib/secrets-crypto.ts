@@ -13,6 +13,7 @@ const AES_KEY_LENGTH = 32;
 const AES_GCM_IV_LENGTH = 12;
 const AES_GCM_TAG_LENGTH = 16;
 const SCRYPT_SALT_LENGTH = 16;
+const MIN_KEY_MATERIAL_BYTES = 32;
 
 export interface SecretEncryptionKeys {
 	primary: string | null;
@@ -106,7 +107,7 @@ export function isEncryptedSecret(value: string): boolean {
 
 export function encryptSecret(value: string, keyMaterial: string): string {
 	if (!value) return value;
-	if (isEncryptedSecret(value)) return value;
+	if (parseEnvelope(value)) return value;
 
 	const salt = randomBytes(SCRYPT_SALT_LENGTH);
 	const key = deriveAesKey(keyMaterial, salt);
@@ -165,9 +166,27 @@ function getTrimmedEnv(name: string): string | null {
 	return raw.length > 0 ? raw : null;
 }
 
+function validateEnvKeyMaterial(value: string | null, envName: string): string | null {
+	if (!value) return null;
+	if (Buffer.byteLength(value, "utf8") < MIN_KEY_MATERIAL_BYTES) {
+		throw new Error(
+			`${envName} must contain at least ${MIN_KEY_MATERIAL_BYTES} bytes of key material`,
+		);
+	}
+	return value;
+}
+
 export function getSecretEncryptionKeysFromEnv(): SecretEncryptionKeys {
+	const primary = validateEnvKeyMaterial(
+		getTrimmedEnv("CODEX_AUTH_ENCRYPTION_KEY"),
+		"CODEX_AUTH_ENCRYPTION_KEY",
+	);
+	const previous = validateEnvKeyMaterial(
+		getTrimmedEnv("CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY"),
+		"CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY",
+	);
 	return {
-		primary: getTrimmedEnv("CODEX_AUTH_ENCRYPTION_KEY"),
-		previous: getTrimmedEnv("CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY"),
+		primary,
+		previous,
 	};
 }

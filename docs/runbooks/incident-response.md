@@ -28,7 +28,7 @@ Incident response workflow for `codex-multi-auth`.
 1. For credential exposure:
    - rotate affected OAuth/session credentials
    - set new `CODEX_AUTH_ENCRYPTION_KEY`
-   - run `codex auth rotate-secrets`
+   - run `codex auth rotate-secrets --idempotency-key <incident-id>`
 2. For unauthorized command execution:
    - downgrade role to `CODEX_AUTH_ROLE=viewer` where possible
    - enable `CODEX_AUTH_ABAC_READ_ONLY=1` until containment is complete

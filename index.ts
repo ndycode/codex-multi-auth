@@ -225,7 +225,9 @@ import { enforceDataRetention } from "./lib/data-retention.js";
 // eslint-disable-next-line @typescript-eslint/require-await
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
-	void enforceDataRetention().catch((error) => {
+	void withAccountStorageTransaction(async (_loadedStorage, _persist) => {
+		await enforceDataRetention();
+	}).catch((error) => {
 		logWarn("Data retention cleanup failed", {
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -273,13 +275,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		redirectUri: string,
 	): Promise<TokenResult> => {
 		const rateLimitKey = "oauth:code-exchange";
-		checkAuthRateLimit(rateLimitKey);
-		recordAuthAttempt(rateLimitKey);
-		const tokens = await exchangeAuthorizationCode(code, verifier, redirectUri);
-		if (tokens.type === "success") {
-			resetAuthRateLimit(rateLimitKey);
+		try {
+			checkAuthRateLimit(rateLimitKey);
+			recordAuthAttempt(rateLimitKey);
+			const tokens = await exchangeAuthorizationCode(code, verifier, redirectUri);
+			if (tokens.type === "success") {
+				resetAuthRateLimit(rateLimitKey);
+			}
+			return tokens;
+		} catch (error) {
+			return {
+				type: "failed",
+				reason: "http_error",
+				message: error instanceof Error ? error.message : String(error),
+			};
 		}
-		return tokens;
 	};
 
 		const parseEnvInt = (value: string | undefined): number | undefined => {

@@ -76,4 +76,77 @@ describe("data retention", () => {
 		expect(await fs.readFile(freshLog, "utf8")).toBe("fresh");
 		expect(await fs.readFile(freshCache, "utf8")).toBe("fresh");
 	});
+
+	it("retries transient EBUSY when pruning single state files", async () => {
+		const { enforceDataRetention } = await import("../lib/data-retention.js");
+		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+		const flagged = join(tempDir, "openai-codex-flagged-accounts.json");
+		await fs.writeFile(flagged, "{}", "utf8");
+		await fs.utimes(flagged, oldDate, oldDate);
+
+		const realUnlink = fs.unlink.bind(fs);
+		const unlinkSpy = vi.spyOn(fs, "unlink");
+		let attempts = 0;
+		unlinkSpy.mockImplementation(async (path) => {
+			if (String(path) === flagged) {
+				attempts += 1;
+				if (attempts < 3) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+			}
+			return realUnlink(path);
+		});
+
+		try {
+			const result = await enforceDataRetention({
+				logDays: 1,
+				cacheDays: 1,
+				flaggedDays: 1,
+				quotaCacheDays: 1,
+				dlqDays: 1,
+			});
+			expect(result.removedStateFiles).toBe(1);
+			expect(attempts).toBe(3);
+			await expect(fs.stat(flagged)).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			unlinkSpy.mockRestore();
+		}
+	});
+
+	it("surfaces non-ENOENT prune errors", async () => {
+		const { enforceDataRetention } = await import("../lib/data-retention.js");
+		const logsDir = join(tempDir, "logs");
+		await fs.mkdir(logsDir, { recursive: true });
+		const staleLog = join(logsDir, "stale.log");
+		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+		await fs.writeFile(staleLog, "old", "utf8");
+		await fs.utimes(staleLog, oldDate, oldDate);
+
+		const statSpy = vi.spyOn(fs, "stat");
+		const realStat = fs.stat.bind(fs);
+		statSpy.mockImplementation(async (path) => {
+			if (String(path) === staleLog) {
+				const error = new Error("denied") as NodeJS.ErrnoException;
+				error.code = "EACCES";
+				throw error;
+			}
+			return realStat(path);
+		});
+
+		try {
+			await expect(
+				enforceDataRetention({
+					logDays: 1,
+					cacheDays: 1,
+					flaggedDays: 1,
+					quotaCacheDays: 1,
+					dlqDays: 1,
+				}),
+			).rejects.toMatchObject({ code: "EACCES" });
+		} finally {
+			statSpy.mockRestore();
+		}
+	});
 });

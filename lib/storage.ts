@@ -1236,14 +1236,14 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 }
 
 export async function withAccountStorageTransaction<T>(
-  handler: (
+	handler: (
     current: AccountStorageV3 | null,
     persist: (storage: AccountStorageV3) => Promise<void>,
   ) => Promise<T>,
 ): Promise<T> {
 	const path = getStoragePath();
-	return withAccountFileLock(path, () =>
-		withStorageLock(async () => {
+	return withStorageLock(async () =>
+		withAccountFileLock(path, async () => {
 			const current = await loadAccountsInternal(saveAccountsUnlocked);
 			return handler(current, saveAccountsUnlocked);
 		}),
@@ -1259,8 +1259,8 @@ export async function withAccountStorageTransaction<T>(
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
 	const path = getStoragePath();
-	return withAccountFileLock(path, () =>
-		withStorageLock(async () => {
+	return withStorageLock(async () =>
+		withAccountFileLock(path, async () => {
 			await saveAccountsUnlocked(storage);
 		}),
 	);
@@ -1272,29 +1272,29 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  */
 export async function clearAccounts(): Promise<void> {
 	const path = getStoragePath();
-	return withAccountFileLock(path, () =>
-		withStorageLock(async () => {
+	return withStorageLock(async () =>
+		withAccountFileLock(path, async () => {
 			const walPath = getAccountsWalPath(path);
-	const backupPaths = getAccountsBackupRecoveryCandidates(path);
-    const clearPath = async (targetPath: string): Promise<void> => {
-      try {
-        await fs.unlink(targetPath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT") {
-          log.error("Failed to clear account storage artifact", {
-            path: targetPath,
-            error: String(error),
-          });
-        }
-      }
-    };
+			const backupPaths = getAccountsBackupRecoveryCandidates(path);
+			const clearPath = async (targetPath: string): Promise<void> => {
+				try {
+					await fs.unlink(targetPath);
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (code !== "ENOENT") {
+						log.error("Failed to clear account storage artifact", {
+							path: targetPath,
+							error: String(error),
+						});
+					}
+				}
+			};
 
-    try {
-      await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
-    } catch {
-      // Individual path cleanup is already best-effort with per-artifact logging.
-    }
+			try {
+				await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
+			} catch {
+				// Individual path cleanup is already best-effort with per-artifact logging.
+			}
 		}),
 	);
 }
@@ -1313,8 +1313,10 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		let refreshToken: string;
 		try {
 			refreshToken = decryptStorageSecret(refreshTokenRaw, "flagged refresh token").value;
-		} catch {
-			continue;
+		} catch (error) {
+			throw new Error("Failed to decrypt flagged refresh token", {
+				cause: error instanceof Error ? error : undefined,
+			});
 		}
 
 		const flaggedAt = typeof rawAccount.flaggedAt === "number" ? rawAccount.flaggedAt : Date.now();
@@ -1406,7 +1408,7 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
 			log.error("Failed to load flagged account storage", { path, error: String(error) });
-			return empty;
+			throw error;
 		}
 	}
 

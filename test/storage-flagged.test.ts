@@ -148,6 +148,42 @@ describe("flagged account storage", () => {
     expect(existsSync(legacyPath)).toBe(true);
   });
 
+  it("fails fast when flagged refresh token cannot be decrypted", async () => {
+    const previousEncryptionKey = process.env.CODEX_AUTH_ENCRYPTION_KEY;
+    const previousPreviousKey = process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+    try {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef";
+      delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [
+          {
+            refreshToken: "encrypted-token-value",
+            flaggedAt: 1,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "fedcba9876543210fedcba9876543210";
+      await expect(loadFlaggedAccounts()).rejects.toThrow(
+        "Failed to decrypt flagged refresh token",
+      );
+    } finally {
+      if (previousEncryptionKey === undefined) {
+        delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
+      } else {
+        process.env.CODEX_AUTH_ENCRYPTION_KEY = previousEncryptionKey;
+      }
+      if (previousPreviousKey === undefined) {
+        delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+      } else {
+        process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = previousPreviousKey;
+      }
+    }
+  });
+
   it("clears flagged storage and tolerates missing files", async () => {
     await saveFlaggedAccounts({
       version: 1,

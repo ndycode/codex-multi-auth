@@ -53,7 +53,7 @@ describe("file lock", () => {
 				maxDelayMs: 2,
 				staleAfterMs: 10_000,
 			}),
-		).rejects.toBeTruthy();
+		).rejects.toMatchObject({ code: "EEXIST" });
 
 		await first.release();
 		const second = await acquireFileLock(lockPath, {
@@ -78,6 +78,45 @@ describe("file lock", () => {
 			staleAfterMs: 1_000,
 		});
 		await lock.release();
+	});
+
+	it("does not unlink a newer lock when a stale owner releases late", async () => {
+		const lockPath = join(tempDir, "late-release.lock");
+		const first = await acquireFileLock(lockPath, {
+			maxAttempts: 3,
+			baseDelayMs: 1,
+			maxDelayMs: 2,
+			staleAfterMs: 1_000,
+		});
+		const staleDate = new Date(Date.now() - 120_000);
+		await fs.utimes(lockPath, staleDate, staleDate);
+
+		const second = await acquireFileLock(lockPath, {
+			maxAttempts: 10,
+			baseDelayMs: 1,
+			maxDelayMs: 4,
+			staleAfterMs: 1_000,
+		});
+
+		await first.release();
+
+		await expect(
+			acquireFileLock(lockPath, {
+				maxAttempts: 2,
+				baseDelayMs: 1,
+				maxDelayMs: 2,
+				staleAfterMs: 10_000,
+			}),
+		).rejects.toMatchObject({ code: "EEXIST" });
+
+		await second.release();
+		const third = await acquireFileLock(lockPath, {
+			maxAttempts: 3,
+			baseDelayMs: 1,
+			maxDelayMs: 2,
+			staleAfterMs: 10_000,
+		});
+		await third.release();
 	});
 
 	it("serializes concurrent writes from multiple processes under contention", async () => {

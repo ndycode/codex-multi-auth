@@ -128,7 +128,7 @@ codex auth doctor --fix
 | `codex auth fix --dry-run` | Preview safe repairs |
 | `codex auth fix --live --model gpt-5-codex` | Run repairs with live probe model |
 | `codex auth doctor --fix` | Diagnose and apply safe fixes |
-| `codex auth rotate-secrets --json` | Re-encrypt stored secrets and return rotation summary |
+| `codex auth rotate-secrets --json --idempotency-key <run-id>` | Re-encrypt stored secrets with safe retry semantics for automation |
 
 ---
 

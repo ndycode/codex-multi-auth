@@ -112,7 +112,7 @@ Repair and recovery:
 codex auth fix --dry-run
 codex auth fix --live --model gpt-5-codex
 codex auth doctor --fix
-codex auth rotate-secrets --json
+codex auth rotate-secrets --json --idempotency-key "$CI_JOB_ID"
 ```
 
 ---

@@ -42,8 +42,21 @@ function getDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number): n
 
 function isRetryableByDefault(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	if (typeof code !== "string") return false;
-	return code === "EBUSY" || code === "EPERM" || code === "EAGAIN" || code === "ETIMEDOUT";
+	if (typeof code === "string") {
+		return code === "EBUSY" || code === "EPERM" || code === "EAGAIN" || code === "ETIMEDOUT";
+	}
+	const candidate = error as
+		| { status?: unknown; statusCode?: unknown; response?: { status?: unknown } }
+		| undefined;
+	const status =
+		typeof candidate?.status === "number"
+			? candidate.status
+			: typeof candidate?.statusCode === "number"
+				? candidate.statusCode
+				: typeof candidate?.response?.status === "number"
+					? candidate.response.status
+					: null;
+	return status === 429;
 }
 
 async function appendDeadLetter(entry: DeadLetterEntry): Promise<void> {

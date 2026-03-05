@@ -769,7 +769,13 @@ export class AccountManager {
 			const doSave = async () => {
 				try {
 					if (this.pendingSave) {
-						await this.pendingSave;
+						try {
+							await this.pendingSave;
+						} catch (error) {
+							log.warn("Previous debounced save failed", {
+								error: error instanceof Error ? error.message : String(error),
+							});
+						}
 					}
 					this.pendingSave = runBackgroundJobWithRetry({
 						name: "accounts.saveToDiskDebounced",

@@ -144,4 +144,4 @@ jobs:
         run: npm run build
 
       - name: Run smoke tests
-        run: npm run test -- test/runtime-paths.test.ts test/codex-bin-wrapper.test.ts
+        run: npm run test -- test/runtime-paths.test.ts test/codex-bin-wrapper.test.ts test/file-lock.test.ts test/background-jobs.test.ts

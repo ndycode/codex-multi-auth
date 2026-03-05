@@ -17,6 +17,18 @@ const DEFAULT_POLICY: RetentionPolicy = {
 	quotaCacheDays: 14,
 	dlqDays: 30,
 };
+const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN"]);
+const RETRY_MAX_ATTEMPTS = 5;
+const RETRY_BASE_DELAY_MS = 50;
+
+function isRetryableFsError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+async function sleep(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function parseEnvDays(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -72,24 +84,33 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 			if (code === "ENOENT") {
 				continue;
 			}
+			throw error;
 		}
 	}
 	return removed;
 }
 
 async function pruneSingleFile(path: string, maxAgeMs: number): Promise<boolean> {
-	try {
-		const stats = await fs.stat(path);
-		if (Date.now() - stats.mtimeMs <= maxAgeMs) {
-			return false;
+	let lastError: unknown;
+	for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			const stats = await fs.stat(path);
+			if (Date.now() - stats.mtimeMs <= maxAgeMs) {
+				return false;
+			}
+			await fs.unlink(path);
+			return true;
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return false;
+			if (!isRetryableFsError(error) || attempt >= RETRY_MAX_ATTEMPTS) {
+				throw error;
+			}
+			await sleep(RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1));
 		}
-		await fs.unlink(path);
-		return true;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") return false;
-		throw error;
 	}
+	throw lastError instanceof Error ? lastError : new Error("Retention prune retry exhausted");
 }
 
 export async function enforceDataRetention(

@@ -65,16 +65,57 @@ describe("secrets crypto", () => {
 		expect(isEncryptedSecret("enc:v3:abc:def:ghi:jkl")).toBe(false);
 	});
 
+	it("re-encrypts malformed prefixed plaintext inputs", () => {
+		const malformed = "enc:v2:not-a-valid-envelope";
+		const encrypted = encryptSecret(malformed, "0123456789abcdef0123456789abcdef");
+		expect(encrypted).not.toBe(malformed);
+		expect(encrypted.startsWith("enc:v2:")).toBe(true);
+		const decrypted = decryptSecret(encrypted, {
+			primary: "0123456789abcdef0123456789abcdef",
+			previous: null,
+		});
+		expect(decrypted.value).toBe(malformed);
+	});
+
 	it("reads and trims encryption keys from env", () => {
 		const previousPrimary = process.env.CODEX_AUTH_ENCRYPTION_KEY;
 		const previousSecondary = process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
 		try {
-			process.env.CODEX_AUTH_ENCRYPTION_KEY = "  key-a  ";
-			process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = "\tkey-b\n";
+			process.env.CODEX_AUTH_ENCRYPTION_KEY = "  0123456789abcdef0123456789abcdef  ";
+			process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = "\tfedcba9876543210fedcba9876543210\n";
 			expect(getSecretEncryptionKeysFromEnv()).toEqual({
-				primary: "key-a",
-				previous: "key-b",
+				primary: "0123456789abcdef0123456789abcdef",
+				previous: "fedcba9876543210fedcba9876543210",
 			});
+		} finally {
+			if (previousPrimary === undefined) {
+				delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
+			} else {
+				process.env.CODEX_AUTH_ENCRYPTION_KEY = previousPrimary;
+			}
+			if (previousSecondary === undefined) {
+				delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+			} else {
+				process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = previousSecondary;
+			}
+		}
+	});
+
+	it("rejects weak key material from environment", () => {
+		const previousPrimary = process.env.CODEX_AUTH_ENCRYPTION_KEY;
+		const previousSecondary = process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+		try {
+			process.env.CODEX_AUTH_ENCRYPTION_KEY = "short";
+			delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+			expect(() => getSecretEncryptionKeysFromEnv()).toThrow(
+				"CODEX_AUTH_ENCRYPTION_KEY must contain at least 32 bytes of key material",
+			);
+
+			process.env.CODEX_AUTH_ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef";
+			process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = "tiny";
+			expect(() => getSecretEncryptionKeysFromEnv()).toThrow(
+				"CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY must contain at least 32 bytes of key material",
+			);
 		} finally {
 			if (previousPrimary === undefined) {
 				delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
