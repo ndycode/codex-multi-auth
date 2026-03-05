@@ -447,6 +447,9 @@ async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> 
 			}
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
+			if (isTransientUnlinkCode(code)) {
+				shouldAdvanceLastRunAt = false;
+			}
 			if (code !== "ENOENT") {
 				log.warn("Failed to scan for stale rotating backup artifacts", {
 					path,
@@ -462,6 +465,10 @@ async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> 
 	try {
 		await cleanupPromise;
 	} finally {
+		const latestState = rotatingBackupCleanupState.get(path);
+		if (!latestState || latestState.inFlight !== cleanupPromise) {
+			return;
+		}
 		rotatingBackupCleanupState.set(path, {
 			lastRunAt: shouldAdvanceLastRunAt
 				? Date.now()

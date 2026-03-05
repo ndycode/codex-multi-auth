@@ -818,6 +818,109 @@ describe("storage", () => {
       expect(cleanupScanCount).toBe(1);
     });
 
+    it("isolates cleanup scans across in-flight storage path transitions", async () => {
+      const oldDir = join(
+        testWorkDir,
+        `accounts-transition-old-${Math.random().toString(36).slice(2)}`,
+      );
+      const newDir = join(
+        testWorkDir,
+        `accounts-transition-new-${Math.random().toString(36).slice(2)}`,
+      );
+      const oldStoragePath = join(oldDir, "accounts.json");
+      const newStoragePath = join(newDir, "accounts.json");
+      const oldArtifactPath = `${oldStoragePath}.bak.rotate.transition.tmp`;
+
+      await fs.mkdir(oldDir, { recursive: true });
+      await fs.mkdir(newDir, { recursive: true });
+      await fs.writeFile(
+        oldStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "transition-old-refresh-token",
+              accountId: "acct-transition-old",
+              email: "transition-old@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(
+        newStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "transition-new-refresh-token",
+              accountId: "acct-transition-new",
+              email: "transition-new@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(oldArtifactPath, "stale", "utf-8");
+
+      const originalReaddir = fs.readdir.bind(fs);
+      let oldScanCount = 0;
+      let newScanCount = 0;
+      let releaseOldScan: (() => void) | null = null;
+      const oldScanGate = new Promise<void>((resolve) => {
+        releaseOldScan = resolve;
+      });
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === oldDir) {
+            oldScanCount += 1;
+            if (oldScanCount === 1) {
+              await oldScanGate;
+            }
+          } else if (typeof targetPath === "string" && targetPath === newDir) {
+            newScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+
+      try {
+        setStoragePathDirect(oldStoragePath);
+        const firstLoad = loadAccounts();
+
+        await vi.waitFor(() => {
+          expect(oldScanCount).toBeGreaterThanOrEqual(1);
+        }, { timeout: 200 });
+
+        setStoragePathDirect(newStoragePath);
+        const secondLoad = loadAccounts();
+
+        await vi.waitFor(() => {
+          expect(newScanCount).toBeGreaterThanOrEqual(1);
+        }, { timeout: 200 });
+
+        releaseOldScan?.();
+        const [firstResult, secondResult] = await Promise.all([firstLoad, secondLoad]);
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        readdirSpy.mockRestore();
+        releaseOldScan?.();
+      }
+
+      expect(oldScanCount).toBe(1);
+      expect(newScanCount).toBe(1);
+      expect(existsSync(oldArtifactPath)).toBe(false);
+      expect(existsSync(newStoragePath)).toBe(true);
+    });
+
     it("retries transient stale-artifact unlink failures before succeeding", async () => {
       const localStoragePath = join(
         testWorkDir,

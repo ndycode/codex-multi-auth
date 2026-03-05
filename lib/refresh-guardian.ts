@@ -135,12 +135,13 @@ export class RefreshGuardian {
 				snapshotByIndex.set(candidate.index, candidate);
 			}
 			const liveAccounts = manager.getAccountsSnapshot();
+			const liveAccountByIndex = new Map<number, (typeof liveAccounts)[number]>();
 			const liveIndexByRefreshToken = new Map<string, number[]>();
-			for (let i = 0; i < liveAccounts.length; i += 1) {
-				const candidate = liveAccounts[i];
+			for (const candidate of liveAccounts) {
+				liveAccountByIndex.set(candidate.index, candidate);
 				if (!candidate?.refreshToken) continue;
 				const indexes = liveIndexByRefreshToken.get(candidate.refreshToken) ?? [];
-				indexes.push(i);
+				indexes.push(candidate.index);
 				liveIndexByRefreshToken.set(candidate.refreshToken, indexes);
 			}
 
@@ -156,23 +157,19 @@ export class RefreshGuardian {
 						const sourceEmail = normalizeEmail(sourceAccount.email);
 						if (sourceAccount.accountId) {
 							resolvedIndex = candidates.find((candidateIndex) => {
-								const candidate = liveAccounts[candidateIndex];
+								const candidate = liveAccountByIndex.get(candidateIndex);
 								return candidate?.accountId === sourceAccount.accountId;
 							});
 						}
 						if (resolvedIndex === undefined && sourceEmail) {
 							resolvedIndex = candidates.find((candidateIndex) => {
-								const candidate = liveAccounts[candidateIndex];
+								const candidate = liveAccountByIndex.get(candidateIndex);
 								return normalizeEmail(candidate?.email) === sourceEmail;
 							});
 						}
 					}
 				}
-				if (
-					resolvedIndex === undefined &&
-					sourceAccount.index >= 0 &&
-					sourceAccount.index < liveAccounts.length
-				) {
+				if (resolvedIndex === undefined) {
 					resolvedIndex = sourceAccount.index;
 				}
 				const account =

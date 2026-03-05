@@ -746,6 +746,21 @@ describe("OpenAIOAuthPlugin", () => {
 	});
 
 		describe("codex-metrics tool", () => {
+			const restoreEnv = (key: string, previous: string | undefined): void => {
+				if (previous === undefined) {
+					delete process.env[key];
+					return;
+				}
+				process.env[key] = previous;
+			};
+
+			const metricValue = (report: string, label: string): number => {
+				const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const match = report.match(new RegExp(`^${escapedLabel}: (\\d+)$`, "m"));
+				expect(match, `missing metric line for ${label}`).not.toBeNull();
+				return Number(match?.[1] ?? "NaN");
+			};
+
 			it("shows runtime metrics with numeric formatting and parallel aggregation", async () => {
 				const readNumericMetric = (
 					report: string,
@@ -846,23 +861,9 @@ describe("OpenAIOAuthPlugin", () => {
 				const previousVitestWorkerId = process.env.VITEST_WORKER_ID;
 				const previousNodeEnv = process.env.NODE_ENV;
 				const previousSkipHydrate = process.env.CODEX_SKIP_EMAIL_HYDRATE;
-				const restoreEnv = (key: string, previous: string | undefined): void => {
-					if (previous === undefined) {
-						delete process.env[key];
-						return;
-					}
-					process.env[key] = previous;
-				};
 				delete process.env.VITEST_WORKER_ID;
 				process.env.NODE_ENV = "development";
 				delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
-
-				const metricValue = (report: string, label: string): number => {
-					const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-					const match = report.match(new RegExp(`^${escapedLabel}: (\\d+)$`, "m"));
-					expect(match, `missing metric line for ${label}`).not.toBeNull();
-					return Number(match?.[1] ?? "NaN");
-				};
 
 				mockStorage.accounts = Array.from({ length: 6 }, (_, index) => ({
 					accountId: `acc-${index}`,
@@ -918,23 +919,9 @@ describe("OpenAIOAuthPlugin", () => {
 				const previousVitestWorkerId = process.env.VITEST_WORKER_ID;
 				const previousNodeEnv = process.env.NODE_ENV;
 				const previousSkipHydrate = process.env.CODEX_SKIP_EMAIL_HYDRATE;
-				const restoreEnv = (key: string, previous: string | undefined): void => {
-					if (previous === undefined) {
-						delete process.env[key];
-						return;
-					}
-					process.env[key] = previous;
-				};
 				delete process.env.VITEST_WORKER_ID;
 				process.env.NODE_ENV = "development";
 				delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
-
-				const metricValue = (report: string, label: string): number => {
-					const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-					const match = report.match(new RegExp(`^${escapedLabel}: (\\d+)$`, "m"));
-					expect(match, `missing metric line for ${label}`).not.toBeNull();
-					return Number(match?.[1] ?? "NaN");
-				};
 
 				mockStorage.accounts = Array.from({ length: 6 }, (_, index) => ({
 					accountId: `acc-${index}`,

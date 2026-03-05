@@ -289,9 +289,11 @@ describe("refresh-guardian", () => {
       accountId: "acc-b",
       email: "b@example.com",
     };
+    const liveA = { ...accountA, index: 10 };
+    const liveB = { ...accountB, index: 20 };
     const snapshots = [
       [accountA, accountB],
-      [accountA, accountB],
+      [liveB, liveA],
     ];
     let readCount = 0;
     const manager = {
@@ -299,7 +301,8 @@ describe("refresh-guardian", () => {
         () => snapshots[Math.min(readCount++, snapshots.length - 1)],
       ),
       getAccountByIndex: vi.fn(
-        (index: number) => snapshots[1]?.[index] ?? null,
+        (index: number) =>
+          snapshots[1]?.find((account) => account.index === index) ?? null,
       ),
       clearAuthFailures: vi.fn(),
       markAccountCoolingDown: vi.fn(),
@@ -333,11 +336,11 @@ describe("refresh-guardian", () => {
 
     expect(applyRefreshResultMock).toHaveBeenCalledTimes(1);
     expect(applyRefreshResultMock).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 0, accountId: "acc-a" }),
+      expect.objectContaining({ index: 10, accountId: "acc-a" }),
       expect.objectContaining({ type: "success" }),
     );
     expect(applyRefreshResultMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ index: 1, accountId: "acc-b" }),
+      expect.objectContaining({ index: 20, accountId: "acc-b" }),
       expect.anything(),
     );
   });
@@ -726,7 +729,8 @@ describe("refresh-guardian", () => {
         return liveAfterRemoval;
       }),
       getAccountByIndex: vi.fn(
-        (index: number) => liveAfterRemoval[index] ?? null,
+        (index: number) =>
+          liveAfterRemoval.find((account) => account.index === index) ?? null,
       ),
       clearAuthFailures: vi.fn(),
       markAccountCoolingDown: vi.fn(),
