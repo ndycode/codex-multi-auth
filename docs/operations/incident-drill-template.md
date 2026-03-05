@@ -41,6 +41,12 @@ codex auth report --live --json
 codex auth doctor --json
 ```
 
+```powershell
+npm run ops:health-check
+codex auth report --live --json
+codex auth doctor --json
+```
+
 Attach:
 
 - command outputs

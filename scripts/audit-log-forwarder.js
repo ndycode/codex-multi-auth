@@ -90,12 +90,29 @@ async function loadCheckpoint(path) {
 }
 
 async function discoverAuditFiles(logDir) {
-	if (!existsSync(logDir)) return [];
-	const entries = await readdir(logDir, { withFileTypes: true });
+	let entries;
+	try {
+		entries = await readdir(logDir, { withFileTypes: true });
+	} catch (error) {
+		const code = error?.code;
+		if (code === "ENOENT" || code === "ENOTDIR") {
+			return [];
+		}
+		throw error;
+	}
 	const files = [];
 	for (const entry of entries) {
 		if (!entry.isFile()) continue;
 		if (!entry.name.startsWith("audit") || !entry.name.endsWith(".log")) continue;
+		try {
+			await stat(join(logDir, entry.name));
+		} catch (error) {
+			const code = error?.code;
+			if (code === "ENOENT" || code === "ENOTDIR") {
+				continue;
+			}
+			throw error;
+		}
 		files.push(entry.name);
 	}
 	files.sort((a, b) => {
@@ -329,13 +346,20 @@ async function withCheckpointLock(checkpointPath, action) {
 async function writeCheckpointAtomic(checkpointPath, checkpoint) {
 	const tmpPath = `${checkpointPath}.${process.pid}.${Date.now()}.tmp`;
 	await withCheckpointLock(checkpointPath, async () => {
-		await writeFile(tmpPath, `${JSON.stringify(checkpoint, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
-		await rename(tmpPath, checkpointPath);
+		try {
+			await writeFile(tmpPath, `${JSON.stringify(checkpoint, null, 2)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			await rename(tmpPath, checkpointPath);
+		} finally {
+			await unlink(tmpPath).catch((error) => {
+				if (error?.code !== "ENOENT") {
+					throw error;
+				}
+			});
+		}
 	});
-	await unlink(tmpPath).catch(() => {});
 }
 
 async function main() {
@@ -401,9 +425,16 @@ async function main() {
 		return newest ? join(logDir, newest) : null;
 	})();
 	let newestLogMtimeMs = null;
-	if (newestMtime && existsSync(newestMtime)) {
-		const metadata = await stat(newestMtime);
-		newestLogMtimeMs = metadata.mtimeMs;
+	if (newestMtime) {
+		try {
+			const metadata = await stat(newestMtime);
+			newestLogMtimeMs = metadata.mtimeMs;
+		} catch (error) {
+			const code = error?.code;
+			if (code !== "ENOENT" && code !== "ENOTDIR") {
+				throw error;
+			}
+		}
 	}
 
 	console.log(

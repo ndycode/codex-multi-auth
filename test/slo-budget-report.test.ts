@@ -138,4 +138,40 @@ describe("slo-budget-report script", () => {
 		expect(execFileSync.mock.calls[0][1]).toEqual(["scripts\\enterprise-health-check.js"]);
 		expect(payload.status).toBe("pass");
 	});
+
+	it("treats ENOTDIR log path churn as no audit entries instead of crashing", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "slo-budget-enotdir-"));
+		fixtures.push(root);
+		const logDirFile = path.join(root, "logs");
+		const policyPath = path.join(root, "policy.json");
+		await fs.writeFile(logDirFile, "not-a-directory\n", "utf8");
+		await fs.writeFile(
+			policyPath,
+			JSON.stringify({
+				windowDays: 7,
+				objectives: {
+					requestSuccessRatePercent: 99.9,
+				},
+			}),
+			"utf8",
+		);
+
+		const result = spawnSync(process.execPath, [scriptPath, `--policy=${policyPath}`], {
+			encoding: "utf8",
+			env: {
+				...process.env,
+				CODEX_MULTI_AUTH_DIR: root,
+			},
+		});
+
+		expect(result.status).toBe(0);
+		const payload = JSON.parse(result.stdout) as {
+			command?: string;
+			entriesConsidered?: number;
+			status?: string;
+		};
+		expect(payload.command).toBe("slo-budget-report");
+		expect(payload.entriesConsidered).toBe(0);
+		expect(payload.status).toBe("pass");
+	});
 });

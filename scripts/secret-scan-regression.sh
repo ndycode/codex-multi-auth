@@ -86,7 +86,7 @@ function walk(dir) {
       continue;
     }
     if (!entry.isFile()) continue;
-    const rel = path.relative(sourceDir, full).replace(/\\\\/g, "/");
+    const rel = path.relative(sourceDir, full).replace(/\\/g, "/");
     const content = fs.readFileSync(full, "utf8");
     if (!secretPattern.test(content)) continue;
     if (allowlistedFixture.test(rel)) continue;

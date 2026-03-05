@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const root = join(workspace, ".tmp", "health-fixture");
 const logsDir = join(root, "logs");
 
-mkdirSync(logsDir, { recursive: true });
+mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+const accountsPath = join(root, "openai-codex-accounts.json");
 writeFileSync(
-	join(root, "openai-codex-accounts.json"),
+	accountsPath,
 	`${JSON.stringify(
 		{
 			version: 4,
@@ -34,15 +35,32 @@ writeFileSync(
 		null,
 		2,
 	)}\n`,
-	"utf8",
+	{ encoding: "utf8", mode: 0o600 },
 );
+try {
+	chmodSync(accountsPath, 0o600);
+} catch {
+	// Best-effort hardening for non-posix environments.
+}
+const settingsPath = join(root, "settings.json");
 writeFileSync(
-	join(root, "settings.json"),
+	settingsPath,
 	`${JSON.stringify({ version: 1, pluginConfig: {}, dashboardDisplaySettings: {} }, null, 2)}\n`,
-	"utf8",
+	{ encoding: "utf8", mode: 0o600 },
 );
+try {
+	chmodSync(settingsPath, 0o600);
+} catch {
+	// Best-effort hardening for non-posix environments.
+}
+const auditPath = join(logsDir, "audit.log");
 writeFileSync(
-	join(logsDir, "audit.log"),
+	auditPath,
 	`${JSON.stringify({ timestamp: new Date().toISOString(), action: "request.start", outcome: "success" })}\n`,
-	"utf8",
+	{ encoding: "utf8", mode: 0o600 },
 );
+try {
+	chmodSync(auditPath, 0o600);
+} catch {
+	// Best-effort hardening for non-posix environments.
+}

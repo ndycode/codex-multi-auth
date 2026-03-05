@@ -30,7 +30,16 @@ function resolveRoot() {
 
 async function loadAuditEntries(logDir, cutoffMs) {
 	if (!existsSync(logDir)) return [];
-	const entries = await readdir(logDir, { withFileTypes: true });
+	let entries;
+	try {
+		entries = await readdir(logDir, { withFileTypes: true });
+	} catch (error) {
+		const code = error?.code;
+		if (code === "ENOENT" || code === "ENOTDIR") {
+			return [];
+		}
+		throw error;
+	}
 	const files = entries
 		.filter((entry) => entry.isFile() && entry.name.startsWith("audit") && entry.name.endsWith(".log"))
 		.map((entry) => entry.name)
@@ -39,7 +48,16 @@ async function loadAuditEntries(logDir, cutoffMs) {
 	const output = [];
 	for (const file of files) {
 		const fullPath = join(logDir, file);
-		const raw = await readFile(fullPath, "utf8");
+		let raw;
+		try {
+			raw = await readFile(fullPath, "utf8");
+		} catch (error) {
+			const code = error?.code;
+			if (code === "ENOENT" || code === "ENOTDIR") {
+				continue;
+			}
+			throw error;
+		}
 		for (const line of raw.split(/\r?\n/)) {
 			if (!line.trim()) continue;
 			try {

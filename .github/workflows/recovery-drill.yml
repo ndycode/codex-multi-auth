@@ -37,6 +37,7 @@ jobs:
         run: node scripts/enterprise-health-check.js > .tmp/recovery-drill-health.json 2>&1
 
       - name: Upload recovery drill artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: recovery-drill-artifacts

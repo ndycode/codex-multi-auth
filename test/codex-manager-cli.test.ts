@@ -18,6 +18,7 @@ const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const selectMock = vi.fn();
+const auditLogMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -27,7 +28,16 @@ vi.mock("../lib/logger.js", () => ({
 		error: vi.fn(),
 	})),
 	logWarn: vi.fn(),
+	maskEmail: vi.fn((email: string) => email.replace(/^(.).+(@.*)$/, "$1***$2")),
 }));
+
+vi.mock("../lib/audit.js", async () => {
+	const actual = await vi.importActual("../lib/audit.js");
+	return {
+		...(actual as Record<string, unknown>),
+		auditLog: auditLogMock,
+	};
+});
 
 vi.mock("../lib/auth/auth.js", () => ({
 	createAuthorizationFlow: vi.fn(),
@@ -198,6 +208,7 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		selectMock.mockReset();
+		auditLogMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -1968,6 +1979,122 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(false);
+	});
+
+	it("maps audited commands to expected actions and outcomes", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const { AuditAction, AuditOutcome } = await import("../lib/audit.js");
+		const { createAuthorizationFlow } = await import("../lib/auth/auth.js");
+
+		vi.mocked(createAuthorizationFlow).mockRejectedValueOnce(new Error("mock login failure"));
+		await expect(runCodexMultiAuthCli(["auth", "login"])).rejects.toThrow("mock login failure");
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.AUTH_LOGIN,
+			"cli-user",
+			"codex auth login",
+			AuditOutcome.FAILURE,
+			expect.objectContaining({ command: "login", error: expect.any(String) }),
+		);
+
+		auditLogMock.mockClear();
+		const switchCode = await runCodexMultiAuthCli(["auth", "switch"]);
+		expect(switchCode).toBe(1);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.ACCOUNT_SWITCH,
+			"cli-user",
+			"codex auth switch",
+			AuditOutcome.FAILURE,
+			expect.objectContaining({ command: "switch", exitCode: 1 }),
+		);
+
+		auditLogMock.mockClear();
+		loadAccountsMock.mockResolvedValueOnce(null);
+		const checkCode = await runCodexMultiAuthCli(["auth", "check"]);
+		expect(checkCode).toBe(0);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.REQUEST_START,
+			"cli-user",
+			"codex auth check",
+			AuditOutcome.SUCCESS,
+			expect.objectContaining({ command: "check", exitCode: 0 }),
+		);
+
+		auditLogMock.mockClear();
+		loadFlaggedAccountsMock.mockResolvedValueOnce({ version: 1, accounts: [] });
+		const verifyCode = await runCodexMultiAuthCli(["auth", "verify-flagged", "--json"]);
+		expect(verifyCode).toBe(0);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.ACCOUNT_REFRESH,
+			"cli-user",
+			"codex auth verify-flagged",
+			AuditOutcome.SUCCESS,
+			expect.objectContaining({ command: "verify-flagged", exitCode: 0 }),
+		);
+
+		auditLogMock.mockClear();
+		loadAccountsMock.mockResolvedValueOnce(null);
+		const forecastCode = await runCodexMultiAuthCli(["auth", "forecast", "--json"]);
+		expect(forecastCode).toBe(0);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.COMMAND_RUN,
+			"cli-user",
+			"codex auth forecast",
+			AuditOutcome.SUCCESS,
+			expect.objectContaining({ command: "forecast", exitCode: 0 }),
+		);
+
+		auditLogMock.mockClear();
+		loadAccountsMock.mockResolvedValueOnce(null);
+		const statusCode = await runCodexMultiAuthCli(["auth", "status"]);
+		expect(statusCode).toBe(0);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.COMMAND_RUN,
+			"cli-user",
+			"codex auth status",
+			AuditOutcome.SUCCESS,
+			expect.objectContaining({ command: "status", exitCode: 0 }),
+		);
+	});
+
+	it("sanitizes audited thrown errors with token and email redaction", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const { AuditAction, AuditOutcome } = await import("../lib/audit.js");
+		const secretError = new Error(
+			[
+				"EBUSY while refreshing account",
+				"HTTP 429 from upstream",
+				"user@example.com",
+				"sk-test-secret-abcdefghijklmnopqrstuvwxyz",
+				"refresh_token_sensitive-abcdef12",
+				"access_token_sensitive-qwerty12",
+				"secret-access-token",
+				"x".repeat(260),
+			].join(" | "),
+		);
+		loadAccountsMock.mockRejectedValueOnce(secretError);
+
+		await expect(runCodexMultiAuthCli(["auth", "status"])).rejects.toThrow(secretError);
+		expect(auditLogMock).toHaveBeenCalledTimes(1);
+
+		const call = auditLogMock.mock.calls[0];
+		expect(call?.[0]).toBe(AuditAction.COMMAND_RUN);
+		expect(call?.[3]).toBe(AuditOutcome.FAILURE);
+		const metadata = call?.[4] as Record<string, unknown> | undefined;
+		const sanitizedError = typeof metadata?.error === "string" ? metadata.error : "";
+		expect(sanitizedError.length).toBeLessThanOrEqual(200);
+		expect(sanitizedError).toContain("EBUSY");
+		expect(sanitizedError).toContain("429");
+		expect(sanitizedError).not.toContain("sk-test-secret-abcdefghijklmnopqrstuvwxyz");
+		expect(sanitizedError).not.toContain("refresh_token_sensitive-abcdef12");
+		expect(sanitizedError).not.toContain("access_token_sensitive-qwerty12");
+		expect(sanitizedError).not.toContain("secret-access-token");
+		expect(sanitizedError).not.toContain("user@example.com");
+		expect(sanitizedError).toContain("***REDACTED***");
 	});
 
 	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {

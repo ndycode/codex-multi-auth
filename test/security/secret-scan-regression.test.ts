@@ -49,6 +49,7 @@ describe("secret scan regression harness", () => {
 		const gitleaksConfig = await fs.readFile(path.join(repoRoot, ".gitleaks.toml"), "utf8");
 		expect(gitleaksConfig).toContain("^test[\\\\/]security[\\\\/]fixtures[\\\\/]");
 		expect(/^test[\\/]security[\\/]fixtures[\\/]/i.test("test\\security\\fixtures\\fixture.txt")).toBe(true);
+		expect("test\\security\\fixtures\\fixture.txt".replace(/\\/g, "/")).toBe("test/security/fixtures/fixture.txt");
 
 		const root = mkdtempSync(path.join(tmpdir(), "secret-scan-regression-"));
 		fixtures.push(root);

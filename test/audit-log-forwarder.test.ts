@@ -320,4 +320,41 @@ describe("audit-log-forwarder script", () => {
 			expect(result.stderr).toContain("Timed out acquiring checkpoint lock");
 		});
 	});
+
+	it("continues when newest log disappears before final mtime stat", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "audit-forwarder-newest-race-"));
+		fixtures.push(root);
+		const logDir = path.join(root, "logs");
+		const checkpointPath = path.join(root, "checkpoint.json");
+		const newestLogPath = path.join(logDir, "audit.log");
+		await fs.mkdir(logDir, { recursive: true });
+		await fs.writeFile(
+			newestLogPath,
+			'{"timestamp":"2026-03-01T00:00:00Z","action":"request.start"}\n',
+			"utf8",
+		);
+
+		await withServer(async (_req, res) => {
+			await fs.unlink(newestLogPath).catch(() => {});
+			res.statusCode = 200;
+			res.end("ok");
+		}, async (endpoint) => {
+			const result = await runForwarder([
+				`--endpoint=${endpoint}`,
+				`--log-dir=${logDir}`,
+				`--checkpoint=${checkpointPath}`,
+			]);
+			expect(result.status).toBe(0);
+			const payload = parseJsonStdout(result.stdout);
+			expect(payload.status).toBe("sent");
+			expect(payload.newestLogMtimeMs).toBeNull();
+		});
+
+		const checkpoint = JSON.parse(await fs.readFile(checkpointPath, "utf8")) as {
+			file?: string;
+			line?: number;
+		};
+		expect(checkpoint.file).toBe("audit.log");
+		expect(checkpoint.line).toBe(1);
+	});
 });

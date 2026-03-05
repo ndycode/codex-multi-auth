@@ -16,36 +16,36 @@ Migrate legacy installs to the canonical `codex-multi-auth` workflow on the `0.x
 
 1. Install official Codex CLI:
 
-```bash
-npm i -g @openai/codex
-```
+   ```bash
+   npm i -g @openai/codex
+   ```
 
-1. Remove legacy scoped package if present:
+2. Remove legacy scoped package if present:
 
-```bash
-npm uninstall -g @ndycode/codex-multi-auth
-```
+   ```bash
+   npm uninstall -g @ndycode/codex-multi-auth
+   ```
 
-1. Install canonical package:
+3. Install canonical package:
 
-```bash
-npm i -g codex-multi-auth
-```
+   ```bash
+   npm i -g codex-multi-auth
+   ```
 
-1. Verify routing and status:
+4. Verify routing and status:
 
-```bash
-codex --version
-codex auth status
-```
+   ```bash
+   codex --version
+   codex auth status
+   ```
 
-1. Rebuild account health baseline:
+5. Rebuild account health baseline:
 
-```bash
-codex auth login
-codex auth check
-codex auth forecast --live --model gpt-5-codex
-```
+   ```bash
+   codex auth login
+   codex auth check
+   codex auth forecast --live --model gpt-5-codex
+   ```
 
 ---
 
@@ -68,30 +68,30 @@ Use this flow when migrating existing deployments that were running with plainte
 
 1. Back up runtime state before changing secret storage mode:
 
-```bash
-cp -r ~/.codex/multi-auth ~/.codex/multi-auth.backup
-```
+   ```bash
+   cp -r ~/.codex/multi-auth ~/.codex/multi-auth.backup
+   ```
 
 2. Validate keychain backend availability:
 
-```bash
-npm run ops:keychain-assert
-```
+   ```bash
+   npm run ops:keychain-assert
+   ```
 
 3. Set `CODEX_SECRET_STORAGE_MODE=keychain` in your runtime environment (or use `auto` only after the keychain validation above passes).
 
 4. Trigger a controlled account rewrite so token refs are persisted in v4 format:
 
-```bash
-codex auth check
-codex auth report --live
-```
+   ```bash
+   codex auth check
+   codex auth report --live
+   ```
 
 5. Verify health and storage state:
 
-```bash
-npm run ops:health-check -- --require-files
-```
+   ```bash
+   npm run ops:health-check -- --require-files
+   ```
 
 Windows migration note:
 

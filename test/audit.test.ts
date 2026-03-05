@@ -271,32 +271,31 @@ describe("Audit logging", () => {
 		it("does not throttle purge when a prior directory read fails", () => {
 			const fixedNowMs = 2_000_000_000_000;
 			const nowSpy = vi.spyOn(Date, "now").mockReturnValue(fixedNowMs);
-			const blockedLogDir = join(testLogDir, "blocked-log-dir");
-			writeFileSync(blockedLogDir, "not-a-directory", "utf8");
-			configureAudit({
-				enabled: true,
-				logDir: blockedLogDir,
-				maxFileSizeBytes: 1024,
-				maxFiles: 3,
-				retentionDays: 1,
-			});
-
-			auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
-
-			rmSync(blockedLogDir);
-			mkdirSync(blockedLogDir, { recursive: true });
-			const staleLogPath = join(blockedLogDir, "audit.1.log");
-			writeFileSync(staleLogPath, "stale\n", "utf8");
-			const staleDate = new Date(fixedNowMs - 3 * 24 * 60 * 60 * 1000);
-			utimesSync(staleLogPath, staleDate, staleDate);
-
 			try {
+				const blockedLogDir = join(testLogDir, "blocked-log-dir");
+				writeFileSync(blockedLogDir, "not-a-directory", "utf8");
+				configureAudit({
+					enabled: true,
+					logDir: blockedLogDir,
+					maxFileSizeBytes: 1024,
+					maxFiles: 3,
+					retentionDays: 1,
+				});
+
+				auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+
+				rmSync(blockedLogDir);
+				mkdirSync(blockedLogDir, { recursive: true });
+				const staleLogPath = join(blockedLogDir, "audit.1.log");
+				writeFileSync(staleLogPath, "stale\n", "utf8");
+				const staleDate = new Date(fixedNowMs - 3 * 24 * 60 * 60 * 1000);
+				utimesSync(staleLogPath, staleDate, staleDate);
+
 				auditLog(AuditAction.REQUEST_SUCCESS, "actor", "resource", AuditOutcome.SUCCESS);
+				expect(existsSync(staleLogPath)).toBe(false);
 			} finally {
 				nowSpy.mockRestore();
 			}
-
-			expect(existsSync(staleLogPath)).toBe(false);
 		});
 	});
 

@@ -75,6 +75,6 @@ describe("audit purge retry handling", () => {
 
 		expect(unlinkSync).toHaveBeenCalledTimes(3);
 		expect(writeFileSync).toHaveBeenCalledTimes(1);
-		expect(atomicsWaitSpy).toHaveBeenCalledTimes(2);
+		expect(atomicsWaitSpy).not.toHaveBeenCalled();
 	});
 });
