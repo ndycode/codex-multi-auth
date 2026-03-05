@@ -2400,27 +2400,25 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
 										const count = accountManager.getAccountCount();
-								const jitteredWaitMs = waitMs > 0 ? addJitter(waitMs, 0.2) : 0;
-								const plannedWaitMs =
-									retryAllAccountsAbsoluteCeilingMs > 0
-										? Math.min(
-												jitteredWaitMs,
-												Math.max(
-													0,
-													retryAllAccountsAbsoluteCeilingMs - accumulatedAllRateLimitedWaitMs,
-												),
-											)
-										: jitteredWaitMs;
-								const retryDecision = decideRetryAllAccountsRateLimited({
-									enabled: retryAllAccountsRateLimited,
-									accountCount: count,
-									waitMs: plannedWaitMs,
-									maxWaitMs: retryAllAccountsMaxWaitMs,
-									currentRetryCount: allRateLimitedRetries,
-									maxRetries: retryAllAccountsMaxRetries,
-									accumulatedWaitMs: accumulatedAllRateLimitedWaitMs,
-									absoluteCeilingMs: retryAllAccountsAbsoluteCeilingMs,
-								});
+										const jitteredWaitMs = waitMs > 0 ? addJitter(waitMs, 0.2) : 0;
+										const remainingCeilingMs =
+											retryAllAccountsAbsoluteCeilingMs > 0
+												? Math.max(
+														0,
+														retryAllAccountsAbsoluteCeilingMs - accumulatedAllRateLimitedWaitMs,
+													)
+												: Number.POSITIVE_INFINITY;
+										const plannedWaitMs = Math.min(jitteredWaitMs, remainingCeilingMs);
+										const retryDecision = decideRetryAllAccountsRateLimited({
+											enabled: retryAllAccountsRateLimited,
+											accountCount: count,
+											waitMs,
+											maxWaitMs: retryAllAccountsMaxWaitMs,
+											currentRetryCount: allRateLimitedRetries,
+											maxRetries: retryAllAccountsMaxRetries,
+											accumulatedWaitMs: accumulatedAllRateLimitedWaitMs,
+											absoluteCeilingMs: retryAllAccountsAbsoluteCeilingMs,
+										});
 
 								if (retryDecision.shouldRetry) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
@@ -2439,6 +2437,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										reason: retryDecision.reason,
 										accountCount: count,
 										waitMs,
+										jitteredWaitMs,
 										plannedWaitMs,
 										retryCount: allRateLimitedRetries,
 										accumulatedWaitMs: accumulatedAllRateLimitedWaitMs,
