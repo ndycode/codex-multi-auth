@@ -20,7 +20,7 @@ function parseCliExitCode(value) {
 	}
 	if (typeof value === "string") {
 		const trimmed = value.trim();
-		if (/^[+-]?\d+$/.test(trimmed)) {
+		if (/^\d+$/.test(trimmed)) {
 			const parsed = Number.parseInt(trimmed, 10);
 			if (Number.isInteger(parsed)) {
 				return parsed;

@@ -63,8 +63,18 @@ function runWrapper(fixtureRoot: string, args: string[] = []) {
 }
 
 afterEach(async () => {
+	let firstCleanupError: unknown;
 	for (const dir of createdDirs.splice(0, createdDirs.length)) {
-		await removeDirectoryWithRetry(dir);
+		try {
+			await removeDirectoryWithRetry(dir);
+		} catch (error) {
+			if (firstCleanupError === undefined) {
+				firstCleanupError = error;
+			}
+		}
+	}
+	if (firstCleanupError !== undefined) {
+		throw firstCleanupError;
 	}
 });
 
@@ -124,8 +134,46 @@ describe("codex-multi-auth bin wrapper", () => {
 		expect(result.status).toBe(7);
 	});
 
+	it("propagates zero numeric-string exit codes as success", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli() {",
+				'\treturn "0";',
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["auth", "status"]);
+		expect(result.status).toBe(0);
+	});
+
 	it("normalizes non-decimal numeric-string exit codes to failure", () => {
 		for (const encoded of ["0xff", "0o7"]) {
+			const fixtureRoot = createWrapperFixture();
+			const distLibDir = join(fixtureRoot, "dist", "lib");
+			mkdirSync(distLibDir, { recursive: true });
+			writeFileSync(
+				join(distLibDir, "codex-manager.js"),
+				[
+					"export async function runCodexMultiAuthCli() {",
+					`\treturn "${encoded}";`,
+					"}",
+				].join("\n"),
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, ["auth", "status"]);
+			expect(result.status).toBe(1);
+		}
+	});
+
+	it("normalizes signed numeric-string exit codes to failure", () => {
+		for (const encoded of ["+0", "-0"]) {
 			const fixtureRoot = createWrapperFixture();
 			const distLibDir = join(fixtureRoot, "dist", "lib");
 			mkdirSync(distLibDir, { recursive: true });
@@ -171,6 +219,24 @@ describe("codex-multi-auth bin wrapper", () => {
 			[
 				"export async function runCodexMultiAuthCli() {",
 				'\treturn "";',
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["auth", "status"]);
+		expect(result.status).toBe(1);
+	});
+
+	it("normalizes whitespace-only exit codes to failure", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli() {",
+				'\treturn "   ";',
 				"}",
 			].join("\n"),
 			"utf8",

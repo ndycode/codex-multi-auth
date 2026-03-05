@@ -227,7 +227,6 @@ async function runWithWindowsFsRetry(operation, options = {}) {
 			await sleep(backoffMs * (2 ** (attempt - 1)));
 		}
 	}
-	return undefined;
 }
 
 async function writeFileSyncWithWindowsRetry(filePath, content, options) {
