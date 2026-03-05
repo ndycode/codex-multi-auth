@@ -306,6 +306,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	it("consumes remaining ceiling budget under -20% jitter without premature stop", async () => {
 		process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = "1600";
 		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "2";
+		mockInitialNullCalls = 2;
 		vi.spyOn(Math, "random").mockReturnValue(0);
 		const { OpenAIAuthPlugin } = await import("../index.js");
 		const client = {
@@ -326,11 +327,17 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const fetchPromise = sdk.fetch("https://example.com", {});
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 
-		await vi.advanceTimersByTimeAsync(1600);
+		await vi.advanceTimersByTimeAsync(1599);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
 		const response = await fetchPromise;
 		expect(response.status).toBe(200);
+
+		const metrics = await plugin.tool["codex-metrics"].execute();
+		const plainMetrics = stripVTControlCharacters(String(metrics));
+		expect(plainMetrics).toContain("Retry governor stops (absolute ceiling): 0");
 	});
 
 	it("keeps retry budgets isolated across overlapping requests", async () => {

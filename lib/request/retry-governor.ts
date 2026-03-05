@@ -2,6 +2,7 @@ export interface RetryAllAccountsRateLimitDecisionInput {
 	enabled: boolean;
 	accountCount: number;
 	waitMs: number;
+	plannedWaitMs?: number;
 	maxWaitMs: number;
 	currentRetryCount: number;
 	maxRetries: number;
@@ -44,11 +45,13 @@ export function decideRetryAllAccountsRateLimited(
 ): RetryAllAccountsRateLimitDecision {
 	const accountCount = clampNonNegative(input.accountCount);
 	const waitMs = clampNonNegative(input.waitMs);
+	const plannedWaitMs = clampNonNegative(input.plannedWaitMs ?? input.waitMs);
 	const maxWaitMs = clampNonNegative(input.maxWaitMs);
 	const currentRetryCount = clampNonNegative(input.currentRetryCount);
 	const maxRetries = normalizeRetryLimit(input.maxRetries);
 	const accumulatedWaitMs = clampNonNegative(input.accumulatedWaitMs);
 	const absoluteCeilingMs = clampNonNegative(input.absoluteCeilingMs);
+	const ceilingCheckWaitMs = accumulatedWaitMs === 0 ? waitMs : plannedWaitMs;
 
 	if (!input.enabled) {
 		return { shouldRetry: false, reason: "disabled" };
@@ -65,7 +68,7 @@ export function decideRetryAllAccountsRateLimited(
 	if (currentRetryCount >= maxRetries) {
 		return { shouldRetry: false, reason: "retry-limit-reached" };
 	}
-	if (absoluteCeilingMs > 0 && accumulatedWaitMs + waitMs > absoluteCeilingMs) {
+	if (absoluteCeilingMs > 0 && accumulatedWaitMs + ceilingCheckWaitMs > absoluteCeilingMs) {
 		return { shouldRetry: false, reason: "absolute-ceiling-exceeded" };
 	}
 	return { shouldRetry: true, reason: "allowed" };
