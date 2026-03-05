@@ -73,6 +73,7 @@ import {
 
 const log = createLogger("accounts");
 type StoredAccount = AccountStorageV3["accounts"][number];
+const DISK_PREFERRED_MERGE_KEYS = new Set(["refreshToken", "accessToken"]);
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
@@ -858,6 +859,9 @@ export class AccountManager {
 				continue;
 			}
 			const currentValue = nextRecord[rawKey];
+			if (DISK_PREFERRED_MERGE_KEYS.has(rawKey) && currentValue !== undefined) {
+				continue;
+			}
 			if (
 				(rawKey === "lastUsed" || rawKey === "addedAt" || rawKey === "coolingDownUntil") &&
 				typeof currentValue === "number" &&

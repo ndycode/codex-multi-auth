@@ -101,11 +101,17 @@ function readSettingsSnapshotSync(): SettingsSnapshot {
 	}
 
 	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
+	const revision = computeSha256(raw);
+	let parsed: JsonRecord | null;
+	try {
+		parsed = cloneRecord(JSON.parse(raw));
+	} catch {
+		return { record: null, revision };
+	}
 	if (!parsed) {
 		throw new Error("Unified settings must contain a JSON object at the root.");
 	}
-	return { record: parsed, revision: computeSha256(raw) };
+	return { record: parsed, revision };
 }
 
 async function readSettingsSnapshotAsync(): Promise<SettingsSnapshot> {
@@ -123,11 +129,17 @@ async function readSettingsSnapshotAsync(): Promise<SettingsSnapshot> {
 		}
 		throw error;
 	}
-	const parsed = cloneRecord(JSON.parse(raw));
+	const revision = computeSha256(raw);
+	let parsed: JsonRecord | null;
+	try {
+		parsed = cloneRecord(JSON.parse(raw));
+	} catch {
+		return { record: null, revision };
+	}
 	if (!parsed) {
 		throw new Error("Unified settings must contain a JSON object at the root.");
 	}
-	return { record: parsed, revision: computeSha256(raw) };
+	return { record: parsed, revision };
 }
 
 /**
