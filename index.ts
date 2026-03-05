@@ -350,7 +350,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				typeof value === "number" && Number.isFinite(value) && value > now,
 			);
 		if (candidates.length === 0) return null;
-		return Math.min(...candidates);
+		return Math.max(...candidates);
 	};
 
 	const getQuotaCacheBootstrapWaitMs = (
@@ -413,10 +413,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return quotaCacheBootstrapLoadPromise;
 		}
 		quotaCacheBootstrapLoadPromise = (async () => {
-			const loaded = await loadQuotaCache();
-			quotaCacheBootstrapData = loaded;
-			quotaCacheBootstrapLoadedAt = Date.now();
-			return loaded;
+			try {
+				const loaded = await loadQuotaCache();
+				quotaCacheBootstrapData = loaded;
+				quotaCacheBootstrapLoadedAt = Date.now();
+				return loaded;
+			} catch (error) {
+				logWarn(
+					`[${PLUGIN_NAME}] failed to load quota cache bootstrap data: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+				return { byAccountId: {}, byEmail: {} };
+			}
 		})();
 		try {
 			return await quotaCacheBootstrapLoadPromise;
@@ -433,7 +442,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		enabled: boolean,
 	): Promise<void> => {
 		if (!enabled || accountSnapshots.length === 0) return;
-		const cache = await loadQuotaCacheForBootstrap();
+		let cache: QuotaCacheData;
+		try {
+			cache = await loadQuotaCacheForBootstrap();
+		} catch (error) {
+			logWarn(
+				`[${PLUGIN_NAME}] quota cache bootstrap skipped: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return;
+		}
 		const now = Date.now();
 		const modelKey = getQuotaKey(modelFamily, model);
 		const baseKey = getQuotaKey(modelFamily);

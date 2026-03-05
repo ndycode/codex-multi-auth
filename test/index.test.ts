@@ -209,7 +209,7 @@ vi.mock("../lib/quota-cache.js", () => ({
 		updatedInit: init,
 		body: { model: "gpt-5.1" },
 	})),
-		shouldRefreshToken: () => false,
+		shouldRefreshToken: vi.fn(() => false),
 		refreshAndUpdateToken: vi.fn(async (auth: unknown) => auth),
 		createCodexHeaders: vi.fn(() => new Headers()),
 		handleErrorResponse: vi.fn(async (response: Response) => ({ response })),
@@ -1063,6 +1063,16 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		return { plugin, sdk, mockClient };
 	};
 
+	const createDeferred = <T>() => {
+		let resolve!: (value: T) => void;
+		let reject!: (error?: unknown) => void;
+		const promise = new Promise<T>((res, rej) => {
+			resolve = res;
+			reject = rej;
+		});
+		return { promise, resolve, reject };
+	};
+
 	it("returns success response for successful fetch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
@@ -1264,14 +1274,14 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		rateLimitSpy.mockRestore();
 	});
 
-	it("uses quota cache bootstrap to skip an already rate-limited account", async () => {
+	it("uses quota cache bootstrap to skip an already rate-limited account via normalized email fallback", async () => {
 		const now = Date.now();
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		const accountOne = {
 			index: 0,
-			accountId: "acc-1",
-			email: "user1@example.com",
+			accountId: "missing-acc-1",
+			email: "  USER1@Example.com  ",
 			refreshToken: "refresh-1",
 			rateLimitResetTimes: {},
 		};
@@ -1283,8 +1293,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			rateLimitResetTimes: {},
 		};
 		loadQuotaCacheMock.mockResolvedValueOnce({
-			byAccountId: {
-				"acc-1": {
+			byAccountId: {},
+			byEmail: {
+				"user1@example.com": {
 					updatedAt: now,
 					status: 429,
 					model: "gpt-5.1",
@@ -1295,16 +1306,28 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 					secondary: {},
 				},
 			},
-			byEmail: {},
 		});
 		const countSpy = vi
 			.spyOn(AccountManager.prototype, "getAccountCount")
 			.mockReturnValue(2);
 		const selectionSpy = vi
 			.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
-			.mockImplementationOnce(() => accountOne as never)
-			.mockImplementationOnce(() => accountTwo as never)
-			.mockImplementation(() => null as never);
+			.mockImplementation((family: string, model?: string | null) => {
+				const nowMs = Date.now();
+				const accounts = [accountOne, accountTwo];
+				const modelKey = model ? `${family}:${model}` : family;
+				for (const candidate of accounts) {
+					const resets = candidate.rateLimitResetTimes ?? {};
+					const blockedUntil = Math.max(
+						resets[family] ?? 0,
+						resets[modelKey] ?? 0,
+					);
+					if (blockedUntil <= nowMs) {
+						return candidate as never;
+					}
+				}
+				return null as never;
+			});
 		const snapshotSpy = vi
 			.spyOn(AccountManager.prototype, "getAccountsSnapshot")
 			.mockReturnValue([accountOne, accountTwo] as never);
@@ -1321,6 +1344,24 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				refresh: `refresh-${account.accountId ?? "unknown"}`,
 				expires: Date.now() + 60_000,
 			}));
+		const markRateLimitSpy = vi
+			.spyOn(AccountManager.prototype, "markRateLimitedWithReason")
+			.mockImplementation(
+				(
+					account: { rateLimitResetTimes?: Record<string, number> },
+					waitMs: number,
+					family: string,
+					_reason?: string,
+					model?: string | null,
+				) => {
+					const resetAt = Date.now() + waitMs;
+					account.rateLimitResetTimes = account.rateLimitResetTimes ?? {};
+					account.rateLimitResetTimes[family] = resetAt;
+					if (model) {
+						account.rateLimitResetTimes[`${family}:${model}`] = resetAt;
+					}
+				},
+			);
 		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
 			(_init, _accountId, accessToken) =>
 				new Headers({ "x-test-access-token": String(accessToken ?? "") }),
@@ -1347,6 +1388,379 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		snapshotSpy.mockRestore();
 		getByIndexSpy.mockRestore();
 		toAuthSpy.mockRestore();
+		markRateLimitSpy.mockRestore();
+	});
+
+	it("uses the furthest quota reset window when bootstrapping rate limits", async () => {
+		const now = Date.now();
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const accountOne = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user1@example.com",
+			refreshToken: "refresh-1",
+			rateLimitResetTimes: {},
+		};
+		const accountTwo = {
+			index: 1,
+			accountId: "acc-2",
+			email: "user2@example.com",
+			refreshToken: "refresh-2",
+			rateLimitResetTimes: {},
+		};
+		loadQuotaCacheMock.mockResolvedValueOnce({
+			byAccountId: {
+				"acc-1": {
+					updatedAt: now,
+					status: 429,
+					model: "gpt-5.1",
+					primary: {
+						usedPercent: 100,
+						resetAtMs: now + 60_000,
+					},
+					secondary: {
+						usedPercent: 100,
+						resetAtMs: now + 5 * 60_000,
+					},
+				},
+			},
+			byEmail: {},
+		});
+		const countSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountCount")
+			.mockReturnValue(2);
+		const selectionSpy = vi
+			.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
+			.mockImplementation((family: string, model?: string | null) => {
+				const nowMs = Date.now();
+				const accounts = [accountOne, accountTwo];
+				const modelKey = model ? `${family}:${model}` : family;
+				for (const candidate of accounts) {
+					const resets = candidate.rateLimitResetTimes ?? {};
+					const blockedUntil = Math.max(
+						resets[family] ?? 0,
+						resets[modelKey] ?? 0,
+					);
+					if (blockedUntil <= nowMs) {
+						return candidate as never;
+					}
+				}
+				return null as never;
+			});
+		const snapshotSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountsSnapshot")
+			.mockReturnValue([accountOne, accountTwo] as never);
+		const getByIndexSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountByIndex")
+			.mockImplementation((index: number) =>
+				(index === 0 ? accountOne : index === 1 ? accountTwo : null) as never,
+			);
+		const toAuthSpy = vi
+			.spyOn(AccountManager.prototype, "toAuthDetails")
+			.mockImplementation((account: { accountId?: string }) => ({
+				type: "oauth" as const,
+				access: `access-${account.accountId ?? "unknown"}`,
+				refresh: `refresh-${account.accountId ?? "unknown"}`,
+				expires: Date.now() + 60_000,
+			}));
+		const markRateLimitSpy = vi
+			.spyOn(AccountManager.prototype, "markRateLimitedWithReason")
+			.mockImplementation(
+				(
+					account: { rateLimitResetTimes?: Record<string, number> },
+					waitMs: number,
+					family: string,
+					_reason?: string,
+					model?: string | null,
+				) => {
+					const resetAt = Date.now() + waitMs;
+					account.rateLimitResetTimes = account.rateLimitResetTimes ?? {};
+					account.rateLimitResetTimes[family] = resetAt;
+					if (model) {
+						account.rateLimitResetTimes[`${family}:${model}`] = resetAt;
+					}
+				},
+			);
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, _accountId, accessToken) =>
+				new Headers({ "x-test-access-token": String(accessToken ?? "") }),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		const headers = new Headers(
+			(vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit)?.headers,
+		);
+		expect(headers.get("x-test-access-token")).toBe("access-acc-2");
+		const bootstrapWaitMs = markRateLimitSpy.mock.calls
+			.map((call) => call[1])
+			.find((value): value is number => typeof value === "number");
+		expect(bootstrapWaitMs).toBeGreaterThanOrEqual(4 * 60_000);
+		countSpy.mockRestore();
+		selectionSpy.mockRestore();
+		snapshotSpy.mockRestore();
+		getByIndexSpy.mockRestore();
+		toAuthSpy.mockRestore();
+		markRateLimitSpy.mockRestore();
+	});
+
+	it("loads quota bootstrap cache once for concurrent fetch calls", async () => {
+		const testNow = Date.now() + 31 * 60_000;
+		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(testNow);
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		try {
+			const deferredLoad = createDeferred<{ byAccountId: Record<string, never>; byEmail: Record<string, never> }>();
+			loadQuotaCacheMock.mockImplementationOnce(() => deferredLoad.promise);
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+				(_init, _accountId, accessToken) =>
+					new Headers({ "x-test-access-token": String(accessToken ?? "") }),
+			);
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+			const { sdk } = await setupPlugin();
+			const firstRequest = sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			const secondRequest = sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			for (let attempt = 0; attempt < 20 && loadQuotaCacheMock.mock.calls.length === 0; attempt += 1) {
+				await Promise.resolve();
+			}
+
+			expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
+			deferredLoad.resolve({ byAccountId: {}, byEmail: {} });
+			const [firstResponse, secondResponse] = await Promise.all([firstRequest, secondRequest]);
+			expect(firstResponse.status).toBe(200);
+			expect(secondResponse.status).toBe(200);
+			expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		} finally {
+			nowSpy.mockRestore();
+		}
+	});
+
+	it("handles token refresh races while rotating away from a bootstrap-rate-limited account", async () => {
+		const now = Date.now() + 31 * 60_000;
+		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		try {
+			const accountOne = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user1@example.com",
+			refreshToken: "refresh-1",
+			rateLimitResetTimes: {},
+		};
+			const accountTwo = {
+			index: 1,
+			accountId: "acc-2",
+			email: "user2@example.com",
+			refreshToken: "refresh-2",
+			rateLimitResetTimes: {},
+		};
+			loadQuotaCacheMock.mockResolvedValueOnce({
+			byAccountId: {
+				"acc-1": {
+					updatedAt: now,
+					status: 429,
+					model: "gpt-5.1",
+					primary: {
+						usedPercent: 100,
+						resetAtMs: now + 2 * 60_000,
+					},
+					secondary: {},
+				},
+			},
+			byEmail: {},
+		});
+			const countSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountCount")
+			.mockReturnValue(2);
+			const selectionSpy = vi
+			.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
+			.mockImplementation((family: string, model?: string | null) => {
+				const nowMs = Date.now();
+				const accounts = [accountOne, accountTwo];
+				const modelKey = model ? `${family}:${model}` : family;
+				for (const candidate of accounts) {
+					const resets = candidate.rateLimitResetTimes ?? {};
+					const blockedUntil = Math.max(
+						resets[family] ?? 0,
+						resets[modelKey] ?? 0,
+					);
+					if (blockedUntil <= nowMs) {
+						return candidate as never;
+					}
+				}
+				return null as never;
+			});
+			const snapshotSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountsSnapshot")
+			.mockReturnValue([accountOne, accountTwo] as never);
+			const getByIndexSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountByIndex")
+			.mockImplementation((index: number) =>
+				(index === 0 ? accountOne : index === 1 ? accountTwo : null) as never,
+			);
+			const toAuthSpy = vi
+			.spyOn(AccountManager.prototype, "toAuthDetails")
+			.mockImplementation((account: { accountId?: string }) => {
+				const accountId = account.accountId ?? "unknown";
+				return {
+					type: "oauth" as const,
+					access: `stale-${accountId}`,
+					refresh: `refresh-${accountId}`,
+					expires: Date.now() - 60_000,
+				};
+			});
+			const markRateLimitSpy = vi
+			.spyOn(AccountManager.prototype, "markRateLimitedWithReason")
+			.mockImplementation(
+				(
+					account: { rateLimitResetTimes?: Record<string, number> },
+					waitMs: number,
+					family: string,
+					_reason?: string,
+					model?: string | null,
+				) => {
+					const resetAt = Date.now() + waitMs;
+					account.rateLimitResetTimes = account.rateLimitResetTimes ?? {};
+					account.rateLimitResetTimes[family] = resetAt;
+					if (model) {
+						account.rateLimitResetTimes[`${family}:${model}`] = resetAt;
+					}
+				},
+			);
+			const blockedRefresh = createDeferred<{
+			type: "oauth";
+			access: string;
+			refresh: string;
+			expires: number;
+		}>();
+			let blockedRefreshUsed = false;
+			let refreshCallCount = 0;
+			vi.mocked(fetchHelpers.shouldRefreshToken).mockImplementation(
+			(auth: { access?: string }) => auth.access?.startsWith("stale-") ?? false,
+		);
+			vi.mocked(fetchHelpers.refreshAndUpdateToken).mockImplementation(
+			async (auth: { refresh: string }) => {
+				refreshCallCount += 1;
+				if (!blockedRefreshUsed) {
+					blockedRefreshUsed = true;
+					return blockedRefresh.promise;
+				}
+				return {
+					type: "oauth" as const,
+					access: `refreshed-${refreshCallCount}`,
+					refresh: auth.refresh,
+					expires: Date.now() + 60_000,
+				};
+			},
+		);
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, _accountId, accessToken) =>
+				new Headers({ "x-test-access-token": String(accessToken ?? "") }),
+		);
+			globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+			const { sdk } = await setupPlugin();
+			const firstRequest = sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			const secondRequest = sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			await Promise.resolve();
+			blockedRefresh.resolve({
+				type: "oauth",
+				access: "refreshed-blocked",
+				refresh: "refresh-acc-2",
+				expires: Date.now() + 60_000,
+			});
+
+			const [firstResponse, secondResponse] = await Promise.all([firstRequest, secondRequest]);
+			expect(firstResponse.status).toBe(200);
+			expect(secondResponse.status).toBe(200);
+			expect(refreshCallCount).toBeGreaterThanOrEqual(2);
+			expect(selectionSpy).toHaveBeenCalled();
+			expect(getByIndexSpy).toHaveBeenCalled();
+			const accessTokens = vi
+				.mocked(globalThis.fetch)
+				.mock.calls
+				.map((call) => {
+					const headers = new Headers((call[1] as RequestInit | undefined)?.headers);
+					return headers.get("x-test-access-token");
+				})
+				.filter((token): token is string => typeof token === "string");
+			expect(accessTokens.length).toBe(2);
+			expect(accessTokens.every((token) => token.startsWith("refreshed-"))).toBe(true);
+			countSpy.mockRestore();
+			selectionSpy.mockRestore();
+			snapshotSpy.mockRestore();
+			getByIndexSpy.mockRestore();
+			toAuthSpy.mockRestore();
+			markRateLimitSpy.mockRestore();
+		} finally {
+			nowSpy.mockRestore();
+		}
+	});
+
+	it("continues request flow when quota bootstrap cache reads hit EPERM/EBUSY", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const epermError = Object.assign(new Error("locked"), { code: "EPERM" });
+		const ebusyError = Object.assign(new Error("busy"), { code: "EBUSY" });
+		loadQuotaCacheMock
+			.mockRejectedValueOnce(epermError)
+			.mockRejectedValueOnce(ebusyError);
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, _accountId, accessToken) =>
+				new Headers({ "x-test-access-token": String(accessToken ?? "") }),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const firstResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+		const secondResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(firstResponse.status).toBe(200);
+		expect(secondResponse.status).toBe(200);
+		expect(loadQuotaCacheMock).toHaveBeenCalledTimes(2);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		const firstHeaders = new Headers(
+			(vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit)?.headers,
+		);
+		const secondHeaders = new Headers(
+			(vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit)?.headers,
+		);
+		expect(firstHeaders.get("x-test-access-token")).toBe("access-token");
+		expect(secondHeaders.get("x-test-access-token")).toBe("access-token");
 	});
 
 	it("disables quota cache bootstrap when CODEX_AUTH_QUOTA_CACHE_BOOTSTRAP=0", async () => {
