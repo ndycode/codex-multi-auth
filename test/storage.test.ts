@@ -728,6 +728,37 @@ describe("storage", () => {
       expect(parsed.version).toBe(3);
     });
 
+    it("keeps successful saves when lock release fails after write", async () => {
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t1", accountId: "A", addedAt: 1, lastUsed: 2 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      const originalUnlink = fs.unlink.bind(fs);
+      let releaseFailureInjected = false;
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path =
+          typeof target === "string" ? target : target instanceof URL ? target.pathname : String(target);
+        if (!releaseFailureInjected && path === lockPath) {
+          releaseFailureInjected = true;
+          throw Object.assign(new Error("lock release failed"), { code: "EACCES" });
+        }
+        return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+      });
+
+      try {
+        await expect(saveAccounts(storage)).resolves.toBeUndefined();
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+
+      expect(releaseFailureInjected).toBe(true);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("A");
+    });
+
     it("rejects stale overwrite when storage changed on disk after load", async () => {
       const initial: AccountStorageV3 = {
         version: 3,

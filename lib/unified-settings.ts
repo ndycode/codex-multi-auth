@@ -126,7 +126,7 @@ function readSettingsSnapshotSync(): SettingsSnapshot {
 		return { record: null, revision };
 	}
 	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
+		return { record: null, revision };
 	}
 	return { record: parsed, revision };
 }
@@ -154,7 +154,7 @@ async function readSettingsSnapshotAsync(): Promise<SettingsSnapshot> {
 		return { record: null, revision };
 	}
 	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
+		return { record: null, revision };
 	}
 	return { record: parsed, revision };
 }

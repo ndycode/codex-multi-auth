@@ -82,6 +82,23 @@ describe("unified settings", () => {
 		});
 	});
 
+	it("recovers from valid non-object settings JSON during async plugin save", async () => {
+		const { getUnifiedSettingsPath, saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+
+		await fs.mkdir(tempDir, { recursive: true });
+		await fs.writeFile(getUnifiedSettingsPath(), JSON.stringify([]), "utf8");
+
+		await expect(
+			saveUnifiedPluginConfig({ codexMode: false, requestTimeoutMs: 30_000 }),
+		).resolves.toBeUndefined();
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: false,
+			requestTimeoutMs: 30_000,
+		});
+	});
+
 	it("recovers from malformed settings JSON during sync plugin save", async () => {
 		const { getUnifiedSettingsPath, saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
 			"../lib/unified-settings.js"
@@ -89,6 +106,18 @@ describe("unified settings", () => {
 
 		await fs.mkdir(tempDir, { recursive: true });
 		await fs.writeFile(getUnifiedSettingsPath(), "{ malformed json", "utf8");
+
+		saveUnifiedPluginConfigSync({ codexMode: true, retries: 5 });
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 5 });
+	});
+
+	it("recovers from valid non-object settings JSON during sync plugin save", async () => {
+		const { getUnifiedSettingsPath, saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+
+		await fs.mkdir(tempDir, { recursive: true });
+		await fs.writeFile(getUnifiedSettingsPath(), JSON.stringify(null), "utf8");
 
 		saveUnifiedPluginConfigSync({ codexMode: true, retries: 5 });
 		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 5 });

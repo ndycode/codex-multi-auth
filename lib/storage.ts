@@ -648,7 +648,10 @@ async function withStorageSaveFileLock<T>(
 				});
 				throw taskError;
 			}
-			throw releaseError;
+			log.warn("Failed to release account storage lock after successful save", {
+				lockPath: lock.lockPath,
+				error: String(releaseError),
+			});
 		}
 	}
 }
