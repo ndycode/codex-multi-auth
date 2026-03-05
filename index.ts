@@ -308,8 +308,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 	const QUOTA_CACHE_BOOTSTRAP_TTL_MS = 30 * 60_000;
 	const QUOTA_CACHE_BOOTSTRAP_MIN_WAIT_MS = 1_000;
+	const QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS = 60_000;
+	const QUOTA_CACHE_BOOTSTRAP_FAILURE_RETRY_INTERVAL_MS = 5_000;
 	let quotaCacheBootstrapData: QuotaCacheData | null = null;
 	let quotaCacheBootstrapLoadedAt = 0;
+	let quotaCacheBootstrapFailureUntil = 0;
+	let quotaCacheBootstrapFailureRetryAt = 0;
 	let quotaCacheBootstrapLoadPromise: Promise<QuotaCacheData> | null = null;
 
 	type QuotaBootstrapAccountCandidate = {
@@ -327,6 +331,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const fallback = value.trim().toLowerCase();
 		return fallback.length > 0 ? fallback : null;
 	};
+
+	const normalizeQuotaCacheModelId = (value: string | undefined): string | null => {
+		if (typeof value !== "string") return null;
+		const trimmed = value.trim();
+		if (trimmed.length === 0) return null;
+		const withoutProvider = trimmed.includes("/") ? (trimmed.split("/").pop() ?? trimmed) : trimmed;
+		const normalized = withoutProvider.trim().toLowerCase();
+		return normalized.length > 0 ? normalized : null;
+	};
+
+	const hasQuotaCacheEntries = (cache: QuotaCacheData): boolean =>
+		Object.keys(cache.byAccountId).length > 0 || Object.keys(cache.byEmail).length > 0;
+
+	const createEmptyQuotaCache = (): QuotaCacheData => ({ byAccountId: {}, byEmail: {} });
 
 	const getQuotaCacheEntryForCandidate = (
 		cache: QuotaCacheData,
@@ -360,6 +378,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const futureResetAtMs = getQuotaCacheEntryFutureResetAtMs(entry, now);
 		if (typeof futureResetAtMs === "number") {
 			return Math.max(0, Math.floor(futureResetAtMs - now));
+		}
+		const hasKnownResetTime =
+			typeof entry.primary.resetAtMs === "number" ||
+			typeof entry.secondary.resetAtMs === "number";
+		if (hasKnownResetTime) {
+			return 0;
 		}
 		const maxAgeUntil = entry.updatedAt + QUOTA_CACHE_BOOTSTRAP_TTL_MS;
 		if (!Number.isFinite(maxAgeUntil) || maxAgeUntil <= now) {
@@ -409,22 +433,45 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		if (quotaCacheBootstrapData && now - quotaCacheBootstrapLoadedAt < QUOTA_CACHE_BOOTSTRAP_TTL_MS) {
 			return quotaCacheBootstrapData;
 		}
+		if (
+			now < quotaCacheBootstrapFailureUntil &&
+			now < quotaCacheBootstrapFailureRetryAt
+		) {
+			return createEmptyQuotaCache();
+		}
 		if (quotaCacheBootstrapLoadPromise) {
 			return quotaCacheBootstrapLoadPromise;
 		}
 		quotaCacheBootstrapLoadPromise = (async () => {
 			try {
 				const loaded = await loadQuotaCache();
-				quotaCacheBootstrapData = loaded;
-				quotaCacheBootstrapLoadedAt = Date.now();
+				if (hasQuotaCacheEntries(loaded)) {
+					quotaCacheBootstrapData = loaded;
+					quotaCacheBootstrapLoadedAt = Date.now();
+					quotaCacheBootstrapFailureUntil = 0;
+					quotaCacheBootstrapFailureRetryAt = 0;
+				} else {
+					const failureAt = Date.now();
+					quotaCacheBootstrapData = null;
+					quotaCacheBootstrapLoadedAt = 0;
+					quotaCacheBootstrapFailureUntil = failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS;
+					quotaCacheBootstrapFailureRetryAt =
+						failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_RETRY_INTERVAL_MS;
+				}
 				return loaded;
 			} catch (error) {
+				const failureAt = Date.now();
+				quotaCacheBootstrapData = null;
+				quotaCacheBootstrapLoadedAt = 0;
+				quotaCacheBootstrapFailureUntil = failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS;
+				quotaCacheBootstrapFailureRetryAt =
+					failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_RETRY_INTERVAL_MS;
 				logWarn(
 					`[${PLUGIN_NAME}] failed to load quota cache bootstrap data: ${
 						error instanceof Error ? error.message : String(error)
 					}`,
 				);
-				return { byAccountId: {}, byEmail: {} };
+				return createEmptyQuotaCache();
 			}
 		})();
 		try {
@@ -444,14 +491,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		if (!enabled || accountSnapshots.length === 0) return;
 		const cache = await loadQuotaCacheForBootstrap();
 		const now = Date.now();
-		const requestedModel =
-			typeof model === "string" && model.trim().length > 0 ? model.trim() : null;
+		const requestedModel = normalizeQuotaCacheModelId(model);
 		const baseKey = getQuotaKey(modelFamily);
 
 		for (const snapshotCandidate of accountSnapshots) {
 			const entry = getQuotaCacheEntryForCandidate(cache, snapshotCandidate);
 			if (!entry) continue;
-			const entryModel = entry.model.trim();
+			const entryModel = normalizeQuotaCacheModelId(entry.model);
+			if (!entryModel) continue;
 			if (getModelFamily(entryModel) !== modelFamily) {
 				continue;
 			}
