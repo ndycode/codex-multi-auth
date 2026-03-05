@@ -298,6 +298,39 @@ async function renameFileWithRetry(sourcePath: string, destinationPath: string):
 	}
 }
 
+function isTransientUnlinkCode(code: string | undefined): boolean {
+	return code === "EPERM" || code === "EBUSY" || code === "EAGAIN";
+}
+
+async function unlinkFileWithRetry(targetPath: string): Promise<void> {
+	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.unlink(targetPath);
+			return;
+		} catch (error) {
+			const err = error as NodeJS.ErrnoException & {
+				attempts?: number;
+				transientExhausted?: boolean;
+			};
+			const code = err.code;
+			if (code === "ENOENT") {
+				return;
+			}
+			const canRetry =
+				isTransientUnlinkCode(code) && attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+			if (canRetry) {
+				await new Promise((resolve) =>
+					setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt),
+				);
+				continue;
+			}
+			err.attempts = attempt + 1;
+			err.transientExhausted = isTransientUnlinkCode(code);
+			throw err;
+		}
+	}
+}
+
 async function createRotatingAccountsBackup(path: string): Promise<void> {
 	const candidates = getAccountsBackupRecoveryCandidates(path);
 	const rotationNonce = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
@@ -380,6 +413,7 @@ async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> 
 		return existingState.inFlight;
 	}
 
+	let shouldAdvanceLastRunAt = true;
 	const cleanupPromise = (async () => {
 		const directoryPath = dirname(path);
 		try {
@@ -391,13 +425,22 @@ async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> 
 
 			for (const staleArtifactPath of staleArtifacts) {
 				try {
-					await fs.unlink(staleArtifactPath);
+					await unlinkFileWithRetry(staleArtifactPath);
 				} catch (error) {
-					const code = (error as NodeJS.ErrnoException).code;
+					const typedError = error as NodeJS.ErrnoException & {
+						attempts?: number;
+						transientExhausted?: boolean;
+					};
+					const code = typedError.code;
+					if (typedError.transientExhausted) {
+						shouldAdvanceLastRunAt = false;
+					}
 					if (code !== "ENOENT") {
 						log.warn("Failed to remove stale rotating backup artifact", {
 							path: staleArtifactPath,
 							error: String(error),
+							attempts: typedError.attempts ?? 1,
+							transientExhausted: typedError.transientExhausted ?? false,
 						});
 					}
 				}
@@ -420,7 +463,9 @@ async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> 
 		await cleanupPromise;
 	} finally {
 		rotatingBackupCleanupState.set(path, {
-			lastRunAt: Date.now(),
+			lastRunAt: shouldAdvanceLastRunAt
+				? Date.now()
+				: existingState?.lastRunAt ?? 0,
 			inFlight: null,
 		});
 	}

@@ -817,6 +817,124 @@ describe("storage", () => {
 
       expect(cleanupScanCount).toBe(1);
     });
+
+    it("retries transient stale-artifact unlink failures before succeeding", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-transient-retry-${Math.random().toString(36).slice(2)}.json`,
+      );
+      const staleArtifactPath = `${localStoragePath}.bak.rotate.transient.tmp`;
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "retry-refresh-token",
+              accountId: "acct-retry",
+              email: "retry-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+      const originalUnlink = fs.unlink.bind(fs);
+      let staleUnlinkCalls = 0;
+      const unlinkSpy = vi
+        .spyOn(fs, "unlink")
+        .mockImplementation(async (...args: Parameters<typeof fs.unlink>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === staleArtifactPath) {
+            staleUnlinkCalls += 1;
+            if (staleUnlinkCalls === 1) {
+              const busyError = new Error("busy") as NodeJS.ErrnoException;
+              busyError.code = "EBUSY";
+              throw busyError;
+            }
+          }
+          return originalUnlink(...args);
+        });
+
+      try {
+        const result = await loadAccounts();
+        expect(result?.accounts).toHaveLength(1);
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+
+      expect(staleUnlinkCalls).toBe(2);
+      expect(existsSync(staleArtifactPath)).toBe(false);
+    });
+
+    it("does not throttle stale-artifact cleanup after exhausted transient unlink retries", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-transient-exhausted-${Math.random().toString(36).slice(2)}.json`,
+      );
+      const staleArtifactPath = `${localStoragePath}.bak.rotate.exhausted.tmp`;
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "exhausted-refresh-token",
+              accountId: "acct-exhausted",
+              email: "exhausted-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+      const originalUnlink = fs.unlink.bind(fs);
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+      const unlinkSpy = vi
+        .spyOn(fs, "unlink")
+        .mockImplementation(async (...args: Parameters<typeof fs.unlink>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === staleArtifactPath) {
+            const busyError = new Error("busy") as NodeJS.ErrnoException;
+            busyError.code = "EBUSY";
+            throw busyError;
+          }
+          return originalUnlink(...args);
+        });
+
+      try {
+        const firstResult = await loadAccounts();
+        const secondResult = await loadAccounts();
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        unlinkSpy.mockRestore();
+        readdirSpy.mockRestore();
+      }
+
+      expect(cleanupScanCount).toBe(2);
+      expect(existsSync(staleArtifactPath)).toBe(true);
+    });
   });
 
   describe("saveAccounts", () => {

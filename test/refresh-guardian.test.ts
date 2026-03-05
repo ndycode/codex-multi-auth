@@ -656,6 +656,35 @@ describe("refresh-guardian", () => {
     expect(Reflect.get(guardian, "running")).toBe(false);
   });
 
+  it("records max tick duration for failed ticks even when runs are not counted", async () => {
+    const accountA = createManagedAccount(0);
+    const manager = createManagerMock([accountA]);
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      intervalMs: 5_000,
+      bufferMs: 60_000,
+    });
+
+    const nowSpy = vi.spyOn(performance, "now");
+    nowSpy
+      .mockReturnValueOnce(100)
+      .mockReturnValueOnce(145)
+      .mockReturnValueOnce(200)
+      .mockReturnValueOnce(255);
+    refreshExpiringAccountsMock.mockRejectedValueOnce(new Error("first failure"));
+    refreshExpiringAccountsMock.mockRejectedValueOnce(new Error("second failure"));
+
+    await guardian.tick();
+    await guardian.tick();
+
+    const stats = guardian.getStats();
+    expect(stats.runs).toBe(0);
+    expect(stats.lastTickDurationMs).toBe(55);
+    expect(stats.maxTickDurationMs).toBe(55);
+    expect(stats.cumulativeTickDurationMs).toBe(0);
+    expect(stats.avgTickDurationMs).toBe(0);
+  });
+
   it("tracks guardian tick duration aggregates", async () => {
     const accountA = createManagedAccount(0);
     const manager = createManagerMock([accountA]);

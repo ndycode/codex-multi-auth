@@ -228,8 +228,9 @@ export class RefreshGuardian {
 			// Track the most recent tick duration even when no account work was counted,
 			// so diagnostics can still surface event-loop stalls or no-op overhead.
 			this.stats.lastTickDurationMs = durationMs;
+			// Track max duration across all ticks, including slow error/no-op paths.
+			this.stats.maxTickDurationMs = Math.max(this.stats.maxTickDurationMs, durationMs);
 			if (countedRun) {
-				this.stats.maxTickDurationMs = Math.max(this.stats.maxTickDurationMs, durationMs);
 				this.stats.cumulativeTickDurationMs += durationMs;
 				this.stats.avgTickDurationMs = Math.round(
 					this.stats.cumulativeTickDurationMs / this.stats.runs,

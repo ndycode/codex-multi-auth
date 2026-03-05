@@ -846,6 +846,13 @@ describe("OpenAIOAuthPlugin", () => {
 				const previousVitestWorkerId = process.env.VITEST_WORKER_ID;
 				const previousNodeEnv = process.env.NODE_ENV;
 				const previousSkipHydrate = process.env.CODEX_SKIP_EMAIL_HYDRATE;
+				const restoreEnv = (key: string, previous: string | undefined): void => {
+					if (previous === undefined) {
+						delete process.env[key];
+						return;
+					}
+					process.env[key] = previous;
+				};
 				delete process.env.VITEST_WORKER_ID;
 				process.env.NODE_ENV = "development";
 				delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
@@ -900,21 +907,112 @@ describe("OpenAIOAuthPlugin", () => {
 					expect(metricValue(report, "Email hydration max concurrency used")).toBeLessThanOrEqual(4);
 					expect(maxActive).toBeLessThanOrEqual(4);
 				} finally {
-					if (previousVitestWorkerId === undefined) {
-						delete process.env.VITEST_WORKER_ID;
-					} else {
-						process.env.VITEST_WORKER_ID = previousVitestWorkerId;
+					restoreEnv("VITEST_WORKER_ID", previousVitestWorkerId);
+					restoreEnv("NODE_ENV", previousNodeEnv);
+					restoreEnv("CODEX_SKIP_EMAIL_HYDRATE", previousSkipHydrate);
+				}
+			});
+
+			it("tracks bounded hydration metrics when a subset of refreshes fail", async () => {
+				const { queuedRefresh } = await import("../lib/refresh-queue.js");
+				const previousVitestWorkerId = process.env.VITEST_WORKER_ID;
+				const previousNodeEnv = process.env.NODE_ENV;
+				const previousSkipHydrate = process.env.CODEX_SKIP_EMAIL_HYDRATE;
+				const restoreEnv = (key: string, previous: string | undefined): void => {
+					if (previous === undefined) {
+						delete process.env[key];
+						return;
 					}
-					if (previousNodeEnv === undefined) {
-						delete process.env.NODE_ENV;
-					} else {
-						process.env.NODE_ENV = previousNodeEnv;
+					process.env[key] = previous;
+				};
+				delete process.env.VITEST_WORKER_ID;
+				process.env.NODE_ENV = "development";
+				delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
+
+				const metricValue = (report: string, label: string): number => {
+					const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+					const match = report.match(new RegExp(`^${escapedLabel}: (\\d+)$`, "m"));
+					expect(match, `missing metric line for ${label}`).not.toBeNull();
+					return Number(match?.[1] ?? "NaN");
+				};
+
+				mockStorage.accounts = Array.from({ length: 6 }, (_, index) => ({
+					accountId: `acc-${index}`,
+					refreshToken: `refresh-${index}`,
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				}));
+
+				const failingTokens = new Set(["refresh-1", "refresh-4"]);
+				let active = 0;
+				let maxActive = 0;
+				vi.mocked(queuedRefresh).mockImplementation(async (refreshToken: string) => {
+					active += 1;
+					maxActive = Math.max(maxActive, active);
+					await new Promise((resolve) => setTimeout(resolve, 5));
+					active -= 1;
+					if (failingTokens.has(refreshToken)) {
+						throw new Error(`forced hydrate failure for ${refreshToken}`);
 					}
-					if (previousSkipHydrate === undefined) {
-						delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
-					} else {
-						process.env.CODEX_SKIP_EMAIL_HYDRATE = previousSkipHydrate;
-					}
+					return {
+						type: "success" as const,
+						access: `hydrated-access-${refreshToken}`,
+						refresh: refreshToken,
+						expires: Date.now() + 3600_000,
+						idToken: `hydrated-id-${refreshToken}`,
+					};
+				});
+
+				const baselineReport = await plugin.tool["codex-metrics"].execute();
+				const baselineRuns = metricValue(baselineReport, "Email hydration runs");
+				const baselineCandidates = metricValue(baselineReport, "Email hydration candidates");
+				const baselineRefreshed = metricValue(baselineReport, "Email hydration refreshed");
+				const baselineUpdated = metricValue(baselineReport, "Email hydration updated");
+				const baselineFailures = metricValue(baselineReport, "Email hydration failures");
+				const baselineMaxBatch = metricValue(baselineReport, "Email hydration max batch size");
+				const baselineMaxConcurrency = metricValue(
+					baselineReport,
+					"Email hydration max concurrency used",
+				);
+
+				try {
+					const { promptLoginMode } = await import("../lib/cli.js");
+					vi.mocked(promptLoginMode)
+						.mockResolvedValueOnce({ mode: "deep-check" } as never)
+						.mockResolvedValueOnce({ mode: "cancel" } as never);
+					const oauthMethod = plugin.auth.methods[0] as unknown as {
+						authorize: (inputs?: Record<string, string>) => Promise<unknown>;
+					};
+					await oauthMethod.authorize();
+
+					const report = await plugin.tool["codex-metrics"].execute();
+					const deltaRuns = metricValue(report, "Email hydration runs") - baselineRuns;
+					const deltaCandidates =
+						metricValue(report, "Email hydration candidates") - baselineCandidates;
+					const deltaRefreshed =
+						metricValue(report, "Email hydration refreshed") - baselineRefreshed;
+					const deltaUpdated =
+						metricValue(report, "Email hydration updated") - baselineUpdated;
+					const deltaFailures =
+						metricValue(report, "Email hydration failures") - baselineFailures;
+					expect(deltaRuns).toBeGreaterThanOrEqual(1);
+					expect(deltaCandidates).toBeGreaterThanOrEqual(6);
+					expect(deltaRefreshed).toBe(4);
+					expect(deltaUpdated).toBe(4);
+					expect(deltaFailures).toBeGreaterThanOrEqual(2);
+					expect(deltaFailures).toBe(deltaCandidates - deltaRefreshed);
+					expect(metricValue(report, "Email hydration max batch size")).toBe(
+						Math.max(baselineMaxBatch, 6),
+					);
+					expect(metricValue(report, "Email hydration max concurrency used")).toBeLessThanOrEqual(4);
+					expect(metricValue(report, "Email hydration max concurrency used")).toBeGreaterThanOrEqual(
+						baselineMaxConcurrency,
+					);
+					expect(maxActive).toBeLessThanOrEqual(4);
+				} finally {
+					restoreEnv("VITEST_WORKER_ID", previousVitestWorkerId);
+					restoreEnv("NODE_ENV", previousNodeEnv);
+					restoreEnv("CODEX_SKIP_EMAIL_HYDRATE", previousSkipHydrate);
 				}
 			});
 		});
