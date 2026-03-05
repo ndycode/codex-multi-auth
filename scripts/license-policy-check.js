@@ -16,8 +16,38 @@ const packages = packageLock.packages ?? {};
 const violations = [];
 const unknown = [];
 
-function extractLicenseTokens(licenseExpression) {
-	return licenseExpression
+function normalizeLicenseValue(value) {
+	if (typeof value === "string") {
+		return value;
+	}
+	if (value && typeof value === "object" && typeof value.type === "string") {
+		return value.type;
+	}
+	return "";
+}
+
+function extractRawLicense(record) {
+	const direct = normalizeLicenseValue(record.license);
+	if (direct) return direct;
+
+	if (typeof record.licenses === "string") {
+		return record.licenses;
+	}
+	if (Array.isArray(record.licenses)) {
+		const values = record.licenses
+			.map((entry) => normalizeLicenseValue(entry))
+			.filter((entry) => entry.length > 0);
+		if (values.length > 0) {
+			return values.join(" OR ");
+		}
+	}
+
+	return "";
+}
+
+function extractLicenseTokens(rawLicense) {
+	return rawLicense
+		.toUpperCase()
 		.split(/[^A-Z0-9.-]+/g)
 		.map((token) => token.trim())
 		.filter(
@@ -35,12 +65,7 @@ for (const [packagePath, metadata] of Object.entries(packages)) {
 	const record = metadata;
 	const name = typeof record.name === "string" ? record.name : packagePath;
 	const version = typeof record.version === "string" ? record.version : "0.0.0";
-	const rawLicense =
-		typeof record.license === "string"
-			? record.license
-			: typeof record.licenses === "string"
-				? record.licenses
-				: "";
+	const rawLicense = extractRawLicense(record);
 	const normalized = rawLicense.trim().toUpperCase();
 	if (!normalized) {
 		unknown.push(`${name}@${version}`);

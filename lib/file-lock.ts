@@ -139,19 +139,22 @@ export async function acquireFileLock(
 			const handle = await fs.open(path, "wx", 0o600);
 			const token = createLockToken();
 			let writeError: unknown;
+			let closeError: unknown;
 			try {
 				await handle.writeFile(serializeLockMetadata(token), LOCK_FILE_ENCODING);
 			} catch (error) {
 				writeError = error;
-				throw error;
-			} finally {
-				try {
-					await handle.close();
-				} catch (closeError) {
-					if (writeError === undefined) {
-						throw closeError;
-					}
-				}
+			}
+			try {
+				await handle.close();
+			} catch (error) {
+				closeError = error;
+			}
+			if (writeError !== undefined) {
+				throw writeError;
+			}
+			if (closeError !== undefined) {
+				throw closeError;
 			}
 			let released = false;
 			return {
@@ -223,19 +226,22 @@ export function acquireFileLockSync(
 			const fd = openSync(path, "wx", 0o600);
 			const token = createLockToken();
 			let writeError: unknown;
+			let closeError: unknown;
 			try {
 				writeFileSync(fd, serializeLockMetadata(token), LOCK_FILE_ENCODING);
 			} catch (error) {
 				writeError = error;
-				throw error;
-			} finally {
-				try {
-					closeSync(fd);
-				} catch (closeError) {
-					if (writeError === undefined) {
-						throw closeError;
-					}
-				}
+			}
+			try {
+				closeSync(fd);
+			} catch (error) {
+				closeError = error;
+			}
+			if (writeError !== undefined) {
+				throw writeError;
+			}
+			if (closeError !== undefined) {
+				throw closeError;
 			}
 			let released = false;
 			return {

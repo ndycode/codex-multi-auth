@@ -50,6 +50,14 @@ npm run bench:edit-formats:smoke
 7. `npm run license:check`
 8. run docs command checks for newly documented command paths
 
+### Upgrade Notes (PR #32)
+
+- Gate ordering was updated so `npm run coverage` runs before `npm run build`.
+- Two required supply-chain checks were added to the standard local sequence:
+  - `npm run audit:ci`
+  - `npm run license:check`
+- If you maintain local CI wrappers or pre-push scripts, update them to use the order above and rerun once to refresh baselines.
+
 * * *
 
 ## Auth/Account Change Test Matrix

@@ -52,16 +52,30 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Upload build artifact
+        if: matrix.node-version == '20.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-node20
+          path: dist/
+
       - name: Run tests
         run: npm test
 
   coverage-gate:
     name: Coverage Gate
     runs-on: ubuntu-latest
+    needs: test
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-node20
+          path: dist/
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -73,7 +87,7 @@ jobs:
         run: npm ci
 
       - name: Run tests with coverage threshold gate
-        run: npm run coverage
+        run: npm run test:coverage
 
   lint:
     name: Lint

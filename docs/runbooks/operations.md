@@ -24,7 +24,8 @@ Routine operations checklist for maintainers.
 1. Rotate encryption key material:
    - set `CODEX_AUTH_ENCRYPTION_KEY` (new key)
    - set `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY` (prior key)
-   - run `codex auth rotate-secrets --json`
+   - run `codex auth rotate-secrets --json --idempotency-key <run-id>`
+   - prefer a stable run id source (for example `weekly-YYYYMMDD` or CI `${{ github.run_id }}`)
    - remove previous key after successful rotation validation
 2. Review dependency and license policy reports:
    - `npm run audit:ci`

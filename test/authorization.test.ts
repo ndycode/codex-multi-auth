@@ -56,34 +56,31 @@ async function removeWithRetry(
 
 describe("authorization", () => {
 	it("defaults to admin role", () => {
-		const previousRole = process.env.CODEX_AUTH_ROLE;
+		const previous = captureAuthEnv();
 		try {
-			delete process.env.CODEX_AUTH_ROLE;
+			for (const key of AUTH_ENV_KEYS) {
+				delete process.env[key];
+			}
 			expect(getAuthorizationRole()).toBe("admin");
 			expect(authorizeAction("secrets:rotate").allowed).toBe(true);
 		} finally {
-			if (previousRole === undefined) {
-				delete process.env.CODEX_AUTH_ROLE;
-			} else {
-				process.env.CODEX_AUTH_ROLE = previousRole;
-			}
+			restoreAuthEnv(previous);
 		}
 	});
 
 	it("denies write actions for viewer role", () => {
-		const previousRole = process.env.CODEX_AUTH_ROLE;
+		const previous = captureAuthEnv();
 		try {
+			for (const key of AUTH_ENV_KEYS) {
+				delete process.env[key];
+			}
 			process.env.CODEX_AUTH_ROLE = "viewer";
 			const auth = authorizeAction("accounts:write");
 			expect(auth.allowed).toBe(false);
 			expect(auth.role).toBe("viewer");
 			expect(auth.reason).toContain("accounts:write");
 		} finally {
-			if (previousRole === undefined) {
-				delete process.env.CODEX_AUTH_ROLE;
-			} else {
-				process.env.CODEX_AUTH_ROLE = previousRole;
-			}
+			restoreAuthEnv(previous);
 		}
 	});
 
@@ -105,8 +102,7 @@ describe("authorization", () => {
 	});
 
 	it("allows all actions when break-glass is enabled and audits the bypass", async () => {
-		const previousRole = process.env.CODEX_AUTH_ROLE;
-		const previousBreakGlass = process.env.CODEX_AUTH_BREAK_GLASS;
+		const previous = captureAuthEnv();
 		const previousAuditConfig = getAuditConfig();
 		const auditDir = await fs.mkdtemp(join(tmpdir(), "codex-auth-audit-"));
 		try {
@@ -116,6 +112,9 @@ describe("authorization", () => {
 				maxFileSizeBytes: 1024 * 1024,
 				maxFiles: 2,
 			});
+			for (const key of AUTH_ENV_KEYS) {
+				delete process.env[key];
+			}
 			process.env.CODEX_AUTH_ROLE = "viewer";
 			process.env.CODEX_AUTH_BREAK_GLASS = "1";
 			const result = authorizeAction("secrets:rotate");
@@ -142,16 +141,7 @@ describe("authorization", () => {
 		} finally {
 			configureAudit(previousAuditConfig);
 			await removeWithRetry(auditDir, { recursive: true, force: true });
-			if (previousRole === undefined) {
-				delete process.env.CODEX_AUTH_ROLE;
-			} else {
-				process.env.CODEX_AUTH_ROLE = previousRole;
-			}
-			if (previousBreakGlass === undefined) {
-				delete process.env.CODEX_AUTH_BREAK_GLASS;
-			} else {
-				process.env.CODEX_AUTH_BREAK_GLASS = previousBreakGlass;
-			}
+			restoreAuthEnv(previous);
 		}
 	});
 

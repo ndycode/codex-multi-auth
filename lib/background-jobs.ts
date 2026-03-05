@@ -36,11 +36,25 @@ function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function sanitizeErrorMessage(message: string): string {
+	return message
+		.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "***REDACTED***")
+		.replace(
+			/\b(?:access|refresh|id)?_?token(?:=|:)?\s*([A-Z0-9._-]+)/gi,
+			"token=***REDACTED***",
+		)
+		.replace(/\b(Bearer)\s+[A-Z0-9._-]+\b/gi, "$1 ***REDACTED***");
+}
+
 function getDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
 	return Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));
 }
 
 function isRetryableByDefault(error: unknown): boolean {
+	const statusCode = (error as { statusCode?: unknown } | undefined)?.statusCode;
+	if (typeof statusCode === "number" && statusCode === 429) {
+		return true;
+	}
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	if (typeof code === "string") {
 		return code === "EBUSY" || code === "EPERM" || code === "EAGAIN" || code === "ETIMEDOUT";
@@ -100,7 +114,7 @@ export async function runBackgroundJobWithRetry<T>(options: BackgroundJobRetryOp
 		}
 	}
 
-	const errorMessage = toErrorMessage(lastError);
+	const errorMessage = sanitizeErrorMessage(toErrorMessage(lastError));
 	const deadLetter: DeadLetterEntry = {
 		version: 1,
 		timestamp: new Date().toISOString(),
@@ -115,7 +129,7 @@ export async function runBackgroundJobWithRetry<T>(options: BackgroundJobRetryOp
 	} catch (dlqError) {
 		logWarn("Failed to append background job dead-letter", {
 			job: options.name,
-			error: toErrorMessage(dlqError),
+			error: sanitizeErrorMessage(toErrorMessage(dlqError)),
 		});
 	}
 

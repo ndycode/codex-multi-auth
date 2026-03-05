@@ -1,6 +1,7 @@
 import { promises as fs, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { getCodexCacheDir, getCodexLogDir, getCodexMultiAuthDir } from "./runtime-paths.js";
+import { sleep } from "./utils.js";
 
 export interface RetentionPolicy {
 	logDays: number;
@@ -17,17 +18,25 @@ const DEFAULT_POLICY: RetentionPolicy = {
 	quotaCacheDays: 14,
 	dlqDays: 30,
 };
-const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN"]);
-const RETRY_MAX_ATTEMPTS = 5;
-const RETRY_BASE_DELAY_MS = 50;
+const RETRYABLE_RETENTION_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN"]);
 
-function isRetryableFsError(error: unknown): boolean {
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+function isRetryableRetentionError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return typeof code === "string" && RETRYABLE_RETENTION_CODES.has(code);
 }
 
-async function sleep(ms: number): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, ms));
+async function withRetentionIoRetry<T>(operation: () => Promise<T>): Promise<T> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (!isRetryableRetentionError(error) || attempt >= 4) {
+				throw error;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
+	throw new Error("Unreachable retention retry state");
 }
 
 function parseEnvDays(name: string, fallback: number): number {
@@ -55,7 +64,9 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 	let removed = 0;
 	let entries: Dirent<string>[] = [];
 	try {
-		entries = await fs.readdir(path, { withFileTypes: true, encoding: "utf8" });
+		entries = await withRetentionIoRetry(() =>
+			fs.readdir(path, { withFileTypes: true, encoding: "utf8" }),
+		);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") return 0;
@@ -67,17 +78,17 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 		const fullPath = join(path, entry.name);
 		try {
 			if (entry.isDirectory()) {
-				removed += await pruneDirectoryByAge(fullPath, maxAgeMs);
-				const childEntries = await fs.readdir(fullPath);
+				removed += await withRetentionIoRetry(() => pruneDirectoryByAge(fullPath, maxAgeMs));
+				const childEntries = await withRetentionIoRetry(() => fs.readdir(fullPath));
 				if (childEntries.length === 0) {
-					await fs.rmdir(fullPath);
+					await withRetentionIoRetry(() => fs.rmdir(fullPath));
 				}
 				continue;
 			}
 			if (!entry.isFile()) continue;
-			const stats = await fs.stat(fullPath);
+			const stats = await withRetentionIoRetry(() => fs.stat(fullPath));
 			if (now - stats.mtimeMs <= maxAgeMs) continue;
-			await fs.unlink(fullPath);
+			await withRetentionIoRetry(() => fs.unlink(fullPath));
 			removed += 1;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
@@ -91,26 +102,18 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 }
 
 async function pruneSingleFile(path: string, maxAgeMs: number): Promise<boolean> {
-	let lastError: unknown;
-	for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
-		try {
-			const stats = await fs.stat(path);
-			if (Date.now() - stats.mtimeMs <= maxAgeMs) {
-				return false;
-			}
-			await fs.unlink(path);
-			return true;
-		} catch (error) {
-			lastError = error;
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") return false;
-			if (!isRetryableFsError(error) || attempt >= RETRY_MAX_ATTEMPTS) {
-				throw error;
-			}
-			await sleep(RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1));
+	try {
+		const stats = await withRetentionIoRetry(() => fs.stat(path));
+		if (Date.now() - stats.mtimeMs <= maxAgeMs) {
+			return false;
 		}
+		await withRetentionIoRetry(() => fs.unlink(path));
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return false;
+		throw error;
 	}
-	throw lastError instanceof Error ? lastError : new Error("Retention prune retry exhausted");
 }
 
 export async function enforceDataRetention(
