@@ -66,20 +66,18 @@ function runWrapper(
 	args: string[],
 	extraEnv: NodeJS.ProcessEnv = {},
 ): SpawnSyncReturns<string> {
-	return spawnSync(
-		process.execPath,
-		[join(fixtureRoot, "scripts", "codex.js"), ...args],
-		{
-			encoding: "utf8",
-			env: {
-				...process.env,
-				...extraEnv,
-			},
-		},
-	);
+	return runNodeScript(join(fixtureRoot, "scripts", "codex.js"), args, extraEnv);
 }
 
 function runWrapperScript(
+	scriptPath: string,
+	args: string[],
+	extraEnv: NodeJS.ProcessEnv = {},
+): SpawnSyncReturns<string> {
+	return runNodeScript(scriptPath, args, extraEnv);
+}
+
+function runNodeScript(
 	scriptPath: string,
 	args: string[],
 	extraEnv: NodeJS.ProcessEnv = {},
