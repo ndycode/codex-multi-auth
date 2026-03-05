@@ -118,20 +118,20 @@ export function removeAccountAndReconcileActiveIndexes(
 		storage.activeIndex = previousActive;
 	}
 
-	if (storage.activeIndexByFamily) {
-		for (const family of families) {
-			const idx = storage.activeIndexByFamily[family];
-			const base = typeof idx === "number"
-				? clampIndex(idx, previousCount)
-				: previousActive;
-			const next = base > targetIndex
-				? base - 1
-				: base === targetIndex
-					? Math.min(targetIndex, storage.accounts.length - 1)
-					: base;
-			if (storage.activeIndexByFamily[family] !== next) {
-				storage.activeIndexByFamily[family] = next;
-			}
+	const activeIndexByFamily = storage.activeIndexByFamily ?? {};
+	storage.activeIndexByFamily = activeIndexByFamily;
+	for (const family of families) {
+		const idx = activeIndexByFamily[family];
+		const base = typeof idx === "number"
+			? clampIndex(idx, previousCount)
+			: previousActive;
+		const next = base > targetIndex
+			? base - 1
+			: base === targetIndex
+				? Math.min(targetIndex, storage.accounts.length - 1)
+				: base;
+		if (activeIndexByFamily[family] !== next) {
+			activeIndexByFamily[family] = next;
 		}
 	}
 

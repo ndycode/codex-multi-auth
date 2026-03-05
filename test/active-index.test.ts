@@ -162,6 +162,26 @@ describe("active-index helpers", () => {
 		expect(storage.activeIndexByFamily?.["gpt-5.1"]).toBe(1);
 	});
 
+	it("initializes model-family indexes when removing from legacy storage without family map", () => {
+		const storage: {
+			accounts: unknown[];
+			activeIndex: number;
+			activeIndexByFamily?: Partial<Record<(typeof MODEL_FAMILIES)[number], number>>;
+		} = {
+			accounts: [{ id: 1 }, { id: 2 }, { id: 3 }],
+			activeIndex: 1,
+		};
+
+		const changed = removeAccountAndReconcileActiveIndexes(storage, 0);
+
+		expect(changed).toBe(true);
+		expect(storage.accounts).toHaveLength(2);
+		expect(storage.activeIndex).toBe(0);
+		for (const family of MODEL_FAMILIES) {
+			expect(storage.activeIndexByFamily?.[family]).toBe(0);
+		}
+	});
+
 	it("returns false and keeps storage unchanged for out-of-range removals", () => {
 		const storage: {
 			accounts: unknown[];
