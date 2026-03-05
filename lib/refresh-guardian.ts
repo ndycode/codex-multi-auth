@@ -29,6 +29,12 @@ export interface RefreshGuardianStats {
 
 const DEFAULT_INTERVAL_MS = 60_000;
 
+function normalizeEmail(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const trimmed = value.trim().toLowerCase();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
 export class RefreshGuardian {
 	private readonly getAccountManager: () => AccountManager | null;
 	private readonly intervalMs: number;
@@ -129,17 +135,46 @@ export class RefreshGuardian {
 				snapshotByIndex.set(candidate.index, candidate);
 			}
 			const liveAccounts = manager.getAccountsSnapshot();
-			const liveIndexByRefreshToken = new Map<string, number>();
+			const liveIndexByRefreshToken = new Map<string, number[]>();
 			for (let i = 0; i < liveAccounts.length; i += 1) {
 				const candidate = liveAccounts[i];
 				if (!candidate?.refreshToken) continue;
-				liveIndexByRefreshToken.set(candidate.refreshToken, i);
+				const indexes = liveIndexByRefreshToken.get(candidate.refreshToken) ?? [];
+				indexes.push(i);
+				liveIndexByRefreshToken.set(candidate.refreshToken, indexes);
 			}
 
 			for (const [accountIndex, result] of refreshResults.entries()) {
 				const sourceAccount = snapshotByIndex.get(accountIndex);
 				if (!sourceAccount) continue;
-				const resolvedIndex = liveIndexByRefreshToken.get(sourceAccount.refreshToken);
+				let resolvedIndex: number | undefined;
+				if (sourceAccount.refreshToken) {
+					const candidates = liveIndexByRefreshToken.get(sourceAccount.refreshToken) ?? [];
+					if (candidates.length === 1) {
+						resolvedIndex = candidates[0];
+					} else if (candidates.length > 1) {
+						const sourceEmail = normalizeEmail(sourceAccount.email);
+						if (sourceAccount.accountId) {
+							resolvedIndex = candidates.find((candidateIndex) => {
+								const candidate = liveAccounts[candidateIndex];
+								return candidate?.accountId === sourceAccount.accountId;
+							});
+						}
+						if (resolvedIndex === undefined && sourceEmail) {
+							resolvedIndex = candidates.find((candidateIndex) => {
+								const candidate = liveAccounts[candidateIndex];
+								return normalizeEmail(candidate?.email) === sourceEmail;
+							});
+						}
+					}
+				}
+				if (
+					resolvedIndex === undefined &&
+					sourceAccount.index >= 0 &&
+					sourceAccount.index < liveAccounts.length
+				) {
+					resolvedIndex = sourceAccount.index;
+				}
 				const account =
 					typeof resolvedIndex === "number"
 						? manager.getAccountByIndex(resolvedIndex)

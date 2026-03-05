@@ -276,6 +276,109 @@ describe("refresh-guardian", () => {
     ).toHaveBeenCalledWith(liveB);
   });
 
+  it("disambiguates duplicate refresh tokens using stable account identity", async () => {
+    const accountA = {
+      ...createManagedAccount(0),
+      refreshToken: "shared-refresh-token",
+      accountId: "acc-a",
+      email: "a@example.com",
+    };
+    const accountB = {
+      ...createManagedAccount(1),
+      refreshToken: "shared-refresh-token",
+      accountId: "acc-b",
+      email: "b@example.com",
+    };
+    const snapshots = [
+      [accountA, accountB],
+      [accountA, accountB],
+    ];
+    let readCount = 0;
+    const manager = {
+      getAccountsSnapshot: vi.fn(
+        () => snapshots[Math.min(readCount++, snapshots.length - 1)],
+      ),
+      getAccountByIndex: vi.fn(
+        (index: number) => snapshots[1]?.[index] ?? null,
+      ),
+      clearAuthFailures: vi.fn(),
+      markAccountCoolingDown: vi.fn(),
+      saveToDiskDebounced: vi.fn(),
+    } as unknown as AccountManager;
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(
+      new Map([
+        [
+          0,
+          {
+            refreshed: true,
+            reason: "success",
+            tokenResult: {
+              type: "success",
+              access: "access-updated",
+              refresh: "refresh-updated",
+              expires: Date.now() + 3_600_000,
+            },
+          },
+        ],
+      ]),
+    );
+
+    await guardian.tick();
+
+    expect(applyRefreshResultMock).toHaveBeenCalledTimes(1);
+    expect(applyRefreshResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 0, accountId: "acc-a" }),
+      expect.objectContaining({ type: "success" }),
+    );
+    expect(applyRefreshResultMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ index: 1, accountId: "acc-b" }),
+      expect.anything(),
+    );
+  });
+
+  it("falls back to snapshot index for no-refresh-token outcomes", async () => {
+    const accountA = {
+      ...createManagedAccount(0),
+      refreshToken: "",
+    };
+    const manager = createManagerMock([accountA]);
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(
+      new Map([
+        [
+          0,
+          {
+            refreshed: false,
+            reason: "no_refresh_token",
+          },
+        ],
+      ]),
+    );
+
+    await guardian.tick();
+
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountA, 60_000, "auth-failure");
+    expect(
+      manager.setAccountEnabled as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(0, false);
+    const stats = guardian.getStats();
+    expect(stats.noRefreshToken).toBe(1);
+    expect(stats.authFailed).toBe(1);
+  });
+
   it("classifies failure reasons and handles no-op branches", async () => {
     const accountA = createManagedAccount(0);
     const accountB = createManagedAccount(1);

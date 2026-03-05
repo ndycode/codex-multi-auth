@@ -215,6 +215,79 @@ describe("codex-cli sync", () => {
     expect(result.storage?.accounts[0]?.refreshToken).toBe("refresh-new");
   });
 
+  it("rekeys account lookup after refresh token and email updates without creating duplicates", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              accountId: "acc-a",
+              email: "new@example.com",
+              auth: {
+                tokens: {
+                  access_token: "new.access.token",
+                  refresh_token: "refresh-new",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const current: AccountStorageV3 = {
+      version: 3,
+      accounts: [
+        {
+          accountId: "acc-a",
+          email: "old@example.com",
+          refreshToken: "refresh-old",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+    };
+
+    const firstSync = await syncAccountStorageFromCodexCli(current);
+    expect(firstSync.changed).toBe(true);
+    expect(firstSync.storage?.accounts).toHaveLength(1);
+    expect(firstSync.storage?.accounts[0]?.refreshToken).toBe("refresh-new");
+    expect(firstSync.storage?.accounts[0]?.email).toBe("new@example.com");
+
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              email: "new@example.com",
+              auth: {
+                tokens: {
+                  access_token: "new.access.token.v2",
+                  refresh_token: "refresh-new",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const secondSync = await syncAccountStorageFromCodexCli(firstSync.storage ?? current);
+    expect(secondSync.storage?.accounts).toHaveLength(1);
+    expect(secondSync.storage?.accounts[0]?.refreshToken).toBe("refresh-new");
+    expect(secondSync.storage?.accounts[0]?.email).toBe("new@example.com");
+  });
+
   it("returns unchanged storage when sync is disabled", async () => {
     process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "0";
     clearCodexCliStateCache();

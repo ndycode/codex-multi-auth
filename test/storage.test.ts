@@ -795,9 +795,9 @@ describe("storage", () => {
 
       try {
         const firstLoad = loadAccounts();
-        for (let i = 0; i < 20 && cleanupScanCount === 0; i += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
+        await vi.waitFor(() => {
+          expect(cleanupScanCount).toBeGreaterThanOrEqual(1);
+        }, { timeout: 200 });
         const secondLoad = loadAccounts();
 
         await new Promise((resolve) => setTimeout(resolve, 0));

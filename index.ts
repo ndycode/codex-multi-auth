@@ -386,6 +386,28 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		lastRequestAt: null,
 		lastError: null,
 	};
+	const inFlightAuthRefreshByToken = new Map<string, Promise<OAuthAuthDetails>>();
+
+	const refreshAuthWithDedup = async (auth: OAuthAuthDetails): Promise<OAuthAuthDetails> => {
+		const refreshKey = auth.refresh?.trim() || `access:${auth.access.slice(0, 32)}`;
+		const existing = inFlightAuthRefreshByToken.get(refreshKey);
+		if (existing) {
+			return existing;
+		}
+		const refreshPromise = (async () => {
+			const refreshed = (await refreshAndUpdateToken(auth, client)) as OAuthAuthDetails;
+			return refreshed;
+		})();
+		inFlightAuthRefreshByToken.set(refreshKey, refreshPromise);
+		refreshPromise.finally(() => {
+			if (inFlightAuthRefreshByToken.get(refreshKey) === refreshPromise) {
+				inFlightAuthRefreshByToken.delete(refreshKey);
+			}
+		}).catch(() => {
+			// Error propagation is handled by awaiting callers.
+		});
+		return refreshPromise;
+	};
 
         type TokenSuccess = Extract<TokenResult, { type: "success" }>;
         type TokenSuccessWithAccount = TokenSuccess & {
@@ -1557,10 +1579,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											let accountAuth = accountManager.toAuthDetails(account) as OAuthAuthDetails;
 								try {
 						if (shouldRefreshToken(accountAuth, tokenRefreshSkewMs)) {
-							accountAuth = (await refreshAndUpdateToken(
-								accountAuth,
-								client,
-							)) as OAuthAuthDetails;
+							accountAuth = await refreshAuthWithDedup(accountAuth);
 							accountManager.updateFromAuth(account, accountAuth);
 							accountManager.clearAuthFailures(account);
 							accountManager.saveToDiskDebounced();
@@ -2190,10 +2209,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										let fallbackAuth = accountManager.toAuthDetails(fallbackAccount) as OAuthAuthDetails;
 										try {
 											if (shouldRefreshToken(fallbackAuth, tokenRefreshSkewMs)) {
-												fallbackAuth = (await refreshAndUpdateToken(
-													fallbackAuth,
-													client,
-												)) as OAuthAuthDetails;
+												fallbackAuth = await refreshAuthWithDedup(fallbackAuth);
 												accountManager.updateFromAuth(fallbackAccount, fallbackAuth);
 												accountManager.clearAuthFailures(fallbackAccount);
 												accountManager.saveToDiskDebounced();
