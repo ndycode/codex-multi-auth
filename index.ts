@@ -2413,9 +2413,20 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 								if (retryDecision.shouldRetry) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
-									await sleepWithCountdown(addJitter(waitMs, 0.2), countdownMessage);
+									const jitteredWaitMs = addJitter(waitMs, 0.2);
+									const boundedWaitMs =
+										retryAllAccountsAbsoluteCeilingMs > 0
+											? Math.min(
+													jitteredWaitMs,
+													Math.max(
+														0,
+														retryAllAccountsAbsoluteCeilingMs - accumulatedAllRateLimitedWaitMs,
+													),
+												)
+											: jitteredWaitMs;
+									await sleepWithCountdown(boundedWaitMs, countdownMessage);
 									allRateLimitedRetries++;
-									accumulatedAllRateLimitedWaitMs += waitMs;
+									accumulatedAllRateLimitedWaitMs += boundedWaitMs;
 									continue;
 								}
 								recordRetryGovernorStopReason(retryDecision.reason);

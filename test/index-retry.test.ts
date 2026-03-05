@@ -243,5 +243,34 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const plainMetrics = String(metrics).replace(/\u001b\[[0-9;]*m/g, "");
 		expect(plainMetrics).toContain("Retry governor stops (absolute ceiling): 1");
 	});
+
+	it("caps jittered retry waits at the configured absolute ceiling", async () => {
+		process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = "1100";
+		vi.spyOn(Math, "random").mockReturnValue(1);
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const fetchPromise = sdk.fetch("https://example.com", {});
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1150);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+		const response = await fetchPromise;
+		expect(response.status).toBe(200);
+	});
 });
 
