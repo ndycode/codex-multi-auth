@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { stripVTControlCharacters } from "node:util";
 
 process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS = "1";
+let mockInitialNullCalls = 1;
 
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
@@ -27,6 +28,7 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	refreshAndUpdateToken: async (auth: any) => auth,
 	createCodexHeaders: () => new Headers(),
 	handleErrorResponse: async (response: Response) => ({ response }),
+	getUnsupportedCodexModelInfo: () => ({ isUnsupported: false }),
 	resolveUnsupportedCodexFallbackModel: () => undefined,
 	shouldFallbackToGpt52OnUnsupportedGpt53: () => false,
 	handleSuccessResponse: async (response: Response) => response,
@@ -50,7 +52,7 @@ vi.mock("../lib/accounts.js", () => {
 
 		getCurrentOrNextForFamily() {
 			this.calls += 1;
-			if (this.calls === 1) return null;
+			if (this.calls <= mockInitialNullCalls) return null;
 			return { index: 0, accountId: "account-1", email: "user@example.com" };
 		}
 
@@ -166,6 +168,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		process.env.CODEX_AUTH_TOKEN_REFRESH_SKEW_MS = "0";
 		process.env.CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS = "0";
 		process.env.CODEX_AUTH_PREWARM = "0";
+		mockInitialNullCalls = 1;
 
 		vi.useFakeTimers();
 		originalFetch = globalThis.fetch;
@@ -301,6 +304,41 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 
 		const response = await fetchPromise;
 		expect(response.status).toBe(200);
+	});
+
+	it("keeps retry budgets isolated across overlapping requests", async () => {
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "1";
+		mockInitialNullCalls = 2;
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const requestA = sdk.fetch("https://example.com/a", {});
+		const requestB = sdk.fetch("https://example.com/b", {});
+
+		await vi.advanceTimersByTimeAsync(1000);
+		const [responseA, responseB] = await Promise.all([requestA, requestB]);
+
+		expect(responseA.status).toBe(200);
+		expect(responseB.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+		const metrics = await plugin.tool["codex-metrics"].execute();
+		const plainMetrics = stripVTControlCharacters(String(metrics));
+		expect(plainMetrics).toContain("Retry governor stops (retry limit): 0");
 	});
 
 	it("keeps max wait checks deterministic at the raw wait threshold", async () => {
