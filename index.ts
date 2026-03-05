@@ -454,18 +454,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return;
 		}
 		const now = Date.now();
-		const modelKey = getQuotaKey(modelFamily, model);
+		const requestedModel =
+			typeof model === "string" && model.trim().length > 0 ? model.trim() : null;
 		const baseKey = getQuotaKey(modelFamily);
 
 		for (const snapshotCandidate of accountSnapshots) {
 			const entry = getQuotaCacheEntryForCandidate(cache, snapshotCandidate);
 			if (!entry) continue;
-			if (getModelFamily(entry.model) !== modelFamily) {
+			const entryModel = entry.model.trim();
+			if (getModelFamily(entryModel) !== modelFamily) {
+				continue;
+			}
+			if (requestedModel && entryModel !== requestedModel) {
 				continue;
 			}
 			if (!shouldApplyQuotaCacheEntry(entry, now)) {
 				continue;
 			}
+			const appliedModel = requestedModel ?? entryModel;
+			const appliedModelKey = getQuotaKey(modelFamily, appliedModel);
 
 			const waitMs = Math.max(
 				QUOTA_CACHE_BOOTSTRAP_MIN_WAIT_MS,
@@ -476,7 +483,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			account.rateLimitResetTimes = account.rateLimitResetTimes ?? {};
 
 			const existingBaseResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
-			const existingModelResetAt = account.rateLimitResetTimes[modelKey] ?? 0;
+			const existingModelResetAt = account.rateLimitResetTimes[appliedModelKey] ?? 0;
 			const existingResetAt = Math.max(existingBaseResetAt, existingModelResetAt);
 			const nextResetAt = now + waitMs;
 			if (existingResetAt >= nextResetAt) {
@@ -488,9 +495,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				waitMs,
 				modelFamily,
 				"quota",
-				model,
+				appliedModel,
 			);
-			const quotaScheduleKey = `${resolveEntitlementAccountKey(snapshotCandidate)}:${model ?? modelFamily}`;
+			const quotaScheduleKey = `${resolveEntitlementAccountKey(snapshotCandidate)}:${appliedModel}`;
 			preemptiveQuotaScheduler.update(
 				quotaScheduleKey,
 				toQuotaSchedulerSnapshot(entry),
