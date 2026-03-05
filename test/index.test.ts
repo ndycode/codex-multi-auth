@@ -171,12 +171,14 @@ vi.mock("../lib/rotation.js", () => ({
 
 vi.mock("../lib/prompts/codex.js", () => ({
 	getModelFamily: (model: string) => {
+		if (model.includes("gpt-5-codex")) return "gpt-5-codex";
 		if (model.includes("codex-max")) return "codex-max";
+		if (model.includes("gpt-5.2")) return "gpt-5.2";
 		if (model.includes("codex")) return "codex";
 		return "gpt-5.1";
 	},
 	getCodexInstructions: vi.fn(async () => "test instructions"),
-	MODEL_FAMILIES: ["codex-max", "codex", "gpt-5.1"] as const,
+	MODEL_FAMILIES: ["gpt-5-codex", "codex-max", "codex", "gpt-5.2", "gpt-5.1"] as const,
 	prewarmCodexInstructions: vi.fn(),
 }));
 
@@ -1005,6 +1007,34 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		await plugin.tool["codex-remove"].execute({ index: 1 });
 		expect(mockStorage.activeIndex).toBe(1);
 		expect(mockStorage.activeIndexByFamily.codex).toBe(1);
+	});
+
+	it("reindexes per-family active indices when removing index 0", async () => {
+		mockStorage.accounts = [
+			{ refreshToken: "r1", email: "user1@example.com" },
+			{ refreshToken: "r2", email: "user2@example.com" },
+			{ refreshToken: "r3", email: "user3@example.com" },
+		];
+		mockStorage.activeIndex = 2;
+		mockStorage.activeIndexByFamily = {
+			"gpt-5-codex": 0,
+			"codex-max": 2,
+			codex: 2,
+			"gpt-5.2": 2,
+			"gpt-5.1": 1,
+		};
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		await plugin.tool["codex-remove"].execute({ index: 1 });
+		expect(mockStorage.activeIndex).toBe(1);
+		expect(mockStorage.activeIndexByFamily["gpt-5-codex"]).toBe(0);
+		expect(mockStorage.activeIndexByFamily["codex-max"]).toBe(1);
+		expect(mockStorage.activeIndexByFamily.codex).toBe(1);
+		expect(mockStorage.activeIndexByFamily["gpt-5.2"]).toBe(1);
+		expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(0);
 	});
 
 	it("resets activeIndex when removing active account at end", async () => {

@@ -3604,7 +3604,11 @@ async function handleManageAction(
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
-			removeAccountAndReconcileActiveIndexes(storage, idx);
+			const removed = removeAccountAndReconcileActiveIndexes(storage, idx);
+			if (!removed) {
+				console.error(`Invalid account index: ${idx + 1}.`);
+				return;
+			}
 			await saveAccounts(storage);
 			console.log(`Deleted account ${idx + 1}.`);
 		}

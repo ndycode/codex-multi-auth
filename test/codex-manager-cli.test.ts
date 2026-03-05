@@ -2021,6 +2021,53 @@ describe("codex manager cli commands", () => {
 		expect(saved?.activeIndexByFamily?.["gpt-5.1"]).toBe(1);
 	});
 
+	it("does not persist or log delete success for fractional manage index", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 0.5 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(
+				logSpy.mock.calls.some((call) => String(call[0]).includes("Deleted account")),
+			).toBe(false);
+			expect(
+				errorSpy.mock.calls.some((call) => String(call[0]).includes("Invalid account index")),
+			).toBe(true);
+		} finally {
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("toggles account enabled state from manage mode", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({

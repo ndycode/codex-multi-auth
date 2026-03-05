@@ -2394,10 +2394,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 							let startFresh = explicitLoginMode === "fresh";
 							let refreshAccountIndex: number | undefined;
 
-							const clampActiveIndices = (storage: AccountStorageV3): void => {
+							const reconcileActiveIndicesAfterRemoval = (
+								storage: AccountStorageV3,
+								targetIndex: number,
+							): boolean => {
+								const removed = removeAccountAndReconcileActiveIndexes(storage, targetIndex);
+								if (!removed) {
+									return false;
+								}
 								normalizeActiveIndexByFamily(storage, storage.accounts.length, {
 									clearFamilyMapWhenEmpty: true,
 								});
+								return true;
 							};
 
 							const isFlaggableFailure = (failure: Extract<TokenResult, { type: "failed" }>): boolean => {
@@ -2881,11 +2889,23 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 
 								if (removeFromActive.size > 0) {
-									workingStorage.accounts = workingStorage.accounts.filter(
-										(account) => !removeFromActive.has(account.refreshToken),
-									);
-									clampActiveIndices(workingStorage);
-									storageChanged = true;
+									const indexesToRemove: number[] = [];
+									for (let i = 0; i < workingStorage.accounts.length; i += 1) {
+										const account = workingStorage.accounts[i];
+										if (account && removeFromActive.has(account.refreshToken)) {
+											indexesToRemove.push(i);
+										}
+									}
+									indexesToRemove.sort((a, b) => b - a);
+									let removedAny = false;
+									for (const indexToRemove of indexesToRemove) {
+										if (reconcileActiveIndicesAfterRemoval(workingStorage, indexToRemove)) {
+											removedAny = true;
+										}
+									}
+									if (removedAny) {
+										storageChanged = true;
+									}
 								}
 
 								if (storageChanged) {
@@ -3077,8 +3097,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (typeof menuResult.deleteAccountIndex === "number") {
 											const target = workingStorage.accounts[menuResult.deleteAccountIndex];
 											if (target) {
-												workingStorage.accounts.splice(menuResult.deleteAccountIndex, 1);
-												clampActiveIndices(workingStorage);
+												const removed = reconcileActiveIndicesAfterRemoval(
+													workingStorage,
+													menuResult.deleteAccountIndex,
+												);
+												if (!removed) {
+													continue;
+												}
 												await saveAccounts(workingStorage);
 												await saveFlaggedAccounts({
 													version: 1,
