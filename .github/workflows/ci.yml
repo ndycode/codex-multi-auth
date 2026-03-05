@@ -61,7 +61,7 @@ jobs:
 
       - name: Seed enterprise health fixture
         run: |
-          node -e "const fs=require('fs'); const path=require('path'); const root=path.join(process.env.GITHUB_WORKSPACE,'.tmp','health-fixture'); const logs=path.join(root,'logs'); fs.mkdirSync(logs,{recursive:true}); fs.writeFileSync(path.join(root,'openai-codex-accounts.json'), JSON.stringify({version:4,accounts:[{refreshTokenRef:'fixture-account:refresh',accessTokenRef:'fixture-account:access',addedAt:1,lastUsed:1}],activeIndex:0,activeIndexByFamily:{codex:0,legacy:0,gpt5:0,o3:0,o4mini:0,oss:0},}, null, 2)+'\\n'); fs.writeFileSync(path.join(root,'settings.json'), JSON.stringify({version:1,pluginConfig:{},dashboardDisplaySettings:{}}, null, 2)+'\\n'); fs.writeFileSync(path.join(logs,'audit.log'), JSON.stringify({timestamp:new Date().toISOString(),action:'request.start',outcome:'success'})+'\\n');"
+          node scripts/seed-health-fixture.js
 
       - name: Enterprise health check
         env:

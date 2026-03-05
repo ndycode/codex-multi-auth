@@ -6,6 +6,11 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
+
+const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 15_000;
+const DEFAULT_HEALTH_CHECK_SCRIPT = "scripts/enterprise-health-check.js";
+const HEALTH_CHECK_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 
 function parseArgValue(name) {
 	const prefix = `${name}=`;
@@ -52,24 +57,41 @@ async function loadAuditEntries(logDir, cutoffMs) {
 	return output;
 }
 
-function runHealthCheck() {
+function parsePositiveInt(value, fallback) {
+	const parsed = Number.parseInt(String(value ?? ""), 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+	return parsed;
+}
+
+function resolveHealthCheckScriptPath() {
+	const override = parseArgValue("--health-script") ?? process.env.CODEX_SLO_HEALTH_CHECK_SCRIPT;
+	return override && override.trim().length > 0 ? override.trim() : DEFAULT_HEALTH_CHECK_SCRIPT;
+}
+
+export function runHealthCheck() {
+	const timeoutMs = parsePositiveInt(process.env.CODEX_HEALTH_CHECK_TIMEOUT_MS, DEFAULT_HEALTH_CHECK_TIMEOUT_MS);
+	const healthCheckScript = resolveHealthCheckScriptPath();
 	try {
 		const nodeCmd = process.execPath;
-		const raw = execFileSync(nodeCmd, ["scripts/enterprise-health-check.js"], {
+		const raw = execFileSync(nodeCmd, [healthCheckScript], {
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
 			cwd: process.cwd(),
+			timeout: timeoutMs,
+			killSignal: "SIGTERM",
+			maxBuffer: HEALTH_CHECK_MAX_BUFFER_BYTES,
 		});
 		return JSON.parse(raw);
 	} catch (error) {
 		const out = `${error?.stdout ?? ""}${error?.stderr ?? ""}`.trim();
+		const fallbackMessage = error instanceof Error ? error.message : String(error);
 		return {
 			status: "fail",
 			checks: [],
 			findings: [
 				{
 					code: "health-check-exec-failed",
-					message: out.slice(0, 500),
+					message: (out.length > 0 ? out : fallbackMessage).slice(0, 500),
 				},
 			],
 		};
@@ -187,7 +209,10 @@ async function main() {
 	}
 }
 
-main().catch((error) => {
-	console.error(`slo-budget-report failed: ${error instanceof Error ? error.message : String(error)}`);
-	process.exit(1);
-});
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
+if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
+	main().catch((error) => {
+		console.error(`slo-budget-report failed: ${error instanceof Error ? error.message : String(error)}`);
+		process.exit(1);
+	});
+}

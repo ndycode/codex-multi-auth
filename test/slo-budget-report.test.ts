@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, utimesSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,6 +34,11 @@ describe("slo-budget-report script", () => {
 			if (!fixture) continue;
 			await removeWithRetry(fixture);
 		}
+		vi.doUnmock("node:child_process");
+		vi.restoreAllMocks();
+		vi.resetModules();
+		delete process.env.CODEX_HEALTH_CHECK_TIMEOUT_MS;
+		delete process.env.CODEX_SLO_HEALTH_CHECK_SCRIPT;
 	});
 
 	it("counts stale-audit-log findings in staleWalFindings evaluation", async () => {
@@ -73,5 +78,64 @@ describe("slo-budget-report script", () => {
 		expect(payload.health?.staleWalFindings).toBe(1);
 		const staleEval = payload.evaluations?.find((entry) => entry.id === "stale-wal-findings");
 		expect(staleEval?.status).toBe("fail");
+	});
+
+	it("runHealthCheck surfaces timeout failures and applies timeout/kill options", async () => {
+		const execError = new Error("spawn ETIMEDOUT: health check timed out");
+		Object.assign(execError, { stdout: "", stderr: "" });
+		const execFileSync = vi.fn(() => {
+			throw execError;
+		});
+		vi.doMock("node:child_process", () => ({ execFileSync }));
+		process.env.CODEX_HEALTH_CHECK_TIMEOUT_MS = "4321";
+
+		const module = await import("../scripts/slo-budget-report.js");
+		const payload = module.runHealthCheck() as {
+			status?: string;
+			findings?: Array<{ code?: string; message?: string }>;
+		};
+
+		expect(execFileSync).toHaveBeenCalledTimes(1);
+		const call = execFileSync.mock.calls[0];
+		expect(call[0]).toBe(process.execPath);
+		expect(call[1]).toEqual(["scripts/enterprise-health-check.js"]);
+		expect(call[2]).toMatchObject({
+			timeout: 4321,
+			killSignal: "SIGTERM",
+		});
+		expect(payload.status).toBe("fail");
+		expect(payload.findings?.[0]?.code).toBe("health-check-exec-failed");
+		expect(payload.findings?.[0]?.message).toContain("ETIMEDOUT");
+	});
+
+	it("runHealthCheck falls back to spawn error text when stdout/stderr are empty", async () => {
+		const execError = new Error("spawn ENOENT: missing health check script");
+		Object.assign(execError, { stdout: "", stderr: "" });
+		const execFileSync = vi.fn(() => {
+			throw execError;
+		});
+		vi.doMock("node:child_process", () => ({ execFileSync }));
+
+		const module = await import("../scripts/slo-budget-report.js");
+		const payload = module.runHealthCheck() as {
+			status?: string;
+			findings?: Array<{ message?: string }>;
+		};
+
+		expect(payload.status).toBe("fail");
+		expect(payload.findings?.[0]?.message).toContain("ENOENT");
+	});
+
+	it("runHealthCheck honors health script overrides (Windows-compatible path)", async () => {
+		const execFileSync = vi.fn(() => JSON.stringify({ status: "pass", checks: [], findings: [] }));
+		vi.doMock("node:child_process", () => ({ execFileSync }));
+		process.env.CODEX_SLO_HEALTH_CHECK_SCRIPT = "scripts\\enterprise-health-check.js";
+
+		const module = await import("../scripts/slo-budget-report.js");
+		const payload = module.runHealthCheck() as { status?: string };
+
+		expect(execFileSync).toHaveBeenCalledTimes(1);
+		expect(execFileSync.mock.calls[0][1]).toEqual(["scripts\\enterprise-health-check.js"]);
+		expect(payload.status).toBe("pass");
 	});
 });

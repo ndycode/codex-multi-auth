@@ -10,10 +10,18 @@ import process from "node:process";
 const DEFAULT_BATCH_SIZE = 500;
 const SEND_TIMEOUT_MS = Number.parseInt(process.env.CODEX_AUDIT_FORWARDER_TIMEOUT_MS ?? "15000", 10);
 const SEND_MAX_ATTEMPTS = Number.parseInt(process.env.CODEX_AUDIT_FORWARDER_MAX_ATTEMPTS ?? "3", 10);
-const CHECKPOINT_LOCK_MAX_ATTEMPTS = 40;
+const CHECKPOINT_LOCK_MAX_ATTEMPTS = parsePositiveInt(process.env.CODEX_AUDIT_FORWARDER_LOCK_MAX_ATTEMPTS, 40);
+const CHECKPOINT_LOCK_STALE_MS = parsePositiveInt(process.env.CODEX_AUDIT_FORWARDER_STALE_LOCK_MS, 5 * 60 * 1000);
+const CHECKPOINT_LOCK_MAX_WAIT_MS = parsePositiveInt(process.env.CODEX_AUDIT_FORWARDER_MAX_WAIT_MS, 60 * 1000);
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parsePositiveInt(value, fallback) {
+	const parsed = Number.parseInt(String(value ?? ""), 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+	return parsed;
 }
 
 function parseArgValue(name) {
@@ -228,12 +236,67 @@ async function sendBatch({ endpoint, apiKey, payload }) {
 	}
 }
 
+function isProcessAlive(pid) {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return error?.code === "EPERM";
+	}
+}
+
+async function clearStaleCheckpointLock(lockPath) {
+	let details;
+	try {
+		details = await stat(lockPath);
+	} catch (error) {
+		if (error?.code === "ENOENT") return false;
+		return false;
+	}
+	if (Date.now() - details.mtimeMs < CHECKPOINT_LOCK_STALE_MS) {
+		return false;
+	}
+
+	let ownerPid = null;
+	try {
+		const raw = (await readFile(lockPath, "utf8")).trim();
+		const parsed = Number.parseInt(raw, 10);
+		if (Number.isFinite(parsed) && parsed > 0) {
+			ownerPid = parsed;
+		}
+	} catch {
+		// Ignore parse/read failures and treat as stale candidate.
+	}
+
+	if (ownerPid !== null && isProcessAlive(ownerPid)) {
+		return false;
+	}
+	try {
+		await unlink(lockPath);
+		return true;
+	} catch (error) {
+		if (error?.code === "ENOENT") return true;
+		return false;
+	}
+}
+
+function buildCheckpointLockTimeoutError(lockPath, elapsedMs, waitMs) {
+	const effectiveElapsed = Math.max(0, Math.floor(elapsedMs + waitMs));
+	return new Error(`Timed out acquiring checkpoint lock after ${effectiveElapsed}ms: ${lockPath}`);
+}
+
 async function withCheckpointLock(checkpointPath, action) {
 	const lockPath = `${checkpointPath}.lock`;
+	const startedAt = Date.now();
 	for (let attempt = 0; attempt < CHECKPOINT_LOCK_MAX_ATTEMPTS; attempt += 1) {
 		try {
 			const handle = await open(lockPath, "wx", 0o600);
-			await handle.close();
+			try {
+				await handle.writeFile(`${process.pid}\n`, "utf8");
+			} finally {
+				await handle.close();
+			}
 			try {
 				return await action();
 			} finally {
@@ -241,12 +304,26 @@ async function withCheckpointLock(checkpointPath, action) {
 			}
 		} catch (error) {
 			const code = error?.code;
-			if (code !== "EEXIST" || attempt === CHECKPOINT_LOCK_MAX_ATTEMPTS - 1) {
+			const contention = code === "EEXIST" || code === "EPERM";
+			if (!contention) {
 				throw error;
 			}
-			await sleep(25 * 2 ** Math.min(attempt, 6));
+			if (await clearStaleCheckpointLock(lockPath)) {
+				continue;
+			}
+			const backoffMs = 25 * 2 ** Math.min(attempt, 6);
+			const elapsedMs = Date.now() - startedAt;
+			if (
+				attempt === CHECKPOINT_LOCK_MAX_ATTEMPTS - 1 ||
+				elapsedMs >= CHECKPOINT_LOCK_MAX_WAIT_MS ||
+				elapsedMs + backoffMs > CHECKPOINT_LOCK_MAX_WAIT_MS
+			) {
+				throw buildCheckpointLockTimeoutError(lockPath, elapsedMs, backoffMs);
+			}
+			await sleep(backoffMs);
 		}
 	}
+	throw buildCheckpointLockTimeoutError(lockPath, Date.now() - startedAt, 0);
 }
 
 async function writeCheckpointAtomic(checkpointPath, checkpoint) {

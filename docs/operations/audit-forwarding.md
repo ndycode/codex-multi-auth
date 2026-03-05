@@ -15,7 +15,7 @@ Forward local audit logs to a central SIEM endpoint.
 ## Required Configuration
 
 - `CODEX_SIEM_ENDPOINT` (HTTPS ingestion endpoint)
-- `CODEX_SIEM_API_KEY` (optional bearer token, if required by SIEM)
+- `CODEX_SIEM_API_KEY` (bearer token; required when the SIEM endpoint enforces authentication)
 - `CODEX_MULTI_AUTH_DIR` (optional runtime root override)
 
 ---
@@ -57,6 +57,16 @@ Checkpoint fields:
 - `file`
 - `line`
 - `updatedAt`
+
+### Failure & Retry Behavior
+
+- Export delivery retries on HTTP `429` or `5xx`, plus timeout/network failures.
+- Retry count and timeout are configurable:
+  - `CODEX_AUDIT_FORWARDER_MAX_ATTEMPTS` (default `3`)
+  - `CODEX_AUDIT_FORWARDER_TIMEOUT_MS` (default `15000`)
+- Backoff is exponential with jitter (`250ms * 2^attempt + random(0..99ms)`).
+- Non-retryable responses and terminal retry failures stop the run and return non-zero.
+- Checkpoints are written only after a successful send batch. Failed sends keep the prior checkpoint (`file`, `line`, `updatedAt`) so operators can re-run safely.
 
 ---
 

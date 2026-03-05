@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, utimesSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -250,5 +250,74 @@ describe("audit-log-forwarder script", () => {
 		};
 		expect(checkpoint.file).toBe("audit.log");
 		expect(checkpoint.line).toBe(1);
+	});
+
+	it("clears stale checkpoint locks and proceeds", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "audit-forwarder-stale-lock-"));
+		fixtures.push(root);
+		const logDir = path.join(root, "logs");
+		const checkpointPath = path.join(root, "checkpoint.json");
+		const checkpointLockPath = `${checkpointPath}.lock`;
+		await fs.mkdir(logDir, { recursive: true });
+		await fs.writeFile(
+			path.join(logDir, "audit.log"),
+			'{"timestamp":"2026-03-01T00:00:00Z","action":"request.start"}\n',
+			"utf8",
+		);
+		await fs.writeFile(checkpointLockPath, "999999\n", "utf8");
+		const staleDate = new Date(Date.now() - 60 * 1000);
+		utimesSync(checkpointLockPath, staleDate, staleDate);
+
+		await withServer((_req, res) => {
+			res.statusCode = 200;
+			res.end("ok");
+		}, async (endpoint) => {
+			const result = await runForwarder(
+				[
+					`--endpoint=${endpoint}`,
+					`--log-dir=${logDir}`,
+					`--checkpoint=${checkpointPath}`,
+				],
+				{
+					CODEX_AUDIT_FORWARDER_STALE_LOCK_MS: "50",
+					CODEX_AUDIT_FORWARDER_MAX_WAIT_MS: "500",
+				},
+			);
+			expect(result.status).toBe(0);
+		});
+	});
+
+	it("fails with a clear timeout when checkpoint lock contention persists", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "audit-forwarder-lock-timeout-"));
+		fixtures.push(root);
+		const logDir = path.join(root, "logs");
+		const checkpointPath = path.join(root, "checkpoint.json");
+		const checkpointLockPath = `${checkpointPath}.lock`;
+		await fs.mkdir(logDir, { recursive: true });
+		await fs.writeFile(
+			path.join(logDir, "audit.log"),
+			'{"timestamp":"2026-03-01T00:00:00Z","action":"request.start"}\n',
+			"utf8",
+		);
+		await fs.writeFile(checkpointLockPath, `${process.pid}\n`, "utf8");
+
+		await withServer((_req, res) => {
+			res.statusCode = 200;
+			res.end("ok");
+		}, async (endpoint) => {
+			const result = await runForwarder(
+				[
+					`--endpoint=${endpoint}`,
+					`--log-dir=${logDir}`,
+					`--checkpoint=${checkpointPath}`,
+				],
+				{
+					CODEX_AUDIT_FORWARDER_MAX_WAIT_MS: "80",
+					CODEX_AUDIT_FORWARDER_LOCK_MAX_ATTEMPTS: "10",
+				},
+			);
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("Timed out acquiring checkpoint lock");
+		});
 	});
 });

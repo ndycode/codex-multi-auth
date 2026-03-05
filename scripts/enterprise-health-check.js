@@ -185,7 +185,6 @@ async function newestMtimeMs(dir) {
 
 async function checkSecureMode(path, findings) {
 	if (process.platform === "win32") return;
-	if (!existsSync(path)) return;
 	try {
 		const details = await stat(path);
 		const perms = details.mode & 0o777;
@@ -198,6 +197,7 @@ async function checkSecureMode(path, findings) {
 			});
 		}
 	} catch (error) {
+		if (error?.code === "ENOENT") return;
 		findings.push({
 			severity: "medium",
 			code: "stat-failed",

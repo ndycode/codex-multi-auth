@@ -32,6 +32,11 @@ function createFakeNpmBin(root: string): string {
 	const npmShellPath = path.join(binDir, "npm");
 	const npmCmdPath = path.join(binDir, "npm.cmd");
 	const fakeNpmSource = `
+const fs = require("node:fs");
+const markerPath = process.env.FAKE_NPM_MARKER_PATH;
+if (markerPath) {
+  fs.writeFileSync(markerPath, process.env.FAKE_NPM_WRAPPER ?? "unknown", "utf8");
+}
 const args = process.argv.slice(2);
 if (args[0] === "sbom") {
   process.stdout.write(JSON.stringify({ bomFormat: "CycloneDX", specVersion: "1.5", metadata: "x".repeat(1_500_000) }));
@@ -45,8 +50,10 @@ for (let index = 0; index < 5000; index += 1) {
 process.stdout.write(output);
 process.exit(0);
 `.trimStart();
-	const npmShellSource = `#!/usr/bin/env sh\nnode \"${fakeNpmPath.replace(/\\/g, "/")}\" \"$@\"\n`;
-	const npmCmdSource = `@echo off\r\nnode \"%~dp0\\fake-npm.js\" %*\r\n`;
+	const nodeExecPosix = process.execPath.replace(/\\/g, "/").replace(/"/g, '\\"');
+	const nodeExecWindows = process.execPath.replace(/"/g, '""');
+	const npmShellSource = `#!/usr/bin/env sh\nFAKE_NPM_WRAPPER=sh \"${nodeExecPosix}\" \"${fakeNpmPath.replace(/\\/g, "/")}\" \"$@\"\n`;
+	const npmCmdSource = `@echo off\r\nset FAKE_NPM_WRAPPER=cmd\r\n\"${nodeExecWindows}\" \"%~dp0\\fake-npm.js\" %*\r\n`;
 	writeFileSync(fakeNpmPath, fakeNpmSource, "utf8");
 	writeFileSync(npmShellPath, npmShellSource, "utf8");
 	writeFileSync(npmCmdPath, npmCmdSource, "utf8");
@@ -103,5 +110,31 @@ describe("compliance-evidence-bundle script", () => {
 
 		const firstLogStat = await fs.stat(path.join(outDir, "01-typecheck.log"));
 		expect(firstLogStat.size).toBeGreaterThan(1_000_000);
+	});
+
+	it.skipIf(process.platform !== "win32")("uses npm.cmd wrapper on Windows for verbose runs", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "compliance-bundle-win32-"));
+		fixtures.push(root);
+		const outDir = path.join(root, "evidence");
+		const binDir = createFakeNpmBin(root);
+		const markerPath = path.join(root, "wrapper-marker.txt");
+
+		const result = spawnSync(
+			process.execPath,
+			[scriptPath, "--profile=quick", `--out-dir=${outDir}`],
+			{
+				cwd: root,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+					FAKE_NPM_MARKER_PATH: markerPath,
+				},
+			},
+		);
+
+		expect(result.status).toBe(0);
+		const marker = await fs.readFile(markerPath, "utf8");
+		expect(marker.trim()).toBe("cmd");
 	});
 });

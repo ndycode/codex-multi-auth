@@ -60,7 +60,7 @@ Attach:
 
 ## Exit Criteria Review
 
-- [ ] health check returned `pass`
+- [ ] health check returned `status: "pass"` (verify JSON `status` field)
 - [ ] no unresolved `SEV-1` conditions
 - [ ] rollback decision documented (if applicable)
 - [ ] prevention tasks created with owners and due dates

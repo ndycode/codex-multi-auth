@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createLogger } from "../logger.js";
+import { sleep } from "../utils.js";
 
 type SecretStorageMode = "keychain" | "plaintext" | "auto";
 type EffectiveSecretStorageMode = "keychain" | "plaintext";
@@ -64,10 +65,6 @@ async function loadKeytar(): Promise<KeytarModule | null> {
 		})();
 	}
 	return keytarLoader;
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isRetryableDeleteError(error: unknown): boolean {

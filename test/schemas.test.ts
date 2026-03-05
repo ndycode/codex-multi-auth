@@ -267,6 +267,17 @@ describe("AccountStorageV4Schema", () => {
 		});
 		expect(result.success).toBe(false);
 	});
+
+	it("accepts V4 storage with activeIndexByFamily", () => {
+		const result = AccountStorageV4Schema.safeParse({
+			...validStorage,
+			activeIndexByFamily: {
+				codex: 0,
+				legacy: 0,
+			},
+		});
+		expect(result.success).toBe(true);
+	});
 });
 
 describe("AccountStorageV1Schema", () => {

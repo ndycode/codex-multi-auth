@@ -72,12 +72,13 @@ Use this flow when migrating existing deployments that were running with plainte
 cp -r ~/.codex/multi-auth ~/.codex/multi-auth.backup
 ```
 
-2. Set `CODEX_SECRET_STORAGE_MODE=keychain` in your runtime environment (or use `auto` if keychain availability is guaranteed and verified in your fleet).
-3. Validate keychain backend availability:
+2. Validate keychain backend availability:
 
 ```bash
 npm run ops:keychain-assert
 ```
+
+3. Set `CODEX_SECRET_STORAGE_MODE=keychain` in your runtime environment (or use `auto` only after the keychain validation above passes).
 
 4. Trigger a controlled account rewrite so token refs are persisted in v4 format:
 

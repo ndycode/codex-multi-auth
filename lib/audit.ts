@@ -59,6 +59,7 @@ export interface AuditConfig {
 
 const DEFAULT_AUDIT_RETENTION_DAYS = 90;
 const RETRYABLE_AUDIT_FS_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+const RETRYABLE_AUDIT_FS_BASE_DELAY_MS = 10;
 const PURGE_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_CONFIG: AuditConfig = {
 	enabled: true,
@@ -70,6 +71,7 @@ const DEFAULT_CONFIG: AuditConfig = {
 
 let auditConfig: AuditConfig = { ...DEFAULT_CONFIG };
 let lastPurgeAttemptMs = 0;
+const retrySleepSignal = new Int32Array(new SharedArrayBuffer(4));
 
 export function configureAudit(config: Partial<AuditConfig>): void {
 	auditConfig = { ...auditConfig, ...config };
@@ -125,6 +127,7 @@ function withRetryableAuditFsOperation<T>(operation: () => T): T {
 			if (!isRetryableAuditFsError(error) || attempt === 4) {
 				throw error;
 			}
+			Atomics.wait(retrySleepSignal, 0, 0, RETRYABLE_AUDIT_FS_BASE_DELAY_MS * 2 ** attempt);
 		}
 	}
 	throw lastError;

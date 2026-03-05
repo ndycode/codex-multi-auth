@@ -49,6 +49,7 @@ import {
 	type QuotaCacheData,
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
+import { maskEmail } from "./logger.js";
 import {
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -4067,7 +4068,8 @@ function sanitizeAuditError(error: unknown): string {
 	const masked = raw
 		.replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "***REDACTED***")
 		.replace(/\b(?:refresh|access)_token_[A-Za-z0-9_-]{8,}\b/gi, "***REDACTED***")
-		.replace(/\bsecret-(?:access|refresh)-token\b/gi, "***REDACTED***");
+		.replace(/\bsecret-(?:access|refresh)-token\b/gi, "***REDACTED***")
+		.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, (match) => maskEmail(match));
 	return masked.slice(0, 200);
 }
 

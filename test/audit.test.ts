@@ -210,7 +210,9 @@ describe("Audit logging", () => {
 
 		it("keeps secure 0600 mode on existing audit logs (posix)", () => {
 			if (process.platform === "win32") {
-				expect(true).toBe(true);
+				auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+				const content = readFileSync(getAuditLogPath(), "utf8");
+				expect(content).toContain("\"action\":\"request.start\"");
 				return;
 			}
 			const logPath = getAuditLogPath();

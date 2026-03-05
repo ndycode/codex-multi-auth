@@ -28,6 +28,7 @@ describe("audit purge retry handling", () => {
 		}));
 		const renameSync = vi.fn();
 		const readdirSync = vi.fn(() => ["audit.1.log"]);
+		const chmodSync = vi.fn();
 
 		let unlinkAttempts = 0;
 		const unlinkSync = vi.fn(() => {
@@ -45,6 +46,7 @@ describe("audit purge retry handling", () => {
 			renameSync,
 			readdirSync,
 			unlinkSync,
+			chmodSync,
 		}));
 		vi.doMock("../lib/runtime-paths.js", () => ({
 			getCodexLogDir: () => "/tmp/codex-logs",
@@ -73,6 +75,6 @@ describe("audit purge retry handling", () => {
 
 		expect(unlinkSync).toHaveBeenCalledTimes(3);
 		expect(writeFileSync).toHaveBeenCalledTimes(1);
-		expect(atomicsWaitSpy).not.toHaveBeenCalled();
+		expect(atomicsWaitSpy).toHaveBeenCalledTimes(2);
 	});
 });

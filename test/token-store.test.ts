@@ -125,6 +125,7 @@ describe("token store", () => {
 	it("handles concurrent keychain writes for the same account ref without torn secrets", async () => {
 		const secrets = new Map<string, string>();
 		const refreshGate = createDeferred<void>();
+		const firstRefreshEntered = createDeferred<void>();
 		let refreshCallCount = 0;
 
 		mockKeytar({
@@ -132,6 +133,7 @@ describe("token store", () => {
 				if (account === "acct-1:refresh") {
 					refreshCallCount += 1;
 					if (refreshCallCount === 1) {
+						firstRefreshEntered.resolve();
 						await refreshGate.promise;
 					}
 				}
@@ -153,7 +155,7 @@ describe("token store", () => {
 			refreshToken: "refresh-token-b",
 			accessToken: "access-token-b",
 		});
-		await Promise.resolve();
+		await firstRefreshEntered.promise;
 		refreshGate.resolve();
 
 		const [firstRefs, secondRefs] = await Promise.all([firstWrite, secondWrite]);
