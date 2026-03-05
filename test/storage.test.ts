@@ -1038,6 +1038,70 @@ describe("storage", () => {
       expect(cleanupScanCount).toBe(2);
       expect(existsSync(staleArtifactPath)).toBe(true);
     });
+
+    it("does not throttle stale-artifact cleanup after exhausted EACCES unlink retries", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-transient-eacces-${Math.random().toString(36).slice(2)}.json`,
+      );
+      const staleArtifactPath = `${localStoragePath}.bak.rotate.eacces.tmp`;
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "eacces-refresh-token",
+              accountId: "acct-eacces",
+              email: "eacces-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+      const originalUnlink = fs.unlink.bind(fs);
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+      const unlinkSpy = vi
+        .spyOn(fs, "unlink")
+        .mockImplementation(async (...args: Parameters<typeof fs.unlink>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === staleArtifactPath) {
+            const accessError = new Error("access denied") as NodeJS.ErrnoException;
+            accessError.code = "EACCES";
+            throw accessError;
+          }
+          return originalUnlink(...args);
+        });
+
+      try {
+        const firstResult = await loadAccounts();
+        const secondResult = await loadAccounts();
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        unlinkSpy.mockRestore();
+        readdirSpy.mockRestore();
+      }
+
+      expect(cleanupScanCount).toBe(2);
+      expect(existsSync(staleArtifactPath)).toBe(true);
+    });
   });
 
   describe("saveAccounts", () => {

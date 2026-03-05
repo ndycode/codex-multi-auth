@@ -299,7 +299,7 @@ async function renameFileWithRetry(sourcePath: string, destinationPath: string):
 }
 
 function isTransientUnlinkCode(code: string | undefined): boolean {
-	return code === "EPERM" || code === "EBUSY" || code === "EAGAIN";
+	return code === "EPERM" || code === "EBUSY" || code === "EAGAIN" || code === "EACCES";
 }
 
 async function unlinkFileWithRetry(targetPath: string): Promise<void> {
