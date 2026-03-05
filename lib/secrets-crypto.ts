@@ -24,6 +24,8 @@ function deriveLegacyAesKey(input: string): Buffer {
 }
 
 function deriveAesKey(input: string, salt: Buffer): Buffer {
+	// Intentionally synchronous: callers use this in short-lived local encryption
+	// paths where deterministic blocking behavior is preferred.
 	return scryptSync(input, salt, AES_KEY_LENGTH);
 }
 

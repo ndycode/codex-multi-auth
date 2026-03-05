@@ -17,6 +17,9 @@ const DEFAULT_POLICY: RetentionPolicy = {
 	quotaCacheDays: 14,
 	dlqDays: 30,
 };
+const RETRYABLE_DIRECTORY_CLEANUP_CODES = new Set(["ENOTEMPTY", "EBUSY", "EPERM"]);
+const DIRECTORY_CLEANUP_MAX_ATTEMPTS = 4;
+const DIRECTORY_CLEANUP_BASE_DELAY_MS = 10;
 
 function parseEnvDays(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -39,6 +42,29 @@ export function getRetentionPolicyFromEnv(): RetentionPolicy {
 	};
 }
 
+async function removeEmptyDirectoryWithRetry(path: string): Promise<void> {
+	for (let attempt = 0; attempt < DIRECTORY_CLEANUP_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			const childEntries = await fs.readdir(path);
+			if (childEntries.length !== 0) return;
+			await fs.rmdir(path);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !RETRYABLE_DIRECTORY_CLEANUP_CODES.has(code)) {
+				throw error;
+			}
+			if (attempt >= DIRECTORY_CLEANUP_MAX_ATTEMPTS - 1) {
+				return;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, DIRECTORY_CLEANUP_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
+	}
+}
+
 async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<number> {
 	let removed = 0;
 	let entries: Dirent<string>[] = [];
@@ -56,10 +82,7 @@ async function pruneDirectoryByAge(path: string, maxAgeMs: number): Promise<numb
 		try {
 			if (entry.isDirectory()) {
 				removed += await pruneDirectoryByAge(fullPath, maxAgeMs);
-				const childEntries = await fs.readdir(fullPath);
-				if (childEntries.length === 0) {
-					await fs.rmdir(fullPath);
-				}
+				await removeEmptyDirectoryWithRetry(fullPath);
 				continue;
 			}
 			if (!entry.isFile()) continue;

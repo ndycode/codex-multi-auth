@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { RetentionPolicy } from "../lib/data-retention.js";
+import { removeWithRetry } from "./helpers/fs-retry.js";
 
 describe("data retention", () => {
 	let tempDir: string;
@@ -21,7 +22,7 @@ describe("data retention", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("prunes stale log/cache/state files", async () => {
@@ -77,25 +78,27 @@ describe("data retention", () => {
 		expect(await fs.readFile(freshCache, "utf8")).toBe("fresh");
 	});
 
-	it("rethrows non-ENOENT errors during recursive prune", async () => {
+	it("tolerates transient EBUSY while pruning empty directories", async () => {
 		const { enforceDataRetention } = await import("../lib/data-retention.js");
-		const logsDir = join(tempDir, "logs");
-		await fs.mkdir(logsDir, { recursive: true });
-		const lockedLog = join(logsDir, "locked.log");
+		const nestedLogDir = join(tempDir, "logs", "nested");
+		await fs.mkdir(nestedLogDir, { recursive: true });
+		const oldLog = join(nestedLogDir, "old.log");
 		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
-		await fs.writeFile(lockedLog, "locked", "utf8");
-		await fs.utimes(lockedLog, oldDate, oldDate);
+		await fs.writeFile(oldLog, "old", "utf8");
+		await fs.utimes(oldLog, oldDate, oldDate);
 
-		const unlinkSpy = vi.spyOn(fs, "unlink");
-		const originalUnlink = fs.unlink.bind(fs);
-		unlinkSpy.mockImplementation(async (...args) => {
+		const originalRmdir = fs.rmdir.bind(fs);
+		const rmdirSpy = vi.spyOn(fs, "rmdir");
+		let busyCount = 0;
+		rmdirSpy.mockImplementation(async (...args) => {
 			const path = args[0];
-			if (typeof path === "string" && path.endsWith("locked.log")) {
-				const error = new Error("locked") as NodeJS.ErrnoException;
-				error.code = "EPERM";
+			if (typeof path === "string" && path.endsWith("nested") && busyCount === 0) {
+				busyCount += 1;
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
 				throw error;
 			}
-			return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+			return originalRmdir(...(args as Parameters<typeof fs.rmdir>));
 		});
 
 		try {
@@ -107,9 +110,53 @@ describe("data retention", () => {
 					quotaCacheDays: 1,
 					dlqDays: 1,
 				}),
-			).rejects.toMatchObject({ code: "EPERM" });
+			).resolves.toEqual(
+				expect.objectContaining({
+					removedLogs: 1,
+				}),
+			);
+			expect(busyCount).toBe(1);
 		} finally {
-			unlinkSpy.mockRestore();
+			rmdirSpy.mockRestore();
 		}
 	});
+
+	it.each(["EPERM", "EBUSY"] as const)(
+		"rethrows non-ENOENT errors during recursive prune (%s)",
+		async (errorCode) => {
+			const { enforceDataRetention } = await import("../lib/data-retention.js");
+			const logsDir = join(tempDir, "logs");
+			await fs.mkdir(logsDir, { recursive: true });
+			const lockedLog = join(logsDir, "locked.log");
+			const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+			await fs.writeFile(lockedLog, "locked", "utf8");
+			await fs.utimes(lockedLog, oldDate, oldDate);
+
+			const unlinkSpy = vi.spyOn(fs, "unlink");
+			const originalUnlink = fs.unlink.bind(fs);
+			unlinkSpy.mockImplementation(async (...args) => {
+				const path = args[0];
+				if (typeof path === "string" && path.endsWith("locked.log")) {
+					const error = new Error("locked") as NodeJS.ErrnoException;
+					error.code = errorCode;
+					throw error;
+				}
+				return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+			});
+
+			try {
+				await expect(
+					enforceDataRetention({
+						logDays: 1,
+						cacheDays: 1,
+						flaggedDays: 1,
+						quotaCacheDays: 1,
+						dlqDays: 1,
+					}),
+				).rejects.toMatchObject({ code: errorCode });
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+		},
+	);
 });

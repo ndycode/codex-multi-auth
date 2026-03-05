@@ -1301,6 +1301,45 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							{ sessionRecovery: true, autoResume: autoResumeEnabled }
 						)
 					: null;
+				type RefreshDedupeAccount = {
+					index: number;
+					accountId?: string;
+					email?: string;
+					refreshToken?: string;
+				};
+				const refreshInFlightByAccount = new Map<string, Promise<OAuthAuthDetails>>();
+				const getRefreshDedupeKey = (account: RefreshDedupeAccount): string => {
+					const accountId = account.accountId?.trim().toLowerCase();
+					if (accountId) return `account:${accountId}`;
+					const email = sanitizeEmail(account.email);
+					if (email) return `email:${email}`;
+					if (account.refreshToken?.trim()) {
+						const suffix = account.refreshToken.trim().slice(-16).toLowerCase();
+						return `refresh:${suffix}`;
+					}
+					return `index:${account.index}`;
+				};
+				const refreshAccountAuth = async (
+					account: RefreshDedupeAccount,
+					accountAuth: OAuthAuthDetails,
+				): Promise<OAuthAuthDetails> => {
+					const dedupeKey = getRefreshDedupeKey(account);
+					const existingRefresh = refreshInFlightByAccount.get(dedupeKey);
+					if (existingRefresh) {
+						return await existingRefresh;
+					}
+					const refreshPromise = (async () => {
+						return (await refreshAndUpdateToken(accountAuth, client)) as OAuthAuthDetails;
+					})();
+					refreshInFlightByAccount.set(dedupeKey, refreshPromise);
+					try {
+						return await refreshPromise;
+					} finally {
+						if (refreshInFlightByAccount.get(dedupeKey) === refreshPromise) {
+							refreshInFlightByAccount.delete(dedupeKey);
+						}
+					}
+				};
 
 			checkAndNotify(async (message, variant) => {
 				await showToast(message, variant);
@@ -1599,10 +1638,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											let accountAuth = accountManager.toAuthDetails(account) as OAuthAuthDetails;
 								try {
 						if (shouldRefreshToken(accountAuth, tokenRefreshSkewMs)) {
-							accountAuth = (await refreshAndUpdateToken(
-								accountAuth,
-								client,
-							)) as OAuthAuthDetails;
+							accountAuth = await refreshAccountAuth(account, accountAuth);
 							accountManager.updateFromAuth(account, accountAuth);
 							accountManager.clearAuthFailures(account);
 							accountManager.saveToDiskDebounced();
@@ -1783,7 +1819,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								runtimeMetrics.totalRequests++;
 								auditLog(
 									AuditAction.REQUEST_START,
-									account.email ?? `account-${account.index + 1}`,
+									`account-${account.index + 1}`,
 									url,
 									AuditOutcome.SUCCESS,
 									{
@@ -1817,11 +1853,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 									}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
-								auditLog(
-									AuditAction.REQUEST_FAILURE,
-									account.email ?? `account-${account.index + 1}`,
-									url,
-									AuditOutcome.FAILURE,
+									auditLog(
+										AuditAction.REQUEST_FAILURE,
+										`account-${account.index + 1}`,
+										url,
+										AuditOutcome.FAILURE,
 									{
 										model,
 										accountIndex: account.index + 1,
@@ -2280,10 +2316,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 										let fallbackAuth = accountManager.toAuthDetails(fallbackAccount) as OAuthAuthDetails;
 										try {
 											if (shouldRefreshToken(fallbackAuth, tokenRefreshSkewMs)) {
-												fallbackAuth = (await refreshAndUpdateToken(
+												fallbackAuth = await refreshAccountAuth(
+													fallbackAccount,
 													fallbackAuth,
-													client,
-												)) as OAuthAuthDetails;
+												);
 												accountManager.updateFromAuth(fallbackAccount, fallbackAuth);
 												accountManager.clearAuthFailures(fallbackAccount);
 												accountManager.saveToDiskDebounced();
@@ -2532,11 +2568,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 							successAccountForResponse.index,
 						);
 					runtimeMetrics.successfulRequests++;
-					auditLog(
-						AuditAction.REQUEST_SUCCESS,
-						successAccountForResponse.email ?? `account-${successAccountForResponse.index + 1}`,
-						url,
-						AuditOutcome.SUCCESS,
+						auditLog(
+							AuditAction.REQUEST_SUCCESS,
+							`account-${successAccountForResponse.index + 1}`,
+							url,
+							AuditOutcome.SUCCESS,
 						{
 							model,
 							accountIndex: successAccountForResponse.index + 1,

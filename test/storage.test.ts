@@ -1700,7 +1700,7 @@ describe("storage", () => {
       statSpy.mockRestore();
     });
 
-    it("falls back to best-effort cleanup when lock.release throws EBUSY", async () => {
+    it("does not force-delete lock file when lock.release throws EBUSY", async () => {
       const now = Date.now();
       const storage = {
         version: 3 as const,
@@ -1722,14 +1722,14 @@ describe("storage", () => {
         await saveAccounts(storage);
 
         expect(existsSync(testStoragePath)).toBe(true);
-        expect(rmSpy).toHaveBeenCalledWith(lockPath, { force: true });
+        expect(rmSpy).not.toHaveBeenCalledWith(lockPath, { force: true });
       } finally {
         rmSpy.mockRestore();
         acquireSpy.mockRestore();
       }
     });
 
-    it("falls back to best-effort cleanup when lock.release throws EPERM", async () => {
+    it("does not force-delete lock file when lock.release throws EPERM", async () => {
       const now = Date.now();
       const storage = {
         version: 3 as const,
@@ -1751,7 +1751,7 @@ describe("storage", () => {
         await saveAccounts(storage);
 
         expect(existsSync(testStoragePath)).toBe(true);
-        expect(rmSpy).toHaveBeenCalledWith(lockPath, { force: true });
+        expect(rmSpy).not.toHaveBeenCalledWith(lockPath, { force: true });
       } finally {
         rmSpy.mockRestore();
         acquireSpy.mockRestore();

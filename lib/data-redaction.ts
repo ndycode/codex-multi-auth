@@ -13,6 +13,11 @@ const DEFAULT_REDACT_KEYS = new Set([
 	"email",
 	"accountId",
 ]);
+const SENSITIVE_STRING_PATTERNS = [
+	/\bsk-[a-z0-9][a-z0-9_-]{8,}\b/gi,
+	/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi,
+	/\beyJ[a-z0-9._-]{16,}\b/gi,
+];
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -32,9 +37,20 @@ function shouldRedactKey(key: string): boolean {
 	return false;
 }
 
+function redactSensitiveString(value: string): string {
+	let redacted = value;
+	for (const pattern of SENSITIVE_STRING_PATTERNS) {
+		redacted = redacted.replace(pattern, "***REDACTED***");
+	}
+	return redacted;
+}
+
 export function redactForExternalOutput<T>(value: T): T {
 	const seen = new WeakSet<object>();
 	const visit = (node: unknown): unknown => {
+		if (typeof node === "string") {
+			return redactSensitiveString(node);
+		}
 		if (Array.isArray(node)) {
 			if (seen.has(node)) {
 				return "[Circular]";

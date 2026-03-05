@@ -27,15 +27,29 @@ export function unregisterCleanup(fn: CleanupFn): void {
 	}
 }
 
+async function waitWithTimeout(promise: Promise<void>): Promise<void> {
+	const timeoutMs = getShutdownTimeoutMs();
+	let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+	const timeoutPromise = new Promise<void>((resolve) => {
+		timeoutHandle = setTimeout(resolve, timeoutMs);
+	});
+	try {
+		await Promise.race([promise, timeoutPromise]);
+	} finally {
+		if (timeoutHandle) {
+			clearTimeout(timeoutHandle);
+		}
+	}
+}
+
 export async function runCleanup(): Promise<void> {
 	if (cleanupInFlight) {
-		await cleanupInFlight;
+		await waitWithTimeout(cleanupInFlight);
 		return;
 	}
 
 	const fns = [...cleanupFunctions];
 	cleanupFunctions.length = 0;
-	const timeoutMs = getShutdownTimeoutMs();
 
 	const runner = (async () => {
 		for (const fn of fns) {
@@ -49,18 +63,7 @@ export async function runCleanup(): Promise<void> {
 	cleanupInFlight = runner.finally(() => {
 		cleanupInFlight = null;
 	});
-	let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-	const timeoutPromise = new Promise<void>((resolve) => {
-		timeoutHandle = setTimeout(resolve, timeoutMs);
-	});
-
-	try {
-		await Promise.race([cleanupInFlight, timeoutPromise]);
-	} finally {
-		if (timeoutHandle) {
-			clearTimeout(timeoutHandle);
-		}
-	}
+	await waitWithTimeout(cleanupInFlight);
 }
 
 function ensureShutdownHandler(): void {

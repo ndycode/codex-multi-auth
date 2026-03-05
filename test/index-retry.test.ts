@@ -330,20 +330,12 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 				multiAccount: true,
 			};
 		});
-		let refreshInFlight: Promise<unknown> | null = null;
 		refreshAndUpdateTokenMock.mockImplementation(async (auth: unknown) => {
-			if (!refreshInFlight) {
-				refreshInFlight = (async () => {
-					const refreshed = await refreshEndpoint();
-					if (auth && typeof auth === "object") {
-						Object.assign(auth as Record<string, unknown>, refreshed);
-					}
-					return auth;
-				})().finally(() => {
-					refreshInFlight = null;
-				});
+			const refreshed = await refreshEndpoint();
+			if (auth && typeof auth === "object") {
+				Object.assign(auth as Record<string, unknown>, refreshed);
 			}
-			return refreshInFlight;
+			return auth;
 		});
 
 		const { OpenAIAuthPlugin } = await import("../index.js");
@@ -367,6 +359,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		await vi.advanceTimersByTimeAsync(1500);
 		await Promise.resolve();
 
+		expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(1);
 		expect(refreshEndpoint).toHaveBeenCalledTimes(1);
 		expect(releaseRefresh).toBeTypeOf("function");
 		releaseRefresh?.();
@@ -376,6 +369,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		for (const response of responses) {
 			expect(response.status).toBe(200);
 		}
+		expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(1);
 		expect(refreshEndpoint).toHaveBeenCalledTimes(1);
 	});
 });

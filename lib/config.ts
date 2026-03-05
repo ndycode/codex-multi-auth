@@ -351,15 +351,24 @@ type JsonRecordSnapshot = {
 async function readConfigSnapshotFromPath(
 	configPath: string,
 ): Promise<JsonRecordSnapshot> {
-	let fileContent: string;
-	try {
-		fileContent = await fs.readFile(configPath, "utf-8");
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code === "ENOENT") {
-			return { record: null, revision: null };
+	let fileContent: string | null = null;
+	for (let attempt = 0; attempt < CONFIG_READ_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			fileContent = await fs.readFile(configPath, "utf-8");
+			break;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return { record: null, revision: null };
+			}
+			if (!isRetryableFsError(error) || attempt >= CONFIG_READ_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			await sleep(CONFIG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt);
 		}
-		throw error;
+	}
+	if (fileContent === null) {
+		return { record: null, revision: null };
 	}
 	const normalizedFileContent = stripUtf8Bom(fileContent);
 	const revision = computeSha256(normalizedFileContent);

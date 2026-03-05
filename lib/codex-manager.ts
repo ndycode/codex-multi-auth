@@ -69,7 +69,6 @@ import {
 	summarizeTelemetryEvents,
 	type TelemetryEvent,
 	type TelemetryOutcome,
-	type TelemetryEvent,
 } from "./telemetry.js";
 import {
 	getStoragePath,
@@ -1339,8 +1338,23 @@ async function runOAuthFlow(forceNewLogin: boolean): Promise<TokenResult> {
 		};
 	}
 	const authRateLimitKey = "oauth:login";
-	checkAuthRateLimit(authRateLimitKey);
-	recordAuthAttempt(authRateLimitKey);
+	try {
+		checkAuthRateLimit(authRateLimitKey);
+		recordAuthAttempt(authRateLimitKey);
+	} catch (error) {
+		if (error instanceof AuthRateLimitError) {
+			emitAudit(AuditAction.AUTH_FAILURE, AuditOutcome.FAILURE, "oauth", {
+				reason: "rate-limited",
+				message: error.message,
+			});
+			return {
+				type: "failed",
+				reason: "unknown",
+				message: error.message,
+			};
+		}
+		throw error;
+	}
 	const authPluginConfig = loadPluginConfig();
 	const oauthFetchTimeoutMs = getFetchTimeoutMs(authPluginConfig);
 	const tokenResult = await exchangeAuthorizationCode(
@@ -4261,16 +4275,17 @@ async function runRotateSecrets(args: string[]): Promise<number> {
 			...(idempotencyKey ? { idempotencyKey } : {}),
 		});
 		if (asJson) {
+			const payload = maybeRedactJsonOutput({
+				command: "rotate-secrets",
+				schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
+				rotated: false,
+				replayed: false,
+				error: message,
+				...(idempotencyKey ? { idempotencyKey } : {}),
+			});
 			console.log(
 				JSON.stringify(
-					{
-						command: "rotate-secrets",
-						schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
-						rotated: false,
-						replayed: false,
-						error: message,
-						...(idempotencyKey ? { idempotencyKey } : {}),
-					},
+					payload,
 					null,
 					2,
 				),

@@ -109,6 +109,39 @@ describe("Graceful shutdown", () => {
 		}
 	});
 
+	it("applies timeout for subsequent callers while cleanup is still in-flight", async () => {
+		const originalTimeout = process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+		process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = "1000";
+		vi.useFakeTimers();
+		try {
+			let resolveHanging: (() => void) | undefined;
+			registerCleanup(
+				() =>
+					new Promise<void>((resolve) => {
+						resolveHanging = resolve;
+					}),
+			);
+
+			const firstCall = runCleanup();
+			await vi.advanceTimersByTimeAsync(1_000);
+			await firstCall;
+
+			const secondCall = runCleanup();
+			await vi.advanceTimersByTimeAsync(1_000);
+			await secondCall;
+
+			resolveHanging?.();
+			await runCleanup();
+		} finally {
+			if (originalTimeout === undefined) {
+				delete process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
+			} else {
+				process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = originalTimeout;
+			}
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not leave a pending shutdown timer after fast cleanup", async () => {
 		const originalTimeout = process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS;
 		process.env.CODEX_AUTH_SHUTDOWN_TIMEOUT_MS = "5000";

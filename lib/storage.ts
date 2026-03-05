@@ -342,17 +342,6 @@ function getAccountsLockPath(path: string): string {
 	return `${path}.lock`;
 }
 
-async function releaseStorageLockFallback(lockPath: string): Promise<void> {
-	try {
-		await fs.rm(lockPath, { force: true });
-	} catch (error) {
-		log.debug("Best-effort lock cleanup fallback failed", {
-			path: lockPath,
-			error: String(error),
-		});
-	}
-}
-
 async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
 	const lockPath = getAccountsLockPath(path);
 	await fs.mkdir(dirname(path), { recursive: true });
@@ -364,16 +353,15 @@ async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promi
 			await lock.release();
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== "ENOENT") {
-				log.warn("Failed to release account storage lock", {
-					path: lockPath,
-					error: String(error),
-				});
-				await releaseStorageLockFallback(lockPath);
+				if (code !== "ENOENT") {
+					log.warn("Failed to release account storage lock", {
+						path: lockPath,
+						error: String(error),
+					});
+				}
 			}
 		}
 	}
-}
 async function copyFileWithRetry(
 	sourcePath: string,
 	destinationPath: string,

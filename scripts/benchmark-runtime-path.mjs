@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { assertSyncBenchmarkMergeResult } from "./benchmark-runtime-path-helpers.mjs";
+import {
+	assertSyncBenchmarkMergeResult,
+	removeWithRetry,
+} from "./benchmark-runtime-path-helpers.mjs";
 import { filterInput } from "../dist/lib/request/request-transformer.js";
 import { cleanupToolDefinitions } from "../dist/lib/request/helpers/tool-utils.js";
 import { AccountManager } from "../dist/lib/accounts.js";
@@ -17,7 +20,6 @@ import {
 } from "../dist/lib/request/fetch-helpers.js";
 import { normalizeAccountStorage } from "../dist/lib/storage.js";
 
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 let processStateMutationQueue = Promise.resolve();
 
 function argValue(args, name) {
@@ -31,22 +33,6 @@ function parsePositiveInt(value, fallback) {
 	const parsed = Number.parseInt(value, 10);
 	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
 	return parsed;
-}
-
-async function removeWithRetry(path, options) {
-	for (let attempt = 0; attempt < 6; attempt += 1) {
-		try {
-			await rm(path, options);
-			return;
-		} catch (error) {
-			const code = error?.code;
-			if (code === "ENOENT") return;
-			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
-				throw error;
-			}
-			await sleep(25 * 2 ** attempt);
-		}
-	}
 }
 
 async function withProcessStateMutationLock(fn) {

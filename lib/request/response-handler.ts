@@ -99,21 +99,21 @@ export async function convertSseToJsonWithDetails(
 
 			const jsonHeaders = new Headers(headers);
 			jsonHeaders.set("content-type", "application/json; charset=utf-8");
-			return {
-				response: new Response(
-					JSON.stringify({
-						error: {
+				return {
+					response: new Response(
+						JSON.stringify({
+							error: {
 							message: "No response.done event found in SSE stream",
 							type: "stream_parse_error",
 						},
-					}),
-					{
-						status: response.status,
-						statusText: response.statusText,
-						headers: jsonHeaders,
-					},
-				),
-			};
+						}),
+						{
+							status: 502,
+							statusText: "Bad Gateway",
+							headers: jsonHeaders,
+						},
+					),
+				};
 		}
 
 		// Return as plain JSON (not SSE)

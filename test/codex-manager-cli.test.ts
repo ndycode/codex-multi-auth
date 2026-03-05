@@ -153,6 +153,13 @@ vi.mock("../lib/telemetry.js", () => ({
 
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+const originalAuthRole = process.env.CODEX_AUTH_ROLE;
+const originalAbacDenyActions = process.env.CODEX_AUTH_ABAC_DENY_ACTIONS;
+const originalAbacDenyCommands = process.env.CODEX_AUTH_ABAC_DENY_COMMANDS;
+const originalAbacReadOnly = process.env.CODEX_AUTH_ABAC_READ_ONLY;
+const originalAbacRequireInteractive = process.env.CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE;
+const originalAbacRequireIdempotencyKey = process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY;
+const originalBreakGlass = process.env.CODEX_AUTH_BREAK_GLASS;
 
 function setInteractiveTTY(enabled: boolean): void {
 	Object.defineProperty(process.stdin, "isTTY", {
@@ -202,6 +209,13 @@ describe("codex manager cli commands", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.clearAllMocks();
+		process.env.CODEX_AUTH_ROLE = "admin";
+		delete process.env.CODEX_AUTH_ABAC_DENY_ACTIONS;
+		delete process.env.CODEX_AUTH_ABAC_DENY_COMMANDS;
+		delete process.env.CODEX_AUTH_ABAC_READ_ONLY;
+		delete process.env.CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE;
+		delete process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY;
+		delete process.env.CODEX_AUTH_BREAK_GLASS;
 		loadAccountsMock.mockReset();
 		loadFlaggedAccountsMock.mockReset();
 		saveAccountsMock.mockReset();
@@ -272,6 +286,41 @@ describe("codex manager cli commands", () => {
 
 	afterEach(() => {
 		restoreTTYDescriptors();
+		if (originalAuthRole === undefined) {
+			delete process.env.CODEX_AUTH_ROLE;
+		} else {
+			process.env.CODEX_AUTH_ROLE = originalAuthRole;
+		}
+		if (originalAbacDenyActions === undefined) {
+			delete process.env.CODEX_AUTH_ABAC_DENY_ACTIONS;
+		} else {
+			process.env.CODEX_AUTH_ABAC_DENY_ACTIONS = originalAbacDenyActions;
+		}
+		if (originalAbacDenyCommands === undefined) {
+			delete process.env.CODEX_AUTH_ABAC_DENY_COMMANDS;
+		} else {
+			process.env.CODEX_AUTH_ABAC_DENY_COMMANDS = originalAbacDenyCommands;
+		}
+		if (originalAbacReadOnly === undefined) {
+			delete process.env.CODEX_AUTH_ABAC_READ_ONLY;
+		} else {
+			process.env.CODEX_AUTH_ABAC_READ_ONLY = originalAbacReadOnly;
+		}
+		if (originalAbacRequireInteractive === undefined) {
+			delete process.env.CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE;
+		} else {
+			process.env.CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE = originalAbacRequireInteractive;
+		}
+		if (originalAbacRequireIdempotencyKey === undefined) {
+			delete process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY;
+		} else {
+			process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY = originalAbacRequireIdempotencyKey;
+		}
+		if (originalBreakGlass === undefined) {
+			delete process.env.CODEX_AUTH_BREAK_GLASS;
+		} else {
+			process.env.CODEX_AUTH_BREAK_GLASS = originalBreakGlass;
+		}
 		vi.restoreAllMocks();
 	});
 
@@ -377,6 +426,17 @@ describe("codex manager cli commands", () => {
 		const orderedEvents = [...events].sort(
 			(left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
 		);
+		const redactedOrderedEvents = orderedEvents.map((entry) => {
+			if (!entry.details) return entry;
+			const details = { ...entry.details } as Record<string, unknown>;
+			if (typeof details.token === "string") {
+				details.token = "***REDACTED***";
+			}
+			if (typeof details.email === "string") {
+				details.email = "***REDACTED***";
+			}
+			return { ...entry, details };
+		});
 		queryTelemetryEventsMock.mockResolvedValueOnce(events);
 		summarizeTelemetryEventsMock.mockReturnValueOnce({
 			total: 2,
@@ -413,7 +473,7 @@ describe("codex manager cli commands", () => {
 			);
 			const sinceMs = (queryTelemetryEventsMock.mock.calls[0]?.[0] as { sinceMs: number }).sinceMs;
 			expect(sinceMs).toBe(nowMs - 12 * 60 * 60_000);
-			expect(summarizeTelemetryEventsMock).toHaveBeenCalledWith(orderedEvents);
+			expect(summarizeTelemetryEventsMock).toHaveBeenCalledWith(redactedOrderedEvents);
 			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
 				command: string;
 				limit: number;
@@ -2608,6 +2668,68 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("returns failed auth result when oauth login pre-check is rate-limited", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "old@example.com",
+					accountId: "acc_old",
+					refreshToken: "refresh-old",
+					accessToken: "access-old",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "add" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+
+		const authModule = await import("../lib/auth/auth.js");
+		const createAuthorizationFlowMock = vi.mocked(authModule.createAuthorizationFlow);
+		const exchangeAuthorizationCodeMock = vi.mocked(authModule.exchangeAuthorizationCode);
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		const startLocalOAuthServerMock = vi.mocked(serverModule.startLocalOAuthServer);
+		createAuthorizationFlowMock.mockResolvedValue({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		openBrowserUrlMock.mockReturnValue(true);
+		startLocalOAuthServerMock.mockResolvedValue({
+			ready: true,
+			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			close: vi.fn(),
+		});
+
+		const { recordAuthAttempt, resetAllAuthRateLimits } = await import("../lib/auth-rate-limit.js");
+		for (let index = 0; index < 5; index += 1) {
+			recordAuthAttempt("oauth:login");
+		}
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+			expect(exitCode).toBe(1);
+			expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
+		} finally {
+			resetAllAuthRateLimits();
+		}
+	});
+
 	it("applies idempotency key for rotate-secrets automation retries", async () => {
 		checkAndRecordIdempotencyKeyMock
 			.mockResolvedValueOnce({ replayed: false })
@@ -2652,8 +2774,48 @@ describe("codex manager cli commands", () => {
 			expect(rotateStoredSecretEncryptionMock).toHaveBeenCalledTimes(1);
 		} finally {
 			logSpy.mockRestore();
-		}
-	});
+			}
+		});
+
+		it("redacts rotate-secrets json error output", async () => {
+			const previousRedact = process.env.CODEX_AUTH_REDACT_JSON_OUTPUT;
+			process.env.CODEX_AUTH_REDACT_JSON_OUTPUT = "1";
+			const sensitiveIdempotencyKey = "person@example.com";
+			const sensitiveToken = "sk-live-telemetry-secret-rotation-token";
+			checkAndRecordIdempotencyKeyMock.mockResolvedValueOnce({ replayed: false });
+			rotateStoredSecretEncryptionMock.mockRejectedValueOnce(
+				new Error(`rotation failed for ${sensitiveToken}`),
+			);
+
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			try {
+				const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+				const exitCode = await runCodexMultiAuthCli([
+					"auth",
+					"rotate-secrets",
+					"--json",
+					"--idempotency-key",
+					sensitiveIdempotencyKey,
+				]);
+				expect(exitCode).toBe(1);
+				const payloadText = String(logSpy.mock.calls[0]?.[0]);
+				const payload = JSON.parse(payloadText) as {
+					error?: string;
+					idempotencyKey?: string;
+				};
+				expect(payloadText).not.toContain(sensitiveToken);
+				expect(payloadText).not.toContain(sensitiveIdempotencyKey);
+				expect(payload.error).toMatch(/REDACTED|MASKED/);
+				expect(payload.idempotencyKey).toMatch(/REDACTED|MASKED/);
+			} finally {
+				logSpy.mockRestore();
+				if (previousRedact === undefined) {
+					delete process.env.CODEX_AUTH_REDACT_JSON_OUTPUT;
+				} else {
+					process.env.CODEX_AUTH_REDACT_JSON_OUTPUT = previousRedact;
+				}
+			}
+		});
 
 	it("enforces ABAC idempotency-key requirement for rotate-secrets", async () => {
 		const previousRole = process.env.CODEX_AUTH_ROLE;

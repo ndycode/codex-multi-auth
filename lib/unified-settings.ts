@@ -223,6 +223,8 @@ function writeSettingsRecordSync(
 					if (!isRetryableFsError(error) || attempt >= 4) {
 						throw error;
 					}
+					// Intentional blocking delay: this sync path uses renameSync and callers
+					// rely on synchronous semantics for persistence.
 					Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
 				}
 			}

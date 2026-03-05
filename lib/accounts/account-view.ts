@@ -21,7 +21,8 @@ export function resolveActiveIndex(
 	if (total === 0) return 0;
 	const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
 	const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-	return Math.max(0, Math.min(raw, total - 1));
+	const normalized = Math.floor(raw);
+	return Math.max(0, Math.min(normalized, total - 1));
 }
 
 export function getRateLimitResetTimeForFamily(

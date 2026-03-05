@@ -126,6 +126,7 @@ Used only for host plugin mode through the host runtime config file.
 | --- | --- |
 | `rateLimitToastDebounceMs` | `60000` |
 | `toastDurationMs` | `5000` |
+| `telemetryEnabled` | `true` |
 
 * * *
 
@@ -197,6 +198,7 @@ Used only for host plugin mode through the host runtime config file.
 | `CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS` | Absolute wait ceiling for retry-all-on-rate-limit loop |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
+| `CODEX_AUTH_TELEMETRY_ENABLED` | Toggle telemetry event recording (`1` = enabled, `0` = disabled) |
 | `CODEX_AUTH_ENCRYPTION_KEY` | Primary high-entropy 32-byte key for at-rest secret encryption (hex/base64 encoded 32-byte secret) |
 | `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY` | Previous high-entropy 32-byte key for staged secret rotation (hex/base64 encoded 32-byte secret) |
 | `CODEX_AUTH_ROLE` | Authorization role baseline (`admin`, `operator`, `viewer`) |

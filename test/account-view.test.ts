@@ -33,6 +33,13 @@ describe("account-view helpers", () => {
 				accounts: [{}, {}, {}],
 			}),
 		).toBe(2);
+		expect(
+			resolveActiveIndex({
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 1.8 },
+				accounts: [{}, {}, {}],
+			}),
+		).toBe(1);
 	});
 
 	it("returns earliest future reset for matching family keys", () => {

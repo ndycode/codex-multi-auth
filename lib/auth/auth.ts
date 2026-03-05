@@ -119,8 +119,11 @@ export type ExchangeAuthorizationCodeOptions = {
 };
 
 function resolveExchangeTimeoutMs(timeoutMs: number | undefined): number {
-	if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
+	if (timeoutMs === undefined) {
 		return DEFAULT_OAUTH_EXCHANGE_TIMEOUT_MS;
+	}
+	if (!Number.isFinite(timeoutMs)) {
+		return 1_000;
 	}
 	return Math.max(1_000, Math.floor(timeoutMs));
 }
@@ -240,6 +243,7 @@ export async function refreshAccessToken(
 	refreshToken: string,
 	options: RefreshAccessTokenOptions = {},
 ): Promise<TokenResult> {
+	const timeoutMs = resolveExchangeTimeoutMs(options.timeoutMs ?? OAUTH_REFRESH_TIMEOUT_MS);
 	try {
 		const response = await fetchWithTimeout(TOKEN_URL, {
 			method: "POST",
@@ -250,7 +254,7 @@ export async function refreshAccessToken(
 				refresh_token: refreshToken,
 				client_id: CLIENT_ID,
 			}),
-		}, options.timeoutMs ?? OAUTH_REFRESH_TIMEOUT_MS);
+		}, timeoutMs);
 
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");

@@ -721,7 +721,7 @@ describe('Auth Module', () => {
 			}
 		});
 
-		it('enforces refresh timeout when refresh endpoint stalls', async () => {
+			it('enforces refresh timeout when refresh endpoint stalls', async () => {
 			vi.useFakeTimers();
 			const originalFetch = globalThis.fetch;
 			globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
@@ -753,10 +753,57 @@ describe('Auth Module', () => {
 			} finally {
 				globalThis.fetch = originalFetch;
 				vi.useRealTimers();
-			}
-		});
+				}
+			});
 
-		it('isolates concurrent refresh abort paths for shared and independent signals', async () => {
+			it.each([0, -1, Number.NaN])(
+				'clamps invalid refresh timeout %p to at least 1000ms',
+				async (timeoutMs) => {
+					vi.useFakeTimers();
+					const originalFetch = globalThis.fetch;
+					globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+						new Promise<Response>((_resolve, reject) => {
+							init?.signal?.addEventListener(
+								'abort',
+								() => {
+									const reason = init.signal?.reason;
+									if (reason instanceof Error) {
+										reject(reason);
+										return;
+									}
+									reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+								},
+								{ once: true },
+							);
+						}),
+					) as never;
+
+					try {
+						let settled = false;
+						const resultPromise = refreshAccessToken('slow-token', { timeoutMs }).then((result) => {
+							settled = true;
+							return result;
+						});
+
+						await vi.advanceTimersByTimeAsync(900);
+						await Promise.resolve();
+						expect(settled).toBe(false);
+
+						await vi.advanceTimersByTimeAsync(200);
+						const result = await resultPromise;
+						expect(result.type).toBe('failed');
+						if (result.type === 'failed') {
+							expect(result.reason).toBe('network_error');
+							expect(result.message).toContain('1000');
+						}
+					} finally {
+						globalThis.fetch = originalFetch;
+						vi.useRealTimers();
+					}
+				},
+			);
+
+			it('isolates concurrent refresh abort paths for shared and independent signals', async () => {
 			vi.useFakeTimers();
 			const originalFetch = globalThis.fetch;
 			const observedSignals: AbortSignal[] = [];

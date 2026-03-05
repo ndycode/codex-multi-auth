@@ -170,6 +170,23 @@ describe("telemetry module", () => {
 		expect(limited[0]?.event).toBe("cli.new");
 	});
 
+	it("uses async directory enumeration when querying telemetry events", async () => {
+		await recordTelemetryEvent({
+			source: "plugin",
+			event: "request.async_readdir",
+			outcome: "info",
+			details: { sample: true },
+		});
+		const readdirSpy = vi.spyOn(fs, "readdir");
+		try {
+			const events = await queryTelemetryEvents({ limit: 10 });
+			expect(readdirSpy).toHaveBeenCalled();
+			expect(events.some((event) => event.event === "request.async_readdir")).toBe(true);
+		} finally {
+			readdirSpy.mockRestore();
+		}
+	});
+
 	it("summarizes telemetry events by source, outcome, and event key", () => {
 		const summary = summarizeTelemetryEvents([
 			{
@@ -241,46 +258,49 @@ describe("telemetry module", () => {
 		expect(concurrentEvents).toHaveLength(eventCount);
 	});
 
-	it("retries transient Windows lock errors during telemetry rotation", async () => {
-		configureTelemetry({ maxFileSizeBytes: 64, maxFiles: 3 });
-		const logPath = getTelemetryLogPath();
-		await fs.writeFile(logPath, `${"x".repeat(256)}\n`, "utf8");
+		it.each(["EBUSY", "EAGAIN", "EACCES"] as const)(
+			"retries transient Windows lock errors during telemetry rotation (%s)",
+			async (errorCode) => {
+				configureTelemetry({ maxFileSizeBytes: 64, maxFiles: 3 });
+				const logPath = getTelemetryLogPath();
+				await fs.writeFile(logPath, `${"x".repeat(256)}\n`, "utf8");
 
-		const originalRename = fs.rename.bind(fs);
-		let renameAttempts = 0;
-		const renameSpy = vi
-			.spyOn(fs, "rename")
-			.mockImplementation(async (oldPath, newPath) => {
-				if (
-					oldPath === logPath &&
-					newPath === `${logPath}.1` &&
-					renameAttempts === 0
-				) {
-					renameAttempts += 1;
-					const err = new Error("busy") as NodeJS.ErrnoException;
-					err.code = "EBUSY";
-					throw err;
+				const originalRename = fs.rename.bind(fs);
+				let renameAttempts = 0;
+				const renameSpy = vi
+					.spyOn(fs, "rename")
+					.mockImplementation(async (oldPath, newPath) => {
+						if (
+							oldPath === logPath &&
+							newPath === `${logPath}.1` &&
+							renameAttempts === 0
+						) {
+							renameAttempts += 1;
+							const err = new Error("busy") as NodeJS.ErrnoException;
+							err.code = errorCode;
+							throw err;
+						}
+						renameAttempts += 1;
+						await originalRename(oldPath, newPath);
+					});
+
+				try {
+					await recordTelemetryEvent({
+						source: "plugin",
+						event: "request.retry_rotation",
+						outcome: "failure",
+						details: { reason: "simulated lock" },
+					});
+				} finally {
+					renameSpy.mockRestore();
 				}
-				renameAttempts += 1;
-				await originalRename(oldPath, newPath);
-			});
 
-		try {
-			await recordTelemetryEvent({
-				source: "plugin",
-				event: "request.retry_rotation",
-				outcome: "failure",
-				details: { reason: "simulated lock" },
-			});
-		} finally {
-			renameSpy.mockRestore();
-		}
-
-		expect(renameAttempts).toBeGreaterThanOrEqual(2);
-		expect(existsSync(`${logPath}.1`)).toBe(true);
-		const events = await queryTelemetryEvents({ limit: 20 });
-		expect(events.some((event) => event.event === "request.retry_rotation")).toBe(true);
-	});
+				expect(renameAttempts).toBeGreaterThanOrEqual(2);
+				expect(existsSync(`${logPath}.1`)).toBe(true);
+				const events = await queryTelemetryEvents({ limit: 20 });
+				expect(events.some((event) => event.event === "request.retry_rotation")).toBe(true);
+			},
+		);
 
 		it("serializes concurrent telemetry writes without dropping events", async () => {
 			configureTelemetry({ maxFileSizeBytes: 1_000_000, maxFiles: 12 });
@@ -288,48 +308,52 @@ describe("telemetry module", () => {
 			await Promise.all(
 				Array.from({ length: total }, (_, index) =>
 					recordTelemetryEvent({
-					source: "plugin",
-					event: "request.concurrent",
-					outcome: "info",
-					details: {
-						index,
-						token: `sk-concurrent-token-${String(index).padStart(4, "0")}`,
-					},
-				}),
-			),
-		);
+						source: "plugin",
+						event: "request.concurrent",
+						outcome: "info",
+						details: {
+							index,
+							token: `sk-concurrent-token-${String(index).padStart(4, "0")}`,
+						},
+					}),
+				),
+			);
 
-		const raw = await fs.readFile(getTelemetryLogPath(), "utf8");
-		const lines = raw.trim().split("\n");
-		expect(lines).toHaveLength(total);
+			const raw = await fs.readFile(getTelemetryLogPath(), "utf8");
+			const lines = raw.trim().split("\n");
+			expect(lines).toHaveLength(total);
 
-			const parsed = lines.map((line) => JSON.parse(line) as { details?: Record<string, unknown> });
+			const parsed = lines.map(
+				(line) => JSON.parse(line) as { details?: Record<string, unknown> },
+			);
 			expect(parsed.every((entry) => entry.details?.token === "***MASKED***")).toBe(true);
 		});
 
 		it("retries transient fs.rm errors during cleanup helper", async () => {
-			const lockedError = Object.assign(new Error("busy"), { code: "EPERM" }) as NodeJS.ErrnoException;
+			const lockedError = Object.assign(new Error("busy"), {
+				code: "EPERM",
+			}) as NodeJS.ErrnoException;
 			const fsMutable = fs as unknown as { rm: typeof fs.rm };
 			const originalRm = fsMutable.rm.bind(fs);
-		let attempts = 0;
-		fsMutable.rm = (async (
-			path: Parameters<typeof fs.rm>[0],
-			options?: Parameters<typeof fs.rm>[1],
-		) => {
-			attempts += 1;
-			if (attempts === 1) {
-				throw lockedError;
-			}
-			return originalRm(path, options);
-		}) as typeof fs.rm;
+			let attempts = 0;
+			fsMutable.rm = (async (
+				path: Parameters<typeof fs.rm>[0],
+				options?: Parameters<typeof fs.rm>[1],
+			) => {
+				attempts += 1;
+				if (attempts === 1) {
+					throw lockedError;
+				}
+				return originalRm(path, options);
+			}) as typeof fs.rm;
 
-		const target = join(tempDir, "cleanup-target");
-		await fs.mkdir(target, { recursive: true });
+			const target = join(tempDir, "cleanup-target");
+			await fs.mkdir(target, { recursive: true });
 
-		try {
-			await removeWithRetry(target, { recursive: true, force: true });
-		} finally {
-			fsMutable.rm = originalRm;
+			try {
+				await removeWithRetry(target, { recursive: true, force: true });
+			} finally {
+				fsMutable.rm = originalRm;
 			}
 
 			expect(attempts).toBe(2);

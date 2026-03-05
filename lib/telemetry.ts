@@ -1,10 +1,10 @@
 import {
 	promises as fs,
-	readdirSync,
 } from "node:fs";
 import { join } from "node:path";
 import { getCorrelationId, maskEmail } from "./logger.js";
 import { getCodexLogDir } from "./runtime-paths.js";
+import { acquireFileLock } from "./file-lock.js";
 
 export type TelemetrySource = "cli" | "plugin";
 export type TelemetryOutcome = "start" | "success" | "failure" | "recovery" | "info";
@@ -87,7 +87,13 @@ const TOKEN_PATTERNS = [
 	/sk-[A-Za-z0-9]{20,}/g,
 	/Bearer\s+\S+/gi,
 ];
-const RETRYABLE_FILE_OP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const RETRYABLE_FILE_OP_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"ENOTEMPTY",
+	"EAGAIN",
+	"EACCES",
+]);
 const FILE_OP_MAX_ATTEMPTS = 6;
 const FILE_OP_BASE_DELAY_MS = 25;
 
@@ -96,6 +102,10 @@ let appendQueue: Promise<void> = Promise.resolve();
 
 function getTelemetryPath(): string {
 	return join(telemetryConfig.logDir, telemetryConfig.fileName);
+}
+
+function getTelemetryLockPath(): string {
+	return `${getTelemetryPath()}.lock`;
 }
 
 async function ensureLogDir(): Promise<void> {
@@ -255,9 +265,9 @@ async function readEventsFromFile(filePath: string): Promise<TelemetryEvent[]> {
 	}
 }
 
-function listTelemetryFiles(): string[] {
+async function listTelemetryFiles(): Promise<string[]> {
 	try {
-		const entries = readdirSync(telemetryConfig.logDir);
+		const entries = await fs.readdir(telemetryConfig.logDir);
 		const sortable = entries
 			.map((name) => {
 				const archiveIndex = parseArchiveSuffix(name);
@@ -307,9 +317,16 @@ export async function recordTelemetryEvent(input: TelemetryEventInput): Promise<
 	try {
 		await queueAppend(async () => {
 			await ensureLogDir();
-			await rotateLogsIfNeeded();
-			const line = `${JSON.stringify(entry)}\n`;
-			await fs.appendFile(getTelemetryPath(), line, "utf8");
+			const lock = await acquireFileLock(getTelemetryLockPath());
+			try {
+				await rotateLogsIfNeeded();
+				const line = `${JSON.stringify(entry)}\n`;
+				await runFileOperationWithRetry(() =>
+					fs.appendFile(getTelemetryPath(), line, "utf8"),
+				);
+			} finally {
+				await lock.release();
+			}
 		});
 	} catch {
 		// Telemetry must never break runtime behavior.
@@ -323,7 +340,7 @@ export async function queryTelemetryEvents(
 	const limit = clampLimit(options.limit);
 	const events: TelemetryEvent[] = [];
 
-	for (const filePath of listTelemetryFiles()) {
+	for (const filePath of await listTelemetryFiles()) {
 		const parsed = await readEventsFromFile(filePath);
 		for (const event of parsed) {
 			const timestampMs = Date.parse(event.timestamp);

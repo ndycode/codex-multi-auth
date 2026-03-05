@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { assertSyncBenchmarkMergeResult } from "../scripts/benchmark-runtime-path-helpers.mjs";
+import { describe, expect, it, vi } from "vitest";
+import {
+	assertSyncBenchmarkMergeResult,
+	removeWithRetry,
+} from "../scripts/benchmark-runtime-path-helpers.mjs";
 
 describe("benchmark-runtime-path helpers", () => {
 	it("fails when codex CLI sync merge result is unchanged", () => {
@@ -54,5 +57,36 @@ describe("benchmark-runtime-path helpers", () => {
 				},
 			),
 		).not.toThrow();
+	});
+
+	it("retries removeWithRetry on transient lock errors", async () => {
+		const remove = vi
+			.fn()
+			.mockRejectedValueOnce(Object.assign(new Error("busy"), { code: "EPERM" }))
+			.mockResolvedValueOnce(undefined);
+		const sleep = vi.fn(async () => {});
+
+		await expect(
+			removeWithRetry("/tmp/benchmark-target", { recursive: true, force: true }, {
+				remove,
+				sleep,
+			}),
+		).resolves.toBeUndefined();
+		expect(remove).toHaveBeenCalledTimes(2);
+		expect(sleep).toHaveBeenCalledWith(25);
+	});
+
+	it("throws removeWithRetry errors for non-retryable failures", async () => {
+		const remove = vi
+			.fn()
+			.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: "EACCES_NONRETRY" }));
+
+		await expect(
+			removeWithRetry("/tmp/benchmark-target", { recursive: true, force: true }, {
+				remove,
+				sleep: async () => {},
+			}),
+		).rejects.toThrow("denied");
+		expect(remove).toHaveBeenCalledTimes(1);
 	});
 });

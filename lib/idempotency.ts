@@ -6,6 +6,7 @@ import { acquireFileLock } from "./file-lock.js";
 const IDEMPOTENCY_PATH = join(getCodexMultiAuthDir(), "idempotency-keys.json");
 const IDEMPOTENCY_LOCK_PATH = `${IDEMPOTENCY_PATH}.lock`;
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60_000;
+const IDEMPOTENCY_MIN_TTL_MS = 1_000;
 const IDEMPOTENCY_RENAME_RETRYABLE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const IDEMPOTENCY_RENAME_MAX_ATTEMPTS = 5;
 
@@ -96,7 +97,10 @@ function pruneExpired(entries: IdempotencyEntry[], nowMs: number, ttlMs: number)
 }
 
 function normalizeTtlMs(ttlMs: number): number {
-	return Number.isFinite(ttlMs) && ttlMs > 0 ? Math.floor(ttlMs) : 1;
+	if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+		return IDEMPOTENCY_MIN_TTL_MS;
+	}
+	return Math.floor(ttlMs);
 }
 
 export function getIdempotencyStorePath(): string {

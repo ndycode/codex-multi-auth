@@ -532,6 +532,7 @@ describe('Fetch Helpers Module', () => {
 			const response = new Response(sseContent, { status: 200 });
 
 			const result = await handleSuccessResponseDetailed(response, false);
+			expect(result.response.status).toBe(502);
 			expect(result.parsedBody).toBeUndefined();
 			const body = await result.response.json() as { error: { type: string; message: string } };
 			expect(body.error.type).toBe('stream_parse_error');

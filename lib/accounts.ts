@@ -831,31 +831,36 @@ export class AccountManager {
 			}),
 		) as Partial<Record<ModelFamily, string | undefined>>;
 
-		const mergedActiveIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-		for (const family of MODEL_FAMILIES) {
-			const token = localActiveTokensByFamily[family];
-			if (token) {
-				const index = mergedAccounts.findIndex(
+			const mergedActiveIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+			const maxIndex = Math.max(0, mergedAccounts.length - 1);
+			for (const family of MODEL_FAMILIES) {
+				const token = localActiveTokensByFamily[family];
+				if (token) {
+					const index = mergedAccounts.findIndex(
 					(account) => account.refreshToken === token,
 				);
 				if (index >= 0) {
-					mergedActiveIndexByFamily[family] = index;
-					continue;
+						mergedActiveIndexByFamily[family] = index;
+						continue;
+					}
 				}
+				const fallback = clampNonNegativeInt(
+					latest.activeIndexByFamily?.[family],
+					0,
+				);
+				mergedActiveIndexByFamily[family] = Math.min(fallback, maxIndex);
 			}
-			mergedActiveIndexByFamily[family] = clampNonNegativeInt(
-				latest.activeIndexByFamily?.[family],
-				0,
-			);
-		}
 
-		return {
-			version: 3,
-			accounts: mergedAccounts,
-			activeIndex: clampNonNegativeInt(mergedActiveIndexByFamily.codex, 0),
-			activeIndexByFamily: mergedActiveIndexByFamily,
-		};
-	}
+			return {
+				version: 3,
+				accounts: mergedAccounts,
+				activeIndex: Math.min(
+					clampNonNegativeInt(mergedActiveIndexByFamily.codex, 0),
+					maxIndex,
+				),
+				activeIndexByFamily: mergedActiveIndexByFamily,
+			};
+		}
 
 	private async persistStorageWithConflictRecovery(storage?: AccountStorageV3): Promise<void> {
 		const maxAttempts = 3;

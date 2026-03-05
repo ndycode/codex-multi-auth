@@ -428,6 +428,11 @@ describe("OpenAIOAuthPlugin", () => {
 	beforeEach(async () => {
 		vi.clearAllMocks();
 		mockClient = createMockClient();
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.loadPluginConfig).mockReset();
+		vi.mocked(configModule.loadPluginConfig).mockReturnValue({});
+		vi.mocked(configModule.getFetchTimeoutMs).mockReset();
+		vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(60000);
 
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;

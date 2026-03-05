@@ -490,6 +490,63 @@ describe("accounts edge branches", () => {
     expect(refreshTokens).toContain("refresh-concurrent");
   });
 
+  it("clamps merged active indexes to merged account bounds after conflict recovery", async () => {
+    const stored = {
+      version: 3 as const,
+      activeIndex: 9,
+      activeIndexByFamily: {
+        codex: 9,
+        "gpt-5.1": 7,
+      },
+      accounts: [
+        buildStoredAccount({
+          refreshToken: "refresh-local",
+          email: "local@example.com",
+        }),
+      ],
+    };
+    const latestDisk = {
+      version: 3 as const,
+      activeIndex: 0,
+      activeIndexByFamily: {
+        codex: 8,
+        "gpt-5.1": 6,
+      },
+      accounts: [
+        buildStoredAccount({
+          refreshToken: "refresh-concurrent",
+          email: "concurrent@example.com",
+        }),
+      ],
+    };
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<Record<string, unknown>>;
+      activeIndex: number;
+      activeIndexByFamily?: Record<string, number>;
+    };
+    const maxIndex = Math.max(0, retriedPayload.accounts.length - 1);
+    expect(retriedPayload.activeIndex).toBeGreaterThanOrEqual(0);
+    expect(retriedPayload.activeIndex).toBeLessThanOrEqual(maxIndex);
+    for (const index of Object.values(retriedPayload.activeIndexByFamily ?? {})) {
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(index).toBeLessThanOrEqual(maxIndex);
+    }
+  });
+
   it("preserves existing rate-limit map entries when conflict merge receives empty map", async () => {
     const now = Date.now();
     const stored = buildStored([

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { removeWithRetry } from "./helpers/fs-retry.js";
 
 describe("idempotency store", () => {
 	let tempDir: string;
@@ -20,7 +21,7 @@ describe("idempotency store", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("records first key use and replays duplicates", async () => {
@@ -102,6 +103,7 @@ describe("idempotency store", () => {
 			await expect(
 				checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-non-finite", Number.NaN),
 			).resolves.toEqual({ replayed: false });
+			vi.advanceTimersByTime(5);
 			await expect(
 				checkAndRecordIdempotencyKey("codex.auth.rotate-secrets", "key-non-finite", Number.NaN),
 			).resolves.toEqual({ replayed: true });

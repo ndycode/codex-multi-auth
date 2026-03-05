@@ -107,6 +107,21 @@ describe("decideRetryAllAccountsRateLimited", () => {
 		expect(result).toEqual({ shouldRetry: false, reason: "retry-limit-reached" });
 	});
 
+	it("clamps all negative numeric inputs before evaluation", () => {
+		const result = decideRetryAllAccountsRateLimited({
+			enabled: true,
+			accountCount: -5,
+			waitMs: -100,
+			maxWaitMs: -1,
+			currentRetryCount: -3,
+			maxRetries: 10,
+			accumulatedWaitMs: -500,
+			absoluteCeilingMs: -1,
+		});
+
+		expect(result).toEqual({ shouldRetry: false, reason: "no-accounts" });
+	});
+
 	it("rejects retry when absolute ceiling would be exceeded", () => {
 		const result = decideRetryAllAccountsRateLimited({
 			enabled: true,

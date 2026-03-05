@@ -311,7 +311,10 @@ describe("settings-hub utility coverage", () => {
 		const selected = configModule.getDefaultPluginConfig();
 		selected.retryAllAccountsAbsoluteCeilingMs = 0;
 
-		const saved = await api.persistBackendConfigSelection(selected, "backend");
-		expect(saved.retryAllAccountsAbsoluteCeilingMs).toBe(0);
+		await api.persistBackendConfigSelection(selected, "backend");
+		vi.resetModules();
+		const freshConfigModule = await import("../lib/config.js");
+		const reloaded = freshConfigModule.loadPluginConfig();
+		expect(reloaded.retryAllAccountsAbsoluteCeilingMs).toBe(0);
 	});
 });

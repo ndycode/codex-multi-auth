@@ -58,12 +58,14 @@ Routine operations checklist for maintainers.
 2. `npm run lint`
 3. `npm test`
 4. `npm run coverage`
-5. `npm run build`
-6. `npm run audit:ci`
-7. `npm run license:check`
-8. `npm run verify:ci`
-9. `npm run perf:runtime:ci`
-10. Confirm branch protection required checks remain aligned with `.github/settings.yml`.
+5. `npm run verify`
+6. `npm test -- test/documentation.test.ts`
+7. `npm run verify:ci`
+8. `npm run perf:runtime:ci`
+9. `npm run build`
+10. `npm run audit:ci`
+11. `npm run license:check`
+12. Confirm branch protection required checks remain aligned with `.github/settings.yml`.
 
 ---
 

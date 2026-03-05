@@ -110,4 +110,28 @@ describe("background jobs", () => {
 		const entry = JSON.parse(dlqContent.trim()) as { attempts: number };
 		expect(entry.attempts).toBe(1);
 	});
+
+	it("serializes concurrent DLQ writes via file lock", async () => {
+		const { runBackgroundJobWithRetry, getBackgroundJobDlqPath } =
+			await import("../lib/background-jobs.js");
+		const jobCount = 5;
+		const jobs = Array.from({ length: jobCount }, (_, index) =>
+			runBackgroundJobWithRetry({
+				name: `test.concurrent-${index}`,
+				task: async () => {
+					const error = new Error("locked") as NodeJS.ErrnoException;
+					error.code = "EPERM";
+					throw error;
+				},
+				maxAttempts: 1,
+				baseDelayMs: 1,
+				maxDelayMs: 1,
+			}).catch(() => {}),
+		);
+		await Promise.all(jobs);
+
+		const dlqContent = await fs.readFile(getBackgroundJobDlqPath(), "utf8");
+		const lines = dlqContent.trim().split("\n");
+		expect(lines).toHaveLength(jobCount);
+	});
 });
