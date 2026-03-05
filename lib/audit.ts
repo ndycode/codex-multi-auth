@@ -105,10 +105,6 @@ function isRetryableAuditFsError(error: unknown): boolean {
 	return typeof maybeCode === "string" && RETRYABLE_AUDIT_FS_CODES.has(maybeCode);
 }
 
-function sleepSync(ms: number): void {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 function withRetryableAuditFsOperation<T>(operation: () => T): T {
 	let lastError: unknown;
 	for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -119,7 +115,6 @@ function withRetryableAuditFsOperation<T>(operation: () => T): T {
 			if (!isRetryableAuditFsError(error) || attempt === 4) {
 				throw error;
 			}
-			sleepSync(10 * 2 ** attempt);
 		}
 	}
 	throw lastError;

@@ -18,6 +18,7 @@ describe("audit purge retry handling", () => {
 	});
 
 	it("retries stale audit log deletion on EBUSY and eventually purges", async () => {
+		const atomicsWaitSpy = vi.spyOn(Atomics, "wait");
 		const writeFileSync = vi.fn();
 		const mkdirSync = vi.fn();
 		const existsSync = vi.fn((target: string) => !target.endsWith("audit.log"));
@@ -72,5 +73,6 @@ describe("audit purge retry handling", () => {
 
 		expect(unlinkSync).toHaveBeenCalledTimes(3);
 		expect(writeFileSync).toHaveBeenCalledTimes(1);
+		expect(atomicsWaitSpy).not.toHaveBeenCalled();
 	});
 });
