@@ -48,6 +48,7 @@ const ACCOUNT_STORAGE_LOCK_OPTIONS = {
 	maxDelayMs: 800,
 	staleAfterMs: 120_000,
 } as const;
+const STORAGE_DECRYPT_ERROR_CODE = "EDECRYPT";
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -190,6 +191,16 @@ function decryptAccountSensitiveFields(account: AccountMetadataV3): AccountMetad
 		refreshToken: refreshResult.value,
 		...(accessResult ? { accessToken: accessResult.value } : {}),
 	};
+}
+
+function toStorageDecryptError(cause: unknown): NodeJS.ErrnoException {
+	const message = "Failed to decrypt account storage";
+	const error = new Error(
+		message,
+		cause instanceof Error ? { cause } : undefined,
+	) as NodeJS.ErrnoException;
+	error.code = STORAGE_DECRYPT_ERROR_CODE;
+	return error;
 }
 
 function encryptAccountSensitiveFields(account: AccountMetadataV3): AccountMetadataV3 {
@@ -855,6 +866,14 @@ function clampIndex(index: number, length: number): number {
   return Math.max(0, Math.min(index, length - 1));
 }
 
+function isStoredAccountCandidate(account: unknown): account is AccountMetadataV3 {
+	return (
+		isRecord(account) &&
+		typeof account.refreshToken === "string" &&
+		account.refreshToken.trim().length > 0
+	);
+}
+
 function toAccountKey(account: Pick<AccountMetadataV3, "accountId" | "refreshToken">): string {
   return account.accountId || account.refreshToken;
 }
@@ -914,12 +933,17 @@ export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null 
       ? migrateV1ToV3(data as unknown as AccountStorageV1)
       : (data as unknown as AccountStorageV3);
 
-  const validAccounts = rawAccounts
-    .filter(
-      (account): account is AccountMetadataV3 =>
-        isRecord(account) && typeof account.refreshToken === "string" && !!account.refreshToken.trim(),
-    )
-    .map((account) => decryptAccountSensitiveFields(account));
+	const validAccounts: AccountMetadataV3[] = [];
+	for (const account of rawAccounts) {
+		if (!isStoredAccountCandidate(account)) {
+			continue;
+		}
+		try {
+			validAccounts.push(decryptAccountSensitiveFields(account));
+		} catch (error) {
+			throw toStorageDecryptError(error);
+		}
+	}
 
   const deduplicatedAccounts = deduplicateAccountsByEmail(
     deduplicateAccountsByKey(validAccounts),
@@ -1099,6 +1123,9 @@ async function loadAccountsInternal(
     return normalized;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === STORAGE_DECRYPT_ERROR_CODE) {
+      throw error;
+    }
     if (code === "ENOENT" && migratedLegacyStorage) {
       return migratedLegacyStorage;
     }

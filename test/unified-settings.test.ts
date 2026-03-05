@@ -3,6 +3,27 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
+
 describe("unified settings", () => {
 	let tempDir: string;
 	let originalDir: string | undefined;
@@ -20,7 +41,7 @@ describe("unified settings", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("merges plugin and dashboard sections into one file", async () => {
@@ -223,6 +244,61 @@ describe("unified settings", () => {
 			menuShowLastUsed: false,
 			uiThemePreset: "green",
 		});
+	});
+
+	it("acquires file lock before reading during plugin config updates", async () => {
+		vi.resetModules();
+		const lockState = { held: false };
+		const acquireFileLockMock = vi.fn(async () => {
+			lockState.held = true;
+			return {
+				path: "mock-settings.lock",
+				release: async () => {
+					lockState.held = false;
+				},
+			};
+		});
+		const acquireFileLockSyncMock = vi.fn(() => ({
+			path: "mock-settings.lock",
+			release: () => undefined,
+		}));
+		vi.doMock("../lib/file-lock.js", () => ({
+			acquireFileLock: acquireFileLockMock,
+			acquireFileLockSync: acquireFileLockSyncMock,
+		}));
+
+		try {
+			const { saveUnifiedPluginConfig, getUnifiedSettingsPath } = await import(
+				"../lib/unified-settings.js"
+			);
+			await fs.writeFile(
+				getUnifiedSettingsPath(),
+				JSON.stringify({
+					version: 1,
+					dashboardDisplaySettings: { menuShowLastUsed: false },
+				}),
+				"utf8",
+			);
+
+			const originalReadFile = fs.readFile.bind(fs);
+			let observedReadUnderLock = false;
+			const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+				if (lockState.held) {
+					observedReadUnderLock = true;
+				}
+				return originalReadFile(...args);
+			});
+			try {
+				await saveUnifiedPluginConfig({ codexMode: true, retries: 2 });
+				expect(observedReadUnderLock).toBe(true);
+				expect(acquireFileLockMock).toHaveBeenCalledTimes(1);
+			} finally {
+				readSpy.mockRestore();
+			}
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+			vi.resetModules();
+		}
 	});
 
 	it("refuses overwriting settings sections when a read fails", async () => {

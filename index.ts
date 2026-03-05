@@ -1722,16 +1722,26 @@ while (attempted.size < Math.max(1, accountCount)) {
 										);
 									}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
+								const safeAuditResource = (() => {
+									try {
+										const parsed = new URL(url);
+										return `${parsed.origin}${parsed.pathname}`;
+									} catch {
+										return url;
+									}
+								})();
+								const networkErrorType =
+									networkError instanceof Error ? networkError.name : "unknown_error";
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
 								auditLog(
 									AuditAction.REQUEST_FAILURE,
 									account.email ?? `account-${account.index + 1}`,
-									url,
+									safeAuditResource,
 									AuditOutcome.FAILURE,
 									{
 										model,
 										accountIndex: account.index + 1,
-										error: errorMsg,
+										errorType: networkErrorType,
 										stage: "network",
 									},
 								);

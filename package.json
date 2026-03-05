@@ -66,7 +66,7 @@
     "audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
     "audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
     "license:check": "node scripts/license-policy-check.js",
-    "sbom": "npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json --omit dev",
+    "sbom": "cyclonedx-npm --output-file sbom.cdx.json --omit dev",
     "prepublishOnly": "npm run build",
     "prepare": "husky"
   },
@@ -104,6 +104,7 @@
   "devDependencies": {
     "@fast-check/vitest": "^0.2.4",
     "@codex-ai/sdk": "file:vendor/codex-ai-sdk",
+    "@cyclonedx/cyclonedx-npm": "4.2.0",
     "@types/node": "^25.3.0",
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",

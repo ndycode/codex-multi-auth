@@ -66,11 +66,27 @@ export async function acquireFileLock(
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
 			const handle = await fs.open(path, "wx", 0o600);
-			await handle.writeFile(
-				`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
-				"utf8",
-			);
-			await handle.close();
+			let writeError: unknown;
+			let closeError: unknown;
+			try {
+				await handle.writeFile(
+					`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
+					"utf8",
+				);
+			} catch (error) {
+				writeError = error;
+			}
+			try {
+				await handle.close();
+			} catch (error) {
+				closeError = error;
+			}
+			if (writeError !== undefined) {
+				throw writeError;
+			}
+			if (closeError !== undefined) {
+				throw closeError;
+			}
 			let released = false;
 			return {
 				path,
@@ -135,12 +151,28 @@ export function acquireFileLockSync(
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
 			const fd = openSync(path, "wx", 0o600);
-			writeFileSync(
-				fd,
-				`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
-				"utf8",
-			);
-			closeSync(fd);
+			let writeError: unknown;
+			let closeError: unknown;
+			try {
+				writeFileSync(
+					fd,
+					`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
+					"utf8",
+				);
+			} catch (error) {
+				writeError = error;
+			}
+			try {
+				closeSync(fd);
+			} catch (error) {
+				closeError = error;
+			}
+			if (writeError !== undefined) {
+				throw writeError;
+			}
+			if (closeError !== undefined) {
+				throw closeError;
+			}
 			let released = false;
 			return {
 				path,

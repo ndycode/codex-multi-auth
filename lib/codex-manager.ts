@@ -1518,6 +1518,7 @@ function encodePaginationCursor(index: number): string {
 function decodePaginationCursor(cursor: string): number | null {
 	try {
 		const decoded = Buffer.from(cursor, "base64").toString("utf8");
+		if (!/^\d+$/.test(decoded)) return null;
 		const parsed = Number.parseInt(decoded, 10);
 		if (!Number.isFinite(parsed) || parsed < 0) return null;
 		return parsed;

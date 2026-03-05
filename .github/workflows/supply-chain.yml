@@ -8,6 +8,9 @@ on:
   schedule:
     - cron: "0 4 * * 1"
 
+env:
+  CODEX_LICENSE_DENYLIST: "GPL-2.0,GPL-3.0,AGPL-3.0"
+
 jobs:
   dependency-review:
     name: Dependency Review
@@ -26,7 +29,7 @@ jobs:
         with:
           fail-on-severity: high
           fail-on-scopes: runtime
-          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0
+          deny-licenses: ${{ env.CODEX_LICENSE_DENYLIST }}
 
   sca-and-license:
     name: SCA and License Gate
@@ -69,7 +72,7 @@ jobs:
         run: npm ci
 
       - name: Generate CycloneDX SBOM
-        run: npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json --omit dev
+        run: npm run sbom
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4

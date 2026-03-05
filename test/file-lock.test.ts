@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { acquireFileLock } from "../lib/file-lock.js";
 
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
@@ -84,50 +85,40 @@ describe("file lock", () => {
 		const lockPath = join(tempDir, "contention.lock");
 		const sharedFilePath = join(tempDir, "shared.txt");
 		const workerScriptPath = join(tempDir, "lock-writer-worker.mjs");
+		const transpiledModulePath = join(tempDir, "file-lock-worker-module.mjs");
+		const ts = await import("typescript");
+		const sourcePath = join(process.cwd(), "lib", "file-lock.ts");
+		const source = await fs.readFile(sourcePath, "utf8");
+		const transpiled = ts.transpileModule(source, {
+			compilerOptions: {
+				module: ts.ModuleKind.ESNext,
+				target: ts.ScriptTarget.ES2022,
+			},
+		}).outputText;
+		await fs.writeFile(transpiledModulePath, transpiled, "utf8");
+		const moduleUrl = pathToFileURL(transpiledModulePath).href;
 		const workerCount = 6;
 		const iterationsPerWorker = 10;
 		await fs.writeFile(sharedFilePath, "", "utf8");
 		await fs.writeFile(
 			workerScriptPath,
 			`import { promises as fs } from "node:fs";
-const [lockPath, sharedFilePath, workerId, iterationsRaw] = process.argv.slice(2);
+const [moduleUrl, lockPath, sharedFilePath, workerId, iterationsRaw] = process.argv.slice(2);
 const iterations = Number(iterationsRaw);
-const RETRYABLE = new Set(["EEXIST", "EBUSY", "EPERM"]);
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-async function acquireLock(path) {
-  for (let attempt = 0; attempt < 1000; attempt += 1) {
-    try {
-      const handle = await fs.open(path, "wx", 0o600);
-      await handle.writeFile(String(process.pid), "utf8");
-      await handle.close();
-      return async () => {
-        try {
-          await fs.unlink(path);
-        } catch (error) {
-          if (error && error.code !== "ENOENT") {
-            throw error;
-          }
-        }
-      };
-    } catch (error) {
-      if (!error || !RETRYABLE.has(error.code)) {
-        throw error;
-      }
-      await sleep(2);
-    }
-  }
-  throw new Error("Failed to acquire lock under contention");
-}
+const { acquireFileLock } = await import(moduleUrl);
 for (let i = 0; i < iterations; i += 1) {
-  const release = await acquireLock(lockPath);
+  const lock = await acquireFileLock(lockPath, {
+    maxAttempts: 500,
+    baseDelayMs: 1,
+    maxDelayMs: 8,
+    staleAfterMs: 10_000,
+  });
   try {
     const existing = await fs.readFile(sharedFilePath, "utf8");
-    await sleep(2);
+    await new Promise((resolve) => setTimeout(resolve, 2));
     await fs.writeFile(sharedFilePath, existing + workerId + ":" + i + "\\n", "utf8");
   } finally {
-    await release();
+    await lock.release();
   }
 }
 `,
@@ -140,6 +131,7 @@ for (let i = 0; i < iterations; i += 1) {
 					process.execPath,
 					[
 						workerScriptPath,
+						moduleUrl,
 						lockPath,
 						sharedFilePath,
 						String(workerId),

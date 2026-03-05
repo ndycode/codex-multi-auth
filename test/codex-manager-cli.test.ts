@@ -2050,9 +2050,18 @@ describe("codex manager cli commands", () => {
 			]);
 			expect(firstExitCode).toBe(0);
 			const firstPayload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				schemaVersion: number;
 				accounts: Array<{ email: string }>;
-				pagination: { hasMore: boolean; nextCursor: string | null };
+				pagination: {
+					cursor: string | null;
+					nextCursor: string | null;
+					hasMore: boolean;
+					pageSize: number;
+				};
 			};
+			expect(typeof firstPayload.schemaVersion).toBe("number");
+			expect(firstPayload.pagination.cursor).toBeNull();
+			expect(firstPayload.pagination.pageSize).toBe(1);
 			expect(firstPayload.accounts).toHaveLength(1);
 			expect(firstPayload.accounts[0]?.email).toBe("one@example.com");
 			expect(firstPayload.pagination.hasMore).toBe(true);
@@ -2070,15 +2079,70 @@ describe("codex manager cli commands", () => {
 			]);
 			expect(secondExitCode).toBe(0);
 			const secondPayload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				schemaVersion: number;
 				accounts: Array<{ email: string }>;
-				pagination: { hasMore: boolean; nextCursor: string | null };
+				pagination: {
+					cursor: string | null;
+					nextCursor: string | null;
+					hasMore: boolean;
+					pageSize: number;
+				};
 			};
+			expect(typeof secondPayload.schemaVersion).toBe("number");
+			expect(secondPayload.pagination.cursor).toBe(String(firstPayload.pagination.nextCursor));
+			expect(secondPayload.pagination.pageSize).toBe(1);
 			expect(secondPayload.accounts).toHaveLength(1);
 			expect(secondPayload.accounts[0]?.email).toBe("two@example.com");
 			expect(secondPayload.pagination.hasMore).toBe(false);
 			expect(secondPayload.pagination.nextCursor).toBeNull();
 		} finally {
 			logSpy.mockRestore();
+		}
+	});
+
+	it("rejects malformed pagination cursors in JSON list mode", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [
+				{
+					email: "one@example.com",
+					accountId: "acc_one",
+					refreshToken: "refresh-one",
+					addedAt: Date.now() - 2_000,
+					lastUsed: Date.now() - 2_000,
+					enabled: true,
+				},
+			],
+		});
+
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const malformedPayloadCursor = Buffer.from("12junk", "utf8").toString("base64");
+			const invalidPayloadExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--cursor",
+				malformedPayloadCursor,
+			]);
+			expect(invalidPayloadExitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("Invalid --cursor value");
+
+			errorSpy.mockClear();
+			const invalidBase64ExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--cursor",
+				"%%%invalid-base64%%%",
+			]);
+			expect(invalidBase64ExitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("Invalid --cursor value");
+		} finally {
+			errorSpy.mockRestore();
 		}
 	});
 

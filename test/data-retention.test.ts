@@ -4,6 +4,27 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { RetentionPolicy } from "../lib/data-retention.js";
 
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
+
 describe("data retention", () => {
 	let tempDir: string;
 	let originalDir: string | undefined;
@@ -21,7 +42,7 @@ describe("data retention", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("prunes stale log/cache/state files", async () => {
@@ -75,5 +96,62 @@ describe("data retention", () => {
 		await expect(fs.stat(dlq)).rejects.toMatchObject({ code: "ENOENT" });
 		expect(await fs.readFile(freshLog, "utf8")).toBe("fresh");
 		expect(await fs.readFile(freshCache, "utf8")).toBe("fresh");
+	});
+
+	it("retries transient EBUSY during directory entry retention pruning", async () => {
+		const { enforceDataRetention } = await import("../lib/data-retention.js");
+		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+		const logsDir = join(tempDir, "logs");
+		const nestedDir = join(logsDir, "nested");
+		const staleLog = join(nestedDir, "stale.log");
+
+		await fs.mkdir(nestedDir, { recursive: true });
+		await fs.writeFile(staleLog, "old", "utf8");
+		await fs.utimes(staleLog, oldDate, oldDate);
+
+		const originalStat = fs.stat.bind(fs);
+		const statSpy = vi.spyOn(fs, "stat");
+		let statBusyInjected = false;
+		statSpy.mockImplementation(async (path, options) => {
+			if (!statBusyInjected && path === staleLog) {
+				statBusyInjected = true;
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			}
+			return originalStat(path, options as { bigint?: boolean });
+		});
+
+		const originalRmdir = fs.rmdir.bind(fs);
+		const rmdirSpy = vi.spyOn(fs, "rmdir");
+		let rmdirBusyInjected = false;
+		rmdirSpy.mockImplementation(async (path) => {
+			if (!rmdirBusyInjected && path === nestedDir) {
+				rmdirBusyInjected = true;
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			}
+			return originalRmdir(path);
+		});
+
+		try {
+			const policy: RetentionPolicy = {
+				logDays: 1,
+				cacheDays: 90,
+				flaggedDays: 90,
+				quotaCacheDays: 90,
+				dlqDays: 90,
+			};
+			const result = await enforceDataRetention(policy);
+			expect(result.removedLogs).toBe(1);
+			expect(statBusyInjected).toBe(true);
+			expect(rmdirBusyInjected).toBe(true);
+			await expect(fs.stat(staleLog)).rejects.toMatchObject({ code: "ENOENT" });
+			await expect(fs.stat(nestedDir)).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			statSpy.mockRestore();
+			rmdirSpy.mockRestore();
+		}
 	});
 });
