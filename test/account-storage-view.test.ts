@@ -48,4 +48,15 @@ describe("account storage view helpers", () => {
 		expect(original.accounts[0]!.rateLimitResetTimes?.codex).toBe(123_000);
 		expect(original.activeIndexByFamily.codex).toBe(0);
 	});
+
+	it("preserves undefined family index map when cloning legacy-shaped storage", () => {
+		const clone = cloneAccountStorage({
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: undefined,
+		});
+
+		expect(clone.activeIndexByFamily).toBeUndefined();
+	});
 });

@@ -31,6 +31,6 @@ export function cloneAccountStorage(storage: AccountStorageV3): AccountStorageV3
 		activeIndex: storage.activeIndex,
 		activeIndexByFamily: storage.activeIndexByFamily
 			? { ...storage.activeIndexByFamily }
-			: {},
+			: undefined,
 	};
 }
