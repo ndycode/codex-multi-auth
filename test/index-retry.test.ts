@@ -35,6 +35,10 @@ vi.mock("../lib/request/request-transformer.js", () => ({
 	applyFastSessionDefaults: <T>(config: T) => config,
 }));
 
+vi.mock("../lib/quota-cache.js", () => ({
+	loadQuotaCache: vi.fn(async () => ({ byAccountId: {}, byEmail: {} })),
+}));
+
 vi.mock("../lib/accounts.js", () => {
 	class AccountManager {
 		private calls = 0;
@@ -55,6 +59,11 @@ vi.mock("../lib/accounts.js", () => {
 
 		getCurrentOrNextForFamilyHybrid() {
 			return this.getCurrentOrNextForFamily();
+		}
+
+		getAccountByIndex(index: number) {
+			if (index !== 0) return null;
+			return { index: 0, accountId: "account-1", email: "user@example.com" };
 		}
 
 		recordSuccess() {}
@@ -120,6 +129,7 @@ vi.mock("../lib/accounts.js", () => {
 		formatWaitTime: (ms: number) => `${ms}ms`,
 		sanitizeEmail: (email: string) => email,
 		parseRateLimitReason: () => "unknown",
+		getQuotaKey: (family: string, model?: string | null) => (model ? `${family}:${model}` : family),
 		lookupCodexCliTokensByEmail: vi.fn(async () => null),
 		isCodexCliSyncEnabled: () => true,
 	};
