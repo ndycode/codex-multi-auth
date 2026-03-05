@@ -24,8 +24,19 @@ const fsMock = vi.hoisted(() => ({
   writeFileSync: vi.fn(),
 }));
 
+const loggerMock = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+const createLoggerMock = vi.hoisted(() => vi.fn(() => loggerMock));
+
 vi.mock("fs/promises", () => fsPromisesMock);
 vi.mock("node:fs", () => fsMock);
+vi.mock("../lib/logger.js", () => ({
+  createLogger: createLoggerMock,
+}));
 vi.mock("../lib/recovery/constants.js", () => ({
   MESSAGE_STORAGE,
   PART_STORAGE,
@@ -37,6 +48,7 @@ let storage: typeof import("../lib/recovery/storage.js");
 
 beforeEach(async () => {
   vi.resetAllMocks();
+  createLoggerMock.mockImplementation(() => loggerMock);
   vi.resetModules();
   storage = await import("../lib/recovery/storage.js");
 });
@@ -158,6 +170,59 @@ describe("RecoveryStorage", () => {
       const result = storage.readMessages(sessionID);
       expect(result).toHaveLength(1);
       expect(result[0]?.id).toBe("a");
+    });
+
+    it("limits corruption warnings per read and emits one suppression warning", () => {
+      const sessionID = "sess";
+      const messageDir = join(MESSAGE_STORAGE, sessionID);
+      const corruptedFiles = Array.from({ length: 30 }, (_, index) => `bad-${index}.json`);
+
+      fsMock.existsSync.mockImplementation((path: string) => path === MESSAGE_STORAGE || path === messageDir);
+      fsMock.readdirSync.mockReturnValue(corruptedFiles);
+      fsMock.readFileSync.mockReturnValue("{ malformed");
+
+      const result = storage.readMessages(sessionID);
+      expect(result).toEqual([]);
+
+      const warnCalls = loggerMock.warn.mock.calls;
+      const corruptionWarns = warnCalls.filter(
+        (call) => call[0] === "Skipped corrupted recovery artifact",
+      );
+      const suppressionWarns = warnCalls.filter(
+        (call) => call[0] === "Suppressing further corrupted recovery artifact warnings",
+      );
+      expect(corruptionWarns).toHaveLength(25);
+      expect(suppressionWarns).toHaveLength(1);
+      expect(suppressionWarns[0]?.[1]).toEqual({ limit: 25 });
+    });
+
+    it("resets corruption warning budget for each read invocation", () => {
+      const sessionID = "sess";
+      const messageDir = join(MESSAGE_STORAGE, sessionID);
+      const firstBatch = Array.from({ length: 30 }, (_, index) => `bad-${index}.json`);
+      const secondBatch = ["bad-again.json"];
+      let readDirectoryCalls = 0;
+
+      fsMock.existsSync.mockImplementation((path: string) => path === MESSAGE_STORAGE || path === messageDir);
+      fsMock.readdirSync.mockImplementation((path: string) => {
+        if (path !== messageDir) return [];
+        readDirectoryCalls += 1;
+        return readDirectoryCalls === 1 ? firstBatch : secondBatch;
+      });
+      fsMock.readFileSync.mockReturnValue("{ malformed");
+
+      expect(storage.readMessages(sessionID)).toEqual([]);
+      expect(storage.readMessages(sessionID)).toEqual([]);
+
+      const warnCalls = loggerMock.warn.mock.calls;
+      const corruptionWarns = warnCalls.filter(
+        (call) => call[0] === "Skipped corrupted recovery artifact",
+      );
+      const suppressionWarns = warnCalls.filter(
+        (call) => call[0] === "Suppressing further corrupted recovery artifact warnings",
+      );
+      expect(corruptionWarns).toHaveLength(26);
+      expect(suppressionWarns).toHaveLength(1);
     });
   });
 

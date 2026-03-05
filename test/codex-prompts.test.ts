@@ -392,6 +392,35 @@ describe("Codex Prompts Module", () => {
 				expect(mockFetch).toHaveBeenCalledTimes(2);
 			});
 
+			it("should fall back to disk cache when metadata read hits transient windows EPERM", async () => {
+				let metaReadFailures = 0;
+				mockedReadFile.mockImplementation((filePath) => {
+					const path = typeof filePath === "string" ? filePath : String(filePath);
+					if (path.includes("-meta.json")) {
+						if (metaReadFailures === 0) {
+							metaReadFailures += 1;
+							return Promise.reject(
+								Object.assign(new Error("win fs busy"), { code: "EPERM" }),
+							);
+						}
+						return Promise.resolve("{ malformed");
+					}
+					return Promise.resolve("disk timeout fallback");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.80.1" }),
+				});
+				mockFetch.mockRejectedValueOnce(
+					Object.assign(new Error("request timeout"), { name: "AbortError" }),
+				);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("disk timeout fallback");
+				expect(metaReadFailures).toBe(1);
+				expect(mockFetch).toHaveBeenCalledTimes(2);
+			});
+
 			it("should fall back to bundled instructions when all else fails", async () => {
 				mockedReadFile.mockImplementation((filePath) => {
 					if (typeof filePath === "string" && filePath.includes("codex-instructions.md")) {

@@ -269,12 +269,15 @@ describe("host-codex-prompt", () => {
     it("keeps stale-cache concurrent callers deterministic during timeout fallback refresh", async () => {
       vi.useFakeTimers();
       const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
-      vi.mocked(readFile)
-        .mockResolvedValueOnce("Old cached content")
-        .mockResolvedValueOnce(JSON.stringify({
-          etag: '"old-etag"',
-          lastChecked: Date.now() - 20 * 60 * 1000,
-        }));
+      vi.mocked(readFile).mockImplementation(async (filePath) => {
+        if (String(filePath).includes("host-codex-prompt-meta.json")) {
+          return JSON.stringify({
+            etag: '"old-etag"',
+            lastChecked: Date.now() - 20 * 60 * 1000,
+          });
+        }
+        return "Old cached content";
+      });
 
       mockFetch
         .mockImplementationOnce((_url, init) => new Promise((_, reject) => {
@@ -298,14 +301,72 @@ describe("host-codex-prompt", () => {
       try {
         const [first, second] = await Promise.all([getHostCodexPrompt(), getHostCodexPrompt()]);
         expect(first).toBe("Old cached content");
-        expect(["Old cached content", "Prompt from timeout fallback source"]).toContain(second);
+        expect(second).toBe("Old cached content");
         await vi.advanceTimersByTimeAsync(15_100);
-        expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
-        expect(mockFetch.mock.calls.length).toBeLessThanOrEqual(3);
+        await vi.waitFor(() =>
+          expect(writeFile).toHaveBeenCalledWith(
+            expect.stringContaining("host-codex-prompt.txt"),
+            "Prompt from timeout fallback source",
+            "utf-8",
+          ),
+        );
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        await expect(getHostCodexPrompt()).resolves.toBe("Prompt from timeout fallback source");
       } finally {
         vi.useRealTimers();
       }
     });
+
+    it.each(["EBUSY", "EPERM"] as const)(
+      "retries timeout-fallback cache persistence when write fails transiently with %s",
+      async (errorCode) => {
+        vi.useFakeTimers();
+        const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");
+        vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
+
+        mockFetch
+          .mockImplementationOnce((_url, init) => new Promise((_, reject) => {
+            const signal = (init as RequestInit | undefined)?.signal as AbortSignal | undefined;
+            signal?.addEventListener("abort", () => {
+              reject(Object.assign(new Error("request timeout"), { name: "AbortError" }));
+            }, { once: true });
+          }))
+          .mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            text: () => Promise.resolve("Prompt from timeout fallback source"),
+            headers: new Map([["etag", '"fallback-timeout-etag"']]),
+          });
+
+        const originalWrite = vi.mocked(writeFile).getMockImplementation();
+        let transientWriteFailures = 0;
+        vi.mocked(writeFile).mockImplementation(async (...args) => {
+          const filePath = String(args[0]);
+          if (
+            filePath.includes("host-codex-prompt") &&
+            transientWriteFailures === 0
+          ) {
+            transientWriteFailures += 1;
+            throw Object.assign(new Error("busy"), { code: errorCode });
+          }
+          if (originalWrite) {
+            return originalWrite(...args);
+          }
+          return undefined;
+        });
+
+        try {
+          const resultPromise = getHostCodexPrompt();
+          await vi.advanceTimersByTimeAsync(15_100);
+          await expect(resultPromise).resolves.toBe("Prompt from timeout fallback source");
+          expect(transientWriteFailures).toBe(1);
+          expect(mockFetch).toHaveBeenCalledTimes(2);
+          expect(writeFile).toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
 
     it("uses CODEX_CODEX_PROMPT_URL override before default sources", async () => {
       const { getHostCodexPrompt } = await import("../lib/prompts/host-codex-prompt.js");

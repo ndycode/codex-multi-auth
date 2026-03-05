@@ -13,7 +13,6 @@ import { createLogger } from "../logger.js";
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const CORRUPTION_WARNING_LIMIT = 25;
 const log = createLogger("recovery-storage");
-let corruptionWarnings = 0;
 
 function validatePathId(id: string, name: string): void {
   if (!SAFE_ID_PATTERN.test(id)) {
@@ -50,14 +49,27 @@ function isStoredPart(value: unknown): value is StoredPart {
   );
 }
 
-function logCorruption(kind: string, target: string, error?: unknown): void {
-  if (corruptionWarnings >= CORRUPTION_WARNING_LIMIT) return;
-  corruptionWarnings += 1;
-  log.warn("Skipped corrupted recovery artifact", {
-    kind,
-    target,
-    error: error instanceof Error ? error.message : error ? String(error) : "invalid-shape",
-  });
+function createCorruptionLogger(): (kind: string, target: string, error?: unknown) => void {
+  let warningCount = 0;
+  let suppressionNotified = false;
+
+  return (kind: string, target: string, error?: unknown): void => {
+    if (warningCount >= CORRUPTION_WARNING_LIMIT) {
+      if (!suppressionNotified) {
+        suppressionNotified = true;
+        log.warn("Suppressing further corrupted recovery artifact warnings", {
+          limit: CORRUPTION_WARNING_LIMIT,
+        });
+      }
+      return;
+    }
+    warningCount += 1;
+    log.warn("Skipped corrupted recovery artifact", {
+      kind,
+      target,
+      error: error instanceof Error ? error.message : error ? String(error) : "invalid-shape",
+    });
+  };
 }
 
 // =============================================================================
@@ -109,6 +121,7 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
   const messageDir = getMessageDir(sessionID);
   if (!messageDir || !existsSync(messageDir)) return [];
 
+  const logCorruption = createCorruptionLogger();
   const messages: StoredMessageMeta[] = [];
   try {
     for (const file of readdirSync(messageDir)) {
@@ -151,6 +164,7 @@ export function readParts(messageID: string): StoredPart[] {
   const partDir = join(PART_STORAGE, messageID);
   if (!existsSync(partDir)) return [];
 
+  const logCorruption = createCorruptionLogger();
   const parts: StoredPart[] = [];
   try {
     for (const file of readdirSync(partDir)) {
@@ -335,6 +349,7 @@ export function stripThinkingParts(messageID: string): boolean {
   const partDir = join(PART_STORAGE, messageID);
   if (!existsSync(partDir)) return false;
 
+  const logCorruption = createCorruptionLogger();
   let anyRemoved = false;
   try {
     for (const file of readdirSync(partDir)) {
@@ -433,6 +448,7 @@ export function replaceEmptyTextParts(messageID: string, replacementText: string
   const partDir = join(PART_STORAGE, messageID);
   if (!existsSync(partDir)) return false;
 
+  const logCorruption = createCorruptionLogger();
   let anyReplaced = false;
   try {
     for (const file of readdirSync(partDir)) {

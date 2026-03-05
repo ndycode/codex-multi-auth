@@ -1,6 +1,6 @@
 import { promises as fs, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -37,6 +37,9 @@ const BACKUP_COPY_BASE_DELAY_MS = 10;
 const TRANSIENT_READ_RETRY_ATTEMPTS = 5;
 const TRANSIENT_READ_RETRY_BASE_DELAY_MS = 10;
 const TRANSIENT_READ_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+const STORAGE_SAVE_LOCK_WAIT_TIMEOUT_MS = 5_000;
+const STORAGE_SAVE_LOCK_STALE_AFTER_MS = 120_000;
+const STORAGE_SAVE_LOCK_POLL_INTERVAL_MS = 25;
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -431,6 +434,222 @@ async function readStorageRevision(path: string): Promise<string | null> {
 			return null;
 		}
 		throw error;
+	}
+}
+
+type StorageSaveFileLock = {
+	lockPath: string;
+	token: string;
+	fingerprint: string;
+};
+
+type StorageSaveLockObservation = {
+	token: string | null;
+	fingerprint: string;
+	acquiredAt: number | null;
+};
+
+function getAccountsSaveLockPath(path: string): string {
+	return `${path}.lock`;
+}
+
+function parseStorageSaveLockToken(raw: string): string | null {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (!parsed || typeof parsed !== "object") {
+			return null;
+		}
+		const token = (parsed as { token?: unknown }).token;
+		if (typeof token !== "string") {
+			return null;
+		}
+		const normalized = token.trim();
+		return normalized.length > 0 ? normalized : null;
+	} catch {
+		return null;
+	}
+}
+
+function parseStorageSaveLockAcquiredAt(raw: string): number | null {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (!parsed || typeof parsed !== "object") {
+			return null;
+		}
+		const acquiredAt = (parsed as { acquiredAt?: unknown }).acquiredAt;
+		if (typeof acquiredAt !== "number" || !Number.isFinite(acquiredAt)) {
+			return null;
+		}
+		return Math.floor(acquiredAt);
+	} catch {
+		return null;
+	}
+}
+
+async function readStorageSaveLockObservation(
+	lockPath: string,
+): Promise<StorageSaveLockObservation | null> {
+	try {
+		const raw = await fs.readFile(lockPath, "utf8");
+		return {
+			token: parseStorageSaveLockToken(raw),
+			fingerprint: computeSha256(raw),
+			acquiredAt: parseStorageSaveLockAcquiredAt(raw),
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function removeStorageSaveLockIfOwnerMatches(
+	lockPath: string,
+	owner: { token?: string; fingerprint?: string },
+): Promise<boolean> {
+	const observation = await readStorageSaveLockObservation(lockPath);
+	if (!observation) {
+		return true;
+	}
+
+	const tokenMatches =
+		typeof owner.token === "string" &&
+		owner.token.length > 0 &&
+		observation.token === owner.token;
+	const fingerprintMatches =
+		typeof owner.fingerprint === "string" &&
+		owner.fingerprint.length > 0 &&
+		observation.fingerprint === owner.fingerprint;
+	if (!tokenMatches && !fingerprintMatches) {
+		return false;
+	}
+
+	try {
+		await fs.unlink(lockPath);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return true;
+		}
+		throw error;
+	}
+}
+
+async function acquireStorageSaveFileLock(path: string): Promise<StorageSaveFileLock> {
+	const lockPath = getAccountsSaveLockPath(path);
+	const deadline = Date.now() + STORAGE_SAVE_LOCK_WAIT_TIMEOUT_MS;
+	const token = randomUUID();
+	const payload = JSON.stringify({
+		pid: process.pid,
+		token,
+		acquiredAt: Date.now(),
+	});
+	const lockContent = `${payload}\n`;
+	const fingerprint = computeSha256(lockContent);
+
+	while (true) {
+		try {
+			const handle = await fs.open(lockPath, "wx");
+			try {
+				await handle.writeFile(lockContent, "utf8");
+			} finally {
+				await handle.close();
+			}
+			return { lockPath, token, fingerprint };
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "EEXIST") {
+				const observation = await readStorageSaveLockObservation(lockPath);
+				const now = Date.now();
+				if (
+					observation &&
+					typeof observation.acquiredAt === "number" &&
+					now - observation.acquiredAt > STORAGE_SAVE_LOCK_STALE_AFTER_MS
+				) {
+					const removed = await removeStorageSaveLockIfOwnerMatches(lockPath, {
+						token: observation.token ?? undefined,
+						fingerprint: observation.fingerprint,
+					});
+					if (removed) {
+						continue;
+					}
+				}
+				if (now >= deadline) {
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, STORAGE_SAVE_LOCK_POLL_INTERVAL_MS));
+				continue;
+			}
+			if (
+				(code === "EBUSY" || code === "EPERM" || code === "EAGAIN") &&
+				Date.now() < deadline
+			) {
+				await new Promise((resolve) => setTimeout(resolve, STORAGE_SAVE_LOCK_POLL_INTERVAL_MS));
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	const lockTimeout = Object.assign(new Error("Timed out waiting for account storage lock"), {
+		code: "EBUSY",
+	});
+	throw new StorageError(
+		"Timed out waiting for account storage lock",
+		"EBUSY",
+		path,
+		formatStorageErrorHint(lockTimeout, path),
+		lockTimeout,
+	);
+}
+
+async function releaseStorageSaveFileLock(lock: StorageSaveFileLock): Promise<void> {
+	const released = await removeStorageSaveLockIfOwnerMatches(lock.lockPath, {
+		token: lock.token,
+		fingerprint: lock.fingerprint,
+	});
+	if (!released) {
+		log.warn("Skipped account storage lock release because ownership changed", {
+			lockPath: lock.lockPath,
+		});
+	}
+}
+
+async function withStorageSaveFileLock<T>(
+	path: string,
+	task: () => Promise<T>,
+): Promise<T> {
+	const lock = await acquireStorageSaveFileLock(path);
+	let taskError: unknown;
+	try {
+		return await task();
+	} catch (error) {
+		taskError = error;
+		throw error;
+	} finally {
+		try {
+			await releaseStorageSaveFileLock(lock);
+		} catch (releaseError) {
+			if (taskError !== undefined) {
+				log.warn("Failed to release account storage lock after save error", {
+					lockPath: lock.lockPath,
+					error: String(releaseError),
+				});
+				throw taskError;
+			}
+			throw releaseError;
+		}
 	}
 }
 
@@ -1036,7 +1255,7 @@ async function loadAccountsInternal(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" && migratedLegacyStorage) {
-      rememberKnownStorageRevisionForStorage(path, migratedLegacyStorage);
+      rememberKnownStorageRevision(path, null);
       return migratedLegacyStorage;
     }
 
@@ -1108,137 +1327,143 @@ async function saveAccountsUnlocked(
 	storage: AccountStorageV3,
 	options?: { expectedRevision?: string | null },
 ): Promise<void> {
-  const path = getStoragePath();
-  const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-  const tempPath = `${path}.${uniqueSuffix}.tmp`;
-  const walPath = getAccountsWalPath(path);
+	const path = getStoragePath();
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${path}.${uniqueSuffix}.tmp`;
+	const walPath = getAccountsWalPath(path);
 
-  try {
-    await fs.mkdir(dirname(path), { recursive: true });
-    await ensureGitignore(path);
-	const expectedRevision =
-		options && Object.hasOwn(options, "expectedRevision")
-			? options.expectedRevision
-			: knownStorageRevisionByPath.has(path)
-				? knownStorageRevisionByPath.get(path)
-				: undefined;
-	if (expectedRevision !== undefined) {
-		const currentRevision = await readStorageRevision(path);
-		if (currentRevision !== expectedRevision) {
-			throw new StorageError(
-				"Detected concurrent account storage modification; refusing stale overwrite",
-				"ECONFLICT",
-				path,
-				"Account storage changed on disk since it was loaded. Reload accounts and retry.",
-			);
-		}
-	}
-
-	if (looksLikeSyntheticFixtureStorage(storage)) {
-		try {
-			const existing = await loadNormalizedStorageFromPath(path, "existing account storage");
-			if (existing && existing.accounts.length > 0 && !looksLikeSyntheticFixtureStorage(existing)) {
-				throw new StorageError(
-					"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
-					"EINVALID",
-					path,
-					"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
-				);
+	try {
+		await fs.mkdir(dirname(path), { recursive: true });
+		await ensureGitignore(path);
+		await withStorageSaveFileLock(path, async () => {
+			const expectedRevision =
+				options && Object.hasOwn(options, "expectedRevision")
+					? options.expectedRevision
+					: knownStorageRevisionByPath.has(path)
+						? knownStorageRevisionByPath.get(path)
+						: undefined;
+			if (expectedRevision !== undefined) {
+				const currentRevision = await readStorageRevision(path);
+				if (currentRevision !== expectedRevision) {
+					throw new StorageError(
+						"Detected concurrent account storage modification; refusing stale overwrite",
+						"ECONFLICT",
+						path,
+						"Account storage changed on disk since it was loaded. Reload accounts and retry.",
+					);
+				}
 			}
-		} catch (error) {
-			if (error instanceof StorageError) {
-				throw error;
-			}
-			// Ignore existing-file probe failures and continue with normal save flow.
-		}
-	}
 
-	if (storageBackupEnabled && existsSync(path)) {
-		try {
-			await createRotatingAccountsBackup(path);
-		} catch (backupError) {
-			log.warn("Failed to create account storage backup", {
+			if (looksLikeSyntheticFixtureStorage(storage)) {
+				try {
+					const existing = await loadNormalizedStorageFromPath(path, "existing account storage");
+					if (existing && existing.accounts.length > 0 && !looksLikeSyntheticFixtureStorage(existing)) {
+						throw new StorageError(
+							"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
+							"EINVALID",
+							path,
+							"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
+						);
+					}
+				} catch (error) {
+					if (error instanceof StorageError) {
+						throw error;
+					}
+					// Ignore existing-file probe failures and continue with normal save flow.
+				}
+			}
+
+			if (storageBackupEnabled && existsSync(path)) {
+				try {
+					await createRotatingAccountsBackup(path);
+				} catch (backupError) {
+					log.warn("Failed to create account storage backup", {
+						path,
+						backupPath: getAccountsBackupPath(path),
+						error: String(backupError),
+					});
+				}
+			}
+
+			const content = JSON.stringify(storage, null, 2);
+			const journalEntry: AccountsJournalEntry = {
+				version: 1,
+				createdAt: Date.now(),
 				path,
-				backupPath: getAccountsBackupPath(path),
-				error: String(backupError),
+				checksum: computeSha256(content),
+				content,
+			};
+			await fs.writeFile(walPath, JSON.stringify(journalEntry), {
+				encoding: "utf-8",
+				mode: 0o600,
 			});
-		}
-	}
+			await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 
-    const content = JSON.stringify(storage, null, 2);
-	const journalEntry: AccountsJournalEntry = {
-		version: 1,
-		createdAt: Date.now(),
-		path,
-		checksum: computeSha256(content),
-		content,
-	};
-	await fs.writeFile(walPath, JSON.stringify(journalEntry), {
-		encoding: "utf-8",
-		mode: 0o600,
-	});
-    await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+			const stats = await fs.stat(tempPath);
+			if (stats.size === 0) {
+				const emptyError = Object.assign(new Error("File written but size is 0"), {
+					code: "EEMPTY",
+				});
+				throw emptyError;
+			}
 
-    const stats = await fs.stat(tempPath);
-    if (stats.size === 0) {
-      const emptyError = Object.assign(new Error("File written but size is 0"), { code: "EEMPTY" });
-      throw emptyError;
-    }
-
-    // Retry rename with exponential backoff for Windows EPERM/EBUSY
-    let lastError: NodeJS.ErrnoException | null = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await fs.rename(tempPath, path);
-		lastAccountsSaveTimestamp = Date.now();
-		rememberKnownStorageRevision(path, computeSha256(content));
+			// Retry rename with exponential backoff for Windows EPERM/EBUSY
+			let lastError: NodeJS.ErrnoException | null = null;
+			for (let attempt = 0; attempt < 5; attempt++) {
+				try {
+					await fs.rename(tempPath, path);
+					lastAccountsSaveTimestamp = Date.now();
+					rememberKnownStorageRevision(path, computeSha256(content));
+					try {
+						await fs.unlink(walPath);
+					} catch {
+						// Best effort cleanup.
+					}
+					return;
+				} catch (renameError) {
+					const code = (renameError as NodeJS.ErrnoException).code;
+					if (code === "EPERM" || code === "EBUSY") {
+						lastError = renameError as NodeJS.ErrnoException;
+						await new Promise((resolve) => setTimeout(resolve, 10 * Math.pow(2, attempt)));
+						continue;
+					}
+					throw renameError;
+				}
+			}
+			if (lastError) {
+				throw lastError;
+			}
+		});
+	} catch (error) {
 		try {
-			await fs.unlink(walPath);
+			await fs.unlink(tempPath);
 		} catch {
-			// Best effort cleanup.
+			// Ignore cleanup failure.
 		}
-        return;
-      } catch (renameError) {
-        const code = (renameError as NodeJS.ErrnoException).code;
-        if (code === "EPERM" || code === "EBUSY") {
-          lastError = renameError as NodeJS.ErrnoException;
-          await new Promise(r => setTimeout(r, 10 * Math.pow(2, attempt)));
-          continue;
-        }
-        throw renameError;
-      }
-    }
-    if (lastError) throw lastError;
-  } catch (error) {
-    try {
-      await fs.unlink(tempPath);
-    } catch {
-      // Ignore cleanup failure.
-    }
 
-	if (error instanceof StorageError) {
-		throw error;
+		if (error instanceof StorageError) {
+			throw error;
+		}
+
+		const err = error as NodeJS.ErrnoException;
+		const code = err?.code || "UNKNOWN";
+		const hint = formatStorageErrorHint(error, path);
+
+		log.error("Failed to save accounts", {
+			path,
+			code,
+			message: err?.message,
+			hint,
+		});
+
+		throw new StorageError(
+			`Failed to save accounts: ${err?.message || "Unknown error"}`,
+			code,
+			path,
+			hint,
+			err instanceof Error ? err : undefined,
+		);
 	}
-
-    const err = error as NodeJS.ErrnoException;
-    const code = err?.code || "UNKNOWN";
-    const hint = formatStorageErrorHint(error, path);
-
-    log.error("Failed to save accounts", {
-      path,
-      code,
-      message: err?.message,
-      hint,
-    });
-
-    throw new StorageError(
-      `Failed to save accounts: ${err?.message || "Unknown error"}`,
-      code,
-      path,
-      hint,
-      err instanceof Error ? err : undefined
-    );
-  }
 }
 
 export async function withAccountStorageTransaction<T>(
@@ -1274,6 +1499,7 @@ export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
     const path = getStoragePath();
     const walPath = getAccountsWalPath(path);
+	const lockPath = getAccountsSaveLockPath(path);
 	const backupPaths = getAccountsBackupRecoveryCandidates(path);
     const clearPath = async (targetPath: string): Promise<void> => {
       try {
@@ -1290,7 +1516,12 @@ export async function clearAccounts(): Promise<void> {
     };
 
     try {
-      await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
+      await Promise.all([
+		clearPath(path),
+		clearPath(walPath),
+		clearPath(lockPath),
+		...backupPaths.map(clearPath),
+	  ]);
 	  rememberKnownStorageRevision(path, null);
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.

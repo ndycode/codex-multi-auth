@@ -858,6 +858,30 @@ export class AccountManager {
 				continue;
 			}
 			const currentValue = nextRecord[rawKey];
+			if (
+				(rawKey === "lastUsed" || rawKey === "addedAt" || rawKey === "coolingDownUntil") &&
+				typeof currentValue === "number" &&
+				typeof value === "number"
+			) {
+				nextRecord[rawKey] = Math.max(currentValue, value);
+				continue;
+			}
+			if (rawKey === "rateLimitResetTimes" && isRecord(currentValue) && isRecord(value)) {
+				const mergedRateLimits: Record<string, unknown> = { ...currentValue };
+				for (const [resetKey, resetValue] of Object.entries(value)) {
+					if (resetValue === undefined) {
+						continue;
+					}
+					const existingResetValue = mergedRateLimits[resetKey];
+					if (typeof existingResetValue === "number" && typeof resetValue === "number") {
+						mergedRateLimits[resetKey] = Math.max(existingResetValue, resetValue);
+						continue;
+					}
+					mergedRateLimits[resetKey] = resetValue;
+				}
+				nextRecord[rawKey] = mergedRateLimits;
+				continue;
+			}
 			if (isRecord(currentValue) && isRecord(value)) {
 				nextRecord[rawKey] = {
 					...currentValue,

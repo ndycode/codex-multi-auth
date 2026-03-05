@@ -338,7 +338,16 @@ async function readConfigSnapshotFromPath(
 	if (!existsSync(configPath)) {
 		return { record: null, revision: null };
 	}
-	const fileContent = await readFileUtf8WithRetry(configPath);
+	let fileContent: string;
+	try {
+		fileContent = await readFileUtf8WithRetry(configPath);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return { record: null, revision: null };
+		}
+		throw error;
+	}
 	const normalizedFileContent = stripUtf8Bom(fileContent);
 	const revision = computeSha256(normalizedFileContent);
 	let record: Record<string, unknown> | null = null;

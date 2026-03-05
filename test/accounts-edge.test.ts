@@ -508,4 +508,68 @@ describe("accounts edge branches", () => {
       latestDisk.accounts[0]?.rateLimitResetTimes,
     );
   });
+
+  it("prefers fresher timestamp and rate-limit reset values during conflict merge", async () => {
+    const localNow = Date.now();
+    const localAccount = buildStoredAccount({
+      refreshToken: "refresh-local",
+      email: "local@example.com",
+      addedAt: localNow - 10_000,
+      lastUsed: localNow - 5_000,
+      coolingDownUntil: localNow + 1_000,
+      rateLimitResetTimes: {
+        "gpt-5-codex:requests": localNow + 1_200,
+        "gpt-5.2:requests": localNow + 400,
+      },
+    });
+    const stored = buildStored([localAccount]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+        addedAt: localNow - 1_000,
+        lastUsed: localNow - 200,
+        coolingDownUntil: localNow + 5_000,
+        rateLimitResetTimes: {
+          "gpt-5-codex:requests": localNow + 9_000,
+          "codex-max:requests": localNow + 2_000,
+        },
+      }),
+    ]);
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{
+        refreshToken: string;
+        addedAt?: number;
+        lastUsed?: number;
+        coolingDownUntil?: number;
+        rateLimitResetTimes?: Record<string, number>;
+      }>;
+    };
+    const mergedLocal = retriedPayload.accounts.find(
+      (account) => account.refreshToken === "refresh-local",
+    );
+    expect(mergedLocal?.addedAt).toBe(localNow - 1_000);
+    expect(mergedLocal?.lastUsed).toBe(localNow - 200);
+    expect(mergedLocal?.coolingDownUntil).toBe(localNow + 5_000);
+    expect(mergedLocal?.rateLimitResetTimes).toEqual({
+      "gpt-5-codex:requests": localNow + 9_000,
+      "gpt-5.2:requests": localNow + 400,
+      "codex-max:requests": localNow + 2_000,
+    });
+  });
 });

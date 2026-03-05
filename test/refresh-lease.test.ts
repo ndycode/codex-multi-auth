@@ -219,6 +219,8 @@ describe("RefreshLeaseCoordinator", () => {
   it.each(["EBUSY", "EPERM"] as const)(
     "returns follower on wait-timeout when a fresh result appears (%s stale lock delete)",
     async (unlinkCode) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
       const refreshToken = "token-timeout-follower";
       const tokenHash = hashToken(refreshToken);
       const resultPath = join(leaseDir, `${tokenHash}.result.json`);
@@ -264,21 +266,19 @@ describe("RefreshLeaseCoordinator", () => {
         "utf8",
       );
 
-      const publishResult = (async () => {
-        await new Promise((resolve) => setTimeout(resolve, 80));
-        await writeFile(
-          resultPath,
-          JSON.stringify({
-            tokenHash,
-            createdAt: Date.now(),
-            result: sampleSuccessResult,
-          }),
-          "utf8",
-        );
-      })();
-
-      const handle = await coordinator.acquire(refreshToken);
-      await publishResult;
+      const acquirePromise = coordinator.acquire(refreshToken);
+      await vi.advanceTimersByTimeAsync(80);
+      await writeFile(
+        resultPath,
+        JSON.stringify({
+          tokenHash,
+          createdAt: Date.now(),
+          result: sampleSuccessResult,
+        }),
+        "utf8",
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      const handle = await acquirePromise;
 
       expect(handle.role).toBe("follower");
       expect(handle.result).toEqual(sampleSuccessResult);

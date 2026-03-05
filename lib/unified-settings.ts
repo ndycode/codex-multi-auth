@@ -82,7 +82,16 @@ async function readCurrentSettingsRevisionAsync(): Promise<string | null> {
 	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
 		return null;
 	}
-	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	let raw: string;
+	try {
+		raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
 	return computeSha256(raw);
 }
 
@@ -104,7 +113,16 @@ async function readSettingsSnapshotAsync(): Promise<SettingsSnapshot> {
 		return { record: null, revision: null };
 	}
 
-	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	let raw: string;
+	try {
+		raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return { record: null, revision: null };
+		}
+		throw error;
+	}
 	const parsed = cloneRecord(JSON.parse(raw));
 	if (!parsed) {
 		throw new Error("Unified settings must contain a JSON object at the root.");

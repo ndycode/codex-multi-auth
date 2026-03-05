@@ -157,6 +157,40 @@ describe("plugin config save paths", () => {
     expect(busyFailures).toBe(2);
   });
 
+  it("recovers from exists-then-delete ENOENT race before saving env-path config", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ codexMode: true }), "utf8");
+
+    const originalReadFile = fs.readFile.bind(fs);
+    let noentFailures = 0;
+    const readSpy = vi.spyOn(fs, "readFile");
+    readSpy.mockImplementation(async (...args) => {
+      const target = args[0];
+      const path = typeof target === "string" ? target : String(target);
+      if (path === configPath && noentFailures === 0) {
+        noentFailures += 1;
+        throw makeErrnoError("noent", "ENOENT");
+      }
+      return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    });
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    try {
+      await savePluginConfig({ codexMode: false, retries: 3 });
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.codexMode).toBe(false);
+    expect(parsed.retries).toBe(3);
+    expect(noentFailures).toBe(1);
+  });
+
   it("retries optimistic config conflicts and eventually succeeds", async () => {
     const configPath = join(tempDir, "plugin-config.json");
     process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;

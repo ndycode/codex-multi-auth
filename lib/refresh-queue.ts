@@ -11,7 +11,10 @@
 import { refreshAccessToken } from "./auth/auth.js";
 import type { TokenResult } from "./types.js";
 import { createLogger } from "./logger.js";
-import { RefreshLeaseCoordinator } from "./refresh-lease.js";
+import {
+  REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT,
+  RefreshLeaseCoordinator,
+} from "./refresh-lease.js";
 import { isAbortError } from "./utils.js";
 
 const log = createLogger("refresh-queue");
@@ -169,7 +172,10 @@ export class RefreshQueue {
         });
         return lease.result;
       }
-      if (lease.role === "bypass" && lease.reason === "wait-timeout") {
+      if (
+        lease.role === "bypass" &&
+        lease.reason === REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT
+      ) {
         log.warn("Refresh lease timed out; refusing fail-open token refresh", {
           tokenSuffix: refreshToken.slice(-6),
           waitPolicy: "fail-closed",

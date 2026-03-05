@@ -768,6 +768,53 @@ describe("storage", () => {
       expect(persistedTokens.has("t-external")).toBe(true);
       expect(persistedTokens.has("t-stale")).toBe(false);
     });
+
+    it("rejects one writer with ECONFLICT when two module instances save concurrently", async () => {
+      const initial: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-initial", accountId: "acct-initial", addedAt: 1, lastUsed: 1 }],
+      };
+      await saveAccounts(initial);
+
+      const storageA = await import("../lib/storage.js?instance=concurrency-a");
+      const storageB = await import("../lib/storage.js?instance=concurrency-b");
+      storageA.setStoragePathDirect(testStoragePath);
+      storageB.setStoragePathDirect(testStoragePath);
+
+      await storageA.loadAccounts();
+      await storageB.loadAccounts();
+
+      const writeA: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-writer-a", accountId: "acct-a", addedAt: 2, lastUsed: 2 }],
+      };
+      const writeB: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-writer-b", accountId: "acct-b", addedAt: 3, lastUsed: 3 }],
+      };
+
+      const [resultA, resultB] = await Promise.allSettled([
+        storageA.saveAccounts(writeA),
+        storageB.saveAccounts(writeB),
+      ]);
+      const rejected = [resultA, resultB].filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      const fulfilled = [resultA, resultB].filter(
+        (result): result is PromiseFulfilledResult<void> => result.status === "fulfilled",
+      );
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0].reason as { code?: string } | undefined)?.code).toBe("ECONFLICT");
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      const persistedTokens = new Set(persisted.accounts.map((account) => account.refreshToken));
+      expect(persistedTokens.size).toBe(1);
+      expect(persistedTokens.has("t-writer-a") || persistedTokens.has("t-writer-b")).toBe(true);
+    });
   });
 
   describe("clearAccounts", () => {
@@ -1101,6 +1148,71 @@ describe("storage", () => {
       expect(migrated?.accounts).toHaveLength(1);
       expect(existsSync(legacyStoragePath)).toBe(false);
       expect(existsSync(getStoragePath())).toBe(true);
+    });
+
+    it("allows follow-up save after ENOENT legacy fallback load", async () => {
+      const fakeHome = join(testWorkDir, "home");
+      const projectDir = join(testWorkDir, "project-enoent-fallback");
+      const projectGitDir = join(projectDir, ".git");
+      const legacyProjectConfigDir = join(projectDir, ".codex");
+      const legacyStoragePath = join(legacyProjectConfigDir, "openai-codex-accounts.json");
+
+      await fs.mkdir(fakeHome, { recursive: true });
+      await fs.mkdir(projectGitDir, { recursive: true });
+      await fs.mkdir(legacyProjectConfigDir, { recursive: true });
+      process.env.HOME = fakeHome;
+      process.env.USERPROFILE = fakeHome;
+      setStoragePath(projectDir);
+      const canonicalPath = getStoragePath();
+
+      await fs.writeFile(
+        legacyStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "legacy-refresh", accountId: "legacy-account", addedAt: 1, lastUsed: 1 }],
+        }),
+        "utf-8",
+      );
+
+      const originalRename = fs.rename.bind(fs);
+      let forcedRenameFailure = false;
+      let blockCanonicalRename = true;
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+        const target = String(args[1]);
+        if (blockCanonicalRename && target === canonicalPath) {
+          forcedRenameFailure = true;
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        }
+        return originalRename(...(args as Parameters<typeof fs.rename>));
+      });
+
+      let loaded: AccountStorageV3 | null = null;
+      try {
+        loaded = await loadAccounts();
+      } finally {
+        blockCanonicalRename = false;
+        renameSpy.mockRestore();
+      }
+
+      expect(forcedRenameFailure).toBe(true);
+      expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
+      expect(existsSync(canonicalPath)).toBe(false);
+
+      const next: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          ...(loaded?.accounts ?? []),
+          { refreshToken: "post-load-save", accountId: "post-load-save", addedAt: 2, lastUsed: 2 },
+        ],
+      };
+      await expect(saveAccounts(next)).resolves.toBeUndefined();
+
+      const persisted = JSON.parse(await fs.readFile(canonicalPath, "utf-8")) as AccountStorageV3;
+      const persistedIds = new Set(persisted.accounts.map((account) => account.accountId));
+      expect(persistedIds.has("legacy-account")).toBe(true);
+      expect(persistedIds.has("post-load-save")).toBe(true);
     });
   });
 
