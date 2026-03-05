@@ -3,27 +3,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { RetentionPolicy } from "../lib/data-retention.js";
-
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
-
-async function removeWithRetry(
-	targetPath: string,
-	options: { recursive?: boolean; force?: boolean },
-): Promise<void> {
-	for (let attempt = 0; attempt < 6; attempt += 1) {
-		try {
-			await fs.rm(targetPath, options);
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") return;
-			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
-				throw error;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
-		}
-	}
-}
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("data retention", () => {
 	let tempDir: string;
@@ -198,6 +178,42 @@ describe("data retention", () => {
 			}
 		},
 	);
+
+	it("throws after max retries for persistent EBUSY during directory entry pruning", async () => {
+		const { enforceDataRetention } = await import("../lib/data-retention.js");
+		const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+		const logsDir = join(tempDir, "logs");
+		const nestedDir = join(logsDir, "nested");
+		const staleLog = join(nestedDir, "stale.log");
+
+		await fs.mkdir(nestedDir, { recursive: true });
+		await fs.writeFile(staleLog, "old", "utf8");
+		await fs.utimes(staleLog, oldDate, oldDate);
+
+		const originalStat = fs.stat.bind(fs);
+		const statSpy = vi.spyOn(fs, "stat");
+		statSpy.mockImplementation(async (path, options) => {
+			if (path === staleLog) {
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			}
+			return originalStat(path, options as { bigint?: boolean });
+		});
+
+		try {
+			const policy: RetentionPolicy = {
+				logDays: 1,
+				cacheDays: 90,
+				flaggedDays: 90,
+				quotaCacheDays: 90,
+				dlqDays: 90,
+			};
+			await expect(enforceDataRetention(policy)).rejects.toMatchObject({ code: "EBUSY" });
+		} finally {
+			statSpy.mockRestore();
+		}
+	});
 
 	it("retries transient unlink failures during single-file retention pruning", async () => {
 		const { enforceDataRetention } = await import("../lib/data-retention.js");

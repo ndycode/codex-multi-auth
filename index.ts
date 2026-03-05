@@ -351,6 +351,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		return sanitized;
 	};
 
+	const toSafeAuditResource = (rawUrl: unknown): string => {
+		try {
+			const parsed = new URL(String(rawUrl));
+			return `${parsed.origin}${parsed.pathname}`;
+		} catch {
+			const sanitized = String(rawUrl).split(/[?#]/, 1)[0];
+			return sanitized && sanitized.length > 0 ? sanitized : "unknown";
+		}
+	};
+
 	type RuntimeMetrics = {
 		startedAt: number;
 		totalRequests: number;
@@ -1684,16 +1694,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								} else if (abortSignal && onUserAbort) {
 									abortSignal.addEventListener("abort", onUserAbort, { once: true });
 								}
-								const safeAuditResource = (() => {
-									try {
-										const parsed = new URL(url);
-										return `${parsed.origin}${parsed.pathname}`;
-									} catch {
-										const rawUrl = String(url);
-										const sanitized = rawUrl.split(/[?#]/, 1)[0];
-										return sanitized && sanitized.length > 0 ? sanitized : "unknown";
-									}
-								})();
+								const safeAuditResource = toSafeAuditResource(url);
 
 							try {
 								runtimeMetrics.totalRequests++;
@@ -2462,16 +2463,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
-								const safePluginAuditResource = (() => {
-									try {
-										const parsed = new URL(url);
-										return `${parsed.origin}${parsed.pathname}`;
-									} catch {
-										const rawUrl = String(url);
-										const sanitized = rawUrl.split(/[?#]/, 1)[0];
-										return sanitized && sanitized.length > 0 ? sanitized : "unknown";
-									}
-								})();
+								const safePluginAuditResource = toSafeAuditResource(url);
 								auditLog(
 									AuditAction.REQUEST_FAILURE,
 									"plugin",
