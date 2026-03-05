@@ -106,7 +106,7 @@ describe("codex-multi-auth bin wrapper", () => {
 		expect(result.status).toBe(1);
 	});
 
-	it("propagates numeric-string exit codes", () => {
+	it("propagates decimal numeric-string exit codes", () => {
 		const fixtureRoot = createWrapperFixture();
 		const distLibDir = join(fixtureRoot, "dist", "lib");
 		mkdirSync(distLibDir, { recursive: true });
@@ -122,6 +122,26 @@ describe("codex-multi-auth bin wrapper", () => {
 
 		const result = runWrapper(fixtureRoot, ["auth", "status"]);
 		expect(result.status).toBe(7);
+	});
+
+	it("normalizes non-decimal numeric-string exit codes to failure", () => {
+		for (const encoded of ["0xff", "0o7"]) {
+			const fixtureRoot = createWrapperFixture();
+			const distLibDir = join(fixtureRoot, "dist", "lib");
+			mkdirSync(distLibDir, { recursive: true });
+			writeFileSync(
+				join(distLibDir, "codex-manager.js"),
+				[
+					"export async function runCodexMultiAuthCli() {",
+					`\treturn "${encoded}";`,
+					"}",
+				].join("\n"),
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, ["auth", "status"]);
+			expect(result.status).toBe(1);
+		}
 	});
 
 	it("normalizes null exit codes to failure", () => {

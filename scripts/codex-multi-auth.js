@@ -14,11 +14,21 @@ try {
 	// Best effort only.
 }
 
+function parseCliExitCode(value) {
+	if (typeof value === "number" && Number.isInteger(value)) {
+		return value;
+	}
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (/^[+-]?\d+$/.test(trimmed)) {
+			const parsed = Number.parseInt(trimmed, 10);
+			if (Number.isInteger(parsed)) {
+				return parsed;
+			}
+		}
+	}
+	return 1;
+}
+
 const exitCode = await runCodexMultiAuthCli(process.argv.slice(2));
-const parsedExitCode =
-	typeof exitCode === "number" && Number.isInteger(exitCode)
-		? exitCode
-		: typeof exitCode === "string" && exitCode.trim().length > 0
-			? Number(exitCode)
-			: Number.NaN;
-process.exitCode = Number.isInteger(parsedExitCode) ? parsedExitCode : 1;
+process.exitCode = parseCliExitCode(exitCode);
