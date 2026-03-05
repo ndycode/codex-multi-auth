@@ -442,17 +442,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		enabled: boolean,
 	): Promise<void> => {
 		if (!enabled || accountSnapshots.length === 0) return;
-		let cache: QuotaCacheData;
-		try {
-			cache = await loadQuotaCacheForBootstrap();
-		} catch (error) {
-			logWarn(
-				`[${PLUGIN_NAME}] quota cache bootstrap skipped: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-			return;
-		}
+		const cache = await loadQuotaCacheForBootstrap();
 		const now = Date.now();
 		const requestedModel =
 			typeof model === "string" && model.trim().length > 0 ? model.trim() : null;
