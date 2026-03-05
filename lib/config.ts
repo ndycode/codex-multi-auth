@@ -483,10 +483,30 @@ async function withConfigSaveLock(path: string, task: () => Promise<void>): Prom
 	const queued = previous.catch(() => {}).then(async () => {
 		await fs.mkdir(dirname(path), { recursive: true });
 		const lock = await acquireConfigSaveFileLock(path);
+		let taskError: unknown;
 		try {
 			await task();
+		} catch (error) {
+			taskError = error;
+			throw error;
 		} finally {
-			await releaseConfigSaveFileLock(lock);
+			try {
+				await releaseConfigSaveFileLock(lock);
+			} catch (releaseError) {
+				if (taskError !== undefined) {
+					logWarn(
+						`Failed to release config save lock after save error at ${lock.lockPath}: ${
+							releaseError instanceof Error ? releaseError.message : String(releaseError)
+						}`,
+					);
+				} else {
+					logWarn(
+						`Failed to release config save lock after successful save at ${lock.lockPath}: ${
+							releaseError instanceof Error ? releaseError.message : String(releaseError)
+						}`,
+					);
+				}
+			}
 		}
 	});
 	configSaveQueues.set(path, queued);

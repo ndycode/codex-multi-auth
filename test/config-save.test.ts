@@ -337,6 +337,45 @@ describe("plugin config save paths", () => {
     expect(elapsed).toBeGreaterThanOrEqual(50);
   });
 
+  it("does not fail successful saves when lock release throws", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    const lockPath = `${configPath}.lock`;
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ codexMode: true }), "utf8");
+
+    const originalUnlink = fs.unlink.bind(fs);
+    let releaseFailureInjected = false;
+    const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
+      const target = args[0];
+      const path =
+        typeof target === "string"
+          ? target
+          : target instanceof URL
+            ? target.pathname
+            : String(target);
+      if (path === lockPath) {
+        releaseFailureInjected = true;
+        throw makeErrnoError("release denied", "EACCES");
+      }
+      return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+    });
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    try {
+      await expect(savePluginConfig({ codexMode: false, retries: 9 })).resolves.toBeUndefined();
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+
+    expect(releaseFailureInjected).toBe(true);
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.codexMode).toBe(false);
+    expect(parsed.retries).toBe(9);
+  });
+
   it("fails closed when lockfile is never released before timeout", async () => {
     const configPath = join(tempDir, "plugin-config.json");
     const lockPath = `${configPath}.lock`;
