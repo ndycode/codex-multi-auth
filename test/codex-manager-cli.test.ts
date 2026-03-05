@@ -320,6 +320,35 @@ describe("codex manager cli commands", () => {
 		expect(payload.probeErrors.some((entry) => entry.includes("Failed to persist quota cache changes"))).toBe(true);
 	});
 
+	it("returns non-zero in forecast text mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "forecast", "--live"]);
+		expect(exitCode).toBe(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("prints implemented 40-feature matrix", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -500,6 +529,35 @@ describe("codex manager cli commands", () => {
 		};
 		expect(payload.command).toBe("fix");
 		expect(payload.quotaCachePersisted).toBe(false);
+	});
+
+	it("returns non-zero in fix text mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--dry-run"]);
+		expect(exitCode).toBe(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("persists rotated tokens during auth check and syncs active codex selection", async () => {

@@ -801,8 +801,12 @@ describe("storage", () => {
         "utf-8",
       );
       let lockPresent = true;
+      let releaseLock: (() => void) | undefined;
+      const releaseGate = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
       const unlockPromise = (async () => {
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        await releaseGate;
         lockPresent = false;
         await fs.unlink(lockPath);
       })();
@@ -814,6 +818,9 @@ describe("storage", () => {
         const path = typeof target === "string" ? target : String(target);
         if (path === lockPath && lockPresent) {
           transientReadFailures += 1;
+          if (transientReadFailures === 2) {
+            releaseLock?.();
+          }
           throw Object.assign(new Error("retry"), { code: "EAGAIN" });
         }
         return originalReadFile(...(args as Parameters<typeof fs.readFile>));
@@ -823,6 +830,7 @@ describe("storage", () => {
         await expect(saveAccounts(storage)).resolves.toBeUndefined();
       } finally {
         readSpy.mockRestore();
+        releaseLock?.();
         await unlockPromise;
       }
 
@@ -875,6 +883,59 @@ describe("storage", () => {
       expect(lockUnlinkAttempts).toBeGreaterThanOrEqual(2);
       const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
       expect(persisted.accounts[0]?.accountId).toBe("unlink-retry");
+    });
+
+    it("evicts stale malformed lock files using file mtime fallback", async () => {
+      const storage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-malformed-stale", accountId: "malformed-stale", addedAt: 1, lastUsed: 1 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      await fs.mkdir(dirname(testStoragePath), { recursive: true });
+      await fs.writeFile(lockPath, "", "utf-8");
+      const staleTimestamp = new Date(Date.now() - 240_000);
+      await fs.utimes(lockPath, staleTimestamp, staleTimestamp);
+
+      await expect(saveAccounts(storage)).resolves.toBeUndefined();
+
+      expect(existsSync(lockPath)).toBe(false);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("malformed-stale");
+    });
+
+    it("retries transient lock release contention and eventually removes lock", async () => {
+      const storage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-release-retry", accountId: "release-retry", addedAt: 1, lastUsed: 1 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      const originalUnlink = fs.unlink.bind(fs);
+      let lockUnlinkAttempts = 0;
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path =
+          typeof target === "string" ? target : target instanceof URL ? target.pathname : String(target);
+        if (path === lockPath) {
+          lockUnlinkAttempts += 1;
+          if (lockUnlinkAttempts < 3) {
+            throw Object.assign(new Error("busy"), { code: "EBUSY" });
+          }
+        }
+        return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+      });
+
+      try {
+        await expect(saveAccounts(storage)).resolves.toBeUndefined();
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+
+      expect(lockUnlinkAttempts).toBeGreaterThanOrEqual(3);
+      expect(existsSync(lockPath)).toBe(false);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("release-retry");
     });
 
     it("rejects stale overwrite when storage changed on disk after load", async () => {

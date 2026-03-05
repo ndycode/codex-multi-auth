@@ -506,7 +506,7 @@ async function readStorageSaveLockObservation(
 		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code === "ENOENT" || isTransientReadError(error)) {
+		if (code === "ENOENT") {
 			return null;
 		}
 		throw error;
@@ -543,7 +543,7 @@ async function removeStorageSaveLockIfOwnerMatches(
 			return true;
 		}
 		if (isTransientReadError(error)) {
-			return false;
+			throw error;
 		}
 		throw error;
 	}
@@ -575,17 +575,38 @@ async function acquireStorageSaveFileLock(path: string): Promise<StorageSaveFile
 			if (code === "EEXIST") {
 				const observation = await readStorageSaveLockObservation(lockPath);
 				const now = Date.now();
-				if (
-					observation &&
-					typeof observation.acquiredAt === "number" &&
-					now - observation.acquiredAt > STORAGE_SAVE_LOCK_STALE_AFTER_MS
-				) {
-					const removed = await removeStorageSaveLockIfOwnerMatches(lockPath, {
-						token: observation.token ?? undefined,
-						fingerprint: observation.fingerprint,
-					});
-					if (removed) {
-						continue;
+				let staleAgeMs: number | null = null;
+				if (observation && typeof observation.acquiredAt === "number") {
+					staleAgeMs = now - observation.acquiredAt;
+				} else if (observation) {
+					try {
+						const stat = await fs.stat(lockPath);
+						staleAgeMs = now - stat.mtimeMs;
+					} catch (statError) {
+						const statCode = (statError as NodeJS.ErrnoException | undefined)?.code;
+						if (statCode === "ENOENT") {
+							continue;
+						}
+						if (!isTransientReadError(statError)) {
+							throw statError;
+						}
+					}
+				}
+				if (observation && staleAgeMs !== null && staleAgeMs > STORAGE_SAVE_LOCK_STALE_AFTER_MS) {
+					try {
+						const removed = await removeStorageSaveLockIfOwnerMatches(lockPath, {
+							token: observation.token ?? undefined,
+							fingerprint: observation.fingerprint,
+						});
+						if (removed) {
+							continue;
+						}
+					} catch (removeError) {
+						if (isTransientReadError(removeError) && now < deadline) {
+							await new Promise((resolve) => setTimeout(resolve, STORAGE_SAVE_LOCK_POLL_INTERVAL_MS));
+							continue;
+						}
+						throw removeError;
 					}
 				}
 				if (now >= deadline) {
@@ -618,14 +639,26 @@ async function acquireStorageSaveFileLock(path: string): Promise<StorageSaveFile
 }
 
 async function releaseStorageSaveFileLock(lock: StorageSaveFileLock): Promise<void> {
-	const released = await removeStorageSaveLockIfOwnerMatches(lock.lockPath, {
-		token: lock.token,
-		fingerprint: lock.fingerprint,
-	});
-	if (!released) {
-		log.warn("Skipped account storage lock release because ownership changed", {
-			lockPath: lock.lockPath,
-		});
+	for (let attempt = 0; attempt < TRANSIENT_READ_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			const released = await removeStorageSaveLockIfOwnerMatches(lock.lockPath, {
+				token: lock.token,
+				fingerprint: lock.fingerprint,
+			});
+			if (!released) {
+				log.warn("Skipped account storage lock release because ownership changed", {
+					lockPath: lock.lockPath,
+				});
+			}
+			return;
+		} catch (error) {
+			if (!isTransientReadError(error) || attempt + 1 >= TRANSIENT_READ_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, TRANSIENT_READ_RETRY_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
 	}
 }
 

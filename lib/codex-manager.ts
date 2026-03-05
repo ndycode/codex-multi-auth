@@ -2204,11 +2204,12 @@ async function runForecast(args: string[]): Promise<number> {
 			console.log(`  ${stylePromptText("-", "warning")} ${stylePromptText(error, "muted")}`);
 		}
 	}
+	let quotaCachePersisted = true;
 	if (quotaCache && quotaCacheChanged) {
-		await persistQuotaCache(quotaCache, { notify: true });
+		quotaCachePersisted = await persistQuotaCache(quotaCache, { notify: true });
 	}
 
-	return 0;
+	return quotaCachePersisted ? 0 : 1;
 }
 
 async function runReport(args: string[]): Promise<number> {
@@ -3071,8 +3072,9 @@ async function runFix(args: string[]): Promise<number> {
 			console.log(`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
 		}
 	}
+	let quotaCachePersisted = true;
 	if (quotaCache && quotaCacheChanged) {
-		await persistQuotaCache(quotaCache, { notify: true });
+		quotaCachePersisted = await persistQuotaCache(quotaCache, { notify: true });
 	}
 
 	if (changed && options.dryRun) {
@@ -3083,7 +3085,7 @@ async function runFix(args: string[]): Promise<number> {
 		console.log(`\n${stylePromptText("No changes were needed.", "muted")}`);
 	}
 
-	return 0;
+	return quotaCachePersisted ? 0 : 1;
 }
 
 type DoctorSeverity = "ok" | "warn" | "error";
