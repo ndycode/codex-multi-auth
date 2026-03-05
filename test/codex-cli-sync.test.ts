@@ -215,6 +215,130 @@ describe("codex-cli sync", () => {
     expect(result.storage?.accounts[0]?.refreshToken).toBe("refresh-new");
   });
 
+  it("rekeys account lookup after refresh token and email updates without creating duplicates", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              accountId: "acc-a",
+              email: "new@example.com",
+              auth: {
+                tokens: {
+                  access_token: "new.access.token",
+                  refresh_token: "refresh-new",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const current: AccountStorageV3 = {
+      version: 3,
+      accounts: [
+        {
+          accountId: "acc-a",
+          email: "old@example.com",
+          refreshToken: "refresh-old",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+    };
+
+    const firstSync = await syncAccountStorageFromCodexCli(current);
+    expect(firstSync.changed).toBe(true);
+    expect(firstSync.storage?.accounts).toHaveLength(1);
+    expect(firstSync.storage?.accounts[0]?.refreshToken).toBe("refresh-new");
+    expect(firstSync.storage?.accounts[0]?.email).toBe("new@example.com");
+
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              email: "new@example.com",
+              auth: {
+                tokens: {
+                  access_token: "new.access.token.v2",
+                  refresh_token: "refresh-new",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    clearCodexCliStateCache();
+
+    const secondSync = await syncAccountStorageFromCodexCli(firstSync.storage ?? current);
+    expect(secondSync.changed).toBe(true);
+    expect(secondSync.storage?.accounts).toHaveLength(1);
+    expect(secondSync.storage?.accounts[0]?.refreshToken).toBe("refresh-new");
+    expect(secondSync.storage?.accounts[0]?.email).toBe("new@example.com");
+    expect(secondSync.storage?.accounts[0]?.accessToken).toBe("new.access.token.v2");
+  });
+
+  it("preserves inferred accountIdSource when snapshot provides accountId", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              accountId: "acc-inferred",
+              email: "inferred@example.com",
+              auth: {
+                tokens: {
+                  access_token: "new.inferred.access",
+                  refresh_token: "refresh-inferred",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const current: AccountStorageV3 = {
+      version: 3,
+      accounts: [
+        {
+          accountId: "acc-inferred",
+          accountIdSource: "inferred",
+          email: "inferred@example.com",
+          accessToken: "old.inferred.access",
+          refreshToken: "refresh-inferred",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+    };
+
+    const result = await syncAccountStorageFromCodexCli(current);
+    expect(result.changed).toBe(true);
+    expect(result.storage?.accounts).toHaveLength(1);
+    expect(result.storage?.accounts[0]?.accountIdSource).toBe("inferred");
+    expect(result.storage?.accounts[0]?.accessToken).toBe("new.inferred.access");
+  });
+
   it("returns unchanged storage when sync is disabled", async () => {
     process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "0";
     clearCodexCliStateCache();
@@ -649,6 +773,57 @@ describe("codex-cli sync", () => {
 
     const result = await syncAccountStorageFromCodexCli(current);
     expect(result.changed).toBe(true);
+    expect(result.storage?.accounts[0]?.accessToken).toBe("new-access");
+    expect(result.storage?.accounts[0]?.email).toBe("updated@example.com");
+  });
+
+  it("preserves manual accountId when snapshot matches by refresh token", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          accounts: [
+            {
+              accountId: "snapshot-account-id",
+              email: "updated@example.com",
+              auth: {
+                tokens: {
+                  access_token: "new-access",
+                  refresh_token: "refresh-a",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const current: AccountStorageV3 = {
+      version: 3,
+      accounts: [
+        {
+          accountId: "manual-local-id",
+          accountIdSource: "manual",
+          email: "manual@example.com",
+          refreshToken: "refresh-a",
+          accessToken: "old-access",
+          enabled: true,
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+    };
+
+    const result = await syncAccountStorageFromCodexCli(current);
+
+    expect(result.changed).toBe(true);
+    expect(result.storage?.accounts[0]?.accountId).toBe("manual-local-id");
+    expect(result.storage?.accounts[0]?.accountIdSource).toBe("manual");
     expect(result.storage?.accounts[0]?.accessToken).toBe("new-access");
     expect(result.storage?.accounts[0]?.email).toBe("updated@example.com");
   });

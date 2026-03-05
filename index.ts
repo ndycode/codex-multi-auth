@@ -140,7 +140,7 @@ import {
 	createCodexHeaders,
 	extractRequestUrl,
         handleErrorResponse,
-        handleSuccessResponse,
+        handleSuccessResponseDetailed,
 	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
         refreshAndUpdateToken,
@@ -251,6 +251,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		balanced: 15_000,
 		conservative: 20_000,
 	};
+	const HYDRATE_EMAILS_MAX_CONCURRENCY = 4;
 
 	const parseFailoverMode = (value: string | undefined): FailoverMode => {
 		const normalized = (value ?? "").trim().toLowerCase();
@@ -345,6 +346,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		streamFailoverRecoveries: number;
 		streamFailoverCrossAccountRecoveries: number;
 		cumulativeLatencyMs: number;
+		emailHydrationRuns: number;
+		emailHydrationCandidates: number;
+		emailHydrationRefreshed: number;
+		emailHydrationUpdated: number;
+		emailHydrationFailures: number;
+		emailHydrationCumulativeDurationMs: number;
+		emailHydrationMaxBatchSize: number;
+		emailHydrationMaxConcurrencyUsed: number;
 		lastRequestAt: number | null;
 		lastError: string | null;
 	};
@@ -366,8 +375,41 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		streamFailoverRecoveries: 0,
 		streamFailoverCrossAccountRecoveries: 0,
 		cumulativeLatencyMs: 0,
+		emailHydrationRuns: 0,
+		emailHydrationCandidates: 0,
+		emailHydrationRefreshed: 0,
+		emailHydrationUpdated: 0,
+		emailHydrationFailures: 0,
+		emailHydrationCumulativeDurationMs: 0,
+		emailHydrationMaxBatchSize: 0,
+		emailHydrationMaxConcurrencyUsed: 0,
 		lastRequestAt: null,
 		lastError: null,
+	};
+	const inFlightAuthRefreshByToken = new Map<string, Promise<OAuthAuthDetails>>();
+
+	const refreshAuthWithDedup = async (auth: OAuthAuthDetails): Promise<OAuthAuthDetails> => {
+		const refreshKey = auth.refresh?.trim();
+		if (!refreshKey) {
+			return (await refreshAndUpdateToken(auth, client)) as OAuthAuthDetails;
+		}
+		const existing = inFlightAuthRefreshByToken.get(refreshKey);
+		if (existing) {
+			return existing;
+		}
+		const refreshPromise = (async () => {
+			const refreshed = (await refreshAndUpdateToken(auth, client)) as OAuthAuthDetails;
+			return refreshed;
+		})();
+		inFlightAuthRefreshByToken.set(refreshKey, refreshPromise);
+		refreshPromise.finally(() => {
+			if (inFlightAuthRefreshByToken.get(refreshKey) === refreshPromise) {
+				inFlightAuthRefreshByToken.delete(refreshKey);
+			}
+		}).catch(() => {
+			// Error propagation is handled by awaiting callers.
+		});
+		return refreshPromise;
 	};
 
         type TokenSuccess = Extract<TokenResult, { type: "success" }>;
@@ -710,11 +752,29 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 if (accountsToHydrate.length === 0) return storage;
 
                 let changed = false;
-                await Promise.all(
-                        accountsToHydrate.map(async (account) => {
+                let refreshedCount = 0;
+                let failedCount = 0;
+                let updatedAccountCount = 0;
+                const hydrateStartedAt = performance.now();
+                const workerCount = Math.min(
+                        HYDRATE_EMAILS_MAX_CONCURRENCY,
+                        accountsToHydrate.length,
+                );
+                let nextHydrateIndex = 0;
+                const workers = Array.from({ length: workerCount }, async () => {
+                        while (nextHydrateIndex < accountsToHydrate.length) {
+                                const position = nextHydrateIndex;
+                                nextHydrateIndex += 1;
+                                const account = accountsToHydrate[position];
+                                if (!account) continue;
                                 try {
                                         const refreshed = await queuedRefresh(account.refreshToken);
-                                        if (refreshed.type !== "success") return;
+                                        if (refreshed.type !== "success") {
+                                                failedCount += 1;
+                                                continue;
+                                        }
+                                        refreshedCount += 1;
+                                        let accountUpdated = false;
                                         const id = extractAccountId(refreshed.access);
                                         const email = sanitizeEmail(extractAccountEmail(refreshed.access, refreshed.idToken));
                                         if (
@@ -725,28 +785,61 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                                 account.accountId = id;
                                                 account.accountIdSource = "token";
                                                 changed = true;
+                                                accountUpdated = true;
                                         }
                                         if (email && email !== account.email) {
                                                 account.email = email;
                                                 changed = true;
+                                                accountUpdated = true;
                                         }
 					if (refreshed.access && refreshed.access !== account.accessToken) {
 						account.accessToken = refreshed.access;
 						changed = true;
+						accountUpdated = true;
 					}
 					if (typeof refreshed.expires === "number" && refreshed.expires !== account.expiresAt) {
 						account.expiresAt = refreshed.expires;
 						changed = true;
+						accountUpdated = true;
 					}
                                         if (refreshed.refresh && refreshed.refresh !== account.refreshToken) {
                                                 account.refreshToken = refreshed.refresh;
                                                 changed = true;
+                                                accountUpdated = true;
                                         }
+					if (accountUpdated) {
+						updatedAccountCount += 1;
+					}
 				} catch {
+					failedCount += 1;
 					logWarn(`[${PLUGIN_NAME}] Failed to hydrate email for account`);
 				}
-                        }),
+                        }
+                });
+                await Promise.all(workers);
+                const durationMs = Math.round(performance.now() - hydrateStartedAt);
+                runtimeMetrics.emailHydrationRuns += 1;
+                runtimeMetrics.emailHydrationCandidates += accountsToHydrate.length;
+                runtimeMetrics.emailHydrationRefreshed += refreshedCount;
+                runtimeMetrics.emailHydrationUpdated += updatedAccountCount;
+                runtimeMetrics.emailHydrationFailures += failedCount;
+                runtimeMetrics.emailHydrationCumulativeDurationMs += durationMs;
+                runtimeMetrics.emailHydrationMaxBatchSize = Math.max(
+                        runtimeMetrics.emailHydrationMaxBatchSize,
+                        accountsToHydrate.length,
                 );
+                runtimeMetrics.emailHydrationMaxConcurrencyUsed = Math.max(
+                        runtimeMetrics.emailHydrationMaxConcurrencyUsed,
+                        workerCount,
+                );
+                logDebug("Email hydration pass complete", {
+                        candidates: accountsToHydrate.length,
+                        refreshed: refreshedCount,
+                        updated: updatedAccountCount,
+                        failed: failedCount,
+                        workerCount,
+                        durationMs,
+                });
 
                 if (changed) {
                         storage.accounts = accountsCopy;
@@ -1489,10 +1582,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											let accountAuth = accountManager.toAuthDetails(account) as OAuthAuthDetails;
 								try {
 						if (shouldRefreshToken(accountAuth, tokenRefreshSkewMs)) {
-							accountAuth = (await refreshAndUpdateToken(
-								accountAuth,
-								client,
-							)) as OAuthAuthDetails;
+							accountAuth = await refreshAuthWithDedup(accountAuth);
 							accountManager.updateFromAuth(account, accountAuth);
 							accountManager.clearAuthFailures(account);
 							accountManager.saveToDiskDebounced();
@@ -2122,10 +2212,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										let fallbackAuth = accountManager.toAuthDetails(fallbackAccount) as OAuthAuthDetails;
 										try {
 											if (shouldRefreshToken(fallbackAuth, tokenRefreshSkewMs)) {
-												fallbackAuth = (await refreshAndUpdateToken(
-													fallbackAuth,
-													client,
-												)) as OAuthAuthDetails;
+												fallbackAuth = await refreshAuthWithDedup(fallbackAuth);
 												accountManager.updateFromAuth(fallbackAccount, fallbackAuth);
 												accountManager.clearAuthFailures(fallbackAccount);
 												accountManager.saveToDiskDebounced();
@@ -2280,15 +2367,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 								},
 							);
 						}
-						const successResponse = await handleSuccessResponse(responseForSuccess, isStreaming, {
+						const successResult = await handleSuccessResponseDetailed(responseForSuccess, isStreaming, {
 							streamStallTimeoutMs,
 						});
+						const successResponse = successResult.response;
 
 					if (!isStreaming && emptyResponseMaxRetries > 0) {
-						const clonedResponse = successResponse.clone();
+						let parsedBody = successResult.parsedBody;
 						try {
-							const bodyText = await clonedResponse.text();
-							const parsedBody = bodyText ? JSON.parse(bodyText) as unknown : null;
+							if (parsedBody === undefined) {
+								const clonedResponse = successResponse.clone();
+								const bodyText = await clonedResponse.text();
+								parsedBody = bodyText ? JSON.parse(bodyText) as unknown : null;
+							}
 							if (isEmptyResponse(parsedBody)) {
 								if (emptyResponseRetries < emptyResponseMaxRetries) {
 									emptyResponseRetries++;
@@ -3736,6 +3827,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 						successful > 0
 							? Math.round(runtimeMetrics.cumulativeLatencyMs / successful)
 							: 0;
+					const avgEmailHydrationDurationMs =
+						runtimeMetrics.emailHydrationRuns > 0
+							? Math.round(
+								runtimeMetrics.emailHydrationCumulativeDurationMs /
+									runtimeMetrics.emailHydrationRuns,
+							)
+							: 0;
 					const liveSyncSnapshot = liveAccountSync?.getSnapshot();
 					const guardianStats = refreshGuardian?.getStats();
 					const sessionAffinityEntries = sessionAffinityStore?.size() ?? 0;
@@ -3764,9 +3862,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 						`Stream failover recoveries: ${runtimeMetrics.streamFailoverRecoveries}`,
 						`Stream failover cross-account recoveries: ${runtimeMetrics.streamFailoverCrossAccountRecoveries}`,
 						`Empty-response retries: ${runtimeMetrics.emptyResponseRetries}`,
+						`Email hydration runs: ${runtimeMetrics.emailHydrationRuns}`,
+						`Email hydration candidates: ${runtimeMetrics.emailHydrationCandidates}`,
+						`Email hydration refreshed: ${runtimeMetrics.emailHydrationRefreshed}`,
+						`Email hydration updated: ${runtimeMetrics.emailHydrationUpdated}`,
+						`Email hydration failures: ${runtimeMetrics.emailHydrationFailures}`,
+						`Email hydration avg duration: ${avgEmailHydrationDurationMs}ms`,
+						`Email hydration max batch size: ${runtimeMetrics.emailHydrationMaxBatchSize}`,
+						`Email hydration max concurrency used: ${runtimeMetrics.emailHydrationMaxConcurrencyUsed}`,
 						`Session affinity entries: ${sessionAffinityEntries}`,
 						`Live sync: ${liveSyncSnapshot?.running ? "on" : "off"} (${liveSyncSnapshot?.reloadCount ?? 0} reloads)`,
-						`Refresh guardian: ${guardianStats ? "on" : "off"} (${guardianStats?.refreshed ?? 0} refreshed, ${guardianStats?.failed ?? 0} failed)`,
+						`Refresh guardian: ${guardianStats ? "on" : "off"} (${guardianStats?.refreshed ?? 0} refreshed, ${guardianStats?.failed ?? 0} failed, avg tick ${guardianStats?.avgTickDurationMs ?? 0}ms)`,
 						`Last upstream request: ${lastRequest}`,
 					];
 
@@ -3799,6 +3905,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 								"accent",
 							),
 							formatUiKeyValue(ui, "Empty-response retries", String(runtimeMetrics.emptyResponseRetries), "warning"),
+							formatUiKeyValue(ui, "Email hydration runs", String(runtimeMetrics.emailHydrationRuns), "muted"),
+							formatUiKeyValue(ui, "Email hydration candidates", String(runtimeMetrics.emailHydrationCandidates), "muted"),
+							formatUiKeyValue(ui, "Email hydration refreshed", String(runtimeMetrics.emailHydrationRefreshed), "success"),
+							formatUiKeyValue(ui, "Email hydration updated", String(runtimeMetrics.emailHydrationUpdated), "accent"),
+							formatUiKeyValue(ui, "Email hydration failures", String(runtimeMetrics.emailHydrationFailures), "warning"),
+							formatUiKeyValue(ui, "Email hydration avg duration", `${avgEmailHydrationDurationMs}ms`, "muted"),
+							formatUiKeyValue(ui, "Email hydration max batch size", String(runtimeMetrics.emailHydrationMaxBatchSize), "muted"),
+							formatUiKeyValue(ui, "Email hydration max concurrency used", String(runtimeMetrics.emailHydrationMaxConcurrencyUsed), "muted"),
 							formatUiKeyValue(ui, "Session affinity entries", String(sessionAffinityEntries), "muted"),
 							formatUiKeyValue(
 								ui,
@@ -3810,7 +3924,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								ui,
 								"Refresh guardian",
 								guardianStats
-									? `on (${guardianStats.refreshed} refreshed, ${guardianStats.failed} failed)`
+									? `on (${guardianStats.refreshed} refreshed, ${guardianStats.failed} failed, avg tick ${guardianStats.avgTickDurationMs}ms)`
 									: "off",
 								guardianStats ? "success" : "muted",
 							),

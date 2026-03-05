@@ -8,6 +8,11 @@ const log = createLogger("response-handler");
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
 const DEFAULT_STREAM_STALL_TIMEOUT_MS = 45_000;
 
+export interface SseToJsonResult {
+	response: Response;
+	parsedBody?: unknown;
+}
+
 /**
 
  * Parse SSE stream to extract final response
@@ -53,6 +58,15 @@ export async function convertSseToJson(
 	headers: Headers,
 	options?: { streamStallTimeoutMs?: number },
 ): Promise<Response> {
+	const result = await convertSseToJsonWithDetails(response, headers, options);
+	return result.response;
+}
+
+export async function convertSseToJsonWithDetails(
+	response: Response,
+	headers: Headers,
+	options?: { streamStallTimeoutMs?: number },
+): Promise<SseToJsonResult> {
 	if (!response.body) {
 		throw new Error(`[${PLUGIN_NAME}] Response has no body`);
 	}
@@ -88,22 +102,27 @@ export async function convertSseToJson(
 			logRequest("stream-error", { error: "No response.done event found" });
 
 			// Return original stream if we can't parse
-			return new Response(fullText, {
-				status: response.status,
-				statusText: response.statusText,
-				headers: headers,
-			});
+			return {
+				response: new Response(fullText, {
+					status: response.status,
+					statusText: response.statusText,
+					headers: headers,
+				}),
+			};
 		}
 
 		// Return as plain JSON (not SSE)
 		const jsonHeaders = new Headers(headers);
 		jsonHeaders.set('content-type', 'application/json; charset=utf-8');
 
-		return new Response(JSON.stringify(finalResponse), {
-			status: response.status,
-			statusText: response.statusText,
-			headers: jsonHeaders,
-		});
+		return {
+			response: new Response(JSON.stringify(finalResponse), {
+				status: response.status,
+				statusText: response.statusText,
+				headers: jsonHeaders,
+			}),
+			parsedBody: finalResponse,
+		};
 
 	} catch (error) {
 		log.error("Error converting stream", { error: String(error) });

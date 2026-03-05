@@ -18,6 +18,7 @@ import {
   exportAccounts,
   importAccounts,
   withAccountStorageTransaction,
+  resetRotatingBackupCleanupStateForTesting,
 } from "../lib/storage.js";
 
 // Mocking the behavior we're about to implement for TDD
@@ -32,9 +33,11 @@ describe("storage", () => {
   beforeEach(() => {
     delete process.env.CODEX_HOME;
     delete process.env.CODEX_MULTI_AUTH_DIR;
+    resetRotatingBackupCleanupStateForTesting();
   });
 
   afterEach(() => {
+    resetRotatingBackupCleanupStateForTesting();
     if (_origCODEX_HOME !== undefined) process.env.CODEX_HOME = _origCODEX_HOME; else delete process.env.CODEX_HOME;
     if (_origCODEX_MULTI_AUTH_DIR !== undefined) process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR; else delete process.env.CODEX_MULTI_AUTH_DIR;
   });
@@ -695,6 +698,409 @@ describe("storage", () => {
       
       // Restore permissions for cleanup
       await fs.chmod(testStoragePath, 0o644);
+    });
+
+    it("throttles stale rotating backup cleanup scans within a 30-second window", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-throttle-${Math.random().toString(36).slice(2)}.json`,
+      );
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "real-refresh-token",
+              accountId: "acct-real",
+              email: "real-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+      const dateNowSpy = vi.spyOn(Date, "now");
+      let now = Date.now();
+      dateNowSpy.mockImplementation(() => now);
+
+      try {
+        await loadAccounts();
+        now += 29_000;
+        await loadAccounts();
+        now += 1_001;
+        await loadAccounts();
+      } finally {
+        dateNowSpy.mockRestore();
+        readdirSpy.mockRestore();
+      }
+
+      expect(cleanupScanCount).toBe(2);
+    });
+
+    it("deduplicates in-flight cleanup scans across concurrent loadAccounts calls", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-concurrent-${Math.random().toString(36).slice(2)}.json`,
+      );
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "concurrent-refresh-token",
+              accountId: "acct-concurrent",
+              email: "concurrent-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      let releaseScan: (() => void) | null = null;
+      const scanGate = new Promise<void>((resolve) => {
+        releaseScan = resolve;
+      });
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+            if (cleanupScanCount === 1) {
+              await scanGate;
+            }
+          }
+          return originalReaddir(...args);
+        });
+
+      try {
+        const firstLoad = loadAccounts();
+        await vi.waitFor(() => {
+          expect(cleanupScanCount).toBeGreaterThanOrEqual(1);
+        }, { timeout: 200 });
+        const secondLoad = loadAccounts();
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(cleanupScanCount).toBe(1);
+
+        releaseScan?.();
+        const [firstResult, secondResult] = await Promise.all([firstLoad, secondLoad]);
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        readdirSpy.mockRestore();
+        releaseScan?.();
+      }
+
+      expect(cleanupScanCount).toBe(1);
+    });
+
+    it("isolates cleanup scans across in-flight storage path transitions", async () => {
+      const oldDir = join(
+        testWorkDir,
+        `accounts-transition-old-${Math.random().toString(36).slice(2)}`,
+      );
+      const newDir = join(
+        testWorkDir,
+        `accounts-transition-new-${Math.random().toString(36).slice(2)}`,
+      );
+      const oldStoragePath = join(oldDir, "accounts.json");
+      const newStoragePath = join(newDir, "accounts.json");
+      const oldArtifactPath = `${oldStoragePath}.bak.rotate.transition.tmp`;
+
+      await fs.mkdir(oldDir, { recursive: true });
+      await fs.mkdir(newDir, { recursive: true });
+      await fs.writeFile(
+        oldStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "transition-old-refresh-token",
+              accountId: "acct-transition-old",
+              email: "transition-old@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(
+        newStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "transition-new-refresh-token",
+              accountId: "acct-transition-new",
+              email: "transition-new@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(oldArtifactPath, "stale", "utf-8");
+
+      const originalReaddir = fs.readdir.bind(fs);
+      let oldScanCount = 0;
+      let newScanCount = 0;
+      let releaseOldScan: (() => void) | null = null;
+      const oldScanGate = new Promise<void>((resolve) => {
+        releaseOldScan = resolve;
+      });
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === oldDir) {
+            oldScanCount += 1;
+            if (oldScanCount === 1) {
+              await oldScanGate;
+            }
+          } else if (typeof targetPath === "string" && targetPath === newDir) {
+            newScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+
+      try {
+        setStoragePathDirect(oldStoragePath);
+        const firstLoad = loadAccounts();
+
+        await vi.waitFor(() => {
+          expect(oldScanCount).toBeGreaterThanOrEqual(1);
+        }, { timeout: 200 });
+
+        setStoragePathDirect(newStoragePath);
+        const secondLoad = loadAccounts();
+
+        await vi.waitFor(() => {
+          expect(newScanCount).toBeGreaterThanOrEqual(1);
+        }, { timeout: 200 });
+
+        releaseOldScan?.();
+        const [firstResult, secondResult] = await Promise.all([firstLoad, secondLoad]);
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        readdirSpy.mockRestore();
+        releaseOldScan?.();
+      }
+
+      expect(oldScanCount).toBe(1);
+      expect(newScanCount).toBe(1);
+      expect(existsSync(oldArtifactPath)).toBe(false);
+      expect(existsSync(newStoragePath)).toBe(true);
+    });
+
+    it("retries transient stale-artifact unlink failures before succeeding", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-transient-retry-${Math.random().toString(36).slice(2)}.json`,
+      );
+      const staleArtifactPath = `${localStoragePath}.bak.rotate.transient.tmp`;
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "retry-refresh-token",
+              accountId: "acct-retry",
+              email: "retry-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+      const originalUnlink = fs.unlink.bind(fs);
+      let staleUnlinkCalls = 0;
+      const unlinkSpy = vi
+        .spyOn(fs, "unlink")
+        .mockImplementation(async (...args: Parameters<typeof fs.unlink>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === staleArtifactPath) {
+            staleUnlinkCalls += 1;
+            if (staleUnlinkCalls === 1) {
+              const busyError = new Error("busy") as NodeJS.ErrnoException;
+              busyError.code = "EBUSY";
+              throw busyError;
+            }
+          }
+          return originalUnlink(...args);
+        });
+
+      try {
+        const result = await loadAccounts();
+        expect(result?.accounts).toHaveLength(1);
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+
+      expect(staleUnlinkCalls).toBe(2);
+      expect(existsSync(staleArtifactPath)).toBe(false);
+    });
+
+    it("does not throttle stale-artifact cleanup after exhausted transient unlink retries", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-transient-exhausted-${Math.random().toString(36).slice(2)}.json`,
+      );
+      const staleArtifactPath = `${localStoragePath}.bak.rotate.exhausted.tmp`;
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "exhausted-refresh-token",
+              accountId: "acct-exhausted",
+              email: "exhausted-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+      const originalUnlink = fs.unlink.bind(fs);
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+      const unlinkSpy = vi
+        .spyOn(fs, "unlink")
+        .mockImplementation(async (...args: Parameters<typeof fs.unlink>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === staleArtifactPath) {
+            const busyError = new Error("busy") as NodeJS.ErrnoException;
+            busyError.code = "EBUSY";
+            throw busyError;
+          }
+          return originalUnlink(...args);
+        });
+
+      try {
+        const firstResult = await loadAccounts();
+        const secondResult = await loadAccounts();
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        unlinkSpy.mockRestore();
+        readdirSpy.mockRestore();
+      }
+
+      expect(cleanupScanCount).toBe(2);
+      expect(existsSync(staleArtifactPath)).toBe(true);
+    });
+
+    it("does not throttle stale-artifact cleanup after exhausted EACCES unlink retries", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-transient-eacces-${Math.random().toString(36).slice(2)}.json`,
+      );
+      const staleArtifactPath = `${localStoragePath}.bak.rotate.eacces.tmp`;
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "eacces-refresh-token",
+              accountId: "acct-eacces",
+              email: "eacces-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+      const originalUnlink = fs.unlink.bind(fs);
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+      const unlinkSpy = vi
+        .spyOn(fs, "unlink")
+        .mockImplementation(async (...args: Parameters<typeof fs.unlink>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === staleArtifactPath) {
+            const accessError = new Error("access denied") as NodeJS.ErrnoException;
+            accessError.code = "EACCES";
+            throw accessError;
+          }
+          return originalUnlink(...args);
+        });
+
+      try {
+        const firstResult = await loadAccounts();
+        const secondResult = await loadAccounts();
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        unlinkSpy.mockRestore();
+        readdirSpy.mockRestore();
+      }
+
+      expect(cleanupScanCount).toBe(2);
+      expect(existsSync(staleArtifactPath)).toBe(true);
     });
   });
 

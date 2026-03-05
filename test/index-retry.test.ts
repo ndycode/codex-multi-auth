@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS = "1";
 
+const shouldRefreshTokenMock = vi.fn(() => false);
+const refreshAndUpdateTokenMock = vi.fn(async (auth: unknown) => auth);
+const handleSuccessResponseDetailedMock = vi.fn(async (response: Response) => ({
+	response,
+	parsedBody: undefined,
+}));
+
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -22,13 +29,14 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	extractRequestUrl: (input: any) => (typeof input === "string" ? input : String(input)),
 	rewriteUrlForCodex: (url: string) => url,
 	transformRequestForCodex: async (init: any) => ({ updatedInit: init, body: { model: "gpt-5.1" } }),
-	shouldRefreshToken: () => false,
-	refreshAndUpdateToken: async (auth: any) => auth,
+	shouldRefreshToken: shouldRefreshTokenMock,
+	refreshAndUpdateToken: refreshAndUpdateTokenMock,
 	createCodexHeaders: () => new Headers(),
 	handleErrorResponse: async (response: Response) => ({ response }),
 	resolveUnsupportedCodexFallbackModel: () => undefined,
 	shouldFallbackToGpt52OnUnsupportedGpt53: () => false,
 	handleSuccessResponse: async (response: Response) => response,
+	handleSuccessResponseDetailed: handleSuccessResponseDetailedMock,
 }));
 
 vi.mock("../lib/request/request-transformer.js", () => ({
@@ -80,6 +88,12 @@ vi.mock("../lib/accounts.js", () => {
 
 	updateFromAuth() {}
 
+	clearAuthFailures() {}
+
+	incrementAuthFailures() {
+		return 1;
+	}
+
 		async saveToDisk() {}
 
 		markAccountCoolingDown() {}
@@ -97,6 +111,8 @@ vi.mock("../lib/accounts.js", () => {
 		}
 
 		markSwitched() {}
+
+		removeAccount() {}
 
 		getMinWaitTimeForFamily() {
 			return 1000;
@@ -167,6 +183,15 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		vi.useFakeTimers();
 		originalFetch = globalThis.fetch;
 		globalThis.fetch = vi.fn(async () => new Response("ok", { status: 200 })) as any;
+		shouldRefreshTokenMock.mockReset();
+		shouldRefreshTokenMock.mockReturnValue(false);
+		refreshAndUpdateTokenMock.mockReset();
+		refreshAndUpdateTokenMock.mockImplementation(async (auth: unknown) => auth);
+		handleSuccessResponseDetailedMock.mockReset();
+		handleSuccessResponseDetailedMock.mockImplementation(async (response: Response) => ({
+			response,
+			parsedBody: undefined,
+		}));
 	});
 
 	afterEach(() => {
@@ -212,6 +237,201 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const response = await fetchPromise;
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 		expect(response.status).toBe(200);
+	});
+
+	it("deduplicates refresh endpoint work for concurrent sdk.fetch retries", async () => {
+		shouldRefreshTokenMock.mockReturnValue(true);
+		let releaseRefresh: (() => void) | undefined;
+		const refreshGate = new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		const refreshEndpoint = vi.fn(async () => {
+			await refreshGate;
+			return {
+				type: "oauth",
+				access: "refreshed-access",
+				refresh: "refreshed-refresh",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			};
+		});
+		refreshAndUpdateTokenMock.mockImplementation(async (auth: unknown) => {
+			const refreshed = await refreshEndpoint();
+			if (auth && typeof auth === "object") {
+				Object.assign(auth as Record<string, unknown>, refreshed);
+			}
+			return auth;
+		});
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+
+		const pending = Promise.all(
+			Array.from({ length: 10 }, () => sdk.fetch("https://example.com", {})),
+		);
+		await vi.advanceTimersByTimeAsync(1500);
+		await Promise.resolve();
+
+		expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(1);
+		expect(refreshEndpoint).toHaveBeenCalledTimes(1);
+		expect(releaseRefresh).toBeTypeOf("function");
+		releaseRefresh?.();
+
+		const responses = await pending;
+		expect(responses).toHaveLength(10);
+		for (const response of responses) {
+			expect(response.status).toBe(200);
+		}
+		expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(1);
+		expect(refreshEndpoint).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not dedupe concurrent refreshes when refresh token is missing", async () => {
+		shouldRefreshTokenMock.mockReturnValue(true);
+		const { AccountManager } = await import("../lib/accounts.js");
+		const selectedAccount = { index: 0, accountId: "account-1", email: "user@example.com" };
+		const getCurrentSpy = vi
+			.spyOn(AccountManager.prototype, "getCurrentOrNextForFamily")
+			.mockReturnValue(selectedAccount as never);
+		const getCurrentHybridSpy = vi
+			.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
+			.mockReturnValue(selectedAccount as never);
+		const noRefreshAuths = [
+			{
+				type: "oauth" as const,
+				access: "eyJhbGciOiJIUzI1NiJ9.shared-prefix.aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				refresh: "",
+				expires: Date.now() + 60_000,
+			},
+			{
+				type: "oauth" as const,
+				access: "eyJhbGciOiJIUzI1NiJ9.shared-prefix.bbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				refresh: "",
+				expires: Date.now() + 60_000,
+			},
+		];
+		const toAuthDetailsSpy = vi.spyOn(AccountManager.prototype, "toAuthDetails").mockImplementation(() => {
+			return noRefreshAuths.shift() ?? {
+				type: "oauth",
+				access: "eyJhbGciOiJIUzI1NiJ9.shared-prefix.fallbacktoken",
+				refresh: "",
+				expires: Date.now() + 60_000,
+			};
+		});
+		let releaseRefresh: (() => void) | undefined;
+		const refreshGate = new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		refreshAndUpdateTokenMock.mockImplementation(async (auth: unknown) => {
+			await refreshGate;
+			return auth;
+		});
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "loader-access",
+			refresh: "loader-refresh",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+		const sdkA = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const sdkB = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+
+		try {
+			const pending = Promise.all([
+				sdkA.fetch("https://example.com", {}),
+				sdkB.fetch("https://example.com", {}),
+			]);
+			await vi.waitFor(() => {
+				expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(2);
+			}, { timeout: 500 });
+			expect(releaseRefresh).toBeTypeOf("function");
+			releaseRefresh?.();
+			const responses = await pending;
+			expect(responses).toHaveLength(2);
+			for (const response of responses) {
+				expect(response.status).toBe(200);
+			}
+		} finally {
+			getCurrentSpy.mockRestore();
+			getCurrentHybridSpy.mockRestore();
+			toAuthDetailsSpy.mockRestore();
+		}
+	});
+
+	it("cleans failed refresh dedup entries so later retries re-execute refresh", async () => {
+		shouldRefreshTokenMock.mockReturnValue(true);
+		const { AccountManager } = await import("../lib/accounts.js");
+		const selectedAccount = { index: 0, accountId: "account-1", email: "user@example.com" };
+		const getCurrentSpy = vi
+			.spyOn(AccountManager.prototype, "getCurrentOrNextForFamily")
+			.mockReturnValue(selectedAccount as never);
+		const getCurrentHybridSpy = vi
+			.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
+			.mockReturnValue(selectedAccount as never);
+		let refreshAttempt = 0;
+		refreshAndUpdateTokenMock.mockImplementation(async (auth: unknown) => {
+			refreshAttempt += 1;
+			if (refreshAttempt === 1) {
+				throw new Error("refresh failed");
+			}
+			return auth;
+		});
+
+		const previousMaxRetries = process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "0";
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+
+		try {
+			await Promise.all([
+				sdk.fetch("https://example.com", {}),
+				sdk.fetch("https://example.com", {}),
+			]);
+			expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(1);
+
+			const response = await sdk.fetch("https://example.com", {});
+			expect(response.status).toBe(200);
+			expect(refreshAndUpdateTokenMock).toHaveBeenCalledTimes(2);
+		} finally {
+			if (previousMaxRetries === undefined) {
+				delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+			} else {
+				process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = previousMaxRetries;
+			}
+			getCurrentSpy.mockRestore();
+			getCurrentHybridSpy.mockRestore();
+		}
 	});
 });
 
