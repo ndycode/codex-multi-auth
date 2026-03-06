@@ -78,6 +78,52 @@ describe("data retention", () => {
 		expect(await fs.readFile(freshCache, "utf8")).toBe("fresh");
 	});
 
+	it("acquires quota cache lock before pruning stale quota cache file", async () => {
+		const release = vi.fn(async () => {});
+		const acquireFileLockMock = vi.fn(async () => ({
+			path: join(tempDir, "quota-cache.json.lock"),
+			release,
+		}));
+		vi.doMock("../lib/file-lock.js", async () => {
+			const actual = await vi.importActual<typeof import("../lib/file-lock.js")>(
+				"../lib/file-lock.js",
+			);
+			return {
+				...actual,
+				acquireFileLock: acquireFileLockMock,
+			};
+		});
+
+		try {
+			const { enforceDataRetention } = await import("../lib/data-retention.js");
+			const oldDate = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+			const quota = join(tempDir, "quota-cache.json");
+			await fs.writeFile(quota, "{}", "utf8");
+			await fs.utimes(quota, oldDate, oldDate);
+
+			const result = await enforceDataRetention({
+				logDays: 1,
+				cacheDays: 1,
+				flaggedDays: 1,
+				quotaCacheDays: 1,
+				dlqDays: 1,
+			});
+
+			expect(acquireFileLockMock).toHaveBeenCalledTimes(1);
+			expect(acquireFileLockMock).toHaveBeenCalledWith(join(tempDir, "quota-cache.json.lock"), {
+				maxAttempts: 80,
+				baseDelayMs: 15,
+				maxDelayMs: 800,
+				staleAfterMs: 120_000,
+			});
+			expect(release).toHaveBeenCalledTimes(1);
+			expect(result.removedStateFiles).toBe(1);
+			await expect(fs.stat(quota)).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+		}
+	});
+
 	it("tolerates transient EBUSY while pruning empty directories", async () => {
 		const { enforceDataRetention } = await import("../lib/data-retention.js");
 		const nestedLogDir = join(tempDir, "logs", "nested");
@@ -133,16 +179,18 @@ describe("data retention", () => {
 			await fs.utimes(oldLog, oldDate, oldDate);
 
 			const originalUnlink = fs.unlink.bind(fs);
-			let attempts = 0;
+			let oldLogAttempts = 0;
 			const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
 				const path = args[0];
-				if (typeof path === "string" && path.endsWith("old.log") && attempts === 0) {
-					attempts += 1;
-					const error = new Error("locked") as NodeJS.ErrnoException;
-					error.code = errorCode;
-					throw error;
+				if (typeof path === "string" && path.endsWith("old.log")) {
+					if (oldLogAttempts === 0) {
+						oldLogAttempts += 1;
+						const error = new Error("locked") as NodeJS.ErrnoException;
+						error.code = errorCode;
+						throw error;
+					}
+					oldLogAttempts += 1;
 				}
-				attempts += 1;
 				return originalUnlink(...(args as Parameters<typeof fs.unlink>));
 			});
 
@@ -164,7 +212,7 @@ describe("data retention", () => {
 				unlinkSpy.mockRestore();
 			}
 
-			expect(attempts).toBe(2);
+			expect(oldLogAttempts).toBe(2);
 			await expect(fs.stat(oldLog)).rejects.toMatchObject({ code: "ENOENT" });
 		},
 	);

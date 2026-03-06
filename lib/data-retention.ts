@@ -1,5 +1,6 @@
 import { promises as fs, type Dirent } from "node:fs";
 import { join } from "node:path";
+import { acquireFileLock } from "./file-lock.js";
 import { logWarn } from "./logger.js";
 import { getCodexCacheDir, getCodexLogDir, getCodexMultiAuthDir } from "./runtime-paths.js";
 
@@ -24,6 +25,10 @@ const DIRECTORY_CLEANUP_BASE_DELAY_MS = 10;
 const RETRYABLE_FILE_UNLINK_CODES = new Set(["EBUSY", "EPERM"]);
 const FILE_UNLINK_MAX_ATTEMPTS = 4;
 const FILE_UNLINK_BASE_DELAY_MS = 25;
+const QUOTA_CACHE_LOCK_MAX_ATTEMPTS = 80;
+const QUOTA_CACHE_LOCK_BASE_DELAY_MS = 15;
+const QUOTA_CACHE_LOCK_MAX_DELAY_MS = 800;
+const QUOTA_CACHE_LOCK_STALE_AFTER_MS = 120_000;
 
 function parseEnvDays(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -143,6 +148,20 @@ async function pruneSingleFile(path: string, maxAgeMs: number): Promise<boolean>
 	}
 }
 
+async function pruneQuotaCacheWithLock(path: string, maxAgeMs: number): Promise<boolean> {
+	const lock = await acquireFileLock(`${path}.lock`, {
+		maxAttempts: QUOTA_CACHE_LOCK_MAX_ATTEMPTS,
+		baseDelayMs: QUOTA_CACHE_LOCK_BASE_DELAY_MS,
+		maxDelayMs: QUOTA_CACHE_LOCK_MAX_DELAY_MS,
+		staleAfterMs: QUOTA_CACHE_LOCK_STALE_AFTER_MS,
+	});
+	try {
+		return await pruneSingleFile(path, maxAgeMs);
+	} finally {
+		await lock.release();
+	}
+}
+
 export async function enforceDataRetention(
 	policy: RetentionPolicy = getRetentionPolicyFromEnv(),
 ): Promise<{ removedLogs: number; removedCacheFiles: number; removedStateFiles: number }> {
@@ -156,7 +175,7 @@ export async function enforceDataRetention(
 		join(root, "openai-codex-flagged-accounts.json"),
 		policy.flaggedDays * 24 * 60 * 60_000,
 	);
-	const removedQuota = await pruneSingleFile(
+	const removedQuota = await pruneQuotaCacheWithLock(
 		join(root, "quota-cache.json"),
 		policy.quotaCacheDays * 24 * 60 * 60_000,
 	);
