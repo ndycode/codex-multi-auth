@@ -119,6 +119,7 @@ import {
         shouldUpdateAccountIdFromToken,
         resolveRequestAccountId,
         parseRateLimitReason,
+	getQuotaKey,
 	lookupCodexCliTokensByEmail,
 	isCodexCliSyncEnabled,
 } from "./lib/accounts.js";
@@ -171,7 +172,6 @@ import {
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import {
 	getRateLimitBackoff,
-	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
 	resetRateLimitBackoff,
 } from "./lib/request/rate-limit-backoff.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
@@ -194,8 +194,14 @@ import {
 import {
 	PreemptiveQuotaScheduler,
 	readQuotaSchedulerSnapshot,
+	type QuotaSchedulerSnapshot,
 } from "./lib/preemptive-quota-scheduler.js";
 import { CapabilityPolicyStore } from "./lib/capability-policy.js";
+import {
+	loadQuotaCache,
+	type QuotaCacheData,
+	type QuotaCacheEntry,
+} from "./lib/quota-cache.js";
 import { withStreamingFailover } from "./lib/request/stream-failover.js";
 import { buildTableHeader, buildTableRow, type TableOptions } from "./lib/table-formatter.js";
 import { setUiRuntimeOptions, type UiRuntimeOptions } from "./lib/ui/runtime.js";
@@ -361,6 +367,237 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 			return null;
 		};
+
+	const QUOTA_CACHE_BOOTSTRAP_TTL_MS = 30 * 60_000;
+	const QUOTA_CACHE_BOOTSTRAP_MIN_WAIT_MS = 1_000;
+	const QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS = 60_000;
+	let quotaCacheBootstrapData: QuotaCacheData | null = null;
+	let quotaCacheBootstrapLoadedAt = 0;
+	let quotaCacheBootstrapFailureUntil = 0;
+	let quotaCacheBootstrapLoadPromise: Promise<QuotaCacheData> | null = null;
+
+	type QuotaBootstrapAccountCandidate = {
+		index: number;
+		accountId?: string;
+		email?: string;
+	};
+
+	const normalizeQuotaCacheEmail = (value: string | undefined): string | null => {
+		const normalized = sanitizeEmail(value);
+		if (typeof normalized === "string" && normalized.trim().length > 0) {
+			return normalized.trim().toLowerCase();
+		}
+		if (typeof value !== "string") return null;
+		const fallback = value.trim().toLowerCase();
+		return fallback.length > 0 ? fallback : null;
+	};
+
+	const normalizeQuotaCacheModelId = (value: string | undefined): string | null => {
+		if (typeof value !== "string") return null;
+		const trimmed = value.trim();
+		if (trimmed.length === 0) return null;
+		const withoutProvider = trimmed.includes("/") ? (trimmed.split("/").pop() ?? trimmed) : trimmed;
+		const normalized = withoutProvider.trim().toLowerCase();
+		return normalized.length > 0 ? normalized : null;
+	};
+
+	const buildQuotaScheduleKey = (
+		account: { accountId?: string; email?: string } | string,
+		model: string | undefined,
+		modelFamily: ModelFamily,
+	): string => {
+		const accountKey =
+			typeof account === "string" ? account : resolveEntitlementAccountKey(account);
+		const normalizedModel = normalizeQuotaCacheModelId(model) ?? modelFamily;
+		return `${accountKey}:${normalizedModel}`;
+	};
+
+	const createEmptyQuotaCache = (): QuotaCacheData => ({ byAccountId: {}, byEmail: {} });
+
+	const getQuotaCacheEntryForCandidate = (
+		cache: QuotaCacheData,
+		candidate: QuotaBootstrapAccountCandidate,
+	): QuotaCacheEntry | null => {
+		if (candidate.accountId) {
+			const byAccountId = cache.byAccountId[candidate.accountId];
+			if (byAccountId) return byAccountId;
+		}
+		const email = normalizeQuotaCacheEmail(candidate.email);
+		if (!email) return null;
+		return cache.byEmail[email] ?? null;
+	};
+
+	const getQuotaCacheEntryFutureResetAtMs = (
+		entry: QuotaCacheEntry,
+		now: number,
+	): number | null => {
+		const candidates = [entry.primary.resetAtMs, entry.secondary.resetAtMs]
+			.filter((value): value is number =>
+				typeof value === "number" && Number.isFinite(value) && value > now,
+			);
+		if (candidates.length === 0) return null;
+		return Math.max(...candidates);
+	};
+
+	const getQuotaCacheBootstrapWaitMs = (
+		entry: QuotaCacheEntry,
+		now: number,
+	): number => {
+		const futureResetAtMs = getQuotaCacheEntryFutureResetAtMs(entry, now);
+		if (typeof futureResetAtMs === "number") {
+			return Math.max(0, Math.floor(futureResetAtMs - now));
+		}
+		const hasKnownResetTime =
+			typeof entry.primary.resetAtMs === "number" ||
+			typeof entry.secondary.resetAtMs === "number";
+		if (hasKnownResetTime) {
+			return 0;
+		}
+		const maxAgeUntil = entry.updatedAt + QUOTA_CACHE_BOOTSTRAP_TTL_MS;
+		if (!Number.isFinite(maxAgeUntil) || maxAgeUntil <= now) {
+			return 0;
+		}
+		return Math.max(0, Math.floor(maxAgeUntil - now));
+	};
+
+	const isQuotaCacheEntryExhausted = (entry: QuotaCacheEntry): boolean => {
+		const primaryUsedPercent = entry.primary.usedPercent;
+		if (typeof primaryUsedPercent === "number" && Number.isFinite(primaryUsedPercent)) {
+			if (primaryUsedPercent >= 100) return true;
+		}
+		const secondaryUsedPercent = entry.secondary.usedPercent;
+		if (typeof secondaryUsedPercent === "number" && Number.isFinite(secondaryUsedPercent)) {
+			if (secondaryUsedPercent >= 100) return true;
+		}
+		return false;
+	};
+
+	const shouldApplyQuotaCacheEntry = (
+		entry: QuotaCacheEntry,
+		now: number,
+	): boolean => {
+		const isRateLimited = entry.status === 429;
+		if (!isRateLimited && !isQuotaCacheEntryExhausted(entry)) {
+			return false;
+		}
+		return getQuotaCacheBootstrapWaitMs(entry, now) > 0;
+	};
+
+	const toQuotaSchedulerSnapshot = (entry: QuotaCacheEntry): QuotaSchedulerSnapshot => ({
+		status: entry.status,
+		primary: {
+			usedPercent: entry.primary.usedPercent,
+			resetAtMs: entry.primary.resetAtMs,
+		},
+		secondary: {
+			usedPercent: entry.secondary.usedPercent,
+			resetAtMs: entry.secondary.resetAtMs,
+		},
+		updatedAt: entry.updatedAt,
+	});
+
+	const loadQuotaCacheForBootstrap = async (): Promise<QuotaCacheData> => {
+		const now = Date.now();
+		if (quotaCacheBootstrapData && now - quotaCacheBootstrapLoadedAt < QUOTA_CACHE_BOOTSTRAP_TTL_MS) {
+			return quotaCacheBootstrapData;
+		}
+		if (now < quotaCacheBootstrapFailureUntil) {
+			return createEmptyQuotaCache();
+		}
+		if (quotaCacheBootstrapLoadPromise) {
+			return quotaCacheBootstrapLoadPromise;
+		}
+		quotaCacheBootstrapLoadPromise = (async () => {
+			try {
+				const loaded = await loadQuotaCache();
+				quotaCacheBootstrapData = loaded;
+				quotaCacheBootstrapLoadedAt = Date.now();
+				quotaCacheBootstrapFailureUntil = 0;
+				return loaded;
+			} catch (error) {
+				const failureAt = Date.now();
+				quotaCacheBootstrapData = null;
+				quotaCacheBootstrapLoadedAt = 0;
+				quotaCacheBootstrapFailureUntil = failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS;
+				logWarn(
+					`[${PLUGIN_NAME}] failed to load quota cache bootstrap data: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+				return createEmptyQuotaCache();
+			}
+		})();
+		try {
+			return await quotaCacheBootstrapLoadPromise;
+		} finally {
+			quotaCacheBootstrapLoadPromise = null;
+		}
+	};
+
+	const applyQuotaCacheBootstrapForModel = async (
+		accountManager: AccountManager,
+		accountSnapshots: QuotaBootstrapAccountCandidate[],
+		modelFamily: ModelFamily,
+		model: string | undefined,
+		enabled: boolean,
+	): Promise<void> => {
+		if (!enabled || accountSnapshots.length === 0) return;
+		const cache = await loadQuotaCacheForBootstrap();
+		const now = Date.now();
+		const requestedModel = normalizeQuotaCacheModelId(model);
+		const baseKey = getQuotaKey(modelFamily);
+
+		for (const snapshotCandidate of accountSnapshots) {
+			const entry = getQuotaCacheEntryForCandidate(cache, snapshotCandidate);
+			if (!entry) continue;
+			const entryModel = normalizeQuotaCacheModelId(entry.model);
+			if (!entryModel) continue;
+			if (getModelFamily(entryModel) !== modelFamily) {
+				continue;
+			}
+			if (requestedModel && entryModel !== requestedModel) {
+				continue;
+			}
+			if (!shouldApplyQuotaCacheEntry(entry, now)) {
+				continue;
+			}
+			const appliedModel = requestedModel ?? entryModel;
+			const appliedModelKey = getQuotaKey(modelFamily, appliedModel);
+
+			const waitMs = Math.max(
+				QUOTA_CACHE_BOOTSTRAP_MIN_WAIT_MS,
+				getQuotaCacheBootstrapWaitMs(entry, now),
+			);
+			const account = accountManager.getAccountByIndex(snapshotCandidate.index);
+			if (!account) continue;
+			account.rateLimitResetTimes = account.rateLimitResetTimes ?? {};
+
+			const existingBaseResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
+			const existingModelResetAt = account.rateLimitResetTimes[appliedModelKey] ?? 0;
+			const existingResetAt = Math.max(existingBaseResetAt, existingModelResetAt);
+			const nextResetAt = now + waitMs;
+			if (existingResetAt >= nextResetAt) {
+				continue;
+			}
+
+			accountManager.markRateLimitedWithReason(
+				account,
+				waitMs,
+				modelFamily,
+				"quota",
+				appliedModel,
+			);
+			const quotaScheduleKey = buildQuotaScheduleKey(
+				snapshotCandidate,
+				requestedModel ?? undefined,
+				modelFamily,
+			);
+			preemptiveQuotaScheduler.update(
+				quotaScheduleKey,
+				toQuotaSchedulerSnapshot(entry),
+			);
+		}
+	};
 
 	const sanitizeResponseHeadersForLog = (headers: Headers): Record<string, string> => {
 		const allowed = new Set([
@@ -1188,6 +1425,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
 				const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 				const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
+				const quotaCacheBootstrapEnabled =
+					(process.env.CODEX_AUTH_QUOTA_CACHE_BOOTSTRAP ?? "1").trim() !== "0";
 				const failoverMode = parseFailoverMode(process.env.CODEX_AUTH_FAILOVER_MODE);
 				const streamFailoverMax = Math.max(
 					0,
@@ -1507,6 +1746,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												}
 											}
 										}
+										await applyQuotaCacheBootstrapForModel(
+											accountManager,
+											accountSnapshotList,
+											modelFamily,
+											model ?? undefined,
+											quotaCacheBootstrapEnabled,
+										);
 										for (const candidate of accountSnapshotList) {
 											const accountKey = resolveEntitlementAccountKey(candidate);
 											capabilityBoostByAccount[candidate.index] = capabilityPolicyStore.getBoost(
@@ -1679,7 +1925,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 										idempotencyKey: requestCorrelationId,
 									},
 								);
-								const quotaScheduleKey = `${entitlementAccountKey}:${model ?? modelFamily}`;
+								const quotaScheduleKey = buildQuotaScheduleKey(
+									entitlementAccountKey,
+									model,
+									modelFamily,
+								);
 								const capabilityModelKey = model ?? modelFamily;
 								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);
 								if (quotaDeferral.defer && quotaDeferral.waitMs > 0) {
@@ -2118,89 +2368,68 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 
 					if (rateLimit) {
-																														runtimeMetrics.rateLimitedResponses++;
-																															const { attempt, delayMs } = getRateLimitBackoff(
-																																account.index,
-																																quotaKey,
-																																rateLimit.retryAfterMs,
-																															);
-																															preemptiveQuotaScheduler.markRateLimited(
-																																quotaScheduleKey,
-																																delayMs,
-																															);
-																															const waitLabel = formatWaitTime(delayMs);
-
-																														if (delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
-																																if (
-																																	accountManager.shouldShowAccountToast(
-																																		account.index,
-																																		rateLimitToastDebounceMs,
-																																		)
-																																) {
-																									await showToast(
-																										`Rate limited. Retrying in ${waitLabel} (attempt ${attempt})...`,
-																										"warning",
-																										{ duration: toastDurationMs },
-																									);
-																																			accountManager.markToastShown(account.index);
-								}
-
-															await sleep(addJitter(Math.max(MIN_BACKOFF_MS, delayMs), 0.2));
-															continue;
-																																}
-
-				accountManager.markRateLimitedWithReason(
-					account,
-					delayMs,
-					modelFamily,
-					parseRateLimitReason(rateLimit.code),
-					model,
-				);
-				accountManager.recordRateLimit(account, modelFamily, model);
-				account.lastSwitchReason = "rate-limit";
-				sessionAffinityStore?.forgetSession(sessionAffinityKey);
-				runtimeMetrics.accountRotations++;
-				accountManager.saveToDiskDebounced();
+						runtimeMetrics.rateLimitedResponses++;
+						const { attempt, delayMs } = getRateLimitBackoff(
+							account.index,
+							quotaKey,
+							rateLimit.retryAfterMs,
+						);
+						preemptiveQuotaScheduler.markRateLimited(
+							quotaScheduleKey,
+							delayMs,
+						);
+						const waitLabel = formatWaitTime(delayMs);
+						accountManager.markRateLimitedWithReason(
+							account,
+							delayMs,
+							modelFamily,
+							parseRateLimitReason(rateLimit.code),
+							model,
+						);
+						accountManager.recordRateLimit(account, modelFamily, model);
+						account.lastSwitchReason = "rate-limit";
+						sessionAffinityStore?.forgetSession(sessionAffinityKey);
+						runtimeMetrics.accountRotations++;
+						accountManager.saveToDiskDebounced();
 						logWarn(
 							`Rate limited. Rotating account ${account.index + 1} (${account.email ?? "unknown"}).`,
 						);
-
-																														if (
-																															accountManager.getAccountCount() > 1 &&
-																															accountManager.shouldShowAccountToast(
-																																account.index,
-																																rateLimitToastDebounceMs,
-																																)
-																														) {
-																									await showToast(
-																										`Rate limited. Switching accounts (retry in ${waitLabel}).`,
-																										"warning",
-																										{ duration: toastDurationMs },
-																									);
-																																	accountManager.markToastShown(account.index);
-																																}
-																															break;
-																														}
-																														if (
-																															!rateLimit &&
-																															!unsupportedModelInfo.isUnsupported &&
-																															errorResponse.status !== 403
-																														) {
-																															capabilityPolicyStore.recordFailure(
-																																entitlementAccountKey,
-																																capabilityModelKey,
-																															);
-																														}
-																														runtimeMetrics.failedRequests++;
-																														runtimeMetrics.lastError = `HTTP ${response.status}`;
-																														emitPluginTelemetry("request.http_error", "failure", {
-																															accountIndex: account.index + 1,
-																															modelFamily,
-																															model,
-																															status: response.status,
-																														});
-																														return errorResponse;
-																											}
+						if (
+							accountManager.getAccountCount() > 1 &&
+							accountManager.shouldShowAccountToast(
+								account.index,
+								rateLimitToastDebounceMs,
+							)
+						) {
+							await showToast(
+								`Rate limited. Switching accounts (retry in ${waitLabel}, attempt ${attempt}).`,
+								"warning",
+								{ duration: toastDurationMs },
+							);
+							accountManager.markToastShown(account.index);
+						}
+						break;
+					}
+					if (
+						!rateLimit &&
+						!unsupportedModelInfo.isUnsupported &&
+						errorResponse.status !== 403
+					) {
+						capabilityPolicyStore.recordFailure(
+							entitlementAccountKey,
+							capabilityModelKey,
+						);
+					}
+					runtimeMetrics.failedRequests++;
+					runtimeMetrics.lastError = `HTTP ${response.status}`;
+					emitPluginTelemetry("request.http_error", "failure", {
+						accountIndex: account.index + 1,
+						modelFamily,
+						model,
+						status: response.status,
+					});
+					return errorResponse;
+				}
 
 						resetRateLimitBackoff(account.index, quotaKey);
 						runtimeMetrics.cumulativeLatencyMs += fetchLatencyMs;
@@ -2317,7 +2546,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 											);
 											if (fallbackSnapshot) {
 												preemptiveQuotaScheduler.update(
-													`${resolveEntitlementAccountKey(fallbackAccount)}:${model ?? modelFamily}`,
+													buildQuotaScheduleKey(
+														fallbackAccount,
+														model,
+														modelFamily,
+													),
 													fallbackSnapshot,
 												);
 											}
