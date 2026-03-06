@@ -8,12 +8,16 @@ on:
 
 jobs:
   test:
-    name: Test on Node.js ${{ matrix.node-version }}
-    runs-on: ubuntu-latest
+    name: Test on Node.js ${{ matrix.node-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
         node-version: [20.x, 22.x]
+        os: [ubuntu-latest]
+        include:
+          - node-version: 20.x
+            os: windows-latest
 
     steps:
       - name: Checkout code
@@ -28,27 +32,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Repository hygiene check
-        run: npm run clean:repo:check
-
-      - name: Security audit (CI policy)
-        run: npm run audit:ci
-
-      - name: Lockfile floor guard
-        run: npm run test -- test/lockfile-version-floor.test.ts
+      - name: Run CI verify pipeline
+        run: npm run verify:ci
 
       - name: Security audit (full dependency tree, non-blocking)
         continue-on-error: true
         run: npm run audit:all
-
-      - name: Run type check
-        run: npm run typecheck
-
-      - name: Run tests with coverage
-        run: npm run coverage
-
-      - name: Build
-        run: npm run build
 
   lint:
     name: Lint
