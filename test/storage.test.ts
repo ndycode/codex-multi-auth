@@ -19,6 +19,7 @@ import {
   exportAccounts,
   importAccounts,
   withAccountStorageTransaction,
+  type AccountStorageV3,
 } from "../lib/storage.js";
 
 // Mocking the behavior we're about to implement for TDD
@@ -713,6 +714,34 @@ describe("storage", () => {
       }
     });
 
+    it("allows follow-up save after v1 migration without conflict", async () => {
+      const v1Storage = {
+        version: 1,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t1", accountId: "A", accessToken: "acc", expiresAt: Date.now() + 3600000 }],
+      };
+      await fs.writeFile(testStoragePath, JSON.stringify(v1Storage), "utf-8");
+
+      const migrated = await loadAccounts();
+      expect(migrated?.version).toBe(3);
+
+      const nextStorage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          ...(migrated?.accounts ?? []),
+          { refreshToken: "t2", accountId: "B", addedAt: 2, lastUsed: 2 },
+        ],
+      };
+      await expect(saveAccounts(nextStorage)).resolves.toBeUndefined();
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.version).toBe(3);
+      const accountIds = new Set(persisted.accounts.map((account) => account.accountId));
+      expect(accountIds.has("A")).toBe(true);
+      expect(accountIds.has("B")).toBe(true);
+    });
+
     it("returns migrated data even when save fails (line 422-423 coverage)", async () => {
       const v1Storage = { 
         version: 1, 
@@ -762,6 +791,276 @@ describe("storage", () => {
       const content = await fs.readFile(testStoragePath, "utf-8");
       const parsed = JSON.parse(content);
       expect(parsed.version).toBe(3);
+    });
+
+    it("keeps successful saves when lock release fails after write", async () => {
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t1", accountId: "A", addedAt: 1, lastUsed: 2 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      const originalUnlink = fs.unlink.bind(fs);
+      let releaseFailureInjected = false;
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path =
+          typeof target === "string" ? target : target instanceof URL ? target.pathname : String(target);
+        if (!releaseFailureInjected && path === lockPath) {
+          releaseFailureInjected = true;
+          throw Object.assign(new Error("lock release failed"), { code: "EACCES" });
+        }
+        return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+      });
+
+      try {
+        await expect(saveAccounts(storage)).resolves.toBeUndefined();
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+
+      expect(releaseFailureInjected).toBe(true);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("A");
+    });
+
+    it("continues waiting when lock observation reads hit transient errors", async () => {
+      const storage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-read-retry", accountId: "read-retry", addedAt: 1, lastUsed: 1 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      await fs.mkdir(dirname(testStoragePath), { recursive: true });
+      await fs.writeFile(
+        lockPath,
+        `${JSON.stringify({ pid: process.pid, token: "other-owner", acquiredAt: Date.now() })}\n`,
+        "utf-8",
+      );
+      let lockPresent = true;
+      let releaseLock: (() => void) | undefined;
+      const releaseGate = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const unlockPromise = (async () => {
+        await releaseGate;
+        lockPresent = false;
+        await fs.unlink(lockPath);
+      })();
+
+      const originalReadFile = fs.readFile.bind(fs);
+      let transientReadFailures = 0;
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path = typeof target === "string" ? target : String(target);
+        if (path === lockPath && lockPresent) {
+          transientReadFailures += 1;
+          if (transientReadFailures === 2) {
+            releaseLock?.();
+          }
+          throw Object.assign(new Error("retry"), { code: "EAGAIN" });
+        }
+        return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        await expect(saveAccounts(storage)).resolves.toBeUndefined();
+      } finally {
+        readSpy.mockRestore();
+        releaseLock?.();
+        await unlockPromise;
+      }
+
+      expect(transientReadFailures).toBeGreaterThan(0);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("read-retry");
+    });
+
+    it("retries stale lock eviction when transient unlink contention occurs", async () => {
+      const storage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-unlink-retry", accountId: "unlink-retry", addedAt: 1, lastUsed: 1 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      await fs.mkdir(dirname(testStoragePath), { recursive: true });
+      await fs.writeFile(
+        lockPath,
+        `${JSON.stringify({
+          pid: process.pid,
+          token: "stale-owner",
+          acquiredAt: Date.now() - 240_000,
+        })}\n`,
+        "utf-8",
+      );
+      const staleTimestamp = new Date(Date.now() - 240_000);
+      await fs.utimes(lockPath, staleTimestamp, staleTimestamp);
+
+      const originalUnlink = fs.unlink.bind(fs);
+      let lockUnlinkAttempts = 0;
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path =
+          typeof target === "string" ? target : target instanceof URL ? target.pathname : String(target);
+        if (path === lockPath) {
+          lockUnlinkAttempts += 1;
+          if (lockUnlinkAttempts === 1) {
+            throw Object.assign(new Error("busy"), { code: "EBUSY" });
+          }
+        }
+        return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+      });
+
+      try {
+        await expect(saveAccounts(storage)).resolves.toBeUndefined();
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+
+      expect(lockUnlinkAttempts).toBeGreaterThanOrEqual(2);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("unlink-retry");
+    });
+
+    it("evicts stale malformed lock files using file mtime fallback", async () => {
+      const storage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-malformed-stale", accountId: "malformed-stale", addedAt: 1, lastUsed: 1 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      await fs.mkdir(dirname(testStoragePath), { recursive: true });
+      await fs.writeFile(lockPath, "", "utf-8");
+      const staleTimestamp = new Date(Date.now() - 240_000);
+      await fs.utimes(lockPath, staleTimestamp, staleTimestamp);
+
+      await expect(saveAccounts(storage)).resolves.toBeUndefined();
+
+      expect(existsSync(lockPath)).toBe(false);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("malformed-stale");
+    });
+
+    it("retries transient lock release contention and eventually removes lock", async () => {
+      const storage: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-release-retry", accountId: "release-retry", addedAt: 1, lastUsed: 1 }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+      const originalUnlink = fs.unlink.bind(fs);
+      let lockUnlinkAttempts = 0;
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path =
+          typeof target === "string" ? target : target instanceof URL ? target.pathname : String(target);
+        if (path === lockPath) {
+          lockUnlinkAttempts += 1;
+          if (lockUnlinkAttempts < 3) {
+            throw Object.assign(new Error("busy"), { code: "EBUSY" });
+          }
+        }
+        return originalUnlink(...(args as Parameters<typeof fs.unlink>));
+      });
+
+      try {
+        await expect(saveAccounts(storage)).resolves.toBeUndefined();
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+
+      expect(lockUnlinkAttempts).toBeGreaterThanOrEqual(3);
+      expect(existsSync(lockPath)).toBe(false);
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      expect(persisted.accounts[0]?.accountId).toBe("release-retry");
+    });
+
+    it("rejects stale overwrite when storage changed on disk after load", async () => {
+      const initial: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-initial", accountId: "acct-initial", addedAt: 1, lastUsed: 1 }],
+      };
+      await saveAccounts(initial);
+
+      const loaded = await loadAccounts();
+      if (!loaded) {
+        throw new Error("expected loaded storage");
+      }
+
+      const externalUpdate: AccountStorageV3 = {
+        ...loaded,
+        accounts: [
+          ...loaded.accounts,
+          { refreshToken: "t-external", accountId: "acct-external", addedAt: 2, lastUsed: 2 },
+        ],
+      };
+      await fs.writeFile(testStoragePath, JSON.stringify(externalUpdate, null, 2), "utf-8");
+
+      const staleWrite: AccountStorageV3 = {
+        ...loaded,
+        accounts: [
+          ...loaded.accounts,
+          { refreshToken: "t-stale", accountId: "acct-stale", addedAt: 3, lastUsed: 3 },
+        ],
+      };
+
+      await expect(saveAccounts(staleWrite)).rejects.toMatchObject({
+        code: "ECONFLICT",
+        message: expect.stringContaining("Detected concurrent account storage modification"),
+      });
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      const persistedTokens = new Set(persisted.accounts.map((account) => account.refreshToken));
+      expect(persistedTokens.has("t-external")).toBe(true);
+      expect(persistedTokens.has("t-stale")).toBe(false);
+    });
+
+    it("rejects one writer with ECONFLICT when two module instances save concurrently", async () => {
+      const initial: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-initial", accountId: "acct-initial", addedAt: 1, lastUsed: 1 }],
+      };
+      await saveAccounts(initial);
+
+      const storageA = await import("../lib/storage.js?instance=concurrency-a");
+      const storageB = await import("../lib/storage.js?instance=concurrency-b");
+      storageA.setStoragePathDirect(testStoragePath);
+      storageB.setStoragePathDirect(testStoragePath);
+
+      await storageA.loadAccounts();
+      await storageB.loadAccounts();
+
+      const writeA: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-writer-a", accountId: "acct-a", addedAt: 2, lastUsed: 2 }],
+      };
+      const writeB: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-writer-b", accountId: "acct-b", addedAt: 3, lastUsed: 3 }],
+      };
+
+      const [resultA, resultB] = await Promise.allSettled([
+        storageA.saveAccounts(writeA),
+        storageB.saveAccounts(writeB),
+      ]);
+      const rejected = [resultA, resultB].filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      const fulfilled = [resultA, resultB].filter(
+        (result): result is PromiseFulfilledResult<void> => result.status === "fulfilled",
+      );
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0].reason as { code?: string } | undefined)?.code).toBe("ECONFLICT");
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      const persistedTokens = new Set(persisted.accounts.map((account) => account.refreshToken));
+      expect(persistedTokens.size).toBe(1);
+      expect(persistedTokens.has("t-writer-a") || persistedTokens.has("t-writer-b")).toBe(true);
     });
   });
 
@@ -1096,6 +1395,71 @@ describe("storage", () => {
       expect(migrated?.accounts).toHaveLength(1);
       expect(existsSync(legacyStoragePath)).toBe(false);
       expect(existsSync(getStoragePath())).toBe(true);
+    });
+
+    it("allows follow-up save after ENOENT legacy fallback load", async () => {
+      const fakeHome = join(testWorkDir, "home");
+      const projectDir = join(testWorkDir, "project-enoent-fallback");
+      const projectGitDir = join(projectDir, ".git");
+      const legacyProjectConfigDir = join(projectDir, ".codex");
+      const legacyStoragePath = join(legacyProjectConfigDir, "openai-codex-accounts.json");
+
+      await fs.mkdir(fakeHome, { recursive: true });
+      await fs.mkdir(projectGitDir, { recursive: true });
+      await fs.mkdir(legacyProjectConfigDir, { recursive: true });
+      process.env.HOME = fakeHome;
+      process.env.USERPROFILE = fakeHome;
+      setStoragePath(projectDir);
+      const canonicalPath = getStoragePath();
+
+      await fs.writeFile(
+        legacyStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "legacy-refresh", accountId: "legacy-account", addedAt: 1, lastUsed: 1 }],
+        }),
+        "utf-8",
+      );
+
+      const originalRename = fs.rename.bind(fs);
+      let forcedRenameFailure = false;
+      let blockCanonicalRename = true;
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+        const target = String(args[1]);
+        if (blockCanonicalRename && target === canonicalPath) {
+          forcedRenameFailure = true;
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        }
+        return originalRename(...(args as Parameters<typeof fs.rename>));
+      });
+
+      let loaded: AccountStorageV3 | null = null;
+      try {
+        loaded = await loadAccounts();
+      } finally {
+        blockCanonicalRename = false;
+        renameSpy.mockRestore();
+      }
+
+      expect(forcedRenameFailure).toBe(true);
+      expect(loaded?.accounts[0]?.accountId).toBe("legacy-account");
+      expect(existsSync(canonicalPath)).toBe(false);
+
+      const next: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          ...(loaded?.accounts ?? []),
+          { refreshToken: "post-load-save", accountId: "post-load-save", addedAt: 2, lastUsed: 2 },
+        ],
+      };
+      await expect(saveAccounts(next)).resolves.toBeUndefined();
+
+      const persisted = JSON.parse(await fs.readFile(canonicalPath, "utf-8")) as AccountStorageV3;
+      const persistedIds = new Set(persisted.accounts.map((account) => account.accountId));
+      expect(persistedIds.has("legacy-account")).toBe(true);
+      expect(persistedIds.has("post-load-save")).toBe(true);
     });
   });
 
@@ -1583,7 +1947,7 @@ describe("storage", () => {
         activeIndex: 0,
         accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
       };
-      const lockPath = `${testStoragePath}.lock`;
+      const lockPath = `${testStoragePath}.queue.lock`;
 
       const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockResolvedValue({
         path: lockPath,
@@ -1612,7 +1976,7 @@ describe("storage", () => {
         activeIndex: 0,
         accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
       };
-      const lockPath = `${testStoragePath}.lock`;
+      const lockPath = `${testStoragePath}.queue.lock`;
 
       const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockResolvedValue({
         path: lockPath,
@@ -1990,6 +2354,94 @@ describe("storage", () => {
 
       expect(unlinkSpy).toHaveBeenCalled();
       unlinkSpy.mockRestore();
+    });
+  });
+
+  describe("read retry hardening", () => {
+    const testWorkDir = join(tmpdir(), "codex-read-retry-" + Math.random().toString(36).slice(2));
+    let testStoragePath: string;
+
+    beforeEach(async () => {
+      await fs.mkdir(testWorkDir, { recursive: true });
+      testStoragePath = join(testWorkDir, "accounts.json");
+      setStoragePathDirect(testStoragePath);
+    });
+
+    afterEach(async () => {
+      vi.restoreAllMocks();
+      setStoragePathDirect(null);
+      await fs.rm(testWorkDir, { recursive: true, force: true });
+    });
+
+    it("retries transient readFile contention when loading account storage", async () => {
+      await fs.writeFile(
+        testStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "retry-token", accountId: "retry-account", addedAt: 1, lastUsed: 1 }],
+        }),
+        "utf-8",
+      );
+
+      const originalReadFile = fs.readFile.bind(fs);
+      let transientFailures = 0;
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path = typeof target === "string" ? target : String(target);
+        if (path === testStoragePath && transientFailures < 2) {
+          transientFailures += 1;
+          const code = transientFailures === 1 ? "EBUSY" : "EPERM";
+          throw Object.assign(new Error(code), { code });
+        }
+        return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        const loaded = await loadAccounts();
+        expect(loaded?.accounts[0]?.accountId).toBe("retry-account");
+        expect(transientFailures).toBe(2);
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
+    it("retries transient revision reads before save conflict checks", async () => {
+      const now = Date.now();
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "initial", accountId: "initial", addedAt: now, lastUsed: now }],
+      });
+
+      const originalReadFile = fs.readFile.bind(fs);
+      let transientFailures = 0;
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        const target = args[0];
+        const path = typeof target === "string" ? target : String(target);
+        if (path === testStoragePath && transientFailures < 2) {
+          transientFailures += 1;
+          const code = transientFailures === 1 ? "EBUSY" : "EAGAIN";
+          throw Object.assign(new Error(code), { code });
+        }
+        return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        await saveAccounts({
+          version: 3,
+          activeIndex: 0,
+          accounts: [{ refreshToken: "next", accountId: "next", addedAt: now + 1, lastUsed: now + 1 }],
+        });
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as {
+        accounts?: Array<{ accountId?: string }>;
+      };
+      expect(persisted.accounts?.[0]?.accountId).toBe("next");
+      expect(transientFailures).toBe(2);
     });
   });
 });

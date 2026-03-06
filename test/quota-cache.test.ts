@@ -35,7 +35,7 @@ describe("quota cache", () => {
     const { loadQuotaCache, saveQuotaCache, getQuotaCachePath } =
       await import("../lib/quota-cache.js");
 
-    await saveQuotaCache({
+    const saved = await saveQuotaCache({
       byAccountId: {
         acc_1: {
           updatedAt: Date.now(),
@@ -48,6 +48,7 @@ describe("quota cache", () => {
       },
       byEmail: {},
     });
+    expect(saved).toBe(true);
 
     const loaded = await loadQuotaCache();
     expect(loaded.byAccountId.acc_1?.primary.usedPercent).toBe(40);
@@ -179,7 +180,7 @@ describe("quota cache", () => {
     });
 
     try {
-      await saveQuotaCache({
+      const saved = await saveQuotaCache({
         byAccountId: {
           acc_1: {
             updatedAt: Date.now(),
@@ -196,6 +197,7 @@ describe("quota cache", () => {
         String(call[0]).endsWith(".tmp"),
       );
       expect(tmpUnlinks).toHaveLength(1);
+      expect(saved).toBe(false);
       const entries = await fs.readdir(tempDir);
       expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
     } finally {
@@ -338,8 +340,9 @@ describe("quota cache", () => {
 
       const mkdirSpy = vi.spyOn(fs, "mkdir");
       mkdirSpy.mockRejectedValueOnce("mkdir-string-failure");
-      await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+      const saved = await saveQuotaCache({ byAccountId: {}, byEmail: {} });
       mkdirSpy.mockRestore();
+      expect(saved).toBe(false);
 
       const messages = warnMock.mock.calls.map((args) => String(args[0]));
       expect(

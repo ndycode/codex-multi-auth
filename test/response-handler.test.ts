@@ -61,7 +61,7 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body).toEqual({ id: 'resp_456', output: 'done' });
 		});
 
-		it('should return original text if no final response found', async () => {
+		it('should return JSON stream parse error if no final response found', async () => {
 			const sseContent = `data: {"type":"response.started"}
 data: {"type":"chunk","delta":"text"}
 `;
@@ -69,9 +69,34 @@ data: {"type":"chunk","delta":"text"}
 			const headers = new Headers();
 
 			const result = await convertSseToJson(response, headers);
-			const text = await result.text();
+			const body = await result.json();
 
-			expect(text).toBe(sseContent);
+			expect(body).toEqual({
+				error: {
+					message: 'No response.done event found in SSE stream',
+					type: 'stream_parse_error',
+				},
+			});
+			expect(result.status).toBe(502);
+			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
+		});
+
+		it('should handle CRLF line endings for stream parse errors', async () => {
+			const sseContent = `data: {"type":"response.started"}\r\ndata: {"type":"chunk","delta":"text"}\r\n`;
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json();
+
+			expect(body).toEqual({
+				error: {
+					message: 'No response.done event found in SSE stream',
+					type: 'stream_parse_error',
+				},
+			});
+			expect(result.status).toBe(502);
+			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
 		});
 
 		it('should skip malformed JSON in SSE stream', async () => {
@@ -92,9 +117,16 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			const headers = new Headers();
 
 			const result = await convertSseToJson(response, headers);
-			const text = await result.text();
+			const body = await result.json();
 
-			expect(text).toBe('');
+			expect(body).toEqual({
+				error: {
+					message: 'No response.done event found in SSE stream',
+					type: 'stream_parse_error',
+				},
+			});
+			expect(result.status).toBe(502);
+			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
 		});
 
 		it('should preserve response status and statusText', async () => {

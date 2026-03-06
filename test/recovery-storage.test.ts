@@ -24,8 +24,19 @@ const fsMock = vi.hoisted(() => ({
   writeFileSync: vi.fn(),
 }));
 
+const loggerMock = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+const createLoggerMock = vi.hoisted(() => vi.fn(() => loggerMock));
+
 vi.mock("fs/promises", () => fsPromisesMock);
 vi.mock("node:fs", () => fsMock);
+vi.mock("../lib/logger.js", () => ({
+  createLogger: createLoggerMock,
+}));
 vi.mock("../lib/recovery/constants.js", () => ({
   MESSAGE_STORAGE,
   PART_STORAGE,
@@ -37,6 +48,7 @@ let storage: typeof import("../lib/recovery/storage.js");
 
 beforeEach(async () => {
   vi.resetAllMocks();
+  createLoggerMock.mockImplementation(() => loggerMock);
   vi.resetModules();
   storage = await import("../lib/recovery/storage.js");
 });
@@ -138,6 +150,101 @@ describe("RecoveryStorage", () => {
 
       expect(storage.readMessages(sessionID)).toEqual([]);
     });
+
+    it("skips message files with invalid object shape", () => {
+      const sessionID = "sess";
+      const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+      fsMock.existsSync.mockImplementation((path: string) => path === MESSAGE_STORAGE || path === messageDir);
+      fsMock.readdirSync.mockReturnValue(["valid.json", "invalid-shape.json"]);
+      fsMock.readFileSync.mockImplementation((path: string) => {
+        if (path === join(messageDir, "valid.json")) {
+          return JSON.stringify({ id: "a", sessionID, role: "assistant", time: { created: 1 } });
+        }
+        if (path === join(messageDir, "invalid-shape.json")) {
+          return JSON.stringify({ role: "assistant", time: { created: 2 } });
+        }
+        return "";
+      });
+
+      const result = storage.readMessages(sessionID);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.id).toBe("a");
+    });
+
+    it("skips message files when parsed payload is an array", () => {
+      const sessionID = "sess";
+      const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+      fsMock.existsSync.mockImplementation((path: string) => path === MESSAGE_STORAGE || path === messageDir);
+      fsMock.readdirSync.mockReturnValue(["valid.json", "array-payload.json"]);
+      fsMock.readFileSync.mockImplementation((path: string) => {
+        if (path === join(messageDir, "valid.json")) {
+          return JSON.stringify({ id: "a", sessionID, role: "assistant", time: { created: 1 } });
+        }
+        if (path === join(messageDir, "array-payload.json")) {
+          return JSON.stringify([{ id: "array-item" }]);
+        }
+        return "";
+      });
+
+      const result = storage.readMessages(sessionID);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.id).toBe("a");
+    });
+
+    it("limits corruption warnings per read and emits one suppression warning", () => {
+      const sessionID = "sess";
+      const messageDir = join(MESSAGE_STORAGE, sessionID);
+      const corruptedFiles = Array.from({ length: 30 }, (_, index) => `bad-${index}.json`);
+
+      fsMock.existsSync.mockImplementation((path: string) => path === MESSAGE_STORAGE || path === messageDir);
+      fsMock.readdirSync.mockReturnValue(corruptedFiles);
+      fsMock.readFileSync.mockReturnValue("{ malformed");
+
+      const result = storage.readMessages(sessionID);
+      expect(result).toEqual([]);
+
+      const warnCalls = loggerMock.warn.mock.calls;
+      const corruptionWarns = warnCalls.filter(
+        (call) => call[0] === "Skipped corrupted recovery artifact",
+      );
+      const suppressionWarns = warnCalls.filter(
+        (call) => call[0] === "Suppressing further corrupted recovery artifact warnings",
+      );
+      expect(corruptionWarns).toHaveLength(25);
+      expect(suppressionWarns).toHaveLength(1);
+      expect(suppressionWarns[0]?.[1]).toEqual({ limit: 25 });
+    });
+
+    it("resets corruption warning budget for each read invocation", () => {
+      const sessionID = "sess";
+      const messageDir = join(MESSAGE_STORAGE, sessionID);
+      const firstBatch = Array.from({ length: 30 }, (_, index) => `bad-${index}.json`);
+      const secondBatch = ["bad-again.json"];
+      let readDirectoryCalls = 0;
+
+      fsMock.existsSync.mockImplementation((path: string) => path === MESSAGE_STORAGE || path === messageDir);
+      fsMock.readdirSync.mockImplementation((path: string) => {
+        if (path !== messageDir) return [];
+        readDirectoryCalls += 1;
+        return readDirectoryCalls === 1 ? firstBatch : secondBatch;
+      });
+      fsMock.readFileSync.mockReturnValue("{ malformed");
+
+      expect(storage.readMessages(sessionID)).toEqual([]);
+      expect(storage.readMessages(sessionID)).toEqual([]);
+
+      const warnCalls = loggerMock.warn.mock.calls;
+      const corruptionWarns = warnCalls.filter(
+        (call) => call[0] === "Skipped corrupted recovery artifact",
+      );
+      const suppressionWarns = warnCalls.filter(
+        (call) => call[0] === "Suppressing further corrupted recovery artifact warnings",
+      );
+      expect(corruptionWarns).toHaveLength(26);
+      expect(suppressionWarns).toHaveLength(1);
+    });
   });
 
   describe("readParts", () => {
@@ -180,6 +287,48 @@ describe("RecoveryStorage", () => {
       });
 
       expect(storage.readParts(messageID)).toEqual([]);
+    });
+
+    it("skips part files with invalid object shape", () => {
+      const messageID = "msg";
+      const partDir = join(PART_STORAGE, messageID);
+
+      fsMock.existsSync.mockImplementation((path: string) => path === partDir);
+      fsMock.readdirSync.mockReturnValue(["valid.json", "invalid-shape.json"]);
+      fsMock.readFileSync.mockImplementation((path: string) => {
+        if (path === join(partDir, "valid.json")) {
+          return JSON.stringify({ id: "1", messageID, sessionID: "s", type: "text", text: "hi" });
+        }
+        if (path === join(partDir, "invalid-shape.json")) {
+          return JSON.stringify({ id: "x", type: "text" });
+        }
+        return "";
+      });
+
+      const result = storage.readParts(messageID);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.id).toBe("1");
+    });
+
+    it("skips part files when parsed payload is an array", () => {
+      const messageID = "msg";
+      const partDir = join(PART_STORAGE, messageID);
+
+      fsMock.existsSync.mockImplementation((path: string) => path === partDir);
+      fsMock.readdirSync.mockReturnValue(["valid.json", "array-payload.json"]);
+      fsMock.readFileSync.mockImplementation((path: string) => {
+        if (path === join(partDir, "valid.json")) {
+          return JSON.stringify({ id: "1", messageID, sessionID: "s", type: "text", text: "hi" });
+        }
+        if (path === join(partDir, "array-payload.json")) {
+          return JSON.stringify([{ id: "array-item" }]);
+        }
+        return "";
+      });
+
+      const result = storage.readParts(messageID);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.id).toBe("1");
     });
   });
 

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
-import { sleep } from "../utils.js";
+import { fetchWithTimeout, sleep } from "../utils.js";
 
 const DEFAULT_HOST_CODEX_PROMPT_URLS = [
 	"https://raw.githubusercontent.com/anomalyco/Codex/dev/packages/Codex/src/session/prompt/codex.txt",
@@ -37,6 +37,7 @@ const LEGACY_CACHE_FILES: ReadonlyArray<{ content: string; meta: string }> = [
 	},
 ];
 const CACHE_TTL_MS = 15 * 60 * 1000;
+const PROMPT_FETCH_TIMEOUT_MS = 15_000;
 const RETRYABLE_FS_ERROR_CODES = new Set(["EBUSY", "EPERM"]);
 const WRITE_RETRY_ATTEMPTS = 5;
 const WRITE_RETRY_BASE_DELAY_MS = 10;
@@ -278,7 +279,11 @@ async function refreshPrompt(
 
 		let response: Response;
 		try {
-			response = await fetch(sourceUrl, { headers });
+			response = await fetchWithTimeout(
+				sourceUrl,
+				{ headers },
+				PROMPT_FETCH_TIMEOUT_MS,
+			);
 		} catch (error) {
 			lastFailure = `${redactSourceForLog(sourceUrl)}: ${String(error)}`;
 			logDebug("Codex prompt source fetch failed", {

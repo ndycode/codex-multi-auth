@@ -387,6 +387,27 @@ describe('Auth Module', () => {
 			}
 		});
 
+		it('returns failed token result for timeout/abort exchange errors', async () => {
+			const originalFetch = globalThis.fetch;
+			const abortError = Object.assign(new Error('OAuth exchange timeout'), {
+				name: 'AbortError',
+			});
+			globalThis.fetch = vi.fn(async () => {
+				throw abortError;
+			}) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode('code', 'verifier');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toContain('timeout');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		});
+
 		it('uses custom redirect URI when provided', async () => {
 			const originalFetch = globalThis.fetch;
 			let capturedBody: URLSearchParams | undefined;
@@ -503,6 +524,94 @@ describe('Auth Module', () => {
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it('enforces refresh timeout when refresh endpoint stalls', async () => {
+			vi.useFakeTimers();
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						'abort',
+						() => {
+							const reason = init.signal?.reason;
+							if (reason instanceof Error) {
+								reject(reason);
+								return;
+							}
+							reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const resultPromise = refreshAccessToken('slow-token', { timeoutMs: 1_000 });
+				await vi.advanceTimersByTimeAsync(1_200);
+				const result = await resultPromise;
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('unknown');
+					expect(result.message).toContain('timeout');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+			}
+		});
+
+		it('concurrent refreshes with one timeout do not corrupt results', async () => {
+			vi.useFakeTimers();
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+				const requestBody = init?.body;
+				const params = requestBody instanceof URLSearchParams ? requestBody : new URLSearchParams(String(requestBody ?? ""));
+				const refreshToken = params.get('refresh_token');
+				if (refreshToken === 'fast-token') {
+					return Promise.resolve(
+						new Response(JSON.stringify({
+							access_token: 'fast-access',
+							refresh_token: 'fast-refresh-next',
+							expires_in: 60,
+						}), { status: 200 }),
+					);
+				}
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						'abort',
+						() => {
+							const reason = init.signal?.reason;
+							if (reason instanceof Error) {
+								reject(reason);
+								return;
+							}
+							reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+						},
+						{ once: true },
+					);
+				});
+			}) as never;
+
+			try {
+				const fastPromise = refreshAccessToken('fast-token');
+				const slowPromise = refreshAccessToken('slow-token', { timeoutMs: 1_000 });
+				await vi.advanceTimersByTimeAsync(1_200);
+				const [fastResult, slowResult] = await Promise.all([fastPromise, slowPromise]);
+				expect(fastResult.type).toBe('success');
+				if (fastResult.type === 'success') {
+					expect(fastResult.access).toBe('fast-access');
+					expect(fastResult.refresh).toBe('fast-refresh-next');
+				}
+				expect(slowResult.type).toBe('failed');
+				if (slowResult.type === 'failed') {
+					expect(slowResult.reason).toBe('unknown');
+					expect(slowResult.message).toContain('timeout');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
 			}
 		});
 

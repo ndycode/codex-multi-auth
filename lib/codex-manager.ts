@@ -716,6 +716,17 @@ function countMenuQuotaRefreshTargets(
 	return count;
 }
 
+async function persistQuotaCache(
+	cache: QuotaCacheData,
+	options: { notify?: boolean } = {},
+): Promise<boolean> {
+	const saved = await saveQuotaCache(cache);
+	if (!saved && options.notify && output.isTTY && process.env.VITEST !== "true") {
+		console.log(stylePromptText("Warning: failed to persist quota cache changes.", "warning"));
+	}
+	return saved;
+}
+
 async function refreshQuotaCacheForMenu(
 	storage: AccountStorageV3,
 	cache: QuotaCacheData,
@@ -749,7 +760,7 @@ async function refreshQuotaCacheForMenu(
 	}
 
 	if (changed) {
-		await saveQuotaCache(cache);
+		await persistQuotaCache(cache, { notify: true });
 	}
 
 	return cache;
@@ -1864,7 +1875,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		console.log(stylePromptText("Per-account lines are hidden in dashboard settings.", "muted"));
 	}
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		await persistQuotaCache(quotaCache, { notify: true });
 	}
 
 	if (changed) {
@@ -2455,26 +2466,33 @@ async function runForecast(args: string[]): Promise<number> {
 	const recommendation = recommendForecastAccount(forecastResults);
 
 	if (options.json) {
+		let quotaCachePersisted = true;
 		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+			quotaCachePersisted = await persistQuotaCache(quotaCache);
 		}
+		const payload = {
+			command: "forecast",
+			model: options.model,
+			liveProbe: options.live,
+			summary,
+			recommendation,
+			probeErrors: quotaCachePersisted
+				? probeErrors
+				: [...probeErrors, "Failed to persist quota cache changes"],
+			quotaCachePersisted,
+			accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
+		};
 		console.log(
 			JSON.stringify(
 				maybeRedactJsonOutput({
-					command: "forecast",
 					schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
-					model: options.model,
-					liveProbe: options.live,
-					summary,
-					recommendation,
-					probeErrors,
-					accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
+					...payload,
 				}),
 				null,
 				2,
 			),
 		);
-		return 0;
+		return quotaCachePersisted ? 0 : 1;
 	}
 
 	console.log(
@@ -2545,11 +2563,12 @@ async function runForecast(args: string[]): Promise<number> {
 			console.log(`  ${stylePromptText("-", "warning")} ${stylePromptText(error, "muted")}`);
 		}
 	}
+	let quotaCachePersisted = true;
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		quotaCachePersisted = await persistQuotaCache(quotaCache, { notify: true });
 	}
 
-	return 0;
+	return quotaCachePersisted ? 0 : 1;
 }
 
 async function runReport(args: string[]): Promise<number> {
@@ -3357,32 +3376,37 @@ async function runFix(args: string[]): Promise<number> {
 	}
 
 	if (options.json) {
+		let quotaCachePersisted = true;
 		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+			quotaCachePersisted = await persistQuotaCache(quotaCache);
 		}
+		const payload = {
+			command: "fix",
+			dryRun: options.dryRun,
+			liveProbe: options.live,
+			model: options.model,
+			changed,
+			summary: reportSummary,
+			recommendation,
+			recommendedSwitchCommand:
+				recommendation.recommendedIndex !== null &&
+					recommendation.recommendedIndex !== activeIndex
+					? `codex auth switch ${recommendation.recommendedIndex + 1}`
+					: null,
+			reports,
+			quotaCachePersisted,
+		};
 		console.log(
 			JSON.stringify(
 				maybeRedactJsonOutput({
-					command: "fix",
 					schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
-					dryRun: options.dryRun,
-					liveProbe: options.live,
-					model: options.model,
-					changed,
-					summary: reportSummary,
-					recommendation,
-					recommendedSwitchCommand:
-						recommendation.recommendedIndex !== null &&
-							recommendation.recommendedIndex !== activeIndex
-							? `codex auth switch ${recommendation.recommendedIndex + 1}`
-							: null,
-					reports,
+					...payload,
 				}),
 				null,
 				2,
 			),
 		);
-		return 0;
+		return quotaCachePersisted ? 0 : 1;
 	}
 
 	console.log(stylePromptText(`Auto-fix scan (${options.dryRun ? "preview" : "apply"})`, "accent"));
@@ -3435,8 +3459,9 @@ async function runFix(args: string[]): Promise<number> {
 			console.log(`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
 		}
 	}
+	let quotaCachePersisted = true;
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		quotaCachePersisted = await persistQuotaCache(quotaCache, { notify: true });
 	}
 
 	if (changed && options.dryRun) {
@@ -3447,7 +3472,7 @@ async function runFix(args: string[]): Promise<number> {
 		console.log(`\n${stylePromptText("No changes were needed.", "muted")}`);
 	}
 
-	return 0;
+	return quotaCachePersisted ? 0 : 1;
 }
 
 type DoctorSeverity = "ok" | "warn" | "error";

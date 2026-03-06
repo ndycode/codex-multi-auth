@@ -13,6 +13,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = 35_000;
 const DEFAULT_POLL_INTERVAL_MS = 150;
 const DEFAULT_RESULT_TTL_MS = 20_000;
 const RETRYABLE_IO_ERRORS = new Set(["EBUSY", "EPERM", "EMFILE", "ENFILE"]);
+export const REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT = "wait-timeout" as const;
 
 interface LeaseFilePayload {
 	tokenHash: string;
@@ -44,6 +45,7 @@ export interface RefreshLeaseCoordinatorOptions {
 
 export interface RefreshLeaseHandle {
 	role: "owner" | "follower" | "bypass";
+	reason?: string;
 	result?: TokenResult;
 	release: (result?: TokenResult) => Promise<void>;
 }
@@ -251,20 +253,40 @@ export class RefreshLeaseCoordinator {
 					const removed = await safeUnlink(lockPath, undefined, this.fsOps);
 					if (removed) continue;
 					if (Date.now() >= deadline) {
+						const finalResult = await this.readFreshResult(resultPath, tokenHash);
+						if (finalResult) {
+							return {
+								role: "follower",
+								result: finalResult,
+								release: async () => {
+									// Follower does not own lock.
+								},
+							};
+						}
 						log.warn("Refresh lease wait timeout while stale lock could not be removed", {
 							waitTimeoutMs: this.waitTimeoutMs,
 						});
-						return this.createBypassHandle("wait-timeout");
+						return this.createBypassHandle(REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT);
 					}
 					await sleep(this.pollIntervalMs);
 					continue;
 				}
 
 				if (Date.now() >= deadline) {
+					const finalResult = await this.readFreshResult(resultPath, tokenHash);
+					if (finalResult) {
+						return {
+							role: "follower",
+							result: finalResult,
+							release: async () => {
+								// Follower does not own lock.
+							},
+						};
+					}
 					log.warn("Refresh lease wait timeout; proceeding without lease", {
 						waitTimeoutMs: this.waitTimeoutMs,
 					});
-					return this.createBypassHandle("wait-timeout");
+					return this.createBypassHandle(REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT);
 				}
 				await sleep(this.pollIntervalMs);
 			}
@@ -275,6 +297,7 @@ export class RefreshLeaseCoordinator {
 		log.debug("Bypassing refresh lease", { reason });
 		return {
 			role: "bypass",
+			reason,
 			release: async () => {
 				// No-op
 			},
@@ -353,10 +376,10 @@ export class RefreshLeaseCoordinator {
 
 		const parsed = parseLeasePayload(raw);
 		if (!parsed) {
-			return { state: "unknown", reason: "invalid-payload" };
+			return { state: "stale", reason: "invalid-payload" };
 		}
 		if (parsed.tokenHash !== tokenHash) {
-			return { state: "unknown", reason: "token-mismatch" };
+			return { state: "stale", reason: "token-mismatch" };
 		}
 		if (parsed.expiresAt <= Date.now()) {
 			return { state: "stale", reason: "expired" };

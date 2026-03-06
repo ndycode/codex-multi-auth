@@ -1,6 +1,6 @@
 import { promises as fs, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { acquireFileLock } from "./file-lock.js";
@@ -73,10 +73,17 @@ const ACCOUNT_STORAGE_LOCK_OPTIONS = {
 	staleAfterMs: 120_000,
 } as const;
 const STORAGE_DECRYPT_ERROR_CODE = "EDECRYPT";
+const TRANSIENT_READ_RETRY_ATTEMPTS = 5;
+const TRANSIENT_READ_RETRY_BASE_DELAY_MS = 10;
+const TRANSIENT_READ_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+const STORAGE_SAVE_LOCK_WAIT_TIMEOUT_MS = 5_000;
+const STORAGE_SAVE_LOCK_STALE_AFTER_MS = 120_000;
+const STORAGE_SAVE_LOCK_POLL_INTERVAL_MS = 25;
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
 const missingEncryptionKeyWarnings = new Set<string>();
+const knownStorageRevisionByPath = new Map<string, string | null>();
 
 export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
 	flaggedAt: number;
@@ -368,7 +375,7 @@ function getAccountsWalPath(path: string): string {
 }
 
 function getAccountsLockPath(path: string): string {
-	return `${path}.lock`;
+	return `${path}.queue.lock`;
 }
 
 async function releaseStorageLockFallback(lockPath: string): Promise<void> {
@@ -558,6 +565,322 @@ function computeSha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+function isTransientReadError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && TRANSIENT_READ_RETRY_CODES.has(code);
+}
+
+async function readFileUtf8WithTransientRetry(path: string): Promise<string> {
+	for (let attempt = 0; attempt < TRANSIENT_READ_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			return await fs.readFile(path, "utf-8");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				throw error;
+			}
+			if (!isTransientReadError(error) || attempt + 1 >= TRANSIENT_READ_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, TRANSIENT_READ_RETRY_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
+	}
+
+	throw new Error(`Failed to read file after ${TRANSIENT_READ_RETRY_ATTEMPTS} attempts: ${path}`);
+}
+
+async function readStorageRevision(path: string): Promise<string | null> {
+	try {
+		const content = await readFileUtf8WithTransientRetry(path);
+		return computeSha256(content);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+type StorageSaveFileLock = {
+	lockPath: string;
+	token: string;
+	fingerprint: string;
+};
+
+type StorageSaveLockObservation = {
+	token: string | null;
+	fingerprint: string;
+	acquiredAt: number | null;
+};
+
+function getAccountsSaveLockPath(path: string): string {
+	return `${path}.lock`;
+}
+
+function parseStorageSaveLockToken(raw: string): string | null {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (!parsed || typeof parsed !== "object") {
+			return null;
+		}
+		const token = (parsed as { token?: unknown }).token;
+		if (typeof token !== "string") {
+			return null;
+		}
+		const normalized = token.trim();
+		return normalized.length > 0 ? normalized : null;
+	} catch {
+		return null;
+	}
+}
+
+function parseStorageSaveLockAcquiredAt(raw: string): number | null {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (!parsed || typeof parsed !== "object") {
+			return null;
+		}
+		const acquiredAt = (parsed as { acquiredAt?: unknown }).acquiredAt;
+		if (typeof acquiredAt !== "number" || !Number.isFinite(acquiredAt)) {
+			return null;
+		}
+		return Math.floor(acquiredAt);
+	} catch {
+		return null;
+	}
+}
+
+async function readStorageSaveLockObservation(
+	lockPath: string,
+): Promise<StorageSaveLockObservation | null> {
+	try {
+		const raw = await readFileUtf8WithTransientRetry(lockPath);
+		return {
+			token: parseStorageSaveLockToken(raw),
+			fingerprint: computeSha256(raw),
+			acquiredAt: parseStorageSaveLockAcquiredAt(raw),
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function removeStorageSaveLockIfOwnerMatches(
+	lockPath: string,
+	owner: { token?: string; fingerprint?: string },
+): Promise<boolean> {
+	const observation = await readStorageSaveLockObservation(lockPath);
+	if (!observation) {
+		return true;
+	}
+
+	const tokenMatches =
+		typeof owner.token === "string" &&
+		owner.token.length > 0 &&
+		observation.token === owner.token;
+	const fingerprintMatches =
+		typeof owner.fingerprint === "string" &&
+		owner.fingerprint.length > 0 &&
+		observation.fingerprint === owner.fingerprint;
+	if (!tokenMatches && !fingerprintMatches) {
+		return false;
+	}
+
+	try {
+		await fs.unlink(lockPath);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return true;
+		}
+		if (isTransientReadError(error)) {
+			throw error;
+		}
+		throw error;
+	}
+}
+
+async function acquireStorageSaveFileLock(path: string): Promise<StorageSaveFileLock> {
+	const lockPath = getAccountsSaveLockPath(path);
+	const deadline = Date.now() + STORAGE_SAVE_LOCK_WAIT_TIMEOUT_MS;
+	const token = randomUUID();
+	const payload = JSON.stringify({
+		pid: process.pid,
+		token,
+		acquiredAt: Date.now(),
+	});
+	const lockContent = `${payload}\n`;
+	const fingerprint = computeSha256(lockContent);
+
+	while (true) {
+		try {
+			const handle = await fs.open(lockPath, "wx");
+			try {
+				await handle.writeFile(lockContent, "utf8");
+			} finally {
+				await handle.close();
+			}
+			return { lockPath, token, fingerprint };
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "EEXIST") {
+				const observation = await readStorageSaveLockObservation(lockPath);
+				const now = Date.now();
+				let staleAgeMs: number | null = null;
+				if (observation && typeof observation.acquiredAt === "number") {
+					staleAgeMs = now - observation.acquiredAt;
+				} else if (observation) {
+					try {
+						const stat = await fs.stat(lockPath);
+						staleAgeMs = now - stat.mtimeMs;
+					} catch (statError) {
+						const statCode = (statError as NodeJS.ErrnoException | undefined)?.code;
+						if (statCode === "ENOENT") {
+							continue;
+						}
+						if (!isTransientReadError(statError)) {
+							throw statError;
+						}
+					}
+				}
+				if (observation && staleAgeMs !== null && staleAgeMs > STORAGE_SAVE_LOCK_STALE_AFTER_MS) {
+					try {
+						const removed = await removeStorageSaveLockIfOwnerMatches(lockPath, {
+							token: observation.token ?? undefined,
+							fingerprint: observation.fingerprint,
+						});
+						if (removed) {
+							continue;
+						}
+					} catch (removeError) {
+						if (isTransientReadError(removeError) && now < deadline) {
+							await new Promise((resolve) => setTimeout(resolve, STORAGE_SAVE_LOCK_POLL_INTERVAL_MS));
+							continue;
+						}
+						throw removeError;
+					}
+				}
+				if (now >= deadline) {
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, STORAGE_SAVE_LOCK_POLL_INTERVAL_MS));
+				continue;
+			}
+			if (
+				(code === "EBUSY" || code === "EPERM" || code === "EAGAIN") &&
+				Date.now() < deadline
+			) {
+				await new Promise((resolve) => setTimeout(resolve, STORAGE_SAVE_LOCK_POLL_INTERVAL_MS));
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	const lockTimeout = Object.assign(new Error("Timed out waiting for account storage lock"), {
+		code: "EBUSY",
+	});
+	throw new StorageError(
+		"Timed out waiting for account storage lock",
+		"EBUSY",
+		path,
+		formatStorageErrorHint(lockTimeout, path),
+		lockTimeout,
+	);
+}
+
+async function releaseStorageSaveFileLock(lock: StorageSaveFileLock): Promise<void> {
+	for (let attempt = 0; attempt < TRANSIENT_READ_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			const released = await removeStorageSaveLockIfOwnerMatches(lock.lockPath, {
+				token: lock.token,
+				fingerprint: lock.fingerprint,
+			});
+			if (!released) {
+				log.warn("Skipped account storage lock release because ownership changed", {
+					lockPath: lock.lockPath,
+				});
+			}
+			return;
+		} catch (error) {
+			if (!isTransientReadError(error) || attempt + 1 >= TRANSIENT_READ_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, TRANSIENT_READ_RETRY_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
+	}
+}
+
+async function withStorageSaveFileLock<T>(
+	path: string,
+	task: () => Promise<T>,
+): Promise<T> {
+	const lock = await acquireStorageSaveFileLock(path);
+	let taskError: unknown;
+	try {
+		return await task();
+	} catch (error) {
+		taskError = error;
+		throw error;
+	} finally {
+		try {
+			await releaseStorageSaveFileLock(lock);
+		} catch (releaseError) {
+			if (taskError !== undefined) {
+				log.warn("Failed to release account storage lock after save error", {
+					lockPath: lock.lockPath,
+					error: String(releaseError),
+				});
+				// Preserve the original task failure and avoid throwing from finally.
+			} else {
+				log.warn("Failed to release account storage lock after successful save", {
+					lockPath: lock.lockPath,
+					error: String(releaseError),
+				});
+			}
+		}
+	}
+}
+
+function rememberKnownStorageRevision(path: string, revision: string | null): void {
+	knownStorageRevisionByPath.set(path, revision);
+}
+
+function forgetKnownStorageRevision(path: string): void {
+	knownStorageRevisionByPath.delete(path);
+}
+
+async function rememberKnownStorageRevisionFromDisk(path: string): Promise<void> {
+	try {
+		const revision = await readStorageRevision(path);
+		rememberKnownStorageRevision(path, revision);
+	} catch (error) {
+		log.warn("Failed to refresh known storage revision from disk", {
+			path,
+			error: String(error),
+		});
+		forgetKnownStorageRevision(path);
+	}
+}
+
 type AccountsJournalEntry = {
 	version: 1;
 	createdAt: number;
@@ -571,6 +894,9 @@ export function getLastAccountsSaveTimestamp(): number {
 }
 
 export function setStoragePath(projectPath: string | null): void {
+  if (currentStoragePath) {
+    forgetKnownStorageRevision(currentStoragePath);
+  }
   if (!projectPath) {
     currentStoragePath = null;
     currentLegacyProjectStoragePath = null;
@@ -600,6 +926,9 @@ export function setStoragePath(projectPath: string | null): void {
 }
 
 export function setStoragePathDirect(path: string | null): void {
+  if (currentStoragePath) {
+    forgetKnownStorageRevision(currentStoragePath);
+  }
   currentStoragePath = path;
   currentLegacyProjectStoragePath = null;
   currentLegacyWorktreeStoragePath = null;
@@ -1119,10 +1448,14 @@ async function loadAccountsFromPath(path: string): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
+	rawChecksum: string;
 }> {
-	const content = await fs.readFile(path, "utf-8");
+	const content = await readFileUtf8WithTransientRetry(path);
 	const data = JSON.parse(content) as unknown;
-	return await parseAndNormalizeStorage(data);
+	return {
+		...(await parseAndNormalizeStorage(data)),
+		rawChecksum: computeSha256(content),
+	};
 }
 
 async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 | null> {
@@ -1163,7 +1496,9 @@ async function loadAccountsInternal(
 		: null;
 
   try {
-    const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
+    const { normalized, storedVersion, schemaErrors, rawChecksum } = await loadAccountsFromPath(path);
+    const requiresMigrationPersist =
+      normalized !== null && storedVersion !== normalized.version && persistMigration !== null;
     if (schemaErrors.length > 0) {
       log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
     }
@@ -1204,6 +1539,7 @@ async function loadAccountsInternal(
 						});
 					}
 				}
+				await rememberKnownStorageRevisionFromDisk(path);
 				return backup.normalized;
 			} catch (backupError) {
 				const backupCode = (backupError as NodeJS.ErrnoException).code;
@@ -1217,6 +1553,11 @@ async function loadAccountsInternal(
 		}
 	}
 
+	if (requiresMigrationPersist) {
+		await rememberKnownStorageRevisionFromDisk(path);
+	} else {
+		rememberKnownStorageRevision(path, rawChecksum);
+	}
     return normalized;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -1224,6 +1565,7 @@ async function loadAccountsInternal(
       throw error;
     }
     if (code === "ENOENT" && migratedLegacyStorage) {
+      rememberKnownStorageRevision(path, null);
       return migratedLegacyStorage;
     }
 
@@ -1239,6 +1581,7 @@ async function loadAccountsInternal(
 				});
 			}
 		}
+		await rememberKnownStorageRevisionFromDisk(path);
 		return recoveredFromWal;
 	}
 
@@ -1265,6 +1608,7 @@ async function loadAccountsInternal(
 							});
 						}
 					}
+					await rememberKnownStorageRevisionFromDisk(path);
 					return backup.normalized;
 				}
 			} catch (backupError) {
@@ -1281,7 +1625,10 @@ async function loadAccountsInternal(
 
     if (code !== "ENOENT") {
       log.error("Failed to load account storage", { error: String(error) });
+      forgetKnownStorageRevision(path);
+      return null;
     }
+	rememberKnownStorageRevision(path, null);
     return null;
   }
 }
@@ -1345,125 +1692,156 @@ async function serializeStorageForPersist(storage: AccountStorageV3): Promise<Se
 	}
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
-  const path = getStoragePath();
-  const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-  const tempPath = `${path}.${uniqueSuffix}.tmp`;
-  const walPath = getAccountsWalPath(path);
-  let persistedSecretRefs: PersistedSecretRef[] = [];
+async function saveAccountsUnlocked(
+	storage: AccountStorageV3,
+	options?: { expectedRevision?: string | null },
+): Promise<void> {
+	const path = getStoragePath();
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${path}.${uniqueSuffix}.tmp`;
+	const walPath = getAccountsWalPath(path);
+	let persistedSecretRefs: PersistedSecretRef[] = [];
 
-  try {
-    await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await ensureGitignore(path);
-
-	if (looksLikeSyntheticFixtureStorage(storage)) {
-		try {
-			const existing = await loadNormalizedStorageFromPath(path, "existing account storage");
-			if (existing && existing.accounts.length > 0 && !looksLikeSyntheticFixtureStorage(existing)) {
-				throw new StorageError(
-					"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
-					"EINVALID",
-					path,
-					"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
-				);
+	try {
+		await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
+		await ensureGitignore(path);
+		await withStorageSaveFileLock(path, async () => {
+			const expectedRevision =
+				options && Object.hasOwn(options, "expectedRevision")
+					? options.expectedRevision
+					: knownStorageRevisionByPath.has(path)
+						? knownStorageRevisionByPath.get(path)
+						: undefined;
+			if (expectedRevision !== undefined) {
+				const currentRevision = await readStorageRevision(path);
+				if (currentRevision !== expectedRevision) {
+					throw new StorageError(
+						"Detected concurrent account storage modification; refusing stale overwrite",
+						"ECONFLICT",
+						path,
+						"Account storage changed on disk since it was loaded. Reload accounts and retry.",
+					);
+				}
 			}
-		} catch (error) {
-			if (error instanceof StorageError) {
-				throw error;
-			}
-			// Ignore existing-file probe failures and continue with normal save flow.
-		}
-	}
 
-	if (storageBackupEnabled && existsSync(path)) {
-		try {
-			await createRotatingAccountsBackup(path);
-		} catch (backupError) {
-			log.warn("Failed to create account storage backup", {
+			if (looksLikeSyntheticFixtureStorage(storage)) {
+				try {
+					const existing = await loadNormalizedStorageFromPath(path, "existing account storage");
+					if (existing && existing.accounts.length > 0 && !looksLikeSyntheticFixtureStorage(existing)) {
+						throw new StorageError(
+							"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
+							"EINVALID",
+							path,
+							"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
+						);
+					}
+				} catch (error) {
+					if (error instanceof StorageError) {
+						throw error;
+					}
+					// Ignore existing-file probe failures and continue with normal save flow.
+				}
+			}
+
+			if (storageBackupEnabled && existsSync(path)) {
+				try {
+					await createRotatingAccountsBackup(path);
+				} catch (backupError) {
+					log.warn("Failed to create account storage backup", {
+						path,
+						backupPath: getAccountsBackupPath(path),
+						error: String(backupError),
+					});
+				}
+			}
+
+			const serialized = await serializeStorageForPersist(storage);
+			const content = serialized.content;
+			persistedSecretRefs = serialized.persistedSecretRefs;
+			const journalEntry: AccountsJournalEntry = {
+				version: 1,
+				createdAt: Date.now(),
 				path,
-				backupPath: getAccountsBackupPath(path),
-				error: String(backupError),
+				checksum: computeSha256(content),
+				content,
+			};
+			await fs.writeFile(walPath, JSON.stringify(journalEntry), {
+				encoding: "utf-8",
+				mode: 0o600,
 			});
-		}
-	}
+			await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 
-	const serialized = await serializeStorageForPersist(storage);
-	const content = serialized.content;
-	persistedSecretRefs = serialized.persistedSecretRefs;
-	const journalEntry: AccountsJournalEntry = {
-		version: 1,
-		createdAt: Date.now(),
-		path,
-		checksum: computeSha256(content),
-		content,
-	};
-	await fs.writeFile(walPath, JSON.stringify(journalEntry), {
-		encoding: "utf-8",
-		mode: 0o600,
-	});
-    await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+			const stats = await fs.stat(tempPath);
+			if (stats.size === 0) {
+				const emptyError = Object.assign(new Error("File written but size is 0"), {
+					code: "EEMPTY",
+				});
+				throw emptyError;
+			}
 
-    const stats = await fs.stat(tempPath);
-    if (stats.size === 0) {
-      const emptyError = Object.assign(new Error("File written but size is 0"), { code: "EEMPTY" });
-      throw emptyError;
-    }
-
-    // Retry rename with exponential backoff for Windows EPERM/EBUSY
-    let lastError: NodeJS.ErrnoException | null = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await fs.rename(tempPath, path);
-		lastAccountsSaveTimestamp = Date.now();
-		persistedSecretRefs = [];
+			// Retry rename with exponential backoff for Windows EPERM/EBUSY
+			let lastError: NodeJS.ErrnoException | null = null;
+			for (let attempt = 0; attempt < 5; attempt++) {
+				try {
+					await fs.rename(tempPath, path);
+					lastAccountsSaveTimestamp = Date.now();
+					rememberKnownStorageRevision(path, computeSha256(content));
+					persistedSecretRefs = [];
+					try {
+						await fs.unlink(walPath);
+					} catch {
+						// Best effort cleanup.
+					}
+					return;
+				} catch (renameError) {
+					const code = (renameError as NodeJS.ErrnoException).code;
+					if (code === "EPERM" || code === "EBUSY") {
+						lastError = renameError as NodeJS.ErrnoException;
+						await new Promise((resolve) => setTimeout(resolve, 10 * Math.pow(2, attempt)));
+						continue;
+					}
+					throw renameError;
+				}
+			}
+			if (lastError) {
+				throw lastError;
+			}
+		});
+	} catch (error) {
 		try {
-			await fs.unlink(walPath);
+			await fs.unlink(tempPath);
 		} catch {
-			// Best effort cleanup.
+			// Ignore cleanup failure.
 		}
-        return;
-      } catch (renameError) {
-        const code = (renameError as NodeJS.ErrnoException).code;
-        if (code === "EPERM" || code === "EBUSY") {
-          lastError = renameError as NodeJS.ErrnoException;
-          await new Promise(r => setTimeout(r, 10 * Math.pow(2, attempt)));
-          continue;
-        }
-        throw renameError;
-      }
-    }
-    if (lastError) throw lastError;
-  } catch (error) {
-    try {
-      await fs.unlink(tempPath);
-    } catch {
-      // Ignore cleanup failure.
-    }
-	if (persistedSecretRefs.length > 0) {
-		await Promise.allSettled(
-			persistedSecretRefs.map((refs) => deleteAccountSecrets(refs, { force: true })),
+		if (persistedSecretRefs.length > 0) {
+			await Promise.allSettled(
+				persistedSecretRefs.map((refs) => deleteAccountSecrets(refs, { force: true })),
+			);
+		}
+
+		if (error instanceof StorageError) {
+			throw error;
+		}
+
+		const err = error as NodeJS.ErrnoException;
+		const code = err?.code || "UNKNOWN";
+		const hint = formatStorageErrorHint(error, path);
+
+		log.error("Failed to save accounts", {
+			path,
+			code,
+			message: err?.message,
+			hint,
+		});
+
+		throw new StorageError(
+			`Failed to save accounts: ${err?.message || "Unknown error"}`,
+			code,
+			path,
+			hint,
+			err instanceof Error ? err : undefined,
 		);
 	}
-
-    const err = error as NodeJS.ErrnoException;
-    const code = err?.code || "UNKNOWN";
-    const hint = formatStorageErrorHint(error, path);
-
-    log.error("Failed to save accounts", {
-      path,
-      code,
-      message: err?.message,
-      hint,
-    });
-
-    throw new StorageError(
-      `Failed to save accounts: ${err?.message || "Unknown error"}`,
-      code,
-      path,
-      hint,
-      err instanceof Error ? err : undefined
-    );
-  }
 }
 
 export async function withAccountStorageTransaction<T>(
@@ -1571,6 +1949,7 @@ export async function clearAccounts(): Promise<void> {
 	const path = getStoragePath();
 	return withStorageSerializedFileLock(path, async () => {
 		const walPath = getAccountsWalPath(path);
+		const lockPath = getAccountsSaveLockPath(path);
 		const backupPaths = getAccountsBackupRecoveryCandidates(path);
     const clearPath = async (targetPath: string): Promise<void> => {
       try {
@@ -1592,7 +1971,13 @@ export async function clearAccounts(): Promise<void> {
       for (const backupPath of backupPaths) {
         await clearPersistedAccountSecrets(backupPath);
       }
-      await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
+      await Promise.all([
+		clearPath(path),
+		clearPath(walPath),
+		clearPath(lockPath),
+		...backupPaths.map(clearPath),
+	  ]);
+	  rememberKnownStorageRevision(path, null);
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.
     }

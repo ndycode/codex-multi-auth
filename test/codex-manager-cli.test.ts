@@ -246,6 +246,7 @@ describe("codex manager cli commands", () => {
 		});
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
+		saveQuotaCacheMock.mockResolvedValue(true);
 		selectMock.mockResolvedValue(undefined);
 		checkAndRecordIdempotencyKeyMock.mockResolvedValue({ replayed: false });
 		restoreTTYDescriptors();
@@ -298,6 +299,75 @@ describe("codex manager cli commands", () => {
 		expect(payload.command).toBe("forecast");
 		expect(payload.summary.total).toBe(2);
 		expect(payload.recommendation.recommendedIndex).toBe(0);
+	});
+
+	it("returns non-zero in forecast json mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "forecast", "--live", "--json"]);
+		expect(exitCode).toBe(1);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			quotaCachePersisted: boolean;
+			probeErrors: string[];
+		};
+		expect(payload.command).toBe("forecast");
+		expect(payload.quotaCachePersisted).toBe(false);
+		expect(payload.probeErrors.some((entry) => entry.includes("Failed to persist quota cache changes"))).toBe(true);
+	});
+
+	it("returns non-zero in forecast text mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "forecast", "--live"]);
+		expect(exitCode).toBe(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("prints implemented 40-feature matrix", async () => {
@@ -444,6 +514,71 @@ describe("codex manager cli commands", () => {
 		expect(payload.dryRun).toBe(true);
 		expect(payload.changed).toBe(true);
 		expect(payload.reports[0]?.outcome).toBe("warning-soft-failure");
+	});
+
+	it("returns non-zero in fix json mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--json"]);
+		expect(exitCode).toBe(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			quotaCachePersisted: boolean;
+		};
+		expect(payload.command).toBe("fix");
+		expect(payload.quotaCachePersisted).toBe(false);
+	});
+
+	it("returns non-zero in fix text mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--dry-run"]);
+		expect(exitCode).toBe(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("persists rotated tokens during auth check and syncs active codex selection", async () => {

@@ -8,13 +8,65 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { join } from "node:path";
 import { MESSAGE_STORAGE, PART_STORAGE, THINKING_TYPES, META_TYPES } from "./constants.js";
 import type { StoredMessageMeta, StoredPart, StoredTextPart } from "./types.js";
+import { createLogger } from "../logger.js";
+import { isRecord } from "../utils.js";
 
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const CORRUPTION_WARNING_LIMIT = 25;
+const log = createLogger("recovery-storage");
 
 function validatePathId(id: string, name: string): void {
   if (!SAFE_ID_PATTERN.test(id)) {
     throw new Error(`Invalid ${name}: contains unsafe characters`);
   }
+}
+
+function isStoredMessageMeta(value: unknown): value is StoredMessageMeta {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    typeof value.sessionID === "string" &&
+    value.sessionID.length > 0 &&
+    (value.role === "assistant" || value.role === "user")
+  );
+}
+
+function isStoredPart(value: unknown): value is StoredPart {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    typeof value.sessionID === "string" &&
+    value.sessionID.length > 0 &&
+    typeof value.messageID === "string" &&
+    value.messageID.length > 0 &&
+    typeof value.type === "string" &&
+    value.type.length > 0
+  );
+}
+
+function createCorruptionLogger(): (kind: string, target: string, error?: unknown) => void {
+  let warningCount = 0;
+  let suppressionNotified = false;
+
+  return (kind: string, target: string, error?: unknown): void => {
+    if (warningCount >= CORRUPTION_WARNING_LIMIT) {
+      if (!suppressionNotified) {
+        suppressionNotified = true;
+        log.warn("Suppressing further corrupted recovery artifact warnings", {
+          limit: CORRUPTION_WARNING_LIMIT,
+        });
+      }
+      return;
+    }
+    warningCount += 1;
+    log.warn("Skipped corrupted recovery artifact", {
+      kind,
+      target,
+      error: error instanceof Error ? error.message : error ? String(error) : "invalid-shape",
+    });
+  };
 }
 
 // =============================================================================
@@ -48,8 +100,11 @@ export function getMessageDir(sessionID: string): string {
         return sessionPath;
       }
     }
-  } catch {
-    // Ignore read errors
+  } catch (error) {
+    log.debug("Failed to enumerate message storage root", {
+      storage: MESSAGE_STORAGE,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   return "";
@@ -63,18 +118,29 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
   const messageDir = getMessageDir(sessionID);
   if (!messageDir || !existsSync(messageDir)) return [];
 
+  const logCorruption = createCorruptionLogger();
   const messages: StoredMessageMeta[] = [];
   try {
     for (const file of readdirSync(messageDir)) {
       if (!file.endsWith(".json")) continue;
       try {
         const content = readFileSync(join(messageDir, file), "utf-8");
-        messages.push(JSON.parse(content));
-      } catch {
+        const parsed = JSON.parse(content) as unknown;
+        if (!isStoredMessageMeta(parsed)) {
+          logCorruption("message-meta", file);
+          continue;
+        }
+        messages.push(parsed);
+      } catch (error) {
+        logCorruption("message-meta", file, error);
         continue;
       }
     }
-  } catch {
+  } catch (error) {
+    log.debug("Failed to read message directory", {
+      messageDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return [];
   }
 
@@ -95,18 +161,29 @@ export function readParts(messageID: string): StoredPart[] {
   const partDir = join(PART_STORAGE, messageID);
   if (!existsSync(partDir)) return [];
 
+  const logCorruption = createCorruptionLogger();
   const parts: StoredPart[] = [];
   try {
     for (const file of readdirSync(partDir)) {
       if (!file.endsWith(".json")) continue;
       try {
         const content = readFileSync(join(partDir, file), "utf-8");
-        parts.push(JSON.parse(content));
-      } catch {
+        const parsed = JSON.parse(content) as unknown;
+        if (!isStoredPart(parsed)) {
+          logCorruption("message-part", file);
+          continue;
+        }
+        parts.push(parsed);
+      } catch (error) {
+        logCorruption("message-part", file, error);
         continue;
       }
     }
-  } catch {
+  } catch (error) {
+    log.debug("Failed to read part directory", {
+      partDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return [];
   }
 
@@ -269,6 +346,7 @@ export function stripThinkingParts(messageID: string): boolean {
   const partDir = join(PART_STORAGE, messageID);
   if (!existsSync(partDir)) return false;
 
+  const logCorruption = createCorruptionLogger();
   let anyRemoved = false;
   try {
     for (const file of readdirSync(partDir)) {
@@ -276,16 +354,26 @@ export function stripThinkingParts(messageID: string): boolean {
       try {
         const filePath = join(partDir, file);
         const content = readFileSync(filePath, "utf-8");
-        const part = JSON.parse(content) as StoredPart;
+        const parsed = JSON.parse(content) as unknown;
+        if (!isStoredPart(parsed)) {
+          logCorruption("strip-thinking", filePath);
+          continue;
+        }
+        const part = parsed as StoredPart;
         if (THINKING_TYPES.has(part.type)) {
           unlinkSync(filePath);
           anyRemoved = true;
         }
-      } catch {
+      } catch (error) {
+        logCorruption("strip-thinking", file, error);
         continue;
       }
     }
-  } catch {
+  } catch (error) {
+    log.debug("Failed to scan part directory for thinking strip", {
+      partDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return false;
   }
 
@@ -357,6 +445,7 @@ export function replaceEmptyTextParts(messageID: string, replacementText: string
   const partDir = join(PART_STORAGE, messageID);
   if (!existsSync(partDir)) return false;
 
+  const logCorruption = createCorruptionLogger();
   let anyReplaced = false;
   try {
     for (const file of readdirSync(partDir)) {
@@ -364,7 +453,12 @@ export function replaceEmptyTextParts(messageID: string, replacementText: string
       try {
         const filePath = join(partDir, file);
         const content = readFileSync(filePath, "utf-8");
-        const part = JSON.parse(content) as StoredPart;
+        const parsed = JSON.parse(content) as unknown;
+        if (!isStoredPart(parsed)) {
+          logCorruption("replace-empty-text", filePath);
+          continue;
+        }
+        const part = parsed as StoredPart;
 
         if (part.type === "text") {
           const textPart = part as StoredTextPart;
@@ -375,11 +469,16 @@ export function replaceEmptyTextParts(messageID: string, replacementText: string
             anyReplaced = true;
           }
         }
-      } catch {
+      } catch (error) {
+        logCorruption("replace-empty-text", file, error);
         continue;
       }
     }
-  } catch {
+  } catch (error) {
+    log.debug("Failed to scan part directory for empty text replacement", {
+      partDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return false;
   }
 

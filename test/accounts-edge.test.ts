@@ -415,4 +415,216 @@ describe("accounts edge branches", () => {
     expect(account?.accountIdSource).toBe("manual");
     expect(account?.email).toBe("edge@example.com");
   });
+
+  it("retries on storage conflicts and merges concurrent disk accounts", async () => {
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+      }),
+    ]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-concurrent",
+        email: "concurrent@example.com",
+      }),
+    ]);
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{ refreshToken: string }>;
+    };
+    const refreshTokens = retriedPayload.accounts.map((account) => account.refreshToken);
+    expect(refreshTokens).toContain("refresh-local");
+    expect(refreshTokens).toContain("refresh-concurrent");
+
+    await manager.saveToDisk();
+    const postConflictPayload = mockSaveAccounts.mock.calls[2]?.[0] as {
+      accounts: Array<{ refreshToken: string }>;
+    };
+    const persistedTokens = postConflictPayload.accounts.map((account) => account.refreshToken);
+    expect(persistedTokens).toContain("refresh-local");
+    expect(persistedTokens).toContain("refresh-concurrent");
+  });
+
+  it("does not let undefined local fields clobber concrete disk values during conflict merge", async () => {
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+      }),
+    ]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+        enabled: false,
+        rateLimitResetTimes: {
+          "gpt-5-codex:requests": { resetAt: Date.now() + 60_000, reason: "quota-limit" },
+        },
+      }),
+    ]);
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{
+        refreshToken: string;
+        enabled?: boolean;
+        rateLimitResetTimes?: Record<string, unknown>;
+      }>;
+    };
+    const mergedLocal = retriedPayload.accounts.find(
+      (account) => account.refreshToken === "refresh-local",
+    );
+    expect(mergedLocal?.enabled).toBe(false);
+    expect(mergedLocal?.rateLimitResetTimes).toEqual(
+      latestDisk.accounts[0]?.rateLimitResetTimes,
+    );
+  });
+
+  it("keeps disk-issued credentials when conflict merge matches by account identity", async () => {
+    const localExpiresAt = Date.now() + 1_000;
+    const rotatedExpiresAt = Date.now() + 60_000;
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-stale",
+        accessToken: "access-stale",
+        expiresAt: localExpiresAt,
+        email: "identity@example.com",
+        accountId: "account-identity-1",
+      }),
+    ]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-rotated",
+        accessToken: "access-rotated",
+        expiresAt: rotatedExpiresAt,
+        email: "identity@example.com",
+        accountId: "account-identity-1",
+      }),
+    ]);
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{
+        accountId?: string;
+        refreshToken: string;
+        accessToken?: string;
+        expiresAt?: number;
+      }>;
+    };
+    const mergedAccount = retriedPayload.accounts.find(
+      (account) => account.accountId === "account-identity-1",
+    );
+    expect(mergedAccount?.refreshToken).toBe("refresh-rotated");
+    expect(mergedAccount?.accessToken).toBe("access-rotated");
+    expect(mergedAccount?.expiresAt).toBe(rotatedExpiresAt);
+    expect(retriedPayload.accounts.some((account) => account.refreshToken === "refresh-stale")).toBe(
+      false,
+    );
+  });
+
+  it("prefers fresher timestamp and rate-limit reset values during conflict merge", async () => {
+    const localNow = Date.now();
+    const localAccount = buildStoredAccount({
+      refreshToken: "refresh-local",
+      email: "local@example.com",
+      addedAt: localNow - 10_000,
+      lastUsed: localNow - 5_000,
+      coolingDownUntil: localNow + 1_000,
+      rateLimitResetTimes: {
+        "gpt-5-codex:requests": localNow + 1_200,
+        "gpt-5.2:requests": localNow + 400,
+      },
+    });
+    const stored = buildStored([localAccount]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-local",
+        email: "local@example.com",
+        addedAt: localNow - 1_000,
+        lastUsed: localNow - 200,
+        coolingDownUntil: localNow + 5_000,
+        rateLimitResetTimes: {
+          "gpt-5-codex:requests": localNow + 9_000,
+          "codex-max:requests": localNow + 2_000,
+        },
+      }),
+    ]);
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{
+        refreshToken: string;
+        addedAt?: number;
+        lastUsed?: number;
+        coolingDownUntil?: number;
+        rateLimitResetTimes?: Record<string, number>;
+      }>;
+    };
+    const mergedLocal = retriedPayload.accounts.find(
+      (account) => account.refreshToken === "refresh-local",
+    );
+    expect(mergedLocal?.addedAt).toBe(localNow - 1_000);
+    expect(mergedLocal?.lastUsed).toBe(localNow - 200);
+    expect(mergedLocal?.coolingDownUntil).toBe(localNow + 5_000);
+    expect(mergedLocal?.rateLimitResetTimes).toEqual({
+      "gpt-5-codex:requests": localNow + 9_000,
+      "gpt-5.2:requests": localNow + 400,
+      "codex-max:requests": localNow + 2_000,
+    });
+  });
 });

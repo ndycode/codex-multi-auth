@@ -1635,6 +1635,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									{
 										model,
 										promptCacheKey: effectivePromptCacheKey,
+										idempotencyKey: requestCorrelationId,
 									},
 								);
 								const quotaScheduleKey = `${entitlementAccountKey}:${model ?? modelFamily}`;
@@ -2223,6 +2224,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											{
 												model,
 												promptCacheKey: effectivePromptCacheKey,
+												idempotencyKey: requestCorrelationId,
 											},
 										);
 

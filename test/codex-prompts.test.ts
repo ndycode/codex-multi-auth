@@ -298,6 +298,29 @@ describe("Codex Prompts Module", () => {
 				expect(result).toBe("fallback instructions");
 			});
 
+			it("should fall back to HTML releases page when API request times out", async () => {
+				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+				mockFetch.mockRejectedValueOnce(
+					Object.assign(new Error("request timeout"), { name: "AbortError" }),
+				);
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					url: "https://github.com/openai/codex/releases/tag/rust-v0.55.0",
+					text: () => Promise.resolve(""),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("timeout fallback instructions"),
+					headers: { get: () => "fallback-timeout-etag" },
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2-codex");
+				expect(result).toBe("timeout fallback instructions");
+				expect(mockFetch).toHaveBeenCalledTimes(3);
+			});
+
 			it("should parse tag from HTML content if URL parsing fails", async () => {
 				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
 				mockFetch.mockResolvedValueOnce({
@@ -405,6 +428,56 @@ describe("Codex Prompts Module", () => {
 
 				const result = await getCodexInstructions("gpt-5.2");
 				expect(result).toBe("disk cache fallback");
+			});
+
+			it("should fall back to disk cache when prompt fetch times out", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						// malformed metadata forces the timeout path instead of stale-while-revalidate.
+						return Promise.resolve("{ malformed");
+					}
+					return Promise.resolve("disk timeout fallback");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.80.0" }),
+				});
+				mockFetch.mockRejectedValueOnce(
+					Object.assign(new Error("request timeout"), { name: "AbortError" }),
+				);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("disk timeout fallback");
+				expect(mockFetch).toHaveBeenCalledTimes(2);
+			});
+
+			it("should fall back to disk cache when metadata read hits transient windows EPERM", async () => {
+				let metaReadFailures = 0;
+				mockedReadFile.mockImplementation((filePath) => {
+					const path = typeof filePath === "string" ? filePath : String(filePath);
+					if (path.includes("-meta.json")) {
+						if (metaReadFailures === 0) {
+							metaReadFailures += 1;
+							return Promise.reject(
+								Object.assign(new Error("win fs busy"), { code: "EPERM" }),
+							);
+						}
+						return Promise.resolve("{ malformed");
+					}
+					return Promise.resolve("disk timeout fallback");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.80.1" }),
+				});
+				mockFetch.mockRejectedValueOnce(
+					Object.assign(new Error("request timeout"), { name: "AbortError" }),
+				);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("disk timeout fallback");
+				expect(metaReadFailures).toBe(1);
+				expect(mockFetch).toHaveBeenCalledTimes(2);
 			});
 
 			it("should fall back to bundled instructions when all else fails", async () => {
