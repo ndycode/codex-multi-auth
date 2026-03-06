@@ -55,6 +55,7 @@ import {
 	getAutoResume,
 	getToastDurationMs,
 	getPerProjectAccounts,
+	getTelemetryEnabled,
 	getEmptyResponseMaxRetries,
 	getEmptyResponseRetryDelayMs,
 	getPidOffsetEnabled,
@@ -102,6 +103,7 @@ import {
 } from "./lib/logger.js";
 import { auditLog, AuditAction, AuditOutcome } from "./lib/audit.js";
 import { checkAuthRateLimit, recordAuthAttempt, resetAuthRateLimit } from "./lib/auth-rate-limit.js";
+import { recordTelemetryEvent } from "./lib/telemetry.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
 import {
@@ -1210,6 +1212,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const emptyResponseMaxRetries = getEmptyResponseMaxRetries(pluginConfig);
 				const emptyResponseRetryDelayMs = getEmptyResponseRetryDelayMs(pluginConfig);
 				const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
+				const telemetryEnabled = getTelemetryEnabled(pluginConfig);
+				const emitPluginTelemetry = (
+					event: string,
+					outcome: "start" | "success" | "failure" | "recovery" | "info",
+					details?: Record<string, unknown>,
+				): void => {
+					if (!telemetryEnabled) return;
+					void recordTelemetryEvent({
+						source: "plugin",
+						event,
+						outcome,
+						details,
+					});
+				};
 				const effectiveUserConfig = fastSessionEnabled
 					? applyFastSessionDefaults(userConfig)
 					: userConfig;
@@ -1555,6 +1571,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 				runtimeMetrics.failedRequests++;
 				runtimeMetrics.accountRotations++;
 				runtimeMetrics.lastError = (err as Error)?.message ?? String(err);
+				emitPluginTelemetry("request.auth_refresh_failed", "failure", {
+					accountIndex: account.index + 1,
+					modelFamily,
+					model,
+					error: (err as Error)?.message ?? String(err),
+				});
 				const failures = accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index);
 
@@ -1772,6 +1794,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 								runtimeMetrics.networkErrors++;
 								runtimeMetrics.accountRotations++;
 								runtimeMetrics.lastError = errorMsg;
+								emitPluginTelemetry("request.network_error", "failure", {
+									accountIndex: account.index + 1,
+									modelFamily,
+									model,
+									error: errorMsg,
+								});
 								const policy = evaluateFailurePolicy(
 									{ kind: "network", failoverMode },
 									{ networkCooldownMs: networkErrorCooldownMs },
@@ -2040,6 +2068,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 							runtimeMetrics.serverErrors++;
 							runtimeMetrics.accountRotations++;
 							runtimeMetrics.lastError = `HTTP ${response.status}`;
+							emitPluginTelemetry("request.server_error", "failure", {
+								accountIndex: account.index + 1,
+								modelFamily,
+								model,
+								status: response.status,
+							});
 							const serverRetryAfterMs = parseRetryAfterHintMs(response.headers);
 							const policy = evaluateFailurePolicy(
 								{ kind: "server", failoverMode, serverRetryAfterMs: serverRetryAfterMs ?? undefined },
@@ -2159,6 +2193,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 																														}
 																														runtimeMetrics.failedRequests++;
 																														runtimeMetrics.lastError = `HTTP ${response.status}`;
+																														emitPluginTelemetry("request.http_error", "failure", {
+																															accountIndex: account.index + 1,
+																															modelFamily,
+																															model,
+																															status: response.status,
+																														});
 																														return errorResponse;
 																											}
 
@@ -2323,6 +2363,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 												`Recovered stream via failover attempt ${failoverAttempt} using account ${fallbackAccount.index + 1}.`,
 												{ emittedBytes },
 											);
+											emitPluginTelemetry("request.stream_failover_recovered", "recovery", {
+												accountIndex: fallbackAccount.index + 1,
+												fromAccountIndex: account.index + 1,
+												failoverAttempt,
+												emittedBytes,
+												modelFamily,
+												model,
+											});
 											return fallbackResponse;
 										} catch (streamFailoverError) {
 											accountManager.refundToken(fallbackAccount, modelFamily, model);
@@ -2337,10 +2385,21 @@ while (attempted.size < Math.max(1, accountCount)) {
 													emittedBytes,
 													error:
 														streamFailoverError instanceof Error
-															? streamFailoverError.message
-															: String(streamFailoverError),
+														? streamFailoverError.message
+														: String(streamFailoverError),
 												},
 											);
+											emitPluginTelemetry("request.stream_failover_attempt_failed", "failure", {
+												accountIndex: fallbackAccount.index + 1,
+												failoverAttempt,
+												emittedBytes,
+												modelFamily,
+												model,
+												error:
+													streamFailoverError instanceof Error
+														? streamFailoverError.message
+														: String(streamFailoverError),
+											});
 											continue;
 										} finally {
 											clearTimeout(fallbackTimeoutId);
@@ -2443,6 +2502,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 						},
 					);
 					runtimeMetrics.lastError = null;
+					if (sameAccountRetryCount > 0) {
+						emitPluginTelemetry("request.recovered_after_retry", "recovery", {
+							accountIndex: successAccountForResponse.index + 1,
+							retryCount: sameAccountRetryCount,
+							modelFamily,
+							model,
+						});
+					}
 					if (lastCodexCliActiveSyncIndex !== successAccountForResponse.index) {
 						void accountManager.syncCodexCliActiveSelectionForIndex(successAccountForResponse.index);
 						lastCodexCliActiveSyncIndex = successAccountForResponse.index;
@@ -2530,6 +2597,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 										waitMs,
 									},
 								);
+								emitPluginTelemetry("request.accounts_exhausted", "failure", {
+									accountCount: count,
+									waitMs,
+									modelFamily,
+									model,
+									status: waitMs > 0 ? 429 : 503,
+								});
 								return new Response(JSON.stringify({ error: { message } }), {
 									status: waitMs > 0 ? 429 : 503,
 											headers: {

@@ -36,3 +36,4 @@ export * from "./data-redaction.js";
 export * from "./authorization.js";
 export * from "./background-jobs.js";
 export * from "./idempotency.js";
+export * from "./telemetry.js";

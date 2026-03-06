@@ -9,6 +9,8 @@
 - No custom analytics pipeline in this repository.
 - No project-owned remote database.
 - Network calls are limited to required OAuth/backend/update endpoints.
+- Local structured telemetry is written to `~/.codex/multi-auth/logs/product-telemetry.jsonl`.
+- Set `CODEX_AUTH_TELEMETRY_ENABLED=0` (or `telemetryEnabled: false`) to disable local telemetry writes.
 
 ---
 
@@ -22,6 +24,7 @@
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` | Cached quota snapshots |
 | Background DLQ | `~/.codex/multi-auth/background-job-dlq.jsonl` | Failed background jobs after retry exhaustion |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` | Optional diagnostics |
+| Local telemetry ledger | `~/.codex/multi-auth/logs/product-telemetry.jsonl` | Local event timeline for CLI/plugin outcomes |
 | Prompt/cache files | `~/.codex/multi-auth/cache/` | Cached prompt/template metadata |
 | Codex CLI state | `~/.codex/accounts.json`, `~/.codex/auth.json` | Official Codex CLI files |
 
@@ -105,6 +108,7 @@ rm -f ~/.codex/multi-auth/openai-codex-accounts.json
 rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/quota-cache.json
 rm -rf ~/.codex/multi-auth/logs/codex-plugin
+rm -f ~/.codex/multi-auth/logs/product-telemetry.jsonl*
 rm -rf ~/.codex/multi-auth/cache
 # Override-root cleanup examples (if overrides are set):
 [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && [ -d "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin"
@@ -119,6 +123,7 @@ Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAc
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\logs\product-telemetry.jsonl*" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
 # Override-root cleanup examples (if overrides are set):
 if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\\*" -Recurse -Force -ErrorAction SilentlyContinue }

@@ -42,6 +42,7 @@ describe("PluginConfigSchema", () => {
 			rateLimitToastDebounceMs: 30000,
 			toastDurationMs: 5000,
 			perProjectAccounts: true,
+			telemetryEnabled: true,
 			sessionRecovery: true,
 			autoResume: false,
 			fetchTimeoutMs: 60000,

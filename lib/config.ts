@@ -148,6 +148,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	rateLimitToastDebounceMs: 60_000,
 	toastDurationMs: 5_000,
 	perProjectAccounts: true,
+	telemetryEnabled: true,
 	sessionRecovery: true,
 	autoResume: true,
 	parallelProbing: false,
@@ -1066,6 +1067,14 @@ export function getPerProjectAccounts(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_PER_PROJECT_ACCOUNTS",
 		pluginConfig.perProjectAccounts,
+		true,
+	);
+}
+
+export function getTelemetryEnabled(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_TELEMETRY_ENABLED",
+		pluginConfig.telemetryEnabled,
 		true,
 	);
 }

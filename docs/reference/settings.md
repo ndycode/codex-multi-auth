@@ -74,6 +74,7 @@ Examples:
 - `sessionAffinityTtlMs`
 - `sessionAffinityMaxEntries`
 - `perProjectAccounts`
+- `telemetryEnabled`
 
 ### Rotation and Quota
 
@@ -133,6 +134,7 @@ Common operator overrides:
   Rotation & Quota override for `retryAllAccountsAbsoluteCeilingMs` (ms, `0` to `24h`, `0` = unlimited).
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
+- `CODEX_AUTH_TELEMETRY_ENABLED`
 - `CODEX_AUTH_ENCRYPTION_KEY`
 - `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY`
 - `CODEX_AUTH_ROLE`

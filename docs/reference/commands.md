@@ -39,6 +39,7 @@ Compatibility aliases are supported:
 | `codex auth fix` | Apply safe account storage fixes |
 | `codex auth doctor` | Run diagnostics and optional repairs |
 | `codex auth rotate-secrets` | Re-encrypt account secrets using current encryption key |
+| `codex auth telemetry` | Show local telemetry summary and recent events |
 
 ---
 
@@ -46,7 +47,7 @@ Compatibility aliases are supported:
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
-| `--json` | verify-flagged, forecast, report, fix, doctor, rotate-secrets | Print machine-readable output |
+| `--json` | verify-flagged, forecast, report, fix, doctor, rotate-secrets, telemetry | Print machine-readable output |
 | `--live` | forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
 | `--model <model>` | forecast, report, fix | Specify model for live probe paths |
@@ -56,6 +57,8 @@ Compatibility aliases are supported:
 | `--page-size <n>` | list, status (`--json`) | Page size for JSON list output (1-200) |
 | `--cursor <cursor>` | list, status (`--json`) | Cursor token for JSON list pagination |
 | `--idempotency-key <key>` | rotate-secrets | Safe retry key for automation |
+| `--since-hours <hours>` | telemetry | Include events newer than this many hours |
+| `--limit <n>` | telemetry | Max events to include in report |
 
 ---
 
