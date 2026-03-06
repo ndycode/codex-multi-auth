@@ -1618,6 +1618,69 @@ describe("codex manager cli commands", () => {
 		expect(payload.accounts.disabled).toBe(1);
 	});
 
+	it("uses a valid access token for report --live without forcing refresh", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "live-report@example.net",
+					accountId: "acc_live_report",
+					refreshToken: "refresh-live-report",
+					accessToken: "access-live-report",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "error",
+			message: "refresh token rejected",
+			reason: "unknown",
+			statusCode: 401,
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: { usedPercent: 12, windowMinutes: 300, resetAtMs: now + 1_000 },
+			secondary: { usedPercent: 8, windowMinutes: 10080, resetAtMs: now + 2_000 },
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "report", "--live", "--json"]);
+
+		expect(exitCode).toBe(0);
+		expect(queuedRefreshMock).not.toHaveBeenCalled();
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledWith({
+			accountId: "acc_live_report",
+			accessToken: "access-live-report",
+			model: "gpt-5-codex",
+		});
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			liveProbe: boolean;
+			forecast: {
+				summary: { ready: number; unavailable: number };
+				accounts: Array<{
+					availability: string;
+					liveQuota?: { status: number };
+					refreshFailure?: { statusCode?: number };
+				}>;
+			};
+		};
+		expect(payload.liveProbe).toBe(true);
+		expect(payload.forecast.summary.ready).toBe(1);
+		expect(payload.forecast.summary.unavailable).toBe(0);
+		expect(payload.forecast.accounts[0]?.availability).toBe("ready");
+		expect(payload.forecast.accounts[0]?.liveQuota?.status).toBe(200);
+		expect(payload.forecast.accounts[0]?.refreshFailure).toBeUndefined();
+	});
+
 	it("drives interactive settings hub across sections and persists dashboard/backend changes", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
