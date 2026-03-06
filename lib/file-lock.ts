@@ -1,12 +1,4 @@
-import {
-	openSync,
-	writeFileSync,
-	closeSync,
-	readFileSync,
-	unlinkSync,
-	statSync,
-	promises as fs,
-} from "node:fs";
+import { openSync, writeFileSync, closeSync, unlinkSync, statSync, readFileSync, promises as fs } from "node:fs";
 
 export interface FileLockOptions {
 	maxAttempts?: number;
@@ -30,12 +22,27 @@ const DEFAULT_BASE_DELAY_MS = 25;
 const DEFAULT_MAX_DELAY_MS = 1_000;
 const DEFAULT_STALE_AFTER_MS = 5 * 60_000;
 const RETRYABLE_CODES = new Set(["EEXIST", "EBUSY", "EPERM"]);
-const LOCK_FILE_ENCODING: BufferEncoding = "utf8";
 
-interface LockFileMetadata {
-	pid: number;
-	acquiredAt: number;
-	token: string;
+function isPidAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		return code === "EPERM";
+	}
+}
+
+function parseLockPid(rawLock: string): number | undefined {
+	const firstLine = rawLock.split(/\r?\n/, 1)[0] ?? "";
+	if (!firstLine) return undefined;
+	try {
+		const parsed = JSON.parse(firstLine) as { pid?: unknown };
+		return typeof parsed.pid === "number" && Number.isInteger(parsed.pid) ? parsed.pid : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function sleep(ms: number): Promise<void> {
@@ -52,67 +59,19 @@ function getRetryDelayMs(
 	return Math.max(baseDelayMs, backoff - jitter);
 }
 
-function createLockToken(): string {
-	return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function serializeLockMetadata(token: string): string {
-	const metadata: LockFileMetadata = {
-		pid: process.pid,
-		acquiredAt: Date.now(),
-		token,
-	};
-	return `${JSON.stringify(metadata)}\n`;
-}
-
-function parseLockToken(content: string): string | null {
-	const trimmed = content.trim();
-	if (!trimmed) {
-		return null;
-	}
-	try {
-		const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-		return typeof parsed.token === "string" && parsed.token.length > 0 ? parsed.token : null;
-	} catch {
-		return null;
-	}
-}
-
-async function isOwnedLockFile(path: string, expectedToken: string): Promise<boolean> {
-	let content: string;
-	try {
-		content = await fs.readFile(path, LOCK_FILE_ENCODING);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return false;
-		}
-		throw error;
-	}
-	const token = parseLockToken(content);
-	return token === expectedToken;
-}
-
-function isOwnedLockFileSync(path: string, expectedToken: string): boolean {
-	let content: string;
-	try {
-		content = readFileSync(path, LOCK_FILE_ENCODING);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return false;
-		}
-		throw error;
-	}
-	const token = parseLockToken(content);
-	return token === expectedToken;
-}
-
 async function removeIfStale(path: string, staleAfterMs: number): Promise<boolean> {
 	try {
 		const stats = await fs.stat(path);
 		if (Date.now() - stats.mtimeMs <= staleAfterMs) {
 			return false;
+		}
+		try {
+			const pid = parseLockPid(await fs.readFile(path, "utf8"));
+			if (pid !== undefined && isPidAlive(pid)) {
+				return false;
+			}
+		} catch {
+			// If metadata can't be read, fall back to age-only cleanup.
 		}
 		await fs.unlink(path);
 		return true;
@@ -122,6 +81,33 @@ async function removeIfStale(path: string, staleAfterMs: number): Promise<boolea
 			return true;
 		}
 		return false;
+	}
+}
+
+function throwOriginalOrCleanupError(
+	originalError: unknown,
+	cleanupError: unknown,
+): never {
+	if (originalError instanceof Error) {
+		throw originalError;
+	}
+	if (cleanupError instanceof Error) {
+		throw cleanupError;
+	}
+	throw new Error(String(originalError ?? cleanupError));
+}
+
+async function cleanupIncompleteLockFile(path: string, originalError?: unknown): Promise<void> {
+	try {
+		await fs.unlink(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			if (originalError !== undefined) {
+				throwOriginalOrCleanupError(originalError, error);
+			}
+			throw error;
+		}
 	}
 }
 
@@ -137,11 +123,13 @@ export async function acquireFileLock(
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
 			const handle = await fs.open(path, "wx", 0o600);
-			const token = createLockToken();
 			let writeError: unknown;
 			let closeError: unknown;
 			try {
-				await handle.writeFile(serializeLockMetadata(token), LOCK_FILE_ENCODING);
+				await handle.writeFile(
+					`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
+					"utf8",
+				);
 			} catch (error) {
 				writeError = error;
 			}
@@ -150,29 +138,26 @@ export async function acquireFileLock(
 			} catch (error) {
 				closeError = error;
 			}
-			if (writeError !== undefined) {
-				throw writeError;
-			}
-			if (closeError !== undefined) {
-				throw closeError;
+			if (writeError !== undefined || closeError !== undefined) {
+				const originalFailure = writeError ?? closeError;
+				await cleanupIncompleteLockFile(path, originalFailure);
+				throwOriginalOrCleanupError(originalFailure, originalFailure);
 			}
 			let released = false;
 			return {
 				path,
 				release: async () => {
 					if (released) return;
-					released = true;
 					try {
-						const owned = await isOwnedLockFile(path, token);
-						if (!owned) {
-							return;
-						}
 						await fs.unlink(path);
+						released = true;
 					} catch (error) {
 						const code = (error as NodeJS.ErrnoException).code;
-						if (code !== "ENOENT") {
-							throw error;
+						if (code === "ENOENT") {
+							released = true;
+							return;
 						}
+						throw error;
 					}
 				},
 			};
@@ -201,6 +186,14 @@ function removeIfStaleSync(path: string, staleAfterMs: number): boolean {
 		if (Date.now() - stats.mtimeMs <= staleAfterMs) {
 			return false;
 		}
+		try {
+			const pid = parseLockPid(readFileSync(path, "utf8"));
+			if (pid !== undefined && isPidAlive(pid)) {
+				return false;
+			}
+		} catch {
+			// If metadata can't be read, fall back to age-only cleanup.
+		}
 		unlinkSync(path);
 		return true;
 	} catch (error) {
@@ -209,6 +202,20 @@ function removeIfStaleSync(path: string, staleAfterMs: number): boolean {
 			return true;
 		}
 		return false;
+	}
+}
+
+function cleanupIncompleteLockFileSync(path: string, originalError?: unknown): void {
+	try {
+		unlinkSync(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			if (originalError !== undefined) {
+				throwOriginalOrCleanupError(originalError, error);
+			}
+			throw error;
+		}
 	}
 }
 
@@ -224,11 +231,14 @@ export function acquireFileLockSync(
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 		try {
 			const fd = openSync(path, "wx", 0o600);
-			const token = createLockToken();
 			let writeError: unknown;
 			let closeError: unknown;
 			try {
-				writeFileSync(fd, serializeLockMetadata(token), LOCK_FILE_ENCODING);
+				writeFileSync(
+					fd,
+					`${JSON.stringify({ pid: process.pid, acquiredAt: Date.now() })}\n`,
+					"utf8",
+				);
 			} catch (error) {
 				writeError = error;
 			}
@@ -237,29 +247,26 @@ export function acquireFileLockSync(
 			} catch (error) {
 				closeError = error;
 			}
-			if (writeError !== undefined) {
-				throw writeError;
-			}
-			if (closeError !== undefined) {
-				throw closeError;
+			if (writeError !== undefined || closeError !== undefined) {
+				const originalFailure = writeError ?? closeError;
+				cleanupIncompleteLockFileSync(path, originalFailure);
+				throwOriginalOrCleanupError(originalFailure, originalFailure);
 			}
 			let released = false;
 			return {
 				path,
 				release: () => {
 					if (released) return;
-					released = true;
 					try {
-						const owned = isOwnedLockFileSync(path, token);
-						if (!owned) {
-							return;
-						}
 						unlinkSync(path);
+						released = true;
 					} catch (error) {
 						const code = (error as NodeJS.ErrnoException).code;
-						if (code !== "ENOENT") {
-							throw error;
+						if (code === "ENOENT") {
+							released = true;
+							return;
 						}
+						throw error;
 					}
 				},
 			};

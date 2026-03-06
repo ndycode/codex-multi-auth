@@ -67,6 +67,14 @@ Run before version bump, tag, or publish workflow:
 4. verify changelog and release notes alignment
 5. confirm PR checks are green on the release branch
 
+### Upgrade Notes (PR #32)
+
+- Gate ordering was updated so `npm run coverage` runs before `npm run build`.
+- Two required supply-chain checks were added to the standard local sequence:
+  - `npm run audit:ci`
+  - `npm run license:check`
+- If you maintain local CI wrappers or pre-push scripts, update them to use the order above and rerun once to refresh baselines.
+
 * * *
 
 ## Auth/Account Change Test Matrix

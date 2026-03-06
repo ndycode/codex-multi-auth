@@ -4,9 +4,17 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const lockPath = resolve(process.cwd(), "package-lock.json");
+function normalizeSpdxToken(value) {
+	return value
+		.trim()
+		.toUpperCase()
+		.replace(/\+$/g, "")
+		.replace(/-(ONLY|OR-LATER)$/g, "");
+}
+
 const denyList = (process.env.CODEX_LICENSE_DENYLIST ?? "GPL-2.0,GPL-3.0,AGPL-3.0")
 	.split(",")
-	.map((value) => value.trim().toUpperCase())
+	.map((value) => normalizeSpdxToken(value))
 	.filter((value) => value.length > 0);
 const failOnUnknown = process.env.CODEX_LICENSE_FAIL_ON_UNKNOWN === "1";
 
@@ -48,15 +56,9 @@ function extractRawLicense(record) {
 function extractLicenseTokens(rawLicense) {
 	return rawLicense
 		.toUpperCase()
-		.split(/[^A-Z0-9.-]+/g)
-		.map((token) => token.trim())
-		.filter(
-			(token) =>
-				token.length > 0 &&
-				token !== "AND" &&
-				token !== "OR" &&
-				token !== "WITH",
-		);
+		.split(/[^A-Z0-9.+-]+/)
+		.map((value) => normalizeSpdxToken(value))
+		.filter((value) => value.length > 0);
 }
 
 for (const [packagePath, metadata] of Object.entries(packages)) {
@@ -71,9 +73,9 @@ for (const [packagePath, metadata] of Object.entries(packages)) {
 		unknown.push(`${name}@${version}`);
 		continue;
 	}
-	const licenseTokens = new Set(extractLicenseTokens(normalized));
+	const tokens = new Set(extractLicenseTokens(normalized));
 	for (const denied of denyList) {
-		if (licenseTokens.has(denied)) {
+		if (tokens.has(denied)) {
 			violations.push(`${name}@${version} (${rawLicense})`);
 			break;
 		}

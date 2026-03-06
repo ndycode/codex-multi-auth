@@ -225,9 +225,7 @@ import { enforceDataRetention } from "./lib/data-retention.js";
 // eslint-disable-next-line @typescript-eslint/require-await
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
-	void withAccountStorageTransaction(async (_loadedStorage, _persist) => {
-		await enforceDataRetention();
-	}).catch((error) => {
+	void enforceDataRetention().catch((error) => {
 		logWarn("Data retention cleanup failed", {
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -275,21 +273,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		redirectUri: string,
 	): Promise<TokenResult> => {
 		const rateLimitKey = "oauth:code-exchange";
-		try {
-			checkAuthRateLimit(rateLimitKey);
-			recordAuthAttempt(rateLimitKey);
-			const tokens = await exchangeAuthorizationCode(code, verifier, redirectUri);
-			if (tokens.type === "success") {
-				resetAuthRateLimit(rateLimitKey);
-			}
-			return tokens;
-		} catch (error) {
-			return {
-				type: "failed",
-				reason: "http_error",
-				message: error instanceof Error ? error.message : String(error),
-			};
+		checkAuthRateLimit(rateLimitKey);
+		recordAuthAttempt(rateLimitKey);
+		const tokens = await exchangeAuthorizationCode(code, verifier, redirectUri);
+		if (tokens.type === "success") {
+			resetAuthRateLimit(rateLimitKey);
 		}
+		return tokens;
 	};
 
 		const parseEnvInt = (value: string | undefined): number | undefined => {
@@ -359,6 +349,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			sanitized[name] = rawValue;
 		}
 		return sanitized;
+	};
+
+	const toSafeAuditResource = (rawUrl: unknown): string => {
+		try {
+			const parsed = new URL(String(rawUrl));
+			return `${parsed.origin}${parsed.pathname}`;
+		} catch {
+			const sanitized = String(rawUrl).split(/[?#]/, 1)[0];
+			return sanitized && sanitized.length > 0 ? sanitized : "unknown";
+		}
 	};
 
 	type RuntimeMetrics = {
@@ -1694,13 +1694,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 								} else if (abortSignal && onUserAbort) {
 									abortSignal.addEventListener("abort", onUserAbort, { once: true });
 								}
+								const safeAuditResource = toSafeAuditResource(url);
 
 							try {
 								runtimeMetrics.totalRequests++;
 								auditLog(
 									AuditAction.REQUEST_START,
 									account.email ?? `account-${account.index + 1}`,
-									url,
+									safeAuditResource,
 									AuditOutcome.SUCCESS,
 									{
 										model,
@@ -1732,14 +1733,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 										);
 									}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
-								const safeAuditResource = (() => {
-									try {
-										const parsed = new URL(url);
-										return `${parsed.origin}${parsed.pathname}`;
-									} catch {
-										return url;
-									}
-								})();
 								const networkErrorType =
 									networkError instanceof Error ? networkError.name : "unknown_error";
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
@@ -2419,7 +2412,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					auditLog(
 						AuditAction.REQUEST_SUCCESS,
 						successAccountForResponse.email ?? `account-${successAccountForResponse.index + 1}`,
-						url,
+						safeAuditResource,
 						AuditOutcome.SUCCESS,
 						{
 							model,
@@ -2470,10 +2463,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
+								const safePluginAuditResource = toSafeAuditResource(url);
 								auditLog(
 									AuditAction.REQUEST_FAILURE,
 									"plugin",
-									url,
+									safePluginAuditResource,
 									AuditOutcome.FAILURE,
 									{
 										model,

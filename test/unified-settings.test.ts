@@ -2,27 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
-
-async function removeWithRetry(
-	targetPath: string,
-	options: { recursive?: boolean; force?: boolean },
-): Promise<void> {
-	for (let attempt = 0; attempt < 6; attempt += 1) {
-		try {
-			await fs.rm(targetPath, options);
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") return;
-			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
-				throw error;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
-		}
-	}
-}
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("unified settings", () => {
 	let tempDir: string;
@@ -295,6 +275,68 @@ describe("unified settings", () => {
 			} finally {
 				readSpy.mockRestore();
 			}
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+			vi.resetModules();
+		}
+	});
+
+	it("does not fail async writes when lock release throws EPERM", async () => {
+		vi.resetModules();
+		const acquireFileLockMock = vi.fn(async () => ({
+			path: "mock-settings.lock",
+			release: async () => {
+				const error = new Error("perm locked") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			},
+		}));
+		const acquireFileLockSyncMock = vi.fn(() => ({
+			path: "mock-settings.lock",
+			release: () => undefined,
+		}));
+		vi.doMock("../lib/file-lock.js", () => ({
+			acquireFileLock: acquireFileLockMock,
+			acquireFileLockSync: acquireFileLockSyncMock,
+		}));
+
+		try {
+			const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
+				"../lib/unified-settings.js"
+			);
+			await expect(saveUnifiedPluginConfig({ codexMode: true, retries: 2 })).resolves.toBeUndefined();
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 2 });
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+			vi.resetModules();
+		}
+	});
+
+	it("does not fail sync writes when lock release throws EBUSY", async () => {
+		vi.resetModules();
+		const acquireFileLockMock = vi.fn(async () => ({
+			path: "mock-settings.lock",
+			release: async () => undefined,
+		}));
+		const acquireFileLockSyncMock = vi.fn(() => ({
+			path: "mock-settings.lock",
+			release: () => {
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			},
+		}));
+		vi.doMock("../lib/file-lock.js", () => ({
+			acquireFileLock: acquireFileLockMock,
+			acquireFileLockSync: acquireFileLockSyncMock,
+		}));
+
+		try {
+			const { saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
+				"../lib/unified-settings.js"
+			);
+			expect(() => saveUnifiedPluginConfigSync({ codexMode: false, retries: 1 })).not.toThrow();
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 1 });
 		} finally {
 			vi.doUnmock("../lib/file-lock.js");
 			vi.resetModules();

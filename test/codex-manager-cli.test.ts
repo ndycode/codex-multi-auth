@@ -20,8 +20,6 @@ const savePluginConfigMock = vi.fn();
 const selectMock = vi.fn();
 const rotateStoredSecretEncryptionMock = vi.fn();
 const checkAndRecordIdempotencyKeyMock = vi.fn();
-const markIdempotencySucceededMock = vi.fn();
-const clearIdempotencyOnFailureMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -89,8 +87,6 @@ vi.mock("../lib/storage.js", () => ({
 
 vi.mock("../lib/idempotency.js", () => ({
 	checkAndRecordIdempotencyKey: checkAndRecordIdempotencyKeyMock,
-	markIdempotencySucceeded: markIdempotencySucceededMock,
-	clearIdempotencyOnFailure: clearIdempotencyOnFailureMock,
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -211,8 +207,6 @@ describe("codex manager cli commands", () => {
 		selectMock.mockReset();
 		rotateStoredSecretEncryptionMock.mockReset();
 		checkAndRecordIdempotencyKeyMock.mockReset();
-		markIdempotencySucceededMock.mockReset();
-		clearIdempotencyOnFailureMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -2152,6 +2146,25 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("rejects partially numeric --page-size values", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--page-size",
+				"10junk",
+			]);
+			expect(exitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("--page-size must be between 1 and 200");
+			expect(loadAccountsMock).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("applies idempotency key for rotate-secrets automation retries", async () => {
 		checkAndRecordIdempotencyKeyMock
 			.mockResolvedValueOnce({ replayed: false })
@@ -2194,44 +2207,48 @@ describe("codex manager cli commands", () => {
 			expect(secondPayload.rotated).toBe(true);
 			expect(secondPayload.replayed).toBe(true);
 			expect(rotateStoredSecretEncryptionMock).toHaveBeenCalledTimes(1);
-			expect(markIdempotencySucceededMock).toHaveBeenCalledTimes(1);
-			expect(clearIdempotencyOnFailureMock).not.toHaveBeenCalled();
 		} finally {
 			logSpy.mockRestore();
 		}
 	});
 
-	it("clears pending idempotency key when rotate-secrets fails", async () => {
-		checkAndRecordIdempotencyKeyMock.mockResolvedValue({ replayed: false });
-		rotateStoredSecretEncryptionMock.mockRejectedValueOnce(new Error("user@example.com"));
-		const previousRedaction = process.env.CODEX_AUTH_REDACT_JSON_OUTPUT;
-		process.env.CODEX_AUTH_REDACT_JSON_OUTPUT = "1";
-
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+	it("rejects option-smuggling for --idempotency-key", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
 			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 			const exitCode = await runCodexMultiAuthCli([
 				"auth",
 				"rotate-secrets",
-				"--json",
 				"--idempotency-key",
-				"rotation-fail",
+				"--json",
 			]);
 			expect(exitCode).toBe(1);
-			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as { error: string };
-			expect(payload.error).not.toContain("user@example.com");
-			expect(markIdempotencySucceededMock).not.toHaveBeenCalled();
-			expect(clearIdempotencyOnFailureMock).toHaveBeenCalledWith(
-				"codex.auth.rotate-secrets",
-				"rotation-fail",
-			);
+			expect(errorSpy).toHaveBeenCalledWith("Missing value for --idempotency-key");
+			expect(rotateStoredSecretEncryptionMock).not.toHaveBeenCalled();
 		} finally {
-			logSpy.mockRestore();
-			if (previousRedaction === undefined) {
-				delete process.env.CODEX_AUTH_REDACT_JSON_OUTPUT;
-			} else {
-				process.env.CODEX_AUTH_REDACT_JSON_OUTPUT = previousRedaction;
-			}
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("redacts rotate-secrets failure details in non-json output", async () => {
+		rotateStoredSecretEncryptionMock.mockRejectedValue(
+			new Error(
+				"failed for person@example.com Bearer sk_test+/123== refresh_token=rt+/456==",
+			),
+		);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "rotate-secrets"]);
+			expect(exitCode).toBe(1);
+			const rendered = String(errorSpy.mock.calls[0]?.[0] ?? "");
+			expect(rendered).toContain("Failed to rotate stored secrets:");
+			expect(rendered).toContain("***REDACTED***");
+			expect(rendered).not.toContain("person@example.com");
+			expect(rendered).not.toContain("sk_test+/123==");
+			expect(rendered).not.toContain("rt+/456==");
+		} finally {
+			errorSpy.mockRestore();
 		}
 	});
 

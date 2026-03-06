@@ -110,6 +110,7 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
+let accountFileMutex: Promise<void> = Promise.resolve();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
   const previousMutex = storageMutex;
@@ -118,6 +119,23 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
     releaseLock = resolve;
   });
   return previousMutex.then(fn).finally(() => releaseLock());
+}
+
+function withAccountFileMutex<T>(fn: () => Promise<T>): Promise<T> {
+	const previousMutex = accountFileMutex;
+	let releaseLock: () => void;
+	accountFileMutex = new Promise<void>((resolve) => {
+		releaseLock = resolve;
+	});
+	return previousMutex.then(fn).finally(() => releaseLock());
+}
+
+async function withStorageSerializedFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	// Serialize file-lock acquisition to keep save ordering deterministic.
+	// Acquisition order: file-queue mutex -> file lock -> storage mutex.
+	return withAccountFileMutex(() =>
+		withAccountFileLock(path, () => withStorageLock(fn)),
+	);
 }
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
@@ -329,16 +347,38 @@ function getAccountsLockPath(path: string): string {
 	return `${path}.lock`;
 }
 
-async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-	await fs.mkdir(dirname(path), { recursive: true });
-	const lock = await acquireFileLock(getAccountsLockPath(path), ACCOUNT_STORAGE_LOCK_OPTIONS);
+async function releaseStorageLockFallback(lockPath: string): Promise<void> {
 	try {
-		return await fn();
-	} finally {
-		await lock.release();
+		await fs.rm(lockPath, { force: true });
+	} catch (error) {
+		log.debug("Best-effort lock cleanup fallback failed", {
+			path: lockPath,
+			error: String(error),
+		});
 	}
 }
 
+async function withAccountFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	const lockPath = getAccountsLockPath(path);
+	await fs.mkdir(dirname(path), { recursive: true });
+	const lock = await acquireFileLock(lockPath, ACCOUNT_STORAGE_LOCK_OPTIONS);
+	try {
+		return await fn();
+	} finally {
+		try {
+			await lock.release();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				log.warn("Failed to release account storage lock", {
+					path: lockPath,
+					error: String(error),
+				});
+				await releaseStorageLockFallback(lockPath);
+			}
+		}
+	}
+}
 async function copyFileWithRetry(
 	sourcePath: string,
 	destinationPath: string,
@@ -1263,19 +1303,18 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 }
 
 export async function withAccountStorageTransaction<T>(
-	handler: (
+  handler: (
     current: AccountStorageV3 | null,
     persist: (storage: AccountStorageV3) => Promise<void>,
   ) => Promise<T>,
 ): Promise<T> {
 	const path = getStoragePath();
-	return withStorageLock(async () =>
-		withAccountFileLock(path, async () => {
-			const current = await loadAccountsInternal(saveAccountsUnlocked);
-			return handler(current, saveAccountsUnlocked);
-		}),
-	);
+	return withStorageSerializedFileLock(path, async () => {
+		const current = await loadAccountsInternal(saveAccountsUnlocked);
+		return handler(current, saveAccountsUnlocked);
+	});
 }
+
 
 /**
  * Persists account storage to disk using atomic write (temp file + rename).
@@ -1286,12 +1325,11 @@ export async function withAccountStorageTransaction<T>(
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
 	const path = getStoragePath();
-	return withStorageLock(async () =>
-		withAccountFileLock(path, async () => {
-			await saveAccountsUnlocked(storage);
-		}),
-	);
+	return withStorageSerializedFileLock(path, async () => {
+		await saveAccountsUnlocked(storage);
+	});
 }
+
 
 /**
  * Deletes the account storage file from disk.
@@ -1299,32 +1337,31 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  */
 export async function clearAccounts(): Promise<void> {
 	const path = getStoragePath();
-	return withStorageLock(async () =>
-		withAccountFileLock(path, async () => {
-			const walPath = getAccountsWalPath(path);
-			const backupPaths = getAccountsBackupRecoveryCandidates(path);
-			const clearPath = async (targetPath: string): Promise<void> => {
-				try {
-					await fs.unlink(targetPath);
-				} catch (error) {
-					const code = (error as NodeJS.ErrnoException).code;
-					if (code !== "ENOENT") {
-						log.error("Failed to clear account storage artifact", {
-							path: targetPath,
-							error: String(error),
-						});
-					}
-				}
-			};
+	return withStorageSerializedFileLock(path, async () => {
+		const walPath = getAccountsWalPath(path);
+		const backupPaths = getAccountsBackupRecoveryCandidates(path);
+    const clearPath = async (targetPath: string): Promise<void> => {
+      try {
+        await fs.unlink(targetPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") {
+          log.error("Failed to clear account storage artifact", {
+            path: targetPath,
+            error: String(error),
+          });
+        }
+      }
+    };
 
-			try {
-				await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
-			} catch {
-				// Individual path cleanup is already best-effort with per-artifact logging.
-			}
-		}),
-	);
+    try {
+      await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
+    } catch {
+      // Individual path cleanup is already best-effort with per-artifact logging.
+    }
+	});
 }
+
 
 function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 	if (!isRecord(data) || data.version !== 1 || !Array.isArray(data.accounts)) {
@@ -1340,10 +1377,8 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		let refreshToken: string;
 		try {
 			refreshToken = decryptStorageSecret(refreshTokenRaw, "flagged refresh token").value;
-		} catch (error) {
-			throw new Error("Failed to decrypt flagged refresh token", {
-				cause: error instanceof Error ? error : undefined,
-			});
+		} catch {
+			continue;
 		}
 
 		const flaggedAt = typeof rawAccount.flaggedAt === "number" ? rawAccount.flaggedAt : Date.now();
@@ -1435,7 +1470,7 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
 			log.error("Failed to load flagged account storage", { path, error: String(error) });
-			throw error;
+			return empty;
 		}
 	}
 
@@ -1608,12 +1643,13 @@ export async function rotateStoredSecretEncryption(): Promise<{
 		throw new Error("CODEX_AUTH_ENCRYPTION_KEY is required to rotate stored secrets");
 	}
 
-	let accountCount = 0;
-	const accounts = await loadAccounts();
-	if (accounts) {
-		accountCount = accounts.accounts.length;
-		await saveAccounts(accounts);
-	}
+	const accountCount = await withAccountStorageTransaction(async (current, persist) => {
+		if (!current) {
+			return 0;
+		}
+		await persist(current);
+		return current.accounts.length;
+	});
 
 	const flagged = await loadFlaggedAccounts();
 	const flaggedCount = flagged.accounts.length;
@@ -1626,3 +1662,5 @@ export async function rotateStoredSecretEncryption(): Promise<{
 		flaggedAccounts: flaggedCount,
 	};
 }
+
+

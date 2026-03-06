@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import * as fileLock from "../lib/file-lock.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { 
   deduplicateAccounts,
@@ -1573,6 +1574,105 @@ describe("storage", () => {
       expect(statSpy).toHaveBeenCalled();
 
       statSpy.mockRestore();
+    });
+
+    it("falls back to best-effort cleanup when lock.release throws EBUSY", async () => {
+      const now = Date.now();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+
+      const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockResolvedValue({
+        path: lockPath,
+        release: async () => {
+          const err = new Error("EBUSY release") as NodeJS.ErrnoException;
+          err.code = "EBUSY";
+          throw err;
+        },
+      });
+      const rmSpy = vi.spyOn(fs, "rm");
+      try {
+        await saveAccounts(storage);
+
+        expect(existsSync(testStoragePath)).toBe(true);
+        expect(rmSpy).toHaveBeenCalledWith(lockPath, { force: true });
+      } finally {
+        rmSpy.mockRestore();
+        acquireSpy.mockRestore();
+      }
+    });
+
+    it("falls back to best-effort cleanup when lock.release throws EPERM", async () => {
+      const now = Date.now();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+
+      const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockResolvedValue({
+        path: lockPath,
+        release: async () => {
+          const err = new Error("EPERM release") as NodeJS.ErrnoException;
+          err.code = "EPERM";
+          throw err;
+        },
+      });
+      const rmSpy = vi.spyOn(fs, "rm");
+      try {
+        await saveAccounts(storage);
+
+        expect(existsSync(testStoragePath)).toBe(true);
+        expect(rmSpy).toHaveBeenCalledWith(lockPath, { force: true });
+      } finally {
+        rmSpy.mockRestore();
+        acquireSpy.mockRestore();
+      }
+    });
+
+    it("serializes lock acquisition across concurrent saves", async () => {
+      const now = Date.now();
+      let activeLocks = 0;
+      let maxActiveLocks = 0;
+
+      const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockImplementation(async (path) => {
+        activeLocks += 1;
+        maxActiveLocks = Math.max(maxActiveLocks, activeLocks);
+        return {
+          path,
+          release: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            activeLocks -= 1;
+          },
+        };
+      });
+      try {
+        await Promise.all([
+          saveAccounts({
+            version: 3 as const,
+            activeIndex: 0,
+            accounts: [{ refreshToken: "token-1", addedAt: now + 1, lastUsed: now + 1 }],
+          }),
+          saveAccounts({
+            version: 3 as const,
+            activeIndex: 0,
+            accounts: [{ refreshToken: "token-2", addedAt: now + 2, lastUsed: now + 2 }],
+          }),
+          saveAccounts({
+            version: 3 as const,
+            activeIndex: 0,
+            accounts: [{ refreshToken: "token-3", addedAt: now + 3, lastUsed: now + 3 }],
+          }),
+        ]);
+
+        expect(maxActiveLocks).toBe(1);
+      } finally {
+        acquireSpy.mockRestore();
+      }
     });
 
     it("retries backup copyFile on transient EBUSY and succeeds", async () => {

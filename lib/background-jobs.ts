@@ -39,15 +39,14 @@ function toErrorMessage(error: unknown): string {
 function sanitizeErrorMessage(message: string): string {
 	return message
 		.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "***REDACTED***")
-		.replace(
-			/\b(?:access|refresh|id)?_?token(?:=|:)?\s*([A-Z0-9._-]+)/gi,
-			"token=***REDACTED***",
-		)
-		.replace(/\b(Bearer)\s+[A-Z0-9._-]+\b/gi, "$1 ***REDACTED***");
+		.replace(/\b(?:access|refresh|id)?_?token(?:=|:)?\s*\S+/gi, "token=***REDACTED***")
+		.replace(/\b(Bearer)\s+\S+/gi, "$1 ***REDACTED***");
 }
 
 function getDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
-	return Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));
+	const cappedDelay = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));
+	const jitterFactor = 1 + (Math.random() * 0.4 - 0.2);
+	return Math.max(1, Math.round(cappedDelay * jitterFactor));
 }
 
 function isRetryableByDefault(error: unknown): boolean {
@@ -56,21 +55,8 @@ function isRetryableByDefault(error: unknown): boolean {
 		return true;
 	}
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	if (typeof code === "string") {
-		return code === "EBUSY" || code === "EPERM" || code === "EAGAIN" || code === "ETIMEDOUT";
-	}
-	const candidate = error as
-		| { status?: unknown; statusCode?: unknown; response?: { status?: unknown } }
-		| undefined;
-	const status =
-		typeof candidate?.status === "number"
-			? candidate.status
-			: typeof candidate?.statusCode === "number"
-				? candidate.statusCode
-				: typeof candidate?.response?.status === "number"
-					? candidate.response.status
-					: null;
-	return status === 429;
+	if (typeof code !== "string") return false;
+	return code === "EBUSY" || code === "EPERM" || code === "EAGAIN" || code === "ETIMEDOUT";
 }
 
 async function appendDeadLetter(entry: DeadLetterEntry): Promise<void> {
@@ -102,7 +88,9 @@ export async function runBackgroundJobWithRetry<T>(options: BackgroundJobRetryOp
 	const retryable = options.retryable ?? isRetryableByDefault;
 
 	let lastError: unknown;
+	let attemptsMade = 0;
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		attemptsMade = attempt;
 		try {
 			return await options.task();
 		} catch (error) {
@@ -119,7 +107,7 @@ export async function runBackgroundJobWithRetry<T>(options: BackgroundJobRetryOp
 		version: 1,
 		timestamp: new Date().toISOString(),
 		job: options.name,
-		attempts: maxAttempts,
+		attempts: attemptsMade,
 		error: errorMessage,
 		...(options.context ? { context: redactForExternalOutput(options.context) } : {}),
 	};
@@ -135,7 +123,7 @@ export async function runBackgroundJobWithRetry<T>(options: BackgroundJobRetryOp
 
 	logWarn("Background job failed after retries", {
 		job: options.name,
-		attempts: maxAttempts,
+		attempts: attemptsMade,
 		error: errorMessage,
 	});
 	throw (lastError instanceof Error ? lastError : new Error(errorMessage));

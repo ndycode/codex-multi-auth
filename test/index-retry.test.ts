@@ -228,5 +228,51 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 		expect(response.status).toBe(200);
 	});
+
+	it("strips query and fragment when audit URL parsing falls back", async () => {
+		vi.resetModules();
+		const auditLogMock = vi.fn();
+		vi.doMock("../lib/audit.js", async () => {
+			const actual = await vi.importActual("../lib/audit.js");
+			return {
+				...(actual as Record<string, unknown>),
+				auditLog: auditLogMock,
+			};
+		});
+
+		try {
+			const { OpenAIAuthPlugin } = await import("../index.js");
+			const client = {
+				tui: { showToast: vi.fn() },
+				auth: { set: vi.fn() },
+			} as any;
+
+			const plugin = await OpenAIAuthPlugin({ client });
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+			const responsePromise = sdk.fetch("relative/path?token=super-secret#frag", {});
+			await vi.advanceTimersByTimeAsync(1500);
+			const response = await responsePromise;
+			expect(response.status).toBe(200);
+
+			const resources = auditLogMock.mock.calls.map((args) => String(args[2] ?? ""));
+			expect(resources.length).toBeGreaterThan(0);
+			for (const resource of resources) {
+				expect(resource).not.toContain("?");
+				expect(resource).not.toContain("#");
+				expect(resource).not.toContain("super-secret");
+			}
+		} finally {
+			vi.doUnmock("../lib/audit.js");
+			vi.resetModules();
+		}
+	});
 });
 
