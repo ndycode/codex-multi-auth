@@ -7,6 +7,7 @@ import {
   getFlaggedAccountsPath,
   getStoragePath,
   loadFlaggedAccounts,
+  rotateStoredSecretEncryption,
   saveFlaggedAccounts,
   setStoragePathDirect,
 } from "../lib/storage.js";
@@ -238,5 +239,83 @@ describe("flagged account storage", () => {
     expect(tmpArtifacts).toHaveLength(0);
 
     renameSpy.mockRestore();
+  });
+
+  it("preserves concurrent flagged-account updates during secret rotation", async () => {
+    const previousEncryptionKey = process.env.CODEX_AUTH_ENCRYPTION_KEY;
+    const previousPreviousKey = process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+    process.env.CODEX_AUTH_ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef";
+    delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+
+    await saveFlaggedAccounts({
+      version: 1,
+      accounts: [
+        {
+          refreshToken: "flagged-alpha",
+          flaggedAt: 1,
+          addedAt: 1,
+          lastUsed: 1,
+        },
+      ],
+    });
+
+    let concurrentSavePromise: Promise<void> | null = null;
+    const flaggedPath = getFlaggedAccountsPath();
+    const originalReadFile = fs.readFile.bind(fs);
+    const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (path, options) => {
+      if (
+        concurrentSavePromise === null &&
+        typeof path === "string" &&
+        path === flaggedPath &&
+        options === "utf-8"
+      ) {
+        queueMicrotask(() => {
+          concurrentSavePromise = saveFlaggedAccounts({
+            version: 1,
+            accounts: [
+              {
+                refreshToken: "flagged-alpha",
+                flaggedAt: 1,
+                addedAt: 1,
+                lastUsed: 1,
+              },
+              {
+                refreshToken: "flagged-beta",
+                flaggedAt: 2,
+                addedAt: 2,
+                lastUsed: 2,
+              },
+            ],
+          });
+        });
+      }
+      return originalReadFile(path, options);
+    });
+
+    try {
+      const result = await rotateStoredSecretEncryption();
+      if (concurrentSavePromise) {
+        await concurrentSavePromise;
+      }
+
+      const flagged = await loadFlaggedAccounts();
+      expect(result.flaggedAccounts).toBe(1);
+      expect(flagged.accounts.map((account) => account.refreshToken).sort()).toEqual([
+        "flagged-alpha",
+        "flagged-beta",
+      ]);
+    } finally {
+      readFileSpy.mockRestore();
+      if (previousEncryptionKey === undefined) {
+        delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
+      } else {
+        process.env.CODEX_AUTH_ENCRYPTION_KEY = previousEncryptionKey;
+      }
+      if (previousPreviousKey === undefined) {
+        delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+      } else {
+        process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = previousPreviousKey;
+      }
+    }
   });
 });

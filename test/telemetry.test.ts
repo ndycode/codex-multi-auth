@@ -175,4 +175,30 @@ describe("telemetry module", () => {
 		expect(existsSync(getTelemetryLogPath())).toBe(true);
 		expect(existsSync(`${getTelemetryLogPath()}.1`)).toBe(true);
 	});
+
+	it("preserves concurrent events across async log rotation", async () => {
+		configureTelemetry({ maxFileSizeBytes: 220, maxFiles: 16 });
+
+		await Promise.all(
+			Array.from({ length: 12 }, (_, index) =>
+				recordTelemetryEvent({
+					source: index % 2 === 0 ? "plugin" : "cli",
+					event: `rotation.concurrent.${index}`,
+					outcome: index % 3 === 0 ? "failure" : "success",
+					details: {
+						index,
+						message: "x".repeat(96),
+					},
+				}),
+			),
+		);
+
+		const events = await queryTelemetryEvents({ limit: 50 });
+
+		expect(events).toHaveLength(12);
+		expect(events.map((event) => event.event).sort()).toEqual(
+			Array.from({ length: 12 }, (_, index) => `rotation.concurrent.${index}`).sort(),
+		);
+		expect(existsSync(`${getTelemetryLogPath()}.1`)).toBe(true);
+	});
 });
