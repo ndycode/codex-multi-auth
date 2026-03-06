@@ -278,7 +278,7 @@ function normalizeFailureDetail(
 	const reasonLabel = formatReasonLabel(reason);
 	const raw = message?.trim() || reasonLabel || "refresh failed";
 	const structured = parseStructuredErrorMessage(raw);
-	const normalized = collapseWhitespace(structured ?? raw);
+	const normalized = collapseWhitespace(redactFreeformSecretText(structured ?? raw));
 	const bounded = normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
 	return bounded.length > 0 ? bounded : "refresh failed";
 }
@@ -287,7 +287,7 @@ function redactFreeformSecretText(message: string): string {
 	return message
 		.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "***REDACTED***")
 		.replace(
-			/\b(?:access|refresh|id)?_?token(?:=|:)?\s*([A-Z0-9._~+/=-]+)/gi,
+			/\b(?:access|refresh|id)?_?token(?:=|:)\s*([A-Z0-9._~+/=-]+)/gi,
 			"token=***REDACTED***",
 		)
 		.replace(/\b(Bearer)\s+[A-Z0-9._~+/=-]+\b/gi, "$1 ***REDACTED***");
@@ -754,6 +754,42 @@ function hasUsableAccessToken(
 	if (!account.accessToken) return false;
 	if (typeof account.expiresAt !== "number" || !Number.isFinite(account.expiresAt)) return false;
 	return account.expiresAt - now > ACCESS_TOKEN_FRESH_WINDOW_MS;
+}
+
+interface LiveProbeCredentials {
+	accessToken?: string;
+	accountId?: string;
+	refreshFailure?: TokenFailure;
+}
+
+async function resolveLiveProbeCredentials(
+	account: AccountMetadataV3,
+	now: number,
+): Promise<LiveProbeCredentials> {
+	if (hasUsableAccessToken(account, now)) {
+		return {
+			accessToken: account.accessToken,
+			accountId: account.accountId ?? extractAccountId(account.accessToken),
+		};
+	}
+
+	const refreshResult = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
+		accountId: account.accountId,
+		email: account.email,
+	});
+	if (refreshResult.type !== "success") {
+		return {
+			refreshFailure: {
+				...refreshResult,
+				message: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
+			},
+		};
+	}
+
+	return {
+		accessToken: refreshResult.access,
+		accountId: account.accountId ?? extractAccountId(refreshResult.access),
+	};
 }
 
 function hasLikelyInvalidRefreshToken(refreshToken: string | undefined): boolean {
@@ -2477,23 +2513,13 @@ async function runForecast(args: string[]): Promise<number> {
 		if (!account || !options.live) continue;
 		if (account.enabled === false) continue;
 
-		let probeAccessToken = account.accessToken;
-		let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
-		if (!hasUsableAccessToken(account, now)) {
-			const refreshResult = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
-				accountId: account.accountId,
-				email: account.email,
-			});
-			if (refreshResult.type !== "success") {
-				refreshFailures.set(i, {
-					...refreshResult,
-					message: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
-				});
-				continue;
-			}
-			probeAccessToken = refreshResult.access;
-			probeAccountId = account.accountId ?? extractAccountId(refreshResult.access);
+		const probe = await resolveLiveProbeCredentials(account, now);
+		if (probe.refreshFailure) {
+			refreshFailures.set(i, probe.refreshFailure);
+			continue;
 		}
+		const probeAccessToken = probe.accessToken;
+		const probeAccountId = probe.accountId;
 
 		if (!probeAccessToken || !probeAccountId) {
 			probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
@@ -2762,28 +2788,20 @@ async function runReport(args: string[]): Promise<number> {
 			const account = storage.accounts[i];
 			if (!account || account.enabled === false) continue;
 
-			const refreshResult = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
-				accountId: account.accountId,
-				email: account.email,
-			});
-			if (refreshResult.type !== "success") {
-				refreshFailures.set(i, {
-					...refreshResult,
-					message: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
-				});
+			const probe = await resolveLiveProbeCredentials(account, now);
+			if (probe.refreshFailure) {
+				refreshFailures.set(i, probe.refreshFailure);
 				continue;
 			}
-
-			const accountId = account.accountId ?? extractAccountId(refreshResult.access);
-			if (!accountId) {
+			if (!probe.accountId || !probe.accessToken) {
 				probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
 				continue;
 			}
 
 			try {
 				const liveQuota = await fetchCodexQuotaSnapshot({
-					accountId,
-					accessToken: refreshResult.access,
+					accountId: probe.accountId,
+					accessToken: probe.accessToken,
 					model: options.model,
 				});
 				liveQuotaByIndex.set(i, liveQuota);

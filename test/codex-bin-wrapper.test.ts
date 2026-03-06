@@ -44,6 +44,7 @@ function createWrapperFixture(): string {
 	mkdirSync(scriptDir, { recursive: true });
 	copyFileSync(join(repoRootDir, "scripts", "codex.js"), join(scriptDir, "codex.js"));
 	copyFileSync(join(repoRootDir, "scripts", "codex-routing.js"), join(scriptDir, "codex-routing.js"));
+	copyFileSync(join(repoRootDir, "scripts", "codex-model-config.js"), join(scriptDir, "codex-model-config.js"));
 	return fixtureRoot;
 }
 
@@ -71,6 +72,7 @@ function runWrapper(
 		[join(fixtureRoot, "scripts", "codex.js"), ...args],
 		{
 			encoding: "utf8",
+			cwd: fixtureRoot,
 			env: {
 				...process.env,
 				...extraEnv,
@@ -114,6 +116,7 @@ function runWrapperAsync(
 					...process.env,
 					...extraEnv,
 				},
+				cwd: fixtureRoot,
 				stdio: ["ignore", "pipe", "pipe"],
 			},
 		);
@@ -183,6 +186,53 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:--version");
+	});
+
+	it("normalizes alias models and injects derived CLI model config before forwarding", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		writeFileSync(
+			join(fixtureRoot, "Codex.json"),
+			JSON.stringify(
+				{
+					provider: {
+						openai: {
+							options: {
+								reasoningEffort: "medium",
+								reasoningSummary: "auto",
+								textVerbosity: "medium",
+							},
+							models: {
+								"gpt-5.2-high": {
+									options: {
+										reasoningEffort: "high",
+										reasoningSummary: "detailed",
+										textVerbosity: "medium",
+									},
+								},
+							},
+						},
+					},
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "HELLO", "--model", "gpt-5.2-high", "--json", "--skip-git-repo-check"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:exec HELLO --model gpt-5.2 --json --skip-git-repo-check");
+		expect(result.stdout).toContain('model_reasoning_effort="high"');
+		expect(result.stdout).toContain('model_reasoning_summary="detailed"');
+		expect(result.stdout).toContain('model_text_verbosity="medium"');
 	});
 
 	it("installs Windows codex shell guards to survive shim takeover", () => {
@@ -261,6 +311,7 @@ describe("codex bin wrapper", () => {
 		mkdirSync(scriptDir, { recursive: true });
 		copyFileSync(join(repoRootDir, "scripts", "codex.js"), join(scriptDir, "codex.js"));
 		copyFileSync(join(repoRootDir, "scripts", "codex-routing.js"), join(scriptDir, "codex-routing.js"));
+		copyFileSync(join(repoRootDir, "scripts", "codex-model-config.js"), join(scriptDir, "codex-model-config.js"));
 		writeFileSync(
 			join(globalShimDir, "codex-multi-auth.cmd"),
 			"@ECHO OFF\r\nREM real shim\r\n",

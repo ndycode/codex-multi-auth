@@ -324,4 +324,56 @@ describe("storage v4 keychain persistence", () => {
 		expect(secrets.has("acct-wal:access")).toBe(false);
 		await expect(fs.stat(walPath)).rejects.toThrow();
 	});
+
+	it("preserves existing plaintext storage when keychain mode is forced but unavailable", async () => {
+		vi.doMock("keytar", () => {
+			throw new Error("keytar unavailable");
+		});
+		const { getStoragePath, loadAccounts, saveAccounts } = await import("../lib/storage.js");
+		const storagePath = getStoragePath();
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acct_plain",
+							email: "plain@example.com",
+							refreshToken: "refresh-token-plain",
+							accessToken: "access-token-plain",
+							addedAt: 50,
+							lastUsed: 51,
+							enabled: true,
+						},
+					],
+					activeIndex: 0,
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+
+		const loaded = await loadAccounts();
+		expect(loaded?.accounts[0]?.refreshToken).toBe("refresh-token-plain");
+		if (!loaded) {
+			throw new Error("expected plaintext storage to load");
+		}
+
+		loaded.accounts[0] = {
+			...loaded.accounts[0],
+			lastUsed: 99,
+		};
+		await saveAccounts(loaded);
+
+		const persisted = JSON.parse(await fs.readFile(storagePath, "utf8")) as {
+			version: number;
+			accounts: Array<Record<string, unknown>>;
+		};
+		expect(persisted.version).toBe(3);
+		expect(persisted.accounts[0]?.refreshTokenRef).toBeUndefined();
+		const reloaded = await loadAccounts();
+		expect(reloaded?.accounts[0]?.lastUsed).toBe(99);
+	});
 });

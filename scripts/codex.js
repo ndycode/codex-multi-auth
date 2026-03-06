@@ -7,6 +7,7 @@ import { basename, delimiter, dirname, join, resolve as resolvePath } from "node
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+import { resolveCliModelSelection } from "./codex-model-config.js";
 
 function hydrateCliVersionEnv() {
 	try {
@@ -145,36 +146,76 @@ function forwardToRealCodex(codexBin, args) {
 	});
 }
 
-function hasCliAuthCredentialsStoreOverride(args) {
+function collectConfigOverrideKeys(args) {
+	const keys = new Set();
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
 		if (arg === "-c" || arg === "--config") {
 			const next = args[i + 1];
 			if (!next || !next.includes("=")) continue;
 			const [key] = next.split("=", 1);
-			if ((key ?? "").trim() === "cli_auth_credentials_store") {
-				return true;
+			const normalizedKey = (key ?? "").trim();
+			if (normalizedKey) {
+				keys.add(normalizedKey);
 			}
 			continue;
 		}
 		if (typeof arg === "string" && arg.startsWith("--config=")) {
 			const assignment = arg.slice("--config=".length);
 			const [key] = assignment.split("=", 1);
-			if ((key ?? "").trim() === "cli_auth_credentials_store") {
-				return true;
+			const normalizedKey = (key ?? "").trim();
+			if (normalizedKey) {
+				keys.add(normalizedKey);
 			}
 		}
 	}
-	return false;
+	return keys;
+}
+
+function rewriteModelArgs(rawArgs, configOverrideKeys) {
+	const forwardArgs = [...rawArgs];
+	for (let i = 0; i < forwardArgs.length; i += 1) {
+		const arg = forwardArgs[i];
+		if (arg === "--model" || arg === "-m") {
+			const next = forwardArgs[i + 1];
+			if (typeof next !== "string" || next.trim().length === 0) {
+				continue;
+			}
+			const selection = resolveCliModelSelection(next, { cwd: process.cwd() });
+			forwardArgs[i + 1] = selection.model;
+			for (const entry of selection.configEntries) {
+				if (configOverrideKeys.has(entry.key)) continue;
+				forwardArgs.push("-c", `${entry.key}="${entry.value}"`);
+				configOverrideKeys.add(entry.key);
+			}
+			continue;
+		}
+		if (typeof arg === "string" && arg.startsWith("--model=")) {
+			const modelName = arg.slice("--model=".length);
+			if (modelName.trim().length === 0) {
+				continue;
+			}
+			const selection = resolveCliModelSelection(modelName, { cwd: process.cwd() });
+			forwardArgs[i] = `--model=${selection.model}`;
+			for (const entry of selection.configEntries) {
+				if (configOverrideKeys.has(entry.key)) continue;
+				forwardArgs.push("-c", `${entry.key}="${entry.value}"`);
+				configOverrideKeys.add(entry.key);
+			}
+		}
+	}
+	return forwardArgs;
 }
 
 function buildForwardArgs(rawArgs) {
 	const forceFileAuthStore = (process.env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE ?? "1").trim() !== "0";
-	if (!forceFileAuthStore) return [...rawArgs];
-	if (hasCliAuthCredentialsStoreOverride(rawArgs)) return [...rawArgs];
+	const configOverrideKeys = collectConfigOverrideKeys(rawArgs);
+	const rewrittenArgs = rewriteModelArgs(rawArgs, configOverrideKeys);
+	if (!forceFileAuthStore) return rewrittenArgs;
+	if (configOverrideKeys.has("cli_auth_credentials_store")) return rewrittenArgs;
 
 	return [
-		...rawArgs,
+		...rewrittenArgs,
 		"-c",
 		'cli_auth_credentials_store="file"',
 	];

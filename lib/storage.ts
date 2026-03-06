@@ -1652,7 +1652,21 @@ type SerializedStoragePayload = {
 	persistedSecretRefs: PersistedSecretRef[];
 };
 
-async function serializeStorageForPersist(storage: AccountStorageV3): Promise<SerializedStoragePayload> {
+async function canPreservePlaintextStorage(path: string): Promise<boolean> {
+	try {
+		const raw = await fs.readFile(path, "utf-8");
+		const parsed = JSON.parse(raw) as unknown;
+		return isRecord(parsed) && (parsed.version === 1 || parsed.version === 3);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "ENOENT" ? false : false;
+	}
+}
+
+async function serializeStorageForPersist(
+	storage: AccountStorageV3,
+	options: { path: string; allowPlaintextFallback?: boolean },
+): Promise<SerializedStoragePayload> {
 	const mode = await getEffectiveSecretStorageMode();
 	if (mode === "plaintext") {
 		return {
@@ -1661,7 +1675,21 @@ async function serializeStorageForPersist(storage: AccountStorageV3): Promise<Se
 		};
 	}
 
-	await ensureSecretStorageBackendAvailable();
+	try {
+		await ensureSecretStorageBackendAvailable();
+	} catch (error) {
+		if (options.allowPlaintextFallback) {
+			log.warn("Keychain unavailable; preserving existing plaintext account storage", {
+				path: options.path,
+				error: String(error),
+			});
+			return {
+				content: JSON.stringify(cloneStorageForPersist(storage), null, 2),
+				persistedSecretRefs: [],
+			};
+		}
+		throw error;
+	}
 	const refsByIndex: Array<PersistedSecretRef> = [];
 	const persistedSecretRefs: PersistedSecretRef[] = [];
 	try {
@@ -1767,7 +1795,10 @@ async function saveAccountsUnlocked(
 				}
 			}
 
-			const serialized = await serializeStorageForPersist(storage);
+			const serialized = await serializeStorageForPersist(storage, {
+				path,
+				allowPlaintextFallback: await canPreservePlaintextStorage(path),
+			});
 			const content = serialized.content;
 			persistedSecretRefs = serialized.persistedSecretRefs;
 			const journalEntry: AccountsJournalEntry = {
