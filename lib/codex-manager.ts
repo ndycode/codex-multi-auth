@@ -278,7 +278,7 @@ function normalizeFailureDetail(
 	const reasonLabel = formatReasonLabel(reason);
 	const raw = message?.trim() || reasonLabel || "refresh failed";
 	const structured = parseStructuredErrorMessage(raw);
-	const normalized = collapseWhitespace(structured ?? raw);
+	const normalized = collapseWhitespace(redactFreeformSecretText(structured ?? raw));
 	const bounded = normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
 	return bounded.length > 0 ? bounded : "refresh failed";
 }
@@ -287,7 +287,7 @@ function redactFreeformSecretText(message: string): string {
 	return message
 		.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "***REDACTED***")
 		.replace(
-			/\b(?:access|refresh|id)?_?token(?:=|:)?\s*([A-Z0-9._~+/=-]+)/gi,
+			/\b(?:access|refresh|id)?_?token(?:=|:)\s*([A-Z0-9._~+/=-]+)/gi,
 			"token=***REDACTED***",
 		)
 		.replace(/\b(Bearer)\s+[A-Z0-9._~+/=-]+\b/gi, "$1 ***REDACTED***");

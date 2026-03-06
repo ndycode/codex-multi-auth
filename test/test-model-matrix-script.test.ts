@@ -90,30 +90,153 @@ describe("test-model-matrix script helpers", () => {
 
 	it("builds matrix exec args with JSON + git-check skip and optional variant config", async () => {
 		const mod = await import("../scripts/test-model-matrix.js");
+		const userConfig = {
+			global: {
+				reasoningEffort: "medium",
+				reasoningSummary: "auto",
+				textVerbosity: "medium",
+			},
+			models: {
+				"gpt-5.2": {
+					variants: {
+						high: {
+							reasoningEffort: "high",
+							reasoningSummary: "detailed",
+							textVerbosity: "medium",
+						},
+					},
+				},
+			},
+		};
 
-		expect(mod.__buildModelCaseArgsForTests({ model: "gpt-5.2" }, 3)).toEqual({
+		expect(mod.__buildModelCaseArgsForTests({ model: "gpt-5.2" }, 3, userConfig)).toEqual({
 			token: "MODEL_MATRIX_OK_3",
 			args: [
 				"exec",
-				"MODEL_MATRIX_OK_3",
+				"Reply with exactly MODEL_MATRIX_OK_3 and nothing else.",
 				"--model",
 				"gpt-5.2",
 				"--json",
 				"--skip-git-repo-check",
+				"-c",
+				'model_reasoning_effort="medium"',
+				"-c",
+				'model_reasoning_summary="auto"',
+				"-c",
+				'model_text_verbosity="medium"',
 			],
 		});
 
-		expect(mod.__buildModelCaseArgsForTests({ model: "gpt-5.2", variant: "high" }, 4)).toEqual({
+		expect(mod.__buildModelCaseArgsForTests({ model: "gpt-5.2-high", variant: "high" }, 4, userConfig)).toEqual({
 			token: "MODEL_MATRIX_OK_4",
 			args: [
 				"exec",
-				"MODEL_MATRIX_OK_4",
+				"Reply with exactly MODEL_MATRIX_OK_4 and nothing else.",
 				"--model",
 				"gpt-5.2",
 				"--json",
 				"--skip-git-repo-check",
 				"-c",
 				'model_reasoning_effort="high"',
+				"-c",
+				'model_reasoning_summary="detailed"',
+				"-c",
+				'model_text_verbosity="medium"',
+			],
+		});
+	});
+
+	it("derives scenario user config from codex config shape", async () => {
+		const mod = await import("../scripts/codex-model-config.js");
+
+		expect(
+			mod.deriveUserConfigFromCodexConfig({
+				provider: {
+					openai: {
+						options: { reasoningEffort: "medium" },
+						models: {
+							"gpt-5-codex": {
+								options: { reasoningEffort: "high" },
+							},
+						},
+					},
+				},
+			}),
+		).toEqual({
+			global: { reasoningEffort: "medium" },
+			models: {
+				"gpt-5-codex": {
+					options: { reasoningEffort: "high" },
+				},
+			},
+		});
+	});
+
+	it("normalizes alias models using nearest config when building CLI selections", async () => {
+		const fixtureRoot = mkdtempSync(join(tmpdir(), "matrix-model-config-"));
+		try {
+			writeFileSync(
+				join(fixtureRoot, "Codex.json"),
+				JSON.stringify(
+					{
+						provider: {
+							openai: {
+								models: {
+									"gpt-5.2-high": {
+										options: {
+											reasoningEffort: "high",
+											reasoningSummary: "detailed",
+											textVerbosity: "medium",
+										},
+									},
+								},
+							},
+						},
+					},
+					null,
+					2,
+				),
+				"utf8",
+			);
+			const mod = await import("../scripts/codex-model-config.js");
+
+			expect(mod.resolveCliModelSelection("gpt-5.2-high", { cwd: fixtureRoot })).toEqual({
+				model: "gpt-5.2",
+				configEntries: [
+					{ key: "model_reasoning_effort", value: "high" },
+					{ key: "model_reasoning_summary", value: "detailed" },
+					{ key: "model_text_verbosity", value: "medium" },
+				],
+			});
+		} finally {
+			rmSync(fixtureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves explicit CLI config when wrapper helper injects derived model options", async () => {
+		const mod = await import("../scripts/codex-model-config.js");
+
+		expect(mod.resolveCliModelSelection("gpt-5.1-high", {
+			userConfig: {
+				global: {},
+				models: {
+					"gpt-5.1": {
+						variants: {
+							high: {
+								reasoningEffort: "high",
+								reasoningSummary: "detailed",
+								textVerbosity: "high",
+							},
+						},
+					},
+				},
+			},
+		})).toEqual({
+			model: "gpt-5.1",
+			configEntries: [
+				{ key: "model_reasoning_effort", value: "high" },
+				{ key: "model_reasoning_summary", value: "detailed" },
+				{ key: "model_text_verbosity", value: "high" },
 			],
 		});
 	});

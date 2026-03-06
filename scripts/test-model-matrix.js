@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
+import { deriveUserConfigFromCodexConfig, resolveCliModelSelection } from "./codex-model-config.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -244,28 +245,34 @@ function enumerateCases(models, smoke, maxCases) {
 	return selected;
 }
 
-function buildModelCaseArgs(caseInfo, index) {
+function buildModelCaseArgs(caseInfo, index, userConfig) {
 	const token = `MODEL_MATRIX_OK_${index}`;
+	const prompt = `Reply with exactly ${token} and nothing else.`;
+	const requestedModel =
+		caseInfo.variant && !caseInfo.model.toLowerCase().endsWith(`-${caseInfo.variant}`)
+			? `${caseInfo.model}-${caseInfo.variant}`
+			: caseInfo.model;
+	const selection = resolveCliModelSelection(requestedModel, { userConfig });
 	const args = [
 		"exec",
-		token,
+		prompt,
 		"--model",
-		caseInfo.model,
+		selection.model,
 		"--json",
 		"--skip-git-repo-check",
 	];
-	if (caseInfo.variant) {
-		args.push("-c", `model_reasoning_effort="${caseInfo.variant}"`);
+	for (const entry of selection.configEntries) {
+		args.push("-c", `${entry.key}="${entry.value}"`);
 	}
 	return { token, args };
 }
 
-export function __buildModelCaseArgsForTests(caseInfo, index) {
-	return buildModelCaseArgs(caseInfo, index);
+export function __buildModelCaseArgsForTests(caseInfo, index, userConfig) {
+	return buildModelCaseArgs(caseInfo, index, userConfig);
 }
 
-function executeModelCase(caseInfo, index) {
-	const { token, args } = buildModelCaseArgs(caseInfo, index);
+function executeModelCase(caseInfo, index, userConfig) {
+	const { token, args } = buildModelCaseArgs(caseInfo, index, userConfig);
 
 	const timeoutMs = resolveMatrixTimeoutMs();
 	const commandArgs = [...(CodexExecutable.prefixArgs ?? []), ...args];
@@ -373,6 +380,7 @@ async function runScenario(scenario, options) {
 	if (!models || typeof models !== "object") {
 		throw new Error(`Scenario '${scenario}' has no provider.openai.models object`);
 	}
+	const userConfig = deriveUserConfigFromCodexConfig(config);
 
 	const cases = enumerateCases(models, options.smoke, options.maxCases);
 	console.log(`\n=== ${scenario.toUpperCase()} (${cases.length} cases) ===`);
@@ -383,6 +391,7 @@ async function runScenario(scenario, options) {
 		const result = executeModelCase(
 			caseInfo,
 			i + 1,
+			userConfig,
 		);
 		results.push(result);
 		const variantLabel = result.variant ? ` [variant=${result.variant}]` : "";
