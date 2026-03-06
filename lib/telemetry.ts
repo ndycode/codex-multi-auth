@@ -274,7 +274,7 @@ async function listTelemetryFiles(config: TelemetryConfig): Promise<string[]> {
 		const entries = await fs.readdir(config.logDir);
 		const sortable = entries
 			.map((name) => {
-				const archiveIndex = parseArchiveSuffix(name);
+				const archiveIndex = parseArchiveSuffix(name, config);
 				if (archiveIndex === null) return null;
 				return { name, archiveIndex };
 			})

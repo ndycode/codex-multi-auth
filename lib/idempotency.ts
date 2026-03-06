@@ -65,11 +65,11 @@ async function loadFile(): Promise<IdempotencyFile> {
 async function saveFile(file: IdempotencyFile): Promise<void> {
 	await fs.mkdir(dirname(IDEMPOTENCY_PATH), { recursive: true });
 	const tempPath = `${IDEMPOTENCY_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, {
-		encoding: "utf8",
-		mode: 0o600,
-	});
 	try {
+		await fs.writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
 		for (let attempt = 0; attempt < IDEMPOTENCY_RENAME_MAX_ATTEMPTS; attempt += 1) {
 			try {
 				await fs.rename(tempPath, IDEMPOTENCY_PATH);
