@@ -655,6 +655,32 @@ describe("codex manager cli commands", () => {
 		expect(logSpy.mock.calls.some((call) => String(call[0]).includes("live session OK"))).toBe(true);
 	});
 
+	it("shows rate-limit reset details in auth status output", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "rate-limited@example.com",
+					refreshToken: "refresh-rate-limited",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					rateLimitResetTimes: {
+						codex: now + 120_000,
+					},
+				},
+			],
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "status"]);
+		expect(exitCode).toBe(0);
+		expect(logSpy.mock.calls.some((call) => String(call[0]).includes("rate-limited"))).toBe(true);
+	});
+
 	it("runs fix apply mode and returns a switch recommendation", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({

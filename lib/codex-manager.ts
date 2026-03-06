@@ -22,6 +22,18 @@ import {
 	sanitizeEmail,
 	selectBestAccountCandidate,
 } from "./accounts.js";
+import {
+	resolveActiveIndex,
+	formatRateLimitEntry,
+} from "./accounts/account-view.js";
+import {
+	createActiveIndexByFamily,
+	setActiveIndexForAllFamilies,
+	normalizeActiveIndexByFamily,
+} from "./accounts/active-index.js";
+import {
+	createEmptyAccountStorage as createEmptyAccountStorageBase,
+} from "./accounts/storage-view.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
 import {
@@ -37,7 +49,6 @@ import {
 	summarizeForecast,
 	type ForecastAccountResult,
 } from "./forecast.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
@@ -475,51 +486,6 @@ function runFeaturesReport(): number {
 		console.log(`${feature.id}. ${feature.name}`);
 	}
 	return 0;
-}
-
-function resolveActiveIndex(
-	storage: AccountStorageV3,
-	family: ModelFamily = "codex",
-): number {
-	const total = storage.accounts.length;
-	if (total === 0) return 0;
-	const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-	const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-	return Math.max(0, Math.min(raw, total - 1));
-}
-
-function getRateLimitResetTimeForFamily(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily,
-): number | null {
-	const times = account.rateLimitResetTimes;
-	if (!times) return null;
-
-	let minReset: number | null = null;
-	const prefix = `${family}:`;
-	for (const [key, value] of Object.entries(times)) {
-		if (typeof value !== "number") continue;
-		if (value <= now) continue;
-		if (key !== family && !key.startsWith(prefix)) continue;
-		if (minReset === null || value < minReset) {
-			minReset = value;
-		}
-	}
-
-	return minReset;
-}
-
-function formatRateLimitEntry(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily = "codex",
-): string | null {
-	const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-	if (typeof resetAt !== "number") return null;
-	const remaining = resetAt - now;
-	if (remaining <= 0) return null;
-	return `resets in ${formatWaitTime(remaining)}`;
 }
 
 function normalizeQuotaEmail(email: string | undefined): string | null {
@@ -1524,10 +1490,7 @@ async function persistAccountPool(
 		: selectedAccountIndex === null
 			? fallbackActiveIndex
 			: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = nextActiveIndex;
-	}
+	const activeIndexByFamily = createActiveIndexByFamily(nextActiveIndex);
 
 	await saveAccounts({
 		version: 3,
@@ -2775,16 +2738,7 @@ interface VerifyFlaggedReport {
 }
 
 function createEmptyAccountStorage(): AccountStorageV3 {
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = 0;
-	}
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily,
-	};
+	return createEmptyAccountStorageBase({ initializeFamilyIndexes: true });
 }
 
 function findExistingAccountIndexForFlagged(
@@ -3510,25 +3464,7 @@ function hasPlaceholderEmail(value: string | undefined): boolean {
 }
 
 function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
-	const total = storage.accounts.length;
-	const nextActive = total === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, total - 1));
-	let changed = false;
-	if (storage.activeIndex !== nextActive) {
-		storage.activeIndex = nextActive;
-		changed = true;
-	}
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		const raw = storage.activeIndexByFamily[family];
-		const fallback = storage.activeIndex;
-		const candidate = typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
-		const clamped = total === 0 ? 0 : Math.max(0, Math.min(candidate, total - 1));
-		if (storage.activeIndexByFamily[family] !== clamped) {
-			storage.activeIndexByFamily[family] = clamped;
-			changed = true;
-		}
-	}
-	return changed;
+	return normalizeActiveIndexByFamily(storage, storage.accounts.length);
 }
 
 function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {
@@ -4185,12 +4121,7 @@ async function runRotateSecrets(args: string[]): Promise<number> {
 }
 
 async function clearAccountsAndReset(): Promise<void> {
-	await saveAccounts({
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-	});
+	await saveAccounts(createEmptyAccountStorageBase());
 }
 
 async function handleManageAction(
@@ -4207,11 +4138,7 @@ async function handleManageAction(
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
 			storage.accounts.splice(idx, 1);
-			storage.activeIndex = 0;
-			storage.activeIndexByFamily = {};
-			for (const family of MODEL_FAMILIES) {
-				storage.activeIndexByFamily[family] = 0;
-			}
+			setActiveIndexForAllFamilies(storage, 0);
 			await saveAccounts(storage);
 			console.log(`Deleted account ${idx + 1}.`);
 		}
@@ -4450,11 +4377,7 @@ async function runSwitch(args: string[]): Promise<number> {
 		return 1;
 	}
 
-	storage.activeIndex = targetIndex;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = targetIndex;
-	}
+	setActiveIndexForAllFamilies(storage, targetIndex);
 	const wasDisabled = account.enabled === false;
 	if (wasDisabled) {
 		account.enabled = true;

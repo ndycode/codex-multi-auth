@@ -889,6 +889,11 @@ describe("OpenAIOAuthPlugin", () => {
 				{ refreshToken: "r2", email: "user2@example.com" },
 			];
 			const result = await plugin.tool["codex-switch"].execute({ index: 2 });
+			const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
+			expect(mockStorage.activeIndex).toBe(1);
+			for (const family of MODEL_FAMILIES) {
+				expect(mockStorage.activeIndexByFamily[family]).toBe(1);
+			}
 			expect(result).toContain("Switched to account");
 		});
 
@@ -924,13 +929,20 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it("shows detailed status for accounts", async () => {
+			const now = Date.now();
 			mockStorage.accounts = [
-				{ refreshToken: "r1", email: "user@example.com", lastUsed: Date.now() - 60000 },
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					lastUsed: now - 60000,
+					rateLimitResetTimes: { codex: now + 120000 },
+				},
 			];
 			mockStorage.activeIndexByFamily = { codex: 0 };
 			const result = await plugin.tool["codex-status"].execute();
 			expect(result).toContain("Account Status");
 			expect(result).toContain("Active index by model family");
+			expect(result).toContain("resets in");
 		});
 	});
 
@@ -984,9 +996,13 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("handles removal of last account", async () => {
 			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			mockStorage.activeIndex = 3;
+			mockStorage.activeIndexByFamily = { codex: 3, "gpt-5.1": 3 };
 			const result = await plugin.tool["codex-remove"].execute({ index: 1 });
 			expect(result).toContain("Removed");
 			expect(result).toContain("No accounts remaining");
+			expect(mockStorage.activeIndex).toBe(0);
+			expect(mockStorage.activeIndexByFamily).toEqual({});
 		});
 	});
 
@@ -2092,6 +2108,11 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		await plugin.event({
 			event: { type: "account.select", properties: { accountIndex: 1 } },
 		});
+		const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
+		expect(mockStorage.activeIndex).toBe(1);
+		for (const family of MODEL_FAMILIES) {
+			expect(mockStorage.activeIndexByFamily[family]).toBe(1);
+		}
 	});
 
 	it("reloads account manager from disk when handling account.select", async () => {
