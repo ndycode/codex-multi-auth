@@ -185,6 +185,7 @@ type BackendNumberSettingKey =
 	| "proactiveRefreshBufferMs"
 	| "parallelProbingMaxConcurrency"
 	| "fastSessionMaxInputItems"
+	| "retryAllAccountsAbsoluteCeilingMs"
 	| "networkErrorCooldownMs"
 	| "serverErrorCooldownMs"
 	| "fetchTimeoutMs"
@@ -378,6 +379,15 @@ const BACKEND_NUMBER_OPTIONS: BackendNumberSettingOption[] = [
 		unit: "count",
 	},
 	{
+		key: "retryAllAccountsAbsoluteCeilingMs",
+		label: "Retry-All Absolute Wait Ceiling",
+		description: "Total max wait for retry-all-on-rate-limit. Set 0 for unlimited.",
+		min: 0,
+		max: 24 * 60 * 60_000,
+		step: 30_000,
+		unit: "ms",
+	},
+	{
 		key: "networkErrorCooldownMs",
 		label: "Network Error Cooldown",
 		description: "Wait time after network errors before retry.",
@@ -486,6 +496,7 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 			"preemptiveQuotaRemainingPercent5h",
 			"preemptiveQuotaRemainingPercent7d",
 			"preemptiveQuotaMaxDeferralMs",
+			"retryAllAccountsAbsoluteCeilingMs",
 		],
 	},
 	{
@@ -974,8 +985,20 @@ function buildBackendSettingsPreview(
 		config.preemptiveQuotaRemainingPercent7d ??
 		BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent7d ??
 		5;
+	const retryAllAbsoluteCeilingMs =
+		config.retryAllAccountsAbsoluteCeilingMs ??
+		BACKEND_DEFAULTS.retryAllAccountsAbsoluteCeilingMs ??
+		0;
 	const fetchTimeout = config.fetchTimeoutMs ?? BACKEND_DEFAULTS.fetchTimeoutMs ?? 60_000;
 	const stallTimeout = config.streamStallTimeoutMs ?? BACKEND_DEFAULTS.streamStallTimeoutMs ?? 45_000;
+	const retryAllAbsoluteCeilingOption = BACKEND_NUMBER_OPTION_BY_KEY.get(
+		"retryAllAccountsAbsoluteCeilingMs",
+	);
+	const retryCeilingLabel = retryAllAbsoluteCeilingMs === 0
+		? "unlimited"
+		: retryAllAbsoluteCeilingOption
+			? formatBackendNumberValue(retryAllAbsoluteCeilingOption, retryAllAbsoluteCeilingMs)
+			: `${retryAllAbsoluteCeilingMs}ms`;
 	const fetchTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("fetchTimeoutMs");
 	const stallTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("streamStallTimeoutMs");
 
@@ -993,6 +1016,7 @@ function buildBackendSettingsPreview(
 	const hint = [
 		`thresholds 5h<=${highlightIfFocused("preemptiveQuotaRemainingPercent5h", `${threshold5h}%`)}`,
 		`7d<=${highlightIfFocused("preemptiveQuotaRemainingPercent7d", `${threshold7d}%`)}`,
+		`retry ceiling ${highlightIfFocused("retryAllAccountsAbsoluteCeilingMs", retryCeilingLabel)}`,
 		`timeouts ${highlightIfFocused("fetchTimeoutMs", fetchTimeoutOption ? formatBackendNumberValue(fetchTimeoutOption, fetchTimeout) : `${fetchTimeout}ms`)}/${highlightIfFocused("streamStallTimeoutMs", stallTimeoutOption ? formatBackendNumberValue(stallTimeoutOption, stallTimeout) : `${stallTimeout}ms`)}`,
 	].join(" | ");
 
@@ -1069,6 +1093,10 @@ function clampBackendNumberForTests(settingKey: string, value: number): number {
 	return clampBackendNumber(option, value);
 }
 
+function buildBackendSettingsPreviewForTests(config: PluginConfig): { label: string; hint: string } {
+	return buildBackendSettingsPreview(config, getUiRuntimeOptions());
+}
+
 async function withQueuedRetryForTests<T>(
 	pathKey: string,
 	task: () => Promise<T>,
@@ -1093,6 +1121,7 @@ async function persistBackendConfigSelectionForTests(
 
 const __testOnly = {
 	clampBackendNumber: clampBackendNumberForTests,
+	buildBackendSettingsPreview: buildBackendSettingsPreviewForTests,
 	formatMenuLayoutMode,
 	cloneDashboardSettings,
 	withQueuedRetry: withQueuedRetryForTests,

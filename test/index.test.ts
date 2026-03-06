@@ -91,6 +91,7 @@ vi.mock("../lib/config.js", () => ({
 	getFastSessionMaxInputItems: () => 30,
 	getRateLimitToastDebounceMs: () => 5000,
 	getRetryAllAccountsMaxRetries: () => 3,
+	getRetryAllAccountsAbsoluteCeilingMs: () => 0,
 	getRetryAllAccountsMaxWaitMs: () => 30000,
 	getRetryAllAccountsRateLimited: () => true,
 	getUnsupportedCodexPolicy: vi.fn(() => "fallback"),

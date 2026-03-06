@@ -139,6 +139,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	retryAllAccountsRateLimited: true,
 	retryAllAccountsMaxWaitMs: 0,
 	retryAllAccountsMaxRetries: RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES,
+	retryAllAccountsAbsoluteCeilingMs: 0,
 	unsupportedCodexPolicy: "strict",
 	fallbackOnUnsupportedCodexModel: false,
 	fallbackToGpt52OnUnsupportedGpt53: true,
@@ -927,6 +928,15 @@ export function getRetryAllAccountsMaxRetries(pluginConfig: PluginConfig): numbe
 		pluginConfig.retryAllAccountsMaxRetries,
 		RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES,
 		{ min: 0, max: RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES },
+	);
+}
+
+export function getRetryAllAccountsAbsoluteCeilingMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS",
+		pluginConfig.retryAllAccountsAbsoluteCeilingMs,
+		0,
+		{ min: 0, max: 24 * 60 * 60_000 },
 	);
 }
 
