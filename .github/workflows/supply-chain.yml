@@ -1,0 +1,135 @@
+name: Supply Chain
+
+concurrency:
+  group: supply-chain-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 4 * * 1"
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0
+
+  concurrency-group-guard:
+    name: Concurrency Group Guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Assert concurrency.group includes github.event_name
+        run: |
+          node -e "const fs=require('node:fs'); const workflow=fs.readFileSync('.github/workflows/supply-chain.yml','utf8'); const match=workflow.match(/\nconcurrency:\n\s+group:\s*(.+)/); if(!match){ throw new Error('missing concurrency.group'); } if(!match[1].includes('github.event_name')){ throw new Error('concurrency.group must include github.event_name'); }"
+
+  sca-and-license:
+    name: SCA and License Gate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run vulnerability policy gate
+        run: npm run audit:ci
+
+      - name: Run license policy gate
+        run: npm run license:check
+
+  policy-smoke-windows:
+    name: Policy Smoke (Windows)
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run vulnerability allowlist policy (dev)
+        run: npm run audit:dev:allowlist
+
+      - name: Run license policy gate
+        run: npm run license:check
+
+  sbom:
+    name: Generate SBOM
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate CycloneDX SBOM
+        run: npx --yes @cyclonedx/cyclonedx-npm@4.2.0 --output-file sbom.cdx.json --omit dev
+
+      - name: Validate SBOM top-level fields
+        run: |
+          node -e "const fs=require('node:fs'); const sbom=JSON.parse(fs.readFileSync('sbom.cdx.json','utf8')); if(sbom.bomFormat!=='CycloneDX' || typeof sbom.specVersion!=='string' || typeof sbom.version!=='number'){ throw new Error('sbom.cdx.json missing required top-level fields'); }"
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json

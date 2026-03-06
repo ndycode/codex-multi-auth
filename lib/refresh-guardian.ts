@@ -21,6 +21,10 @@ export interface RefreshGuardianStats {
 	networkFailed: number;
 	authFailed: number;
 	lastRunAt: number | null;
+	lastTickDurationMs: number;
+	maxTickDurationMs: number;
+	cumulativeTickDurationMs: number;
+	avgTickDurationMs: number;
 }
 
 const DEFAULT_INTERVAL_MS = 60_000;
@@ -41,6 +45,10 @@ export class RefreshGuardian {
 		networkFailed: 0,
 		authFailed: 0,
 		lastRunAt: null,
+		lastTickDurationMs: 0,
+		maxTickDurationMs: 0,
+		cumulativeTickDurationMs: 0,
+		avgTickDurationMs: 0,
 	};
 
 	constructor(
@@ -100,6 +108,8 @@ export class RefreshGuardian {
 		const manager = this.getAccountManager();
 		if (!manager) return;
 		this.running = true;
+		const tickStart = performance.now();
+		let countedRun = false;
 		try {
 			const snapshot = manager.getAccountsSnapshot().filter((account) => account.enabled !== false);
 			if (snapshot.length === 0) {
@@ -109,6 +119,7 @@ export class RefreshGuardian {
 			const refreshResults = await refreshExpiringAccounts(snapshot, this.bufferMs);
 			if (refreshResults.size === 0) {
 				this.stats.runs += 1;
+				countedRun = true;
 				this.stats.lastRunAt = Date.now();
 				return;
 			}
@@ -117,15 +128,22 @@ export class RefreshGuardian {
 			for (const candidate of snapshot) {
 				snapshotByIndex.set(candidate.index, candidate);
 			}
+			const liveAccounts = manager.getAccountsSnapshot();
+			const liveIndexByRefreshToken = new Map<string, number>();
+			for (let i = 0; i < liveAccounts.length; i += 1) {
+				const candidate = liveAccounts[i];
+				if (!candidate?.refreshToken) continue;
+				liveIndexByRefreshToken.set(candidate.refreshToken, i);
+			}
 
 			for (const [accountIndex, result] of refreshResults.entries()) {
 				const sourceAccount = snapshotByIndex.get(accountIndex);
 				if (!sourceAccount) continue;
-				const liveAccounts = manager.getAccountsSnapshot();
-				const resolvedIndex = liveAccounts.findIndex(
-					(candidate) => candidate.refreshToken === sourceAccount.refreshToken,
-				);
-				const account = resolvedIndex >= 0 ? manager.getAccountByIndex(resolvedIndex) : null;
+				const resolvedIndex = liveIndexByRefreshToken.get(sourceAccount.refreshToken);
+				const account =
+					typeof resolvedIndex === "number"
+						? manager.getAccountByIndex(resolvedIndex)
+						: null;
 				if (!account) continue;
 
 				switch (result.reason) {
@@ -164,12 +182,24 @@ export class RefreshGuardian {
 
 			manager.saveToDiskDebounced();
 			this.stats.runs += 1;
+			countedRun = true;
 			this.stats.lastRunAt = Date.now();
 		} catch (error) {
 			log.warn("Refresh guardian tick failed", {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		} finally {
+			const durationMs = Math.round(performance.now() - tickStart);
+			// Track the most recent tick duration even when no account work was counted,
+			// so diagnostics can still surface event-loop stalls or no-op overhead.
+			this.stats.lastTickDurationMs = durationMs;
+			if (countedRun) {
+				this.stats.maxTickDurationMs = Math.max(this.stats.maxTickDurationMs, durationMs);
+				this.stats.cumulativeTickDurationMs += durationMs;
+				this.stats.avgTickDurationMs = Math.round(
+					this.stats.cumulativeTickDurationMs / this.stats.runs,
+				);
+			}
 			this.running = false;
 		}
 	}

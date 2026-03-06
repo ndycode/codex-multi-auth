@@ -8,6 +8,7 @@ import {
     createCodexHeaders,
     handleErrorResponse,
     handleSuccessResponse,
+    handleSuccessResponseDetailed,
     isEntitlementError,
     createEntitlementErrorResponse,
 	getUnsupportedCodexModelInfo,
@@ -504,6 +505,51 @@ describe('Fetch Helpers Module', () => {
 			const text = await result.text();
 			expect(text).toBe('stream body');
 		});
+
+		it('returns parsedBody metadata for non-streaming success responses', async () => {
+			const sseContent = `data: {"type":"response.done","response":{"id":"resp_meta","output":"done"}}`;
+			const response = new Response(sseContent, { status: 200 });
+
+			const result = await handleSuccessResponseDetailed(response, false);
+
+			expect(result.parsedBody).toEqual({ id: 'resp_meta', output: 'done' });
+			expect(await result.response.json()).toEqual({ id: 'resp_meta', output: 'done' });
+		});
+
+		it('parses CRLF-framed SSE payloads for non-streaming success responses', async () => {
+			const sseContent =
+				`data: {"type":"response.done","response":{"id":"resp_meta_crlf","output":"done"}}\r\n\r\n`;
+			const response = new Response(sseContent, { status: 200 });
+
+			const result = await handleSuccessResponseDetailed(response, false);
+
+			expect(result.parsedBody).toEqual({ id: 'resp_meta_crlf', output: 'done' });
+			expect(await result.response.json()).toEqual({ id: 'resp_meta_crlf', output: 'done' });
+		});
+
+		it('surfaces SSE parse errors in detailed mode when final response event is missing', async () => {
+			const sseContent = `data: {"type":"response.output_text.delta","delta":"partial"}`;
+			const response = new Response(sseContent, { status: 200 });
+
+			const result = await handleSuccessResponseDetailed(response, false);
+			expect(result.response.status).toBe(502);
+			expect(result.parsedBody).toBeUndefined();
+			const body = await result.response.json() as { error: { type: string; message: string } };
+			expect(body.error.type).toBe('stream_parse_error');
+			expect(body.error.message).toContain('No response.done event');
+		});
+
+		it('returns undefined parsedBody and preserves sse payload for streaming success responses in detailed mode', async () => {
+			const sseContent =
+				`data: {"type":"response.output_text.delta","delta":"partial"}\r\n\r\n`;
+			const response = new Response(sseContent, {
+				status: 200,
+				headers: { 'content-type': 'text/event-stream' },
+			});
+			const result = await handleSuccessResponseDetailed(response, true);
+			expect(result.parsedBody).toBeUndefined();
+			expect(await result.response.text()).toBe(sseContent);
+		});
 	});
 
 	describe('handleErrorResponse error normalization', () => {
@@ -540,11 +586,15 @@ describe('Fetch Helpers Module', () => {
 
 		it('uses body text when no structured error', async () => {
 			const response = new Response('plain text error', { status: 500 });
+			const debugSpy = vi.spyOn(loggerModule, 'logDebug');
 			
 			const { response: result } = await handleErrorResponse(response);
 			const json = await result.json() as { error: { message: string } };
 			
 			expect(json.error.message).toBe('plain text error');
+			expect(debugSpy).toHaveBeenCalledWith(
+				'Failed to parse error response body as JSON; using raw text message',
+			);
 		});
 
 		it('uses statusText when body is empty', async () => {

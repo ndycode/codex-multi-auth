@@ -278,7 +278,7 @@ describe('OAuth Server Unit Tests', () => {
 			);
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
-			const code = await result.waitForCode('test-state');
+			const code = await result.waitForCode();
 
 			expect(code).toBeNull();
 		});
@@ -296,8 +296,33 @@ describe('OAuth Server Unit Tests', () => {
 			
 			mockServer._lastCode = 'the-code';
 			
-			const code = await result.waitForCode('test-state');
+			const code = await result.waitForCode();
 			expect(code).toEqual({ code: 'the-code' });
+		});
+
+		it('waitForCode returns null when close aborts active poll loop', async () => {
+			vi.useFakeTimers();
+			try {
+				(mockServer.listen as ReturnType<typeof vi.fn>).mockImplementation(
+					(_port: number, _host: string, callback: () => void) => {
+						callback();
+						return mockServer;
+					}
+				);
+				(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
+				(mockServer.close as ReturnType<typeof vi.fn>).mockImplementation(() => undefined);
+
+				const result = await startLocalOAuthServer({ state: 'test-state' });
+				const codePromise = result.waitForCode();
+				result.close();
+
+				await vi.advanceTimersByTimeAsync(200);
+
+				await expect(codePromise).resolves.toBeNull();
+				expect(logWarn).not.toHaveBeenCalledWith('OAuth poll timeout after 5 minutes');
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		it('should return null after 5 minute timeout', async () => {
@@ -313,7 +338,7 @@ describe('OAuth Server Unit Tests', () => {
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
 			
-			const codePromise = result.waitForCode('test-state');
+			const codePromise = result.waitForCode();
 			
 			await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 100);
 			

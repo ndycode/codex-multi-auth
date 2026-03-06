@@ -1,8 +1,9 @@
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import { basename, join } from "node:path";
 import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { isRecord, sleep } from "./utils.js";
+import { acquireFileLock } from "./file-lock.js";
 
 export interface QuotaCacheWindow {
 	usedPercent?: number;
@@ -31,6 +32,7 @@ interface QuotaCacheFile {
 }
 
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
+const QUOTA_CACHE_LOCK_PATH = `${QUOTA_CACHE_PATH}.lock`;
 const QUOTA_CACHE_LABEL = basename(QUOTA_CACHE_PATH);
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 
@@ -168,10 +170,6 @@ export function getQuotaCachePath(): string {
  *          will be empty if the on-disk file is absent, malformed, or could not be read.
  */
 export async function loadQuotaCache(): Promise<QuotaCacheData> {
-	if (!existsSync(QUOTA_CACHE_PATH)) {
-		return { byAccountId: {}, byEmail: {} };
-	}
-
 	try {
 		const content = await readCacheFileWithRetry(QUOTA_CACHE_PATH);
 		const parsed = JSON.parse(content) as unknown;
@@ -188,6 +186,9 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 			byEmail: normalizeEntryMap(parsed.byEmail),
 		};
 	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { byAccountId: {}, byEmail: {} };
+		}
 		logWarn(
 			`Failed to load quota cache from ${QUOTA_CACHE_LABEL}: ${
 				error instanceof Error ? error.message : String(error)
@@ -216,7 +217,7 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
  * @param data - The quota cache data (byAccountId and byEmail maps) to persist; callers
  *               should pass normalized QuotaCacheData.
  */
-export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
+export async function saveQuotaCache(data: QuotaCacheData): Promise<boolean> {
 	const payload: QuotaCacheFile = {
 		version: 1,
 		byAccountId: data.byAccountId,
@@ -225,37 +226,50 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 
 	try {
 		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
-		const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
+		const lock = await acquireFileLock(QUOTA_CACHE_LOCK_PATH, {
+			maxAttempts: 80,
+			baseDelayMs: 15,
+			maxDelayMs: 800,
+			staleAfterMs: 120_000,
 		});
-		let renamed = false;
 		try {
-			for (let attempt = 0; attempt < 5; attempt += 1) {
-				try {
-					await fs.rename(tempPath, QUOTA_CACHE_PATH);
-					renamed = true;
-					break;
-				} catch (error) {
-					if (!isRetryableFsError(error) || attempt >= 4) throw error;
-					await sleep(10 * 2 ** attempt);
+			const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+			const writeOptions: { encoding: "utf8"; mode?: number } = { encoding: "utf8" };
+			if (process.platform !== "win32") {
+				writeOptions.mode = 0o600;
+			}
+			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, writeOptions);
+			let renamed = false;
+			try {
+				for (let attempt = 0; attempt < 5; attempt += 1) {
+					try {
+						await fs.rename(tempPath, QUOTA_CACHE_PATH);
+						renamed = true;
+						break;
+					} catch (error) {
+						if (!isRetryableFsError(error) || attempt >= 4) throw error;
+						await sleep(10 * 2 ** attempt);
+					}
+				}
+			} finally {
+				if (!renamed) {
+					try {
+						await fs.unlink(tempPath);
+					} catch {
+						// Best effort temp cleanup.
+					}
 				}
 			}
 		} finally {
-			if (!renamed) {
-				try {
-					await fs.unlink(tempPath);
-				} catch {
-					// Best effort temp cleanup.
-				}
-			}
+			await lock.release();
 		}
+		return true;
 	} catch (error) {
 		logWarn(
 			`Failed to save quota cache to ${QUOTA_CACHE_LABEL}: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
+		return false;
 	}
 }

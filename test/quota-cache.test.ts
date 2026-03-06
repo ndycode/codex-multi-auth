@@ -33,7 +33,7 @@ describe("quota cache", () => {
     const { loadQuotaCache, saveQuotaCache, getQuotaCachePath } =
       await import("../lib/quota-cache.js");
 
-    await saveQuotaCache({
+    const saved = await saveQuotaCache({
       byAccountId: {
         acc_1: {
           updatedAt: Date.now(),
@@ -46,6 +46,7 @@ describe("quota cache", () => {
       },
       byEmail: {},
     });
+    expect(saved).toBe(true);
 
     const loaded = await loadQuotaCache();
     expect(loaded.byAccountId.acc_1?.primary.usedPercent).toBe(40);
@@ -166,6 +167,42 @@ describe("quota cache", () => {
     },
   );
 
+  it("omits unix mode when writing temp cache files on win32", async () => {
+    const { saveQuotaCache } = await import("../lib/quota-cache.js");
+    const writeSpy = vi.spyOn(fs, "writeFile");
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    try {
+      const saved = await saveQuotaCache({
+        byAccountId: {
+          acc_1: {
+            updatedAt: Date.now(),
+            status: 200,
+            model: "gpt-5-codex",
+            primary: { usedPercent: 40, windowMinutes: 300 },
+            secondary: { usedPercent: 20, windowMinutes: 10080 },
+          },
+        },
+        byEmail: {},
+      });
+      expect(saved).toBe(true);
+      const tempWriteCall = writeSpy.mock.calls.find((call) =>
+        String(call[0]).endsWith(".tmp"),
+      );
+      expect(tempWriteCall).toBeDefined();
+      const options = tempWriteCall?.[2] as
+        | {
+            encoding?: string;
+            mode?: number;
+          }
+        | undefined;
+      expect(options?.encoding).toBe("utf8");
+      expect(options && "mode" in options).toBe(false);
+    } finally {
+      platformSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+  });
+
   it("cleans up temp files when rename keeps failing", async () => {
     const { saveQuotaCache } = await import("../lib/quota-cache.js");
     const renameSpy = vi.spyOn(fs, "rename");
@@ -177,7 +214,7 @@ describe("quota cache", () => {
     });
 
     try {
-      await saveQuotaCache({
+      const saved = await saveQuotaCache({
         byAccountId: {
           acc_1: {
             updatedAt: Date.now(),
@@ -190,7 +227,11 @@ describe("quota cache", () => {
         byEmail: {},
       });
 
-      expect(unlinkSpy).toHaveBeenCalledTimes(1);
+      const tmpUnlinks = unlinkSpy.mock.calls.filter((call) =>
+        String(call[0]).endsWith(".tmp"),
+      );
+      expect(tmpUnlinks).toHaveLength(1);
+      expect(saved).toBe(false);
       const entries = await fs.readdir(tempDir);
       expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
     } finally {
@@ -333,8 +374,9 @@ describe("quota cache", () => {
 
       const mkdirSpy = vi.spyOn(fs, "mkdir");
       mkdirSpy.mockRejectedValueOnce("mkdir-string-failure");
-      await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+      const saved = await saveQuotaCache({ byAccountId: {}, byEmail: {} });
       mkdirSpy.mockRestore();
+      expect(saved).toBe(false);
 
       const messages = warnMock.mock.calls.map((args) => String(args[0]));
       expect(

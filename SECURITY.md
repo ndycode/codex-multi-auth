@@ -30,6 +30,7 @@ Key controls:
 - Never commit auth files, logs, or cache artifacts.
 - Review connected apps in ChatGPT settings periodically.
 - Enable debug/body logging only for short-lived troubleshooting sessions.
+- Set `CODEX_AUTH_ROLE` explicitly in production (`viewer` is the safe default when unset), and only enable `CODEX_AUTH_BREAK_GLASS=1` during audited emergency windows.
 
 Sensitive logging toggles:
 

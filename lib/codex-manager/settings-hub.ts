@@ -185,6 +185,7 @@ type BackendNumberSettingKey =
 	| "proactiveRefreshBufferMs"
 	| "parallelProbingMaxConcurrency"
 	| "fastSessionMaxInputItems"
+	| "retryAllAccountsAbsoluteCeilingMs"
 	| "networkErrorCooldownMs"
 	| "serverErrorCooldownMs"
 	| "fetchTimeoutMs"
@@ -378,6 +379,15 @@ const BACKEND_NUMBER_OPTIONS: BackendNumberSettingOption[] = [
 		unit: "count",
 	},
 	{
+		key: "retryAllAccountsAbsoluteCeilingMs",
+		label: "Retry-All Absolute Wait Ceiling",
+		description: "Total max wait for retry-all-on-rate-limit. Set 0 for unlimited.",
+		min: 0,
+		max: 24 * 60 * 60_000,
+		step: 30_000,
+		unit: "ms",
+	},
+	{
 		key: "networkErrorCooldownMs",
 		label: "Network Error Cooldown",
 		description: "Wait time after network errors before retry.",
@@ -486,6 +496,7 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 			"preemptiveQuotaRemainingPercent5h",
 			"preemptiveQuotaRemainingPercent7d",
 			"preemptiveQuotaMaxDeferralMs",
+			"retryAllAccountsAbsoluteCeilingMs",
 		],
 	},
 	{
@@ -974,10 +985,23 @@ function buildBackendSettingsPreview(
 		config.preemptiveQuotaRemainingPercent7d ??
 		BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent7d ??
 		5;
+	const retryAllAbsoluteCeilingMs =
+		config.retryAllAccountsAbsoluteCeilingMs ??
+		BACKEND_DEFAULTS.retryAllAccountsAbsoluteCeilingMs ??
+		0;
 	const fetchTimeout = config.fetchTimeoutMs ?? BACKEND_DEFAULTS.fetchTimeoutMs ?? 60_000;
 	const stallTimeout = config.streamStallTimeoutMs ?? BACKEND_DEFAULTS.streamStallTimeoutMs ?? 45_000;
+	const retryAllAbsoluteCeilingOption = BACKEND_NUMBER_OPTION_BY_KEY.get(
+		"retryAllAccountsAbsoluteCeilingMs",
+	);
 	const fetchTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("fetchTimeoutMs");
 	const stallTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("streamStallTimeoutMs");
+	const retryAllAbsoluteCeilingLabel =
+		retryAllAbsoluteCeilingMs <= 0
+			? "unlimited"
+			: retryAllAbsoluteCeilingOption
+				? formatBackendNumberValue(retryAllAbsoluteCeilingOption, retryAllAbsoluteCeilingMs)
+				: `${retryAllAbsoluteCeilingMs}ms`;
 
 	const highlightIfFocused = (key: BackendSettingFocusKey, text: string): string => {
 		if (focus !== key) return text;
@@ -993,6 +1017,7 @@ function buildBackendSettingsPreview(
 	const hint = [
 		`thresholds 5h<=${highlightIfFocused("preemptiveQuotaRemainingPercent5h", `${threshold5h}%`)}`,
 		`7d<=${highlightIfFocused("preemptiveQuotaRemainingPercent7d", `${threshold7d}%`)}`,
+		`retry ceiling ${highlightIfFocused("retryAllAccountsAbsoluteCeilingMs", retryAllAbsoluteCeilingLabel)}`,
 		`timeouts ${highlightIfFocused("fetchTimeoutMs", fetchTimeoutOption ? formatBackendNumberValue(fetchTimeoutOption, fetchTimeout) : `${fetchTimeout}ms`)}/${highlightIfFocused("streamStallTimeoutMs", stallTimeoutOption ? formatBackendNumberValue(stallTimeoutOption, stallTimeout) : `${stallTimeout}ms`)}`,
 	].join(" | ");
 
@@ -1091,6 +1116,36 @@ async function persistBackendConfigSelectionForTests(
 	return persistBackendConfigSelection(selected, scope);
 }
 
+function buildBackendSettingsPreviewForTests(
+	config: PluginConfig,
+	focus: BackendSettingFocusKey = null,
+): { label: string; hint: string } {
+	return buildBackendSettingsPreview(config, getUiRuntimeOptions(), focus);
+}
+
+function getBackendSettingMetadataForTests(
+	settingKey: string,
+): { label: string; categoryKey: string; categoryLabel: string } {
+	const numberOption = BACKEND_NUMBER_OPTION_BY_KEY.get(settingKey as BackendNumberSettingKey);
+	const toggleOption = BACKEND_TOGGLE_OPTION_BY_KEY.get(settingKey as BackendToggleSettingKey);
+	const option = numberOption ?? toggleOption;
+	if (!option) {
+		throw new Error(`Unknown backend setting key: ${settingKey}`);
+	}
+	const category = BACKEND_CATEGORY_OPTIONS.find((candidate) =>
+		candidate.numberKeys.includes(settingKey as BackendNumberSettingKey)
+		|| candidate.toggleKeys.includes(settingKey as BackendToggleSettingKey)
+	);
+	if (!category) {
+		throw new Error(`Missing backend category for setting key: ${settingKey}`);
+	}
+	return {
+		label: option.label,
+		categoryKey: category.key,
+		categoryLabel: category.label,
+	};
+}
+
 const __testOnly = {
 	clampBackendNumber: clampBackendNumberForTests,
 	formatMenuLayoutMode,
@@ -1098,6 +1153,8 @@ const __testOnly = {
 	withQueuedRetry: withQueuedRetryForTests,
 	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
 	persistBackendConfigSelection: persistBackendConfigSelectionForTests,
+	buildBackendSettingsPreview: buildBackendSettingsPreviewForTests,
+	getBackendSettingMetadata: getBackendSettingMetadataForTests,
 };
 
 /* c8 ignore start - interactive prompt flows are covered by integration tests */

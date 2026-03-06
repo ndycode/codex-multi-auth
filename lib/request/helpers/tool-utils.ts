@@ -17,7 +17,60 @@ export interface Tool {
 }
 
 function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
-	return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+	return cloneJsonRecord(value);
+}
+
+function cloneJsonRecord(value: Record<string, unknown>): Record<string, unknown> {
+	const seen = new WeakSet<object>();
+	return cloneJsonValue(value, seen) as Record<string, unknown>;
+}
+
+function cloneJsonValue(value: unknown, seen: WeakSet<object>): unknown {
+	if (value === null) return null;
+	const valueType = typeof value;
+	if (valueType === "string" || valueType === "boolean") {
+		return value;
+	}
+	if (valueType === "number") {
+		return Number.isFinite(value) ? value : null;
+	}
+	if (valueType === "bigint") {
+		// Keep current behavior parity with JSON.stringify, which throws on bigint.
+		throw new TypeError("Cannot serialize bigint value");
+	}
+	if (valueType !== "object") {
+		// JSON serialization drops undefined/symbol/function in object fields.
+		return undefined;
+	}
+
+	if (Array.isArray(value)) {
+		if (seen.has(value)) {
+			throw new TypeError("Cannot clone circular value");
+		}
+		seen.add(value);
+		const clonedArray = value.map((entry) => {
+			const cloned = cloneJsonValue(entry, seen);
+			// JSON.stringify array semantics convert undefined to null.
+			return cloned === undefined ? null : cloned;
+		});
+		seen.delete(value);
+		return clonedArray;
+	}
+
+	const inputObject = value as Record<string, unknown>;
+	if (seen.has(inputObject)) {
+		throw new TypeError("Cannot clone circular value");
+	}
+	seen.add(inputObject);
+	const clonedObject: Record<string, unknown> = {};
+	for (const key of Object.keys(inputObject)) {
+		const cloned = cloneJsonValue(inputObject[key], seen);
+		if (cloned !== undefined) {
+			clonedObject[key] = cloned;
+		}
+	}
+	seen.delete(inputObject);
+	return clonedObject;
 }
 
 /**
@@ -76,7 +129,8 @@ function cleanupSchema(schema: Record<string, unknown>): void {
 
 	if (schema.properties && typeof schema.properties === "object") {
 		const properties = schema.properties as Record<string, unknown>;
-		for (const key of Object.keys(properties)) {
+		for (const key in properties) {
+			if (!Object.prototype.hasOwnProperty.call(properties, key)) continue;
 			if (properties[key] === undefined) {
 				delete properties[key];
 			}
@@ -104,13 +158,23 @@ function cleanupSchema(schema: Record<string, unknown>): void {
 
 	// 2. Flatten Nullable Types (["string", "null"] -> "string")
 	if (Array.isArray(schema.type)) {
-		const types = schema.type as string[];
-		const isNullable = types.includes("null");
-		const nonNullTypes = types.filter((t) => t !== "null");
+		const types = schema.type as unknown[];
+		let isNullable = false;
+		let firstNonNullType: string | undefined;
+		for (let i = 0; i < types.length; i += 1) {
+			const candidate = types[i];
+			if (candidate === "null") {
+				isNullable = true;
+				continue;
+			}
+			if (!firstNonNullType && typeof candidate === "string") {
+				firstNonNullType = candidate;
+			}
+		}
 
-		if (nonNullTypes.length > 0) {
+		if (firstNonNullType) {
 			// Use the first non-null type (most strict models expect a single string type)
-			schema.type = nonNullTypes[0];
+			schema.type = firstNonNullType;
 			if (isNullable) {
 				const desc = (schema.description as string) || "";
 				// Only append if not already present
@@ -129,10 +193,16 @@ function cleanupSchema(schema: Record<string, unknown>): void {
 	) {
 		const properties = schema.properties as Record<string, unknown>;
 		const required = schema.required as string[];
-
-		const validRequired = required.filter((key: string) =>
-			Object.prototype.hasOwnProperty.call(properties, key),
-		);
+		const validRequired: string[] = [];
+		for (let i = 0; i < required.length; i += 1) {
+			const key = required[i];
+			if (
+				typeof key === "string" &&
+				Object.prototype.hasOwnProperty.call(properties, key)
+			) {
+				validRequired.push(key);
+			}
+		}
 
 		if (validRequired.length === 0) {
 			delete schema.required;
@@ -144,7 +214,7 @@ function cleanupSchema(schema: Record<string, unknown>): void {
 	// 4. Handle empty object parameters
 	if (
 		schema.type === "object" &&
-		(!schema.properties || Object.keys(schema.properties as object).length === 0)
+		(!schema.properties || !hasOwnProperties(schema.properties as Record<string, unknown>))
 	) {
 		schema.properties = {
 			_placeholder: {
@@ -164,6 +234,7 @@ function cleanupSchema(schema: Record<string, unknown>): void {
 	if (schema.properties && typeof schema.properties === "object") {
 		const props = schema.properties as Record<string, Record<string, unknown>>;
 		for (const key in props) {
+			if (!Object.prototype.hasOwnProperty.call(props, key)) continue;
 			const prop = props[key];
 			// istanbul ignore next -- JSON.stringify at line 39 strips undefined values
 			if (prop !== undefined) {
@@ -176,4 +247,13 @@ function cleanupSchema(schema: Record<string, unknown>): void {
 	if (schema.items && typeof schema.items === "object") {
 		cleanupSchema(schema.items as Record<string, unknown>);
 	}
+}
+
+function hasOwnProperties(record: Record<string, unknown>): boolean {
+	for (const key in record) {
+		if (Object.prototype.hasOwnProperty.call(record, key)) {
+			return true;
+		}
+	}
+	return false;
 }

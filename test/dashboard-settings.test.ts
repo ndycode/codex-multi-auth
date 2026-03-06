@@ -15,6 +15,7 @@ describe("dashboard settings", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (originalDir === undefined) {
       delete process.env.CODEX_MULTI_AUTH_DIR;
     } else {
@@ -153,7 +154,13 @@ describe("dashboard settings", () => {
     const error = Object.assign(new Error("permission denied"), {
       code: "EACCES",
     });
-    const readSpy = vi.spyOn(fs, "readFile").mockRejectedValueOnce(error);
+    const realReadFile = fs.readFile.bind(fs);
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      if (String(args[0]) === legacyPath) {
+        throw error;
+      }
+      return realReadFile(...args);
+    });
 
     const loaded = await loadDashboardDisplaySettings();
     expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
@@ -182,17 +189,26 @@ describe("dashboard settings", () => {
     });
     await fs.writeFile(legacyPath, payload, "utf8");
 
-    const originalReadFile = fs.readFile.bind(fs);
+    const realReadFile = fs.readFile.bind(fs);
     const readSpy = vi.spyOn(fs, "readFile");
     const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+    let busyAttempted = false;
     readSpy
-      .mockRejectedValueOnce(busy)
-      .mockImplementation(async (...args) => originalReadFile(...args));
+      .mockImplementation(async (...args) => {
+        if (String(args[0]) === legacyPath && !busyAttempted) {
+          busyAttempted = true;
+          throw busy;
+        }
+        return realReadFile(...args);
+      });
 
     const loaded = await loadDashboardDisplaySettings();
     expect(loaded.showPerAccountRows).toBe(false);
     expect(loaded.menuShowQuotaSummary).toBe(false);
-    expect(readSpy).toHaveBeenCalled();
+    const legacyReadAttempts = readSpy.mock.calls.filter(
+      ([path]) => String(path) === legacyPath,
+    );
+    expect(legacyReadAttempts).toHaveLength(2);
     readSpy.mockRestore();
   });
 
@@ -206,13 +222,22 @@ describe("dashboard settings", () => {
       "utf8",
     );
 
+    const realReadFile = fs.readFile.bind(fs);
     const readSpy = vi.spyOn(fs, "readFile");
     const locked = Object.assign(new Error("locked"), { code: "EPERM" });
-    readSpy.mockRejectedValue(locked);
+    readSpy.mockImplementation(async (...args) => {
+      if (String(args[0]) === legacyPath) {
+        throw locked;
+      }
+      return realReadFile(...args);
+    });
 
     const loaded = await loadDashboardDisplaySettings();
     expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
-    expect(readSpy).toHaveBeenCalledTimes(4);
+    const legacyReadAttempts = readSpy.mock.calls.filter(
+      ([path]) => String(path) === legacyPath,
+    );
+    expect(legacyReadAttempts).toHaveLength(4);
     readSpy.mockRestore();
   });
   it("normalizes invalid primitive values to defaults", async () => {
@@ -440,8 +465,14 @@ describe("dashboard settings", () => {
         "utf8",
       );
 
+      const realReadFile = fs.readFile.bind(fs);
       const readSpy = vi.spyOn(fs, "readFile");
-      readSpy.mockRejectedValueOnce("legacy-read-string-failure");
+      readSpy.mockImplementation(async (...args) => {
+        if (String(args[0]) === legacyPath) {
+          throw "legacy-read-string-failure";
+        }
+        return realReadFile(...args);
+      });
 
       const loaded = await loadDashboardDisplaySettings();
       expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);

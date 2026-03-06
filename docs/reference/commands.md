@@ -38,6 +38,8 @@ Compatibility aliases are supported:
 | `codex auth report` | Generate full health report |
 | `codex auth fix` | Apply safe account storage fixes |
 | `codex auth doctor` | Run diagnostics and optional repairs |
+| `codex auth rotate-secrets` | Re-encrypt account secrets using current encryption key |
+| `codex auth telemetry` | Show local telemetry summary and recent events |
 
 ---
 
@@ -45,13 +47,22 @@ Compatibility aliases are supported:
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
-| `--json` | verify-flagged, forecast, report, fix, doctor | Print machine-readable output |
+| `--json` | verify-flagged, forecast, report, fix, doctor, rotate-secrets, telemetry | Print machine-readable output |
 | `--live` | forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
 | `--model <model>` | forecast, report, fix | Specify model for live probe paths |
 | `--out <path>` | report | Write report output to file |
 | `--fix` | doctor | Apply safe repairs |
 | `--no-restore` | verify-flagged | Verify only; do not restore healthy flagged accounts |
+| `--page-size <n>` | list, status (`--json`) | Page size for JSON list output (1-200) |
+| `--cursor <cursor>` | list, status (`--json`) | Cursor token for JSON list pagination |
+| `--idempotency-key <key>` | rotate-secrets | Safe retry key for automation |
+| `--since-hours <hours>` | telemetry | Include events newer than this many hours |
+| `--limit <n>` | telemetry | Max events to include in report |
+
+Telemetry rollout pointer:
+- Upgrade notes: [../upgrade.md](../upgrade.md)
+- Automation rollout: add a script alias such as `auth:telemetry` -> `codex auth telemetry --json --since-hours 24 --limit 200`
 
 ---
 
@@ -108,6 +119,7 @@ Repair and recovery:
 codex auth fix --dry-run
 codex auth fix --live --model gpt-5-codex
 codex auth doctor --fix
+codex auth rotate-secrets --json
 ```
 
 ---

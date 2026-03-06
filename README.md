@@ -93,6 +93,28 @@ codex auth check
 
 ---
 
+## Local Development (Contributors)
+
+From repo root:
+
+```bash
+npm run setup:dev
+```
+
+Daily validation:
+
+```bash
+npm run doctor:dev
+npm run verify
+```
+
+- `doctor:dev` validates local prerequisites and required project files.
+- `setup:dev` runs install plus the local validation gate.
+- `verify` is the canonical local and CI gate.
+- `format` applies Biome formatting for repo config files (JSON/JSONC/YAML).
+
+---
+
 ## Quick Start
 
 ```bash
@@ -128,6 +150,7 @@ codex auth doctor --fix
 | `codex auth fix --dry-run` | Preview safe repairs |
 | `codex auth fix --live --model gpt-5-codex` | Run repairs with live probe model |
 | `codex auth doctor --fix` | Diagnose and apply safe fixes |
+| `codex auth rotate-secrets --json` | Re-encrypt stored secrets and return rotation summary |
 
 ---
 
@@ -188,6 +211,7 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
+| `CODEX_AUTH_ROLE=admin\|operator\|viewer` | CLI authorization role baseline (defaults to `viewer` when unset) |
 
 Validate config after changes:
 

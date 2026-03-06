@@ -6,12 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test on Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     strategy:
+      fail-fast: false
       matrix:
         node-version: [20.x, 22.x]
 
@@ -23,19 +29,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Repository hygiene check
-        run: npm run clean:repo:check
-
-      - name: Security audit (CI policy)
-        run: npm run audit:ci
-
-      - name: Lockfile floor guard
-        run: npm run test -- test/lockfile-version-floor.test.ts
+      - name: Run CI verify pipeline
+        run: npm run verify:ci
 
       - name: Security audit (full dependency tree, non-blocking)
         continue-on-error: true
@@ -44,15 +44,38 @@ jobs:
       - name: Run type check
         run: npm run typecheck
 
-      - name: Run tests with coverage
-        run: npm run coverage
-
       - name: Build
         run: npm run build
 
+      - name: Run tests
+        run: npm test
+      - name: Runtime performance regression gate
+        if: matrix.node-version == '20.x'
+        run: npm run perf:runtime:ci
+
+  coverage-gate:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage threshold gate
+        run: npm run coverage
+
   lint:
     name: Lint
-
     runs-on: ubuntu-latest
 
     steps:
@@ -63,17 +86,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20.x
-          cache: 'npm'
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run ESLint
+      - name: Dev doctor sanity check
+        run: npm run doctor:dev
+
+      - name: Run lint and format checks
         run: npm run lint
 
   codex-compat:
     name: Codex Compatibility Smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -83,10 +110,42 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20.x
-          cache: 'npm'
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Run Codex compatibility tests
         run: npm run test -- test/codex.test.ts test/host-codex-prompt.test.ts test/request-transformer.test.ts test/fetch-helpers.test.ts
+
+  cross-platform-smoke:
+    name: Cross-Platform Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run smoke typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Run smoke tests
+        run: npm run test -- test/runtime-paths.test.ts test/codex-bin-wrapper.test.ts test/file-lock.test.ts test/quota-cache.test.ts

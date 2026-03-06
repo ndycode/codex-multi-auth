@@ -1,4 +1,4 @@
-import { createLogger, logRequest, LOGGING_ENABLED } from "../logger.js";
+import { createLogger, logRequest } from "../logger.js";
 import { PLUGIN_NAME } from "../constants.js";
 
 import type { SSEEventData } from "../types.js";
@@ -7,6 +7,11 @@ const log = createLogger("response-handler");
 
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
 const DEFAULT_STREAM_STALL_TIMEOUT_MS = 45_000;
+
+export interface SseToJsonResult {
+	response: Response;
+	parsedBody?: unknown;
+}
 
 /**
 
@@ -53,6 +58,15 @@ export async function convertSseToJson(
 	headers: Headers,
 	options?: { streamStallTimeoutMs?: number },
 ): Promise<Response> {
+	const result = await convertSseToJsonWithDetails(response, headers, options);
+	return result.response;
+}
+
+export async function convertSseToJsonWithDetails(
+	response: Response,
+	headers: Headers,
+	options?: { streamStallTimeoutMs?: number },
+): Promise<SseToJsonResult> {
 	if (!response.body) {
 		throw new Error(`[${PLUGIN_NAME}] Response has no body`);
 	}
@@ -75,10 +89,6 @@ export async function convertSseToJson(
 			}
 		}
 
-		if (LOGGING_ENABLED) {
-			logRequest("stream-full", { fullContent: fullText });
-		}
-
 		// Parse SSE events to extract the final response
 		const finalResponse = parseSseStream(fullText);
 
@@ -87,23 +97,37 @@ export async function convertSseToJson(
 
 			logRequest("stream-error", { error: "No response.done event found" });
 
-			// Return original stream if we can't parse
-			return new Response(fullText, {
-				status: response.status,
-				statusText: response.statusText,
-				headers: headers,
-			});
+			const jsonHeaders = new Headers(headers);
+			jsonHeaders.set("content-type", "application/json; charset=utf-8");
+				return {
+					response: new Response(
+						JSON.stringify({
+							error: {
+							message: "No response.done event found in SSE stream",
+							type: "stream_parse_error",
+						},
+						}),
+						{
+							status: 502,
+							statusText: "Bad Gateway",
+							headers: jsonHeaders,
+						},
+					),
+				};
 		}
 
 		// Return as plain JSON (not SSE)
 		const jsonHeaders = new Headers(headers);
 		jsonHeaders.set('content-type', 'application/json; charset=utf-8');
 
-		return new Response(JSON.stringify(finalResponse), {
-			status: response.status,
-			statusText: response.statusText,
-			headers: jsonHeaders,
-		});
+		return {
+			response: new Response(JSON.stringify(finalResponse), {
+				status: response.status,
+				statusText: response.statusText,
+				headers: jsonHeaders,
+			}),
+			parsedBody: finalResponse,
+		};
 
 	} catch (error) {
 		log.error("Error converting stream", { error: String(error) });

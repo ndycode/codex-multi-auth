@@ -340,10 +340,223 @@ describe('Auth Module', () => {
 				if (result.type === 'failed') {
 					expect(result.reason).toBe('http_error');
 					expect(result.statusCode).toBe(400);
-					expect(result.message).toBe('Bad Request');
+					expect(result.message).toBe('OAuth token exchange failed');
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it('returns failed for network errors during code exchange', async () => {
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn(async () => {
+				throw new Error('Network failed');
+			}) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode('code', 'verifier');
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('network_error');
+					expect(result.message).toBe('Network failed');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it('returns failed when code exchange times out', async () => {
+			const originalFetch = globalThis.fetch;
+			vi.useFakeTimers();
+			globalThis.fetch = vi.fn((_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					if (signal?.aborted) {
+						reject(signal.reason);
+						return;
+					}
+					signal?.addEventListener(
+						'abort',
+						() => {
+							reject(signal.reason);
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const resultPromise = exchangeAuthorizationCode(
+					'code',
+					'verifier',
+					REDIRECT_URI,
+					{ timeoutMs: 1000 },
+				);
+				await vi.advanceTimersByTimeAsync(1000);
+				const result = await resultPromise;
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('network_error');
+					expect(result.message).toMatch(/timed out|timeout/i);
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+			}
+		});
+
+		it('short-circuits when upstream signal is already aborted', async () => {
+			const originalFetch = globalThis.fetch;
+			vi.useFakeTimers();
+			const upstream = new AbortController();
+			const abortReason = Object.assign(new Error('upstream-pre-aborted'), {
+				name: 'AbortError',
+				code: 'ABORT_ERR',
+			});
+			const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+			upstream.abort(abortReason);
+			globalThis.fetch = vi.fn(async (_url, init) => {
+				const signal = init?.signal as AbortSignal | undefined;
+				if (signal?.aborted) {
+					throw signal.reason;
+				}
+				throw new Error('fetch should not continue with non-aborted signal');
+			}) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode(
+					'code',
+					'verifier',
+					REDIRECT_URI,
+					{ timeoutMs: 1_000, signal: upstream.signal },
+				);
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('network_error');
+					expect(result.message).toBe('upstream-pre-aborted');
+				}
+				expect(setTimeoutSpy).not.toHaveBeenCalled();
+				await vi.advanceTimersByTimeAsync(5_000);
+				expect(setTimeoutSpy).not.toHaveBeenCalled();
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+				vi.restoreAllMocks();
+			}
+		});
+
+		it('propagates mid-flight upstream abort reason and clears timeout', async () => {
+			const originalFetch = globalThis.fetch;
+			vi.useFakeTimers();
+			const upstream = new AbortController();
+			const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+			const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+			globalThis.fetch = vi.fn((_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					if (signal?.aborted) {
+						reject(signal.reason);
+						return;
+					}
+					signal?.addEventListener(
+						'abort',
+						() => {
+							reject(signal.reason);
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const resultPromise = exchangeAuthorizationCode(
+					'code',
+					'verifier',
+					REDIRECT_URI,
+					{ timeoutMs: 5_000, signal: upstream.signal },
+				);
+				upstream.abort(
+					Object.assign(new Error('upstream-mid-flight'), {
+						name: 'AbortError',
+						code: 'ABORT_ERR',
+					}),
+				);
+				const result = await resultPromise;
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('network_error');
+					expect(result.message).toBe('upstream-mid-flight');
+				}
+				expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+				expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+				vi.restoreAllMocks();
+			}
+		});
+
+		it('cleans upstream listeners and timers across repeated abortable exchanges', async () => {
+			const originalFetch = globalThis.fetch;
+			vi.useFakeTimers();
+			const upstream = new AbortController();
+			const addListenerSpy = vi.spyOn(upstream.signal, 'addEventListener');
+			const removeListenerSpy = vi.spyOn(upstream.signal, 'removeEventListener');
+			const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+			const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+			globalThis.fetch = vi.fn((_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					if (signal?.aborted) {
+						reject(signal.reason);
+						return;
+					}
+					signal?.addEventListener(
+						'abort',
+						() => {
+							reject(signal.reason);
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const first = exchangeAuthorizationCode(
+					'code-1',
+					'verifier-1',
+					REDIRECT_URI,
+					{ timeoutMs: 2_000, signal: upstream.signal },
+				);
+				const second = exchangeAuthorizationCode(
+					'code-2',
+					'verifier-2',
+					REDIRECT_URI,
+					{ timeoutMs: 2_000, signal: upstream.signal },
+				);
+				expect(addListenerSpy).toHaveBeenCalledTimes(2);
+
+				upstream.abort(new Error('shared-upstream-abort'));
+				const [firstResult, secondResult] = await Promise.all([first, second]);
+				expect(firstResult.type).toBe('failed');
+				expect(secondResult.type).toBe('failed');
+				if (firstResult.type === 'failed') {
+					expect(firstResult.reason).toBe('network_error');
+				}
+				if (secondResult.type === 'failed') {
+					expect(secondResult.reason).toBe('network_error');
+				}
+				expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
+				expect(clearTimeoutSpy).toHaveBeenCalledTimes(2);
+				expect(removeListenerSpy).toHaveBeenCalledTimes(2);
+
+				const clearTimeoutCallCount = clearTimeoutSpy.mock.calls.length;
+				await vi.advanceTimersByTimeAsync(5_000);
+				expect(clearTimeoutSpy).toHaveBeenCalledTimes(clearTimeoutCallCount);
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+				vi.restoreAllMocks();
 			}
 		});
 
@@ -444,6 +657,8 @@ describe('Auth Module', () => {
 				expect(result.type).toBe('failed');
 				if (result.type === 'failed') {
 					expect(result.reason).toBe('http_error');
+					expect(result.statusCode).toBe(400);
+					expect(result.message).toBe('Token refresh failed');
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
@@ -498,11 +713,162 @@ describe('Auth Module', () => {
 				const result = await refreshAccessToken('some-token', { signal: controller.signal });
 				expect(result.type).toBe('failed');
 				if (result.type === 'failed') {
-					expect(result.reason).toBe('unknown');
+					expect(result.reason).toBe('network_error');
 					expect(result.message).toBe('Request aborted');
 				}
 			} finally {
 				globalThis.fetch = originalFetch;
+			}
+		});
+
+			it('enforces refresh timeout when refresh endpoint stalls', async () => {
+			vi.useFakeTimers();
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						'abort',
+						() => {
+							const reason = init.signal?.reason;
+							if (reason instanceof Error) {
+								reject(reason);
+								return;
+							}
+							reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+						},
+						{ once: true },
+					);
+				}),
+			) as never;
+
+			try {
+				const resultPromise = refreshAccessToken('slow-token', { timeoutMs: 1_000 });
+				await vi.advanceTimersByTimeAsync(1_200);
+				const result = await resultPromise;
+				expect(result.type).toBe('failed');
+				if (result.type === 'failed') {
+					expect(result.reason).toBe('network_error');
+					expect(result.message).toContain('timeout');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
+				}
+			});
+
+			it.each([0, -1, Number.NaN])(
+				'clamps invalid refresh timeout %p to at least 1000ms',
+				async (timeoutMs) => {
+					vi.useFakeTimers();
+					const originalFetch = globalThis.fetch;
+					globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+						new Promise<Response>((_resolve, reject) => {
+							init?.signal?.addEventListener(
+								'abort',
+								() => {
+									const reason = init.signal?.reason;
+									if (reason instanceof Error) {
+										reject(reason);
+										return;
+									}
+									reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+								},
+								{ once: true },
+							);
+						}),
+					) as never;
+
+					try {
+						let settled = false;
+						const resultPromise = refreshAccessToken('slow-token', { timeoutMs }).then((result) => {
+							settled = true;
+							return result;
+						});
+
+						await vi.advanceTimersByTimeAsync(900);
+						await Promise.resolve();
+						expect(settled).toBe(false);
+
+						await vi.advanceTimersByTimeAsync(200);
+						const result = await resultPromise;
+						expect(result.type).toBe('failed');
+						if (result.type === 'failed') {
+							expect(result.reason).toBe('network_error');
+							expect(result.message).toContain('1000');
+						}
+					} finally {
+						globalThis.fetch = originalFetch;
+						vi.useRealTimers();
+					}
+				},
+			);
+
+			it('isolates concurrent refresh abort paths for shared and independent signals', async () => {
+			vi.useFakeTimers();
+			const originalFetch = globalThis.fetch;
+			const observedSignals: AbortSignal[] = [];
+			globalThis.fetch = vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal;
+					if (!signal) {
+						reject(new Error('missing signal'));
+						return;
+					}
+					observedSignals.push(signal);
+					const rejectWithAbort = () => {
+						const reason = signal.reason;
+						if (reason instanceof Error) {
+							reject(reason);
+							return;
+						}
+						reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+					};
+					if (signal.aborted) {
+						rejectWithAbort();
+						return;
+					}
+					signal.addEventListener('abort', rejectWithAbort, { once: true });
+				}),
+			) as never;
+
+			try {
+				const sharedController = new AbortController();
+				const independentController = new AbortController();
+
+				const sharedPromise = refreshAccessToken('slow-shared', {
+					signal: sharedController.signal,
+					timeoutMs: 5_000,
+				});
+				const independentPromise = refreshAccessToken('slow-independent', {
+					signal: independentController.signal,
+					timeoutMs: 1_000,
+				});
+
+				await vi.advanceTimersByTimeAsync(1_100);
+				const independentResult = await independentPromise;
+				expect(independentResult.type).toBe('failed');
+				if (independentResult.type === 'failed') {
+					expect(independentResult.reason).toBe('network_error');
+					expect(independentResult.message).toContain('timeout');
+				}
+
+				expect(observedSignals).toHaveLength(2);
+
+				sharedController.abort(
+					Object.assign(new Error('shared-controller-abort'), {
+						name: 'AbortError',
+						code: 'ABORT_ERR',
+					}),
+				);
+				const sharedResult = await sharedPromise;
+				expect(sharedResult.type).toBe('failed');
+				if (sharedResult.type === 'failed') {
+					expect(sharedResult.reason).toBe('network_error');
+					expect(sharedResult.message).toContain('shared-controller-abort');
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.useRealTimers();
 			}
 		});
 

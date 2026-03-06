@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import type { PluginConfig } from "./types.js";
 import { logWarn } from "./logger.js";
 import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
@@ -9,6 +10,7 @@ import {
 	loadUnifiedPluginConfigSync,
 	saveUnifiedPluginConfig,
 } from "./unified-settings.js";
+import { acquireFileLock } from "./file-lock.js";
 
 const CONFIG_DIR = getCodexMultiAuthDir();
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
@@ -34,6 +36,14 @@ const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const CONFIG_READ_MAX_ATTEMPTS = 4;
+const CONFIG_READ_RETRY_BASE_DELAY_MS = 10;
+const pluginConfigShape = PluginConfigSchema.shape;
+type PluginConfigShapeKey = keyof typeof pluginConfigShape;
+const CONFIG_CONFLICT_RETRY_LIMIT = 3;
+const RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES = 12;
+const RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES = 100;
+const RETRY_ALL_ACCOUNTS_ABSOLUTE_CEILING_HARD_MAX_MS = 24 * 60 * 60_000;
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -124,7 +134,8 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	fastSessionMaxInputItems: 30,
 	retryAllAccountsRateLimited: true,
 	retryAllAccountsMaxWaitMs: 0,
-	retryAllAccountsMaxRetries: Infinity,
+	retryAllAccountsMaxRetries: RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES,
+	retryAllAccountsAbsoluteCeilingMs: 0,
 	unsupportedCodexPolicy: "strict",
 	fallbackOnUnsupportedCodexModel: false,
 	fallbackToGpt52OnUnsupportedGpt53: true,
@@ -133,6 +144,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	rateLimitToastDebounceMs: 60_000,
 	toastDurationMs: 5_000,
 	perProjectAccounts: true,
+	telemetryEnabled: true,
 	sessionRecovery: true,
 	autoResume: true,
 	parallelProbing: false,
@@ -193,7 +205,7 @@ export function loadPluginConfig(): PluginConfig {
 				return { ...DEFAULT_PLUGIN_CONFIG };
 			}
 
-			const fileContent = readFileSync(configPath, "utf-8");
+			const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 			const normalizedFileContent = stripUtf8Bom(fileContent);
 			userConfig = JSON.parse(normalizedFileContent) as unknown;
 			sourceKind = "file";
@@ -222,6 +234,7 @@ export function loadPluginConfig(): PluginConfig {
 				`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
 			);
 		}
+		const sanitizedConfig = sanitizePluginConfigRecord(userConfig);
 
 		if (
 			sourceKind === "file" &&
@@ -235,7 +248,7 @@ export function loadPluginConfig(): PluginConfig {
 
 		return {
 			...DEFAULT_PLUGIN_CONFIG,
-			...(userConfig as Partial<PluginConfig>),
+			...sanitizedConfig,
 		};
 	} catch (error) {
 		const configPath = resolvePluginConfigPath() ?? CONFIG_PATH;
@@ -268,44 +281,157 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isPluginConfigShapeKey(key: string): key is PluginConfigShapeKey {
+	return Object.hasOwn(pluginConfigShape, key);
+}
+
+function sanitizePluginConfigRecord(userConfig: unknown): Partial<PluginConfig> {
+	if (!isRecord(userConfig)) return {};
+	const sanitized: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(userConfig)) {
+		if (!isPluginConfigShapeKey(key)) continue;
+		const parsed = pluginConfigShape[key].safeParse(value);
+		if (parsed.success && parsed.data !== undefined) {
+			sanitized[key] = parsed.data;
+		}
+	}
+	return sanitized as Partial<PluginConfig>;
+}
+
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function readFileSyncWithRetry(path: string, encoding: BufferEncoding): string {
+	for (let attempt = 0; attempt < CONFIG_READ_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			return readFileSync(path, encoding);
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= CONFIG_READ_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			sleepSync(CONFIG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+	throw new Error(`Failed to read config file after ${CONFIG_READ_MAX_ATTEMPTS} attempts`);
 }
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function computeSha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function createConfigConflictError(path: string): Error & { code: string } {
+	return Object.assign(
+		new Error(
+			`Detected concurrent config modification at ${path}; reload and retry`,
+		),
+		{ code: "ECONFLICT" as const },
+	);
+}
+
+function isConfigConflictError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === "ECONFLICT";
+}
+
+type JsonRecordSnapshot = {
+	record: Record<string, unknown> | null;
+	revision: string | null;
+};
+
+async function readConfigSnapshotFromPath(
+	configPath: string,
+): Promise<JsonRecordSnapshot> {
+	let fileContent: string | null = null;
+	for (let attempt = 0; attempt < CONFIG_READ_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			fileContent = await fs.readFile(configPath, "utf-8");
+			break;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return { record: null, revision: null };
+			}
+			if (!isRetryableFsError(error) || attempt >= CONFIG_READ_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			await sleep(CONFIG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+	if (fileContent === null) {
+		return { record: null, revision: null };
+	}
+	const normalizedFileContent = stripUtf8Bom(fileContent);
+	const revision = computeSha256(normalizedFileContent);
+	let record: Record<string, unknown> | null = null;
+	try {
+		const parsed = JSON.parse(normalizedFileContent) as unknown;
+		record = isRecord(parsed) ? parsed : null;
+	} catch {
+		record = null;
+	}
+	return {
+		record,
+		revision,
+	};
+}
+
 async function writeJsonFileAtomicWithRetry(
 	filePath: string,
 	payload: Record<string, unknown>,
+	options?: { expectedRevision?: string | null },
 ): Promise<void> {
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.mkdir(dirname(filePath), { recursive: true });
-	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-	let renamed = false;
+	const lock = await acquireFileLock(`${filePath}.lock`, {
+		maxAttempts: 80,
+		baseDelayMs: 15,
+		maxDelayMs: 800,
+		staleAfterMs: 120_000,
+	});
 	try {
-		for (let attempt = 0; attempt < 5; attempt += 1) {
-			try {
-				await fs.rename(tempPath, filePath);
-				renamed = true;
-				return;
-			} catch (error) {
-				if (!isRetryableFsError(error) || attempt >= 4) {
-					throw error;
+		const expectedRevision = options?.expectedRevision;
+		if (expectedRevision !== undefined) {
+			const currentSnapshot = await readConfigSnapshotFromPath(filePath);
+			if (currentSnapshot.revision !== expectedRevision) {
+				throw createConfigConflictError(filePath);
+			}
+		}
+		await fs.mkdir(dirname(filePath), { recursive: true });
+		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+		let renamed = false;
+		try {
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rename(tempPath, filePath);
+					renamed = true;
+					return;
+				} catch (error) {
+					if (!isRetryableFsError(error) || attempt >= 4) {
+						throw error;
+					}
+					await sleep(10 * 2 ** attempt);
 				}
-				await sleep(10 * 2 ** attempt);
+			}
+		} finally {
+			if (!renamed) {
+				try {
+					await fs.unlink(tempPath);
+				} catch {
+					// Best-effort temp cleanup.
+				}
 			}
 		}
 	} finally {
-		if (!renamed) {
-			try {
-				await fs.unlink(tempPath);
-			} catch {
-				// Best-effort temp cleanup.
-			}
-		}
+		await lock.release();
 	}
 }
 
@@ -331,13 +457,16 @@ async function withConfigSaveLock(path: string, task: () => Promise<void>): Prom
  * @returns The parsed top-level JSON object as a Record<string, unknown> when the file exists and contains an object, or `null` if the file is missing, malformed, or could not be read.
  */
 function readConfigRecordFromPath(configPath: string): Record<string, unknown> | null {
-	if (!existsSync(configPath)) return null;
 	try {
-		const fileContent = readFileSync(configPath, "utf-8");
+		const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const parsed = JSON.parse(normalizedFileContent) as unknown;
 		return isRecord(parsed) ? parsed : null;
 	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
 		logConfigWarnOnce(
 			`Failed to read config from ${configPath}: ${
 				error instanceof Error ? error.message : String(error)
@@ -391,11 +520,29 @@ export async function savePluginConfig(configPatch: Partial<PluginConfig>): Prom
 
 	if (envPath.length > 0) {
 		await withConfigSaveLock(envPath, async () => {
-			const merged = {
-				...(readConfigRecordFromPath(envPath) ?? {}),
-				...sanitizedPatch,
-			};
-			await writeJsonFileAtomicWithRetry(envPath, merged);
+			let lastError: unknown;
+			for (let attempt = 0; attempt < CONFIG_CONFLICT_RETRY_LIMIT; attempt += 1) {
+				const snapshot = await readConfigSnapshotFromPath(envPath);
+				const merged = {
+					...(snapshot.record ?? {}),
+					...sanitizedPatch,
+				};
+				try {
+					await writeJsonFileAtomicWithRetry(envPath, merged, {
+						expectedRevision: snapshot.revision,
+					});
+					return;
+				} catch (error) {
+					lastError = error;
+					if (
+						!isConfigConflictError(error) ||
+						attempt >= CONFIG_CONFLICT_RETRY_LIMIT - 1
+					) {
+						throw error;
+					}
+				}
+			}
+			throw lastError instanceof Error ? lastError : new Error("Failed to save plugin config");
 		});
 		return;
 	}
@@ -586,8 +733,17 @@ export function getRetryAllAccountsMaxRetries(pluginConfig: PluginConfig): numbe
 	return resolveNumberSetting(
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
 		pluginConfig.retryAllAccountsMaxRetries,
-		Infinity,
-		{ min: 0 },
+		RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES,
+		{ min: 0, max: RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES },
+	);
+}
+
+export function getRetryAllAccountsAbsoluteCeilingMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS",
+		pluginConfig.retryAllAccountsAbsoluteCeilingMs,
+		0,
+		{ min: 0, max: RETRY_ALL_ACCOUNTS_ABSOLUTE_CEILING_HARD_MAX_MS },
 	);
 }
 
@@ -717,6 +873,14 @@ export function getPerProjectAccounts(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_PER_PROJECT_ACCOUNTS",
 		pluginConfig.perProjectAccounts,
+		true,
+	);
+}
+
+export function getTelemetryEnabled(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_TELEMETRY_ENABLED",
+		pluginConfig.telemetryEnabled,
 		true,
 	);
 }

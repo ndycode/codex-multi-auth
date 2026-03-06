@@ -76,6 +76,7 @@ vi.mock("../lib/config.js", () => ({
 	getFastSessionMaxInputItems: () => 30,
 	getRateLimitToastDebounceMs: () => 5000,
 	getRetryAllAccountsMaxRetries: () => 3,
+	getRetryAllAccountsAbsoluteCeilingMs: () => 0,
 	getRetryAllAccountsMaxWaitMs: () => 30000,
 	getRetryAllAccountsRateLimited: () => true,
 	getUnsupportedCodexPolicy: vi.fn(() => "fallback"),
@@ -90,7 +91,7 @@ vi.mock("../lib/config.js", () => ({
 	getEmptyResponseMaxRetries: () => 2,
 	getEmptyResponseRetryDelayMs: () => 1000,
 	getPidOffsetEnabled: () => false,
-	getFetchTimeoutMs: () => 60000,
+	getFetchTimeoutMs: vi.fn(() => 60000),
 	getStreamStallTimeoutMs: () => 45000,
 	getLiveAccountSync: vi.fn(() => false),
 	getLiveAccountSyncDebounceMs: () => 250,
@@ -108,10 +109,17 @@ vi.mock("../lib/config.js", () => ({
 	getPreemptiveQuotaRemainingPercent5h: () => 5,
 	getPreemptiveQuotaRemainingPercent7d: () => 5,
 	getPreemptiveQuotaMaxDeferralMs: () => 2 * 60 * 60_000,
+	getTelemetryEnabled: () => true,
 	getCodexTuiV2: () => false,
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
-	loadPluginConfig: () => ({}),
+	loadPluginConfig: vi.fn(() => ({})),
+}));
+
+const recordTelemetryEventMock = vi.fn(async () => {});
+
+vi.mock("../lib/telemetry.js", () => ({
+	recordTelemetryEvent: recordTelemetryEventMock,
 }));
 
 const liveAccountSyncSyncToPathMock = vi.fn(async () => {});
@@ -212,6 +220,10 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 	resolveUnsupportedCodexFallbackModel: vi.fn(() => undefined),
 	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
 	handleSuccessResponse: vi.fn(async (response: Response) => response),
+	handleSuccessResponseDetailed: vi.fn(async (response: Response) => ({
+		response,
+		parsedBody: undefined,
+	})),
 }));
 
 const mockStorage = {
@@ -416,6 +428,11 @@ describe("OpenAIOAuthPlugin", () => {
 	beforeEach(async () => {
 		vi.clearAllMocks();
 		mockClient = createMockClient();
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.loadPluginConfig).mockReset();
+		vi.mocked(configModule.loadPluginConfig).mockReturnValue({});
+		vi.mocked(configModule.getFetchTimeoutMs).mockReset();
+		vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(60000);
 
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
@@ -503,6 +520,126 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("invalid_response");
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("passes configured timeout to manual OAuth callback exchange", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const configModule = await import("../lib/config.js");
+			const manualMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					callback: (input: string) => Promise<{ type: string; reason?: string; message?: string }>;
+				}>;
+			};
+			const expectedTimeoutMs = 4321;
+			const pluginConfig = { fetchTimeoutMs: expectedTimeoutMs };
+			vi.mocked(configModule.loadPluginConfig).mockReturnValue(pluginConfig);
+			vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(expectedTimeoutMs);
+
+			const flow = await manualMethod.authorize();
+			await flow.callback("http://127.0.0.1:1455/auth/callback?code=abc123&state=test-state");
+
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
+				"abc123",
+				"test-verifier",
+				authModule.REDIRECT_URI,
+				{ timeoutMs: expectedTimeoutMs },
+			);
+			expect(vi.mocked(configModule.getFetchTimeoutMs)).toHaveBeenCalledWith(pluginConfig);
+		});
+
+		it("passes configured timeout to browser OAuth callback exchange", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const configModule = await import("../lib/config.js");
+			const browserModule = await import("../lib/auth/browser.js");
+			const serverModule = await import("../lib/auth/server.js");
+			const expectedTimeoutMs = 6789;
+			const pluginConfig = { fetchTimeoutMs: expectedTimeoutMs };
+			vi.mocked(configModule.loadPluginConfig).mockReturnValue(pluginConfig);
+			vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(expectedTimeoutMs);
+			vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue({
+				pkce: { verifier: "custom-verifier", challenge: "custom-challenge" },
+				state: "custom-state",
+				url: "https://auth.openai.com/oauth/authorize?state=custom-state",
+			});
+			vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+			vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+				ready: true,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize();
+
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
+				"oauth-code",
+				"custom-verifier",
+				authModule.REDIRECT_URI,
+				{ timeoutMs: expectedTimeoutMs },
+			);
+			expect(vi.mocked(configModule.getFetchTimeoutMs)).toHaveBeenCalledWith(pluginConfig);
+		});
+
+		it("keeps timeout wiring stable under concurrent OAuth authorize calls", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const configModule = await import("../lib/config.js");
+			const browserModule = await import("../lib/auth/browser.js");
+			const serverModule = await import("../lib/auth/server.js");
+			const expectedTimeoutMs = 2468;
+			vi.mocked(configModule.loadPluginConfig).mockReturnValue({ fetchTimeoutMs: expectedTimeoutMs });
+			vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(expectedTimeoutMs);
+			vi.mocked(authModule.createAuthorizationFlow)
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-1", challenge: "challenge-1" },
+					state: "state-1",
+					url: "https://auth.openai.com/oauth/authorize?state=state-1",
+				})
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-2", challenge: "challenge-2" },
+					state: "state-2",
+					url: "https://auth.openai.com/oauth/authorize?state=state-2",
+				})
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-3", challenge: "challenge-3" },
+					state: "state-3",
+					url: "https://auth.openai.com/oauth/authorize?state=state-3",
+				});
+			vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+			vi.mocked(serverModule.startLocalOAuthServer)
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-1" })),
+				})
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-2" })),
+				})
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-3" })),
+				});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await Promise.all([autoMethod.authorize(), autoMethod.authorize(), autoMethod.authorize()]);
+
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledTimes(3);
+			const calls = vi.mocked(authModule.exchangeAuthorizationCode).mock.calls;
+			expect(calls.map((call) => call[0])).toEqual(
+				expect.arrayContaining(["code-1", "code-2", "code-3"]),
+			);
+			expect(calls.map((call) => call[1])).toEqual(
+				expect.arrayContaining(["verifier-1", "verifier-2", "verifier-3"]),
+			);
+			for (const call of calls) {
+				expect(call[3]).toEqual({ timeoutMs: expectedTimeoutMs });
+			}
 		});
 
 		it("uses REDIRECT_URI in manual callback validation copy", async () => {
@@ -627,6 +764,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 				expect(liveAccountSyncCtorMock).toHaveBeenCalledTimes(1);
 				expect(liveAccountSyncSyncToPathMock).toHaveBeenCalledTimes(1);
+				expect(recordTelemetryEventMock).not.toHaveBeenCalled();
 			} finally {
 				vi.mocked(configModule.getLiveAccountSync).mockReturnValue(false);
 			}
@@ -696,6 +834,11 @@ describe("OpenAIOAuthPlugin", () => {
 				{ refreshToken: "r2", email: "user2@example.com" },
 			];
 			const result = await plugin.tool["codex-switch"].execute({ index: 2 });
+			const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
+			expect(mockStorage.activeIndex).toBe(1);
+			for (const family of MODEL_FAMILIES) {
+				expect(mockStorage.activeIndexByFamily[family]).toBe(1);
+			}
 			expect(result).toContain("Switched to account");
 		});
 
@@ -731,21 +874,115 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it("shows detailed status for accounts", async () => {
+			const now = Date.now();
 			mockStorage.accounts = [
-				{ refreshToken: "r1", email: "user@example.com", lastUsed: Date.now() - 60000 },
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					lastUsed: now - 60000,
+					rateLimitResetTimes: { codex: now + 120000 },
+				},
 			];
 			mockStorage.activeIndexByFamily = { codex: 0 };
 			const result = await plugin.tool["codex-status"].execute();
 			expect(result).toContain("Account Status");
 			expect(result).toContain("Active index by model family");
+			expect(result).toContain("resets in");
 		});
 	});
 
 	describe("codex-metrics tool", () => {
-		it("shows runtime metrics", async () => {
-			const result = await plugin.tool["codex-metrics"].execute();
-			expect(result).toContain("Codex Plugin Metrics");
-			expect(result).toContain("Total upstream requests");
+		it("shows runtime metrics with numeric formatting and parallel aggregation", async () => {
+			const readNumericMetric = (
+				report: string,
+				label: string,
+				options: { suffix?: string; allowDecimal?: boolean } = {},
+			): number => {
+				const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const numberPattern = options.allowDecimal ? "(\\d+(?:\\.\\d+)?)" : "(\\d+)";
+				const suffixPattern = options.suffix ? options.suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "";
+				const metricPattern = new RegExp(
+					`^${escapedLabel}: ${numberPattern}${suffixPattern}$`,
+					"m",
+				);
+				const match = report.match(metricPattern);
+				expect(match, `missing metric line for ${label}`).not.toBeNull();
+				return Number(match?.[1] ?? "NaN");
+			};
+
+			const baseline = await plugin.tool["codex-metrics"].execute();
+			expect(baseline).toContain("Codex Plugin Metrics");
+			expect(baseline).toMatch(/^Total upstream requests: \d+$/m);
+			expect(baseline).toMatch(/^Email hydration runs: \d+$/m);
+			expect(baseline).toMatch(/^Email hydration avg duration: \d+ms$/m);
+			expect(baseline).toMatch(
+				/^Refresh guardian: (on|off) \(\d+ refreshed, \d+ failed, avg tick \d+ms\)$/m,
+			);
+
+			const baselineTotal = readNumericMetric(baseline, "Total upstream requests");
+			const baselineSuccess = readNumericMetric(baseline, "Successful responses");
+			const baselineFailed = readNumericMetric(baseline, "Failed responses");
+			const baselineHydrationRuns = readNumericMetric(baseline, "Email hydration runs");
+			const baselineHydrationAvg = readNumericMetric(baseline, "Email hydration avg duration", {
+				suffix: "ms",
+			});
+			const baselineSuccessRate = readNumericMetric(baseline, "Success rate", {
+				suffix: "%",
+				allowDecimal: true,
+			});
+			expect(baselineTotal).toBeGreaterThanOrEqual(0);
+			expect(baselineSuccess).toBeGreaterThanOrEqual(0);
+			expect(baselineFailed).toBeGreaterThanOrEqual(0);
+			expect(baselineHydrationRuns).toBeGreaterThanOrEqual(0);
+			expect(baselineHydrationAvg).toBeGreaterThanOrEqual(0);
+			expect(baselineSuccessRate).toBeGreaterThanOrEqual(0);
+
+			const originalFetch = globalThis.fetch;
+			try {
+				globalThis.fetch = vi
+					.fn()
+					.mockResolvedValue(new Response(JSON.stringify({ id: "resp_test", output: "ok" }), { status: 200 }));
+
+				const getAuth = async () => ({
+					type: "oauth" as const,
+					access: "a",
+					refresh: "r",
+					expires: Date.now() + 60_000,
+					multiAccount: true,
+				});
+				const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as {
+					fetch: (input: string, init: RequestInit) => Promise<Response>;
+				};
+
+				const parallelRuns = 3;
+				const responses = await Promise.all(
+					Array.from({ length: parallelRuns }, () => {
+						return sdk.fetch("https://api.openai.com/v1/responses", {
+							method: "POST",
+							body: JSON.stringify({ model: "gpt-5.1", input: "ping" }),
+						});
+					}),
+				);
+				for (const response of responses) {
+					expect(response.status).toBe(200);
+				}
+
+				const afterParallel = await plugin.tool["codex-metrics"].execute();
+				const totalAfter = readNumericMetric(afterParallel, "Total upstream requests");
+				const successAfter = readNumericMetric(afterParallel, "Successful responses");
+				const failedAfter = readNumericMetric(afterParallel, "Failed responses");
+				const successRateAfter = readNumericMetric(afterParallel, "Success rate", {
+					suffix: "%",
+					allowDecimal: true,
+				});
+
+				expect(totalAfter - baselineTotal).toBe(parallelRuns);
+				expect(successAfter - baselineSuccess).toBe(parallelRuns);
+				expect(failedAfter).toBe(baselineFailed);
+				expect(successRateAfter).toBeGreaterThan(0);
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
 		});
 	});
 
@@ -791,9 +1028,13 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("handles removal of last account", async () => {
 			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			mockStorage.activeIndex = 3;
+			mockStorage.activeIndexByFamily = { codex: 3, "gpt-5.1": 3 };
 			const result = await plugin.tool["codex-remove"].execute({ index: 1 });
 			expect(result).toContain("Removed");
 			expect(result).toContain("No accounts remaining");
+			expect(mockStorage.activeIndex).toBe(0);
+			expect(mockStorage.activeIndexByFamily).toEqual({});
 		});
 	});
 
@@ -934,6 +1175,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 
 		const result = await plugin.tool["codex-refresh"].execute();
 		expect(result).toContain("Failed");
+		expect(recordTelemetryEventMock).not.toHaveBeenCalled();
 	});
 
 	it("handles refresh throwing errors", async () => {
@@ -950,6 +1192,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const result = await plugin.tool["codex-refresh"].execute();
 		expect(result).toContain("Error");
 		expect(result).toContain("Network timeout");
+		expect(recordTelemetryEventMock).not.toHaveBeenCalled();
 	});
 
 	it("handles storage errors in codex-remove", async () => {
@@ -971,8 +1214,8 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 	});
 
 	it("adjusts activeIndex when removing account before it", async () => {
-		// When activeIndex=2 and we remove index 0 (1-based: 1), the remaining accounts
-		// have length 2. Since activeIndex (2) >= length (2), it resets to 0.
+		// When activeIndex=2 and we remove index 0 (1-based: 1), selection should shift
+		// to keep pointing at the same logical account after compaction.
 		mockStorage.accounts = [
 			{ refreshToken: "r1", email: "user1@example.com" },
 			{ refreshToken: "r2", email: "user2@example.com" },
@@ -987,10 +1230,8 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
 		await plugin.tool["codex-remove"].execute({ index: 1 });
-		// After removing account at 0-based index 0, length is 2.
-		// activeIndex (2) >= length (2), so it resets to 0
-		expect(mockStorage.activeIndex).toBe(0);
-		expect(mockStorage.activeIndexByFamily.codex).toBe(0);
+		expect(mockStorage.activeIndex).toBe(1);
+		expect(mockStorage.activeIndexByFamily.codex).toBe(1);
 	});
 
 	it("resets activeIndex when removing active account at end", async () => {
@@ -1008,6 +1249,66 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 
 		await plugin.tool["codex-remove"].execute({ index: 2 });
 		expect(mockStorage.activeIndex).toBe(0);
+	});
+
+	it("invalidates cached account manager after hydrate persistence", async () => {
+		const previousNodeEnv = process.env.NODE_ENV;
+		const previousWorkerId = process.env.VITEST_WORKER_ID;
+		const previousSkipHydrate = process.env.CODEX_SKIP_EMAIL_HYDRATE;
+		delete process.env.NODE_ENV;
+		delete process.env.VITEST_WORKER_ID;
+		delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
+
+		const { saveAccounts } = await import("../lib/storage.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+		vi.mocked(cliModule.promptLoginMode).mockResolvedValueOnce({ mode: "cancel" } as never);
+
+		mockStorage.accounts = [{ refreshToken: "refresh-hydrate-target" }];
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		try {
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			loadFromDiskSpy.mockClear();
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize();
+			expect(vi.mocked(saveAccounts)).toHaveBeenCalled();
+
+			loadFromDiskSpy.mockClear();
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			loadFromDiskSpy.mockRestore();
+			if (previousNodeEnv === undefined) {
+				delete process.env.NODE_ENV;
+			} else {
+				process.env.NODE_ENV = previousNodeEnv;
+			}
+			if (previousWorkerId === undefined) {
+				delete process.env.VITEST_WORKER_ID;
+			} else {
+				process.env.VITEST_WORKER_ID = previousWorkerId;
+			}
+			if (previousSkipHydrate === undefined) {
+				delete process.env.CODEX_SKIP_EMAIL_HYDRATE;
+			} else {
+				process.env.CODEX_SKIP_EMAIL_HYDRATE = previousSkipHydrate;
+			}
+		}
 	});
 });
 
@@ -1078,6 +1379,20 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(response.status).toBe(503);
 		expect(await response.text()).toContain("server errors or auth issues");
 		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "plugin",
+				event: "request.network_error",
+				outcome: "failure",
+			}),
+		);
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "plugin",
+				event: "request.accounts_exhausted",
+				outcome: "failure",
+			}),
+		);
 	});
 
 	it("does not penalize account health when fetch is aborted by user", async () => {
@@ -1726,6 +2041,49 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 	});
+
+	it("does not count SSE parse failures as successful responses", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "streamed" }), { status: 200 }),
+		);
+		const { handleSuccessResponseDetailed } = await import("../lib/request/fetch-helpers.js");
+		vi.mocked(handleSuccessResponseDetailed).mockImplementationOnce(async () => ({
+			response: new Response(
+				JSON.stringify({
+					error: {
+						message: "No response.done event found in SSE stream",
+						type: "stream_parse_error",
+					},
+				}),
+				{
+					status: 502,
+					statusText: "Bad Gateway",
+					headers: { "content-type": "application/json; charset=utf-8" },
+				},
+			),
+			parsedBody: undefined,
+		}));
+
+		const readNumericMetric = (report: string, label: string): number => {
+			const match = report.match(new RegExp(`^${label}:\\s+([0-9]+)$`, "m"));
+			return Number(match?.[1] ?? Number.NaN);
+		};
+
+		const { plugin, sdk } = await setupPlugin();
+		const baseline = await plugin.tool["codex-metrics"].execute();
+		const baselineSuccess = readNumericMetric(baseline, "Successful responses");
+		const baselineFailed = readNumericMetric(baseline, "Failed responses");
+
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+		});
+		expect(response.status).toBe(502);
+
+		const after = await plugin.tool["codex-metrics"].execute();
+		expect(readNumericMetric(after, "Successful responses")).toBe(baselineSuccess);
+		expect(readNumericMetric(after, "Failed responses")).toBe(baselineFailed + 1);
+	});
 });
 
 describe("OpenAIOAuthPlugin resolveAccountSelection", () => {
@@ -1899,6 +2257,11 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		await plugin.event({
 			event: { type: "account.select", properties: { accountIndex: 1 } },
 		});
+		const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
+		expect(mockStorage.activeIndex).toBe(1);
+		for (const family of MODEL_FAMILIES) {
+			expect(mockStorage.activeIndexByFamily[family]).toBe(1);
+		}
 	});
 
 	it("reloads account manager from disk when handling account.select", async () => {
@@ -1967,6 +2330,114 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		await plugin.event({
 			event: { type: "account.select", properties: { index: "invalid" } },
 		});
+	});
+});
+
+describe("OpenAIOAuthPlugin telemetry hygiene", () => {
+	it("does not emit raw token values in telemetry payloads", async () => {
+		recordTelemetryEventMock.mockClear();
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error("forced-network-error"));
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "telemetry_access_token_fixture_1234567890",
+			refresh: "telemetry_refresh_token_fixture_1234567890",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		try {
+			const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			expect(response.status).toBe(503);
+
+			expect(recordTelemetryEventMock).toHaveBeenCalled();
+			const serializedCalls = JSON.stringify(recordTelemetryEventMock.mock.calls);
+			expect(serializedCalls).not.toContain("telemetry_access_token_fixture_1234567890");
+			expect(serializedCalls).not.toContain("telemetry_refresh_token_fixture_1234567890");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it("handles rejected telemetry writes without unhandled rejections", async () => {
+		recordTelemetryEventMock.mockRejectedValue(new Error("telemetry-write-failure"));
+		mockStorage.accounts = [
+			{
+				accountId: "acc-1",
+				email: "user@example.com",
+				refreshToken: "refresh-1",
+			},
+		];
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = { codex: 0 };
+
+		const unhandledRejections: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown) => {
+			unhandledRejections.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error("forced-network-error"));
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "telemetry-access-token",
+			refresh: "refresh-1",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		try {
+			const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			const responses = await Promise.all(
+				Array.from({ length: 6 }, () =>
+					sdk.fetch!("https://api.openai.com/v1/chat", {
+						method: "POST",
+						body: JSON.stringify({ model: "gpt-5.1" }),
+					}),
+				),
+			);
+			for (const response of responses) {
+				expect(response.status).toBe(503);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(unhandledRejections).toHaveLength(0);
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+			globalThis.fetch = originalFetch;
+			recordTelemetryEventMock.mockResolvedValue(undefined);
+		}
+	});
+});
+
+describe("lib/index barrel exports", () => {
+	it("re-exports hardened runtime modules", async () => {
+		const api = await vi.importActual<Record<string, unknown>>("../lib/index.js");
+		expect(api).toEqual(
+			expect.objectContaining({
+				acquireFileLock: expect.any(Function),
+				encryptSecret: expect.any(Function),
+				decryptSecret: expect.any(Function),
+				enforceDataRetention: expect.any(Function),
+				redactForExternalOutput: expect.any(Function),
+				authorizeAction: expect.any(Function),
+				runBackgroundJobWithRetry: expect.any(Function),
+				checkAndRecordIdempotencyKey: expect.any(Function),
+				recordTelemetryEvent: expect.any(Function),
+			}),
+		);
 	});
 });
 

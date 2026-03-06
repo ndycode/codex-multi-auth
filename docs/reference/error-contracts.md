@@ -31,17 +31,24 @@ Examples:
 
 The following commands support `--json` and produce pretty-printed JSON objects:
 
+- `codex auth list --json`
 - `codex auth forecast --json`
 - `codex auth report --json`
 - `codex auth fix --json`
 - `codex auth doctor --json`
 - `codex auth verify-flagged --json`
+- `codex auth rotate-secrets --json`
 
 Compatibility guarantees:
 
 - Output is valid JSON.
 - `command` field identifies the command family.
+- `schemaVersion` is required for machine-consumable contracts.
 - Documented top-level sections remain stable unless a migration note is provided.
+- Optional redaction mode (`CODEX_AUTH_REDACT_JSON_OUTPUT=1`) masks sensitive fields without changing schema shape.
+- Paginated list output uses `pagination.{cursor,nextCursor,hasMore,pageSize}`.
+
+For `rotate-secrets`, automation may provide `--idempotency-key <key>` to avoid duplicate side effects on retried runs.
 
 ---
 

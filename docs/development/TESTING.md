@@ -20,10 +20,21 @@ Coverage thresholds in `vitest.config.ts`: statements/branches/functions/lines >
 ## Core Commands
 
 ```bash
+npm run setup:dev
+npm run doctor:dev
+npm run verify
+npm run verify:ci
+```
+
+Component commands:
+
+```bash
 npm run typecheck
 npm run lint
 npm test
 npm run build
+npm run audit:ci
+npm run license:check
 ```
 
 Optional:
@@ -42,8 +53,21 @@ npm run bench:edit-formats:smoke
 1. `npm run typecheck`
 2. `npm run lint`
 3. `npm test`
-4. `npm run build`
-5. run docs command checks for newly documented command paths
+4. `npm run coverage`
+5. `npm run build`
+6. `npm run audit:ci`
+7. `npm run license:check`
+8. `npm run verify`
+9. `npm run test -- test/documentation.test.ts`
+10. run command-path docs parity check: `npm run test -- test/documentation.test.ts`
+
+## Release Gate
+
+Run before version bump, tag, or publish workflow:
+
+1. `npm run release:check`
+2. verify changelog and release notes alignment
+3. confirm PR checks are green on the release branch
 
 * * *
 

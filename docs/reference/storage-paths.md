@@ -26,6 +26,7 @@ Override root:
 | Accounts WAL | `~/.codex/multi-auth/openai-codex-accounts.json.wal` |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
+| Background job DLQ | `~/.codex/multi-auth/background-job-dlq.jsonl` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Cache | `~/.codex/multi-auth/cache/` |
 | Codex CLI accounts | `~/.codex/accounts.json` |

@@ -619,4 +619,31 @@ describe("cleanupToolDefinitions", () => {
     const props = result[0].function.parameters.properties as Record<string, unknown>;
     expect(props.valid).toEqual({ type: "string" });
   });
-});
+
+  it("normalizes non-finite numbers to null for JSON parity", () => {
+    const tools = [{
+      type: "function",
+	      function: {
+	        name: "non-finite-values",
+	        parameters: {
+	          type: "object",
+	          properties: {
+	            coercedValues: {
+	              anyOf: [
+	                { const: Number.NaN },
+	                { const: Number.POSITIVE_INFINITY },
+	                { const: Number.NEGATIVE_INFINITY },
+	              ],
+	            },
+	          },
+	        },
+	      },
+	    }];
+
+	    const result = cleanupToolDefinitions(tools) as typeof tools;
+	    const props = result[0].function.parameters.properties as Record<string, unknown>;
+	    const coerced = props.coercedValues as Record<string, unknown>;
+	    expect(coerced.anyOf).toBeUndefined();
+	    expect(coerced.enum).toEqual([null, null, null]);
+	  });
+	});

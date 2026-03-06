@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import * as fileLock from "../lib/file-lock.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { 
   deduplicateAccounts,
@@ -10,14 +11,19 @@ import {
   loadAccounts, 
   saveAccounts,
   clearAccounts,
-  getStoragePath,
-  setStoragePath,
-  setStoragePathDirect,
+  loadFlaggedAccounts,
+   saveFlaggedAccounts,
+   rotateStoredSecretEncryption,
+   getStoragePath,
+   getFlaggedAccountsPath,
+   setStoragePath,
+   setStoragePathDirect,
   StorageError,
   formatStorageErrorHint,
   exportAccounts,
   importAccounts,
   withAccountStorageTransaction,
+  type AccountStorageV3,
 } from "../lib/storage.js";
 
 // Mocking the behavior we're about to implement for TDD
@@ -696,6 +702,124 @@ describe("storage", () => {
       // Restore permissions for cleanup
       await fs.chmod(testStoragePath, 0o644);
     });
+
+    it("throttles stale rotating backup cleanup scans within a 30-second window", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-throttle-${Math.random().toString(36).slice(2)}.json`,
+      );
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "real-refresh-token",
+              accountId: "acct-real",
+              email: "real-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+          }
+          return originalReaddir(...args);
+        });
+      const dateNowSpy = vi.spyOn(Date, "now");
+      let now = Date.now();
+      dateNowSpy.mockImplementation(() => now);
+
+      try {
+        await loadAccounts();
+        now += 29_000;
+        await loadAccounts();
+        now += 1_001;
+        await loadAccounts();
+      } finally {
+        dateNowSpy.mockRestore();
+        readdirSpy.mockRestore();
+      }
+
+      expect(cleanupScanCount).toBe(2);
+    });
+
+    it("deduplicates in-flight cleanup scans across concurrent loadAccounts calls", async () => {
+      const localStoragePath = join(
+        testWorkDir,
+        `accounts-concurrent-${Math.random().toString(36).slice(2)}.json`,
+      );
+      setStoragePathDirect(localStoragePath);
+      await fs.writeFile(
+        localStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "concurrent-refresh-token",
+              accountId: "acct-concurrent",
+              email: "concurrent-user@example.com",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const originalReaddir = fs.readdir.bind(fs);
+      let cleanupScanCount = 0;
+      let releaseScan: (() => void) | null = null;
+      const scanGate = new Promise<void>((resolve) => {
+        releaseScan = resolve;
+      });
+      const readdirSpy = vi
+        .spyOn(fs, "readdir")
+        .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+          const [targetPath] = args;
+          if (typeof targetPath === "string" && targetPath === dirname(localStoragePath)) {
+            cleanupScanCount += 1;
+            if (cleanupScanCount === 1) {
+              await scanGate;
+            }
+          }
+          return originalReaddir(...args);
+        });
+
+      try {
+        const firstLoad = loadAccounts();
+        for (let i = 0; i < 20 && cleanupScanCount === 0; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        const secondLoad = loadAccounts();
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(cleanupScanCount).toBe(1);
+
+        releaseScan?.();
+        const [firstResult, secondResult] = await Promise.all([firstLoad, secondLoad]);
+        expect(firstResult?.accounts).toHaveLength(1);
+        expect(secondResult?.accounts).toHaveLength(1);
+      } finally {
+        readdirSpy.mockRestore();
+        releaseScan?.();
+      }
+
+      expect(cleanupScanCount).toBe(1);
+    });
   });
 
   describe("saveAccounts", () => {
@@ -725,6 +849,44 @@ describe("storage", () => {
       const content = await fs.readFile(testStoragePath, "utf-8");
       const parsed = JSON.parse(content);
       expect(parsed.version).toBe(3);
+    });
+
+    it("rejects stale overwrite when storage changed on disk after load", async () => {
+      const initial: AccountStorageV3 = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "t-initial", accountId: "acct-initial", addedAt: 1, lastUsed: 1 }],
+      };
+      await saveAccounts(initial);
+
+      const loaded = await loadAccounts();
+      if (!loaded) {
+        throw new Error("expected loaded storage");
+      }
+
+      const externalUpdate: AccountStorageV3 = {
+        ...loaded,
+        accounts: [
+          ...loaded.accounts,
+          { refreshToken: "t-external", accountId: "acct-external", addedAt: 2, lastUsed: 2 },
+        ],
+      };
+      await fs.writeFile(testStoragePath, JSON.stringify(externalUpdate, null, 2), "utf-8");
+
+      const staleWrite: AccountStorageV3 = {
+        ...loaded,
+        accounts: [
+          ...loaded.accounts,
+          { refreshToken: "t-stale", accountId: "acct-stale", addedAt: 3, lastUsed: 3 },
+        ],
+      };
+
+      await expect(saveAccounts(staleWrite)).rejects.toMatchObject({ code: "ECONFLICT" });
+
+      const persisted = JSON.parse(await fs.readFile(testStoragePath, "utf-8")) as AccountStorageV3;
+      const persistedTokens = new Set(persisted.accounts.map((account) => account.refreshToken));
+      expect(persistedTokens.has("t-external")).toBe(true);
+      expect(persistedTokens.has("t-stale")).toBe(false);
     });
   });
 
@@ -1539,6 +1701,105 @@ describe("storage", () => {
       statSpy.mockRestore();
     });
 
+    it("does not force-delete lock file when lock.release throws EBUSY", async () => {
+      const now = Date.now();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+
+      const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockResolvedValue({
+        path: lockPath,
+        release: async () => {
+          const err = new Error("EBUSY release") as NodeJS.ErrnoException;
+          err.code = "EBUSY";
+          throw err;
+        },
+      });
+      const rmSpy = vi.spyOn(fs, "rm");
+      try {
+        await saveAccounts(storage);
+
+        expect(existsSync(testStoragePath)).toBe(true);
+        expect(rmSpy).not.toHaveBeenCalledWith(lockPath, { force: true });
+      } finally {
+        rmSpy.mockRestore();
+        acquireSpy.mockRestore();
+      }
+    });
+
+    it("does not force-delete lock file when lock.release throws EPERM", async () => {
+      const now = Date.now();
+      const storage = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+      };
+      const lockPath = `${testStoragePath}.lock`;
+
+      const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockResolvedValue({
+        path: lockPath,
+        release: async () => {
+          const err = new Error("EPERM release") as NodeJS.ErrnoException;
+          err.code = "EPERM";
+          throw err;
+        },
+      });
+      const rmSpy = vi.spyOn(fs, "rm");
+      try {
+        await saveAccounts(storage);
+
+        expect(existsSync(testStoragePath)).toBe(true);
+        expect(rmSpy).not.toHaveBeenCalledWith(lockPath, { force: true });
+      } finally {
+        rmSpy.mockRestore();
+        acquireSpy.mockRestore();
+      }
+    });
+
+    it("serializes lock acquisition across concurrent saves", async () => {
+      const now = Date.now();
+      let activeLocks = 0;
+      let maxActiveLocks = 0;
+
+      const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockImplementation(async (path) => {
+        activeLocks += 1;
+        maxActiveLocks = Math.max(maxActiveLocks, activeLocks);
+        return {
+          path,
+          release: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            activeLocks -= 1;
+          },
+        };
+      });
+      try {
+        await Promise.all([
+          saveAccounts({
+            version: 3 as const,
+            activeIndex: 0,
+            accounts: [{ refreshToken: "token-1", addedAt: now + 1, lastUsed: now + 1 }],
+          }),
+          saveAccounts({
+            version: 3 as const,
+            activeIndex: 0,
+            accounts: [{ refreshToken: "token-2", addedAt: now + 2, lastUsed: now + 2 }],
+          }),
+          saveAccounts({
+            version: 3 as const,
+            activeIndex: 0,
+            accounts: [{ refreshToken: "token-3", addedAt: now + 3, lastUsed: now + 3 }],
+          }),
+        ]);
+
+        expect(maxActiveLocks).toBe(1);
+      } finally {
+        acquireSpy.mockRestore();
+      }
+    });
+
     it("retries backup copyFile on transient EBUSY and succeeds", async () => {
       const now = Date.now();
       const storage = {
@@ -1809,6 +2070,20 @@ describe("storage", () => {
   });
 
   describe("clearAccounts edge cases", () => {
+    const workDir = join(tmpdir(), `codex-storage-clear-${Math.random().toString(36).slice(2)}`);
+
+    beforeEach(async () => {
+      await fs.mkdir(workDir, { recursive: true });
+      setStoragePathDirect(
+        join(workDir, `accounts-${Math.random().toString(36).slice(2)}.json`),
+      );
+    });
+
+    afterEach(async () => {
+      setStoragePathDirect(null);
+      await fs.rm(workDir, { recursive: true, force: true });
+    });
+
     it("removes primary, backup, and wal artifacts", async () => {
       const now = Date.now();
       const storage = {
@@ -1848,6 +2123,188 @@ describe("storage", () => {
 
       expect(unlinkSpy).toHaveBeenCalled();
       unlinkSpy.mockRestore();
+    });
+  });
+
+  describe("flagged storage and secret rotation resilience", () => {
+    const workDir = join(tmpdir(), `codex-storage-flagged-${Math.random().toString(36).slice(2)}`);
+    let storagePath: string;
+
+    beforeEach(async () => {
+      await fs.mkdir(workDir, { recursive: true });
+      storagePath = join(workDir, `accounts-${Math.random().toString(36).slice(2)}.json`);
+      setStoragePathDirect(storagePath);
+      delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+    });
+
+    afterEach(async () => {
+      setStoragePathDirect(null);
+      delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
+      delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+      await fs.rm(workDir, { recursive: true, force: true });
+    });
+
+    it("retries flagged storage rename on transient EBUSY", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "test-encryption-key";
+      const originalRename = fs.rename.bind(fs);
+      const flaggedPath = getFlaggedAccountsPath();
+      let renameAttempts = 0;
+      let injectedBusy = false;
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (fromPath, toPath) => {
+        renameAttempts += 1;
+        if (!injectedBusy && String(toPath) === flaggedPath) {
+          injectedBusy = true;
+          const error = new Error("busy") as NodeJS.ErrnoException;
+          error.code = "EBUSY";
+          throw error;
+        }
+        return originalRename(fromPath as string, toPath as string);
+      });
+
+      try {
+        await saveFlaggedAccounts({
+          version: 1,
+          accounts: [{ refreshToken: "flagged-token", flaggedAt: Date.now() }],
+        });
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(renameAttempts).toBeGreaterThanOrEqual(2);
+      expect(injectedBusy).toBe(true);
+      const flagged = await loadFlaggedAccounts();
+      expect(flagged.accounts).toHaveLength(1);
+    });
+
+    it("serializes concurrent flagged writes and recovers from transient rename locks", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "test-encryption-key";
+      const flaggedPath = getFlaggedAccountsPath();
+      const originalRename = fs.rename.bind(fs);
+      let renameAttempts = 0;
+      let injectedLock = false;
+      let activeLocks = 0;
+      let maxActiveLocks = 0;
+
+      const acquireSpy = vi.spyOn(fileLock, "acquireFileLock").mockImplementation(async (path) => {
+        activeLocks += 1;
+        maxActiveLocks = Math.max(maxActiveLocks, activeLocks);
+        return {
+          path,
+          release: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            activeLocks -= 1;
+          },
+        };
+      });
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (fromPath, toPath) => {
+        renameAttempts += 1;
+        if (!injectedLock && String(toPath) === flaggedPath) {
+          injectedLock = true;
+          const error = new Error("locked") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        }
+        return originalRename(fromPath as string, toPath as string);
+      });
+
+      try {
+        await Promise.all(
+          Array.from({ length: 6 }, (_, index) =>
+            saveFlaggedAccounts({
+              version: 1,
+              accounts: [{ refreshToken: `flagged-token-${index}`, flaggedAt: Date.now() }],
+            }),
+          ),
+        );
+      } finally {
+        renameSpy.mockRestore();
+        acquireSpy.mockRestore();
+      }
+
+      expect(maxActiveLocks).toBe(1);
+      expect(injectedLock).toBe(true);
+      expect(renameAttempts).toBeGreaterThanOrEqual(7);
+      const flagged = await loadFlaggedAccounts();
+      expect(flagged.accounts).toHaveLength(1);
+      const token = flagged.accounts[0]?.refreshToken;
+      expect(typeof token).toBe("string");
+      expect(token).toMatch(/^flagged-token-\d$/);
+    });
+
+    it("fails closed when only previous encryption key is configured", async () => {
+      process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = "legacy-only-key";
+      delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
+
+      await expect(
+        saveAccounts({
+          version: 3,
+          accounts: [{ refreshToken: "plain-refresh-token", addedAt: Date.now() }],
+        }),
+      ).rejects.toThrow(
+        "CODEX_AUTH_ENCRYPTION_KEY is required when CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY is set",
+      );
+    });
+
+    it("throws secret rotation when account storage exists but cannot be loaded", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "rotation-primary";
+      await fs.writeFile(getStoragePath(), "{ invalid", "utf8");
+
+      await expect(rotateStoredSecretEncryption()).rejects.toThrow(
+        "Failed to load account storage for secret rotation",
+      );
+    });
+
+    it("throws secret rotation when flagged storage has undecryptable entries", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "old-key";
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [{ refreshToken: "flagged-token", flaggedAt: Date.now() }],
+      });
+
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "new-key";
+      delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+
+      await expect(rotateStoredSecretEncryption()).rejects.toThrow(
+        "Failed to load flagged account storage for secret rotation",
+      );
+    });
+
+    it("tolerates ENOENT when flagged file disappears during rotation validation", async () => {
+      process.env.CODEX_AUTH_ENCRYPTION_KEY = "rotation-primary";
+      const flaggedPath = getFlaggedAccountsPath();
+      await fs.writeFile(
+        flaggedPath,
+        JSON.stringify({
+          version: 1,
+          accounts: [],
+        }),
+        "utf8",
+      );
+
+      const originalReadFile = fs.readFile.bind(fs);
+      let flaggedReadCount = 0;
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        const path = args[0];
+        if (typeof path === "string" && path === flaggedPath) {
+          flaggedReadCount += 1;
+          if (flaggedReadCount >= 2) {
+            const error = new Error("missing") as NodeJS.ErrnoException;
+            error.code = "ENOENT";
+            throw error;
+          }
+        }
+        return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+      });
+
+      try {
+        await expect(rotateStoredSecretEncryption()).resolves.toEqual(
+          expect.objectContaining({
+            flaggedAccounts: 0,
+          }),
+        );
+      } finally {
+        readSpy.mockRestore();
+      }
     });
   });
 });

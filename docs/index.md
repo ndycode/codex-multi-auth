@@ -46,4 +46,5 @@ Legacy package/path guidance is documented in [upgrade.md](upgrade.md) and [refe
 - Command flags and hotkeys: [reference/commands.md](reference/commands.md)
 - Settings and overrides: [reference/settings.md](reference/settings.md)
 - Storage path matrix: [reference/storage-paths.md](reference/storage-paths.md)
+- Operations runbooks: [runbooks/README.md](runbooks/README.md)
 - Full docs portal: [README.md](README.md)

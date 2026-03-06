@@ -20,6 +20,20 @@ const mockedReadFile = vi.mocked(fs.readFile);
 const mockedWriteFile = vi.mocked(fs.writeFile);
 const mockedMkdir = vi.mocked(fs.mkdir);
 
+function createDeferred<T>(): {
+	promise: Promise<T>;
+	resolve: (value: T | PromiseLike<T>) => void;
+	reject: (reason?: unknown) => void;
+} {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
 describe("Codex Prompts Module", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -213,6 +227,74 @@ describe("Codex Prompts Module", () => {
 				const second = await getCodexInstructions("gpt-5.1-codex");
 				expect(second).toBe("new version content");
 			});
+
+			it("deduplicates background refresh for concurrent stale calls", async () => {
+				const oldTimestamp = Date.now() - 20 * 60 * 1000;
+				let resolvePromptText: ((value: string) => void) | null = null;
+				const refreshFetchStarted = createDeferred<void>();
+				const diskWritesCompleted = createDeferred<void>();
+				let writeCount = 0;
+				const promptText = new Promise<string>((resolve) => {
+					resolvePromptText = resolve;
+				});
+
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "old-etag",
+								tag: "rust-v0.40.0",
+								lastChecked: oldTimestamp,
+								url: "https://example.com",
+							}),
+						);
+					}
+					return Promise.resolve("stale disk content");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.50.0" }),
+				});
+				mockFetch.mockImplementationOnce(() =>
+					Promise.resolve().then(() => {
+						refreshFetchStarted.resolve();
+						return {
+							ok: true,
+							text: () => promptText,
+							headers: { get: () => "new-etag" },
+						};
+					}),
+				);
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockImplementation(async (..._args) => {
+					writeCount += 1;
+					if (writeCount >= 2) {
+						diskWritesCompleted.resolve();
+					}
+				});
+
+				const [first, second] = await Promise.all([
+					getCodexInstructions("gpt-5.1-codex"),
+					getCodexInstructions("gpt-5.1-codex"),
+				]);
+
+				expect(first).toBe("stale disk content");
+				expect(second).toBe("stale disk content");
+				await refreshFetchStarted.promise;
+				expect(mockFetch).toHaveBeenCalledTimes(2);
+
+				resolvePromptText?.("fresh deduped content");
+				await diskWritesCompleted.promise;
+				await Promise.resolve();
+				expect(mockedWriteFile).toHaveBeenCalled();
+
+				let refreshed = await getCodexInstructions("gpt-5.1-codex");
+				for (let attempt = 0; attempt < 10 && refreshed !== "fresh deduped content"; attempt += 1) {
+					await Promise.resolve();
+					refreshed = await getCodexInstructions("gpt-5.1-codex");
+				}
+				expect(refreshed).toBe("fresh deduped content");
+			});
 		});
 
 		describe("GitHub HTML fallback", () => {
@@ -243,7 +325,7 @@ describe("Codex Prompts Module", () => {
 				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
 				mockFetch.mockResolvedValueOnce({
 					ok: false,
-					status: 500,
+					status: 403,
 				});
 				mockFetch.mockResolvedValueOnce({
 					ok: true,

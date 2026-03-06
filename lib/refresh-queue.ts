@@ -169,6 +169,21 @@ export class RefreshQueue {
         });
         return lease.result;
       }
+      if (lease.role === "bypass" && lease.reason === "wait-timeout") {
+        const supersedingPromise = getSupersedingPromise();
+        if (supersedingPromise) {
+          return supersedingPromise;
+        }
+        log.warn("Refresh lease timed out; refusing fail-open token refresh", {
+          tokenSuffix: refreshToken.slice(-6),
+          waitPolicy: "fail-closed",
+        });
+        return {
+          type: "failed",
+          reason: "unknown",
+          message: "Refresh lease timeout; retry shortly",
+        };
+      }
 
       try {
         const supersedingPromise = getSupersedingPromise();

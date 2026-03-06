@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ensureContentType, convertSseToJson, isEmptyResponse } from '../lib/request/response-handler.js';
+import {
+	ensureContentType,
+	convertSseToJson,
+	convertSseToJsonWithDetails,
+	isEmptyResponse,
+} from '../lib/request/response-handler.js';
 
 describe('Response Handler Module', () => {
 	describe('ensureContentType', () => {
@@ -48,6 +53,34 @@ data: {"type":"response.done","response":{"id":"resp_123","output":"test"}}
 			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
 		});
 
+		it('returns parsedBody metadata when response.done is found', async () => {
+			const sseContent = `data: {"type":"response.done","response":{"id":"resp_meta","output":"ok"}}`;
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJsonWithDetails(response, headers);
+			expect(result.parsedBody).toEqual({ id: 'resp_meta', output: 'ok' });
+			expect(await result.response.json()).toEqual({ id: 'resp_meta', output: 'ok' });
+		});
+
+		it("returns undefined parsedBody and surfaces stream parse error when no final event exists", async () => {
+			const sseContent = `data: {"type":"response.started"}
+data: {"type":"chunk","delta":"partial"}
+`;
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJsonWithDetails(response, headers);
+
+			expect(result.parsedBody).toBeUndefined();
+			expect(await result.response.json()).toEqual({
+				error: {
+					message: 'No response.done event found in SSE stream',
+					type: 'stream_parse_error',
+				},
+			});
+		});
+
 		it('should parse SSE stream with response.completed event', async () => {
 			const sseContent = `data: {"type":"response.started"}
 data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
@@ -61,7 +94,7 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body).toEqual({ id: 'resp_456', output: 'done' });
 		});
 
-		it('should return original text if no final response found', async () => {
+		it('should return JSON stream parse error if no final response found', async () => {
 			const sseContent = `data: {"type":"response.started"}
 data: {"type":"chunk","delta":"text"}
 `;
@@ -69,9 +102,15 @@ data: {"type":"chunk","delta":"text"}
 			const headers = new Headers();
 
 			const result = await convertSseToJson(response, headers);
-			const text = await result.text();
+			const body = await result.json();
 
-			expect(text).toBe(sseContent);
+			expect(body).toEqual({
+				error: {
+					message: 'No response.done event found in SSE stream',
+					type: 'stream_parse_error',
+				},
+			});
+			expect(result.headers.get('content-type')).toBe('application/json; charset=utf-8');
 		});
 
 		it('should skip malformed JSON in SSE stream', async () => {
@@ -92,9 +131,14 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			const headers = new Headers();
 
 			const result = await convertSseToJson(response, headers);
-			const text = await result.text();
+			const body = await result.json();
 
-			expect(text).toBe('');
+			expect(body).toEqual({
+				error: {
+					message: 'No response.done event found in SSE stream',
+					type: 'stream_parse_error',
+				},
+			});
 		});
 
 		it('should preserve response status and statusText', async () => {

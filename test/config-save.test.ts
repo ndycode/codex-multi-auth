@@ -2,27 +2,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
-
-async function removeWithRetry(
-  targetPath: string,
-  options: { recursive?: boolean; force?: boolean },
-): Promise<void> {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    try {
-      await fs.rm(targetPath, options);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return;
-      if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
-    }
-  }
-}
+import { removeWithRetry } from "./helpers/fs-retry.js";
 
 describe("plugin config save paths", () => {
   let tempDir = "";
@@ -93,6 +73,162 @@ describe("plugin config save paths", () => {
     });
   });
 
+	  it("retries transient env-path read locks before merge save to prevent key loss", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        codexMode: true,
+        preserved: { nested: true },
+      }),
+      "utf8",
+    );
+
+	    vi.resetModules();
+	    const logWarnMock = vi.fn();
+	    let transientReadFailures = 0;
+	    let readAttempts = 0;
+
+	    vi.doMock("node:fs", async () => {
+	      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+	      const readFile = vi.fn(
+	        async (...args: Parameters<typeof actual.promises.readFile>) => {
+	          readAttempts += 1;
+	          const [filePath] = args;
+	          if (
+	            typeof filePath === "string" &&
+	            filePath === configPath &&
+	            transientReadFailures < 2
+	          ) {
+	            transientReadFailures += 1;
+	            const code = transientReadFailures === 1 ? "EBUSY" : "EPERM";
+	            throw Object.assign(new Error(`Transient ${code}`), { code });
+	          }
+	          return actual.promises.readFile(...args);
+	        },
+	      );
+	      return {
+	        ...actual,
+	        promises: {
+	          ...actual.promises,
+	          readFile,
+	        },
+	      };
+	    });
+    vi.doMock("../lib/logger.js", async () => {
+      const actual = await vi.importActual<typeof import("../lib/logger.js")>(
+        "../lib/logger.js",
+      );
+      return {
+        ...actual,
+        logWarn: logWarnMock,
+      };
+    });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await savePluginConfig({ codexTuiV2: false });
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.doUnmock("../lib/logger.js");
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.codexMode).toBe(true);
+    expect(parsed.preserved).toEqual({ nested: true });
+    expect(parsed.codexTuiV2).toBe(false);
+	    const failedReadWarnings = logWarnMock.mock.calls.filter(([message]) =>
+	      String(message).includes("Failed to read config from"),
+	    );
+	    expect(failedReadWarnings).toHaveLength(0);
+	    expect(transientReadFailures).toBe(2);
+	    expect(readAttempts).toBe(6);
+	  });
+
+	  it("retries sync loadPluginConfig reads with exponential backoff for retryable locks", async () => {
+	    const configPath = join(tempDir, "plugin-config-sync.json");
+	    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+	    await fs.writeFile(configPath, JSON.stringify({ codexMode: false }), "utf8");
+
+	    vi.resetModules();
+	    let transientReadFailures = 0;
+	    const atomicsWaitSpy = vi
+	      .spyOn(Atomics, "wait")
+	      .mockImplementation(() => "timed-out");
+	    vi.doMock("node:fs", async () => {
+	      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+	      return {
+	        ...actual,
+	        readFileSync: vi.fn((...args: Parameters<typeof actual.readFileSync>) => {
+	          const [filePath] = args;
+	          if (
+	            typeof filePath === "string" &&
+	            filePath === configPath &&
+	            transientReadFailures < 2
+	          ) {
+	            transientReadFailures += 1;
+	            const code = transientReadFailures === 1 ? "EBUSY" : "EPERM";
+	            throw Object.assign(new Error(`Transient ${code}`), { code });
+	          }
+	          return actual.readFileSync(...args);
+	        }),
+	      };
+	    });
+
+	    try {
+	      const { loadPluginConfig } = await import("../lib/config.js");
+	      const loaded = loadPluginConfig();
+	      expect(loaded.codexMode).toBe(false);
+	      expect(transientReadFailures).toBe(2);
+	      const sleepDurations = atomicsWaitSpy.mock.calls.map((call) => call[3]);
+	      expect(sleepDurations).toEqual([10, 20]);
+	    } finally {
+	      vi.doUnmock("node:fs");
+	      atomicsWaitSpy.mockRestore();
+	    }
+	  });
+
+	  it("falls back to defaults when sync config read retries are exhausted", async () => {
+	    const configPath = join(tempDir, "plugin-config-sync-exhausted.json");
+	    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+	    await fs.writeFile(configPath, JSON.stringify({ codexMode: false }), "utf8");
+
+	    vi.resetModules();
+	    let attempts = 0;
+	    const atomicsWaitSpy = vi
+	      .spyOn(Atomics, "wait")
+	      .mockImplementation(() => "timed-out");
+	    vi.doMock("node:fs", async () => {
+	      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+	      return {
+	        ...actual,
+	        readFileSync: vi.fn((...args: Parameters<typeof actual.readFileSync>) => {
+	          const [filePath] = args;
+	          if (typeof filePath === "string" && filePath === configPath) {
+	            attempts += 1;
+	            throw Object.assign(new Error("Persistent EBUSY"), { code: "EBUSY" });
+	          }
+	          return actual.readFileSync(...args);
+	        }),
+	      };
+	    });
+
+	    try {
+	      const { loadPluginConfig } = await import("../lib/config.js");
+	      const loaded = loadPluginConfig();
+	      expect(loaded.codexMode).toBe(true);
+	      expect(attempts).toBe(4);
+	      expect(atomicsWaitSpy).toHaveBeenCalledTimes(3);
+	    } finally {
+	      vi.doUnmock("node:fs");
+	      atomicsWaitSpy.mockRestore();
+	    }
+	  });
+
   it("recovers from malformed env-path JSON before saving", async () => {
     const configPath = join(tempDir, "plugin-config.json");
     process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
@@ -132,13 +268,13 @@ describe("plugin config save paths", () => {
     await savePluginConfig({
       codexMode: false,
       parallelProbing: true,
-      parallelProbingMaxConcurrency: 7,
+      parallelProbingMaxConcurrency: 5,
     });
 
     const loaded = loadPluginConfig();
     expect(loaded.codexMode).toBe(false);
     expect(loaded.parallelProbing).toBe(true);
-    expect(loaded.parallelProbingMaxConcurrency).toBe(7);
+    expect(loaded.parallelProbingMaxConcurrency).toBe(5);
   });
 
   it("resolves parallel probing settings and clamps concurrency", async () => {

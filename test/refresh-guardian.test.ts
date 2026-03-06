@@ -71,8 +71,13 @@ describe("refresh-guardian", () => {
     const missingManagerGuardian = new RefreshGuardian(() => null, {
       intervalMs: 5_000,
     });
-    await expect(missingManagerGuardian.tick()).resolves.toBeUndefined();
-    expect(missingManagerGuardian.getStats().runs).toBe(0);
+	    await expect(missingManagerGuardian.tick()).resolves.toBeUndefined();
+	    const missingStats = missingManagerGuardian.getStats();
+	    expect(missingStats.runs).toBe(0);
+	    expect(missingStats.lastTickDurationMs).toBe(0);
+	    expect(missingStats.maxTickDurationMs).toBe(0);
+	    expect(missingStats.cumulativeTickDurationMs).toBe(0);
+	    expect(missingStats.avgTickDurationMs).toBe(0);
 
     const disabledManager = createManagerMock([
       { ...createManagedAccount(0), enabled: false },
@@ -83,8 +88,13 @@ describe("refresh-guardian", () => {
       bufferMs: 60_000,
     });
     await expect(disabledGuardian.tick()).resolves.toBeUndefined();
-    expect(refreshExpiringAccountsMock).not.toHaveBeenCalled();
-    expect(disabledGuardian.getStats().runs).toBe(0);
+	    expect(refreshExpiringAccountsMock).not.toHaveBeenCalled();
+	    const disabledStats = disabledGuardian.getStats();
+	    expect(disabledStats.runs).toBe(0);
+	    expect(disabledStats.lastTickDurationMs).toBe(0);
+	    expect(disabledStats.maxTickDurationMs).toBe(0);
+	    expect(disabledStats.cumulativeTickDurationMs).toBe(0);
+	    expect(disabledStats.avgTickDurationMs).toBe(0);
   });
 
   it("records run stats when no accounts require proactive refresh", async () => {
@@ -103,9 +113,12 @@ describe("refresh-guardian", () => {
     expect(
       manager.saveToDiskDebounced as ReturnType<typeof vi.fn>,
     ).not.toHaveBeenCalled();
-    const stats = guardian.getStats();
-    expect(stats.runs).toBe(1);
-    expect(stats.lastRunAt).not.toBeNull();
+	    const stats = guardian.getStats();
+	    expect(stats.runs).toBe(1);
+	    expect(stats.lastRunAt).not.toBeNull();
+	    expect(stats.maxTickDurationMs).toBe(stats.lastTickDurationMs);
+	    expect(stats.cumulativeTickDurationMs).toBe(stats.lastTickDurationMs);
+	    expect(stats.avgTickDurationMs).toBe(stats.lastTickDurationMs);
   });
 
   it("applies refresh outcomes and updates stats", async () => {
@@ -173,9 +186,12 @@ describe("refresh-guardian", () => {
     expect(stats.authFailed).toBe(1);
     expect(stats.networkFailed).toBe(0);
     expect(stats.rateLimited).toBe(0);
-    expect(stats.notNeeded).toBe(0);
-    expect(stats.noRefreshToken).toBe(0);
-    expect(stats.lastRunAt).not.toBeNull();
+	    expect(stats.notNeeded).toBe(0);
+	    expect(stats.noRefreshToken).toBe(0);
+	    expect(stats.lastRunAt).not.toBeNull();
+	    expect(stats.maxTickDurationMs).toBe(stats.lastTickDurationMs);
+	    expect(stats.cumulativeTickDurationMs).toBe(stats.lastTickDurationMs);
+	    expect(stats.avgTickDurationMs).toBe(stats.lastTickDurationMs);
   });
 
   it("skips overlapping tick executions", async () => {
@@ -358,11 +374,14 @@ describe("refresh-guardian", () => {
     expect(stats.runs).toBe(1);
     expect(stats.refreshed).toBe(0);
     expect(stats.failed).toBe(4);
-    expect(stats.notNeeded).toBe(1);
-    expect(stats.noRefreshToken).toBe(1);
-    expect(stats.rateLimited).toBe(1);
-    expect(stats.networkFailed).toBe(1);
-    expect(stats.authFailed).toBe(2);
+	    expect(stats.notNeeded).toBe(1);
+	    expect(stats.noRefreshToken).toBe(1);
+	    expect(stats.rateLimited).toBe(1);
+	    expect(stats.networkFailed).toBe(1);
+	    expect(stats.authFailed).toBe(2);
+	    expect(stats.maxTickDurationMs).toBe(stats.lastTickDurationMs);
+	    expect(stats.cumulativeTickDurationMs).toBe(stats.lastTickDurationMs);
+	    expect(stats.avgTickDurationMs).toBe(stats.lastTickDurationMs);
   });
 
   it("covers additional failure-classification and skip branches", async () => {
@@ -519,11 +538,14 @@ describe("refresh-guardian", () => {
     const stats = guardian.getStats();
     expect(stats.runs).toBe(1);
     expect(stats.refreshed).toBe(0);
-    expect(stats.failed).toBe(5);
-    expect(stats.rateLimited).toBe(0);
-    expect(stats.authFailed).toBe(2);
-    expect(stats.networkFailed).toBe(3);
-  });
+	    expect(stats.failed).toBe(5);
+	    expect(stats.rateLimited).toBe(0);
+	    expect(stats.authFailed).toBe(2);
+	    expect(stats.networkFailed).toBe(3);
+	    expect(stats.maxTickDurationMs).toBe(stats.lastTickDurationMs);
+	    expect(stats.cumulativeTickDurationMs).toBe(stats.lastTickDurationMs);
+	    expect(stats.avgTickDurationMs).toBe(stats.lastTickDurationMs);
+	  });
 
   it("handles thrown errors in tick and always resets running state", async () => {
     const accountA = createManagedAccount(0);
@@ -543,6 +565,34 @@ describe("refresh-guardian", () => {
     refreshExpiringAccountsMock.mockRejectedValueOnce("refresh-string-failed");
     await expect(guardian.tick()).resolves.toBeUndefined();
     expect(Reflect.get(guardian, "running")).toBe(false);
+  });
+
+  it("tracks guardian tick duration aggregates", async () => {
+    const accountA = createManagedAccount(0);
+    const manager = createManagerMock([accountA]);
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      intervalMs: 5_000,
+      bufferMs: 60_000,
+    });
+    refreshExpiringAccountsMock.mockResolvedValue(new Map());
+
+    const nowSpy = vi.spyOn(performance, "now");
+    nowSpy
+      .mockReturnValueOnce(10)
+      .mockReturnValueOnce(25)
+      .mockReturnValueOnce(30)
+      .mockReturnValueOnce(60);
+
+    await guardian.tick();
+    await guardian.tick();
+
+    const stats = guardian.getStats();
+    expect(stats.runs).toBe(2);
+    expect(stats.lastTickDurationMs).toBe(30);
+    expect(stats.maxTickDurationMs).toBe(30);
+    expect(stats.cumulativeTickDurationMs).toBe(45);
+    expect(stats.avgTickDurationMs).toBe(23);
   });
 
   it("handles account removal during tick without throwing", async () => {

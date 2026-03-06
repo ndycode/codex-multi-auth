@@ -16,6 +16,13 @@ type SettingsHubTestApi = {
 		scope: string,
 	) => Promise<DashboardDisplaySettings>;
 	persistBackendConfigSelection: (selected: PluginConfig, scope: string) => Promise<PluginConfig>;
+	buildBackendSettingsPreview: (
+		config: PluginConfig,
+		focus?: string | null,
+	) => { label: string; hint: string };
+	getBackendSettingMetadata: (
+		settingKey: string,
+	) => { label: string; categoryKey: string; categoryLabel: string };
 };
 
 let tempRoot = "";
@@ -64,6 +71,10 @@ describe("settings-hub utility coverage", () => {
 		const api = await loadSettingsHubTestApi();
 		expect(api.clampBackendNumber("fetchTimeoutMs", 250)).toBe(1_000);
 		expect(api.clampBackendNumber("fetchTimeoutMs", 999_999)).toBe(600_000);
+		expect(api.clampBackendNumber("retryAllAccountsAbsoluteCeilingMs", -1)).toBe(0);
+		expect(api.clampBackendNumber("retryAllAccountsAbsoluteCeilingMs", 999_999_999)).toBe(
+			24 * 60 * 60_000,
+		);
 		expect(() => api.clampBackendNumber("unknown-setting", 5)).toThrow(
 			"Unknown backend numeric setting key",
 		);
@@ -273,5 +284,37 @@ describe("settings-hub utility coverage", () => {
 		const reloaded = freshConfigModule.loadPluginConfig();
 		expect(reloaded.fetchTimeoutMs).toBe(12_345);
 		expect(reloaded.streamStallTimeoutMs).toBe(23_456);
+	});
+
+	it("renders retry-all absolute ceiling of zero as unlimited", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const selected = configModule.getDefaultPluginConfig();
+		selected.retryAllAccountsAbsoluteCeilingMs = 0;
+		const preview = api.buildBackendSettingsPreview(selected, "retryAllAccountsAbsoluteCeilingMs");
+		expect(preview.hint).toContain("retry ceiling unlimited");
+	});
+
+	it("keeps retry-all ceiling metadata in the Rotation & Quota category", async () => {
+		const api = await loadSettingsHubTestApi();
+		const metadata = api.getBackendSettingMetadata("retryAllAccountsAbsoluteCeilingMs");
+		expect(metadata).toEqual({
+			label: "Retry-All Absolute Wait Ceiling",
+			categoryKey: "rotation-quota",
+			categoryLabel: "Rotation & Quota",
+		});
+	});
+
+	it("persists retry-all absolute ceiling value of zero without coercion", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const selected = configModule.getDefaultPluginConfig();
+		selected.retryAllAccountsAbsoluteCeilingMs = 0;
+
+		await api.persistBackendConfigSelection(selected, "backend");
+		vi.resetModules();
+		const freshConfigModule = await import("../lib/config.js");
+		const reloaded = freshConfigModule.loadPluginConfig();
+		expect(reloaded.retryAllAccountsAbsoluteCeilingMs).toBe(0);
 	});
 });

@@ -12,11 +12,13 @@ import {
 	getUnsupportedCodexPolicy,
 	getFallbackOnUnsupportedCodexModel,
 	getTokenRefreshSkewMs,
+	getRetryAllAccountsAbsoluteCeilingMs,
 	getRetryAllAccountsMaxRetries,
 	getFallbackToGpt52OnUnsupportedGpt53,
 	getUnsupportedCodexFallbackChain,
 	getFetchTimeoutMs,
 	getStreamStallTimeoutMs,
+	getTelemetryEnabled,
 	getPreemptiveQuotaEnabled,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
@@ -60,9 +62,11 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_FAST_SESSION',
 		'CODEX_AUTH_FAST_SESSION_STRATEGY',
 		'CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS',
+		'CODEX_AUTH_TELEMETRY_ENABLED',
 		'CODEX_AUTH_UNSUPPORTED_MODEL_POLICY',
 		'CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL',
 		'CODEX_AUTH_FALLBACK_GPT53_TO_GPT52',
+		'CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT',
@@ -105,7 +109,8 @@ describe('Plugin Configuration', () => {
 				fastSessionMaxInputItems: 30,
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsMaxRetries: 12,
+				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
@@ -114,6 +119,7 @@ describe('Plugin Configuration', () => {
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
 				perProjectAccounts: true,
+				telemetryEnabled: true,
 				sessionRecovery: true,
 				autoResume: true,
 				parallelProbing: false,
@@ -163,7 +169,8 @@ describe('Plugin Configuration', () => {
 				fastSessionMaxInputItems: 30,
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsMaxRetries: 12,
+				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
@@ -172,6 +179,7 @@ describe('Plugin Configuration', () => {
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
 				perProjectAccounts: true,
+				telemetryEnabled: true,
 				sessionRecovery: true,
 				autoResume: true,
 				parallelProbing: false,
@@ -198,6 +206,46 @@ describe('Plugin Configuration', () => {
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
+		});
+
+		it('retries transient config read lock errors and succeeds', () => {
+			mockExistsSync.mockReturnValue(true);
+			const transientReadError = Object.assign(new Error('Resource busy'), { code: 'EBUSY' });
+			mockReadFileSync
+				.mockImplementationOnce(() => {
+					throw transientReadError;
+				})
+				.mockReturnValueOnce(JSON.stringify({ codexMode: false }));
+
+			const config = loadPluginConfig();
+
+			expect(config.codexMode).toBe(false);
+			expect(mockReadFileSync).toHaveBeenCalledTimes(2);
+			const failedLoadWarnings = vi
+				.mocked(logger.logWarn)
+				.mock.calls.filter(([message]) => String(message).includes('Failed to load config'));
+			expect(failedLoadWarnings).toHaveLength(0);
+		});
+
+		it('retries transient config read lock errors (EPERM) and succeeds', () => {
+			mockExistsSync.mockReturnValue(true);
+			const transientReadError = Object.assign(new Error('Operation not permitted'), {
+				code: 'EPERM',
+			});
+			mockReadFileSync
+				.mockImplementationOnce(() => {
+					throw transientReadError;
+				})
+				.mockReturnValueOnce(JSON.stringify({ codexMode: false }));
+
+			const config = loadPluginConfig();
+
+			expect(config.codexMode).toBe(false);
+			expect(mockReadFileSync).toHaveBeenCalledTimes(2);
+			const failedLoadWarnings = vi
+				.mocked(logger.logWarn)
+				.mock.calls.filter(([message]) => String(message).includes('Failed to load config'));
+			expect(failedLoadWarnings).toHaveLength(0);
 		});
 
 		it('should detect CODEX_HOME legacy auth config path before global legacy path', async () => {
@@ -418,7 +466,8 @@ describe('Plugin Configuration', () => {
 				fastSessionMaxInputItems: 30,
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
+				retryAllAccountsMaxRetries: 12,
+				retryAllAccountsAbsoluteCeilingMs: 0,
 				unsupportedCodexPolicy: 'strict',
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
@@ -427,6 +476,7 @@ describe('Plugin Configuration', () => {
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
 				perProjectAccounts: true,
+				telemetryEnabled: true,
 				sessionRecovery: true,
 				autoResume: true,
 				parallelProbing: false,
@@ -482,7 +532,8 @@ describe('Plugin Configuration', () => {
 		fastSessionMaxInputItems: 30,
 		retryAllAccountsRateLimited: true,
 		retryAllAccountsMaxWaitMs: 0,
-		retryAllAccountsMaxRetries: Infinity,
+		retryAllAccountsMaxRetries: 12,
+		retryAllAccountsAbsoluteCeilingMs: 0,
 		unsupportedCodexPolicy: 'strict',
 		fallbackOnUnsupportedCodexModel: false,
 		fallbackToGpt52OnUnsupportedGpt53: true,
@@ -491,6 +542,7 @@ describe('Plugin Configuration', () => {
 		rateLimitToastDebounceMs: 60_000,
 		toastDurationMs: 5_000,
 		perProjectAccounts: true,
+		telemetryEnabled: true,
 		sessionRecovery: true,
 		autoResume: true,
 		parallelProbing: false,
@@ -540,7 +592,8 @@ describe('Plugin Configuration', () => {
 			fastSessionMaxInputItems: 30,
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 0,
-			retryAllAccountsMaxRetries: Infinity,
+			retryAllAccountsMaxRetries: 12,
+			retryAllAccountsAbsoluteCeilingMs: 0,
 			unsupportedCodexPolicy: 'strict',
 			fallbackOnUnsupportedCodexModel: false,
 			fallbackToGpt52OnUnsupportedGpt53: true,
@@ -549,6 +602,7 @@ describe('Plugin Configuration', () => {
 			rateLimitToastDebounceMs: 60_000,
 			toastDurationMs: 5_000,
 			perProjectAccounts: true,
+			telemetryEnabled: true,
 			sessionRecovery: true,
 			autoResume: true,
 			parallelProbing: false,
@@ -598,6 +652,43 @@ describe('Plugin Configuration', () => {
 				String(message).includes('Plugin config validation warnings:')
 			);
 			expect(validationWarnings).toHaveLength(1);
+		});
+
+		it('sanitizes invalid config fields while preserving valid settings', () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockReturnValue(
+				JSON.stringify({
+					codexMode: false,
+					unsupportedCodexPolicy: 'fallback',
+					emptyResponseMaxRetries: 4,
+					fetchTimeoutMs: 'invalid-timeout',
+					preemptiveQuotaRemainingPercent5h: 'invalid-percent',
+				}),
+			);
+
+			const config = loadPluginConfig();
+
+			expect(config.codexMode).toBe(false);
+			expect(config.unsupportedCodexPolicy).toBe('fallback');
+			expect(config.emptyResponseMaxRetries).toBe(4);
+			// Invalid values should be dropped and defaulted safely.
+			expect(config.fetchTimeoutMs).toBe(60_000);
+			expect(config.preemptiveQuotaRemainingPercent5h).toBe(5);
+		});
+
+		it('sanitizes out-of-range numeric config fields to safe defaults', () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockReturnValue(
+				JSON.stringify({
+					fetchTimeoutMs: 10,
+					preemptiveQuotaRemainingPercent5h: 500,
+				}),
+			);
+
+			const config = loadPluginConfig();
+
+			expect(config.fetchTimeoutMs).toBe(60_000);
+			expect(config.preemptiveQuotaRemainingPercent5h).toBe(5);
 		});
 	});
 
@@ -738,6 +829,25 @@ describe('Plugin Configuration', () => {
 			expect(getFastSession({ fastSession: true })).toBe(false);
 			process.env.CODEX_AUTH_FAST_SESSION = '1';
 			expect(getFastSession({ fastSession: false })).toBe(true);
+		});
+	});
+
+	describe('getTelemetryEnabled', () => {
+		it('should default to true', () => {
+			delete process.env.CODEX_AUTH_TELEMETRY_ENABLED;
+			expect(getTelemetryEnabled({})).toBe(true);
+		});
+
+		it('should use config value when env var not set', () => {
+			delete process.env.CODEX_AUTH_TELEMETRY_ENABLED;
+			expect(getTelemetryEnabled({ telemetryEnabled: false })).toBe(false);
+		});
+
+		it('should prioritize env var over config', () => {
+			process.env.CODEX_AUTH_TELEMETRY_ENABLED = '0';
+			expect(getTelemetryEnabled({ telemetryEnabled: true })).toBe(false);
+			process.env.CODEX_AUTH_TELEMETRY_ENABLED = '1';
+			expect(getTelemetryEnabled({ telemetryEnabled: false })).toBe(true);
 		});
 	});
 
@@ -937,6 +1047,36 @@ describe('Plugin Configuration', () => {
 			const config: PluginConfig = { retryAllAccountsMaxRetries: 5 };
 			const result = getRetryAllAccountsMaxRetries(config);
 			expect(result).toBe(5);
+		});
+
+		it('should default retry-all absolute ceiling to zero', () => {
+			delete process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS;
+			expect(getRetryAllAccountsAbsoluteCeilingMs({})).toBe(0);
+		});
+
+		it('should prioritize retry-all absolute ceiling env override', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = '12000';
+			const config: PluginConfig = { retryAllAccountsAbsoluteCeilingMs: 5000 };
+			expect(getRetryAllAccountsAbsoluteCeilingMs(config)).toBe(12000);
+		});
+
+		it('should clamp retry-all absolute ceiling to non-negative values', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = '-10';
+			expect(getRetryAllAccountsAbsoluteCeilingMs({})).toBe(0);
+			delete process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS;
+		});
+
+		it('should clamp retry-all absolute ceiling to a 24h hard maximum', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS = '999999999';
+			expect(getRetryAllAccountsAbsoluteCeilingMs({})).toBe(24 * 60 * 60_000);
+			delete process.env.CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS;
+		});
+
+		it('should clamp all-account retry max to hard upper bound', () => {
+			process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = '10000';
+			const result = getRetryAllAccountsMaxRetries({});
+			expect(result).toBe(100);
+			delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
 		});
 
 		it('should return env value without min constraint', () => {
