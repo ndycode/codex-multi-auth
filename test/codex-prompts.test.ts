@@ -213,6 +213,65 @@ describe("Codex Prompts Module", () => {
 				const second = await getCodexInstructions("gpt-5.1-codex");
 				expect(second).toBe("new version content");
 			});
+
+			it("deduplicates background refresh for concurrent stale calls", async () => {
+				const oldTimestamp = Date.now() - 20 * 60 * 1000;
+				let resolvePromptText: ((value: string) => void) | null = null;
+				const promptText = new Promise<string>((resolve) => {
+					resolvePromptText = resolve;
+				});
+
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "old-etag",
+								tag: "rust-v0.40.0",
+								lastChecked: oldTimestamp,
+								url: "https://example.com",
+							}),
+						);
+					}
+					return Promise.resolve("stale disk content");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.50.0" }),
+				});
+				mockFetch.mockImplementationOnce(() =>
+					Promise.resolve({
+						ok: true,
+						text: () => promptText,
+						headers: { get: () => "new-etag" },
+					}),
+				);
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				const [first, second] = await Promise.all([
+					getCodexInstructions("gpt-5.1-codex"),
+					getCodexInstructions("gpt-5.1-codex"),
+				]);
+
+				expect(first).toBe("stale disk content");
+				expect(second).toBe("stale disk content");
+				await vi.waitFor(() => {
+					expect(mockFetch).toHaveBeenCalledTimes(2);
+				});
+
+				resolvePromptText?.("fresh deduped content");
+				await vi.waitFor(() => {
+					expect(mockedWriteFile).toHaveBeenCalled();
+				});
+				const settledFetchCalls = mockFetch.mock.calls.length;
+				expect(settledFetchCalls).toBe(2);
+
+				const refreshed = await getCodexInstructions("gpt-5.1-codex");
+				expect(refreshed).toBe("fresh deduped content");
+				await vi.waitFor(() => {
+					expect(mockFetch).toHaveBeenCalledTimes(settledFetchCalls);
+				});
+			});
 		});
 
 		describe("GitHub HTML fallback", () => {
