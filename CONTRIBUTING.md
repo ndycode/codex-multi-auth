@@ -22,7 +22,7 @@ If a proposal conflicts with OpenAI policy boundaries, it will be declined.
 ## Local Setup
 
 ```bash
-npm ci
+npm run setup:dev
 npm run verify
 ```
 
@@ -31,6 +31,11 @@ Node requirement: `>=18`.
 `npm run verify` runs the full local gate: `npm run lint`, `npm run verify:repo`, and
 `npm run verify:quality` (`npm run typecheck` + `npm run coverage`, where coverage already
 runs `npm run build`).
+
+Supporting commands:
+
+- `npm run doctor:dev` for prerequisite and repo-shape checks
+- `npm run format` to apply Biome formatting for repo config files
 
 ---
 
@@ -66,6 +71,7 @@ Documentation requirements for behavior changes:
      - `npm run typecheck`
      - `npm test`
      - `npm run build`
+   - if troubleshooting setup or first-clone reproducibility, run `npm run doctor:dev` and `npm run setup:dev`
 4. Include command output evidence in the PR description.
 5. Document behavior changes and migration notes when needed.
 6. Ensure no secrets or local runtime data are committed.

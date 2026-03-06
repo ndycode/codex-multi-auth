@@ -6,7 +6,16 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"includes": ["**", "!!**/dist"]
+		"includes": [
+			"package.json",
+			"biome.jsonc",
+			".github/**/*.yml",
+			".github/**/*.yaml",
+			"!!dist/**",
+			"!!coverage/**",
+			"!!node_modules/**",
+			"!!vendor/**"
+		]
 	},
 	"formatter": {
 		"enabled": true,
