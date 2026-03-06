@@ -1,11 +1,4 @@
-import {
-	existsSync,
-	promises as fs,
-	readdirSync,
-	renameSync,
-	statSync,
-	unlinkSync,
-} from "node:fs";
+import { existsSync, promises as fs, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { getCorrelationId, maskEmail } from "./logger.js";
 import { getCodexLogDir } from "./runtime-paths.js";
@@ -144,21 +137,42 @@ function parseArchiveSuffix(fileName: string): number | null {
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
-function rotateLogsIfNeeded(): void {
-	const logPath = getTelemetryPath();
-	if (!existsSync(logPath)) return;
+function isMissingFsError(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+}
 
-	const size = statSync(logPath).size;
+async function rotateLogsIfNeeded(): Promise<void> {
+	const logPath = getTelemetryPath();
+	let size: number;
+	try {
+		size = (await fs.stat(logPath)).size;
+	} catch (error) {
+		if (isMissingFsError(error)) {
+			return;
+		}
+		throw error;
+	}
+
 	if (size < telemetryConfig.maxFileSizeBytes) return;
 
 	for (let i = telemetryConfig.maxFiles - 1; i >= 1; i -= 1) {
 		const target = `${logPath}.${i}`;
 		const source = i === 1 ? logPath : `${logPath}.${i - 1}`;
-		if (i === telemetryConfig.maxFiles - 1 && existsSync(target)) {
-			unlinkSync(target);
+		if (i === telemetryConfig.maxFiles - 1) {
+			try {
+				await fs.unlink(target);
+			} catch (error) {
+				if (!isMissingFsError(error)) {
+					throw error;
+				}
+			}
 		}
-		if (existsSync(source)) {
-			renameSync(source, target);
+		try {
+			await fs.rename(source, target);
+		} catch (error) {
+			if (!isMissingFsError(error)) {
+				throw error;
+			}
 		}
 	}
 }
@@ -253,7 +267,7 @@ export async function recordTelemetryEvent(input: TelemetryEventInput): Promise<
 	try {
 		await queueAppend(async () => {
 			await ensureLogDir();
-			rotateLogsIfNeeded();
+			await rotateLogsIfNeeded();
 			const line = `${JSON.stringify(entry)}\n`;
 			await fs.appendFile(getTelemetryPath(), line, "utf8");
 		});

@@ -564,6 +564,58 @@ describe("accounts edge branches", () => {
     );
   });
 
+  it("prefers fresher local credentials over stale disk tokens during conflict merge", async () => {
+    const staleExpiresAt = Date.now() + 1_000;
+    const freshExpiresAt = Date.now() + 120_000;
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-fresh",
+        accessToken: "access-fresh",
+        expiresAt: freshExpiresAt,
+        email: "identity@example.com",
+        accountId: "account-identity-1",
+      }),
+    ]);
+
+    const latestDisk = buildStored([
+      buildStoredAccount({
+        refreshToken: "refresh-stale",
+        accessToken: "access-stale",
+        expiresAt: staleExpiresAt,
+        email: "identity@example.com",
+        accountId: "account-identity-1",
+      }),
+    ]);
+
+    const conflictError = Object.assign(new Error("conflict"), {
+      code: "ECONFLICT",
+    });
+    mockSaveAccounts
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce(undefined);
+    mockLoadAccounts.mockResolvedValueOnce(latestDisk);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    await manager.saveToDisk();
+
+    const retriedPayload = mockSaveAccounts.mock.calls[1]?.[0] as {
+      accounts: Array<{
+        accountId?: string;
+        refreshToken: string;
+        accessToken?: string;
+        expiresAt?: number;
+      }>;
+    };
+    const mergedAccount = retriedPayload.accounts.find(
+      (account) => account.accountId === "account-identity-1",
+    );
+    expect(mergedAccount?.refreshToken).toBe("refresh-fresh");
+    expect(mergedAccount?.accessToken).toBe("access-fresh");
+    expect(mergedAccount?.expiresAt).toBe(freshExpiresAt);
+  });
+
   it("prefers fresher timestamp and rate-limit reset values during conflict merge", async () => {
     const localNow = Date.now();
     const localAccount = buildStoredAccount({

@@ -74,7 +74,7 @@ import {
 
 const log = createLogger("accounts");
 type StoredAccount = AccountStorageV3["accounts"][number];
-const DISK_PREFERRED_MERGE_KEYS = new Set(["refreshToken", "accessToken", "expiresAt"]);
+const CREDENTIAL_MERGE_KEYS = new Set(["refreshToken", "accessToken", "expiresAt"]);
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
@@ -854,13 +854,18 @@ export class AccountManager {
 	private mergeStoredAccountRecords(current: StoredAccount, incoming: StoredAccount): StoredAccount {
 		const next: StoredAccount = { ...current };
 		const nextRecord = next as unknown as Record<string, unknown>;
+		const preferredCredentialSource = this.selectCredentialMergeSource(current, incoming);
 		for (const [rawKey, rawValue] of Object.entries(incoming)) {
 			const value = rawValue as unknown;
 			if (value === undefined) {
 				continue;
 			}
 			const currentValue = nextRecord[rawKey];
-			if (DISK_PREFERRED_MERGE_KEYS.has(rawKey) && currentValue !== undefined) {
+			if (
+				CREDENTIAL_MERGE_KEYS.has(rawKey) &&
+				currentValue !== undefined &&
+				preferredCredentialSource === "current"
+			) {
 				continue;
 			}
 			if (
@@ -897,6 +902,27 @@ export class AccountManager {
 			nextRecord[rawKey] = value;
 		}
 		return next;
+	}
+
+	private selectCredentialMergeSource(
+		current: StoredAccount,
+		incoming: StoredAccount,
+	): "current" | "incoming" {
+		const currentExpiresAt =
+			typeof current.expiresAt === "number" ? current.expiresAt : undefined;
+		const incomingExpiresAt =
+			typeof incoming.expiresAt === "number" ? incoming.expiresAt : undefined;
+
+		if (incomingExpiresAt === undefined && currentExpiresAt === undefined) {
+			return "incoming";
+		}
+		if (incomingExpiresAt === undefined) {
+			return "current";
+		}
+		if (currentExpiresAt === undefined) {
+			return "incoming";
+		}
+		return incomingExpiresAt > currentExpiresAt ? "incoming" : "current";
 	}
 
 	private applyPersistedStorageSnapshot(storage: AccountStorageV3): void {
