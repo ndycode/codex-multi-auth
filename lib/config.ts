@@ -44,6 +44,10 @@ const CONFIG_LOCK_STALE_MS = 30_000;
 const CONFIG_LOCK_WAIT_TIMEOUT_MS = 5_000;
 const RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES = 12;
 const RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES = 100;
+const CONFIG_READ_MAX_ATTEMPTS = 4;
+const CONFIG_READ_RETRY_BASE_DELAY_MS = 10;
+const pluginConfigShape = PluginConfigSchema.shape;
+type PluginConfigShapeKey = keyof typeof pluginConfigShape;
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -203,7 +207,7 @@ export function loadPluginConfig(): PluginConfig {
 				return { ...DEFAULT_PLUGIN_CONFIG };
 			}
 
-			const fileContent = readFileSync(configPath, "utf-8");
+			const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 			const normalizedFileContent = stripUtf8Bom(fileContent);
 			userConfig = JSON.parse(normalizedFileContent) as unknown;
 			sourceKind = "file";
@@ -232,6 +236,7 @@ export function loadPluginConfig(): PluginConfig {
 				`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
 			);
 		}
+		const sanitizedConfig = sanitizePluginConfigRecord(userConfig);
 
 		if (
 			sourceKind === "file" &&
@@ -245,7 +250,7 @@ export function loadPluginConfig(): PluginConfig {
 
 		return {
 			...DEFAULT_PLUGIN_CONFIG,
-			...(userConfig as Partial<PluginConfig>),
+			...sanitizedConfig,
 		};
 	} catch (error) {
 		const configPath = resolvePluginConfigPath() ?? CONFIG_PATH;
@@ -278,9 +283,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isPluginConfigShapeKey(key: string): key is PluginConfigShapeKey {
+	return Object.hasOwn(pluginConfigShape, key);
+}
+
+function sanitizePluginConfigRecord(userConfig: unknown): Partial<PluginConfig> {
+	if (!isRecord(userConfig)) return {};
+	const sanitized: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(userConfig)) {
+		if (!isPluginConfigShapeKey(key)) continue;
+		const parsed = pluginConfigShape[key].safeParse(value);
+		if (parsed.success && parsed.data !== undefined) {
+			sanitized[key] = parsed.data;
+		}
+	}
+	return sanitized as Partial<PluginConfig>;
+}
+
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function readFileSyncWithRetry(path: string, encoding: BufferEncoding): string {
+	for (let attempt = 0; attempt < CONFIG_READ_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			return readFileSync(path, encoding);
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= CONFIG_READ_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			sleepSync(CONFIG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+	throw new Error(`Failed to read config file after ${CONFIG_READ_MAX_ATTEMPTS} attempts`);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -617,7 +657,7 @@ async function releaseConfigSaveFileLock(lock: ConfigSaveFileLock): Promise<void
 function readConfigRecordFromPath(configPath: string): Record<string, unknown> | null {
 	if (!existsSync(configPath)) return null;
 	try {
-		const fileContent = readFileSync(configPath, "utf-8");
+		const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const parsed = JSON.parse(normalizedFileContent) as unknown;
 		return isRecord(parsed) ? parsed : null;

@@ -105,7 +105,7 @@ vi.mock("../lib/config.js", () => ({
 	getEmptyResponseMaxRetries: () => 2,
 	getEmptyResponseRetryDelayMs: () => 1000,
 	getPidOffsetEnabled: () => false,
-	getFetchTimeoutMs: () => 60000,
+	getFetchTimeoutMs: vi.fn(() => 60000),
 	getStreamStallTimeoutMs: () => 45000,
 	getLiveAccountSync: vi.fn(() => false),
 	getLiveAccountSyncDebounceMs: () => 250,
@@ -126,7 +126,7 @@ vi.mock("../lib/config.js", () => ({
 	getCodexTuiV2: () => false,
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
-	loadPluginConfig: () => ({}),
+	loadPluginConfig: vi.fn(() => ({})),
 }));
 
 const liveAccountSyncSyncToPathMock = vi.fn(async () => {});
@@ -570,6 +570,126 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("http_error");
 			expect(result.message).toContain("network down");
+		});
+
+		it("passes configured timeout to manual OAuth callback exchange", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const configModule = await import("../lib/config.js");
+			const manualMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					callback: (input: string) => Promise<{ type: string; reason?: string; message?: string }>;
+				}>;
+			};
+			const expectedTimeoutMs = 4321;
+			const pluginConfig = { fetchTimeoutMs: expectedTimeoutMs };
+			vi.mocked(configModule.loadPluginConfig).mockReturnValue(pluginConfig);
+			vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(expectedTimeoutMs);
+
+			const flow = await manualMethod.authorize();
+			await flow.callback("http://127.0.0.1:1455/auth/callback?code=abc123&state=test-state");
+
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
+				"abc123",
+				"test-verifier",
+				authModule.REDIRECT_URI,
+				{ timeoutMs: expectedTimeoutMs },
+			);
+			expect(vi.mocked(configModule.getFetchTimeoutMs)).toHaveBeenCalledWith(pluginConfig);
+		});
+
+		it("passes configured timeout to browser OAuth callback exchange", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const configModule = await import("../lib/config.js");
+			const browserModule = await import("../lib/auth/browser.js");
+			const serverModule = await import("../lib/auth/server.js");
+			const expectedTimeoutMs = 6789;
+			const pluginConfig = { fetchTimeoutMs: expectedTimeoutMs };
+			vi.mocked(configModule.loadPluginConfig).mockReturnValue(pluginConfig);
+			vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(expectedTimeoutMs);
+			vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue({
+				pkce: { verifier: "custom-verifier", challenge: "custom-challenge" },
+				state: "custom-state",
+				url: "https://auth.openai.com/oauth/authorize?state=custom-state",
+			});
+			vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+			vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+				ready: true,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize();
+
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
+				"oauth-code",
+				"custom-verifier",
+				authModule.REDIRECT_URI,
+				{ timeoutMs: expectedTimeoutMs },
+			);
+			expect(vi.mocked(configModule.getFetchTimeoutMs)).toHaveBeenCalledWith(pluginConfig);
+		});
+
+		it("keeps timeout wiring stable under concurrent OAuth authorize calls", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const configModule = await import("../lib/config.js");
+			const browserModule = await import("../lib/auth/browser.js");
+			const serverModule = await import("../lib/auth/server.js");
+			const expectedTimeoutMs = 2468;
+			vi.mocked(configModule.loadPluginConfig).mockReturnValue({ fetchTimeoutMs: expectedTimeoutMs });
+			vi.mocked(configModule.getFetchTimeoutMs).mockReturnValue(expectedTimeoutMs);
+			vi.mocked(authModule.createAuthorizationFlow)
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-1", challenge: "challenge-1" },
+					state: "state-1",
+					url: "https://auth.openai.com/oauth/authorize?state=state-1",
+				})
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-2", challenge: "challenge-2" },
+					state: "state-2",
+					url: "https://auth.openai.com/oauth/authorize?state=state-2",
+				})
+				.mockResolvedValueOnce({
+					pkce: { verifier: "verifier-3", challenge: "challenge-3" },
+					state: "state-3",
+					url: "https://auth.openai.com/oauth/authorize?state=state-3",
+				});
+			vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+			vi.mocked(serverModule.startLocalOAuthServer)
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-1" })),
+				})
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-2" })),
+				})
+				.mockResolvedValueOnce({
+					ready: true,
+					close: vi.fn(),
+					waitForCode: vi.fn(async () => ({ code: "code-3" })),
+				});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await Promise.all([autoMethod.authorize(), autoMethod.authorize(), autoMethod.authorize()]);
+
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledTimes(3);
+			const calls = vi.mocked(authModule.exchangeAuthorizationCode).mock.calls;
+			expect(calls.map((call) => call[0])).toEqual(
+				expect.arrayContaining(["code-1", "code-2", "code-3"]),
+			);
+			expect(calls.map((call) => call[1])).toEqual(
+				expect.arrayContaining(["verifier-1", "verifier-2", "verifier-3"]),
+			);
+			for (const call of calls) {
+				expect(call[3]).toEqual({ timeoutMs: expectedTimeoutMs });
+			}
 		});
 
 		it("uses REDIRECT_URI in manual callback validation copy", async () => {

@@ -23,6 +23,7 @@ import {
 	selectBestAccountCandidate,
 } from "./accounts.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
+import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
 import {
 	loadDashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
@@ -1381,9 +1382,16 @@ async function runOAuthFlow(forceNewLogin: boolean): Promise<TokenResult> {
 		};
 	}
 	const authRateLimitKey = "oauth:login";
+	const authPluginConfig = loadPluginConfig();
+	const oauthFetchTimeoutMs = getFetchTimeoutMs(authPluginConfig);
 	checkAuthRateLimit(authRateLimitKey);
 	recordAuthAttempt(authRateLimitKey);
-	const tokenResult = await exchangeAuthorizationCode(code, pkce.verifier, REDIRECT_URI);
+	const tokenResult = await exchangeAuthorizationCode(
+		code,
+		pkce.verifier,
+		REDIRECT_URI,
+		{ timeoutMs: oauthFetchTimeoutMs },
+	);
 	if (tokenResult.type === "success") {
 		resetAuthRateLimit(authRateLimitKey);
 		emitAudit(AuditAction.AUTH_LOGIN, AuditOutcome.SUCCESS, "oauth", {

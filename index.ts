@@ -225,7 +225,9 @@ import { enforceDataRetention } from "./lib/data-retention.js";
 // eslint-disable-next-line @typescript-eslint/require-await
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
-	void enforceDataRetention().catch((error) => {
+	void withAccountStorageTransaction(async () => {
+		await enforceDataRetention();
+	}).catch((error) => {
 		logWarn("Data retention cleanup failed", {
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -271,15 +273,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		code: string,
 		verifier: string,
 		redirectUri: string,
+		options?: Parameters<typeof exchangeAuthorizationCode>[3],
 	): Promise<TokenResult> => {
-		const rateLimitKey = "oauth:code-exchange";
-		checkAuthRateLimit(rateLimitKey);
-		recordAuthAttempt(rateLimitKey);
-		const tokens = await exchangeAuthorizationCode(code, verifier, redirectUri);
-		if (tokens.type === "success") {
-			resetAuthRateLimit(rateLimitKey);
+		try {
+			const rateLimitKey = "oauth:code-exchange";
+			checkAuthRateLimit(rateLimitKey);
+			recordAuthAttempt(rateLimitKey);
+			const tokens = await exchangeAuthorizationCode(
+				code,
+				verifier,
+				redirectUri,
+				options,
+			);
+			if (tokens.type === "success") {
+				resetAuthRateLimit(rateLimitKey);
+			}
+			return tokens;
+		} catch (error) {
+			const err = error instanceof Error ? error : new Error(String(error));
+			return {
+				type: "failed",
+				reason: "http_error",
+				message: err.message,
+			};
 		}
-		return tokens;
 	};
 
 		const parseEnvInt = (value: string | undefined): number | undefined => {
@@ -455,6 +472,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 };
         };
 
+        const resolveOAuthFetchTimeoutMs = (): number => {
+                return getFetchTimeoutMs(loadPluginConfig());
+        };
+
         const buildManualOAuthFlow = (
                 pkce: { verifier: string },
                 url: string,
@@ -493,10 +514,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         message: "OAuth state mismatch. Restart login and try again.",
                                 };
                         }
+						const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
 						const tokens = await exchangeAuthorizationCodeWithRateLimit(
 							parsed.code,
 							pkce.verifier,
 							REDIRECT_URI,
+							{ timeoutMs: oauthFetchTimeoutMs },
 						);
                         if (tokens?.type === "success") {
                                 const resolved = resolveAccountSelection(tokens);
@@ -542,10 +565,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
 		}
 
+                const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
                 return await exchangeAuthorizationCodeWithRateLimit(
                         result.code,
                         pkce.verifier,
                         REDIRECT_URI,
+                        { timeoutMs: oauthFetchTimeoutMs },
                 );
         };
 
