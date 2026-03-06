@@ -126,6 +126,7 @@ Common operator overrides:
 - `CODEX_TUI_V2`
 - `CODEX_TUI_COLOR_PROFILE`
 - `CODEX_TUI_GLYPHS`
+- `CODEX_SECRET_STORAGE_MODE`
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
 - `CODEX_AUTH_ENCRYPTION_KEY`
@@ -134,6 +135,10 @@ Common operator overrides:
 
 Encryption key variables must be high-entropy 32-byte key material (for example,
 from a secret manager). Do not use passwords.
+
+Enterprise recommendation:
+
+- pin `CODEX_SECRET_STORAGE_MODE=keychain` for production.
 
 ---
 

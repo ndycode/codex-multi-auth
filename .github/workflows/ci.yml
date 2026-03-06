@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -44,6 +44,26 @@ jobs:
       - name: Security audit (full dependency tree, non-blocking)
         continue-on-error: true
         run: npm run audit:all
+
+      - name: Generate and verify SBOM
+        run: |
+          npm run sbom:generate
+          npm run sbom:verify
+
+      - name: Assert keychain mode storage contract
+        run: npm run ops:keychain-assert
+
+      - name: Seed enterprise health fixture
+        run: |
+          node scripts/seed-health-fixture.js
+
+      - name: Enterprise health check
+        env:
+          CODEX_MULTI_AUTH_DIR: ${{ github.workspace }}/.tmp/health-fixture
+        run: npm run ops:health-check -- --require-files
+
+      - name: Performance budget check
+        run: npm run perf:budget-check
 
   lint:
     name: Lint

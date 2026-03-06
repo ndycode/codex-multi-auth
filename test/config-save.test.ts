@@ -24,6 +24,12 @@ async function removeWithRetry(
   }
 }
 
+async function expectSecureFileMode(path: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const stats = await fs.stat(path);
+  expect(stats.mode & 0o777).toBe(0o600);
+}
+
 describe("plugin config save paths", () => {
   let tempDir = "";
   const envKeys = [
@@ -91,6 +97,7 @@ describe("plugin config save paths", () => {
     expect(parsed.unsupportedCodexFallbackChain).toEqual({
       "gpt-5": ["gpt-4o"],
     });
+    await expectSecureFileMode(configPath);
   });
 
   it("recovers from malformed env-path JSON before saving", async () => {

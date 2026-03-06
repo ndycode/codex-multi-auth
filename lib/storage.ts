@@ -5,7 +5,11 @@ import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { acquireFileLock } from "./file-lock.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
-import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
+import {
+	AnyAccountStorageSchema,
+	AccountStorageV4Schema,
+	getValidationErrors,
+} from "./schemas.js";
 import {
 	decryptSecret,
 	encryptSecret,
@@ -23,15 +27,35 @@ import {
 } from "./storage/paths.js";
 import {
   migrateV1ToV3,
+  migrateV3ToV4,
   type CooldownReason,
   type RateLimitStateV3,
   type AccountMetadataV1,
   type AccountStorageV1,
   type AccountMetadataV3,
   type AccountStorageV3,
+  type AccountMetadataV4,
+  type AccountStorageV4,
 } from "./storage/migrations.js";
+import {
+	deleteAccountSecrets,
+	deriveAccountSecretRef,
+	ensureSecretStorageBackendAvailable,
+	getEffectiveSecretStorageMode,
+	loadAccountSecrets,
+	persistAccountSecrets,
+} from "./secrets/token-store.js";
 
-export type { CooldownReason, RateLimitStateV3, AccountMetadataV1, AccountStorageV1, AccountMetadataV3, AccountStorageV3 };
+export type {
+	CooldownReason,
+	RateLimitStateV3,
+	AccountMetadataV1,
+	AccountStorageV1,
+	AccountMetadataV3,
+	AccountStorageV3,
+	AccountMetadataV4,
+	AccountStorageV4,
+};
 
 const log = createLogger("storage");
 const ACCOUNTS_FILE_NAME = "openai-codex-accounts.json";
@@ -138,7 +162,7 @@ async function withStorageSerializedFileLock<T>(path: string, fn: () => Promise<
 	);
 }
 
-type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
+type AnyAccountStorage = AccountStorageV1 | AccountStorageV3 | AccountStorageV4;
 
 type AccountLike = {
   accountId?: string;
@@ -1007,14 +1031,87 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
   return loadAccountsInternal(saveAccounts);
 }
 
-function parseAndNormalizeStorage(data: unknown): {
+async function hydrateV4Storage(data: AccountStorageV4): Promise<AccountStorageV3 | null> {
+	const mode = await getEffectiveSecretStorageMode();
+	if (mode === "plaintext") {
+		log.warn("Cannot load v4 keychain-backed account storage in plaintext mode");
+		return null;
+	}
+
+	const hydratedAccounts: AccountMetadataV3[] = [];
+	let skippedBeforeActiveIndex = 0;
+	const skippedIndices: number[] = [];
+	for (let index = 0; index < data.accounts.length; index += 1) {
+		const rawAccount = data.accounts[index];
+		if (!rawAccount) continue;
+		const secrets = await loadAccountSecrets({
+			refreshTokenRef: rawAccount.refreshTokenRef,
+			accessTokenRef: rawAccount.accessTokenRef,
+		});
+		if (!secrets || !secrets.refreshToken) {
+			if (index < data.activeIndex) {
+				skippedBeforeActiveIndex += 1;
+			}
+			skippedIndices.push(index);
+			log.warn("Skipping v4 account with missing keychain secret", {
+				accountId: rawAccount.accountId,
+			});
+			continue;
+		}
+		const {
+			refreshTokenRef,
+			accessTokenRef,
+			...rest
+		} = rawAccount;
+		void refreshTokenRef;
+		void accessTokenRef;
+		hydratedAccounts.push({
+			...rest,
+			refreshToken: secrets.refreshToken,
+			accessToken: secrets.accessToken,
+		});
+	}
+	const adjustedActiveIndex = Math.max(0, data.activeIndex - skippedBeforeActiveIndex);
+	const remapFamilyIndex = (rawIndex: number): number => {
+		const droppedBefore = skippedIndices.filter((droppedIndex) => droppedIndex < rawIndex).length;
+		const remapped = Math.max(0, rawIndex - droppedBefore);
+		if (hydratedAccounts.length <= 0) return 0;
+		return Math.min(remapped, hydratedAccounts.length - 1);
+	};
+	const adjustedActiveIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+	if (data.activeIndexByFamily) {
+		for (const family of MODEL_FAMILIES) {
+			const raw = data.activeIndexByFamily[family];
+			if (typeof raw === "number" && Number.isFinite(raw)) {
+				adjustedActiveIndexByFamily[family] = remapFamilyIndex(raw);
+			}
+		}
+	}
+
+	return normalizeAccountStorage({
+		version: 3,
+		accounts: hydratedAccounts,
+		activeIndex: adjustedActiveIndex,
+		activeIndexByFamily: adjustedActiveIndexByFamily,
+	});
+}
+
+async function parseAndNormalizeStorage(data: unknown): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
-} {
+}> {
 	const schemaErrors = getValidationErrors(AnyAccountStorageSchema, data);
-	const normalized = normalizeAccountStorage(data);
 	const storedVersion = isRecord(data) ? (data as { version?: unknown }).version : undefined;
+	if (storedVersion === 4 && isRecord(data)) {
+		const parsedV4 = AccountStorageV4Schema.safeParse(data);
+		if (!parsedV4.success) {
+			return { normalized: null, storedVersion, schemaErrors };
+		}
+		const normalized = await hydrateV4Storage(parsedV4.data);
+		return { normalized, storedVersion, schemaErrors };
+	}
+	const normalized = normalizeAccountStorage(data);
 	return { normalized, storedVersion, schemaErrors };
 }
 
@@ -1025,7 +1122,7 @@ async function loadAccountsFromPath(path: string): Promise<{
 }> {
 	const content = await fs.readFile(path, "utf-8");
 	const data = JSON.parse(content) as unknown;
-	return parseAndNormalizeStorage(data);
+	return await parseAndNormalizeStorage(data);
 }
 
 async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 | null> {
@@ -1043,7 +1140,7 @@ async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 |
 			return null;
 		}
 		const data = JSON.parse(entry.content) as unknown;
-		const { normalized } = parseAndNormalizeStorage(data);
+		const { normalized } = await parseAndNormalizeStorage(data);
 		if (!normalized) return null;
 		log.warn("Recovered account storage from WAL journal", { path, walPath });
 		return normalized;
@@ -1070,7 +1167,7 @@ async function loadAccountsInternal(
     if (schemaErrors.length > 0) {
       log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
     }
-    if (normalized && storedVersion !== normalized.version) {
+    if (normalized && storedVersion !== normalized.version && storedVersion !== 4) {
       log.info("Migrating account storage to v3", { from: storedVersion, to: normalized.version });
       if (persistMigration) {
         try {
@@ -1189,14 +1286,74 @@ async function loadAccountsInternal(
   }
 }
 
+type PersistedSecretRef = { refreshTokenRef: string; accessTokenRef?: string };
+
+type SerializedStoragePayload = {
+	content: string;
+	persistedSecretRefs: PersistedSecretRef[];
+};
+
+async function serializeStorageForPersist(storage: AccountStorageV3): Promise<SerializedStoragePayload> {
+	const mode = await getEffectiveSecretStorageMode();
+	if (mode === "plaintext") {
+		return {
+			content: JSON.stringify(cloneStorageForPersist(storage), null, 2),
+			persistedSecretRefs: [],
+		};
+	}
+
+	await ensureSecretStorageBackendAvailable();
+	const refsByIndex: Array<PersistedSecretRef> = [];
+	const persistedSecretRefs: PersistedSecretRef[] = [];
+	try {
+		for (let index = 0; index < storage.accounts.length; index += 1) {
+			const account = storage.accounts[index];
+			if (!account) continue;
+			const baseRef = `acct-${deriveAccountSecretRef({
+				accountId: account.accountId,
+				email: account.email,
+				addedAt: account.addedAt,
+				refreshToken: account.refreshToken,
+			})}`;
+			const refs = await persistAccountSecrets(baseRef, {
+				refreshToken: account.refreshToken,
+				accessToken: account.accessToken,
+			});
+			if (!refs) {
+				throw new Error("Keychain mode selected but no secret refs were returned");
+			}
+			persistedSecretRefs.push(refs);
+			refsByIndex[index] = refs;
+		}
+
+		const storageV4 = migrateV3ToV4(storage, (_account, index) => {
+			const refs = refsByIndex[index];
+			if (!refs) {
+				throw new Error(`Missing keychain refs for account index ${index}`);
+			}
+			return refs;
+		});
+		return {
+			content: JSON.stringify(storageV4, null, 2),
+			persistedSecretRefs,
+		};
+	} catch (error) {
+		await Promise.allSettled(
+			persistedSecretRefs.map((refs) => deleteAccountSecrets(refs, { force: true })),
+		);
+		throw error;
+	}
+}
+
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   const path = getStoragePath();
   const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   const tempPath = `${path}.${uniqueSuffix}.tmp`;
   const walPath = getAccountsWalPath(path);
+  let persistedSecretRefs: PersistedSecretRef[] = [];
 
   try {
-    await fs.mkdir(dirname(path), { recursive: true });
+    await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await ensureGitignore(path);
 
 	if (looksLikeSyntheticFixtureStorage(storage)) {
@@ -1230,8 +1387,9 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 		}
 	}
 
-	const persistedStorage = cloneStorageForPersist(storage);
-    const content = JSON.stringify(persistedStorage, null, 2);
+	const serialized = await serializeStorageForPersist(storage);
+	const content = serialized.content;
+	persistedSecretRefs = serialized.persistedSecretRefs;
 	const journalEntry: AccountsJournalEntry = {
 		version: 1,
 		createdAt: Date.now(),
@@ -1257,6 +1415,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
       try {
         await fs.rename(tempPath, path);
 		lastAccountsSaveTimestamp = Date.now();
+		persistedSecretRefs = [];
 		try {
 			await fs.unlink(walPath);
 		} catch {
@@ -1280,6 +1439,11 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
     } catch {
       // Ignore cleanup failure.
     }
+	if (persistedSecretRefs.length > 0) {
+		await Promise.allSettled(
+			persistedSecretRefs.map((refs) => deleteAccountSecrets(refs, { force: true })),
+		);
+	}
 
     const err = error as NodeJS.ErrnoException;
     const code = err?.code || "UNKNOWN";
@@ -1330,6 +1494,74 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
 	});
 }
 
+function collectSecretRefsFromV4Payload(payload: unknown): PersistedSecretRef[] {
+	if (!isRecord(payload) || payload.version !== 4 || !Array.isArray(payload.accounts)) {
+		return [];
+	}
+	const refs: PersistedSecretRef[] = [];
+	for (const rawAccount of payload.accounts) {
+		if (!isRecord(rawAccount)) continue;
+		const refreshTokenRef =
+			typeof rawAccount.refreshTokenRef === "string"
+				? rawAccount.refreshTokenRef.trim()
+				: "";
+		if (!refreshTokenRef) continue;
+		const accessTokenRef =
+			typeof rawAccount.accessTokenRef === "string"
+				? rawAccount.accessTokenRef.trim()
+				: undefined;
+		refs.push({ refreshTokenRef, accessTokenRef });
+	}
+	return refs;
+}
+
+function collectPersistedSecretRefs(payload: unknown): PersistedSecretRef[] {
+	const directRefs = collectSecretRefsFromV4Payload(payload);
+	if (directRefs.length > 0) {
+		return directRefs;
+	}
+	if (
+		!isRecord(payload) ||
+		payload.version !== 1 ||
+		typeof payload.content !== "string" ||
+		payload.content.trim().length === 0
+	) {
+		return [];
+	}
+	try {
+		const journalPayload = JSON.parse(payload.content) as unknown;
+		return collectSecretRefsFromV4Payload(journalPayload);
+	} catch {
+		return [];
+	}
+}
+
+async function clearPersistedAccountSecrets(path: string): Promise<void> {
+	try {
+		const raw = await fs.readFile(path, "utf-8");
+		const parsed = JSON.parse(raw) as unknown;
+		const refs = collectPersistedSecretRefs(parsed);
+		for (const ref of refs) {
+			try {
+				await deleteAccountSecrets(ref, { force: true });
+			} catch (error) {
+				log.warn("Failed to clear keychain secret reference", {
+					path,
+					refreshTokenRef: ref.refreshTokenRef,
+					error: String(error),
+				});
+			}
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to clear persisted account secrets", {
+				path,
+				error: String(error),
+			});
+		}
+	}
+}
 
 /**
  * Deletes the account storage file from disk.
@@ -1355,6 +1587,11 @@ export async function clearAccounts(): Promise<void> {
     };
 
     try {
+      await clearPersistedAccountSecrets(path);
+      await clearPersistedAccountSecrets(walPath);
+      for (const backupPath of backupPaths) {
+        await clearPersistedAccountSecrets(backupPath);
+      }
       await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
     } catch {
       // Individual path cleanup is already best-effort with per-artifact logging.

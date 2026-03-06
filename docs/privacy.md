@@ -78,6 +78,21 @@ Startup retention cleanup removes expired local artifacts based on:
 - `CODEX_AUTH_RETENTION_QUOTA_CACHE_DAYS`
 - `CODEX_AUTH_RETENTION_DLQ_DAYS`
 
+Retention control:
+
+```bash
+npm run ops:retention-cleanup
+npm run ops:retention-cleanup -- --days=30
+```
+
+Default retention window is 90 days.
+
+Audit forwarding (for central SIEM ingestion):
+
+```bash
+npm run ops:audit-forwarder -- --dry-run
+```
+
 ---
 
 ## Data Cleanup

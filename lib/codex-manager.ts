@@ -49,6 +49,7 @@ import {
 	type QuotaCacheData,
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
+import { maskEmail } from "./logger.js";
 import {
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -4568,6 +4569,63 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	});
 }
 
+function auditActionForCommand(command: string): AuditAction {
+	switch (command) {
+		case "login":
+			return AuditAction.AUTH_LOGIN;
+		case "switch":
+			return AuditAction.ACCOUNT_SWITCH;
+		case "check":
+			return AuditAction.REQUEST_START;
+		case "verify-flagged":
+			return AuditAction.ACCOUNT_REFRESH;
+		case "forecast":
+		case "report":
+		case "fix":
+		case "doctor":
+		case "list":
+		case "status":
+			return AuditAction.COMMAND_RUN;
+		default:
+			return AuditAction.COMMAND_RUN;
+	}
+}
+
+function sanitizeAuditError(error: unknown): string {
+	const raw = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+	const masked = raw
+		.replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "***REDACTED***")
+		.replace(/\b(?:refresh|access)_token_[A-Za-z0-9_-]{8,}\b/gi, "***REDACTED***")
+		.replace(/\bsecret-(?:access|refresh)-token\b/gi, "***REDACTED***")
+		.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, (match) => maskEmail(match));
+	return masked.slice(0, 200);
+}
+
+async function runWithAudit(
+	command: string,
+	runner: () => Promise<number>,
+): Promise<number> {
+	const action = auditActionForCommand(command);
+	const resource = `codex auth ${command}`;
+	try {
+		const code = await runner();
+		auditLog(
+			action,
+			"cli-user",
+			resource,
+			code === 0 ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE,
+			{ command, exitCode: code },
+		);
+		return code;
+	} catch (error) {
+		auditLog(action, "cli-user", resource, AuditOutcome.FAILURE, {
+			command,
+			error: sanitizeAuditError(error),
+		});
+		throw error;
+	}
+}
+
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
@@ -4594,46 +4652,69 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return 0;
 	}
 	if (command === "login") {
-		if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) return 1;
-		return runAuthLogin();
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) return 1;
+			return runAuthLogin();
+		});
 	}
 	if (command === "list" || command === "status") {
-		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
-		return showAccountStatus(rest);
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
+			return showAccountStatus(rest);
+		});
 	}
 	if (command === "switch") {
-		if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) return 1;
-		return runSwitch(rest);
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) return 1;
+			return runSwitch(rest);
+		});
 	}
 	if (command === "check") {
-		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
-		await runHealthCheck({ liveProbe: true });
-		return 0;
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
+			await runHealthCheck({ liveProbe: true });
+			return 0;
+		});
 	}
 	if (command === "features") {
 		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
 		return runFeaturesReport();
 	}
 	if (command === "verify-flagged") {
-		if (!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) return 1;
-		return runVerifyFlagged(rest);
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) return 1;
+			return runVerifyFlagged(rest);
+		});
 	}
 	if (command === "forecast") {
-		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
-		return runForecast(rest);
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
+			return runForecast(rest);
+		});
 	}
 	if (command === "report") {
-		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
-		return runReport(rest);
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
+			return runReport(rest);
+		});
 	}
 	if (command === "fix") {
-		if (!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) return 1;
-		return runFix(rest);
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) return 1;
+			return runFix(rest);
+		});
 	}
 	if (command === "doctor") {
-		if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
-		if (rest.includes("--fix") && !ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) return 1;
-		return runDoctor(rest);
+		return runWithAudit(command, async () => {
+			if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) return 1;
+			if (
+				rest.includes("--fix") &&
+				!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })
+			) {
+				return 1;
+			}
+			return runDoctor(rest);
+		});
 	}
 	if (command === "rotate-secrets") {
 		if (!ensureAuthorized("secrets:rotate", {

@@ -84,6 +84,10 @@ Before release and after dependency changes:
 
 ```bash
 npm run audit:ci
+npm run ops:health-check
+npm run perf:budget-check
+npm run sbom:generate
+npm run sbom:verify
 npm run lint
 npm run typecheck
 npm test

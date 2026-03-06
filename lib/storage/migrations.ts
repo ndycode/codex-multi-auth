@@ -63,6 +63,30 @@ export interface AccountStorageV3 {
 	activeIndexByFamily?: Partial<Record<ModelFamily, number>>;
 }
 
+export interface AccountMetadataV4 {
+	accountId?: string;
+	accountIdSource?: AccountIdSource;
+	accountLabel?: string;
+	email?: string;
+	refreshTokenRef: string;
+	accessTokenRef?: string;
+	expiresAt?: number;
+	enabled?: boolean;
+	addedAt: number;
+	lastUsed: number;
+	lastSwitchReason?: "rate-limit" | "initial" | "rotation";
+	rateLimitResetTimes?: RateLimitStateV3;
+	coolingDownUntil?: number;
+	cooldownReason?: CooldownReason;
+}
+
+export interface AccountStorageV4 {
+	version: 4;
+	accounts: AccountMetadataV4[];
+	activeIndex: number;
+	activeIndexByFamily?: Partial<Record<ModelFamily, number>>;
+}
+
 function nowMs(): number {
 	return Date.now();
 }
@@ -99,5 +123,38 @@ export function migrateV1ToV3(v1: AccountStorageV1): AccountStorageV3 {
 		activeIndexByFamily: Object.fromEntries(
 			MODEL_FAMILIES.map((family) => [family, v1.activeIndex]),
 		) as Partial<Record<ModelFamily, number>>,
+	};
+}
+
+export function migrateV3ToV4(
+	v3: AccountStorageV3,
+	resolveRefs: (account: AccountMetadataV3, index: number) => {
+		refreshTokenRef: string;
+		accessTokenRef?: string;
+	},
+): AccountStorageV4 {
+	return {
+		version: 4,
+		activeIndex: v3.activeIndex,
+		activeIndexByFamily: v3.activeIndexByFamily,
+		accounts: v3.accounts.map((account, index) => {
+			const refs = resolveRefs(account, index);
+			return {
+				accountId: account.accountId,
+				accountIdSource: account.accountIdSource,
+				accountLabel: account.accountLabel,
+				email: account.email,
+				refreshTokenRef: refs.refreshTokenRef,
+				accessTokenRef: refs.accessTokenRef,
+				expiresAt: account.expiresAt,
+				enabled: account.enabled,
+				addedAt: account.addedAt,
+				lastUsed: account.lastUsed,
+				lastSwitchReason: account.lastSwitchReason,
+				rateLimitResetTimes: account.rateLimitResetTimes,
+				coolingDownUntil: account.coolingDownUntil,
+				cooldownReason: account.cooldownReason,
+			};
+		}),
 	};
 }

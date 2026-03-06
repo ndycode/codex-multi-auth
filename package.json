@@ -63,12 +63,22 @@
     "bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
     "bench:runtime-path": "npm run build && node scripts/benchmark-runtime-path.mjs",
     "bench:runtime-path:quick": "node scripts/benchmark-runtime-path.mjs",
+    "perf:budget-check": "node scripts/performance-budget-check.js",
+    "sbom:generate": "node scripts/generate-sbom.js",
+    "sbom:verify": "node scripts/verify-sbom.js .tmp/sbom.cdx.json",
     "test:coverage": "vitest run --coverage",
     "coverage": "npm run build && vitest run --coverage",
     "verify:repo": "npm run clean:repo:check && npm run audit:ci && npm run test -- test/lockfile-version-floor.test.ts",
     "verify:quality": "npm run typecheck && npm run coverage",
     "verify": "npm run lint && npm run verify:repo && npm run verify:quality",
     "verify:ci": "npm run verify:repo && npm run verify:quality",
+    "ops:health-check": "node scripts/enterprise-health-check.js",
+    "ops:retention-cleanup": "node scripts/retention-cleanup.js",
+    "ops:audit-forwarder": "node scripts/audit-log-forwarder.js",
+    "ops:slo-report": "node scripts/slo-budget-report.js --output=.tmp/slo-report.json",
+    "ops:compliance-evidence": "node scripts/compliance-evidence-bundle.js --profile=release",
+    "ops:recovery-drill": "npm run test -- test/storage-recovery-paths.test.ts test/storage.test.ts",
+    "ops:keychain-assert": "node scripts/keychain-assert.js",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "audit:all": "npm audit --audit-level=high",
     "audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
@@ -136,6 +146,9 @@
     "@codex-ai/plugin": "file:vendor/codex-ai-plugin",
     "hono": "4.12.3",
     "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "keytar": "^7.9.0"
   },
   "overrides": {
     "hono": "4.12.3",

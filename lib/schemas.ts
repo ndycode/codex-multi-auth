@@ -138,6 +138,40 @@ export const AccountStorageV3Schema = z.object({
 export type AccountStorageV3FromSchema = z.infer<typeof AccountStorageV3Schema>;
 
 /**
+ * Account metadata V4 - keychain-backed secret reference format.
+ */
+export const AccountMetadataV4Schema = z.object({
+	accountId: z.string().optional(),
+	accountIdSource: AccountIdSourceSchema.optional(),
+	accountLabel: z.string().optional(),
+	email: z.string().optional(),
+	refreshTokenRef: z.string().min(1),
+	accessTokenRef: z.string().min(1).optional(),
+	expiresAt: z.number().optional(),
+	enabled: z.boolean().optional(),
+	addedAt: z.number(),
+	lastUsed: z.number(),
+	lastSwitchReason: SwitchReasonSchema.optional(),
+	rateLimitResetTimes: RateLimitStateV3Schema.optional(),
+	coolingDownUntil: z.number().optional(),
+	cooldownReason: CooldownReasonSchema.optional(),
+});
+
+export type AccountMetadataV4FromSchema = z.infer<typeof AccountMetadataV4Schema>;
+
+/**
+ * Account storage V4 - current secure storage format with keychain refs.
+ */
+export const AccountStorageV4Schema = z.object({
+	version: z.literal(4),
+	accounts: z.array(AccountMetadataV4Schema),
+	activeIndex: z.number().min(0),
+	activeIndexByFamily: ActiveIndexByFamilySchema.optional(),
+});
+
+export type AccountStorageV4FromSchema = z.infer<typeof AccountStorageV4Schema>;
+
+/**
  * Legacy V1 account metadata for migration support.
  */
 export const AccountMetadataV1Schema = z.object({
@@ -171,11 +205,12 @@ export const AccountStorageV1Schema = z.object({
 export type AccountStorageV1FromSchema = z.infer<typeof AccountStorageV1Schema>;
 
 /**
- * Union of V1 and V3 storage formats for migration detection.
+ * Union of V1/V3/V4 storage formats for migration detection.
  */
 export const AnyAccountStorageSchema = z.discriminatedUnion("version", [
 	AccountStorageV1Schema,
 	AccountStorageV3Schema,
+	AccountStorageV4Schema,
 ]);
 
 export type AnyAccountStorageFromSchema = z.infer<typeof AnyAccountStorageSchema>;

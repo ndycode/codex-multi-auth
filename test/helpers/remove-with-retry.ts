@@ -4,7 +4,7 @@ const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES",
 
 export async function removeWithRetry(
 	targetPath: string,
-	options: { recursive?: boolean; force?: boolean },
+	options: { recursive?: boolean; force?: boolean } = { recursive: true, force: true },
 ): Promise<void> {
 	for (let attempt = 0; attempt < 6; attempt += 1) {
 		try {

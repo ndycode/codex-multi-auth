@@ -62,6 +62,11 @@ Canonical documentation map for `codex-multi-auth`.
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |
 | [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Dashboard UX parity checklist |
 | [runbooks/README.md](runbooks/README.md) | Operations and incident response playbooks |
+| [operations/incident-response.md](operations/incident-response.md) | Incident triage, containment, and recovery |
+| [operations/incident-drill-template.md](operations/incident-drill-template.md) | Monthly tabletop incident drill worksheet |
+| [operations/release-runbook.md](operations/release-runbook.md) | Release governance, provenance, and rollback |
+| [operations/slo-error-budget.md](operations/slo-error-budget.md) | Reliability objectives and budget policy |
+| [operations/audit-forwarding.md](operations/audit-forwarding.md) | SIEM forwarding controls for audit events |
 | [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark methodology and outputs |
 
 ---

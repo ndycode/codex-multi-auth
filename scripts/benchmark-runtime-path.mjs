@@ -7,6 +7,8 @@ import { dirname, resolve } from "node:path";
 import { filterInput } from "../dist/lib/request/request-transformer.js";
 import { cleanupToolDefinitions } from "../dist/lib/request/helpers/tool-utils.js";
 import { AccountManager } from "../dist/lib/accounts.js";
+import { resolveRequestAccountId } from "../dist/lib/auth/token-utils.js";
+import { normalizeAccountStorage } from "../dist/lib/storage.js";
 
 function argValue(args, name) {
 	const prefix = `${name}=`;
@@ -104,6 +106,33 @@ function buildManager(accountCount) {
 	});
 }
 
+function buildStoragePayload(accountCount) {
+	const now = Date.now();
+	const accounts = [];
+	for (let i = 0; i < accountCount; i += 1) {
+		accounts.push({
+			accountId: `acct_${i % 40}`,
+			email: `user${i % 35}@example.com`,
+			refreshToken: `refresh_${i}`,
+			accessToken: `access_${i}`,
+			expiresAt: now + 3_600_000,
+			enabled: true,
+			addedAt: now - i * 1_000,
+			lastUsed: now - i * 100,
+			lastSwitchReason: "rotation",
+		});
+	}
+	return {
+		version: 3,
+		accounts,
+		activeIndex: Math.floor(accountCount / 3),
+		activeIndexByFamily: {
+			codex: 0,
+			default: Math.floor(accountCount / 4),
+		},
+	};
+}
+
 function run() {
 	const args = process.argv.slice(2);
 	const iterations = parsePositiveInt(argValue(args, "--iterations"), 30);
@@ -113,6 +142,7 @@ function run() {
 	const inputLarge = buildInputItems(2000);
 	const toolsMedium = buildTools(40, 12);
 	const toolsLarge = buildTools(140, 25);
+	const storageLarge = buildStoragePayload(240);
 
 	const results = [
 		benchmarkCase("filterInput_small", iterations, () => {
@@ -136,6 +166,17 @@ function run() {
 			for (let i = 0; i < 200; i += 1) {
 				manager.getCurrentOrNextForFamilyHybrid("codex", "gpt-5-codex", { pidOffsetEnabled: false });
 			}
+		}),
+		benchmarkCase("resolveRequestAccountId_1000", iterations, () => {
+			for (let i = 0; i < 1_000; i += 1) {
+				resolveRequestAccountId("org_123", "org", `token_${i}`);
+				resolveRequestAccountId(undefined, "token", `token_${i}`);
+				resolveRequestAccountId("acct_manual", "manual", `token_${i}`);
+			}
+		}),
+		benchmarkCase("normalizeAccountStorage_240", iterations, () => {
+			const out = normalizeAccountStorage(storageLarge);
+			if (!out || out.version !== 3) throw new Error("normalizeAccountStorage_240 failed");
 		}),
 	];
 

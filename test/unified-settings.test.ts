@@ -1,8 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
+
+async function expectSecureFileMode(path: string): Promise<void> {
+	if (process.platform === "win32") {
+		await expect(fs.readFile(path, "utf8")).resolves.toContain("\"version\": 1");
+		const entries = await fs.readdir(dirname(path));
+		const leakedTemps = entries.filter(
+			(entry) => entry.startsWith(`${basename(path)}.`) && entry.endsWith(".tmp"),
+		);
+		expect(leakedTemps).toEqual([]);
+		return;
+	}
+	const stats = await fs.stat(path);
+	expect(stats.mode & 0o777).toBe(0o600);
+}
+
+async function expectSecureDirectoryMode(path: string): Promise<void> {
+	if (process.platform === "win32") {
+		await expect(fs.access(path)).resolves.toBeUndefined();
+		return;
+	}
+	const stats = await fs.stat(path);
+	expect(stats.isDirectory()).toBe(true);
+	expect(stats.mode & 0o777).toBe(0o700);
+}
 
 describe("unified settings", () => {
 	let tempDir: string;
@@ -52,6 +76,8 @@ describe("unified settings", () => {
 		expect(fileContent).toContain("\"version\": 1");
 		expect(fileContent).toContain("\"pluginConfig\"");
 		expect(fileContent).toContain("\"dashboardDisplaySettings\"");
+		await expectSecureFileMode(getUnifiedSettingsPath());
+		await expectSecureDirectoryMode(dirname(getUnifiedSettingsPath()));
 	});
 
 	it("returns null sections for invalid JSON", async () => {
@@ -83,6 +109,22 @@ describe("unified settings", () => {
 		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 4 });
 		const fileContent = await fs.readFile(getUnifiedSettingsPath(), "utf8");
 		expect(fileContent).toContain("\"version\": 1");
+		await expectSecureFileMode(getUnifiedSettingsPath());
+		await expectSecureDirectoryMode(dirname(getUnifiedSettingsPath()));
+	});
+
+	it("preserves secure file mode on repeated sync writes to the same settings file", async () => {
+		const {
+			saveUnifiedPluginConfigSync,
+			loadUnifiedPluginConfigSync,
+			getUnifiedSettingsPath,
+		} = await import("../lib/unified-settings.js");
+
+		saveUnifiedPluginConfigSync({ codexMode: true, retries: 1 });
+		saveUnifiedPluginConfigSync({ codexMode: false, retries: 2 });
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 2 });
+		await expectSecureFileMode(getUnifiedSettingsPath());
 	});
 
 	it("returns null for missing pluginConfig section", async () => {
