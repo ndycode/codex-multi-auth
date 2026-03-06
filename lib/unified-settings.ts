@@ -10,13 +10,21 @@ import {
 import { join } from "node:path";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { sleep } from "./utils.js";
+import { acquireFileLock, acquireFileLockSync } from "./file-lock.js";
 
 type JsonRecord = Record<string, unknown>;
 
 export const UNIFIED_SETTINGS_VERSION = 1 as const;
 
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
+const UNIFIED_SETTINGS_LOCK_PATH = `${UNIFIED_SETTINGS_PATH}.lock`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const SETTINGS_LOCK_OPTIONS = {
+	maxAttempts: 80,
+	baseDelayMs: 15,
+	maxDelayMs: 800,
+	staleAfterMs: 120_000,
+} as const;
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 
 function isRetryableFsError(error: unknown): boolean {
@@ -254,9 +262,14 @@ export function loadUnifiedPluginConfigSync(): JsonRecord | null {
  * @param pluginConfig - Key/value map representing plugin configuration to persist
  */
 export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
-	const record = readSettingsRecordSync() ?? {};
-	record.pluginConfig = { ...pluginConfig };
-	writeSettingsRecordSync(record);
+	const lock = acquireFileLockSync(UNIFIED_SETTINGS_LOCK_PATH, SETTINGS_LOCK_OPTIONS);
+	try {
+		const record = readSettingsRecordSync() ?? {};
+		record.pluginConfig = { ...pluginConfig };
+		writeSettingsRecordSync(record);
+	} finally {
+		lock.release();
+	}
 }
 
 /**
@@ -271,9 +284,14 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.pluginConfig = { ...pluginConfig };
-		await writeSettingsRecordAsync(record);
+		const lock = await acquireFileLock(UNIFIED_SETTINGS_LOCK_PATH, SETTINGS_LOCK_OPTIONS);
+		try {
+			const record = (await readSettingsRecordAsync()) ?? {};
+			record.pluginConfig = { ...pluginConfig };
+			await writeSettingsRecordAsync(record);
+		} finally {
+			await lock.release();
+		}
 	});
 }
 
@@ -314,8 +332,13 @@ export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
-		await writeSettingsRecordAsync(record);
+		const lock = await acquireFileLock(UNIFIED_SETTINGS_LOCK_PATH, SETTINGS_LOCK_OPTIONS);
+		try {
+			const record = (await readSettingsRecordAsync()) ?? {};
+			record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
+			await writeSettingsRecordAsync(record);
+		} finally {
+			await lock.release();
+		}
 	});
 }

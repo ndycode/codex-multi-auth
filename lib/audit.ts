@@ -14,6 +14,7 @@ export enum AuditAction {
 	AUTH_LOGOUT = "auth.logout",
 	AUTH_REFRESH = "auth.refresh",
 	AUTH_FAILURE = "auth.failure",
+	AUTH_BREAK_GLASS = "auth.break_glass",
 	CONFIG_LOAD = "config.load",
 	CONFIG_CHANGE = "config.change",
 	REQUEST_START = "request.start",

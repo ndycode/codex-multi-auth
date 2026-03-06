@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 
 describe("quota cache", () => {
   let tempDir: string;
@@ -190,7 +192,10 @@ describe("quota cache", () => {
         byEmail: {},
       });
 
-      expect(unlinkSpy).toHaveBeenCalledTimes(1);
+      const tmpUnlinks = unlinkSpy.mock.calls.filter((call) =>
+        String(call[0]).endsWith(".tmp"),
+      );
+      expect(tmpUnlinks).toHaveLength(1);
       const entries = await fs.readdir(tempDir);
       expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
     } finally {
@@ -345,6 +350,79 @@ describe("quota cache", () => {
       ).toBe(true);
     } finally {
       vi.doUnmock("../lib/logger.js");
+    }
+  });
+
+  it("serializes concurrent saveQuotaCache writers across processes", async () => {
+    const { loadQuotaCache } = await import("../lib/quota-cache.js");
+    const workerScriptPath = join(tempDir, "quota-cache-worker.mjs");
+    const moduleUrl = pathToFileURL(
+      join(process.cwd(), "dist", "lib", "quota-cache.js"),
+    ).href;
+    const workerCount = 4;
+    const iterations = 8;
+
+    await fs.writeFile(
+      workerScriptPath,
+      `const [moduleUrl, rootDir, workerIdRaw, workerCountRaw, iterationsRaw] = process.argv.slice(2);
+process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+const workerId = Number(workerIdRaw);
+const workerCount = Number(workerCountRaw);
+const iterations = Number(iterationsRaw);
+const { saveQuotaCache } = await import(moduleUrl);
+for (let i = 0; i < iterations; i += 1) {
+  const byAccountId = {};
+  for (let w = 0; w < workerCount; w += 1) {
+    byAccountId[\`acc_\${w}\`] = {
+      updatedAt: Date.now(),
+      status: 200,
+      model: \`writer-\${workerId}-iter-\${i}\`,
+      primary: { usedPercent: w + i, windowMinutes: 300 },
+      secondary: { usedPercent: workerId, windowMinutes: 10080 },
+    };
+  }
+  await saveQuotaCache({ byAccountId, byEmail: {} });
+}
+`,
+      "utf8",
+    );
+
+    const runWorker = (workerId: number): Promise<void> =>
+      new Promise((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            workerScriptPath,
+            moduleUrl,
+            tempDir,
+            String(workerId),
+            String(workerCount),
+            String(iterations),
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        );
+        let stderr = "";
+        child.stderr.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+        child.on("error", reject);
+        child.on("exit", (code) => {
+          if (code === 0) {
+            resolve();
+            return;
+          }
+          reject(new Error(`quota worker ${workerId} exited with ${code}: ${stderr}`));
+        });
+      });
+
+    await Promise.all(Array.from({ length: workerCount }, (_, workerId) => runWorker(workerId)));
+
+    const loaded = await loadQuotaCache();
+    const keys = Object.keys(loaded.byAccountId).sort();
+    expect(keys).toEqual(["acc_0", "acc_1", "acc_2", "acc_3"]);
+    for (const key of keys) {
+      expect(loaded.byAccountId[key]?.model.startsWith("writer-")).toBe(true);
+      expect(typeof loaded.byAccountId[key]?.primary.usedPercent).toBe("number");
     }
   });
 });

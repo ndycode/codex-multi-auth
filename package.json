@@ -1,146 +1,149 @@
 {
-	"name": "codex-multi-auth",
-	"version": "0.1.7",
-	"description": "OpenAI Codex CLI multi-account OAuth manager with resilient routing and quota-aware diagnostics",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"type": "module",
-	"license": "MIT",
-	"author": "Numman Ali",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/ndycode/codex-multi-auth.git"
-	},
-	"keywords": [
-		"openai",
-		"codex",
-		"codex-cli",
-		"chatgpt",
-		"oauth2",
-		"pkce",
-		"multi-account",
-		"account-rotation",
-		"token-refresh",
-		"session-recovery",
-		"rate-limit-handling",
-		"resilient-systems",
-		"fault-tolerance",
-		"terminal-ui",
-		"cli-tool",
-		"typescript",
-		"nodejs",
-		"developer-tools",
-		"authentication",
-		"productivity-tools"
-	],
-	"homepage": "https://github.com/ndycode/codex-multi-auth#readme",
-	"bugs": {
-		"url": "https://github.com/ndycode/codex-multi-auth/issues"
-	},
-	"scripts": {
-		"build": "tsc && node scripts/copy-oauth-success.js",
-		"doctor:dev": "node scripts/doctor-dev.js",
-		"setup:dev": "node scripts/setup-dev.js",
-		"typecheck": "tsc --noEmit",
-		"lint": "npm run lint:ts && npm run lint:scripts && npm run format:check",
-		"lint:ts": "eslint . --ext .ts",
-		"lint:scripts": "eslint scripts --ext .js",
-		"lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
-		"lint:ts:fix": "eslint . --ext .ts --fix",
-		"lint:scripts:fix": "eslint scripts --ext .js --fix",
-		"format": "biome format . --write",
-		"format:check": "biome format .",
-		"test": "vitest run",
-		"test:watch": "vitest",
-		"test:ui": "vitest --ui",
-		"test:model-matrix": "node scripts/test-model-matrix.js",
-		"test:model-matrix:smoke": "node scripts/test-model-matrix.js --smoke",
-		"test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
-		"clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
-		"clean:repo:check": "node scripts/repo-hygiene.js check",
-		"bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
-		"bench:edit-formats:smoke": "node scripts/benchmark-edit-formats.mjs --smoke --preset=codex-core",
-		"bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
-		"bench:runtime-path": "npm run build && node scripts/benchmark-runtime-path.mjs",
-		"bench:runtime-path:quick": "node scripts/benchmark-runtime-path.mjs",
-		"test:coverage": "vitest run --coverage",
-		"coverage": "npm run build && vitest run --coverage",
-		"verify:repo": "npm run clean:repo:check && npm run audit:ci && npm run test -- test/lockfile-version-floor.test.ts",
-		"verify:quality": "npm run typecheck && npm run coverage",
-		"verify": "npm run lint && npm run verify:repo && npm run verify:quality",
-		"verify:ci": "npm run verify:repo && npm run verify:quality",
-		"audit:prod": "npm audit --omit=dev --audit-level=high",
-		"audit:all": "npm audit --audit-level=high",
-		"audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
-		"audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
-		"release:check": "npm run verify && npm run test -- test/documentation.test.ts && npm pack --dry-run",
-		"prepublishOnly": "npm run build",
-		"prepare": "husky"
-	},
-	"bin": {
-		"codex": "scripts/codex.js",
-		"codex-multi-auth": "scripts/codex-multi-auth.js"
-	},
-	"files": [
-		"dist/",
-		"assets/",
-		"config/",
-		"scripts/",
-		"vendor/codex-ai-plugin/",
-		"vendor/codex-ai-sdk/",
-		"README.md",
-		"LICENSE"
-	],
-	"bundleDependencies": [
-		"@codex-ai/plugin"
-	],
-	"lint-staged": {
-		"*.ts": [
-			"eslint --max-warnings=0 --fix --no-warn-ignored"
-		],
-		"scripts/**/*.js": [
-			"eslint --max-warnings=0 --fix --no-warn-ignored"
-		],
-		"*.{json,jsonc,yml,yaml}": [
-			"biome format --write --files-ignore-unknown=true"
-		]
-	},
-	"engines": {
-		"node": ">=18.0.0"
-	},
-	"peerDependencies": {
-		"typescript": "^5"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "^2.4.2",
-		"@fast-check/vitest": "^0.2.4",
-		"@codex-ai/sdk": "file:vendor/codex-ai-sdk",
-		"@types/node": "^25.3.0",
-		"@typescript-eslint/eslint-plugin": "^8.56.0",
-		"@typescript-eslint/parser": "^8.56.0",
-		"@vitest/coverage-v8": "^4.0.18",
-		"@vitest/ui": "^4.0.18",
-		"eslint": "^10.0.0",
-		"fast-check": "^4.5.3",
-		"husky": "^9.1.7",
-		"lint-staged": "^16.2.7",
-		"typescript": "^5.9.3",
-		"typescript-language-server": "^5.1.3",
-		"vitest": "^4.0.18"
-	},
-	"dependencies": {
-		"@openauthjs/openauth": "^0.4.3",
-		"@codex-ai/plugin": "file:vendor/codex-ai-plugin",
-		"hono": "4.12.3",
-		"zod": "^4.3.6"
-	},
-	"overrides": {
-		"hono": "4.12.3",
-		"minimatch": "10.2.4",
-		"rollup": "4.59.0",
-		"vite": "^7.3.1",
-		"@typescript-eslint/typescript-estree": {
-			"minimatch": "9.0.9"
-		}
-	}
+  "name": "codex-multi-auth",
+  "version": "0.1.7",
+  "description": "OpenAI Codex CLI multi-account OAuth manager with resilient routing and quota-aware diagnostics",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "license": "MIT",
+  "author": "Numman Ali",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ndycode/codex-multi-auth.git"
+  },
+  "keywords": [
+    "openai",
+    "codex",
+    "codex-cli",
+    "chatgpt",
+    "oauth2",
+    "pkce",
+    "multi-account",
+    "account-rotation",
+    "token-refresh",
+    "session-recovery",
+    "rate-limit-handling",
+    "resilient-systems",
+    "fault-tolerance",
+    "terminal-ui",
+    "cli-tool",
+    "typescript",
+    "nodejs",
+    "developer-tools",
+    "authentication",
+    "productivity-tools"
+  ],
+  "homepage": "https://github.com/ndycode/codex-multi-auth#readme",
+  "bugs": {
+    "url": "https://github.com/ndycode/codex-multi-auth/issues"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/copy-oauth-success.js",
+    "doctor:dev": "node scripts/doctor-dev.js",
+    "setup:dev": "node scripts/setup-dev.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run lint:ts && npm run lint:scripts && npm run format:check",
+    "lint:ts": "eslint . --ext .ts",
+    "lint:scripts": "eslint scripts --ext .js",
+    "lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
+    "lint:ts:fix": "eslint . --ext .ts --fix",
+    "lint:scripts:fix": "eslint scripts --ext .js --fix",
+    "format": "biome format . --write",
+    "format:check": "biome format .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:model-matrix": "node scripts/test-model-matrix.js",
+    "test:model-matrix:smoke": "node scripts/test-model-matrix.js --smoke",
+    "test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
+    "clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
+    "clean:repo:check": "node scripts/repo-hygiene.js check",
+    "bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
+    "bench:edit-formats:smoke": "node scripts/benchmark-edit-formats.mjs --smoke --preset=codex-core",
+    "bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
+    "bench:runtime-path": "npm run build && node scripts/benchmark-runtime-path.mjs",
+    "bench:runtime-path:quick": "node scripts/benchmark-runtime-path.mjs",
+    "test:coverage": "vitest run --coverage",
+    "coverage": "npm run build && vitest run --coverage",
+    "verify:repo": "npm run clean:repo:check && npm run audit:ci && npm run test -- test/lockfile-version-floor.test.ts",
+    "verify:quality": "npm run typecheck && npm run coverage",
+    "verify": "npm run lint && npm run verify:repo && npm run verify:quality",
+    "verify:ci": "npm run verify:repo && npm run verify:quality",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "audit:all": "npm audit --audit-level=high",
+    "audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
+    "audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
+    "license:check": "node scripts/license-policy-check.js",
+    "sbom": "cyclonedx-npm --output-file sbom.cdx.json --omit dev",
+    "release:check": "npm run verify && npm run audit:ci && npm run license:check && npm run test -- test/documentation.test.ts && npm pack --dry-run",
+    "prepublishOnly": "npm run build",
+    "prepare": "husky"
+  },
+  "bin": {
+    "codex": "scripts/codex.js",
+    "codex-multi-auth": "scripts/codex-multi-auth.js"
+  },
+  "files": [
+    "dist/",
+    "assets/",
+    "config/",
+    "scripts/",
+    "vendor/codex-ai-plugin/",
+    "vendor/codex-ai-sdk/",
+    "README.md",
+    "LICENSE"
+  ],
+  "bundleDependencies": [
+    "@codex-ai/plugin"
+  ],
+  "lint-staged": {
+    "*.ts": [
+      "eslint --max-warnings=0 --fix --no-warn-ignored"
+    ],
+    "scripts/**/*.js": [
+      "eslint --max-warnings=0 --fix --no-warn-ignored"
+    ],
+    "*.{json,jsonc,yml,yaml}": [
+      "biome format --write --files-ignore-unknown=true"
+    ]
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.2",
+    "@cyclonedx/cyclonedx-npm": "4.2.0",
+    "@fast-check/vitest": "^0.2.4",
+    "@codex-ai/sdk": "file:vendor/codex-ai-sdk",
+    "@types/node": "^25.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/ui": "^4.0.18",
+    "eslint": "^10.0.0",
+    "fast-check": "^4.5.3",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "typescript": "^5.9.3",
+    "typescript-language-server": "^5.1.3",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "@openauthjs/openauth": "^0.4.3",
+    "@codex-ai/plugin": "file:vendor/codex-ai-plugin",
+    "hono": "4.12.3",
+    "zod": "^4.3.6"
+  },
+  "overrides": {
+    "hono": "4.12.3",
+    "minimatch": "10.2.4",
+    "rollup": "4.59.0",
+    "vite": "^7.3.1",
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "9.0.9"
+    }
+  }
 }

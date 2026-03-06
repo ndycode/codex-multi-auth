@@ -44,6 +44,25 @@ describe("public api contract", () => {
 		}
 	});
 
+	it("keeps tier-b barrel exports for storage/auth reliability helpers", async () => {
+		const barrel = await import("../lib/index.js");
+		const required = [
+			"acquireFileLock",
+			"acquireFileLockSync",
+			"encryptSecret",
+			"decryptSecret",
+			"enforceDataRetention",
+			"redactForExternalOutput",
+			"authorizeAction",
+			"runBackgroundJobWithRetry",
+			"checkAndRecordIdempotencyKey",
+			"markIdempotencySucceeded",
+			"clearIdempotencyOnFailure",
+		].sort();
+		const exported = required.filter((name) => name in barrel).sort();
+		expect(exported).toEqual(required);
+	});
+
 	it("keeps positional and options-object overload behavior aligned", async () => {
 		const healthTracker = new HealthScoreTracker();
 		const tokenTracker = new TokenBucketTracker();

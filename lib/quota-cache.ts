@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { isRecord, sleep } from "./utils.js";
+import { acquireFileLock } from "./file-lock.js";
 
 export interface QuotaCacheWindow {
 	usedPercent?: number;
@@ -31,6 +32,7 @@ interface QuotaCacheFile {
 }
 
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
+const QUOTA_CACHE_LOCK_PATH = `${QUOTA_CACHE_PATH}.lock`;
 const QUOTA_CACHE_LABEL = basename(QUOTA_CACHE_PATH);
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 
@@ -225,31 +227,42 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 
 	try {
 		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
-		const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
+		// Integration coverage for concurrent writers lives in test/quota-cache.test.ts.
+		const lock = await acquireFileLock(QUOTA_CACHE_LOCK_PATH, {
+			maxAttempts: 80,
+			baseDelayMs: 15,
+			maxDelayMs: 800,
+			staleAfterMs: 120_000,
 		});
-		let renamed = false;
 		try {
-			for (let attempt = 0; attempt < 5; attempt += 1) {
-				try {
-					await fs.rename(tempPath, QUOTA_CACHE_PATH);
-					renamed = true;
-					break;
-				} catch (error) {
-					if (!isRetryableFsError(error) || attempt >= 4) throw error;
-					await sleep(10 * 2 ** attempt);
+			const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			let renamed = false;
+			try {
+				for (let attempt = 0; attempt < 5; attempt += 1) {
+					try {
+						await fs.rename(tempPath, QUOTA_CACHE_PATH);
+						renamed = true;
+						break;
+					} catch (error) {
+						if (!isRetryableFsError(error) || attempt >= 4) throw error;
+						await sleep(10 * 2 ** attempt);
+					}
+				}
+			} finally {
+				if (!renamed) {
+					try {
+						await fs.unlink(tempPath);
+					} catch {
+						// Best effort temp cleanup.
+					}
 				}
 			}
 		} finally {
-			if (!renamed) {
-				try {
-					await fs.unlink(tempPath);
-				} catch {
-					// Best effort temp cleanup.
-				}
-			}
+			await lock.release();
 		}
 	} catch (error) {
 		logWarn(

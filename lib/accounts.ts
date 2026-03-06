@@ -23,6 +23,7 @@ import {
 } from "./codex-cli/state.js";
 import { syncAccountStorageFromCodexCli } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import { runBackgroundJobWithRetry } from "./background-jobs.js";
 
 export {
 	extractAccountId,
@@ -768,9 +769,25 @@ export class AccountManager {
 			const doSave = async () => {
 				try {
 					if (this.pendingSave) {
-						await this.pendingSave;
+						try {
+							await this.pendingSave;
+						} catch (error) {
+							log.warn("Previous debounced save failed", {
+								error: error instanceof Error ? error.message : String(error),
+							});
+						}
 					}
-					this.pendingSave = this.saveToDisk().finally(() => {
+					this.pendingSave = runBackgroundJobWithRetry({
+						name: "accounts.saveToDiskDebounced",
+						task: () => this.saveToDisk(),
+						context: {
+							accountCount: this.accounts.length,
+							activeIndexByFamily: { ...this.currentAccountIndexByFamily },
+						},
+						maxAttempts: 4,
+						baseDelayMs: 50,
+						maxDelayMs: 1_000,
+					}).finally(() => {
 						this.pendingSave = null;
 					});
 					await this.pendingSave;

@@ -33,6 +33,8 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
+npm run audit:ci
+npm run license:check
 ```
 
 Optional:
@@ -49,17 +51,21 @@ npm run bench:edit-formats:smoke
 ## Recommended Local Gate Before PR
 
 1. `npm run verify`
-2. `npm run test -- test/documentation.test.ts`
-3. run docs command checks for newly documented command paths
-4. for first-clone setup or environment validation: `npm run setup:dev` and `npm run doctor:dev`
+2. `npm run audit:ci`
+3. `npm run license:check`
+4. `npm run test -- test/documentation.test.ts`
+5. run docs command checks for newly documented command paths
+6. for first-clone setup or environment validation: `npm run setup:dev` and `npm run doctor:dev`
 
 ## Release Gate
 
 Run before version bump, tag, or publish workflow:
 
 1. `npm run release:check`
-2. verify changelog and release notes alignment
-3. confirm PR checks are green on the release branch
+2. `npm run audit:ci`
+3. `npm run license:check`
+4. verify changelog and release notes alignment
+5. confirm PR checks are green on the release branch
 
 * * *
 

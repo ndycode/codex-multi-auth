@@ -2,6 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 process.env.CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS = "1";
 
+const checkAuthRateLimitMock = vi.fn();
+const recordAuthAttemptMock = vi.fn();
+const resetAuthRateLimitMock = vi.fn();
+const enforceDataRetentionMock = vi.fn(async () => ({
+	removedLogs: 0,
+	removedCacheFiles: 0,
+	removedStateFiles: 0,
+}));
+
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -62,6 +71,12 @@ vi.mock("../lib/auth/server.js", () => ({
 		close: vi.fn(),
 		waitForCode: vi.fn(async () => ({ code: "auth-code" })),
 	})),
+}));
+
+vi.mock("../lib/auth-rate-limit.js", () => ({
+	checkAuthRateLimit: checkAuthRateLimitMock,
+	recordAuthAttempt: recordAuthAttemptMock,
+	resetAuthRateLimit: resetAuthRateLimitMock,
 }));
 
 vi.mock("../lib/cli.js", () => ({
@@ -136,6 +151,10 @@ vi.mock("../lib/live-account-sync.js", () => ({
 
 vi.mock("../lib/request/request-transformer.js", () => ({
 	applyFastSessionDefaults: <T>(config: T) => config,
+}));
+
+vi.mock("../lib/data-retention.js", () => ({
+	enforceDataRetention: enforceDataRetentionMock,
 }));
 
 vi.mock("../lib/logger.js", () => ({
@@ -231,6 +250,10 @@ const mockStorage = {
 	activeIndex: 0,
 	activeIndexByFamily: {} as Record<string, number>,
 };
+const withAccountStorageTransactionMock = vi.fn(
+	async <T>(handler: (storage: typeof mockStorage, persist: (next: typeof mockStorage) => Promise<void>) => Promise<T>) =>
+		handler(mockStorage, async () => {}),
+);
 
 const syncCodexCliSelectionMock = vi.fn(async (_index: number) => {});
 
@@ -238,6 +261,7 @@ vi.mock("../lib/storage.js", () => ({
 	getStoragePath: () => "/mock/path/accounts.json",
 	loadAccounts: vi.fn(async () => mockStorage),
 	saveAccounts: vi.fn(async () => {}),
+	withAccountStorageTransaction: withAccountStorageTransactionMock,
 	clearAccounts: vi.fn(async () => {}),
 	setStoragePath: vi.fn(),
 	setStorageBackupEnabled: vi.fn(),
@@ -420,6 +444,10 @@ describe("OpenAIOAuthPlugin", () => {
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
 		mockStorage.activeIndexByFamily = {};
+		withAccountStorageTransactionMock.mockClear();
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(mockStorage, async () => {}),
+		);
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
@@ -505,6 +533,45 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 
+		it("returns failed TokenResult when auth rate-limit check throws", async () => {
+			const manualMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					callback: (input: string) => Promise<{ type: string; reason?: string; message?: string }>;
+				}>;
+			};
+			checkAuthRateLimitMock.mockImplementationOnce(() => {
+				throw new Error("rate limit exceeded");
+			});
+
+			const flow = await manualMethod.authorize();
+			const result = await flow.callback(
+				"http://127.0.0.1:1455/auth/callback?code=abc123&state=test-state",
+			);
+			expect(result.type).toBe("failed");
+			expect(result.reason).toBe("http_error");
+			expect(result.message).toContain("rate limit exceeded");
+		});
+
+		it("returns failed TokenResult when token exchange throws", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const manualMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					callback: (input: string) => Promise<{ type: string; reason?: string; message?: string }>;
+				}>;
+			};
+			vi.mocked(authModule.exchangeAuthorizationCode).mockRejectedValueOnce(
+				new Error("network down"),
+			);
+
+			const flow = await manualMethod.authorize();
+			const result = await flow.callback(
+				"http://127.0.0.1:1455/auth/callback?code=abc123&state=test-state",
+			);
+			expect(result.type).toBe("failed");
+			expect(result.reason).toBe("http_error");
+			expect(result.message).toContain("network down");
+		});
+
 		it("uses REDIRECT_URI in manual callback validation copy", async () => {
 			const authModule = await import("../lib/auth/auth.js");
 			const manualMethod = plugin.auth.methods[1] as unknown as {
@@ -516,6 +583,11 @@ describe("OpenAIOAuthPlugin", () => {
 
 			const message = flow.validate("invalid-callback-value");
 			expect(message).toContain(authModule.REDIRECT_URI);
+		});
+
+		it("serializes startup retention cleanup through storage transaction", () => {
+			expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+			expect(enforceDataRetentionMock).toHaveBeenCalledTimes(1);
 		});
 
 		it("redacts oauth state from logged oauth URL", async () => {

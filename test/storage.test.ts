@@ -676,6 +676,42 @@ describe("storage", () => {
       expect(saved.version).toBe(3);
     });
 
+    it("fails fast when encrypted account storage cannot be decrypted", async () => {
+      const previousPrimary = process.env.CODEX_AUTH_ENCRYPTION_KEY;
+      const previousSecondary = process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+      try {
+        process.env.CODEX_AUTH_ENCRYPTION_KEY = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+        await saveAccounts({
+          version: 3,
+          activeIndex: 0,
+          activeIndexByFamily: {},
+          accounts: [
+            {
+              refreshToken: "refresh-token-sensitive",
+              accountId: "encrypted-account",
+              addedAt: Date.now(),
+              lastUsed: Date.now(),
+            },
+          ],
+        });
+
+        process.env.CODEX_AUTH_ENCRYPTION_KEY = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        await expect(loadAccounts()).rejects.toThrow("Failed to decrypt account storage");
+      } finally {
+        if (previousPrimary === undefined) {
+          delete process.env.CODEX_AUTH_ENCRYPTION_KEY;
+        } else {
+          process.env.CODEX_AUTH_ENCRYPTION_KEY = previousPrimary;
+        }
+        if (previousSecondary === undefined) {
+          delete process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY;
+        } else {
+          process.env.CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY = previousSecondary;
+        }
+      }
+    });
+
     it("returns migrated data even when save fails (line 422-423 coverage)", async () => {
       const v1Storage = { 
         version: 1, 
@@ -1840,9 +1876,15 @@ describe("storage", () => {
     });
 
     it("logs error for non-ENOENT errors during clear", async () => {
-      const unlinkSpy = vi.spyOn(fs, "unlink").mockRejectedValue(
-        Object.assign(new Error("EACCES error"), { code: "EACCES" })
-      );
+      const realUnlink = fs.unlink.bind(fs);
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+        const candidatePath = String(targetPath);
+        if (candidatePath.endsWith(".lock")) {
+          await realUnlink(targetPath);
+          return;
+        }
+        throw Object.assign(new Error("EACCES error"), { code: "EACCES" });
+      });
 
       await clearAccounts();
 

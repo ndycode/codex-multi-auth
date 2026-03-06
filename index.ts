@@ -99,6 +99,8 @@ import {
 	setCorrelationId,
 	clearCorrelationId,
 } from "./lib/logger.js";
+import { auditLog, AuditAction, AuditOutcome } from "./lib/audit.js";
+import { checkAuthRateLimit, recordAuthAttempt, resetAuthRateLimit } from "./lib/auth-rate-limit.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
 import {
@@ -202,6 +204,7 @@ import {
 	createHashlineReadTool,
 } from "./lib/tools/hashline-tools.js";
 import { registerCleanup } from "./lib/shutdown.js";
+import { enforceDataRetention } from "./lib/data-retention.js";
 
 /**
  * OpenAI Codex OAuth authentication plugin for Codex CLI host runtime
@@ -222,6 +225,13 @@ import { registerCleanup } from "./lib/shutdown.js";
 // eslint-disable-next-line @typescript-eslint/require-await
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
+	void withAccountStorageTransaction(async (_loadedStorage, _persist) => {
+		await enforceDataRetention();
+	}).catch((error) => {
+		logWarn("Data retention cleanup failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	});
 	let cachedAccountManager: AccountManager | null = null;
 	let accountManagerPromise: Promise<AccountManager> | null = null;
 	let loaderMutex: Promise<void> | null = null;
@@ -257,6 +267,29 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		if (normalized === "aggressive") return "aggressive";
 		if (normalized === "conservative") return "conservative";
 		return "balanced";
+	};
+
+	const exchangeAuthorizationCodeWithRateLimit = async (
+		code: string,
+		verifier: string,
+		redirectUri: string,
+	): Promise<TokenResult> => {
+		const rateLimitKey = "oauth:code-exchange";
+		try {
+			checkAuthRateLimit(rateLimitKey);
+			recordAuthAttempt(rateLimitKey);
+			const tokens = await exchangeAuthorizationCode(code, verifier, redirectUri);
+			if (tokens.type === "success") {
+				resetAuthRateLimit(rateLimitKey);
+			}
+			return tokens;
+		} catch (error) {
+			return {
+				type: "failed",
+				reason: "http_error",
+				message: error instanceof Error ? error.message : String(error),
+			};
+		}
 	};
 
 		const parseEnvInt = (value: string | undefined): number | undefined => {
@@ -460,11 +493,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         message: "OAuth state mismatch. Restart login and try again.",
                                 };
                         }
-                        const tokens = await exchangeAuthorizationCode(
-                                parsed.code,
-                                pkce.verifier,
-                                REDIRECT_URI,
-                        );
+						const tokens = await exchangeAuthorizationCodeWithRateLimit(
+							parsed.code,
+							pkce.verifier,
+							REDIRECT_URI,
+						);
                         if (tokens?.type === "success") {
                                 const resolved = resolveAccountSelection(tokens);
                                 if (onSuccess) {
@@ -509,7 +542,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
 		}
 
-                return await exchangeAuthorizationCode(
+                return await exchangeAuthorizationCodeWithRateLimit(
                         result.code,
                         pkce.verifier,
                         REDIRECT_URI,
@@ -1664,6 +1697,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							try {
 								runtimeMetrics.totalRequests++;
+								auditLog(
+									AuditAction.REQUEST_START,
+									account.email ?? `account-${account.index + 1}`,
+									url,
+									AuditOutcome.SUCCESS,
+									{
+										model,
+										accountIndex: account.index + 1,
+										modelFamily,
+									},
+								);
 								response = await fetch(url, {
 									...requestInit,
 									headers,
@@ -1688,7 +1732,29 @@ while (attempted.size < Math.max(1, accountCount)) {
 										);
 									}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
+								const safeAuditResource = (() => {
+									try {
+										const parsed = new URL(url);
+										return `${parsed.origin}${parsed.pathname}`;
+									} catch {
+										return url;
+									}
+								})();
+								const networkErrorType =
+									networkError instanceof Error ? networkError.name : "unknown_error";
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
+								auditLog(
+									AuditAction.REQUEST_FAILURE,
+									account.email ?? `account-${account.index + 1}`,
+									safeAuditResource,
+									AuditOutcome.FAILURE,
+									{
+										model,
+										accountIndex: account.index + 1,
+										errorType: networkErrorType,
+										stage: "network",
+									},
+								);
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.networkErrors++;
 								runtimeMetrics.accountRotations++;
@@ -2350,6 +2416,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 							successAccountForResponse.index,
 						);
 					runtimeMetrics.successfulRequests++;
+					auditLog(
+						AuditAction.REQUEST_SUCCESS,
+						successAccountForResponse.email ?? `account-${successAccountForResponse.index + 1}`,
+						url,
+						AuditOutcome.SUCCESS,
+						{
+							model,
+							accountIndex: successAccountForResponse.index + 1,
+							latencyMs: fetchLatencyMs,
+							modelFamily,
+						},
+					);
 					runtimeMetrics.lastError = null;
 					if (lastCodexCliActiveSyncIndex !== successAccountForResponse.index) {
 						void accountManager.syncCodexCliActiveSelectionForIndex(successAccountForResponse.index);
@@ -2392,6 +2470,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
+								auditLog(
+									AuditAction.REQUEST_FAILURE,
+									"plugin",
+									url,
+									AuditOutcome.FAILURE,
+									{
+										model,
+										accountCount: count,
+										message,
+										waitMs,
+									},
+								);
 								return new Response(JSON.stringify({ error: { message } }), {
 									status: waitMs > 0 ? 429 : 503,
 											headers: {
