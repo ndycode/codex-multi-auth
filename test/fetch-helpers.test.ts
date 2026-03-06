@@ -238,6 +238,30 @@ describe('Fetch Helpers Module', () => {
 			expect(headers.get(OPENAI_HEADERS.SESSION_ID)).toBeNull();
 		});
 
+		it('sets trimmed idempotency key and clears blank values', () => {
+			const withValue = createCodexHeaders(undefined, accountId, accessToken, {
+				model: 'gpt-5',
+				idempotencyKey: '  request-123  ',
+			});
+			expect(withValue.get('Idempotency-Key')).toBe('request-123');
+
+			const withWhitespace = createCodexHeaders(
+				{ headers: { 'Idempotency-Key': 'old-value' } } as RequestInit,
+				accountId,
+				accessToken,
+				{ model: 'gpt-5', idempotencyKey: '   ' },
+			);
+			expect(withWhitespace.get('Idempotency-Key')).toBeNull();
+
+			const withUndefined = createCodexHeaders(
+				{ headers: { 'Idempotency-Key': 'old-value' } } as RequestInit,
+				accountId,
+				accessToken,
+				{ model: 'gpt-5' },
+			);
+			expect(withUndefined.get('Idempotency-Key')).toBeNull();
+		});
+
 		it('supports named-parameter options form', () => {
 			const positional = createCodexHeaders(undefined, accountId, accessToken, {
 				model: 'gpt-5',
@@ -259,6 +283,35 @@ describe('Fetch Helpers Module', () => {
 			expect(named.get('accept')).toBe(positional.get('accept'));
 			expect(named.get('content-type')).toBe(positional.get('content-type'));
 			expect(named.has('x-api-key')).toBe(false);
+		});
+
+		it('applies idempotency-key behavior consistently for named and positional forms', () => {
+			const positional = createCodexHeaders(undefined, accountId, accessToken, {
+				model: 'gpt-5',
+				idempotencyKey: ' idem-1 ',
+			});
+			const named = createCodexHeaders({
+				init: undefined,
+				accountId,
+				accessToken,
+				opts: { model: 'gpt-5', idempotencyKey: ' idem-1 ' },
+			});
+			expect(named.get('Idempotency-Key')).toBe(positional.get('Idempotency-Key'));
+
+			const positionalBlank = createCodexHeaders(
+				{ headers: { 'Idempotency-Key': 'legacy-key' } } as RequestInit,
+				accountId,
+				accessToken,
+				{ model: 'gpt-5', idempotencyKey: '   ' },
+			);
+			const namedBlank = createCodexHeaders({
+				init: { headers: { 'Idempotency-Key': 'legacy-key' } } as RequestInit,
+				accountId,
+				accessToken,
+				opts: { model: 'gpt-5', idempotencyKey: '   ' },
+			});
+			expect(positionalBlank.get('Idempotency-Key')).toBeNull();
+			expect(namedBlank.get('Idempotency-Key')).toBeNull();
 		});
 
 		it('does not treat RequestInit-like objects as named params when keys are spread accidentally', () => {

@@ -44,6 +44,7 @@ import {
 	getFastSessionMaxInputItems,
 	getRateLimitToastDebounceMs,
 	getRetryAllAccountsMaxRetries,
+	getRetryAllAccountsAbsoluteCeilingMs,
 	getRetryAllAccountsMaxWaitMs,
 	getRetryAllAccountsRateLimited,
 	getFallbackToGpt52OnUnsupportedGpt53,
@@ -54,6 +55,7 @@ import {
 	getAutoResume,
 	getToastDurationMs,
 	getPerProjectAccounts,
+	getTelemetryEnabled,
 	getEmptyResponseMaxRetries,
 	getEmptyResponseRetryDelayMs,
 	getPidOffsetEnabled,
@@ -99,6 +101,9 @@ import {
 	setCorrelationId,
 	clearCorrelationId,
 } from "./lib/logger.js";
+import { auditLog, AuditAction, AuditOutcome } from "./lib/audit.js";
+import { checkAuthRateLimit, recordAuthAttempt, resetAuthRateLimit } from "./lib/auth-rate-limit.js";
+import { recordTelemetryEvent } from "./lib/telemetry.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
 import {
@@ -114,9 +119,25 @@ import {
         shouldUpdateAccountIdFromToken,
         resolveRequestAccountId,
         parseRateLimitReason,
+	getQuotaKey,
 	lookupCodexCliTokensByEmail,
 	isCodexCliSyncEnabled,
 } from "./lib/accounts.js";
+import {
+	resolveActiveIndex,
+	formatRateLimitEntry,
+	formatActiveIndexByFamilyLabels,
+	formatRateLimitStatusByFamily,
+} from "./lib/accounts/account-view.js";
+import {
+	cloneAccountStorage,
+	createEmptyAccountStorage,
+} from "./lib/accounts/storage-view.js";
+import {
+	setActiveIndexForAllFamilies,
+	normalizeActiveIndexByFamily,
+	removeAccountAndReconcileActiveIndexes,
+} from "./lib/accounts/active-index.js";
 import {
 	getStoragePath,
 	loadAccounts,
@@ -151,11 +172,14 @@ import {
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import {
 	getRateLimitBackoff,
-	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
 	resetRateLimitBackoff,
 } from "./lib/request/rate-limit-backoff.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
 import { addJitter } from "./lib/rotation.js";
+import {
+	decideRetryAllAccountsRateLimited,
+	type RetryAllAccountsRateLimitDecisionReason,
+} from "./lib/request/retry-governor.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { LiveAccountSync } from "./lib/live-account-sync.js";
 import { RefreshGuardian } from "./lib/refresh-guardian.js";
@@ -170,8 +194,14 @@ import {
 import {
 	PreemptiveQuotaScheduler,
 	readQuotaSchedulerSnapshot,
+	type QuotaSchedulerSnapshot,
 } from "./lib/preemptive-quota-scheduler.js";
 import { CapabilityPolicyStore } from "./lib/capability-policy.js";
+import {
+	loadQuotaCache,
+	type QuotaCacheData,
+	type QuotaCacheEntry,
+} from "./lib/quota-cache.js";
 import { withStreamingFailover } from "./lib/request/stream-failover.js";
 import { buildTableHeader, buildTableRow, type TableOptions } from "./lib/table-formatter.js";
 import { setUiRuntimeOptions, type UiRuntimeOptions } from "./lib/ui/runtime.js";
@@ -202,6 +232,7 @@ import {
 	createHashlineReadTool,
 } from "./lib/tools/hashline-tools.js";
 import { registerCleanup } from "./lib/shutdown.js";
+import { enforceDataRetention } from "./lib/data-retention.js";
 
 /**
  * OpenAI Codex OAuth authentication plugin for Codex CLI host runtime
@@ -222,6 +253,13 @@ import { registerCleanup } from "./lib/shutdown.js";
 // eslint-disable-next-line @typescript-eslint/require-await
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
+	void withAccountStorageTransaction(async () => {
+		await enforceDataRetention();
+	}).catch((error) => {
+		logWarn("Data retention cleanup failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	});
 	let cachedAccountManager: AccountManager | null = null;
 	let accountManagerPromise: Promise<AccountManager> | null = null;
 	let loaderMutex: Promise<void> | null = null;
@@ -257,6 +295,36 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		if (normalized === "aggressive") return "aggressive";
 		if (normalized === "conservative") return "conservative";
 		return "balanced";
+	};
+
+	const exchangeAuthorizationCodeWithRateLimit = async (
+		code: string,
+		verifier: string,
+		redirectUri: string,
+		options?: Parameters<typeof exchangeAuthorizationCode>[3],
+	): Promise<TokenResult> => {
+		try {
+			const rateLimitKey = "oauth:code-exchange";
+			checkAuthRateLimit(rateLimitKey);
+			recordAuthAttempt(rateLimitKey);
+			const tokens = await exchangeAuthorizationCode(
+				code,
+				verifier,
+				redirectUri,
+				options,
+			);
+			if (tokens.type === "success") {
+				resetAuthRateLimit(rateLimitKey);
+			}
+			return tokens;
+		} catch (error) {
+			const err = error instanceof Error ? error : new Error(String(error));
+			return {
+				type: "failed",
+				reason: "http_error",
+				message: err.message,
+			};
+		}
 	};
 
 		const parseEnvInt = (value: string | undefined): number | undefined => {
@@ -300,6 +368,237 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return null;
 		};
 
+	const QUOTA_CACHE_BOOTSTRAP_TTL_MS = 30 * 60_000;
+	const QUOTA_CACHE_BOOTSTRAP_MIN_WAIT_MS = 1_000;
+	const QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS = 60_000;
+	let quotaCacheBootstrapData: QuotaCacheData | null = null;
+	let quotaCacheBootstrapLoadedAt = 0;
+	let quotaCacheBootstrapFailureUntil = 0;
+	let quotaCacheBootstrapLoadPromise: Promise<QuotaCacheData> | null = null;
+
+	type QuotaBootstrapAccountCandidate = {
+		index: number;
+		accountId?: string;
+		email?: string;
+	};
+
+	const normalizeQuotaCacheEmail = (value: string | undefined): string | null => {
+		const normalized = sanitizeEmail(value);
+		if (typeof normalized === "string" && normalized.trim().length > 0) {
+			return normalized.trim().toLowerCase();
+		}
+		if (typeof value !== "string") return null;
+		const fallback = value.trim().toLowerCase();
+		return fallback.length > 0 ? fallback : null;
+	};
+
+	const normalizeQuotaCacheModelId = (value: string | undefined): string | null => {
+		if (typeof value !== "string") return null;
+		const trimmed = value.trim();
+		if (trimmed.length === 0) return null;
+		const withoutProvider = trimmed.includes("/") ? (trimmed.split("/").pop() ?? trimmed) : trimmed;
+		const normalized = withoutProvider.trim().toLowerCase();
+		return normalized.length > 0 ? normalized : null;
+	};
+
+	const buildQuotaScheduleKey = (
+		account: { accountId?: string; email?: string } | string,
+		model: string | undefined,
+		modelFamily: ModelFamily,
+	): string => {
+		const accountKey =
+			typeof account === "string" ? account : resolveEntitlementAccountKey(account);
+		const normalizedModel = normalizeQuotaCacheModelId(model) ?? modelFamily;
+		return `${accountKey}:${normalizedModel}`;
+	};
+
+	const createEmptyQuotaCache = (): QuotaCacheData => ({ byAccountId: {}, byEmail: {} });
+
+	const getQuotaCacheEntryForCandidate = (
+		cache: QuotaCacheData,
+		candidate: QuotaBootstrapAccountCandidate,
+	): QuotaCacheEntry | null => {
+		if (candidate.accountId) {
+			const byAccountId = cache.byAccountId[candidate.accountId];
+			if (byAccountId) return byAccountId;
+		}
+		const email = normalizeQuotaCacheEmail(candidate.email);
+		if (!email) return null;
+		return cache.byEmail[email] ?? null;
+	};
+
+	const getQuotaCacheEntryFutureResetAtMs = (
+		entry: QuotaCacheEntry,
+		now: number,
+	): number | null => {
+		const candidates = [entry.primary.resetAtMs, entry.secondary.resetAtMs]
+			.filter((value): value is number =>
+				typeof value === "number" && Number.isFinite(value) && value > now,
+			);
+		if (candidates.length === 0) return null;
+		return Math.max(...candidates);
+	};
+
+	const getQuotaCacheBootstrapWaitMs = (
+		entry: QuotaCacheEntry,
+		now: number,
+	): number => {
+		const futureResetAtMs = getQuotaCacheEntryFutureResetAtMs(entry, now);
+		if (typeof futureResetAtMs === "number") {
+			return Math.max(0, Math.floor(futureResetAtMs - now));
+		}
+		const hasKnownResetTime =
+			typeof entry.primary.resetAtMs === "number" ||
+			typeof entry.secondary.resetAtMs === "number";
+		if (hasKnownResetTime) {
+			return 0;
+		}
+		const maxAgeUntil = entry.updatedAt + QUOTA_CACHE_BOOTSTRAP_TTL_MS;
+		if (!Number.isFinite(maxAgeUntil) || maxAgeUntil <= now) {
+			return 0;
+		}
+		return Math.max(0, Math.floor(maxAgeUntil - now));
+	};
+
+	const isQuotaCacheEntryExhausted = (entry: QuotaCacheEntry): boolean => {
+		const primaryUsedPercent = entry.primary.usedPercent;
+		if (typeof primaryUsedPercent === "number" && Number.isFinite(primaryUsedPercent)) {
+			if (primaryUsedPercent >= 100) return true;
+		}
+		const secondaryUsedPercent = entry.secondary.usedPercent;
+		if (typeof secondaryUsedPercent === "number" && Number.isFinite(secondaryUsedPercent)) {
+			if (secondaryUsedPercent >= 100) return true;
+		}
+		return false;
+	};
+
+	const shouldApplyQuotaCacheEntry = (
+		entry: QuotaCacheEntry,
+		now: number,
+	): boolean => {
+		const isRateLimited = entry.status === 429;
+		if (!isRateLimited && !isQuotaCacheEntryExhausted(entry)) {
+			return false;
+		}
+		return getQuotaCacheBootstrapWaitMs(entry, now) > 0;
+	};
+
+	const toQuotaSchedulerSnapshot = (entry: QuotaCacheEntry): QuotaSchedulerSnapshot => ({
+		status: entry.status,
+		primary: {
+			usedPercent: entry.primary.usedPercent,
+			resetAtMs: entry.primary.resetAtMs,
+		},
+		secondary: {
+			usedPercent: entry.secondary.usedPercent,
+			resetAtMs: entry.secondary.resetAtMs,
+		},
+		updatedAt: entry.updatedAt,
+	});
+
+	const loadQuotaCacheForBootstrap = async (): Promise<QuotaCacheData> => {
+		const now = Date.now();
+		if (quotaCacheBootstrapData && now - quotaCacheBootstrapLoadedAt < QUOTA_CACHE_BOOTSTRAP_TTL_MS) {
+			return quotaCacheBootstrapData;
+		}
+		if (now < quotaCacheBootstrapFailureUntil) {
+			return createEmptyQuotaCache();
+		}
+		if (quotaCacheBootstrapLoadPromise) {
+			return quotaCacheBootstrapLoadPromise;
+		}
+		quotaCacheBootstrapLoadPromise = (async () => {
+			try {
+				const loaded = await loadQuotaCache();
+				quotaCacheBootstrapData = loaded;
+				quotaCacheBootstrapLoadedAt = Date.now();
+				quotaCacheBootstrapFailureUntil = 0;
+				return loaded;
+			} catch (error) {
+				const failureAt = Date.now();
+				quotaCacheBootstrapData = null;
+				quotaCacheBootstrapLoadedAt = 0;
+				quotaCacheBootstrapFailureUntil = failureAt + QUOTA_CACHE_BOOTSTRAP_FAILURE_COOLDOWN_MS;
+				logWarn(
+					`[${PLUGIN_NAME}] failed to load quota cache bootstrap data: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+				return createEmptyQuotaCache();
+			}
+		})();
+		try {
+			return await quotaCacheBootstrapLoadPromise;
+		} finally {
+			quotaCacheBootstrapLoadPromise = null;
+		}
+	};
+
+	const applyQuotaCacheBootstrapForModel = async (
+		accountManager: AccountManager,
+		accountSnapshots: QuotaBootstrapAccountCandidate[],
+		modelFamily: ModelFamily,
+		model: string | undefined,
+		enabled: boolean,
+	): Promise<void> => {
+		if (!enabled || accountSnapshots.length === 0) return;
+		const cache = await loadQuotaCacheForBootstrap();
+		const now = Date.now();
+		const requestedModel = normalizeQuotaCacheModelId(model);
+		const baseKey = getQuotaKey(modelFamily);
+
+		for (const snapshotCandidate of accountSnapshots) {
+			const entry = getQuotaCacheEntryForCandidate(cache, snapshotCandidate);
+			if (!entry) continue;
+			const entryModel = normalizeQuotaCacheModelId(entry.model);
+			if (!entryModel) continue;
+			if (getModelFamily(entryModel) !== modelFamily) {
+				continue;
+			}
+			if (requestedModel && entryModel !== requestedModel) {
+				continue;
+			}
+			if (!shouldApplyQuotaCacheEntry(entry, now)) {
+				continue;
+			}
+			const appliedModel = requestedModel ?? entryModel;
+			const appliedModelKey = getQuotaKey(modelFamily, appliedModel);
+
+			const waitMs = Math.max(
+				QUOTA_CACHE_BOOTSTRAP_MIN_WAIT_MS,
+				getQuotaCacheBootstrapWaitMs(entry, now),
+			);
+			const account = accountManager.getAccountByIndex(snapshotCandidate.index);
+			if (!account) continue;
+			account.rateLimitResetTimes = account.rateLimitResetTimes ?? {};
+
+			const existingBaseResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
+			const existingModelResetAt = account.rateLimitResetTimes[appliedModelKey] ?? 0;
+			const existingResetAt = Math.max(existingBaseResetAt, existingModelResetAt);
+			const nextResetAt = now + waitMs;
+			if (existingResetAt >= nextResetAt) {
+				continue;
+			}
+
+			accountManager.markRateLimitedWithReason(
+				account,
+				waitMs,
+				modelFamily,
+				"quota",
+				appliedModel,
+			);
+			const quotaScheduleKey = buildQuotaScheduleKey(
+				snapshotCandidate,
+				requestedModel ?? undefined,
+				modelFamily,
+			);
+			preemptiveQuotaScheduler.update(
+				quotaScheduleKey,
+				toQuotaSchedulerSnapshot(entry),
+			);
+		}
+	};
+
 	const sanitizeResponseHeadersForLog = (headers: Headers): Record<string, string> => {
 		const allowed = new Set([
 			"content-type",
@@ -328,6 +627,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		return sanitized;
 	};
 
+	const toSafeAuditResource = (rawUrl: unknown): string => {
+		try {
+			const parsed = new URL(String(rawUrl));
+			return `${parsed.origin}${parsed.pathname}`;
+		} catch {
+			const sanitized = String(rawUrl).split(/[?#]/, 1)[0];
+			return sanitized && sanitized.length > 0 ? sanitized : "unknown";
+		}
+	};
+
 	type RuntimeMetrics = {
 		startedAt: number;
 		totalRequests: number;
@@ -344,6 +653,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		streamFailoverAttempts: number;
 		streamFailoverRecoveries: number;
 		streamFailoverCrossAccountRecoveries: number;
+		retryGovernorStopsWaitExceedsMax: number;
+		retryGovernorStopsRetryLimitReached: number;
+		retryGovernorStopsAbsoluteCeilingExceeded: number;
 		cumulativeLatencyMs: number;
 		lastRequestAt: number | null;
 		lastError: string | null;
@@ -365,9 +677,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		streamFailoverAttempts: 0,
 		streamFailoverRecoveries: 0,
 		streamFailoverCrossAccountRecoveries: 0,
+		retryGovernorStopsWaitExceedsMax: 0,
+		retryGovernorStopsRetryLimitReached: 0,
+		retryGovernorStopsAbsoluteCeilingExceeded: 0,
 		cumulativeLatencyMs: 0,
 		lastRequestAt: null,
 		lastError: null,
+	};
+
+	const recordRetryGovernorStopReason = (
+		reason: RetryAllAccountsRateLimitDecisionReason,
+	): void => {
+		switch (reason) {
+			case "wait-exceeds-max":
+				runtimeMetrics.retryGovernorStopsWaitExceedsMax += 1;
+				return;
+			case "retry-limit-reached":
+				runtimeMetrics.retryGovernorStopsRetryLimitReached += 1;
+				return;
+			case "absolute-ceiling-exceeded":
+				runtimeMetrics.retryGovernorStopsAbsoluteCeilingExceeded += 1;
+				return;
+			default:
+				return;
+		}
 	};
 
         type TokenSuccess = Extract<TokenResult, { type: "success" }>;
@@ -422,6 +755,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 };
         };
 
+        const resolveOAuthFetchTimeoutMs = (): number => {
+                return getFetchTimeoutMs(loadPluginConfig());
+        };
+
         const buildManualOAuthFlow = (
                 pkce: { verifier: string },
                 url: string,
@@ -460,11 +797,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         message: "OAuth state mismatch. Restart login and try again.",
                                 };
                         }
-                        const tokens = await exchangeAuthorizationCode(
-                                parsed.code,
-                                pkce.verifier,
-                                REDIRECT_URI,
-                        );
+						const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
+						const tokens = await exchangeAuthorizationCodeWithRateLimit(
+							parsed.code,
+							pkce.verifier,
+							REDIRECT_URI,
+							{ timeoutMs: oauthFetchTimeoutMs },
+						);
                         if (tokens?.type === "success") {
                                 const resolved = resolveAccountSelection(tokens);
                                 if (onSuccess) {
@@ -509,10 +848,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
 		}
 
-                return await exchangeAuthorizationCode(
+                const oauthFetchTimeoutMs = resolveOAuthFetchTimeoutMs();
+                return await exchangeAuthorizationCodeWithRateLimit(
                         result.code,
                         pkce.verifier,
                         REDIRECT_URI,
+                        { timeoutMs: oauthFetchTimeoutMs },
                 );
         };
 
@@ -676,21 +1017,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 }
         };
 
-		const resolveActiveIndex = (
-				storage: {
-						activeIndex: number;
-						activeIndexByFamily?: Partial<Record<ModelFamily, number>>;
-						accounts: unknown[];
-				},
-				family: ModelFamily = "codex",
-		): number => {
-				const total = storage.accounts.length;
-				if (total === 0) return 0;
-				const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-				const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-				return Math.max(0, Math.min(raw, total - 1));
-		};
-
 	const hydrateEmails = async (
 			storage: AccountStorageV3 | null,
 	): Promise<AccountStorageV3 | null> => {
@@ -754,40 +1080,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 }
                 return storage;
         };
-
-		const getRateLimitResetTimeForFamily = (
-				account: { rateLimitResetTimes?: Record<string, number | undefined> },
-				now: number,
-				family: ModelFamily,
-		): number | null => {
-				const times = account.rateLimitResetTimes;
-				if (!times) return null;
-
-				let minReset: number | null = null;
-				const prefix = `${family}:`;
-				for (const [key, value] of Object.entries(times)) {
-						if (typeof value !== "number") continue;
-						if (value <= now) continue;
-						if (key !== family && !key.startsWith(prefix)) continue;
-						if (minReset === null || value < minReset) {
-								minReset = value;
-						}
-				}
-
-				return minReset;
-		};
-
-		const formatRateLimitEntry = (
-				account: { rateLimitResetTimes?: Record<string, number | undefined> },
-				now: number,
-				family: ModelFamily = "codex",
-		): string | null => {
-				const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-				if (typeof resetAt !== "number") return null;
-				const remaining = resetAt - now;
-				if (remaining <= 0) return null;
-				return `resets in ${formatWaitTime(remaining)}`;
-		};
 
 		const applyUiRuntimeFromConfig = (
 			pluginConfig: ReturnType<typeof loadPluginConfig>,
@@ -999,11 +1291,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         account.lastUsed = now;
                                         account.lastSwitchReason = "rotation";
                                 }
-                                storage.activeIndex = index;
-                                storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-                                for (const family of MODEL_FAMILIES) {
-                                        storage.activeIndexByFamily[family] = index;
-                                }
+                                setActiveIndexForAllFamilies(storage, index);
 
                                 await saveAccounts(storage);
 				if (cachedAccountManager) {
@@ -1124,6 +1412,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const retryAllAccountsRateLimited = getRetryAllAccountsRateLimited(pluginConfig);
 				const retryAllAccountsMaxWaitMs = getRetryAllAccountsMaxWaitMs(pluginConfig);
 				const retryAllAccountsMaxRetries = getRetryAllAccountsMaxRetries(pluginConfig);
+				const retryAllAccountsAbsoluteCeilingMs =
+					getRetryAllAccountsAbsoluteCeilingMs(pluginConfig);
 				const unsupportedCodexPolicy = getUnsupportedCodexPolicy(pluginConfig);
 				const fallbackOnUnsupportedCodexModel = unsupportedCodexPolicy === "fallback";
 				const fallbackToGpt52OnUnsupportedGpt53 =
@@ -1135,6 +1425,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
 				const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 				const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
+				const quotaCacheBootstrapEnabled =
+					(process.env.CODEX_AUTH_QUOTA_CACHE_BOOTSTRAP ?? "1").trim() !== "0";
 				const failoverMode = parseFailoverMode(process.env.CODEX_AUTH_FAILOVER_MODE);
 				const streamFailoverMax = Math.max(
 					0,
@@ -1159,6 +1451,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const emptyResponseMaxRetries = getEmptyResponseMaxRetries(pluginConfig);
 				const emptyResponseRetryDelayMs = getEmptyResponseRetryDelayMs(pluginConfig);
 				const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
+				const telemetryEnabled = getTelemetryEnabled(pluginConfig);
+				const emitPluginTelemetry = (
+					event: string,
+					outcome: "start" | "success" | "failure" | "recovery" | "info",
+					details?: Record<string, unknown>,
+				): void => {
+					if (!telemetryEnabled) return;
+					void recordTelemetryEvent({
+						source: "plugin",
+						event,
+						outcome,
+						details,
+					});
+				};
 				const effectiveUserConfig = fastSessionEnabled
 					? applyFastSessionDefaults(userConfig)
 					: userConfig;
@@ -1397,6 +1703,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					};
 
 							let allRateLimitedRetries = 0;
+							let accumulatedAllRateLimitedWaitMs = 0;
 							let emptyResponseRetries = 0;
 							const attemptedUnsupportedFallbackModels = new Set<string>();
 							if (model) {
@@ -1439,6 +1746,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												}
 											}
 										}
+										await applyQuotaCacheBootstrapForModel(
+											accountManager,
+											accountSnapshotList,
+											modelFamily,
+											model ?? undefined,
+											quotaCacheBootstrapEnabled,
+										);
 										for (const candidate of accountSnapshotList) {
 											const accountKey = resolveEntitlementAccountKey(candidate);
 											capabilityBoostByAccount[candidate.index] = capabilityPolicyStore.getBoost(
@@ -1503,6 +1817,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 				runtimeMetrics.failedRequests++;
 				runtimeMetrics.accountRotations++;
 				runtimeMetrics.lastError = (err as Error)?.message ?? String(err);
+				emitPluginTelemetry("request.auth_refresh_failed", "failure", {
+					accountIndex: account.index + 1,
+					modelFamily,
+					model,
+					error: (err as Error)?.message ?? String(err),
+				});
 				const failures = accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index);
 
@@ -1602,9 +1922,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 									{
 										model,
 										promptCacheKey: effectivePromptCacheKey,
+										idempotencyKey: requestCorrelationId,
 									},
 								);
-								const quotaScheduleKey = `${entitlementAccountKey}:${model ?? modelFamily}`;
+								const quotaScheduleKey = buildQuotaScheduleKey(
+									entitlementAccountKey,
+									model,
+									modelFamily,
+								);
 								const capabilityModelKey = model ?? modelFamily;
 								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);
 								if (quotaDeferral.defer && quotaDeferral.waitMs > 0) {
@@ -1661,9 +1986,21 @@ while (attempted.size < Math.max(1, accountCount)) {
 								} else if (abortSignal && onUserAbort) {
 									abortSignal.addEventListener("abort", onUserAbort, { once: true });
 								}
+								const safeAuditResource = toSafeAuditResource(url);
 
 							try {
 								runtimeMetrics.totalRequests++;
+								auditLog(
+									AuditAction.REQUEST_START,
+									account.email ?? `account-${account.index + 1}`,
+									safeAuditResource,
+									AuditOutcome.SUCCESS,
+									{
+										model,
+										accountIndex: account.index + 1,
+										modelFamily,
+									},
+								);
 								response = await fetch(url, {
 									...requestInit,
 									headers,
@@ -1688,11 +2025,31 @@ while (attempted.size < Math.max(1, accountCount)) {
 										);
 									}
 								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
+								const networkErrorType =
+									networkError instanceof Error ? networkError.name : "unknown_error";
 								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
+								auditLog(
+									AuditAction.REQUEST_FAILURE,
+									account.email ?? `account-${account.index + 1}`,
+									safeAuditResource,
+									AuditOutcome.FAILURE,
+									{
+										model,
+										accountIndex: account.index + 1,
+										errorType: networkErrorType,
+										stage: "network",
+									},
+								);
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.networkErrors++;
 								runtimeMetrics.accountRotations++;
 								runtimeMetrics.lastError = errorMsg;
+								emitPluginTelemetry("request.network_error", "failure", {
+									accountIndex: account.index + 1,
+									modelFamily,
+									model,
+									error: errorMsg,
+								});
 								const policy = evaluateFailurePolicy(
 									{ kind: "network", failoverMode },
 									{ networkCooldownMs: networkErrorCooldownMs },
@@ -1961,6 +2318,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 							runtimeMetrics.serverErrors++;
 							runtimeMetrics.accountRotations++;
 							runtimeMetrics.lastError = `HTTP ${response.status}`;
+							emitPluginTelemetry("request.server_error", "failure", {
+								accountIndex: account.index + 1,
+								modelFamily,
+								model,
+								status: response.status,
+							});
 							const serverRetryAfterMs = parseRetryAfterHintMs(response.headers);
 							const policy = evaluateFailurePolicy(
 								{ kind: "server", failoverMode, serverRetryAfterMs: serverRetryAfterMs ?? undefined },
@@ -2005,83 +2368,68 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 
 					if (rateLimit) {
-																														runtimeMetrics.rateLimitedResponses++;
-																															const { attempt, delayMs } = getRateLimitBackoff(
-																																account.index,
-																																quotaKey,
-																																rateLimit.retryAfterMs,
-																															);
-																															preemptiveQuotaScheduler.markRateLimited(
-																																quotaScheduleKey,
-																																delayMs,
-																															);
-																															const waitLabel = formatWaitTime(delayMs);
-
-																														if (delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
-																																if (
-																																	accountManager.shouldShowAccountToast(
-																																		account.index,
-																																		rateLimitToastDebounceMs,
-																																		)
-																																) {
-																									await showToast(
-																										`Rate limited. Retrying in ${waitLabel} (attempt ${attempt})...`,
-																										"warning",
-																										{ duration: toastDurationMs },
-																									);
-																																			accountManager.markToastShown(account.index);
-								}
-
-															await sleep(addJitter(Math.max(MIN_BACKOFF_MS, delayMs), 0.2));
-															continue;
-																																}
-
-				accountManager.markRateLimitedWithReason(
-					account,
-					delayMs,
-					modelFamily,
-					parseRateLimitReason(rateLimit.code),
-					model,
-				);
-				accountManager.recordRateLimit(account, modelFamily, model);
-				account.lastSwitchReason = "rate-limit";
-				sessionAffinityStore?.forgetSession(sessionAffinityKey);
-				runtimeMetrics.accountRotations++;
-				accountManager.saveToDiskDebounced();
+						runtimeMetrics.rateLimitedResponses++;
+						const { attempt, delayMs } = getRateLimitBackoff(
+							account.index,
+							quotaKey,
+							rateLimit.retryAfterMs,
+						);
+						preemptiveQuotaScheduler.markRateLimited(
+							quotaScheduleKey,
+							delayMs,
+						);
+						const waitLabel = formatWaitTime(delayMs);
+						accountManager.markRateLimitedWithReason(
+							account,
+							delayMs,
+							modelFamily,
+							parseRateLimitReason(rateLimit.code),
+							model,
+						);
+						accountManager.recordRateLimit(account, modelFamily, model);
+						account.lastSwitchReason = "rate-limit";
+						sessionAffinityStore?.forgetSession(sessionAffinityKey);
+						runtimeMetrics.accountRotations++;
+						accountManager.saveToDiskDebounced();
 						logWarn(
 							`Rate limited. Rotating account ${account.index + 1} (${account.email ?? "unknown"}).`,
 						);
-
-																														if (
-																															accountManager.getAccountCount() > 1 &&
-																															accountManager.shouldShowAccountToast(
-																																account.index,
-																																rateLimitToastDebounceMs,
-																																)
-																														) {
-																									await showToast(
-																										`Rate limited. Switching accounts (retry in ${waitLabel}).`,
-																										"warning",
-																										{ duration: toastDurationMs },
-																									);
-																																	accountManager.markToastShown(account.index);
-																																}
-																															break;
-																														}
-																														if (
-																															!rateLimit &&
-																															!unsupportedModelInfo.isUnsupported &&
-																															errorResponse.status !== 403
-																														) {
-																															capabilityPolicyStore.recordFailure(
-																																entitlementAccountKey,
-																																capabilityModelKey,
-																															);
-																														}
-																														runtimeMetrics.failedRequests++;
-																														runtimeMetrics.lastError = `HTTP ${response.status}`;
-																														return errorResponse;
-																											}
+						if (
+							accountManager.getAccountCount() > 1 &&
+							accountManager.shouldShowAccountToast(
+								account.index,
+								rateLimitToastDebounceMs,
+							)
+						) {
+							await showToast(
+								`Rate limited. Switching accounts (retry in ${waitLabel}, attempt ${attempt}).`,
+								"warning",
+								{ duration: toastDurationMs },
+							);
+							accountManager.markToastShown(account.index);
+						}
+						break;
+					}
+					if (
+						!rateLimit &&
+						!unsupportedModelInfo.isUnsupported &&
+						errorResponse.status !== 403
+					) {
+						capabilityPolicyStore.recordFailure(
+							entitlementAccountKey,
+							capabilityModelKey,
+						);
+					}
+					runtimeMetrics.failedRequests++;
+					runtimeMetrics.lastError = `HTTP ${response.status}`;
+					emitPluginTelemetry("request.http_error", "failure", {
+						accountIndex: account.index + 1,
+						modelFamily,
+						model,
+						status: response.status,
+					});
+					return errorResponse;
+				}
 
 						resetRateLimitBackoff(account.index, quotaKey);
 						runtimeMetrics.cumulativeLatencyMs += fetchLatencyMs;
@@ -2164,6 +2512,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											{
 												model,
 												promptCacheKey: effectivePromptCacheKey,
+												idempotencyKey: requestCorrelationId,
 											},
 										);
 
@@ -2197,7 +2546,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 											);
 											if (fallbackSnapshot) {
 												preemptiveQuotaScheduler.update(
-													`${resolveEntitlementAccountKey(fallbackAccount)}:${model ?? modelFamily}`,
+													buildQuotaScheduleKey(
+														fallbackAccount,
+														model,
+														modelFamily,
+													),
 													fallbackSnapshot,
 												);
 											}
@@ -2243,6 +2596,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 												`Recovered stream via failover attempt ${failoverAttempt} using account ${fallbackAccount.index + 1}.`,
 												{ emittedBytes },
 											);
+											emitPluginTelemetry("request.stream_failover_recovered", "recovery", {
+												accountIndex: fallbackAccount.index + 1,
+												fromAccountIndex: account.index + 1,
+												failoverAttempt,
+												emittedBytes,
+												modelFamily,
+												model,
+											});
 											return fallbackResponse;
 										} catch (streamFailoverError) {
 											accountManager.refundToken(fallbackAccount, modelFamily, model);
@@ -2257,10 +2618,21 @@ while (attempted.size < Math.max(1, accountCount)) {
 													emittedBytes,
 													error:
 														streamFailoverError instanceof Error
-															? streamFailoverError.message
-															: String(streamFailoverError),
+														? streamFailoverError.message
+														: String(streamFailoverError),
 												},
 											);
+											emitPluginTelemetry("request.stream_failover_attempt_failed", "failure", {
+												accountIndex: fallbackAccount.index + 1,
+												failoverAttempt,
+												emittedBytes,
+												modelFamily,
+												model,
+												error:
+													streamFailoverError instanceof Error
+														? streamFailoverError.message
+														: String(streamFailoverError),
+											});
 											continue;
 										} finally {
 											clearTimeout(fallbackTimeoutId);
@@ -2350,7 +2722,27 @@ while (attempted.size < Math.max(1, accountCount)) {
 							successAccountForResponse.index,
 						);
 					runtimeMetrics.successfulRequests++;
+					auditLog(
+						AuditAction.REQUEST_SUCCESS,
+						successAccountForResponse.email ?? `account-${successAccountForResponse.index + 1}`,
+						safeAuditResource,
+						AuditOutcome.SUCCESS,
+						{
+							model,
+							accountIndex: successAccountForResponse.index + 1,
+							latencyMs: fetchLatencyMs,
+							modelFamily,
+						},
+					);
 					runtimeMetrics.lastError = null;
+					if (sameAccountRetryCount > 0) {
+						emitPluginTelemetry("request.recovered_after_retry", "recovery", {
+							accountIndex: successAccountForResponse.index + 1,
+							retryCount: sameAccountRetryCount,
+							modelFamily,
+							model,
+						});
+					}
 					if (lastCodexCliActiveSyncIndex !== successAccountForResponse.index) {
 						void accountManager.syncCodexCliActiveSelectionForIndex(successAccountForResponse.index);
 						lastCodexCliActiveSyncIndex = successAccountForResponse.index;
@@ -2368,19 +2760,52 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
 										const count = accountManager.getAccountCount();
+										const jitteredWaitMs = waitMs > 0 ? addJitter(waitMs, 0.2) : 0;
+										const remainingCeilingMs =
+											retryAllAccountsAbsoluteCeilingMs > 0
+												? Math.max(
+														0,
+														retryAllAccountsAbsoluteCeilingMs - accumulatedAllRateLimitedWaitMs,
+													)
+												: Number.POSITIVE_INFINITY;
+										const plannedWaitMs = Math.min(jitteredWaitMs, remainingCeilingMs);
+										const retryDecision = decideRetryAllAccountsRateLimited({
+											enabled: retryAllAccountsRateLimited,
+											accountCount: count,
+											waitMs,
+											plannedWaitMs,
+											maxWaitMs: retryAllAccountsMaxWaitMs,
+											currentRetryCount: allRateLimitedRetries,
+											maxRetries: retryAllAccountsMaxRetries,
+											accumulatedWaitMs: accumulatedAllRateLimitedWaitMs,
+											absoluteCeilingMs: retryAllAccountsAbsoluteCeilingMs,
+										});
 
-								if (
-									retryAllAccountsRateLimited &&
-									count > 0 &&
-									waitMs > 0 &&
-									(retryAllAccountsMaxWaitMs === 0 ||
-										waitMs <= retryAllAccountsMaxWaitMs) &&
-									allRateLimitedRetries < retryAllAccountsMaxRetries
-								) {
+								if (retryDecision.shouldRetry) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
-									await sleepWithCountdown(addJitter(waitMs, 0.2), countdownMessage);
+									await sleepWithCountdown(plannedWaitMs, countdownMessage);
 									allRateLimitedRetries++;
+									accumulatedAllRateLimitedWaitMs += plannedWaitMs;
 									continue;
+								}
+								recordRetryGovernorStopReason(retryDecision.reason);
+								if (
+									retryDecision.reason !== "disabled" &&
+									retryDecision.reason !== "no-accounts" &&
+									retryDecision.reason !== "no-wait"
+								) {
+									logDebug("Retry governor blocked all-rate-limited retry", {
+										reason: retryDecision.reason,
+										accountCount: count,
+										waitMs,
+										jitteredWaitMs,
+										plannedWaitMs,
+										retryCount: allRateLimitedRetries,
+										accumulatedWaitMs: accumulatedAllRateLimitedWaitMs,
+										maxWaitMs: retryAllAccountsMaxWaitMs,
+										maxRetries: retryAllAccountsMaxRetries,
+										absoluteCeilingMs: retryAllAccountsAbsoluteCeilingMs,
+									});
 								}
 
 								const waitLabel = waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
@@ -2392,6 +2817,26 @@ while (attempted.size < Math.max(1, accountCount)) {
 											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
+								const safePluginAuditResource = toSafeAuditResource(url);
+								auditLog(
+									AuditAction.REQUEST_FAILURE,
+									"plugin",
+									safePluginAuditResource,
+									AuditOutcome.FAILURE,
+									{
+										model,
+										accountCount: count,
+										message,
+										waitMs,
+									},
+								);
+								emitPluginTelemetry("request.accounts_exhausted", "failure", {
+									accountCount: count,
+									waitMs,
+									modelFamily,
+									model,
+									status: waitMs > 0 ? 429 : 503,
+								});
 								return new Response(JSON.stringify({ error: { message } }), {
 									status: waitMs > 0 ? 429 : 503,
 											headers: {
@@ -2432,20 +2877,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 							let refreshAccountIndex: number | undefined;
 
 							const clampActiveIndices = (storage: AccountStorageV3): void => {
-								const count = storage.accounts.length;
-								if (count === 0) {
-									storage.activeIndex = 0;
-									storage.activeIndexByFamily = {};
-									return;
-								}
-								storage.activeIndex = Math.max(0, Math.min(storage.activeIndex, count - 1));
-								storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-								for (const family of MODEL_FAMILIES) {
-									const raw = storage.activeIndexByFamily[family];
-									const candidate =
-										typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
-									storage.activeIndexByFamily[family] = Math.max(0, Math.min(candidate, count - 1));
-								}
+								normalizeActiveIndexByFamily(storage, storage.accounts.length, {
+									clearFamilyMapWhenEmpty: true,
+								});
 							};
 
 							const isFlaggableFailure = (failure: Extract<TokenResult, { type: "failed" }>): boolean => {
@@ -2706,14 +3140,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 							const runAccountCheck = async (deepProbe: boolean): Promise<void> => {
 								const loadedStorage = await hydrateEmails(await loadAccounts());
 								const workingStorage = loadedStorage
-									? {
-										...loadedStorage,
-										accounts: loadedStorage.accounts.map((account) => ({ ...account })),
-										activeIndexByFamily: loadedStorage.activeIndexByFamily
-											? { ...loadedStorage.activeIndexByFamily }
-											: {},
-									}
-									: { version: 3 as const, accounts: [], activeIndex: 0, activeIndexByFamily: {} };
+									? cloneAccountStorage(loadedStorage)
+									: createEmptyAccountStorage();
 
 								if (workingStorage.accounts.length === 0) {
 									console.log("\nNo accounts to check.\n");
@@ -3059,14 +3487,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 								while (true) {
 									const loadedStorage = await hydrateEmails(await loadAccounts());
 									const workingStorage = loadedStorage
-										? {
-											...loadedStorage,
-											accounts: loadedStorage.accounts.map((account) => ({ ...account })),
-											activeIndexByFamily: loadedStorage.activeIndexByFamily
-												? { ...loadedStorage.activeIndexByFamily }
-												: {},
-										}
-										: { version: 3 as const, accounts: [], activeIndex: 0, activeIndexByFamily: {} };
+										? cloneAccountStorage(loadedStorage)
+										: createEmptyAccountStorage();
 									const flaggedStorage = await loadFlaggedAccounts();
 
 									if (workingStorage.accounts.length === 0 && flaggedStorage.accounts.length === 0) {
@@ -3566,11 +3988,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                 account.lastSwitchReason = "rotation";
                                         }
 
-					storage.activeIndex = targetIndex;
-					storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-					for (const family of MODEL_FAMILIES) {
-							storage.activeIndexByFamily[family] = targetIndex;
-					}
+					setActiveIndexForAllFamilies(storage, targetIndex);
 					try {
 						await saveAccounts(storage);
 					} catch (saveError) {
@@ -3647,21 +4065,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					lines.push("");
 					lines.push(...formatUiSection(ui, "Active index by model family"));
-					for (const family of MODEL_FAMILIES) {
-						const idx = storage.activeIndexByFamily?.[family];
-						const familyIndexLabel =
-							typeof idx === "number" && Number.isFinite(idx) ? String(idx + 1) : "-";
-						lines.push(formatUiItem(ui, `${family}: ${familyIndexLabel}`));
+					for (const line of formatActiveIndexByFamilyLabels(storage.activeIndexByFamily)) {
+						lines.push(formatUiItem(ui, line));
 					}
 
 					lines.push("");
 					lines.push(...formatUiSection(ui, "Rate limits by model family (per account)"));
 					storage.accounts.forEach((account, index) => {
-						const statuses = MODEL_FAMILIES.map((family) => {
-							const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-							if (typeof resetAt !== "number") return `${family}=ok`;
-							return `${family}=${formatWaitTime(resetAt - now)}`;
-						});
+						const statuses = formatRateLimitStatusByFamily(account, now);
 						lines.push(formatUiItem(ui, `Account ${index + 1}: ${statuses.join(" | ")}`));
 					});
 
@@ -3700,21 +4111,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										lines.push("");
 										lines.push("Active index by model family:");
-										for (const family of MODEL_FAMILIES) {
-												const idx = storage.activeIndexByFamily?.[family];
-												const familyIndexLabel =
-													typeof idx === "number" && Number.isFinite(idx) ? String(idx + 1) : "-";
-												lines.push(`  ${family}: ${familyIndexLabel}`);
+										for (const line of formatActiveIndexByFamilyLabels(storage.activeIndexByFamily)) {
+												lines.push(`  ${line}`);
 										}
 
 										lines.push("");
 										lines.push("Rate limits by model family (per account):");
 										storage.accounts.forEach((account, index) => {
-												const statuses = MODEL_FAMILIES.map((family) => {
-														const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-														if (typeof resetAt !== "number") return `${family}=ok`;
-														return `${family}=${formatWaitTime(resetAt - now)}`;
-												});
+												const statuses = formatRateLimitStatusByFamily(account, now);
 												lines.push(`  Account ${index + 1}: ${statuses.join(" | ")}`);
 										});
 
@@ -3763,6 +4167,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 						`Stream failover attempts: ${runtimeMetrics.streamFailoverAttempts}`,
 						`Stream failover recoveries: ${runtimeMetrics.streamFailoverRecoveries}`,
 						`Stream failover cross-account recoveries: ${runtimeMetrics.streamFailoverCrossAccountRecoveries}`,
+						`Retry governor stops (wait>max): ${runtimeMetrics.retryGovernorStopsWaitExceedsMax}`,
+						`Retry governor stops (retry limit): ${runtimeMetrics.retryGovernorStopsRetryLimitReached}`,
+						`Retry governor stops (absolute ceiling): ${runtimeMetrics.retryGovernorStopsAbsoluteCeilingExceeded}`,
 						`Empty-response retries: ${runtimeMetrics.emptyResponseRetries}`,
 						`Session affinity entries: ${sessionAffinityEntries}`,
 						`Live sync: ${liveSyncSnapshot?.running ? "on" : "off"} (${liveSyncSnapshot?.reloadCount ?? 0} reloads)`,
@@ -3797,6 +4204,24 @@ while (attempted.size < Math.max(1, accountCount)) {
 								"Stream failover cross-account recoveries",
 								String(runtimeMetrics.streamFailoverCrossAccountRecoveries),
 								"accent",
+							),
+							formatUiKeyValue(
+								ui,
+								"Retry governor stops (wait>max)",
+								String(runtimeMetrics.retryGovernorStopsWaitExceedsMax),
+								"warning",
+							),
+							formatUiKeyValue(
+								ui,
+								"Retry governor stops (retry limit)",
+								String(runtimeMetrics.retryGovernorStopsRetryLimitReached),
+								"warning",
+							),
+							formatUiKeyValue(
+								ui,
+								"Retry governor stops (absolute ceiling)",
+								String(runtimeMetrics.retryGovernorStopsAbsoluteCeilingExceeded),
+								"warning",
 							),
 							formatUiKeyValue(ui, "Empty-response retries", String(runtimeMetrics.emptyResponseRetries), "warning"),
 							formatUiKeyValue(ui, "Session affinity entries", String(sessionAffinityEntries), "muted"),
@@ -3933,31 +4358,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					const label = formatAccountLabel(account, targetIndex);
 
-					storage.accounts.splice(targetIndex, 1);
-
-					if (storage.accounts.length === 0) {
-						storage.activeIndex = 0;
-						storage.activeIndexByFamily = {};
-					} else {
-						if (storage.activeIndex >= storage.accounts.length) {
-							storage.activeIndex = 0;
-						} else if (storage.activeIndex > targetIndex) {
-							storage.activeIndex -= 1;
-						}
-
-						if (storage.activeIndexByFamily) {
-							for (const family of MODEL_FAMILIES) {
-								const idx = storage.activeIndexByFamily[family];
-								if (typeof idx === "number") {
-									if (idx >= storage.accounts.length) {
-										storage.activeIndexByFamily[family] = 0;
-									} else if (idx > targetIndex) {
-										storage.activeIndexByFamily[family] = idx - 1;
-									}
-								}
-							}
-						}
-					}
+					removeAccountAndReconcileActiveIndexes(storage, targetIndex);
 
 					try {
 					await saveAccounts(storage);

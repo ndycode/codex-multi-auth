@@ -74,6 +74,7 @@ Examples:
 - `sessionAffinityTtlMs`
 - `sessionAffinityMaxEntries`
 - `perProjectAccounts`
+- `telemetryEnabled`
 
 ### Rotation and Quota
 
@@ -86,6 +87,8 @@ Examples:
 - `retryAllAccountsRateLimited`
 - `retryAllAccountsMaxWaitMs`
 - `retryAllAccountsMaxRetries`
+- `retryAllAccountsAbsoluteCeilingMs`
+  Unit: milliseconds. Bounds: `0` to `24h`. `0` means unlimited.
 
 ### Refresh and Recovery
 
@@ -126,8 +129,22 @@ Common operator overrides:
 - `CODEX_TUI_V2`
 - `CODEX_TUI_COLOR_PROFILE`
 - `CODEX_TUI_GLYPHS`
+- `CODEX_SECRET_STORAGE_MODE`
+- `CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS`
+  Rotation & Quota override for `retryAllAccountsAbsoluteCeilingMs` (ms, `0` to `24h`, `0` = unlimited).
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
+- `CODEX_AUTH_TELEMETRY_ENABLED`
+- `CODEX_AUTH_ENCRYPTION_KEY`
+- `CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY`
+- `CODEX_AUTH_ROLE`
+
+Encryption key variables must be high-entropy 32-byte key material (for example,
+from a secret manager). Do not use passwords.
+
+Enterprise recommendation:
+
+- pin `CODEX_SECRET_STORAGE_MODE=keychain` for production.
 
 ---
 
@@ -141,6 +158,14 @@ Maintainer/debug-focused overrides include:
 - `CODEX_CLI_ACCOUNTS_PATH`
 - `CODEX_CLI_AUTH_PATH`
 - refresh lease controls (`CODEX_AUTH_REFRESH_LEASE*`)
+- `CODEX_AUTH_BREAK_GLASS`
+- `CODEX_AUTH_ABAC_READ_ONLY`
+- `CODEX_AUTH_ABAC_DENY_ACTIONS`
+- `CODEX_AUTH_ABAC_DENY_COMMANDS`
+- `CODEX_AUTH_ABAC_REQUIRE_INTERACTIVE`
+- `CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY`
+- `CODEX_AUTH_REDACT_JSON_OUTPUT`
+- retention controls (`CODEX_AUTH_RETENTION_*`)
 
 Full inventory: [../development/CONFIG_FIELDS.md](../development/CONFIG_FIELDS.md)
 

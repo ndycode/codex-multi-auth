@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import type { PluginConfig } from "./types.js";
 import { logWarn } from "./logger.js";
 import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
@@ -34,6 +35,19 @@ const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const SECURE_DIR_MODE = 0o700;
+const SECURE_FILE_MODE = 0o600;
+const CONFIG_CONFLICT_RETRY_LIMIT = 3;
+const CONFIG_IO_RETRY_ATTEMPTS = 5;
+const CONFIG_IO_RETRY_BASE_MS = 10;
+const CONFIG_LOCK_STALE_MS = 30_000;
+const CONFIG_LOCK_WAIT_TIMEOUT_MS = 5_000;
+const RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES = 12;
+const RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES = 100;
+const CONFIG_READ_MAX_ATTEMPTS = 4;
+const CONFIG_READ_RETRY_BASE_DELAY_MS = 10;
+const pluginConfigShape = PluginConfigSchema.shape;
+type PluginConfigShapeKey = keyof typeof pluginConfigShape;
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -124,7 +138,8 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	fastSessionMaxInputItems: 30,
 	retryAllAccountsRateLimited: true,
 	retryAllAccountsMaxWaitMs: 0,
-	retryAllAccountsMaxRetries: Infinity,
+	retryAllAccountsMaxRetries: RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES,
+	retryAllAccountsAbsoluteCeilingMs: 0,
 	unsupportedCodexPolicy: "strict",
 	fallbackOnUnsupportedCodexModel: false,
 	fallbackToGpt52OnUnsupportedGpt53: true,
@@ -133,6 +148,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	rateLimitToastDebounceMs: 60_000,
 	toastDurationMs: 5_000,
 	perProjectAccounts: true,
+	telemetryEnabled: true,
 	sessionRecovery: true,
 	autoResume: true,
 	parallelProbing: false,
@@ -193,7 +209,7 @@ export function loadPluginConfig(): PluginConfig {
 				return { ...DEFAULT_PLUGIN_CONFIG };
 			}
 
-			const fileContent = readFileSync(configPath, "utf-8");
+			const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 			const normalizedFileContent = stripUtf8Bom(fileContent);
 			userConfig = JSON.parse(normalizedFileContent) as unknown;
 			sourceKind = "file";
@@ -222,6 +238,7 @@ export function loadPluginConfig(): PluginConfig {
 				`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
 			);
 		}
+		const sanitizedConfig = sanitizePluginConfigRecord(userConfig);
 
 		if (
 			sourceKind === "file" &&
@@ -235,7 +252,7 @@ export function loadPluginConfig(): PluginConfig {
 
 		return {
 			...DEFAULT_PLUGIN_CONFIG,
-			...(userConfig as Partial<PluginConfig>),
+			...sanitizedConfig,
 		};
 	} catch (error) {
 		const configPath = resolvePluginConfigPath() ?? CONFIG_PATH;
@@ -268,22 +285,147 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isPluginConfigShapeKey(key: string): key is PluginConfigShapeKey {
+	return Object.hasOwn(pluginConfigShape, key);
+}
+
+function sanitizePluginConfigRecord(userConfig: unknown): Partial<PluginConfig> {
+	if (!isRecord(userConfig)) return {};
+	const sanitized: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(userConfig)) {
+		if (!isPluginConfigShapeKey(key)) continue;
+		const parsed = pluginConfigShape[key].safeParse(value);
+		if (parsed.success && parsed.data !== undefined) {
+			sanitized[key] = parsed.data;
+		}
+	}
+	return sanitized as Partial<PluginConfig>;
+}
+
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function readFileSyncWithRetry(path: string, encoding: BufferEncoding): string {
+	for (let attempt = 0; attempt < CONFIG_READ_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			return readFileSync(path, encoding);
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= CONFIG_READ_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			sleepSync(CONFIG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+	}
+	throw new Error(`Failed to read config file after ${CONFIG_READ_MAX_ATTEMPTS} attempts`);
 }
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function computeSha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function createConfigConflictError(path: string): Error & { code: string } {
+	return Object.assign(
+		new Error(
+			`Detected concurrent config modification at ${path}; reload and retry`,
+		),
+		{ code: "ECONFLICT" as const },
+	);
+}
+
+function isConfigConflictError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === "ECONFLICT";
+}
+
+async function readFileUtf8WithRetry(path: string): Promise<string> {
+	for (let attempt = 0; attempt < CONFIG_IO_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			return await fs.readFile(path, "utf-8");
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt + 1 >= CONFIG_IO_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			await sleep(CONFIG_IO_RETRY_BASE_MS * 2 ** attempt);
+		}
+	}
+	throw new Error(`Failed to read config file after ${CONFIG_IO_RETRY_ATTEMPTS} attempts`);
+}
+
+type JsonRecordSnapshot = {
+	record: Record<string, unknown> | null;
+	revision: string | null;
+};
+
+type ConfigSaveFileLock = {
+	lockPath: string;
+	token: string;
+};
+
+type ConfigSaveLockObservation = {
+	token: string | null;
+	fingerprint: string;
+};
+
+async function readConfigSnapshotFromPath(
+	configPath: string,
+): Promise<JsonRecordSnapshot> {
+	if (!existsSync(configPath)) {
+		return { record: null, revision: null };
+	}
+	let fileContent: string;
+	try {
+		fileContent = await readFileUtf8WithRetry(configPath);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return { record: null, revision: null };
+		}
+		throw error;
+	}
+	const normalizedFileContent = stripUtf8Bom(fileContent);
+	const revision = computeSha256(normalizedFileContent);
+	let record: Record<string, unknown> | null = null;
+	try {
+		const parsed = JSON.parse(normalizedFileContent) as unknown;
+		record = isRecord(parsed) ? parsed : null;
+	} catch {
+		record = null;
+	}
+	return {
+		record,
+		revision,
+	};
+}
+
 async function writeJsonFileAtomicWithRetry(
 	filePath: string,
 	payload: Record<string, unknown>,
+	options?: { expectedRevision?: string | null },
 ): Promise<void> {
+	const expectedRevision = options?.expectedRevision;
+	if (expectedRevision !== undefined) {
+		const currentSnapshot = await readConfigSnapshotFromPath(filePath);
+		if (currentSnapshot.revision !== expectedRevision) {
+			throw createConfigConflictError(filePath);
+		}
+	}
+
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.mkdir(dirname(filePath), { recursive: true });
-	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	await fs.mkdir(dirname(filePath), { recursive: true, mode: SECURE_DIR_MODE });
+	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+		encoding: "utf8",
+		mode: SECURE_FILE_MODE,
+	});
 	let renamed = false;
 	try {
 		for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -309,15 +451,199 @@ async function writeJsonFileAtomicWithRetry(
 	}
 }
 
+function toConfigSaveLockFingerprint(raw: string): string {
+	return computeSha256(raw);
+}
+
+function parseConfigSaveLockToken(raw: string): string | null {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (!isRecord(parsed)) {
+			return null;
+		}
+		const token = parsed.token;
+		if (typeof token !== "string") {
+			return null;
+		}
+		const normalized = token.trim();
+		return normalized.length > 0 ? normalized : null;
+	} catch {
+		return null;
+	}
+}
+
+async function readConfigSaveLockObservation(lockPath: string): Promise<ConfigSaveLockObservation | null> {
+	try {
+		const raw = await fs.readFile(lockPath, "utf8");
+		return {
+			token: parseConfigSaveLockToken(raw),
+			fingerprint: toConfigSaveLockFingerprint(raw),
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function removeConfigSaveLockIfOwnerMatches(
+	lockPath: string,
+	owner: { token?: string; fingerprint?: string },
+): Promise<boolean> {
+	const observation = await readConfigSaveLockObservation(lockPath);
+	if (!observation) {
+		return true;
+	}
+
+	const tokenMatches =
+		typeof owner.token === "string" &&
+		owner.token.length > 0 &&
+		observation.token === owner.token;
+	const fingerprintMatches =
+		typeof owner.fingerprint === "string" &&
+		owner.fingerprint.length > 0 &&
+		observation.fingerprint === owner.fingerprint;
+	if (!tokenMatches && !fingerprintMatches) {
+		return false;
+	}
+
+	try {
+		await fs.unlink(lockPath);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return true;
+		}
+		throw error;
+	}
+}
+
 async function withConfigSaveLock(path: string, task: () => Promise<void>): Promise<void> {
 	const previous = configSaveQueues.get(path) ?? Promise.resolve();
-	const queued = previous.catch(() => {}).then(task);
+	const queued = previous.catch(() => {}).then(async () => {
+		await fs.mkdir(dirname(path), { recursive: true });
+		const lock = await acquireConfigSaveFileLock(path);
+		let taskError: unknown;
+		try {
+			await task();
+		} catch (error) {
+			taskError = error;
+			throw error;
+		} finally {
+			try {
+				await releaseConfigSaveFileLock(lock);
+			} catch (releaseError) {
+				if (taskError !== undefined) {
+					logWarn(
+						`Failed to release config save lock after save error at ${lock.lockPath}: ${
+							releaseError instanceof Error ? releaseError.message : String(releaseError)
+						}`,
+					);
+				} else {
+					logWarn(
+						`Failed to release config save lock after successful save at ${lock.lockPath}: ${
+							releaseError instanceof Error ? releaseError.message : String(releaseError)
+						}`,
+					);
+				}
+			}
+		}
+	});
 	configSaveQueues.set(path, queued);
 	try {
 		await queued;
 	} finally {
 		if (configSaveQueues.get(path) === queued) {
 			configSaveQueues.delete(path);
+		}
+	}
+}
+
+async function acquireConfigSaveFileLock(path: string): Promise<ConfigSaveFileLock> {
+	const lockPath = `${path}.lock`;
+	const waitDeadline = Date.now() + CONFIG_LOCK_WAIT_TIMEOUT_MS;
+	const lockToken = randomUUID();
+	let attempt = 0;
+	while (true) {
+		try {
+			const handle = await fs.open(lockPath, "wx");
+			try {
+				await handle.writeFile(
+					`${JSON.stringify({
+						pid: process.pid,
+						token: lockToken,
+						acquiredAt: Date.now(),
+					})}\n`,
+					"utf8",
+				);
+			} finally {
+				await handle.close();
+			}
+			return { lockPath, token: lockToken };
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "EEXIST") {
+				try {
+					const stat = await fs.stat(lockPath);
+					if (Date.now() - stat.mtimeMs >= CONFIG_LOCK_STALE_MS) {
+						const staleOwner = await readConfigSaveLockObservation(lockPath);
+						if (!staleOwner) {
+							continue;
+						}
+						const removed = await removeConfigSaveLockIfOwnerMatches(lockPath, {
+							fingerprint: staleOwner.fingerprint,
+						});
+						if (removed) {
+							continue;
+						}
+					}
+				} catch (statError) {
+					const statCode = (statError as NodeJS.ErrnoException | undefined)?.code;
+					if (statCode === "ENOENT") {
+						continue;
+					}
+					if (!isRetryableFsError(statError)) {
+						throw statError;
+					}
+				}
+				if (Date.now() >= waitDeadline) {
+					throw new Error(`Timed out waiting for config save lock at ${lockPath}`);
+				}
+				await sleep(CONFIG_IO_RETRY_BASE_MS * 2 ** Math.min(attempt, 6));
+				attempt += 1;
+				continue;
+			}
+			if (isRetryableFsError(error) && Date.now() < waitDeadline) {
+				await sleep(CONFIG_IO_RETRY_BASE_MS * 2 ** Math.min(attempt, 6));
+				attempt += 1;
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
+async function releaseConfigSaveFileLock(lock: ConfigSaveFileLock): Promise<void> {
+	for (let attempt = 0; attempt < CONFIG_IO_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await removeConfigSaveLockIfOwnerMatches(lock.lockPath, { token: lock.token });
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (!isRetryableFsError(error) || attempt + 1 >= CONFIG_IO_RETRY_ATTEMPTS) {
+				throw error;
+			}
+			await sleep(CONFIG_IO_RETRY_BASE_MS * 2 ** attempt);
 		}
 	}
 }
@@ -333,7 +659,7 @@ async function withConfigSaveLock(path: string, task: () => Promise<void>): Prom
 function readConfigRecordFromPath(configPath: string): Record<string, unknown> | null {
 	if (!existsSync(configPath)) return null;
 	try {
-		const fileContent = readFileSync(configPath, "utf-8");
+		const fileContent = readFileSyncWithRetry(configPath, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const parsed = JSON.parse(normalizedFileContent) as unknown;
 		return isRecord(parsed) ? parsed : null;
@@ -376,10 +702,10 @@ function sanitizePluginConfigForSave(config: Partial<PluginConfig>): Record<stri
  * Persist a partial plugin configuration to disk, merging it with existing stored settings.
  *
  * This writes the sanitized patch either to the path specified by the CODEX_MULTI_AUTH_CONFIG_PATH
- * environment variable (if set) or into the unified settings store. The function does not take
- * internal locks; callers should avoid concurrent invocations that might overwrite each other.
- * On Windows and other platforms the write behavior follows the Node.js filesystem semantics and may
- * not be atomic across processes. Callers are responsible for redacting any sensitive values
+ * environment variable (if set) or into the unified settings store. Saves are serialized both
+ * in-process and across processes with a lock file to prevent stale CAS races.
+ * On Windows and other platforms the write behavior follows Node.js filesystem semantics.
+ * Callers are responsible for redacting any sensitive values
  * (tokens, secrets) before calling if redaction is required; this function writes merged values as-is.
  *
  * @param configPatch - Partial PluginConfig containing changes to persist; undefined fields are ignored.
@@ -391,25 +717,40 @@ export async function savePluginConfig(configPatch: Partial<PluginConfig>): Prom
 
 	if (envPath.length > 0) {
 		await withConfigSaveLock(envPath, async () => {
-			const merged = {
-				...(readConfigRecordFromPath(envPath) ?? {}),
-				...sanitizedPatch,
-			};
-			await writeJsonFileAtomicWithRetry(envPath, merged);
+			let lastError: unknown;
+			for (let attempt = 0; attempt < CONFIG_CONFLICT_RETRY_LIMIT; attempt += 1) {
+				const snapshot = await readConfigSnapshotFromPath(envPath);
+				const merged = {
+					...(snapshot.record ?? {}),
+					...sanitizedPatch,
+				};
+				try {
+					await writeJsonFileAtomicWithRetry(envPath, merged, {
+						expectedRevision: snapshot.revision,
+					});
+					return;
+				} catch (error) {
+					lastError = error;
+					if (
+						!isConfigConflictError(error) ||
+						attempt >= CONFIG_CONFLICT_RETRY_LIMIT - 1
+					) {
+						throw error;
+					}
+				}
+			}
+			throw lastError instanceof Error ? lastError : new Error("Failed to save plugin config");
 		});
 		return;
 	}
 
-	const unifiedPath = getUnifiedSettingsPath();
-	await withConfigSaveLock(unifiedPath, async () => {
-		const unifiedConfig = loadUnifiedPluginConfigSync();
-		const legacyPath = unifiedConfig ? null : resolvePluginConfigPath();
-		const merged = {
-			...(unifiedConfig ?? (legacyPath ? readConfigRecordFromPath(legacyPath) : null) ?? {}),
-			...sanitizedPatch,
-		};
-		await saveUnifiedPluginConfig(merged);
-	});
+	const unifiedConfig = loadUnifiedPluginConfigSync();
+	const legacyPath = unifiedConfig ? null : resolvePluginConfigPath();
+	const merged = {
+		...(unifiedConfig ?? (legacyPath ? readConfigRecordFromPath(legacyPath) : null) ?? {}),
+		...sanitizedPatch,
+	};
+	await saveUnifiedPluginConfig(merged);
 }
 
 /**
@@ -586,8 +927,17 @@ export function getRetryAllAccountsMaxRetries(pluginConfig: PluginConfig): numbe
 	return resolveNumberSetting(
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
 		pluginConfig.retryAllAccountsMaxRetries,
-		Infinity,
-		{ min: 0 },
+		RETRY_ALL_ACCOUNTS_DEFAULT_MAX_RETRIES,
+		{ min: 0, max: RETRY_ALL_ACCOUNTS_HARD_MAX_RETRIES },
+	);
+}
+
+export function getRetryAllAccountsAbsoluteCeilingMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RETRY_ALL_ABSOLUTE_CEILING_MS",
+		pluginConfig.retryAllAccountsAbsoluteCeilingMs,
+		0,
+		{ min: 0, max: 24 * 60 * 60_000 },
 	);
 }
 
@@ -717,6 +1067,14 @@ export function getPerProjectAccounts(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_PER_PROJECT_ACCOUNTS",
 		pluginConfig.perProjectAccounts,
+		true,
+	);
+}
+
+export function getTelemetryEnabled(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_TELEMETRY_ENABLED",
+		pluginConfig.telemetryEnabled,
 		true,
 	);
 }

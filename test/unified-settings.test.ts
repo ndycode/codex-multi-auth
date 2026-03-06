@@ -1,7 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
+
+async function expectSecureFileMode(path: string): Promise<void> {
+	if (process.platform === "win32") {
+		await expect(fs.readFile(path, "utf8")).resolves.toContain("\"version\": 1");
+		const entries = await fs.readdir(dirname(path));
+		const leakedTemps = entries.filter(
+			(entry) => entry.startsWith(`${basename(path)}.`) && entry.endsWith(".tmp"),
+		);
+		expect(leakedTemps).toEqual([]);
+		return;
+	}
+	const stats = await fs.stat(path);
+	expect(stats.mode & 0o777).toBe(0o600);
+}
+
+async function expectSecureDirectoryMode(path: string): Promise<void> {
+	if (process.platform === "win32") {
+		await expect(fs.access(path)).resolves.toBeUndefined();
+		return;
+	}
+	const stats = await fs.stat(path);
+	expect(stats.isDirectory()).toBe(true);
+	expect(stats.mode & 0o777).toBe(0o700);
+}
 
 describe("unified settings", () => {
 	let tempDir: string;
@@ -20,7 +45,7 @@ describe("unified settings", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("merges plugin and dashboard sections into one file", async () => {
@@ -51,6 +76,8 @@ describe("unified settings", () => {
 		expect(fileContent).toContain("\"version\": 1");
 		expect(fileContent).toContain("\"pluginConfig\"");
 		expect(fileContent).toContain("\"dashboardDisplaySettings\"");
+		await expectSecureFileMode(getUnifiedSettingsPath());
+		await expectSecureDirectoryMode(dirname(getUnifiedSettingsPath()));
 	});
 
 	it("returns null sections for invalid JSON", async () => {
@@ -63,6 +90,107 @@ describe("unified settings", () => {
 
 		expect(loadUnifiedPluginConfigSync()).toBeNull();
 		expect(await loadUnifiedDashboardSettings()).toBeNull();
+	});
+
+	it("recovers from malformed settings JSON during async plugin save", async () => {
+		const { getUnifiedSettingsPath, saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+
+		await fs.mkdir(tempDir, { recursive: true });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ malformed json", "utf8");
+
+		await expect(
+			saveUnifiedPluginConfig({ codexMode: false, requestTimeoutMs: 45_000 }),
+		).resolves.toBeUndefined();
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: false,
+			requestTimeoutMs: 45_000,
+		});
+	});
+
+	it("recovers from valid non-object settings JSON during async plugin save", async () => {
+		const { getUnifiedSettingsPath, saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+
+		await fs.mkdir(tempDir, { recursive: true });
+		await fs.writeFile(getUnifiedSettingsPath(), JSON.stringify([]), "utf8");
+
+		await expect(
+			saveUnifiedPluginConfig({ codexMode: false, requestTimeoutMs: 30_000 }),
+		).resolves.toBeUndefined();
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: false,
+			requestTimeoutMs: 30_000,
+		});
+	});
+
+	it("recovers from malformed settings JSON during sync plugin save", async () => {
+		const { getUnifiedSettingsPath, saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+
+		await fs.mkdir(tempDir, { recursive: true });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ malformed json", "utf8");
+
+		saveUnifiedPluginConfigSync({ codexMode: true, retries: 5 });
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 5 });
+	});
+
+	it("recovers from valid non-object settings JSON during sync plugin save", async () => {
+		const { getUnifiedSettingsPath, saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
+			"../lib/unified-settings.js"
+		);
+
+		await fs.mkdir(tempDir, { recursive: true });
+		await fs.writeFile(getUnifiedSettingsPath(), JSON.stringify(null), "utf8");
+
+		saveUnifiedPluginConfigSync({ codexMode: true, retries: 5 });
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 5 });
+	});
+
+	it("handles ENOENT race between existsSync and sync read during plugin save", async () => {
+		const settingsPath = join(tempDir, "settings.json");
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ version: 1, pluginConfig: { codexMode: true } }),
+			"utf8",
+		);
+
+		let noentInjected = false;
+		vi.doMock("node:fs", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("node:fs")>();
+			return {
+				...actual,
+				readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+					const target = args[0];
+					const asPath =
+						typeof target === "string" ? target : target instanceof URL ? target.pathname : "";
+					if (!noentInjected && asPath === settingsPath) {
+						noentInjected = true;
+						const error = new Error("noent") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					}
+					return actual.readFileSync(...args);
+				}) as typeof actual.readFileSync,
+			};
+		});
+
+		try {
+			const { saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
+				"../lib/unified-settings.js"
+			);
+			expect(() =>
+				saveUnifiedPluginConfigSync({ codexMode: false, retries: 6 }),
+			).not.toThrow();
+
+			expect(noentInjected).toBe(true);
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 6 });
+		} finally {
+			vi.doUnmock("node:fs");
+		}
 	});
 
 	it("returns null when dashboard settings file is missing", async () => {
@@ -82,6 +210,22 @@ describe("unified settings", () => {
 		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 4 });
 		const fileContent = await fs.readFile(getUnifiedSettingsPath(), "utf8");
 		expect(fileContent).toContain("\"version\": 1");
+		await expectSecureFileMode(getUnifiedSettingsPath());
+		await expectSecureDirectoryMode(dirname(getUnifiedSettingsPath()));
+	});
+
+	it("preserves secure file mode on repeated sync writes to the same settings file", async () => {
+		const {
+			saveUnifiedPluginConfigSync,
+			loadUnifiedPluginConfigSync,
+			getUnifiedSettingsPath,
+		} = await import("../lib/unified-settings.js");
+
+		saveUnifiedPluginConfigSync({ codexMode: true, retries: 1 });
+		saveUnifiedPluginConfigSync({ codexMode: false, retries: 2 });
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 2 });
+		await expectSecureFileMode(getUnifiedSettingsPath());
 	});
 
 	it("returns null for missing pluginConfig section", async () => {
@@ -223,6 +367,209 @@ describe("unified settings", () => {
 			menuShowLastUsed: false,
 			uiThemePreset: "green",
 		});
+	});
+
+	it("acquires file lock before reading during plugin config updates", async () => {
+		vi.resetModules();
+		const lockState = { held: false };
+		const acquireFileLockMock = vi.fn(async () => {
+			lockState.held = true;
+			return {
+				path: "mock-settings.lock",
+				release: async () => {
+					lockState.held = false;
+				},
+			};
+		});
+		const acquireFileLockSyncMock = vi.fn(() => ({
+			path: "mock-settings.lock",
+			release: () => undefined,
+		}));
+		vi.doMock("../lib/file-lock.js", () => ({
+			acquireFileLock: acquireFileLockMock,
+			acquireFileLockSync: acquireFileLockSyncMock,
+		}));
+
+		try {
+			const { saveUnifiedPluginConfig, getUnifiedSettingsPath } = await import(
+				"../lib/unified-settings.js"
+			);
+			await fs.writeFile(
+				getUnifiedSettingsPath(),
+				JSON.stringify({
+					version: 1,
+					dashboardDisplaySettings: { menuShowLastUsed: false },
+				}),
+				"utf8",
+			);
+
+			const originalReadFile = fs.readFile.bind(fs);
+			let observedReadUnderLock = false;
+			const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+				if (lockState.held) {
+					observedReadUnderLock = true;
+				}
+				return originalReadFile(...args);
+			});
+			try {
+				await saveUnifiedPluginConfig({ codexMode: true, retries: 2 });
+				expect(observedReadUnderLock).toBe(true);
+				expect(acquireFileLockMock).toHaveBeenCalledTimes(1);
+			} finally {
+				readSpy.mockRestore();
+			}
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+			vi.resetModules();
+		}
+	});
+
+	it("does not fail async writes when lock release throws EPERM", async () => {
+		vi.resetModules();
+		const acquireFileLockMock = vi.fn(async () => ({
+			path: "mock-settings.lock",
+			release: async () => {
+				const error = new Error("perm locked") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			},
+		}));
+		const acquireFileLockSyncMock = vi.fn(() => ({
+			path: "mock-settings.lock",
+			release: () => undefined,
+		}));
+		vi.doMock("../lib/file-lock.js", () => ({
+			acquireFileLock: acquireFileLockMock,
+			acquireFileLockSync: acquireFileLockSyncMock,
+		}));
+
+		try {
+			const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
+				"../lib/unified-settings.js"
+			);
+			await expect(saveUnifiedPluginConfig({ codexMode: true, retries: 2 })).resolves.toBeUndefined();
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 2 });
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+			vi.resetModules();
+		}
+	});
+
+	it("does not fail sync writes when lock release throws EBUSY", async () => {
+		vi.resetModules();
+		const acquireFileLockMock = vi.fn(async () => ({
+			path: "mock-settings.lock",
+			release: async () => undefined,
+		}));
+		const acquireFileLockSyncMock = vi.fn(() => ({
+			path: "mock-settings.lock",
+			release: () => {
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			},
+		}));
+		vi.doMock("../lib/file-lock.js", () => ({
+			acquireFileLock: acquireFileLockMock,
+			acquireFileLockSync: acquireFileLockSyncMock,
+		}));
+
+		try {
+			const { saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } = await import(
+				"../lib/unified-settings.js"
+			);
+			expect(() => saveUnifiedPluginConfigSync({ codexMode: false, retries: 1 })).not.toThrow();
+			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 1 });
+		} finally {
+			vi.doUnmock("../lib/file-lock.js");
+			vi.resetModules();
+		}
+	});
+
+	it("retries plugin save when optimistic conflict is detected", async () => {
+		const {
+			saveUnifiedPluginConfig,
+			loadUnifiedPluginConfigSync,
+			getUnifiedSettingsPath,
+		} = await import("../lib/unified-settings.js");
+		const settingsPath = getUnifiedSettingsPath();
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ version: 1, pluginConfig: { codexMode: true } }),
+			"utf8",
+		);
+
+		const originalReadFile = fs.readFile.bind(fs);
+		let settingsReadCount = 0;
+		const readSpy = vi.spyOn(fs, "readFile");
+		readSpy.mockImplementation(async (...args) => {
+			const target = args[0];
+			const asPath =
+				typeof target === "string" ? target : target instanceof URL ? target.pathname : "";
+			if (asPath === settingsPath) {
+				settingsReadCount += 1;
+				if (settingsReadCount === 2) {
+					return JSON.stringify({
+						version: 1,
+						pluginConfig: { codexMode: true, concurrentUpdate: true },
+					});
+				}
+			}
+			return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+		});
+
+		try {
+			await saveUnifiedPluginConfig({ codexMode: false, retries: 2 });
+		} finally {
+			readSpy.mockRestore();
+		}
+
+		expect(settingsReadCount).toBeGreaterThanOrEqual(3);
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 2 });
+	});
+
+	it("handles ENOENT race between existsSync and async read during plugin save", async () => {
+		const {
+			saveUnifiedPluginConfig,
+			loadUnifiedPluginConfigSync,
+			getUnifiedSettingsPath,
+		} = await import("../lib/unified-settings.js");
+		const settingsPath = getUnifiedSettingsPath();
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({
+				version: 1,
+				pluginConfig: { codexMode: true },
+				dashboardDisplaySettings: { uiThemePreset: "blue" },
+			}),
+			"utf8",
+		);
+
+		const originalReadFile = fs.readFile.bind(fs);
+		let noentInjected = false;
+		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const target = args[0];
+			const asPath =
+				typeof target === "string" ? target : target instanceof URL ? target.pathname : "";
+			if (!noentInjected && asPath === settingsPath) {
+				noentInjected = true;
+				const error = new Error("noent") as NodeJS.ErrnoException;
+				error.code = "ENOENT";
+				throw error;
+			}
+			return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+		});
+
+		try {
+			await expect(
+				saveUnifiedPluginConfig({ codexMode: false, retries: 4 }),
+			).resolves.toBeUndefined();
+		} finally {
+			readSpy.mockRestore();
+		}
+
+		expect(noentInjected).toBe(true);
+		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: false, retries: 4 });
 	});
 
 	it("refuses overwriting settings sections when a read fails", async () => {

@@ -254,6 +254,18 @@ describe('Documentation Integrity', () => {
     expect(changelog).not.toContain('## [4.');
   });
 
+  it('keeps verify script contract aligned across package scripts and CI wiring', () => {
+    const pkg = JSON.parse(read('package.json')) as { scripts?: Record<string, string> };
+    const scripts = pkg.scripts ?? {};
+
+    expect(scripts['verify']).toBe('npm run lint && npm run verify:repo && npm run verify:quality');
+    expect(scripts['verify:repo']).toBe(
+      'npm run clean:repo:check && npm run audit:ci && npm run test -- test/lockfile-version-floor.test.ts',
+    );
+    expect(scripts['verify:quality']).toBe('npm run typecheck && npm run coverage');
+    expect(scripts['verify:ci']).toBe('npm run verify:repo && npm run verify:quality');
+  });
+
   it('keeps legacy pre-0.1 archive headings in descending semver order', () => {
     const archive = read('docs/releases/legacy-pre-0.1-history.md');
     const versions = [...archive.matchAll(/^## \[(\d+\.\d+\.\d+)\] - /gm)].map((match) => match[1]);
@@ -325,6 +337,8 @@ describe('Documentation Integrity', () => {
 
     const prBody = read(prTemplate);
     expect(prBody).toContain('npm run lint');
+    expect(prBody).toContain('npm run verify:repo');
+    expect(prBody).toContain('npm run verify:quality');
     expect(prBody).toContain('npm run typecheck');
     expect(prBody).toContain('npm test');
     expect(prBody).toContain('npm test -- test/documentation.test.ts');
@@ -339,6 +353,8 @@ describe('Documentation Integrity', () => {
     expect(contributing).toContain('pull request process');
     expect(contributing).toContain('npm run typecheck');
     expect(contributing).toContain('npm run lint');
+    expect(contributing).toContain('npm run verify:repo');
+    expect(contributing).toContain('npm run verify:quality');
     expect(contributing).toContain('npm test');
     expect(contributing).toContain('npm run build');
   });

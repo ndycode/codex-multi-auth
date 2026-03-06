@@ -1,0 +1,59 @@
+name: Release Publish (Provenance)
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish with npm provenance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate quality gates
+        env:
+          CODEX_MULTI_AUTH_DIR: ${{ github.workspace }}/.tmp/health-fixture
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/.tmp/health-fixture/logs"
+          printf '{"version":3,"accounts":[],"activeIndex":0}\n' > "${GITHUB_WORKSPACE}/.tmp/health-fixture/openai-codex-accounts.json"
+          printf '{"version":1,"pluginConfig":{},"dashboardDisplaySettings":{}}\n' > "${GITHUB_WORKSPACE}/.tmp/health-fixture/settings.json"
+          printf '{"timestamp":"%s","action":"request.start","outcome":"success"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${GITHUB_WORKSPACE}/.tmp/health-fixture/logs/audit.log"
+          npm run audit:ci
+          npm run ops:health-check -- --require-files
+          npm run perf:budget-check
+          npm run lint
+          npm run typecheck
+          npm run build
+          npm test
+          npm run ops:keychain-assert
+          npm run sbom:generate
+          npm run sbom:verify
+          node scripts/compliance-evidence-bundle.js --profile=quick --out-dir=.tmp/compliance-evidence-release
+
+      - name: Upload release evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-bundle
+          path: .tmp/compliance-evidence-release
+
+      - name: Publish package with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RefreshQueue, getRefreshQueue, resetRefreshQueue, queuedRefresh } from "../lib/refresh-queue.js";
 import * as authModule from "../lib/auth/auth.js";
-import { RefreshLeaseCoordinator } from "../lib/refresh-lease.js";
+import {
+  REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT,
+  RefreshLeaseCoordinator,
+} from "../lib/refresh-lease.js";
 
 const loggerMocks = vi.hoisted(() => ({
   info: vi.fn(),
@@ -895,6 +898,90 @@ describe("RefreshQueue", () => {
 
 			expect(result).toEqual(mockResult);
 			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+		});
+
+		it("fails closed when lease returns wait-timeout bypass", async () => {
+			const leaseCoordinator = {
+				acquire: vi.fn().mockResolvedValue({
+					role: "bypass" as const,
+					reason: REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT,
+					release: vi.fn().mockResolvedValue(undefined),
+				}),
+			} as unknown as RefreshLeaseCoordinator;
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue({
+				type: "success",
+				access: "unexpected-access",
+				refresh: "unexpected-refresh",
+				expires: Date.now() + 3_600_000,
+			});
+
+			const queue = new RefreshQueue(30_000, leaseCoordinator);
+			const result = await queue.refresh("token-wait-timeout");
+
+			expect(result.type).toBe("failed");
+			if (result.type === "failed") {
+				expect(result.message).toContain("lease timeout");
+			}
+			expect(authModule.refreshAccessToken).not.toHaveBeenCalled();
+		});
+
+		it("joins superseding generation when wait-timeout bypass is stale", async () => {
+			vi.useFakeTimers();
+			try {
+				let resolveFirstAcquire:
+					| ((value: Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>) => void)
+					| undefined;
+				const firstAcquire = new Promise<Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>>(
+					(resolve) => {
+						resolveFirstAcquire = resolve;
+					},
+				);
+				const ownerLease = {
+					role: "owner" as const,
+					release: vi.fn().mockResolvedValue(undefined),
+				};
+				const leaseAcquire = vi.fn().mockReturnValueOnce(firstAcquire).mockResolvedValue(ownerLease);
+				const leaseCoordinator = {
+					acquire: leaseAcquire,
+				} as unknown as RefreshLeaseCoordinator;
+
+				const successResult = {
+					type: "success" as const,
+					access: "access-after-supersede",
+					refresh: "refresh-after-supersede",
+					expires: Date.now() + 3_600_000,
+				};
+				let resolveRefresh: ((value: typeof successResult) => void) | undefined;
+				const delayedRefresh = new Promise<typeof successResult>((resolve) => {
+					resolveRefresh = resolve;
+				});
+				vi.mocked(authModule.refreshAccessToken).mockReturnValue(delayedRefresh);
+
+				const queue = new RefreshQueue(1_000, leaseCoordinator);
+				const firstAttempt = queue.refresh("token-wait-timeout-superseded");
+				await Promise.resolve();
+				expect(queue.pendingCount).toBe(1);
+
+				await vi.advanceTimersByTimeAsync(1_200);
+				const secondAttempt = queue.refresh("token-wait-timeout-superseded");
+				await Promise.resolve();
+				expect(leaseAcquire).toHaveBeenCalledTimes(2);
+
+				resolveFirstAcquire?.({
+					role: "bypass",
+					reason: REFRESH_LEASE_BYPASS_REASON_WAIT_TIMEOUT,
+					release: vi.fn().mockResolvedValue(undefined),
+				});
+				await Promise.resolve();
+
+				resolveRefresh?.(successResult);
+				const [firstResult, secondResult] = await Promise.all([firstAttempt, secondAttempt]);
+				expect(firstResult).toEqual(successResult);
+				expect(secondResult).toEqual(successResult);
+				expect(vi.mocked(authModule.refreshAccessToken)).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		it("swallows lease release errors and still returns token result", async () => {

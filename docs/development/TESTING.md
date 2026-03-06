@@ -20,10 +20,21 @@ Coverage thresholds in `vitest.config.ts`: statements/branches/functions/lines >
 ## Core Commands
 
 ```bash
+npm run setup:dev
+npm run doctor:dev
+npm run verify
+npm run verify:ci
+```
+
+Component commands:
+
+```bash
 npm run typecheck
 npm run lint
 npm test
 npm run build
+npm run audit:ci
+npm run license:check
 ```
 
 Optional:
@@ -39,11 +50,30 @@ npm run bench:edit-formats:smoke
 
 ## Recommended Local Gate Before PR
 
-1. `npm run typecheck`
-2. `npm run lint`
-3. `npm test`
-4. `npm run build`
+1. `npm run verify`
+2. `npm run audit:ci`
+3. `npm run license:check`
+4. `npm run test -- test/documentation.test.ts`
 5. run docs command checks for newly documented command paths
+6. for first-clone setup or environment validation: `npm run setup:dev` and `npm run doctor:dev`
+
+## Release Gate
+
+Run before version bump, tag, or publish workflow:
+
+1. `npm run release:check`
+2. `npm run audit:ci`
+3. `npm run license:check`
+4. verify changelog and release notes alignment
+5. confirm PR checks are green on the release branch
+
+### Upgrade Notes (PR #32)
+
+- Gate ordering was updated so `npm run coverage` runs before `npm run build`.
+- Two required supply-chain checks were added to the standard local sequence:
+  - `npm run audit:ci`
+  - `npm run license:check`
+- If you maintain local CI wrappers or pre-push scripts, update them to use the order above and rerun once to refresh baselines.
 
 * * *
 

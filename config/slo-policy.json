@@ -1,0 +1,8 @@
+{
+  "windowDays": 30,
+  "objectives": {
+    "requestSuccessRatePercent": 99.5,
+    "healthCheckPassRequired": true,
+    "staleWalFindingsMax": 0
+  }
+}

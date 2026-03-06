@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
 	AuditAction,
@@ -207,6 +207,24 @@ describe("Audit logging", () => {
 
 			expect(lines.length).toBe(2);
 		});
+
+		it("keeps secure 0600 mode on existing audit logs (posix)", () => {
+			if (process.platform === "win32") {
+				auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+				const content = readFileSync(getAuditLogPath(), "utf8");
+				expect(content).toContain("\"action\":\"request.start\"");
+				return;
+			}
+			const logPath = getAuditLogPath();
+			writeFileSync(logPath, "existing\n", "utf8");
+			chmodSync(logPath, 0o644);
+
+			auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+
+			const stats = statSync(logPath);
+			expect(stats.mode & 0o777).toBe(0o600);
+		});
+
 	});
 
 	describe("log rotation", () => {
@@ -230,6 +248,55 @@ describe("Audit logging", () => {
 			const files = listAuditLogFiles();
 			expect(files.length).toBeLessThanOrEqual(3);
 		});
+
+		it("purges stale rotated logs during write cycle", () => {
+			configureAudit({ retentionDays: 1 });
+			const fixedNowMs = 2_000_000_000_000;
+			const nowSpy = vi.spyOn(Date, "now").mockReturnValue(fixedNowMs);
+			const staleLogPath = join(testLogDir, "audit.1.log");
+			writeFileSync(staleLogPath, "old\n", "utf8");
+			const staleMs = Date.now() - 3 * 24 * 60 * 60 * 1000;
+			const staleDate = new Date(staleMs);
+			utimesSync(staleLogPath, staleDate, staleDate);
+
+			try {
+				auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+			} finally {
+				nowSpy.mockRestore();
+			}
+
+			expect(existsSync(staleLogPath)).toBe(false);
+		});
+
+		it("does not throttle purge when a prior directory read fails", () => {
+			const fixedNowMs = 2_000_000_000_000;
+			const nowSpy = vi.spyOn(Date, "now").mockReturnValue(fixedNowMs);
+			try {
+				const blockedLogDir = join(testLogDir, "blocked-log-dir");
+				writeFileSync(blockedLogDir, "not-a-directory", "utf8");
+				configureAudit({
+					enabled: true,
+					logDir: blockedLogDir,
+					maxFileSizeBytes: 1024,
+					maxFiles: 3,
+					retentionDays: 1,
+				});
+
+				auditLog(AuditAction.REQUEST_START, "actor", "resource", AuditOutcome.SUCCESS);
+
+				rmSync(blockedLogDir);
+				mkdirSync(blockedLogDir, { recursive: true });
+				const staleLogPath = join(blockedLogDir, "audit.1.log");
+				writeFileSync(staleLogPath, "stale\n", "utf8");
+				const staleDate = new Date(fixedNowMs - 3 * 24 * 60 * 60 * 1000);
+				utimesSync(staleLogPath, staleDate, staleDate);
+
+				auditLog(AuditAction.REQUEST_SUCCESS, "actor", "resource", AuditOutcome.SUCCESS);
+				expect(existsSync(staleLogPath)).toBe(false);
+			} finally {
+				nowSpy.mockRestore();
+			}
+		});
 	});
 
 	describe("listAuditLogFiles", () => {
@@ -251,9 +318,11 @@ describe("Audit logging", () => {
 		it("should have all expected actions", () => {
 			expect(AuditAction.ACCOUNT_ADD).toBe("account.add");
 			expect(AuditAction.AUTH_LOGIN).toBe("auth.login");
+			expect(AuditAction.AUTH_BREAK_GLASS).toBe("auth.break_glass");
 			expect(AuditAction.CONFIG_LOAD).toBe("config.load");
 			expect(AuditAction.REQUEST_START).toBe("request.start");
 			expect(AuditAction.CIRCUIT_OPEN).toBe("circuit.open");
+			expect(AuditAction.COMMAND_RUN).toBe("command.run");
 		});
 	});
 

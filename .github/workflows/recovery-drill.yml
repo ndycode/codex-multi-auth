@@ -1,0 +1,69 @@
+name: Recovery Drill
+
+on:
+  schedule:
+    - cron: "30 3 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recovery-drill:
+    name: Monthly Storage Recovery Drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run recovery drill tests
+        run: |
+          mkdir -p .tmp
+          npm run ops:recovery-drill -- --reporter=default --reporter=json --outputFile=.tmp/recovery-drill-vitest.json
+
+      - name: Run health check snapshot
+        run: node scripts/enterprise-health-check.js > .tmp/recovery-drill-health.json 2>&1
+
+      - name: Upload recovery drill artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-drill-artifacts
+          path: |
+            .tmp/recovery-drill-vitest.json
+            .tmp/recovery-drill-health.json
+
+      - name: Notify recovery drill failure
+        if: failure()
+        env:
+          RECOVERY_DRILL_WEBHOOK_URL: ${{ secrets.RECOVERY_DRILL_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          message="Recovery drill failed. Run: ${RUN_URL}. Artifacts: .tmp/recovery-drill-vitest.json and .tmp/recovery-drill-health.json."
+          if [[ -n "${RECOVERY_DRILL_WEBHOOK_URL:-}" ]]; then
+            payload=$(jq -n --arg msg "${message}" '{"text": $msg}')
+            curl --fail --silent --show-error \
+              --max-time 30 \
+              -X POST \
+              -H "Content-Type: application/json" \
+              --data "${payload}" \
+              "${RECOVERY_DRILL_WEBHOOK_URL}"
+          else
+            echo "::warning::${message} Configure secrets.RECOVERY_DRILL_WEBHOOK_URL for push notifications."
+          fi

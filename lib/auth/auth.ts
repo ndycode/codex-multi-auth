@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
 import { safeParseOAuthTokenResponse } from "../schemas.js";
-import { isAbortError } from "../utils.js";
+import { fetchWithTimeout, isAbortError } from "../utils.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -11,6 +11,7 @@ export const AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
 export const TOKEN_URL = "https://auth.openai.com/oauth/token";
 export const REDIRECT_URI = "http://localhost:1455/auth/callback";
 export const SCOPE = "openid profile email offline_access";
+const DEFAULT_OAUTH_EXCHANGE_TIMEOUT_MS = 60_000;
 
 const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"state",
@@ -18,6 +19,7 @@ const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"code_challenge",
 	"code_verifier",
 ] as const;
+const OAUTH_REFRESH_TIMEOUT_MS = 30_000;
 
 function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unknown> {
 	if (Array.isArray(rawResponse)) {
@@ -111,50 +113,134 @@ export function parseAuthorizationInput(input: string): ParsedAuthInput {
  * @param redirectUri - OAuth redirect URI
  * @returns Token result
  */
+export type ExchangeAuthorizationCodeOptions = {
+	signal?: AbortSignal;
+	timeoutMs?: number;
+};
+
+function resolveExchangeTimeoutMs(timeoutMs: number | undefined): number {
+	if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
+		return DEFAULT_OAUTH_EXCHANGE_TIMEOUT_MS;
+	}
+	return Math.max(1_000, Math.floor(timeoutMs));
+}
+
+function createAbortError(message: string): Error & { code?: string } {
+	const error = new Error(message) as Error & { code?: string };
+	error.name = "AbortError";
+	error.code = "ABORT_ERR";
+	return error;
+}
+
+function buildExchangeAbortContext(
+	options: ExchangeAuthorizationCodeOptions,
+): { signal: AbortSignal; cleanup: () => void } {
+	const controller = new AbortController();
+	const timeoutMs = resolveExchangeTimeoutMs(options.timeoutMs);
+	const upstreamSignal = options.signal;
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+	const onUpstreamAbort = () => {
+		const reason = upstreamSignal?.reason;
+		controller.abort(
+			reason instanceof Error ? reason : createAbortError("Request aborted"),
+		);
+	};
+
+	if (upstreamSignal) {
+		upstreamSignal.addEventListener("abort", onUpstreamAbort, { once: true });
+		if (upstreamSignal.aborted) {
+			onUpstreamAbort();
+		}
+	}
+
+	if (!controller.signal.aborted) {
+		timeoutId = setTimeout(() => {
+			controller.abort(
+				createAbortError(
+					`OAuth token exchange timed out after ${timeoutMs}ms`,
+				),
+			);
+		}, timeoutMs);
+	}
+
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			if (timeoutId !== undefined) {
+				clearTimeout(timeoutId);
+			}
+			if (upstreamSignal) {
+				upstreamSignal.removeEventListener("abort", onUpstreamAbort);
+			}
+		},
+	};
+}
+
 export async function exchangeAuthorizationCode(
 	code: string,
 	verifier: string,
 	redirectUri: string = REDIRECT_URI,
+	options: ExchangeAuthorizationCodeOptions = {},
 ): Promise<TokenResult> {
-	const res = await fetch(TOKEN_URL, {
-		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded" },
-		body: new URLSearchParams({
-			grant_type: "authorization_code",
-			client_id: CLIENT_ID,
-			code,
-			code_verifier: verifier,
-			redirect_uri: redirectUri,
-		}),
-	});
-	if (!res.ok) {
-		const text = await res.text().catch(() => "");
-		logError(`code->token failed: ${res.status} ${text}`);
-		return { type: "failed", reason: "http_error", statusCode: res.status, message: text || undefined };
-	}
-	const rawJson = (await res.json()) as unknown;
-	const json = safeParseOAuthTokenResponse(rawJson);
-	if (!json) {
-		logError("token response validation failed", getOAuthResponseLogMetadata(rawJson));
-		return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
-	}
-	if (!json.refresh_token || json.refresh_token.trim().length === 0) {
-		logError("token response missing refresh token", getOAuthResponseLogMetadata(rawJson));
+	const abortContext = buildExchangeAbortContext(options);
+	try {
+		const res = await fetch(TOKEN_URL, {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			signal: abortContext.signal,
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: CLIENT_ID,
+				code,
+				code_verifier: verifier,
+				redirect_uri: redirectUri,
+			}),
+		});
+		if (!res.ok) {
+			const text = await res.text().catch(() => "");
+			logError("code->token failed", { status: res.status, bodyLength: text.length });
+			return {
+				type: "failed",
+				reason: "http_error",
+				statusCode: res.status,
+				message: text ? "OAuth token exchange failed" : undefined,
+			};
+		}
+		const rawJson = (await res.json()) as unknown;
+		const json = safeParseOAuthTokenResponse(rawJson);
+		if (!json) {
+			logError("token response validation failed", getOAuthResponseLogMetadata(rawJson));
+			return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
+		}
+		if (!json.refresh_token || json.refresh_token.trim().length === 0) {
+			logError("token response missing refresh token", getOAuthResponseLogMetadata(rawJson));
+			return {
+				type: "failed",
+				reason: "invalid_response",
+				message: "Missing refresh token in authorization code exchange response",
+			};
+		}
+		const normalizedRefreshToken = json.refresh_token.trim();
 		return {
-			type: "failed",
-			reason: "invalid_response",
-			message: "Missing refresh token in authorization code exchange response",
+			type: "success",
+			access: json.access_token,
+			refresh: normalizedRefreshToken,
+			expires: Date.now() + json.expires_in * 1000,
+			idToken: json.id_token,
+			multiAccount: true,
 		};
+	} catch (error) {
+		const err = error as Error;
+		if (abortContext.signal.aborted || isAbortError(err)) {
+			logError("code->token aborted", { message: err?.message ?? "Request aborted" });
+			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
+		}
+		logError("code->token error", { message: err?.message ?? String(err) });
+		return { type: "failed", reason: "network_error", message: err?.message ?? "Network request failed" };
+	} finally {
+		abortContext.cleanup();
 	}
-	const normalizedRefreshToken = json.refresh_token.trim();
-	return {
-		type: "success",
-		access: json.access_token,
-		refresh: normalizedRefreshToken,
-		expires: Date.now() + json.expires_in * 1000,
-		idToken: json.id_token,
-		multiAccount: true,
-	};
 }
 
 /**
@@ -186,6 +272,7 @@ export function decodeJWT(token: string): JWTPayload | null {
  */
 type RefreshAccessTokenOptions = {
 	signal?: AbortSignal;
+	timeoutMs?: number;
 };
 
 export async function refreshAccessToken(
@@ -193,7 +280,7 @@ export async function refreshAccessToken(
 	options: RefreshAccessTokenOptions = {},
 ): Promise<TokenResult> {
 	try {
-		const response = await fetch(TOKEN_URL, {
+		const response = await fetchWithTimeout(TOKEN_URL, {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			signal: options?.signal,
@@ -202,12 +289,17 @@ export async function refreshAccessToken(
 				refresh_token: refreshToken,
 				client_id: CLIENT_ID,
 			}),
-		});
+		}, options.timeoutMs ?? OAUTH_REFRESH_TIMEOUT_MS);
 
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
-			logError(`Token refresh failed: ${response.status} ${text}`);
-			return { type: "failed", reason: "http_error", statusCode: response.status, message: text || undefined };
+			logError("Token refresh failed", { status: response.status, bodyLength: text.length });
+			return {
+				type: "failed",
+				reason: "http_error",
+				statusCode: response.status,
+				message: text ? "Token refresh failed" : undefined,
+			};
 		}
 
 		const rawJson = (await response.json()) as unknown;
@@ -233,8 +325,8 @@ export async function refreshAccessToken(
 			multiAccount: true,
 		};
 	} catch (error) {
-		const err = error as Error;
-		if (isAbortError(err)) {
+		const err = error instanceof Error ? error : new Error(String(error));
+		if (isAbortError(err) || /timeout/i.test(err.message)) {
 			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
 		}
 		logError("Token refresh error", err);

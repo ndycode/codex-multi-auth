@@ -93,6 +93,28 @@ codex auth check
 
 ---
 
+## Local Development (Contributors)
+
+From repo root:
+
+```bash
+npm run setup:dev
+```
+
+Daily validation:
+
+```bash
+npm run doctor:dev
+npm run verify
+```
+
+- `doctor:dev` validates local prerequisites and required project files.
+- `setup:dev` runs install plus the local validation gate.
+- `verify` is the canonical local and CI gate.
+- `format` applies Biome formatting for repo config files (JSON/JSONC/YAML).
+
+---
+
 ## Quick Start
 
 ```bash
@@ -128,6 +150,7 @@ codex auth doctor --fix
 | `codex auth fix --dry-run` | Preview safe repairs |
 | `codex auth fix --live --model gpt-5-codex` | Run repairs with live probe model |
 | `codex auth doctor --fix` | Diagnose and apply safe fixes |
+| `codex auth rotate-secrets --json --idempotency-key <run-id>` | Re-encrypt stored secrets with safe retry semantics for automation |
 
 ---
 
@@ -186,6 +209,7 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |
+| `CODEX_SECRET_STORAGE_MODE` | Token-at-rest backend selection: `keychain`, `plaintext`, or `auto` (`keychain` default; set explicit `keychain` in enterprise deployments) |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
 

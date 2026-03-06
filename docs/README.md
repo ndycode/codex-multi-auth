@@ -56,9 +56,17 @@ Canonical documentation map for `codex-multi-auth`.
 | [development/IA_FINDABILITY_AUDIT_2026-03-01.md](development/IA_FINDABILITY_AUDIT_2026-03-01.md) | IA/findability baseline, mismatches, and migration plan |
 | [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Complete field and env inventory |
 | [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Configuration resolution flow |
+| [development/LOCAL_DEV.md](development/LOCAL_DEV.md) | Local contributor setup and validation runbook |
+| [development/RELEASE_RUNBOOK.md](development/RELEASE_RUNBOOK.md) | Maintainer release gate and checklist |
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |
 | [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Dashboard UX parity checklist |
+| [runbooks/README.md](runbooks/README.md) | Operations and incident response playbooks |
+| [operations/incident-response.md](operations/incident-response.md) | Incident triage, containment, and recovery |
+| [operations/incident-drill-template.md](operations/incident-drill-template.md) | Monthly tabletop incident drill worksheet |
+| [operations/release-runbook.md](operations/release-runbook.md) | Release governance, provenance, and rollback |
+| [operations/slo-error-budget.md](operations/slo-error-budget.md) | Reliability objectives and budget policy |
+| [operations/audit-forwarding.md](operations/audit-forwarding.md) | SIEM forwarding controls for audit events |
 | [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark methodology and outputs |
 
 ---

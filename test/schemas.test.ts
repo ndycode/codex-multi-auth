@@ -3,6 +3,7 @@ import {
 	PluginConfigSchema,
 	AccountMetadataV3Schema,
 	AccountStorageV3Schema,
+	AccountStorageV4Schema,
 	AccountStorageV1Schema,
 	AnyAccountStorageSchema,
 	TokenSuccessSchema,
@@ -30,6 +31,7 @@ describe("PluginConfigSchema", () => {
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 5000,
 			retryAllAccountsMaxRetries: 3,
+			retryAllAccountsAbsoluteCeilingMs: 15000,
 			unsupportedCodexPolicy: "strict",
 			fallbackOnUnsupportedCodexModel: true,
 			fallbackToGpt52OnUnsupportedGpt53: false,
@@ -40,6 +42,7 @@ describe("PluginConfigSchema", () => {
 			rateLimitToastDebounceMs: 30000,
 			toastDurationMs: 5000,
 			perProjectAccounts: true,
+			telemetryEnabled: true,
 			sessionRecovery: true,
 			autoResume: false,
 			fetchTimeoutMs: 60000,
@@ -71,6 +74,7 @@ describe("PluginConfigSchema", () => {
 		["sessionAffinityMaxEntries", 7, 8],
 		["proactiveRefreshIntervalMs", 4999, 5000],
 		["proactiveRefreshBufferMs", 29_999, 30_000],
+		["retryAllAccountsAbsoluteCeilingMs", -1, 0],
 		["preemptiveQuotaMaxDeferralMs", 999, 1000],
 	] as const)("enforces minimum for %s", (key, invalidValue, validValue) => {
 		const invalidResult = PluginConfigSchema.safeParse({ [key]: invalidValue });
@@ -109,6 +113,7 @@ describe("PluginConfigSchema", () => {
 		"sessionAffinityMaxEntries",
 		"proactiveRefreshIntervalMs",
 		"proactiveRefreshBufferMs",
+		"retryAllAccountsAbsoluteCeilingMs",
 		"networkErrorCooldownMs",
 		"serverErrorCooldownMs",
 		"preemptiveQuotaRemainingPercent5h",
@@ -237,6 +242,48 @@ describe("AccountStorageV3Schema", () => {
 	});
 });
 
+describe("AccountStorageV4Schema", () => {
+	const validStorage = {
+		version: 4,
+		accounts: [
+			{ refreshTokenRef: "acct-1:refresh", accessTokenRef: "acct-1:access", addedAt: Date.now(), lastUsed: Date.now() },
+		],
+		activeIndex: 0,
+	};
+
+	it("accepts valid V4 storage", () => {
+		const result = AccountStorageV4Schema.safeParse(validStorage);
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects missing refreshTokenRef", () => {
+		const result = AccountStorageV4Schema.safeParse({
+			...validStorage,
+			accounts: [{ addedAt: Date.now(), lastUsed: Date.now() }],
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects empty accessTokenRef when provided", () => {
+		const result = AccountStorageV4Schema.safeParse({
+			...validStorage,
+			accounts: [{ refreshTokenRef: "acct-1:refresh", accessTokenRef: "", addedAt: Date.now(), lastUsed: Date.now() }],
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("accepts V4 storage with activeIndexByFamily", () => {
+		const result = AccountStorageV4Schema.safeParse({
+			...validStorage,
+			activeIndexByFamily: {
+				codex: 0,
+				legacy: 0,
+			},
+		});
+		expect(result.success).toBe(true);
+	});
+});
+
 describe("AccountStorageV1Schema", () => {
 	const validV1 = {
 		version: 1,
@@ -282,6 +329,18 @@ describe("AnyAccountStorageSchema (discriminated union)", () => {
 		expect(result.success).toBe(true);
 		if (result.success) {
 			expect(result.data.version).toBe(3);
+		}
+	});
+
+	it("accepts V4 storage", () => {
+		const result = AnyAccountStorageSchema.safeParse({
+			version: 4,
+			accounts: [{ refreshTokenRef: "acct-1:refresh", addedAt: 1, lastUsed: 1 }],
+			activeIndex: 0,
+		});
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.version).toBe(4);
 		}
 	});
 
@@ -428,6 +487,16 @@ describe("safeParsePluginConfig", () => {
 });
 
 describe("safeParseAccountStorage", () => {
+	it("returns parsed V4 storage", () => {
+		const result = safeParseAccountStorage({
+			version: 4,
+			accounts: [{ refreshTokenRef: "acct-1:refresh", addedAt: 1, lastUsed: 1 }],
+			activeIndex: 0,
+		});
+		expect(result).not.toBeNull();
+		expect(result?.version).toBe(4);
+	});
+
 	it("returns parsed V1 storage", () => {
 		const result = safeParseAccountStorage({
 			version: 1,

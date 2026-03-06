@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -92,6 +92,63 @@ describe("storage recovery paths", () => {
 			accounts?: Array<{ accountId?: string }>;
 		};
 		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup");
+	});
+
+	it("allows immediate save after backup recovery when persist write fails and primary file stays absent", async () => {
+		const backupPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "backup-refresh",
+					accountId: "from-backup",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+		await fs.writeFile(`${storagePath}.bak`, JSON.stringify(backupPayload), "utf-8");
+
+		const originalRename = fs.rename.bind(fs);
+		let injectedFailure = false;
+		const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+			const target = args[1];
+			const destination =
+				typeof target === "string" ? target : target instanceof URL ? target.pathname : String(target);
+			if (!injectedFailure && destination === storagePath) {
+				injectedFailure = true;
+				const error = new Error("persist denied") as NodeJS.ErrnoException;
+				error.code = "EACCES";
+				throw error;
+			}
+			return originalRename(...(args as Parameters<typeof fs.rename>));
+		});
+
+		try {
+			const recovered = await loadAccounts();
+			expect(recovered?.accounts[0]?.accountId).toBe("from-backup");
+			expect(injectedFailure).toBe(true);
+			expect(existsSync(storagePath)).toBe(false);
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		await expect(
+			saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [
+					{
+						refreshToken: "backup-refresh",
+						accountId: "from-backup",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			}),
+		).resolves.toBeUndefined();
+		expect(existsSync(storagePath)).toBe(true);
 	});
 
 	it("falls back to historical backup snapshots when the latest backup is unreadable", async () => {

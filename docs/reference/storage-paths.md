@@ -26,10 +26,16 @@ Override root:
 | Accounts WAL | `~/.codex/multi-auth/openai-codex-accounts.json.wal` |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
+| Background job DLQ | `~/.codex/multi-auth/background-job-dlq.jsonl` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Cache | `~/.codex/multi-auth/cache/` |
 | Codex CLI accounts | `~/.codex/accounts.json` |
 | Codex CLI auth | `~/.codex/auth.json` |
+
+Security note:
+
+- Current secure format (`version: 4`) stores keychain references (`refreshTokenRef`, `accessTokenRef`) instead of raw token values in account storage files.
+- Set `CODEX_SECRET_STORAGE_MODE=plaintext` only for controlled migration/testing environments.
 
 Ownership note:
 

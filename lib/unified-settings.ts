@@ -1,4 +1,5 @@
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	renameSync,
@@ -8,20 +9,72 @@ import {
 	promises as fs,
 } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { sleep } from "./utils.js";
+import { acquireFileLock, acquireFileLockSync } from "./file-lock.js";
+import { logWarn } from "./logger.js";
 
 type JsonRecord = Record<string, unknown>;
 
 export const UNIFIED_SETTINGS_VERSION = 1 as const;
 
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
+const UNIFIED_SETTINGS_LOCK_PATH = `${UNIFIED_SETTINGS_PATH}.lock`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const SETTINGS_LOCK_OPTIONS = {
+	maxAttempts: 80,
+	baseDelayMs: 15,
+	maxDelayMs: 800,
+	staleAfterMs: 120_000,
+} as const;
+const SECURE_DIR_MODE = 0o700;
+const SECURE_FILE_MODE = 0o600;
 let settingsWriteQueue: Promise<void> = Promise.resolve();
+const SETTINGS_CONFLICT_RETRY_LIMIT = 3;
+
+type SettingsSnapshot = {
+	record: JsonRecord | null;
+	revision: string | null;
+};
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
+}
+
+function releaseUnifiedSettingsLockSync(release: () => void): void {
+	try {
+		release();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") return;
+		if (code === "EBUSY" || code === "EPERM") {
+			logWarn("Unified settings lock release failed after write", {
+				lockPath: UNIFIED_SETTINGS_LOCK_PATH,
+				code,
+			});
+			return;
+		}
+		throw error;
+	}
+}
+
+async function releaseUnifiedSettingsLockAsync(release: () => Promise<void>): Promise<void> {
+	try {
+		await release();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") return;
+		if (code === "EBUSY" || code === "EPERM") {
+			logWarn("Unified settings lock release failed after write", {
+				lockPath: UNIFIED_SETTINGS_LOCK_PATH,
+				code,
+			});
+			return;
+		}
+		throw error;
+	}
 }
 
 /**
@@ -45,6 +98,113 @@ function cloneRecord(value: unknown): JsonRecord | null {
 	return { ...value };
 }
 
+function computeSha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function createSettingsConflictError(): Error & { code: string } {
+	return Object.assign(
+		new Error(
+			"Detected concurrent unified settings modification; reload and retry",
+		),
+		{ code: "ECONFLICT" as const },
+	);
+}
+
+function isConflictError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === "ECONFLICT";
+}
+
+function readCurrentSettingsRevisionSync(): string | null {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return null;
+	}
+	try {
+		const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
+		return computeSha256(raw);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function readCurrentSettingsRevisionAsync(): Promise<string | null> {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return null;
+	}
+	let raw: string;
+	try {
+		raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+	return computeSha256(raw);
+}
+
+function readSettingsSnapshotSync(): SettingsSnapshot {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return { record: null, revision: null };
+	}
+
+	let raw: string;
+	try {
+		raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return { record: null, revision: null };
+		}
+		throw error;
+	}
+	const revision = computeSha256(raw);
+	let parsed: JsonRecord | null;
+	try {
+		parsed = cloneRecord(JSON.parse(raw));
+	} catch {
+		return { record: null, revision };
+	}
+	if (!parsed) {
+		return { record: null, revision };
+	}
+	return { record: parsed, revision };
+}
+
+async function readSettingsSnapshotAsync(): Promise<SettingsSnapshot> {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return { record: null, revision: null };
+	}
+
+	let raw: string;
+	try {
+		raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return { record: null, revision: null };
+		}
+		throw error;
+	}
+	const revision = computeSha256(raw);
+	let parsed: JsonRecord | null;
+	try {
+		parsed = cloneRecord(JSON.parse(raw));
+	} catch {
+		return { record: null, revision };
+	}
+	if (!parsed) {
+		return { record: null, revision };
+	}
+	return { record: parsed, revision };
+}
+
 /**
  * Reads and parses the unified settings JSON file from disk.
  *
@@ -56,16 +216,7 @@ function cloneRecord(value: unknown): JsonRecord | null {
  * - Sensitive data: this function performs no token or secret redaction; any sensitive values present in the file are returned as-is and callers are responsible for redaction before logging or external exposure.
  */
 function readSettingsRecordSync(): JsonRecord | null {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
-	}
-
-	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
-	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
-	}
-	return parsed;
+	return readSettingsSnapshotSync().record;
 }
 
 /**
@@ -76,16 +227,8 @@ function readSettingsRecordSync(): JsonRecord | null {
  * @returns The parsed settings record as an object clone, or `null` if unavailable or invalid.
  */
 async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
-	}
-
-	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
-	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
-	}
-	return parsed;
+	const snapshot = await readSettingsSnapshotAsync();
+	return snapshot.record;
 }
 
 /**
@@ -120,17 +263,43 @@ function normalizeForWrite(record: JsonRecord): JsonRecord {
  *
  * @param record - The settings object to persist; it will be normalized to include the unified settings version.
  */
-function writeSettingsRecordSync(record: JsonRecord): void {
-	mkdirSync(getCodexMultiAuthDir(), { recursive: true });
+function writeSettingsRecordSync(
+	record: JsonRecord,
+	options?: { expectedRevision?: string | null },
+): void {
+	const expectedRevision = options?.expectedRevision;
+	if (expectedRevision !== undefined) {
+		const currentRevision = readCurrentSettingsRevisionSync();
+		if (currentRevision !== expectedRevision) {
+			throw createSettingsConflictError();
+		}
+	}
+
+	const settingsDir = getCodexMultiAuthDir();
+	mkdirSync(settingsDir, { recursive: true, mode: SECURE_DIR_MODE });
+	if (process.platform !== "win32") {
+		try {
+			chmodSync(settingsDir, SECURE_DIR_MODE);
+		} catch {
+			// Best-effort hardening.
+		}
+	}
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
-	writeFileSync(tempPath, data, "utf8");
+	writeFileSync(tempPath, data, { encoding: "utf8", mode: SECURE_FILE_MODE });
 	let moved = false;
 	try {
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				renameSync(tempPath, UNIFIED_SETTINGS_PATH);
+				if (process.platform !== "win32") {
+					try {
+						chmodSync(UNIFIED_SETTINGS_PATH, SECURE_FILE_MODE);
+					} catch {
+						// Best-effort hardening.
+					}
+				}
 				moved = true;
 				return;
 			} catch (error) {
@@ -171,17 +340,43 @@ function writeSettingsRecordSync(record: JsonRecord): void {
  *
  * @param record - The settings object to persist; it will be normalized (version set)
  */
-async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
-	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
+async function writeSettingsRecordAsync(
+	record: JsonRecord,
+	options?: { expectedRevision?: string | null },
+): Promise<void> {
+	const expectedRevision = options?.expectedRevision;
+	if (expectedRevision !== undefined) {
+		const currentRevision = await readCurrentSettingsRevisionAsync();
+		if (currentRevision !== expectedRevision) {
+			throw createSettingsConflictError();
+		}
+	}
+
+	const settingsDir = getCodexMultiAuthDir();
+	await fs.mkdir(settingsDir, { recursive: true, mode: SECURE_DIR_MODE });
+	if (process.platform !== "win32") {
+		try {
+			await fs.chmod(settingsDir, SECURE_DIR_MODE);
+		} catch {
+			// Best-effort hardening.
+		}
+	}
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.writeFile(tempPath, data, "utf8");
+	await fs.writeFile(tempPath, data, { encoding: "utf8", mode: SECURE_FILE_MODE });
 	let moved = false;
 	try {
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				await fs.rename(tempPath, UNIFIED_SETTINGS_PATH);
+				if (process.platform !== "win32") {
+					try {
+						await fs.chmod(UNIFIED_SETTINGS_PATH, SECURE_FILE_MODE);
+					} catch {
+						// Best-effort hardening.
+					}
+				}
 				moved = true;
 				return;
 			} catch (error) {
@@ -254,9 +449,27 @@ export function loadUnifiedPluginConfigSync(): JsonRecord | null {
  * @param pluginConfig - Key/value map representing plugin configuration to persist
  */
 export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
-	const record = readSettingsRecordSync() ?? {};
-	record.pluginConfig = { ...pluginConfig };
-	writeSettingsRecordSync(record);
+	const lock = acquireFileLockSync(UNIFIED_SETTINGS_LOCK_PATH, SETTINGS_LOCK_OPTIONS);
+	try {
+		let lastError: unknown;
+		for (let attempt = 0; attempt < SETTINGS_CONFLICT_RETRY_LIMIT; attempt += 1) {
+			const snapshot = readSettingsSnapshotSync();
+			const record = snapshot.record ?? {};
+			record.pluginConfig = { ...pluginConfig };
+			try {
+				writeSettingsRecordSync(record, { expectedRevision: snapshot.revision });
+				return;
+			} catch (error) {
+				lastError = error;
+				if (!isConflictError(error) || attempt >= SETTINGS_CONFLICT_RETRY_LIMIT - 1) {
+					throw error;
+				}
+			}
+		}
+		throw lastError instanceof Error ? lastError : new Error("Failed to save unified plugin config");
+	} finally {
+		releaseUnifiedSettingsLockSync(() => lock.release());
+	}
 }
 
 /**
@@ -271,9 +484,27 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.pluginConfig = { ...pluginConfig };
-		await writeSettingsRecordAsync(record);
+		const lock = await acquireFileLock(UNIFIED_SETTINGS_LOCK_PATH, SETTINGS_LOCK_OPTIONS);
+		try {
+			let lastError: unknown;
+			for (let attempt = 0; attempt < SETTINGS_CONFLICT_RETRY_LIMIT; attempt += 1) {
+				const snapshot = await readSettingsSnapshotAsync();
+				const record = snapshot.record ?? {};
+				record.pluginConfig = { ...pluginConfig };
+				try {
+					await writeSettingsRecordAsync(record, { expectedRevision: snapshot.revision });
+					return;
+				} catch (error) {
+					lastError = error;
+					if (!isConflictError(error) || attempt >= SETTINGS_CONFLICT_RETRY_LIMIT - 1) {
+						throw error;
+					}
+				}
+			}
+			throw lastError instanceof Error ? lastError : new Error("Failed to save unified plugin config");
+		} finally {
+			await releaseUnifiedSettingsLockAsync(() => lock.release());
+		}
 	});
 }
 
@@ -314,8 +545,26 @@ export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
-		await writeSettingsRecordAsync(record);
+		const lock = await acquireFileLock(UNIFIED_SETTINGS_LOCK_PATH, SETTINGS_LOCK_OPTIONS);
+		try {
+			let lastError: unknown;
+			for (let attempt = 0; attempt < SETTINGS_CONFLICT_RETRY_LIMIT; attempt += 1) {
+				const snapshot = await readSettingsSnapshotAsync();
+				const record = snapshot.record ?? {};
+				record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
+				try {
+					await writeSettingsRecordAsync(record, { expectedRevision: snapshot.revision });
+					return;
+				} catch (error) {
+					lastError = error;
+					if (!isConflictError(error) || attempt >= SETTINGS_CONFLICT_RETRY_LIMIT - 1) {
+						throw error;
+					}
+				}
+			}
+			throw lastError instanceof Error ? lastError : new Error("Failed to save unified dashboard settings");
+		} finally {
+			await releaseUnifiedSettingsLockAsync(() => lock.release());
+		}
 	});
 }

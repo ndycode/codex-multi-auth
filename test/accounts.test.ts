@@ -1168,6 +1168,69 @@ describe("AccountManager", () => {
 
       expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
     });
+
+    it("still schedules a new save after previous pending save rejects", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+      mockSaveAccounts.mockResolvedValue(undefined);
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const rejectedPending = Promise.reject(new Error("first-save-failed"));
+      Object.defineProperty(manager, "pendingSave", {
+        value: rejectedPending,
+        writable: true,
+        configurable: true,
+      });
+      await rejectedPending.catch(() => undefined);
+
+      manager.saveToDiskDebounced(50);
+      await vi.advanceTimersByTimeAsync(80);
+      await manager.flushPendingSave();
+
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries transient EBUSY save failures in debounced persistence", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+
+      let attempts = 0;
+      mockSaveAccounts.mockImplementation(async () => {
+        attempts += 1;
+        if (attempts < 3) {
+          const error = Object.assign(new Error("EBUSY"), {
+            code: "EBUSY",
+          }) as NodeJS.ErrnoException;
+          throw error;
+        }
+      });
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      manager.saveToDiskDebounced(50);
+
+      await vi.advanceTimersByTimeAsync(60);
+      await vi.runAllTimersAsync();
+      await manager.flushPendingSave();
+
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(3);
+      expect(attempts).toBe(3);
+    });
   });
 
   describe("constructor edge cases", () => {

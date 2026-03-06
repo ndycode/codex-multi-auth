@@ -7,6 +7,7 @@ import type { PluginConfig } from "../lib/types.js";
 
 type SettingsHubTestApi = {
 	clampBackendNumber: (settingKey: string, value: number) => number;
+	buildBackendSettingsPreview: (config: PluginConfig) => { label: string; hint: string };
 	formatMenuLayoutMode: (mode: "compact-details" | "expanded-rows") => string;
 	cloneDashboardSettings: (settings: DashboardDisplaySettings) => DashboardDisplaySettings;
 	withQueuedRetry: <T>(pathKey: string, task: () => Promise<T>) => Promise<T>;
@@ -64,9 +65,22 @@ describe("settings-hub utility coverage", () => {
 		const api = await loadSettingsHubTestApi();
 		expect(api.clampBackendNumber("fetchTimeoutMs", 250)).toBe(1_000);
 		expect(api.clampBackendNumber("fetchTimeoutMs", 999_999)).toBe(600_000);
+		expect(api.clampBackendNumber("retryAllAccountsAbsoluteCeilingMs", -1)).toBe(0);
+		expect(api.clampBackendNumber("retryAllAccountsAbsoluteCeilingMs", 999_999_999)).toBe(
+			24 * 60 * 60_000,
+		);
 		expect(() => api.clampBackendNumber("unknown-setting", 5)).toThrow(
 			"Unknown backend numeric setting key",
 		);
+	});
+
+	it("renders retry-all absolute ceiling 0 as unlimited in preview", async () => {
+		const api = await loadSettingsHubTestApi();
+		const preview = api.buildBackendSettingsPreview({
+			retryAllAccountsAbsoluteCeilingMs: 0,
+		});
+		expect(preview.hint).toContain("retry ceiling unlimited");
+		expect(preview.hint).not.toContain("retry ceiling 0ms");
 	});
 
 	it("formats layout mode labels", async () => {

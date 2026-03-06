@@ -65,3 +65,48 @@ export function toStringValue(value: unknown): string {
 export function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Run fetch with a hard timeout while preserving caller abort signals.
+ * @param input - fetch input
+ * @param init - fetch init
+ * @param timeoutMs - timeout in milliseconds
+ * @returns fetch response
+ */
+export async function fetchWithTimeout(
+	input: Parameters<typeof fetch>[0],
+	init: Parameters<typeof fetch>[1] = {},
+	timeoutMs = 60_000,
+): Promise<Response> {
+	const timeout = Math.max(1_000, Math.floor(timeoutMs));
+	const controller = new AbortController();
+	const userSignal = init.signal;
+	const timeoutError = new Error(`Fetch timeout after ${timeout}ms`) as Error & { code?: string };
+	timeoutError.name = "AbortError";
+	timeoutError.code = "ABORT_ERR";
+	const timeoutId = setTimeout(() => {
+		controller.abort(timeoutError);
+	}, timeout);
+
+	const onAbort = () => {
+		controller.abort(userSignal?.reason ?? new Error("Aborted"));
+	};
+
+	if (userSignal?.aborted) {
+		onAbort();
+	} else if (userSignal) {
+		userSignal.addEventListener("abort", onAbort, { once: true });
+	}
+
+	try {
+		return await fetch(input, {
+			...init,
+			signal: controller.signal,
+		});
+	} finally {
+		clearTimeout(timeoutId);
+		if (userSignal) {
+			userSignal.removeEventListener("abort", onAbort);
+		}
+	}
+}

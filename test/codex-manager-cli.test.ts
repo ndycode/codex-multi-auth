@@ -18,6 +18,15 @@ const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const selectMock = vi.fn();
+const rotateStoredSecretEncryptionMock = vi.fn();
+const checkAndRecordIdempotencyKeyMock = vi.fn();
+const auditLogMock = vi.fn();
+const recordTelemetryEventMock = vi.fn();
+const queryTelemetryEventsMock = vi.fn();
+const summarizeTelemetryEventsMock = vi.fn();
+const getTelemetryLogPathMock = vi.fn(
+	() => "/mock/logs/product-telemetry.jsonl",
+);
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -27,7 +36,16 @@ vi.mock("../lib/logger.js", () => ({
 		error: vi.fn(),
 	})),
 	logWarn: vi.fn(),
+	maskEmail: vi.fn((email: string) => email.replace(/^(.).+(@.*)$/, "$1***$2")),
 }));
+
+vi.mock("../lib/audit.js", async () => {
+	const actual = await vi.importActual("../lib/audit.js");
+	return {
+		...(actual as Record<string, unknown>),
+		auditLog: auditLogMock,
+	};
+});
 
 vi.mock("../lib/auth/auth.js", () => ({
 	createAuthorizationFlow: vi.fn(),
@@ -80,6 +98,11 @@ vi.mock("../lib/storage.js", () => ({
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
 	setStoragePath: setStoragePathMock,
 	getStoragePath: getStoragePathMock,
+	rotateStoredSecretEncryption: rotateStoredSecretEncryptionMock,
+}));
+
+vi.mock("../lib/idempotency.js", () => ({
+	checkAndRecordIdempotencyKey: checkAndRecordIdempotencyKeyMock,
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -129,6 +152,13 @@ vi.mock("../lib/quota-cache.js", () => ({
 
 vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
+}));
+
+vi.mock("../lib/telemetry.js", () => ({
+	recordTelemetryEvent: recordTelemetryEventMock,
+	queryTelemetryEvents: queryTelemetryEventsMock,
+	summarizeTelemetryEvents: summarizeTelemetryEventsMock,
+	getTelemetryLogPath: getTelemetryLogPathMock,
 }));
 
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
@@ -198,6 +228,13 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		selectMock.mockReset();
+		rotateStoredSecretEncryptionMock.mockReset();
+		checkAndRecordIdempotencyKeyMock.mockReset();
+		auditLogMock.mockReset();
+		recordTelemetryEventMock.mockReset();
+		queryTelemetryEventsMock.mockReset();
+		summarizeTelemetryEventsMock.mockReset();
+		getTelemetryLogPathMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -226,7 +263,20 @@ describe("codex manager cli commands", () => {
 		});
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
+		saveQuotaCacheMock.mockResolvedValue(true);
 		selectMock.mockResolvedValue(undefined);
+		checkAndRecordIdempotencyKeyMock.mockResolvedValue({ replayed: false });
+		recordTelemetryEventMock.mockResolvedValue(undefined);
+		queryTelemetryEventsMock.mockResolvedValue([]);
+		summarizeTelemetryEventsMock.mockReturnValue({
+			total: 0,
+			bySource: { cli: 0, plugin: 0 },
+			byOutcome: { start: 0, success: 0, failure: 0, recovery: 0, info: 0 },
+			byEvent: [],
+			firstTimestamp: null,
+			lastTimestamp: null,
+		});
+		getTelemetryLogPathMock.mockReturnValue("/mock/logs/product-telemetry.jsonl");
 		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
@@ -279,6 +329,75 @@ describe("codex manager cli commands", () => {
 		expect(payload.recommendation.recommendedIndex).toBe(0);
 	});
 
+	it("returns non-zero in forecast json mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "forecast", "--live", "--json"]);
+		expect(exitCode).toBe(1);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			quotaCachePersisted: boolean;
+			probeErrors: string[];
+		};
+		expect(payload.command).toBe("forecast");
+		expect(payload.quotaCachePersisted).toBe(false);
+		expect(payload.probeErrors.some((entry) => entry.includes("Failed to persist quota cache changes"))).toBe(true);
+	});
+
+	it("returns non-zero in forecast text mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "forecast", "--live"]);
+		expect(exitCode).toBe(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("prints implemented 40-feature matrix", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -304,6 +423,97 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(errorSpy).not.toHaveBeenCalled();
 		expect(logSpy.mock.calls[0]?.[0]).toContain("Codex Multi-Auth CLI");
+	});
+
+	it("prints telemetry report in json mode", async () => {
+		const now = Date.now();
+		const events = [
+			{
+				timestamp: new Date(now - 5_000).toISOString(),
+				source: "plugin",
+				event: "request.network_error",
+				outcome: "failure",
+				correlationId: null,
+				details: { status: 503 },
+			},
+		];
+		queryTelemetryEventsMock.mockResolvedValueOnce(events);
+		summarizeTelemetryEventsMock.mockReturnValueOnce({
+			total: 1,
+			bySource: { cli: 0, plugin: 1 },
+			byOutcome: { start: 0, success: 0, failure: 1, recovery: 0, info: 0 },
+			byEvent: [{ event: "request.network_error", count: 1 }],
+			firstTimestamp: events[0].timestamp,
+			lastTimestamp: events[0].timestamp,
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"telemetry",
+			"--json",
+			"--since-hours",
+			"12",
+			"--limit",
+			"5",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(queryTelemetryEventsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sinceMs: expect.any(Number),
+				limit: 5,
+			}),
+		);
+		const sinceMs = (queryTelemetryEventsMock.mock.calls[0]?.[0] as { sinceMs: number }).sinceMs;
+		expect(Math.abs(sinceMs - (now - 12 * 60 * 60_000))).toBeLessThan(5_000);
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			limit: number;
+			sinceHours: number;
+			summary: { total: number };
+		};
+		expect(payload.command).toBe("telemetry");
+		expect(payload.limit).toBe(5);
+		expect(payload.sinceHours).toBe(12);
+		expect(payload.summary.total).toBe(1);
+	});
+
+	it("validates telemetry arguments", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "telemetry", "--limit", "abc"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Invalid value for --limit: abc");
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex auth telemetry");
+	});
+
+	it("emits telemetry events for command lifecycle", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "features"]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalled();
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "cli",
+				event: "cli.command.start",
+				outcome: "start",
+				details: expect.objectContaining({ command: "features" }),
+			}),
+		);
+		expect(recordTelemetryEventMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "cli",
+				event: "cli.command.finish",
+				outcome: "success",
+				details: expect.objectContaining({ command: "features", exitCode: 0 }),
+			}),
+		);
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
@@ -425,6 +635,71 @@ describe("codex manager cli commands", () => {
 		expect(payload.reports[0]?.outcome).toBe("warning-soft-failure");
 	});
 
+	it("returns non-zero in fix json mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--json"]);
+		expect(exitCode).toBe(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			quotaCachePersisted: boolean;
+		};
+		expect(payload.command).toBe("fix");
+		expect(payload.quotaCachePersisted).toBe(false);
+	});
+
+	it("returns non-zero in fix text mode when quota cache persistence fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		saveQuotaCacheMock.mockResolvedValueOnce(false);
+
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--dry-run"]);
+		expect(exitCode).toBe(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("persists rotated tokens during auth check and syncs active codex selection", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
@@ -497,6 +772,32 @@ describe("codex manager cli commands", () => {
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
 		expect(logSpy.mock.calls.some((call) => String(call[0]).includes("live session OK"))).toBe(true);
+	});
+
+	it("shows rate-limit reset details in auth status output", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "rate-limited@example.com",
+					refreshToken: "refresh-rate-limited",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					rateLimitResetTimes: {
+						codex: now + 120_000,
+					},
+				},
+			],
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "status"]);
+		expect(exitCode).toBe(0);
+		expect(logSpy.mock.calls.some((call) => String(call[0]).includes("rate-limited"))).toBe(true);
 	});
 
 	it("runs fix apply mode and returns a switch recommendation", async () => {
@@ -834,6 +1135,8 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce({ mode: "add" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		promptAddAnotherAccountMock.mockResolvedValue(false);
+		const expectedTimeoutMs = 4321;
+		loadPluginConfigMock.mockReturnValue({ fetchTimeoutMs: expectedTimeoutMs });
 
 		const authModule = await import("../lib/auth/auth.js");
 		const createAuthorizationFlowMock = vi.mocked(authModule.createAuthorizationFlow);
@@ -874,6 +1177,12 @@ describe("codex manager cli commands", () => {
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		expect(exchangeAuthorizationCodeMock).toHaveBeenCalledWith(
+			"oauth-code",
+			"pkce-verifier",
+			authModule.REDIRECT_URI,
+			{ timeoutMs: expectedTimeoutMs },
+		);
 	});
 
 	it("runs full refresh test from login menu deep-check mode", async () => {
@@ -1358,6 +1667,7 @@ describe("codex manager cli commands", () => {
 			{ type: "open-category", key: "rotation-quota" },
 			{ type: "toggle", key: "preemptiveQuotaEnabled" },
 			{ type: "bump", key: "preemptiveQuotaRemainingPercent5h", direction: 1 },
+			{ type: "bump", key: "retryAllAccountsAbsoluteCeilingMs", direction: 1 },
 			{ type: "back" },
 			{ type: "save" },
 			{ type: "back" },
@@ -1374,8 +1684,13 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				preemptiveQuotaEnabled: expect.any(Boolean),
 				preemptiveQuotaRemainingPercent5h: expect.any(Number),
+				retryAllAccountsAbsoluteCeilingMs: 30_000,
 			}),
 		);
+		const savedPluginConfig = savePluginConfigMock.mock.calls[0]?.[0] as
+			| { retryAllAccountsAbsoluteCeilingMs?: number }
+			| undefined;
+		expect(savedPluginConfig?.retryAllAccountsAbsoluteCeilingMs).toBe(30_000);
 	});
 
 	it.each([
@@ -1970,6 +2285,122 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(false);
 	});
 
+	it("maps audited commands to expected actions and outcomes", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const { AuditAction, AuditOutcome } = await import("../lib/audit.js");
+		const { createAuthorizationFlow } = await import("../lib/auth/auth.js");
+
+		vi.mocked(createAuthorizationFlow).mockRejectedValueOnce(new Error("mock login failure"));
+		await expect(runCodexMultiAuthCli(["auth", "login"])).rejects.toThrow("mock login failure");
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.AUTH_LOGIN,
+			"cli-user",
+			"codex auth login",
+			AuditOutcome.FAILURE,
+			expect.objectContaining({ command: "login", error: expect.any(String) }),
+		);
+
+		auditLogMock.mockClear();
+		const switchCode = await runCodexMultiAuthCli(["auth", "switch"]);
+		expect(switchCode).toBe(1);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.ACCOUNT_SWITCH,
+			"cli-user",
+			"codex auth switch",
+			AuditOutcome.FAILURE,
+			expect.objectContaining({ command: "switch", exitCode: 1 }),
+		);
+
+		auditLogMock.mockClear();
+		loadAccountsMock.mockResolvedValueOnce(null);
+		const checkCode = await runCodexMultiAuthCli(["auth", "check"]);
+		expect(checkCode).toBe(0);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.REQUEST_START,
+			"cli-user",
+			"codex auth check",
+			AuditOutcome.SUCCESS,
+			expect.objectContaining({ command: "check", exitCode: 0 }),
+		);
+
+		auditLogMock.mockClear();
+		loadFlaggedAccountsMock.mockResolvedValueOnce({ version: 1, accounts: [] });
+		const verifyCode = await runCodexMultiAuthCli(["auth", "verify-flagged", "--json"]);
+		expect(verifyCode).toBe(0);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.ACCOUNT_REFRESH,
+			"cli-user",
+			"codex auth verify-flagged",
+			AuditOutcome.SUCCESS,
+			expect.objectContaining({ command: "verify-flagged", exitCode: 0 }),
+		);
+
+		auditLogMock.mockClear();
+		loadAccountsMock.mockResolvedValueOnce(null);
+		const forecastCode = await runCodexMultiAuthCli(["auth", "forecast", "--json"]);
+		expect(forecastCode).toBe(0);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.COMMAND_RUN,
+			"cli-user",
+			"codex auth forecast",
+			AuditOutcome.SUCCESS,
+			expect.objectContaining({ command: "forecast", exitCode: 0 }),
+		);
+
+		auditLogMock.mockClear();
+		loadAccountsMock.mockResolvedValueOnce(null);
+		const statusCode = await runCodexMultiAuthCli(["auth", "status"]);
+		expect(statusCode).toBe(0);
+		expect(auditLogMock).toHaveBeenCalledWith(
+			AuditAction.COMMAND_RUN,
+			"cli-user",
+			"codex auth status",
+			AuditOutcome.SUCCESS,
+			expect.objectContaining({ command: "status", exitCode: 0 }),
+		);
+	});
+
+	it("sanitizes audited thrown errors with token and email redaction", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const { AuditAction, AuditOutcome } = await import("../lib/audit.js");
+		const secretError = new Error(
+			[
+				"EBUSY while refreshing account",
+				"HTTP 429 from upstream",
+				"user@example.com",
+				"sk-test-secret-abcdefghijklmnopqrstuvwxyz",
+				"refresh_token_sensitive-abcdef12",
+				"access_token_sensitive-qwerty12",
+				"secret-access-token",
+				"x".repeat(260),
+			].join(" | "),
+		);
+		loadAccountsMock.mockRejectedValueOnce(secretError);
+
+		await expect(runCodexMultiAuthCli(["auth", "status"])).rejects.toThrow(secretError);
+		expect(auditLogMock).toHaveBeenCalledTimes(1);
+
+		const call = auditLogMock.mock.calls[0];
+		expect(call?.[0]).toBe(AuditAction.COMMAND_RUN);
+		expect(call?.[3]).toBe(AuditOutcome.FAILURE);
+		const metadata = call?.[4] as Record<string, unknown> | undefined;
+		const sanitizedError = typeof metadata?.error === "string" ? metadata.error : "";
+		expect(sanitizedError.length).toBeLessThanOrEqual(200);
+		expect(sanitizedError).toContain("EBUSY");
+		expect(sanitizedError).toContain("429");
+		expect(sanitizedError).not.toContain("sk-test-secret-abcdefghijklmnopqrstuvwxyz");
+		expect(sanitizedError).not.toContain("refresh_token_sensitive-abcdef12");
+		expect(sanitizedError).not.toContain("access_token_sensitive-qwerty12");
+		expect(sanitizedError).not.toContain("secret-access-token");
+		expect(sanitizedError).not.toContain("user@example.com");
+		expect(sanitizedError).toContain("***REDACTED***");
+	});
+
 	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
@@ -2000,5 +2431,295 @@ describe("codex manager cli commands", () => {
 		expect(selectMock).not.toHaveBeenCalled();
 		expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
 		expect(savePluginConfigMock).not.toHaveBeenCalled();
+	});
+
+	it("supports paginated json output for list command", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "one@example.com",
+					accountId: "acc_one",
+					refreshToken: "refresh-one",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "two@example.com",
+					accountId: "acc_two",
+					refreshToken: "refresh-two",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const firstExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--page-size",
+				"1",
+			]);
+			expect(firstExitCode).toBe(0);
+			const firstPayload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				schemaVersion: number;
+				accounts: Array<{ email: string }>;
+				pagination: {
+					cursor: string | null;
+					nextCursor: string | null;
+					hasMore: boolean;
+					pageSize: number;
+				};
+			};
+			expect(typeof firstPayload.schemaVersion).toBe("number");
+			expect(firstPayload.pagination.cursor).toBeNull();
+			expect(firstPayload.pagination.pageSize).toBe(1);
+			expect(firstPayload.accounts).toHaveLength(1);
+			expect(firstPayload.accounts[0]?.email).toBe("one@example.com");
+			expect(firstPayload.pagination.hasMore).toBe(true);
+			expect(firstPayload.pagination.nextCursor).toBeTruthy();
+
+			logSpy.mockClear();
+			const secondExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--page-size",
+				"1",
+				"--cursor",
+				String(firstPayload.pagination.nextCursor),
+			]);
+			expect(secondExitCode).toBe(0);
+			const secondPayload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				schemaVersion: number;
+				accounts: Array<{ email: string }>;
+				pagination: {
+					cursor: string | null;
+					nextCursor: string | null;
+					hasMore: boolean;
+					pageSize: number;
+				};
+			};
+			expect(typeof secondPayload.schemaVersion).toBe("number");
+			expect(secondPayload.pagination.cursor).toBe(String(firstPayload.pagination.nextCursor));
+			expect(secondPayload.pagination.pageSize).toBe(1);
+			expect(secondPayload.accounts).toHaveLength(1);
+			expect(secondPayload.accounts[0]?.email).toBe("two@example.com");
+			expect(secondPayload.pagination.hasMore).toBe(false);
+			expect(secondPayload.pagination.nextCursor).toBeNull();
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
+	it("rejects malformed pagination cursors in JSON list mode", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [
+				{
+					email: "one@example.com",
+					accountId: "acc_one",
+					refreshToken: "refresh-one",
+					addedAt: Date.now() - 2_000,
+					lastUsed: Date.now() - 2_000,
+					enabled: true,
+				},
+			],
+		});
+
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const malformedPayloadCursor = Buffer.from("12junk", "utf8").toString("base64");
+			const invalidPayloadExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--cursor",
+				malformedPayloadCursor,
+			]);
+			expect(invalidPayloadExitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("Invalid --cursor value");
+
+			errorSpy.mockClear();
+			const invalidBase64ExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--cursor",
+				"%%%invalid-base64%%%",
+			]);
+			expect(invalidBase64ExitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("Invalid --cursor value");
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("rejects partially numeric --page-size values", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"list",
+				"--json",
+				"--page-size",
+				"10junk",
+			]);
+			expect(exitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("--page-size must be between 1 and 200");
+			expect(loadAccountsMock).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("applies idempotency key for rotate-secrets automation retries", async () => {
+		checkAndRecordIdempotencyKeyMock
+			.mockResolvedValueOnce({ replayed: false })
+			.mockResolvedValueOnce({ replayed: true });
+		rotateStoredSecretEncryptionMock.mockResolvedValue({
+			accounts: 2,
+			flaggedAccounts: 1,
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const firstExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--json",
+				"--idempotency-key",
+				"rotation-001",
+			]);
+			expect(firstExitCode).toBe(0);
+			const firstPayload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				rotated: boolean;
+				replayed: boolean;
+			};
+			expect(firstPayload.rotated).toBe(true);
+			expect(firstPayload.replayed).toBe(false);
+
+			logSpy.mockClear();
+			const secondExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--json",
+				"--idempotency-key=rotation-001",
+			]);
+			expect(secondExitCode).toBe(0);
+			const secondPayload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				rotated: boolean;
+				replayed: boolean;
+			};
+			expect(secondPayload.rotated).toBe(true);
+			expect(secondPayload.replayed).toBe(true);
+			expect(rotateStoredSecretEncryptionMock).toHaveBeenCalledTimes(1);
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
+	it("rejects option-smuggling for --idempotency-key", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--idempotency-key",
+				"--json",
+			]);
+			expect(exitCode).toBe(1);
+			expect(errorSpy).toHaveBeenCalledWith("Missing value for --idempotency-key");
+			expect(rotateStoredSecretEncryptionMock).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("redacts rotate-secrets failure details in non-json output", async () => {
+		rotateStoredSecretEncryptionMock.mockRejectedValue(
+			new Error(
+				"failed for person@example.com Bearer sk_test+/123== refresh_token=rt+/456==",
+			),
+		);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "rotate-secrets"]);
+			expect(exitCode).toBe(1);
+			const rendered = String(errorSpy.mock.calls[0]?.[0] ?? "");
+			expect(rendered).toContain("Failed to rotate stored secrets:");
+			expect(rendered).toContain("***REDACTED***");
+			expect(rendered).not.toContain("person@example.com");
+			expect(rendered).not.toContain("sk_test+/123==");
+			expect(rendered).not.toContain("rt+/456==");
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("enforces ABAC idempotency-key requirement for rotate-secrets", async () => {
+		const previousRole = process.env.CODEX_AUTH_ROLE;
+		const previousAbacRequirement = process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY;
+		process.env.CODEX_AUTH_ROLE = "admin";
+		process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY = "secrets:rotate";
+		rotateStoredSecretEncryptionMock.mockResolvedValue({
+			accounts: 1,
+			flaggedAccounts: 0,
+		});
+
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const deniedExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--json",
+			]);
+			expect(deniedExitCode).toBe(1);
+			expect(rotateStoredSecretEncryptionMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("idempotency key"),
+			);
+
+			errorSpy.mockClear();
+			const allowedExitCode = await runCodexMultiAuthCli([
+				"auth",
+				"rotate-secrets",
+				"--json",
+				"--idempotency-key",
+				"rotation-allowed",
+			]);
+			expect(allowedExitCode).toBe(0);
+			expect(rotateStoredSecretEncryptionMock).toHaveBeenCalledTimes(1);
+			expect(errorSpy).not.toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+			if (previousRole === undefined) {
+				delete process.env.CODEX_AUTH_ROLE;
+			} else {
+				process.env.CODEX_AUTH_ROLE = previousRole;
+			}
+			if (previousAbacRequirement === undefined) {
+				delete process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY;
+			} else {
+				process.env.CODEX_AUTH_ABAC_REQUIRE_IDEMPOTENCY_KEY = previousAbacRequirement;
+			}
+		}
 	});
 });

@@ -63,6 +63,24 @@ Positional signatures are preserved for backward compatibility.
 
 ---
 
+## API Standards Baseline
+
+Where this repository exposes machine-readable command output or future HTTP endpoints, use these defaults:
+
+- Versioning:
+  - include `schemaVersion` in JSON command output.
+  - increment schema version only when contract shape changes.
+- Idempotency:
+  - mutating automation flows should support caller-provided idempotency keys.
+  - repeated requests with the same idempotency key should not duplicate side effects.
+- Pagination:
+  - list-style payloads should prefer cursor-based pagination (`nextCursor`, `hasMore`) over offset-only paging.
+  - response envelopes should include stable paging metadata even for empty result sets.
+
+This project currently applies the versioning baseline to JSON command outputs and documents idempotency/pagination standards for future API expansion.
+
+---
+
 ## Semver Guidance
 
 - Breaking Tier A change: `MAJOR`

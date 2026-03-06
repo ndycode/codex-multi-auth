@@ -213,6 +213,65 @@ describe("Codex Prompts Module", () => {
 				const second = await getCodexInstructions("gpt-5.1-codex");
 				expect(second).toBe("new version content");
 			});
+
+			it("deduplicates background refresh for concurrent stale calls", async () => {
+				const oldTimestamp = Date.now() - 20 * 60 * 1000;
+				let resolvePromptText: ((value: string) => void) | null = null;
+				const promptText = new Promise<string>((resolve) => {
+					resolvePromptText = resolve;
+				});
+
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "old-etag",
+								tag: "rust-v0.40.0",
+								lastChecked: oldTimestamp,
+								url: "https://example.com",
+							}),
+						);
+					}
+					return Promise.resolve("stale disk content");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.50.0" }),
+				});
+				mockFetch.mockImplementationOnce(() =>
+					Promise.resolve({
+						ok: true,
+						text: () => promptText,
+						headers: { get: () => "new-etag" },
+					}),
+				);
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				const [first, second] = await Promise.all([
+					getCodexInstructions("gpt-5.1-codex"),
+					getCodexInstructions("gpt-5.1-codex"),
+				]);
+
+				expect(first).toBe("stale disk content");
+				expect(second).toBe("stale disk content");
+				await vi.waitFor(() => {
+					expect(mockFetch).toHaveBeenCalledTimes(2);
+				});
+
+				resolvePromptText?.("fresh deduped content");
+				await vi.waitFor(() => {
+					expect(mockedWriteFile).toHaveBeenCalled();
+				});
+				const settledFetchCalls = mockFetch.mock.calls.length;
+				expect(settledFetchCalls).toBe(2);
+
+				const refreshed = await getCodexInstructions("gpt-5.1-codex");
+				expect(refreshed).toBe("fresh deduped content");
+				await vi.waitFor(() => {
+					expect(mockFetch).toHaveBeenCalledTimes(settledFetchCalls);
+				});
+			});
 		});
 
 		describe("GitHub HTML fallback", () => {
@@ -237,6 +296,29 @@ describe("Codex Prompts Module", () => {
 
 				const result = await getCodexInstructions("gpt-5.2-codex");
 				expect(result).toBe("fallback instructions");
+			});
+
+			it("should fall back to HTML releases page when API request times out", async () => {
+				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+				mockFetch.mockRejectedValueOnce(
+					Object.assign(new Error("request timeout"), { name: "AbortError" }),
+				);
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					url: "https://github.com/openai/codex/releases/tag/rust-v0.55.0",
+					text: () => Promise.resolve(""),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("timeout fallback instructions"),
+					headers: { get: () => "fallback-timeout-etag" },
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2-codex");
+				expect(result).toBe("timeout fallback instructions");
+				expect(mockFetch).toHaveBeenCalledTimes(3);
 			});
 
 			it("should parse tag from HTML content if URL parsing fails", async () => {
@@ -346,6 +428,56 @@ describe("Codex Prompts Module", () => {
 
 				const result = await getCodexInstructions("gpt-5.2");
 				expect(result).toBe("disk cache fallback");
+			});
+
+			it("should fall back to disk cache when prompt fetch times out", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						// malformed metadata forces the timeout path instead of stale-while-revalidate.
+						return Promise.resolve("{ malformed");
+					}
+					return Promise.resolve("disk timeout fallback");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.80.0" }),
+				});
+				mockFetch.mockRejectedValueOnce(
+					Object.assign(new Error("request timeout"), { name: "AbortError" }),
+				);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("disk timeout fallback");
+				expect(mockFetch).toHaveBeenCalledTimes(2);
+			});
+
+			it("should fall back to disk cache when metadata read hits transient windows EPERM", async () => {
+				let metaReadFailures = 0;
+				mockedReadFile.mockImplementation((filePath) => {
+					const path = typeof filePath === "string" ? filePath : String(filePath);
+					if (path.includes("-meta.json")) {
+						if (metaReadFailures === 0) {
+							metaReadFailures += 1;
+							return Promise.reject(
+								Object.assign(new Error("win fs busy"), { code: "EPERM" }),
+							);
+						}
+						return Promise.resolve("{ malformed");
+					}
+					return Promise.resolve("disk timeout fallback");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.80.1" }),
+				});
+				mockFetch.mockRejectedValueOnce(
+					Object.assign(new Error("request timeout"), { name: "AbortError" }),
+				);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("disk timeout fallback");
+				expect(metaReadFailures).toBe(1);
+				expect(mockFetch).toHaveBeenCalledTimes(2);
 			});
 
 			it("should fall back to bundled instructions when all else fails", async () => {

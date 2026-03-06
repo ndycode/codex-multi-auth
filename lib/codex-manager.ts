@@ -22,7 +22,24 @@ import {
 	sanitizeEmail,
 	selectBestAccountCandidate,
 } from "./accounts.js";
+import {
+	resolveActiveIndex,
+	formatRateLimitEntry,
+} from "./accounts/account-view.js";
+import {
+	createActiveIndexByFamily,
+	setActiveIndexForAllFamilies,
+	normalizeActiveIndexByFamily,
+} from "./accounts/active-index.js";
+import {
+	createEmptyAccountStorage as createEmptyAccountStorageBase,
+} from "./accounts/storage-view.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
+import {
+	getFetchTimeoutMs,
+	getTelemetryEnabled,
+	loadPluginConfig,
+} from "./config.js";
 import {
 	loadDashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
@@ -36,7 +53,6 @@ import {
 	summarizeForecast,
 	type ForecastAccountResult,
 } from "./forecast.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
@@ -49,6 +65,14 @@ import {
 	type QuotaCacheData,
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
+import { maskEmail } from "./logger.js";
+import {
+	getTelemetryLogPath,
+	queryTelemetryEvents,
+	recordTelemetryEvent,
+	summarizeTelemetryEvents,
+	type TelemetryOutcome,
+} from "./telemetry.js";
 import {
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -56,10 +80,12 @@ import {
 	saveFlaggedAccounts,
 	saveAccounts,
 	setStoragePath,
+	rotateStoredSecretEncryption,
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
 } from "./storage.js";
+import { checkAndRecordIdempotencyKey } from "./idempotency.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import {
 	getCodexCliAuthPath,
@@ -73,6 +99,10 @@ import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { select, type MenuItem } from "./ui/select.js";
 import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, resolveMenuLayoutMode } from "./codex-manager/settings-hub.js";
+import { auditLog, AuditAction, AuditOutcome } from "./audit.js";
+import { checkAuthRateLimit, recordAuthAttempt, resetAuthRateLimit } from "./auth-rate-limit.js";
+import { redactForExternalOutput } from "./data-redaction.js";
+import { authorizeAction, type AuthAction, type AuthorizationContext } from "./authorization.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 type TokenSuccessWithAccount = TokenSuccess & {
@@ -81,6 +111,87 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
+const JSON_OUTPUT_SCHEMA_VERSION = 1 as const;
+
+function getAuditActor(): string {
+	const candidate = process.env.USER || process.env.USERNAME || "local-user";
+	return candidate.trim().length > 0 ? candidate : "local-user";
+}
+
+function emitAudit(
+	action: AuditAction,
+	outcome: AuditOutcome,
+	resource: string,
+	metadata?: Record<string, unknown>,
+): void {
+	auditLog(action, getAuditActor(), resource, outcome, metadata);
+}
+
+function buildRefreshRateLimitKey(
+	refreshToken: string,
+	accountId?: string,
+	email?: string,
+): string {
+	if (accountId && accountId.trim().length > 0) {
+		return `refresh:${accountId.trim().toLowerCase()}`;
+	}
+	if (email && email.trim().length > 0) {
+		return `refresh:${email.trim().toLowerCase()}`;
+	}
+	const suffix = refreshToken.slice(-12).toLowerCase();
+	return `refresh:${suffix}`;
+}
+
+async function queuedRefreshWithAuthRateLimit(
+	refreshToken: string,
+	context: { accountId?: string; email?: string },
+): Promise<TokenResult> {
+	const rateLimitKey = buildRefreshRateLimitKey(refreshToken, context.accountId, context.email);
+	checkAuthRateLimit(rateLimitKey);
+	recordAuthAttempt(rateLimitKey);
+	const result = await queuedRefresh(refreshToken);
+	if (result.type === "success") {
+		resetAuthRateLimit(rateLimitKey);
+	}
+	return result;
+}
+
+function maybeRedactJsonOutput<T>(value: T): T {
+	const shouldRedact = process.env.CODEX_AUTH_REDACT_JSON_OUTPUT === "1";
+	return shouldRedact ? redactForExternalOutput(value) : value;
+}
+
+function looksLikeOptionToken(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return false;
+	return /^-{1,2}[A-Za-z0-9]/.test(trimmed);
+}
+
+function hasOptionFlag(args: readonly string[], flag: string): boolean {
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === flag) {
+			const next = args[index + 1];
+			return (
+				typeof next === "string" &&
+				next.trim().length > 0 &&
+				!looksLikeOptionToken(next)
+			);
+		}
+		if (arg?.startsWith(`${flag}=`)) {
+			const value = arg.slice(flag.length + 1).trim();
+			return value.length > 0 && !looksLikeOptionToken(value);
+		}
+	}
+	return false;
+}
+
+function ensureAuthorized(action: AuthAction, context: AuthorizationContext = {}): boolean {
+	const auth = authorizeAction(action, context);
+	if (auth.allowed) return true;
+	console.error(`Authorization denied: ${auth.reason}`);
+	return false;
+}
 
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
@@ -170,6 +281,31 @@ function normalizeFailureDetail(
 	const normalized = collapseWhitespace(structured ?? raw);
 	const bounded = normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
 	return bounded.length > 0 ? bounded : "refresh failed";
+}
+
+function redactFreeformSecretText(message: string): string {
+	return message
+		.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "***REDACTED***")
+		.replace(
+			/\b(?:access|refresh|id)?_?token(?:=|:)?\s*([A-Z0-9._~+/=-]+)/gi,
+			"token=***REDACTED***",
+		)
+		.replace(/\b(Bearer)\s+[A-Z0-9._~+/=-]+\b/gi, "$1 ***REDACTED***");
+}
+
+function sanitizeCliErrorMessage(error: unknown): string {
+	const raw = error instanceof Error ? error.message : String(error);
+	const redacted = redactForExternalOutput(raw);
+	if (typeof redacted === "string") {
+		const normalized = collapseWhitespace(redactFreeformSecretText(redacted));
+		return normalized.length > 0 ? normalized : "unknown error";
+	}
+	try {
+		const normalized = collapseWhitespace(redactFreeformSecretText(JSON.stringify(redacted)));
+		return normalized.length > 0 ? normalized : "unknown error";
+	} catch {
+		return "unknown error";
+	}
 }
 
 function joinStyledSegments(parts: string[]): string {
@@ -287,8 +423,8 @@ function printUsage(): void {
 			"",
 			"Usage:",
 			"  codex auth login",
-			"  codex auth list",
-			"  codex auth status",
+			"  codex auth list [--json] [--page-size <n>] [--cursor <cursor>]",
+			"  codex auth status [--json] [--page-size <n>] [--cursor <cursor>]",
 			"  codex auth switch <index>",
 			"  codex auth check",
 			"  codex auth features",
@@ -297,6 +433,8 @@ function printUsage(): void {
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
 			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
+			"  codex auth rotate-secrets [--json] [--idempotency-key <key>]",
+			"  codex auth telemetry [--json] [--since-hours <hours>] [--limit <n>]",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
@@ -360,51 +498,6 @@ function runFeaturesReport(): number {
 		console.log(`${feature.id}. ${feature.name}`);
 	}
 	return 0;
-}
-
-function resolveActiveIndex(
-	storage: AccountStorageV3,
-	family: ModelFamily = "codex",
-): number {
-	const total = storage.accounts.length;
-	if (total === 0) return 0;
-	const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-	const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-	return Math.max(0, Math.min(raw, total - 1));
-}
-
-function getRateLimitResetTimeForFamily(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily,
-): number | null {
-	const times = account.rateLimitResetTimes;
-	if (!times) return null;
-
-	let minReset: number | null = null;
-	const prefix = `${family}:`;
-	for (const [key, value] of Object.entries(times)) {
-		if (typeof value !== "number") continue;
-		if (value <= now) continue;
-		if (key !== family && !key.startsWith(prefix)) continue;
-		if (minReset === null || value < minReset) {
-			minReset = value;
-		}
-	}
-
-	return minReset;
-}
-
-function formatRateLimitEntry(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily = "codex",
-): string | null {
-	const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-	if (typeof resetAt !== "number") return null;
-	const remaining = resetAt - now;
-	if (remaining <= 0) return null;
-	return `resets in ${formatWaitTime(remaining)}`;
 }
 
 function normalizeQuotaEmail(email: string | undefined): string | null {
@@ -602,6 +695,17 @@ function countMenuQuotaRefreshTargets(
 	return count;
 }
 
+async function persistQuotaCache(
+	cache: QuotaCacheData,
+	options: { notify?: boolean } = {},
+): Promise<boolean> {
+	const saved = await saveQuotaCache(cache);
+	if (!saved && options.notify && output.isTTY && process.env.VITEST !== "true") {
+		console.log(stylePromptText("Warning: failed to persist quota cache changes.", "warning"));
+	}
+	return saved;
+}
+
 async function refreshQuotaCacheForMenu(
 	storage: AccountStorageV3,
 	cache: QuotaCacheData,
@@ -635,7 +739,7 @@ async function refreshQuotaCacheForMenu(
 	}
 
 	if (changed) {
-		await saveQuotaCache(cache);
+		await persistQuotaCache(cache, { notify: true });
 	}
 
 	return cache;
@@ -1245,13 +1349,39 @@ async function runOAuthFlow(forceNewLogin: boolean): Promise<TokenResult> {
 	}
 
 	if (!code) {
+		emitAudit(AuditAction.AUTH_LOGIN, AuditOutcome.FAILURE, "oauth", {
+			reason: "cancelled",
+			forceNewLogin,
+		});
 		return {
 			type: "failed",
 			reason: "unknown",
 			message: UI_COPY.oauth.cancelled,
 		};
 	}
-	return exchangeAuthorizationCode(code, pkce.verifier, REDIRECT_URI);
+	const authRateLimitKey = "oauth:login";
+	const authPluginConfig = loadPluginConfig();
+	const oauthFetchTimeoutMs = getFetchTimeoutMs(authPluginConfig);
+	checkAuthRateLimit(authRateLimitKey);
+	recordAuthAttempt(authRateLimitKey);
+	const tokenResult = await exchangeAuthorizationCode(
+		code,
+		pkce.verifier,
+		REDIRECT_URI,
+		{ timeoutMs: oauthFetchTimeoutMs },
+	);
+	if (tokenResult.type === "success") {
+		resetAuthRateLimit(authRateLimitKey);
+		emitAudit(AuditAction.AUTH_LOGIN, AuditOutcome.SUCCESS, "oauth", {
+			forceNewLogin,
+		});
+	} else {
+		emitAudit(AuditAction.AUTH_FAILURE, AuditOutcome.FAILURE, "oauth", {
+			reason: tokenResult.reason,
+			message: tokenResult.message,
+		});
+	}
+	return tokenResult;
 }
 
 async function persistAccountPool(
@@ -1372,10 +1502,7 @@ async function persistAccountPool(
 		: selectedAccountIndex === null
 			? fallbackActiveIndex
 			: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = nextActiveIndex;
-	}
+	const activeIndexByFamily = createActiveIndexByFamily(nextActiveIndex);
 
 	await saveAccounts({
 		version: 3,
@@ -1383,6 +1510,17 @@ async function persistAccountPool(
 		activeIndex: nextActiveIndex,
 		activeIndexByFamily,
 	});
+	emitAudit(
+		AuditAction.ACCOUNT_ADD,
+		AuditOutcome.SUCCESS,
+		"account-pool",
+		{
+			replaceAll,
+			updatedAccounts: results.length,
+			totalAccounts: accounts.length,
+			activeIndex: nextActiveIndex + 1,
+		},
+	);
 }
 
 async function syncSelectionToCodex(tokens: TokenSuccessWithAccount): Promise<void> {
@@ -1403,18 +1541,116 @@ async function syncSelectionToCodex(tokens: TokenSuccessWithAccount): Promise<vo
 	});
 }
 
-async function showAccountStatus(): Promise<void> {
+function encodePaginationCursor(index: number): string {
+	return Buffer.from(String(index), "utf8").toString("base64");
+}
+
+function decodePaginationCursor(cursor: string): number | null {
+	try {
+		const decoded = Buffer.from(cursor, "base64").toString("utf8");
+		if (!/^\d+$/.test(decoded)) return null;
+		const parsed = Number.parseInt(decoded, 10);
+		if (!Number.isFinite(parsed) || parsed < 0) return null;
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+async function showAccountStatus(args: string[] = []): Promise<number> {
+	const parsed = parseListArgs(args);
+	if (!parsed.ok) {
+		console.error(parsed.message);
+		return 1;
+	}
+	const options = parsed.options;
 	setStoragePath(null);
 	const storage = await loadAccounts();
 	const path = getStoragePath();
 	if (!storage || storage.accounts.length === 0) {
-		console.log("No accounts configured.");
-		console.log(`Storage: ${path}`);
-		return;
+		if (options.json) {
+			console.log(
+				JSON.stringify(
+					maybeRedactJsonOutput({
+						command: "list",
+						schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
+						total: 0,
+						storagePath: path,
+						pagination: {
+							pageSize: options.pageSize,
+							cursor: options.cursor ?? null,
+							nextCursor: null,
+							hasMore: false,
+						},
+						accounts: [],
+					}),
+					null,
+					2,
+				),
+			);
+		} else {
+			console.log("No accounts configured.");
+			console.log(`Storage: ${path}`);
+		}
+		return 0;
 	}
 
 	const now = Date.now();
 	const activeIndex = resolveActiveIndex(storage, "codex");
+	if (options.json) {
+		const startIndex = options.cursor ? decodePaginationCursor(options.cursor) : 0;
+		if (startIndex === null || startIndex > storage.accounts.length) {
+			console.error("Invalid --cursor value");
+			return 1;
+		}
+		const page = storage.accounts
+			.slice(startIndex, startIndex + options.pageSize)
+			.map((account, offset) => {
+				const index = startIndex + offset;
+				const label = formatAccountLabel(account, index);
+				const rateLimit = formatRateLimitEntry(account, now, "codex");
+				const cooldown = formatCooldown(account, now);
+				const markers: string[] = [];
+				if (index === activeIndex) markers.push("current");
+				if (account.enabled === false) markers.push("disabled");
+				if (rateLimit) markers.push("rate-limited");
+				if (cooldown) markers.push(`cooldown:${cooldown}`);
+				return {
+					index: index + 1,
+					email: account.email ?? null,
+					accountId: account.accountId ?? null,
+					label,
+					enabled: account.enabled !== false,
+					current: index === activeIndex,
+					markers,
+					lastUsedAtMs: typeof account.lastUsed === "number" ? account.lastUsed : null,
+				};
+			});
+		const nextIndex = startIndex + page.length;
+		const hasMore = nextIndex < storage.accounts.length;
+		const nextCursor = hasMore ? encodePaginationCursor(nextIndex) : null;
+		console.log(
+			JSON.stringify(
+				maybeRedactJsonOutput({
+					command: "list",
+					schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
+					total: storage.accounts.length,
+					storagePath: path,
+					pagination: {
+						pageSize: options.pageSize,
+						cursor: options.cursor ?? null,
+						nextCursor,
+						hasMore,
+					},
+					accounts: page,
+				}),
+				null,
+				2,
+			),
+		);
+		return 0;
+	}
+
 	console.log(`Accounts (${storage.accounts.length})`);
 	console.log(`Storage: ${path}`);
 	console.log("");
@@ -1435,6 +1671,7 @@ async function showAccountStatus(): Promise<void> {
 			: "never used";
 		console.log(`${i + 1}. ${label}${markerLabel} ${lastUsed}`);
 	}
+	return 0;
 }
 
 interface HealthCheckOptions {
@@ -1527,7 +1764,10 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 			}
 			continue;
 		}
-		const result = await queuedRefresh(account.refreshToken);
+		const result = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
+			accountId: account.accountId,
+			email: account.email,
+		});
 		if (result.type === "success") {
 			const tokenAccountId = extractAccountId(result.access);
 			const nextEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
@@ -1618,7 +1858,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		console.log(stylePromptText("Per-account lines are hidden in dashboard settings.", "muted"));
 	}
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		await persistQuotaCache(quotaCache, { notify: true });
 	}
 
 	if (changed) {
@@ -1666,10 +1906,27 @@ interface ReportCliOptions {
 	outPath?: string;
 }
 
+interface TelemetryCliOptions {
+	json: boolean;
+	sinceHours: number;
+	limit: number;
+}
+
 interface VerifyFlaggedCliOptions {
 	dryRun: boolean;
 	json: boolean;
 	restore: boolean;
+}
+
+interface ListCliOptions {
+	json: boolean;
+	pageSize: number;
+	cursor?: string;
+}
+
+interface RotateSecretsCliOptions {
+	json: boolean;
+	idempotencyKey?: string;
 }
 
 type ParsedArgsResult<T> = { ok: true; options: T } | { ok: false; message: string };
@@ -1724,6 +1981,71 @@ function printVerifyFlaggedUsage(): void {
 			"  - Restores healthy accounts back to active storage by default",
 		].join("\n"),
 	);
+}
+
+function parseListArgs(args: string[]): ParsedArgsResult<ListCliOptions> {
+	const options: ListCliOptions = {
+		json: false,
+		pageSize: 20,
+	};
+
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (!arg) continue;
+		if (arg === "--json" || arg === "-j") {
+			options.json = true;
+			continue;
+		}
+		if (arg === "--page-size") {
+			const value = args[i + 1];
+			if (!value) {
+				return { ok: false, message: "Missing value for --page-size" };
+			}
+			const normalized = value.trim();
+			if (!/^\d+$/.test(normalized)) {
+				return { ok: false, message: "--page-size must be between 1 and 200" };
+			}
+			const parsed = Number.parseInt(normalized, 10);
+			if (!Number.isFinite(parsed) || parsed < 1 || parsed > 200) {
+				return { ok: false, message: "--page-size must be between 1 and 200" };
+			}
+			options.pageSize = parsed;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--page-size=")) {
+			const value = arg.slice("--page-size=".length).trim();
+			if (!/^\d+$/.test(value)) {
+				return { ok: false, message: "--page-size must be between 1 and 200" };
+			}
+			const parsed = Number.parseInt(value, 10);
+			if (!Number.isFinite(parsed) || parsed < 1 || parsed > 200) {
+				return { ok: false, message: "--page-size must be between 1 and 200" };
+			}
+			options.pageSize = parsed;
+			continue;
+		}
+		if (arg === "--cursor") {
+			const value = args[i + 1];
+			if (!value || value.trim().length === 0) {
+				return { ok: false, message: "Missing value for --cursor" };
+			}
+			options.cursor = value.trim();
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--cursor=")) {
+			const value = arg.slice("--cursor=".length).trim();
+			if (value.length === 0) {
+				return { ok: false, message: "Missing value for --cursor" };
+			}
+			options.cursor = value;
+			continue;
+		}
+		return { ok: false, message: `Unknown option: ${arg}` };
+	}
+
+	return { ok: true, options };
 }
 
 function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliOptions> {
@@ -1888,6 +2210,37 @@ function parseDoctorArgs(args: string[]): ParsedArgsResult<DoctorCliOptions> {
 	return { ok: true, options };
 }
 
+function parseRotateSecretsArgs(args: string[]): ParsedArgsResult<RotateSecretsCliOptions> {
+	const options: RotateSecretsCliOptions = { json: false };
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (!arg) continue;
+		if (arg === "--json" || arg === "-j") {
+			options.json = true;
+			continue;
+		}
+		if (arg === "--idempotency-key") {
+			const value = args[i + 1];
+			if (!value || value.trim().length === 0 || looksLikeOptionToken(value)) {
+				return { ok: false, message: "Missing value for --idempotency-key" };
+			}
+			options.idempotencyKey = value.trim();
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--idempotency-key=")) {
+			const value = arg.slice("--idempotency-key=".length).trim();
+			if (value.length === 0 || looksLikeOptionToken(value)) {
+				return { ok: false, message: "Missing value for --idempotency-key" };
+			}
+			options.idempotencyKey = value;
+			continue;
+		}
+		return { ok: false, message: `Unknown option: ${arg}` };
+	}
+	return { ok: true, options };
+}
+
 function printReportUsage(): void {
 	console.log(
 		[
@@ -1901,6 +2254,34 @@ function printReportUsage(): void {
 			"  --out              Write JSON report to a file path",
 		].join("\n"),
 	);
+}
+
+function printTelemetryUsage(): void {
+	console.log(
+		[
+			"Usage:",
+			"  codex auth telemetry [--json] [--since-hours <hours>] [--limit <n>]",
+			"",
+			"Options:",
+			"  --json, -j            Print machine-readable JSON output",
+			"  --since-hours <hours> Include events newer than this many hours (default: 24)",
+			"  --limit <n>           Maximum events to return (default: 50, max: 500)",
+		].join("\n"),
+	);
+}
+
+function parsePositiveIntegerOption(
+	value: string | undefined,
+	optionName: string,
+): ParsedArgsResult<number> {
+	if (!value || !/^\d+$/.test(value)) {
+		return { ok: false, message: `Invalid value for ${optionName}: ${value ?? ""}` };
+	}
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		return { ok: false, message: `Invalid value for ${optionName}: ${value}` };
+	}
+	return { ok: true, options: parsed };
 }
 
 function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
@@ -1958,6 +2339,59 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		return { ok: false, message: `Unknown option: ${arg}` };
 	}
 
+	return { ok: true, options };
+}
+
+function parseTelemetryArgs(args: string[]): ParsedArgsResult<TelemetryCliOptions> {
+	const options: TelemetryCliOptions = {
+		json: false,
+		sinceHours: 24,
+		limit: 50,
+	};
+
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (!arg) continue;
+		if (arg === "--json" || arg === "-j") {
+			options.json = true;
+			continue;
+		}
+		if (arg === "--since-hours") {
+			const parsed = parsePositiveIntegerOption(args[i + 1], "--since-hours");
+			if (!parsed.ok) return parsed;
+			options.sinceHours = parsed.options;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--since-hours=")) {
+			const parsed = parsePositiveIntegerOption(
+				arg.slice("--since-hours=".length).trim(),
+				"--since-hours",
+			);
+			if (!parsed.ok) return parsed;
+			options.sinceHours = parsed.options;
+			continue;
+		}
+		if (arg === "--limit") {
+			const parsed = parsePositiveIntegerOption(args[i + 1], "--limit");
+			if (!parsed.ok) return parsed;
+			options.limit = parsed.options;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--limit=")) {
+			const parsed = parsePositiveIntegerOption(
+				arg.slice("--limit=".length).trim(),
+				"--limit",
+			);
+			if (!parsed.ok) return parsed;
+			options.limit = parsed.options;
+			continue;
+		}
+		return { ok: false, message: `Unknown option: ${arg}` };
+	}
+
+	options.limit = Math.max(1, Math.min(500, options.limit));
 	return { ok: true, options };
 }
 
@@ -2046,7 +2480,10 @@ async function runForecast(args: string[]): Promise<number> {
 		let probeAccessToken = account.accessToken;
 		let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
 		if (!hasUsableAccessToken(account, now)) {
-			const refreshResult = await queuedRefresh(account.refreshToken);
+			const refreshResult = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
+				accountId: account.accountId,
+				email: account.email,
+			});
 			if (refreshResult.type !== "success") {
 				refreshFailures.set(i, {
 					...refreshResult,
@@ -2099,25 +2536,33 @@ async function runForecast(args: string[]): Promise<number> {
 	const recommendation = recommendForecastAccount(forecastResults);
 
 	if (options.json) {
+		let quotaCachePersisted = true;
 		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+			quotaCachePersisted = await persistQuotaCache(quotaCache);
 		}
+		const payload = {
+			command: "forecast",
+			model: options.model,
+			liveProbe: options.live,
+			summary,
+			recommendation,
+			probeErrors: quotaCachePersisted
+				? probeErrors
+				: [...probeErrors, "Failed to persist quota cache changes"],
+			quotaCachePersisted,
+			accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
+		};
 		console.log(
 			JSON.stringify(
-				{
-					command: "forecast",
-					model: options.model,
-					liveProbe: options.live,
-					summary,
-					recommendation,
-					probeErrors,
-					accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
-				},
+				maybeRedactJsonOutput({
+					schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
+					...payload,
+				}),
 				null,
 				2,
 			),
 		);
-		return 0;
+		return quotaCachePersisted ? 0 : 1;
 	}
 
 	console.log(
@@ -2188,10 +2633,103 @@ async function runForecast(args: string[]): Promise<number> {
 			console.log(`  ${stylePromptText("-", "warning")} ${stylePromptText(error, "muted")}`);
 		}
 	}
+	let quotaCachePersisted = true;
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		quotaCachePersisted = await persistQuotaCache(quotaCache, { notify: true });
 	}
 
+	return quotaCachePersisted ? 0 : 1;
+}
+
+function formatTelemetryDetail(details: Record<string, unknown> | undefined): string {
+	if (!details) return "";
+	const chunks: string[] = [];
+	for (const [key, value] of Object.entries(details)) {
+		if (value === undefined || value === null) continue;
+		if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+			chunks.push(`${key}=${String(value)}`);
+			continue;
+		}
+		const serialized = JSON.stringify(value);
+		if (serialized) {
+			chunks.push(`${key}=${serialized}`);
+		}
+	}
+	return chunks.join(" ");
+}
+
+async function runTelemetry(args: string[]): Promise<number> {
+	if (args.includes("--help") || args.includes("-h")) {
+		printTelemetryUsage();
+		return 0;
+	}
+
+	const parsedArgs = parseTelemetryArgs(args);
+	if (!parsedArgs.ok) {
+		console.error(parsedArgs.message);
+		printTelemetryUsage();
+		return 1;
+	}
+	const options = parsedArgs.options;
+	const sinceMs = Date.now() - options.sinceHours * 60 * 60_000;
+	const events = await queryTelemetryEvents({
+		sinceMs,
+		limit: options.limit,
+	});
+	const summary = summarizeTelemetryEvents(events);
+	const logPath = getTelemetryLogPath();
+
+	if (options.json) {
+		console.log(
+			JSON.stringify(
+				{
+					command: "telemetry",
+					logPath,
+					sinceHours: options.sinceHours,
+					limit: options.limit,
+					summary,
+					events,
+				},
+				null,
+				2,
+			),
+		);
+		return 0;
+	}
+
+	console.log(`Telemetry report (last ${options.sinceHours}h, limit ${options.limit})`);
+	console.log(`Log file: ${logPath}`);
+	console.log(`Total events: ${summary.total}`);
+	console.log(`By source: cli=${summary.bySource.cli}, plugin=${summary.bySource.plugin}`);
+	console.log(
+		`By outcome: start=${summary.byOutcome.start}, success=${summary.byOutcome.success}, failure=${summary.byOutcome.failure}, recovery=${summary.byOutcome.recovery}, info=${summary.byOutcome.info}`,
+	);
+	if (summary.firstTimestamp && summary.lastTimestamp) {
+		console.log(`Window: ${summary.firstTimestamp} -> ${summary.lastTimestamp}`);
+	}
+	if (summary.byEvent.length > 0) {
+		console.log("");
+		console.log("Top events:");
+		for (const item of summary.byEvent.slice(0, 5)) {
+			console.log(`  - ${item.event}: ${item.count}`);
+		}
+	}
+
+	const recent = events.slice(Math.max(0, events.length - 10));
+	if (recent.length === 0) {
+		console.log("");
+		console.log("No telemetry events found for the selected window.");
+		return 0;
+	}
+
+	console.log("");
+	console.log("Recent events:");
+	for (const event of recent) {
+		const detail = formatTelemetryDetail(event.details);
+		console.log(
+			`  - ${event.timestamp} [${event.source}] ${event.outcome} ${event.event}${detail ? ` | ${detail}` : ""}`,
+		);
+	}
 	return 0;
 }
 
@@ -2224,7 +2762,10 @@ async function runReport(args: string[]): Promise<number> {
 			const account = storage.accounts[i];
 			if (!account || account.enabled === false) continue;
 
-			const refreshResult = await queuedRefresh(account.refreshToken);
+			const refreshResult = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
+				accountId: account.accountId,
+				email: account.email,
+			});
 			if (refreshResult.type !== "success") {
 				refreshFailures.set(i, {
 					...refreshResult,
@@ -2286,6 +2827,7 @@ async function runReport(args: string[]): Promise<number> {
 
 	const report = {
 		command: "report",
+		schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
 		generatedAt: new Date(now).toISOString(),
 		storagePath,
 		model: options.model,
@@ -2305,15 +2847,16 @@ async function runReport(args: string[]): Promise<number> {
 			accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
 		},
 	};
+	const safeReport = maybeRedactJsonOutput(report);
 
 	if (options.outPath) {
 		const outputPath = resolve(process.cwd(), options.outPath);
 		await fs.mkdir(dirname(outputPath), { recursive: true });
-		await fs.writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+		await fs.writeFile(outputPath, `${JSON.stringify(safeReport, null, 2)}\n`, "utf-8");
 	}
 
 	if (options.json) {
-		console.log(JSON.stringify(report, null, 2));
+		console.log(JSON.stringify(safeReport, null, 2));
 		return 0;
 	}
 
@@ -2386,16 +2929,7 @@ interface VerifyFlaggedReport {
 }
 
 function createEmptyAccountStorage(): AccountStorageV3 {
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = 0;
-	}
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily,
-	};
+	return createEmptyAccountStorageBase({ initializeFamilyIndexes: true });
 }
 
 function findExistingAccountIndexForFlagged(
@@ -2537,8 +3071,9 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 		if (options.json) {
 			console.log(
 				JSON.stringify(
-					{
+					maybeRedactJsonOutput({
 						command: "verify-flagged",
+						schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
 						total: 0,
 						restored: 0,
 						healthyFlagged: 0,
@@ -2547,7 +3082,7 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 						dryRun: options.dryRun,
 						restore: options.restore,
 						reports: [] as VerifyFlaggedReport[],
-					},
+					}),
 					null,
 					2,
 				),
@@ -2572,7 +3107,10 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 		const flagged = flaggedStorage.accounts[i];
 		if (!flagged) continue;
 		const label = formatAccountLabel(flagged, i);
-		const result = await queuedRefresh(flagged.refreshToken);
+		const result = await queuedRefreshWithAuthRateLimit(flagged.refreshToken, {
+			accountId: flagged.accountId,
+			email: flagged.email,
+		});
 
 		if (result.type === "success") {
 			if (!options.restore) {
@@ -2671,13 +3209,21 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 				accounts: nextFlaggedAccounts,
 			});
 		}
+		if (changed) {
+			emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.SUCCESS, "verify-flagged", {
+				restored,
+				stillFlagged,
+				remainingFlagged,
+			});
+		}
 	}
 
 	if (options.json) {
 		console.log(
 			JSON.stringify(
-				{
+				maybeRedactJsonOutput({
 					command: "verify-flagged",
+					schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
 					total: flaggedStorage.accounts.length,
 					restored,
 					healthyFlagged,
@@ -2687,7 +3233,7 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 					dryRun: options.dryRun,
 					restore: options.restore,
 					reports,
-				},
+				}),
 				null,
 				2,
 			),
@@ -2834,7 +3380,10 @@ async function runFix(args: string[]): Promise<number> {
 			continue;
 		}
 
-		const refreshResult = await queuedRefresh(account.refreshToken);
+		const refreshResult = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
+			accountId: account.accountId,
+			email: account.email,
+		});
 		if (refreshResult.type === "success") {
 			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
 			const nextAccountId = extractAccountId(refreshResult.access);
@@ -2972,34 +3521,45 @@ async function runFix(args: string[]): Promise<number> {
 
 	if (changed && !options.dryRun) {
 		await saveAccounts(storage);
+		emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.SUCCESS, "auto-fix", {
+			changedAccounts: reports.length,
+			disabledCount: reportSummary.disabled,
+			warnings: reportSummary.warnings,
+		});
 	}
 
 	if (options.json) {
+		let quotaCachePersisted = true;
 		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+			quotaCachePersisted = await persistQuotaCache(quotaCache);
 		}
+		const payload = {
+			command: "fix",
+			dryRun: options.dryRun,
+			liveProbe: options.live,
+			model: options.model,
+			changed,
+			summary: reportSummary,
+			recommendation,
+			recommendedSwitchCommand:
+				recommendation.recommendedIndex !== null &&
+					recommendation.recommendedIndex !== activeIndex
+					? `codex auth switch ${recommendation.recommendedIndex + 1}`
+					: null,
+			reports,
+			quotaCachePersisted,
+		};
 		console.log(
 			JSON.stringify(
-				{
-					command: "fix",
-					dryRun: options.dryRun,
-					liveProbe: options.live,
-					model: options.model,
-					changed,
-					summary: reportSummary,
-					recommendation,
-					recommendedSwitchCommand:
-						recommendation.recommendedIndex !== null &&
-							recommendation.recommendedIndex !== activeIndex
-							? `codex auth switch ${recommendation.recommendedIndex + 1}`
-							: null,
-					reports,
-				},
+				maybeRedactJsonOutput({
+					schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
+					...payload,
+				}),
 				null,
 				2,
 			),
 		);
-		return 0;
+		return quotaCachePersisted ? 0 : 1;
 	}
 
 	console.log(stylePromptText(`Auto-fix scan (${options.dryRun ? "preview" : "apply"})`, "accent"));
@@ -3052,8 +3612,9 @@ async function runFix(args: string[]): Promise<number> {
 			console.log(`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
 		}
 	}
+	let quotaCachePersisted = true;
 	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+		quotaCachePersisted = await persistQuotaCache(quotaCache, { notify: true });
 	}
 
 	if (changed && options.dryRun) {
@@ -3064,7 +3625,7 @@ async function runFix(args: string[]): Promise<number> {
 		console.log(`\n${stylePromptText("No changes were needed.", "muted")}`);
 	}
 
-	return 0;
+	return quotaCachePersisted ? 0 : 1;
 }
 
 type DoctorSeverity = "ok" | "warn" | "error";
@@ -3094,25 +3655,7 @@ function hasPlaceholderEmail(value: string | undefined): boolean {
 }
 
 function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
-	const total = storage.accounts.length;
-	const nextActive = total === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, total - 1));
-	let changed = false;
-	if (storage.activeIndex !== nextActive) {
-		storage.activeIndex = nextActive;
-		changed = true;
-	}
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		const raw = storage.activeIndexByFamily[family];
-		const fallback = storage.activeIndex;
-		const candidate = typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
-		const clamped = total === 0 ? 0 : Math.max(0, Math.min(candidate, total - 1));
-		if (storage.activeIndexByFamily[family] !== clamped) {
-			storage.activeIndexByFamily[family] = clamped;
-			changed = true;
-		}
-	}
-	return changed;
+	return normalizeActiveIndexByFamily(storage, storage.accounts.length);
 }
 
 function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {
@@ -3520,7 +4063,10 @@ async function runDoctor(args: string[]): Promise<number> {
 							message: `Prepared active-account token refresh for account ${activeIndex + 1} (dry-run)`,
 						});
 					} else {
-						const refreshResult = await queuedRefresh(activeAccount.refreshToken);
+						const refreshResult = await queuedRefreshWithAuthRateLimit(activeAccount.refreshToken, {
+							accountId: activeAccount.accountId,
+							email: activeAccount.email,
+						});
 						if (refreshResult.type === "success") {
 							const refreshedEmail = sanitizeEmail(
 								extractAccountEmail(refreshResult.access, refreshResult.idToken),
@@ -3601,11 +4147,19 @@ async function runDoctor(args: string[]): Promise<number> {
 		{ ok: 0, warn: 0, error: 0 },
 	);
 
+	if (options.fix && fixChanged && !options.dryRun) {
+		emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.SUCCESS, "doctor-fix", {
+			actionCount: fixActions.length,
+			summary,
+		});
+	}
+
 	if (options.json) {
 		console.log(
 			JSON.stringify(
-				{
+				maybeRedactJsonOutput({
 					command: "doctor",
+					schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
 					storagePath,
 					summary,
 					checks,
@@ -3615,7 +4169,7 @@ async function runDoctor(args: string[]): Promise<number> {
 						changed: fixChanged,
 						actions: fixActions,
 					},
-				},
+				}),
 				null,
 				2,
 			),
@@ -3649,13 +4203,116 @@ async function runDoctor(args: string[]): Promise<number> {
 	return summary.error > 0 ? 1 : 0;
 }
 
+async function runRotateSecrets(args: string[]): Promise<number> {
+	if (args.includes("--help") || args.includes("-h")) {
+		console.log([
+			"Usage: codex auth rotate-secrets [--json] [--idempotency-key <key>]",
+			"",
+			"Re-encrypts stored account and flagged-account secrets using CODEX_AUTH_ENCRYPTION_KEY.",
+			"Optional fallback key can be provided with CODEX_AUTH_PREVIOUS_ENCRYPTION_KEY.",
+			"Use --idempotency-key to make retries safe for automation.",
+		].join("\n"));
+		return 0;
+	}
+
+	const parsed = parseRotateSecretsArgs(args);
+	if (!parsed.ok) {
+		console.error(parsed.message);
+		return 1;
+	}
+	const { json: asJson, idempotencyKey } = parsed.options;
+	try {
+		if (idempotencyKey) {
+			const idempotency = await checkAndRecordIdempotencyKey(
+				"codex.auth.rotate-secrets",
+				idempotencyKey,
+			);
+			if (idempotency.replayed) {
+				if (asJson) {
+					console.log(
+						JSON.stringify(
+							maybeRedactJsonOutput({
+								command: "rotate-secrets",
+								schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
+								rotated: true,
+								replayed: true,
+								accounts: 0,
+								flaggedAccounts: 0,
+								idempotencyKey,
+							}),
+							null,
+							2,
+						),
+					);
+				} else {
+					console.log("Idempotent replay detected; skipping duplicate rotate-secrets execution.");
+				}
+				emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.PARTIAL, "rotate-secrets", {
+					replayed: true,
+					idempotencyKey,
+				});
+				return 0;
+			}
+		}
+
+		const result = await rotateStoredSecretEncryption();
+		emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.SUCCESS, "rotate-secrets", {
+			accounts: result.accounts,
+			flaggedAccounts: result.flaggedAccounts,
+			...(idempotencyKey ? { idempotencyKey } : {}),
+		});
+		if (asJson) {
+			console.log(
+				JSON.stringify(
+					maybeRedactJsonOutput({
+						command: "rotate-secrets",
+						schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
+						rotated: true,
+						accounts: result.accounts,
+						flaggedAccounts: result.flaggedAccounts,
+						replayed: false,
+						...(idempotencyKey ? { idempotencyKey } : {}),
+					}),
+					null,
+					2,
+				),
+			);
+			return 0;
+		}
+		console.log(
+			`Re-encrypted ${result.accounts} account(s) and ${result.flaggedAccounts} flagged account(s).`,
+		);
+		return 0;
+	} catch (error) {
+		const message = sanitizeCliErrorMessage(error);
+		emitAudit(AuditAction.CONFIG_CHANGE, AuditOutcome.FAILURE, "rotate-secrets", {
+			error: message,
+			...(idempotencyKey ? { idempotencyKey } : {}),
+		});
+		if (asJson) {
+			console.log(
+				JSON.stringify(
+					{
+						command: "rotate-secrets",
+						schemaVersion: JSON_OUTPUT_SCHEMA_VERSION,
+						rotated: false,
+						replayed: false,
+						error: message,
+						...(idempotencyKey ? { idempotencyKey } : {}),
+					},
+					null,
+					2,
+				),
+			);
+			return 1;
+		}
+		console.error(`Failed to rotate stored secrets: ${message}`);
+		return 1;
+	}
+}
+
 async function clearAccountsAndReset(): Promise<void> {
-	await saveAccounts({
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-	});
+	await saveAccounts(createEmptyAccountStorageBase());
 }
 
 async function handleManageAction(
@@ -3672,11 +4329,7 @@ async function handleManageAction(
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
 			storage.accounts.splice(idx, 1);
-			storage.activeIndex = 0;
-			storage.activeIndexByFamily = {};
-			for (const family of MODEL_FAMILIES) {
-				storage.activeIndexByFamily[family] = 0;
-			}
+			setActiveIndexForAllFamilies(storage, 0);
 			await saveAccounts(storage);
 			console.log(`Deleted account ${idx + 1}.`);
 		}
@@ -3872,11 +4525,18 @@ async function runSwitch(args: string[]): Promise<number> {
 	const indexArg = args[0];
 	if (!indexArg) {
 		console.error("Missing index. Usage: codex auth switch <index>");
+		emitAudit(AuditAction.ACCOUNT_SWITCH, AuditOutcome.FAILURE, "account-switch", {
+			reason: "missing-index",
+		});
 		return 1;
 	}
 	const parsed = Number.parseInt(indexArg, 10);
 	if (!Number.isFinite(parsed) || parsed < 1) {
 		console.error(`Invalid index: ${indexArg}`);
+		emitAudit(AuditAction.ACCOUNT_SWITCH, AuditOutcome.FAILURE, "account-switch", {
+			reason: "invalid-index",
+			indexArg,
+		});
 		return 1;
 	}
 	const targetIndex = parsed - 1;
@@ -3884,24 +4544,31 @@ async function runSwitch(args: string[]): Promise<number> {
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
 		console.error("No accounts configured.");
+		emitAudit(AuditAction.ACCOUNT_SWITCH, AuditOutcome.FAILURE, "account-switch", {
+			reason: "no-accounts",
+		});
 		return 1;
 	}
 	if (targetIndex < 0 || targetIndex >= storage.accounts.length) {
 		console.error(`Index out of range. Valid range: 1-${storage.accounts.length}`);
+		emitAudit(AuditAction.ACCOUNT_SWITCH, AuditOutcome.FAILURE, "account-switch", {
+			reason: "out-of-range",
+			targetIndex: parsed,
+		});
 		return 1;
 	}
 
 	const account = storage.accounts[targetIndex];
 	if (!account) {
 		console.error(`Account ${parsed} not found.`);
+		emitAudit(AuditAction.ACCOUNT_SWITCH, AuditOutcome.FAILURE, "account-switch", {
+			reason: "account-missing",
+			targetIndex: parsed,
+		});
 		return 1;
 	}
 
-	storage.activeIndex = targetIndex;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = targetIndex;
-	}
+	setActiveIndexForAllFamilies(storage, targetIndex);
 	const wasDisabled = account.enabled === false;
 	if (wasDisabled) {
 		account.enabled = true;
@@ -3913,7 +4580,10 @@ async function runSwitch(args: string[]): Promise<number> {
 	let syncIdToken: string | undefined;
 
 	if (!hasUsableAccessToken(account, switchNow)) {
-		const refreshResult = await queuedRefresh(account.refreshToken);
+		const refreshResult = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
+			accountId: account.accountId,
+			email: account.email,
+		});
 		if (refreshResult.type === "success") {
 			const tokenAccountId = extractAccountId(refreshResult.access);
 			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
@@ -3965,6 +4635,10 @@ async function runSwitch(args: string[]): Promise<number> {
 	console.log(
 		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
 	);
+	emitAudit(AuditAction.ACCOUNT_SWITCH, AuditOutcome.SUCCESS, "account-switch", {
+		targetIndex: parsed,
+		wasDisabled,
+	});
 	return 0;
 }
 
@@ -3993,7 +4667,10 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	let changed = false;
 
 	if (!hasUsableAccessToken(account, now)) {
-		const refreshResult = await queuedRefresh(account.refreshToken);
+		const refreshResult = await queuedRefreshWithAuthRateLimit(account.refreshToken, {
+			accountId: account.accountId,
+			email: account.email,
+		});
 		if (refreshResult.type === "success") {
 			const tokenAccountId = extractAccountId(refreshResult.access);
 			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
@@ -4039,9 +4716,68 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	});
 }
 
+function auditActionForCommand(command: string): AuditAction {
+	switch (command) {
+		case "login":
+			return AuditAction.AUTH_LOGIN;
+		case "switch":
+			return AuditAction.ACCOUNT_SWITCH;
+		case "check":
+			return AuditAction.REQUEST_START;
+		case "verify-flagged":
+			return AuditAction.ACCOUNT_REFRESH;
+		case "forecast":
+		case "report":
+		case "fix":
+		case "doctor":
+		case "list":
+		case "status":
+			return AuditAction.COMMAND_RUN;
+		default:
+			return AuditAction.COMMAND_RUN;
+	}
+}
+
+function sanitizeAuditError(error: unknown): string {
+	const raw = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+	const masked = raw
+		.replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "***REDACTED***")
+		.replace(/\b(?:refresh|access)_token_[A-Za-z0-9_-]{8,}\b/gi, "***REDACTED***")
+		.replace(/\bsecret-(?:access|refresh)-token\b/gi, "***REDACTED***")
+		.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, (match) => maskEmail(match));
+	return masked.slice(0, 200);
+}
+
+async function runWithAudit(
+	command: string,
+	runner: () => Promise<number>,
+): Promise<number> {
+	const action = auditActionForCommand(command);
+	const resource = `codex auth ${command}`;
+	try {
+		const code = await runner();
+		auditLog(
+			action,
+			"cli-user",
+			resource,
+			code === 0 ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE,
+			{ command, exitCode: code },
+		);
+		return code;
+	} catch (error) {
+		auditLog(action, "cli-user", resource, AuditOutcome.FAILURE, {
+			command,
+			error: sanitizeAuditError(error),
+		});
+		throw error;
+	}
+}
+
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
+	const pluginConfig = loadPluginConfig();
+	const telemetryEnabled = getTelemetryEnabled(pluginConfig);
 
 	const args = [...rawArgs];
 	if (args.length === 0) {
@@ -4060,44 +4796,137 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 
 	const command = sub ?? "login";
+	const emitTelemetry = (
+		outcome: TelemetryOutcome,
+		event: string,
+		details?: Record<string, unknown>,
+	): void => {
+		if (!telemetryEnabled) return;
+		void recordTelemetryEvent({
+			source: "cli",
+			event,
+			outcome,
+			details: {
+				command,
+				...details,
+			},
+		});
+	};
+
 	if (command === "--help" || command === "-h") {
 		printUsage();
 		return 0;
 	}
-	if (command === "login") {
-		return runAuthLogin();
-	}
-	if (command === "list" || command === "status") {
-		await showAccountStatus();
-		return 0;
-	}
-	if (command === "switch") {
-		return runSwitch(rest);
-	}
-	if (command === "check") {
-		await runHealthCheck({ liveProbe: true });
-		return 0;
-	}
-	if (command === "features") {
-		return runFeaturesReport();
-	}
-	if (command === "verify-flagged") {
-		return runVerifyFlagged(rest);
-	}
-	if (command === "forecast") {
-		return runForecast(rest);
-	}
-	if (command === "report") {
-		return runReport(rest);
-	}
-	if (command === "fix") {
-		return runFix(rest);
-	}
-	if (command === "doctor") {
-		return runDoctor(rest);
-	}
+	emitTelemetry("start", "cli.command.start", { argCount: rest.length });
+	try {
+		let exitCode = 0;
+		if (command === "login") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				return runAuthLogin();
+			});
+		} else if (command === "list" || command === "status") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				return showAccountStatus(rest);
+			});
+		} else if (command === "switch") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:write", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				return runSwitch(rest);
+			});
+		} else if (command === "check") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				await runHealthCheck({ liveProbe: true });
+				return 0;
+			});
+		} else if (command === "features") {
+			if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) {
+				return 1;
+			}
+			exitCode = runFeaturesReport();
+		} else if (command === "verify-flagged") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				return runVerifyFlagged(rest);
+			});
+		} else if (command === "forecast") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				return runForecast(rest);
+			});
+		} else if (command === "report") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				return runReport(rest);
+			});
+		} else if (command === "fix") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				return runFix(rest);
+			});
+		} else if (command === "doctor") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				if (
+					rest.includes("--fix") &&
+					!ensureAuthorized("accounts:repair", { command, interactive: output.isTTY })
+				) {
+					return 1;
+				}
+				return runDoctor(rest);
+			});
+		} else if (command === "rotate-secrets") {
+			if (
+				!ensureAuthorized("secrets:rotate", {
+					command,
+					interactive: output.isTTY,
+					idempotencyKeyPresent: hasOptionFlag(rest, "--idempotency-key"),
+				})
+			) {
+				return 1;
+			}
+			exitCode = await runRotateSecrets(rest);
+		} else if (command === "telemetry") {
+			exitCode = await runWithAudit(command, async () => {
+				if (!ensureAuthorized("accounts:read", { command, interactive: output.isTTY })) {
+					return 1;
+				}
+				return runTelemetry(rest);
+			});
+		} else {
+			console.error(`Unknown command: ${command}`);
+			printUsage();
+			exitCode = 1;
+		}
 
-	console.error(`Unknown command: ${command}`);
-	printUsage();
-	return 1;
+		emitTelemetry(exitCode === 0 ? "success" : "failure", "cli.command.finish", {
+			exitCode,
+		});
+		return exitCode;
+	} catch (error) {
+		emitTelemetry("failure", "cli.command.exception", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	}
 }
