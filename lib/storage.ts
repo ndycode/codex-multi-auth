@@ -234,6 +234,18 @@ function toStorageDecryptError(cause: unknown): NodeJS.ErrnoException {
 	return error;
 }
 
+function toFieldDecryptError(
+	fieldName: string,
+	cause: unknown,
+): NodeJS.ErrnoException {
+	const error = new Error(
+		`Failed to decrypt ${fieldName}`,
+		cause instanceof Error ? { cause } : undefined,
+	) as NodeJS.ErrnoException;
+	error.code = STORAGE_DECRYPT_ERROR_CODE;
+	return error;
+}
+
 function encryptAccountSensitiveFields(account: AccountMetadataV3): AccountMetadataV3 {
 	return {
 		...account,
@@ -1999,8 +2011,8 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		let refreshToken: string;
 		try {
 			refreshToken = decryptStorageSecret(refreshTokenRaw, "flagged refresh token").value;
-		} catch {
-			continue;
+		} catch (error) {
+			throw toFieldDecryptError("flagged refresh token", error);
 		}
 
 		const flaggedAt = typeof rawAccount.flaggedAt === "number" ? rawAccount.flaggedAt : Date.now();
@@ -2090,6 +2102,9 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 		return normalizeFlaggedStorage(data);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
+		if (code === STORAGE_DECRYPT_ERROR_CODE) {
+			throw error;
+		}
 		if (code !== "ENOENT") {
 			log.error("Failed to load flagged account storage", { path, error: String(error) });
 			return empty;
@@ -2120,6 +2135,10 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 		});
 		return migrated;
 	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === STORAGE_DECRYPT_ERROR_CODE) {
+			throw error;
+		}
 		log.error("Failed to migrate legacy flagged account storage", {
 			from: legacyPath,
 			to: path,
