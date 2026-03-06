@@ -10,6 +10,8 @@ const AUTH_SUBCOMMANDS = new Set([
 	"report",
 	"fix",
 	"doctor",
+	"rotate-secrets",
+	"telemetry",
 ]);
 
 export function normalizeAuthAlias(args) {

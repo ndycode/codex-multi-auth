@@ -12,6 +12,8 @@ describe("codex routing helpers", () => {
 	it("routes only known auth subcommands to multi-auth runner", () => {
 		expect(shouldHandleMultiAuthAuth(["auth"])).toBe(true);
 		expect(shouldHandleMultiAuthAuth(["auth", "login"])).toBe(true);
+		expect(shouldHandleMultiAuthAuth(["auth", "rotate-secrets"])).toBe(true);
+		expect(shouldHandleMultiAuthAuth(["auth", "telemetry"])).toBe(true);
 		expect(shouldHandleMultiAuthAuth(["auth", "--help"])).toBe(true);
 		expect(shouldHandleMultiAuthAuth(["auth", "unknown-subcommand"])).toBe(false);
 		expect(shouldHandleMultiAuthAuth(["status"])).toBe(false);
