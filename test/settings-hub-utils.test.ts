@@ -694,7 +694,7 @@ describe("settings-hub utility coverage", () => {
 			const selected = await api.promptExperimentalSettings({
 				proactiveRefreshIntervalMs: 30_000,
 			});
-			expect(selected?.proactiveRefreshIntervalMs).toBe(5_000);
+			expect(selected?.proactiveRefreshIntervalMs).toBe(60_000);
 		});
 	});
 });
