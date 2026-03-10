@@ -1,23 +1,25 @@
 import { stdin as input, stdout as output } from "node:process";
 import {
-  loadDashboardDisplaySettings,
-  saveDashboardDisplaySettings,
-  getDashboardSettingsPath,
-  DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-  type DashboardDisplaySettings,
-  type DashboardThemePreset,
-  type DashboardAccentColor,
-  type DashboardAccountSortMode,
-  type DashboardStatuslineField,
+	loadDashboardDisplaySettings,
+	getDashboardSettingsPath,
+	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+	type DashboardDisplaySettings,
+	type DashboardThemePreset,
+	type DashboardAccentColor,
+	type DashboardAccountSortMode,
+	type DashboardStatuslineField,
 } from "../dashboard-settings.js";
-import { getDefaultPluginConfig, loadPluginConfig, savePluginConfig } from "../config.js";
-import { getUnifiedSettingsPath } from "../unified-settings.js";
+import { getDefaultPluginConfig, loadPluginConfig } from "../config.js";
 import type { PluginConfig } from "../types.js";
-import { sleep } from "../utils.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
 import { select, type MenuItem } from "../ui/select.js";
+import {
+	persistBackendConfigSelection,
+	persistDashboardSettingsSelection,
+	withQueuedRetry,
+} from "./settings-persistence.js";
 
 
 type DashboardDisplaySettingKey =
@@ -517,12 +519,6 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 
 type DashboardSettingKey = keyof DashboardDisplaySettings;
 
-const RETRYABLE_SETTINGS_WRITE_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
-const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
-const SETTINGS_WRITE_BASE_DELAY_MS = 20;
-const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
-const settingsWriteQueues = new Map<string, Promise<void>>();
-
 const ACCOUNT_LIST_PANEL_KEYS = [
 	"menuShowStatusBadge",
 	"menuShowCurrentBadge",
@@ -548,82 +544,6 @@ const BEHAVIOR_PANEL_KEYS = [
 	"menuQuotaTtlMs",
 ] as const satisfies readonly DashboardSettingKey[];
 const THEME_PANEL_KEYS = ["uiThemePreset", "uiAccentColor"] as const satisfies readonly DashboardSettingKey[];
-
-function readErrorNumber(value: unknown): number | undefined {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string" && value.trim().length > 0) {
-		const parsed = Number.parseInt(value, 10);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	return undefined;
-}
-
-function getErrorStatusCode(error: unknown): number | undefined {
-	if (!error || typeof error !== "object") return undefined;
-	const record = error as Record<string, unknown>;
-	return readErrorNumber(record.status) ?? readErrorNumber(record.statusCode);
-}
-
-function getRetryAfterMs(error: unknown): number | undefined {
-	if (!error || typeof error !== "object") return undefined;
-	const record = error as Record<string, unknown>;
-	return (
-		readErrorNumber(record.retryAfterMs) ??
-		readErrorNumber(record.retry_after_ms) ??
-		readErrorNumber(record.retryAfter) ??
-		readErrorNumber(record.retry_after)
-	);
-}
-
-function isRetryableSettingsWriteError(error: unknown): boolean {
-	const statusCode = getErrorStatusCode(error);
-	if (statusCode === 429) return true;
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string" && RETRYABLE_SETTINGS_WRITE_CODES.has(code);
-}
-
-function resolveRetryDelayMs(error: unknown, attempt: number): number {
-	const retryAfterMs = getRetryAfterMs(error);
-	if (typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-		return Math.max(10, Math.min(SETTINGS_WRITE_MAX_DELAY_MS, Math.round(retryAfterMs)));
-	}
-	return Math.min(SETTINGS_WRITE_MAX_DELAY_MS, SETTINGS_WRITE_BASE_DELAY_MS * 2 ** attempt);
-}
-
-async function enqueueSettingsWrite<T>(pathKey: string, task: () => Promise<T>): Promise<T> {
-	const previous = settingsWriteQueues.get(pathKey) ?? Promise.resolve();
-	const queued = previous.catch(() => {}).then(task);
-	const queueTail = queued.then(
-		() => undefined,
-		() => undefined,
-	);
-	settingsWriteQueues.set(pathKey, queueTail);
-	try {
-		return await queued;
-	} finally {
-		if (settingsWriteQueues.get(pathKey) === queueTail) {
-			settingsWriteQueues.delete(pathKey);
-		}
-	}
-}
-
-async function withQueuedRetry<T>(pathKey: string, task: () => Promise<T>): Promise<T> {
-	return enqueueSettingsWrite(pathKey, async () => {
-		let lastError: unknown;
-		for (let attempt = 0; attempt < SETTINGS_WRITE_MAX_ATTEMPTS; attempt += 1) {
-			try {
-				return await task();
-			} catch (error) {
-				lastError = error;
-				if (!isRetryableSettingsWriteError(error) || attempt + 1 >= SETTINGS_WRITE_MAX_ATTEMPTS) {
-					throw error;
-				}
-				await sleep(resolveRetryDelayMs(error, attempt));
-			}
-		}
-		throw lastError instanceof Error ? lastError : new Error("settings save retry exhausted");
-	});
-}
 
 function copyDashboardSettingValue(
 	target: DashboardDisplaySettings,
@@ -656,52 +576,6 @@ function mergeDashboardSettingsForKeys(
 		copyDashboardSettingValue(next, selected, key);
 	}
 	return cloneDashboardSettings(next);
-}
-
-function resolvePluginConfigSavePathKey(): string {
-	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
-	return envPath.length > 0 ? envPath : getUnifiedSettingsPath();
-}
-
-function formatPersistError(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	return String(error);
-}
-
-function warnPersistFailure(scope: string, error: unknown): void {
-	console.warn(`Settings save failed (${scope}) after retries: ${formatPersistError(error)}`);
-}
-
-async function persistDashboardSettingsSelection(
-	selected: DashboardDisplaySettings,
-	keys: readonly DashboardSettingKey[],
-	scope: string,
-): Promise<DashboardDisplaySettings> {
-	const fallback = cloneDashboardSettings(selected);
-	try {
-		return await withQueuedRetry(getDashboardSettingsPath(), async () => {
-			const latest = cloneDashboardSettings(await loadDashboardDisplaySettings());
-			const merged = mergeDashboardSettingsForKeys(latest, selected, keys);
-			await saveDashboardDisplaySettings(merged);
-			return merged;
-		});
-	} catch (error) {
-		warnPersistFailure(scope, error);
-		return fallback;
-	}
-}
-
-async function persistBackendConfigSelection(selected: PluginConfig, scope: string): Promise<PluginConfig> {
-	const fallback = cloneBackendPluginConfig(selected);
-	try {
-		await withQueuedRetry(resolvePluginConfigSavePathKey(), async () => {
-			await savePluginConfig(buildBackendConfigPatch(selected));
-		});
-		return fallback;
-	} catch (error) {
-		warnPersistFailure(scope, error);
-		return fallback;
-	}
 }
 
 function normalizeStatuslineFields(
@@ -1081,14 +955,20 @@ async function persistDashboardSettingsSelectionForTests(
 	keys: ReadonlyArray<keyof DashboardDisplaySettings>,
 	scope: string,
 ): Promise<DashboardDisplaySettings> {
-	return persistDashboardSettingsSelection(selected, keys as readonly DashboardSettingKey[], scope);
+	return persistDashboardSettingsSelection(selected, keys as readonly DashboardSettingKey[], scope, {
+		cloneSettings: cloneDashboardSettings,
+		mergeSettingsForKeys: mergeDashboardSettingsForKeys,
+	});
 }
 
 async function persistBackendConfigSelectionForTests(
 	selected: PluginConfig,
 	scope: string,
 ): Promise<PluginConfig> {
-	return persistBackendConfigSelection(selected, scope);
+	return persistBackendConfigSelection(selected, scope, {
+		cloneConfig: cloneBackendPluginConfig,
+		buildPatch: buildBackendConfigPatch,
+	});
 }
 
 const __testOnly = {
@@ -1287,7 +1167,10 @@ async function configureDashboardDisplaySettings(
 	if (!selected) return current;
 	if (dashboardSettingsEqual(current, selected)) return current;
 
-	const merged = await persistDashboardSettingsSelection(selected, ACCOUNT_LIST_PANEL_KEYS, "account-list");
+	const merged = await persistDashboardSettingsSelection(selected, ACCOUNT_LIST_PANEL_KEYS, "account-list", {
+		cloneSettings: cloneDashboardSettings,
+		mergeSettingsForKeys: mergeDashboardSettingsForKeys,
+	});
 	applyUiThemeFromDashboardSettings(merged);
 	return merged;
 }
@@ -1480,7 +1363,10 @@ async function configureStatuslineSettings(
 	if (!selected) return current;
 	if (dashboardSettingsEqual(current, selected)) return current;
 
-	const merged = await persistDashboardSettingsSelection(selected, STATUSLINE_PANEL_KEYS, "summary-fields");
+	const merged = await persistDashboardSettingsSelection(selected, STATUSLINE_PANEL_KEYS, "summary-fields", {
+		cloneSettings: cloneDashboardSettings,
+		mergeSettingsForKeys: mergeDashboardSettingsForKeys,
+	});
 	applyUiThemeFromDashboardSettings(merged);
 	return merged;
 }
@@ -2053,7 +1939,10 @@ async function configureBackendSettings(
 	if (!selected) return current;
 	if (backendSettingsEqual(current, selected)) return current;
 
-	return persistBackendConfigSelection(selected, "backend");
+	return persistBackendConfigSelection(selected, "backend", {
+		cloneConfig: cloneBackendPluginConfig,
+		buildPatch: buildBackendConfigPatch,
+	});
 }
 
 async function promptSettingsHub(
@@ -2120,14 +2009,20 @@ async function configureUnifiedSettings(
 		if (action.type === "behavior") {
 			const selected = await promptBehaviorSettings(current);
 			if (selected && !dashboardSettingsEqual(current, selected)) {
-				current = await persistDashboardSettingsSelection(selected, BEHAVIOR_PANEL_KEYS, "behavior");
+				current = await persistDashboardSettingsSelection(selected, BEHAVIOR_PANEL_KEYS, "behavior", {
+					cloneSettings: cloneDashboardSettings,
+					mergeSettingsForKeys: mergeDashboardSettingsForKeys,
+				});
 			}
 			continue;
 		}
 		if (action.type === "theme") {
 			const selected = await promptThemeSettings(current);
 			if (selected && !dashboardSettingsEqual(current, selected)) {
-				current = await persistDashboardSettingsSelection(selected, THEME_PANEL_KEYS, "theme");
+				current = await persistDashboardSettingsSelection(selected, THEME_PANEL_KEYS, "theme", {
+					cloneSettings: cloneDashboardSettings,
+					mergeSettingsForKeys: mergeDashboardSettingsForKeys,
+				});
 				applyUiThemeFromDashboardSettings(current);
 			}
 			continue;
