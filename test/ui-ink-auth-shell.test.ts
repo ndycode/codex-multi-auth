@@ -127,6 +127,7 @@ describe("ink auth shell", () => {
 		const dashboard = createDashboardViewModel();
 		const app = startInkAuthShell({
 			dashboard,
+			env: {},
 			stdin: input,
 			stdout: output,
 			stderr,

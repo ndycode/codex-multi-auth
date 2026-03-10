@@ -31,15 +31,23 @@ function setInteractiveTTY(): void {
 function restoreTTYDescriptors(): void {
 	if (stdinIsTTYDescriptor) {
 		Object.defineProperty(process.stdin, "isTTY", stdinIsTTYDescriptor);
+	} else {
+		delete (process.stdin as NodeJS.ReadStream & { isTTY?: boolean }).isTTY;
 	}
 	if (stdoutIsTTYDescriptor) {
 		Object.defineProperty(process.stdout, "isTTY", stdoutIsTTYDescriptor);
+	} else {
+		delete (process.stdout as NodeJS.WriteStream & { isTTY?: boolean }).isTTY;
 	}
 	if (stdoutColumnsDescriptor) {
 		Object.defineProperty(process.stdout, "columns", stdoutColumnsDescriptor);
+	} else {
+		delete (process.stdout as NodeJS.WriteStream & { columns?: number }).columns;
 	}
 	if (stdoutRowsDescriptor) {
 		Object.defineProperty(process.stdout, "rows", stdoutRowsDescriptor);
+	} else {
+		delete (process.stdout as NodeJS.WriteStream & { rows?: number }).rows;
 	}
 }
 

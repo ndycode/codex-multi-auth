@@ -12,6 +12,26 @@ import {
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 
+async function removeWithRetry(path: string): Promise<void> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await rm(path, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+		}
+	}
+	if (lastError) {
+		throw lastError;
+	}
+}
+
 describe("codex-cli sync", () => {
 	let tempDir: string;
 	let accountsPath: string;
@@ -61,7 +81,7 @@ describe("codex-cli sync", () => {
 			process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE =
 				previousEnforceFileStore;
 		}
-		await rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir);
 	});
 
 	it("does not seed canonical storage from Codex CLI mirror files", async () => {

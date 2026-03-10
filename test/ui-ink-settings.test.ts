@@ -76,8 +76,11 @@ describe("ink settings flows", () => {
 	beforeEach(async () => {
 		vi.resetModules();
 		vi.clearAllMocks();
+		process.env.NODE_ENV = "test";
 		const dashboardSettingsModule = await import("../lib/dashboard-settings.js");
 		const configModule = await import("../lib/config.js");
+		const settingsPersistenceModule = await import("../lib/codex-manager/settings-persistence.js");
+		settingsPersistenceModule.resetSettingsWriteQueuesForTesting();
 		loadDashboardDisplaySettingsMock.mockResolvedValue(dashboardSettingsModule.DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
 		saveDashboardDisplaySettingsMock.mockResolvedValue(undefined);
 		loadPluginConfigMock.mockReturnValue(configModule.getDefaultPluginConfig());
