@@ -4,7 +4,7 @@ import {
 	getDashboardSettingsPath,
 	type DashboardDisplaySettings,
 } from "../dashboard-settings.js";
-import { savePluginConfig } from "../config.js";
+import { loadPluginConfig, savePluginConfig } from "../config.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
 import type { PluginConfig } from "../types.js";
 import { sleep } from "../utils.js";
@@ -14,6 +14,13 @@ const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
 const SETTINGS_WRITE_BASE_DELAY_MS = 20;
 const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
 const settingsWriteQueues = new Map<string, Promise<void>>();
+
+export function resetSettingsWriteQueuesForTesting(): void {
+	if (process.env.NODE_ENV !== "test") {
+		return;
+	}
+	settingsWriteQueues.clear();
+}
 
 function readErrorNumber(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -145,7 +152,7 @@ export async function persistBackendConfigSelection(
 		await withQueuedRetry(resolvePluginConfigSavePathKey(), async () => {
 			await savePluginConfig(helpers.buildPatch(selected));
 		});
-		return fallback;
+		return helpers.cloneConfig(loadPluginConfig());
 	} catch (error) {
 		warnPersistFailure(scope, error);
 		return fallback;

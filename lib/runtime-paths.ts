@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 
 function firstNonEmpty(values: Array<string | undefined>): string | null {
@@ -76,9 +76,11 @@ function pathsEqualNormalized(a: string, b: string): boolean {
 	const normalize = (value: string): string => {
 		const trimmed = value.trim();
 		if (process.platform === "win32") {
-			return win32.normalize(trimmed).toLowerCase();
+			const normalized = win32.normalize(trimmed).replace(/[\\/]+$/, "");
+			return normalized.length > 0 ? normalized.toLowerCase() : win32.sep;
 		}
-		return trimmed;
+		const normalized = posix.normalize(trimmed).replace(/\/+$/, "");
+		return normalized.length > 0 ? normalized : "/";
 	};
 	return normalize(a) === normalize(b);
 }

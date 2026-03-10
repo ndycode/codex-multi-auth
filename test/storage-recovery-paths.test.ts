@@ -31,16 +31,21 @@ function sha256(value: string): string {
 describe("storage recovery paths", () => {
 	let workDir = "";
 	let storagePath = "";
+	let previousCodexHome: string | undefined;
 
 	beforeEach(async () => {
 		workDir = join(tmpdir(), `codex-storage-recovery-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		storagePath = join(workDir, "openai-codex-accounts.json");
+		previousCodexHome = process.env.CODEX_HOME;
 		await fs.mkdir(workDir, { recursive: true });
+		process.env.CODEX_HOME = join(workDir, "codex-home");
 		setStoragePathDirect(storagePath);
 		setStorageBackupEnabled(true);
 	});
 
 	afterEach(async () => {
+		if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+		else process.env.CODEX_HOME = previousCodexHome;
 		setStoragePathDirect(null);
 		setStorageBackupEnabled(true);
 		await fs.rm(workDir, { recursive: true, force: true });

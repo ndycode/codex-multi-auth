@@ -732,7 +732,7 @@ export async function getBackupMetadata(): Promise<BackupMetadata> {
 
 async function loadAccountsForRestoreAssessment(path: string): Promise<AccountStorageWithMetadata | null> {
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const hasIntentionalResetMarker = existsSync(resetMarkerPath);
+	let hasIntentionalResetMarker = existsSync(resetMarkerPath);
 
 	try {
 		const { normalized, schemaErrors } = await loadAccountsFromPath(path);
@@ -747,6 +747,7 @@ async function loadAccountsForRestoreAssessment(path: string): Promise<AccountSt
 
 		if (hasIntentionalResetMarker) {
 			await removeIntentionalResetMarker(path);
+			hasIntentionalResetMarker = false;
 		}
 
 		const annotated: AccountStorageWithMetadata = { ...normalized };
@@ -763,7 +764,6 @@ async function loadAccountsForRestoreAssessment(path: string): Promise<AccountSt
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
 			if (hasIntentionalResetMarker) {
-				await removeIntentionalResetMarker(path);
 				return {
 					...createEmptyAccountStorage(),
 					restoreEligible: false,
@@ -1498,20 +1498,20 @@ async function loadAccountsInternal(
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
+			if (hasIntentionalResetMarker) {
+				await removeIntentionalResetMarker(path);
+				return {
+					...createEmptyAccountStorage(),
+					restoreEligible: false,
+					restoreReason: "intentional-reset",
+				};
+			}
 			if (migratedFallbackStorage) {
 				return migratedFallbackStorage;
 			}
 			if (migratedLegacyStorage) {
 				return migratedLegacyStorage;
 			}
-		}
-		if (code === "ENOENT" && hasIntentionalResetMarker) {
-			await removeIntentionalResetMarker(path);
-			return {
-				...createEmptyAccountStorage(),
-				restoreEligible: false,
-				restoreReason: "intentional-reset",
-			};
 		}
 
 	const recoveredFromWal = await loadAccountsFromJournal(path);
