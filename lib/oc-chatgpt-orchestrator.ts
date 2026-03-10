@@ -167,8 +167,9 @@ export async function applyOcChatgptSync(
 	options: ApplyOcChatgptSyncOptions,
 ): Promise<OcChatgptSyncApplyResult> {
 	const dependencies = options.dependencies ?? {};
+	let plan: OcChatgptSyncPlanResult | undefined;
 	try {
-		const plan = await planOcChatgptSync({
+		plan = await planOcChatgptSync({
 			source: options.source,
 			destination: options.destination,
 			detectOptions: options.detectOptions,
@@ -194,6 +195,9 @@ export async function applyOcChatgptSync(
 			persistedPath,
 		};
 	} catch (error) {
+		if (plan?.kind === "ready") {
+			return { kind: "error", target: plan.target, error };
+		}
 		const detection =
 			dependencies.detectTarget?.(options.detectOptions) ??
 			detectOcChatgptMultiAuthTarget(options.detectOptions);

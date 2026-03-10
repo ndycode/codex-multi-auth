@@ -245,6 +245,21 @@ describe("oc-chatgpt orchestrator", () => {
 		}
 	});
 
+	it("forwards force=true to named backup export dependencies", async () => {
+		const exportBackup = vi.fn(async () => "C:/target/backups/forced.json");
+		const result = await runNamedBackupExport({
+			name: "forced",
+			force: true,
+			dependencies: { exportBackup },
+		});
+
+		expect(exportBackup).toHaveBeenCalledWith("forced", { force: true });
+		expect(result).toEqual({
+			kind: "exported",
+			path: "C:/target/backups/forced.json",
+		});
+	});
+
 	it("extracts collision paths from message-only backup errors", async () => {
 		const result = await runNamedBackupExport({
 			name: "backup-2026-03-11",
@@ -311,6 +326,35 @@ describe("oc-chatgpt orchestrator", () => {
 		});
 		expect(loadTargetStorage).toHaveBeenCalledOnce();
 		expect(result.kind).toBe("applied");
+	});
+
+	it("supports null source by preserving the destination snapshot during planning", async () => {
+		const result = await planOcChatgptSync({
+			source: null,
+			destination: destinationStorage,
+			dependencies: {
+				detectTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: "C:/target",
+						accountPath: "C:/target/openai-codex-accounts.json",
+						backupRoot: "C:/target/backups",
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+			},
+		});
+
+		expect(result.kind).toBe("ready");
+		if (result.kind === "ready") {
+			expect(result.preview.toAdd).toHaveLength(0);
+			expect(result.preview.toUpdate).toHaveLength(0);
+			expect(result.preview.toSkip).toHaveLength(0);
+			expect(result.preview.unchangedDestinationOnly).toHaveLength(1);
+			expect(result.destination).toBe(destinationStorage);
+		}
 	});
 
 	it("returns structured error when loadTargetStorage throws during apply", async () => {
