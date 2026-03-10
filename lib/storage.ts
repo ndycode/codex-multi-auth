@@ -1329,7 +1329,7 @@ export async function clearAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getStoragePath();
 		const walPath = getAccountsWalPath(path);
-		const backupPaths = getAccountsBackupRecoveryCandidates(path);
+		const backupPaths = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
 		const clearPath = async (targetPath: string): Promise<void> => {
 			try {
 				await fs.unlink(targetPath);

@@ -282,4 +282,31 @@ describe("oc-chatgpt orchestrator", () => {
 			expect(result.error).toBe(backupError);
 		}
 	});
+
+	it("passes injected loadTargetStorage through apply planning when destination is omitted", async () => {
+		const loadedDestination = { ...destinationStorage, activeIndex: 0 };
+		const loadTargetStorage = vi.fn(async () => loadedDestination);
+		const persistMerged = vi.fn(async () => "C:/target/openai-codex-accounts.json");
+		const result = await applyOcChatgptSync({
+			source: sourceStorage,
+			dependencies: {
+				detectTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: "C:/target",
+						accountPath: "C:/target/openai-codex-accounts.json",
+						backupRoot: "C:/target/backups",
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+				loadTargetStorage,
+				persistMerged,
+			},
+		});
+		expect(loadTargetStorage).toHaveBeenCalledOnce();
+		expect(result.kind).toBe("applied");
+	});
+
 });

@@ -163,6 +163,7 @@ export async function applyOcChatgptSync(
 		dependencies: {
 			detectTarget: dependencies.detectTarget,
 			previewMerge: dependencies.previewMerge,
+			loadTargetStorage: dependencies.loadTargetStorage,
 		},
 	});
 
