@@ -206,8 +206,9 @@ describe("codex-cli sync", () => {
 			expect(result.changed).toBe(true);
 			expect(result.storage).not.toBe(current);
 			expect(result.storage?.activeIndex).toBe(1);
-			for (const family of MODEL_FAMILIES) {
-				expect(result.storage?.activeIndexByFamily?.[family]).toBe(1);
+			expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
+			for (const family of MODEL_FAMILIES.filter((candidate) => candidate !== "codex")) {
+				expect(result.storage?.activeIndexByFamily?.[family]).toBeUndefined();
 			}
 			expect(loadSpy).not.toHaveBeenCalled();
 		} finally {
@@ -371,5 +372,26 @@ describe("codex-cli sync", () => {
 				family,
 			),
 		).toBe(1);
+	});
+
+	it("does not report changes when missing family indexes already resolve to the active index", async () => {
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		};
+
+		const result = await syncAccountStorageFromCodexCli(current);
+		expect(result.changed).toBe(false);
+		expect(result.storage).toBe(current);
 	});
 });
