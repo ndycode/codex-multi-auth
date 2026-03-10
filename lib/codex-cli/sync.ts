@@ -16,9 +16,18 @@ function cloneStorage(storage: AccountStorageV3): AccountStorageV3 {
 	};
 }
 
+function normalizeIndexCandidate(value: number, fallback: number): number {
+	if (!Number.isFinite(value)) {
+		return fallback;
+	}
+	return Math.trunc(value);
+}
+
 function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 	const count = storage.accounts.length;
-	const clamped = count === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, count - 1));
+	const normalizedActiveIndex = normalizeIndexCandidate(storage.activeIndex, 0);
+	const clamped =
+		count === 0 ? 0 : Math.max(0, Math.min(normalizedActiveIndex, count - 1));
 	if (storage.activeIndex !== clamped) {
 		storage.activeIndex = clamped;
 	}
@@ -26,7 +35,9 @@ function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 	for (const family of MODEL_FAMILIES) {
 		const raw = storage.activeIndexByFamily[family];
 		const resolved =
-			typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
+			typeof raw === "number"
+				? normalizeIndexCandidate(raw, storage.activeIndex)
+				: storage.activeIndex;
 		storage.activeIndexByFamily[family] =
 			count === 0 ? 0 : Math.max(0, Math.min(resolved, count - 1));
 	}
@@ -45,9 +56,9 @@ function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
  * values need clamping, or null when canonical storage is missing.
  */
 export function syncAccountStorageFromCodexCli(
-    current: AccountStorageV3 | null,
+	current: AccountStorageV3 | null,
 ): Promise<{ storage: AccountStorageV3 | null; changed: boolean }> {
-    incrementCodexCliMetric("reconcileAttempts");
+	incrementCodexCliMetric("reconcileAttempts");
 
 	if (!current) {
 		incrementCodexCliMetric("reconcileNoops");
@@ -74,10 +85,10 @@ export function syncAccountStorageFromCodexCli(
 		accountCount: next.accounts.length,
 	});
 
-    return Promise.resolve({
-        storage: changed ? next : current,
-        changed,
-    });
+	return Promise.resolve({
+		storage: changed ? next : current,
+		changed,
+	});
 }
 
 export function getActiveSelectionForFamily(
@@ -87,6 +98,9 @@ export function getActiveSelectionForFamily(
 	const count = storage.accounts.length;
 	if (count === 0) return 0;
 	const raw = storage.activeIndexByFamily?.[family];
-	const candidate = typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
+	const candidate =
+		typeof raw === "number"
+			? normalizeIndexCandidate(raw, storage.activeIndex)
+			: normalizeIndexCandidate(storage.activeIndex, 0);
 	return Math.max(0, Math.min(candidate, count - 1));
 }
