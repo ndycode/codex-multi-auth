@@ -1,29 +1,40 @@
-import { promises as fs, existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
+import { existsSync, promises as fs } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
+import {
+	exportNamedBackupFile,
+	resolveNamedBackupPath,
+} from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 import {
+	type AccountMetadataV1,
+	type AccountMetadataV3,
+	type AccountStorageV1,
+	type AccountStorageV3,
+	type CooldownReason,
+	migrateV1ToV3,
+	type RateLimitStateV3,
+} from "./storage/migrations.js";
+import {
+	findProjectRoot,
 	getConfigDir,
 	getProjectConfigDir,
 	getProjectGlobalConfigDir,
-	findProjectRoot,
 	resolvePath,
 	resolveProjectStorageIdentityRoot,
 } from "./storage/paths.js";
-import {
-  migrateV1ToV3,
-  type CooldownReason,
-  type RateLimitStateV3,
-  type AccountMetadataV1,
-  type AccountStorageV1,
-  type AccountMetadataV3,
-  type AccountStorageV3,
-} from "./storage/migrations.js";
 
-export type { CooldownReason, RateLimitStateV3, AccountMetadataV1, AccountStorageV1, AccountMetadataV3, AccountStorageV3 };
+export type {
+	CooldownReason,
+	RateLimitStateV3,
+	AccountMetadataV1,
+	AccountStorageV1,
+	AccountMetadataV3,
+	AccountStorageV3,
+};
 
 const log = createLogger("storage");
 const ACCOUNTS_FILE_NAME = "openai-codex-accounts.json";
@@ -34,7 +45,6 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
-
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
 
@@ -53,72 +63,84 @@ export interface FlaggedAccountStorageV1 {
  * Custom error class for storage operations with platform-aware hints.
  */
 export class StorageError extends Error {
-  readonly code: string;
-  readonly path: string;
-  readonly hint: string;
+	readonly code: string;
+	readonly path: string;
+	readonly hint: string;
 
-  constructor(message: string, code: string, path: string, hint: string, cause?: Error) {
-    super(message, { cause });
-    this.name = "StorageError";
-    this.code = code;
-    this.path = path;
-    this.hint = hint;
-  }
+	constructor(
+		message: string,
+		code: string,
+		path: string,
+		hint: string,
+		cause?: Error,
+	) {
+		super(message, { cause });
+		this.name = "StorageError";
+		this.code = code;
+		this.path = path;
+		this.hint = hint;
+	}
 }
 
 /**
  * Generate platform-aware troubleshooting hint based on error code.
  */
 export function formatStorageErrorHint(error: unknown, path: string): string {
-  const err = error as NodeJS.ErrnoException;
-  const code = err?.code || "UNKNOWN";
-  const isWindows = process.platform === "win32";
+	const err = error as NodeJS.ErrnoException;
+	const code = err?.code || "UNKNOWN";
+	const isWindows = process.platform === "win32";
 
-  switch (code) {
-    case "EACCES":
-    case "EPERM":
-      return isWindows
-        ? `Permission denied writing to ${path}. Check antivirus exclusions for this folder. Ensure you have write permissions.`
-        : `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.codex`;
-    case "EBUSY":
-      return `File is locked at ${path}. The file may be open in another program. Close any editors or processes accessing it.`;
-    case "ENOSPC":
-      return `Disk is full. Free up space and try again. Path: ${path}`;
-    case "EEMPTY":
-      return `File written but is empty. This may indicate a disk or filesystem issue. Path: ${path}`;
-    default:
-      return isWindows
-        ? `Failed to write to ${path}. Check folder permissions and ensure path contains no special characters.`
-        : `Failed to write to ${path}. Check folder permissions and disk space.`;
-  }
+	switch (code) {
+		case "EACCES":
+		case "EPERM":
+			return isWindows
+				? `Permission denied writing to ${path}. Check antivirus exclusions for this folder. Ensure you have write permissions.`
+				: `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.codex`;
+		case "EBUSY":
+			return `File is locked at ${path}. The file may be open in another program. Close any editors or processes accessing it.`;
+		case "ENOSPC":
+			return `Disk is full. Free up space and try again. Path: ${path}`;
+		case "EEMPTY":
+			return `File written but is empty. This may indicate a disk or filesystem issue. Path: ${path}`;
+		default:
+			return isWindows
+				? `Failed to write to ${path}. Check folder permissions and ensure path contains no special characters.`
+				: `Failed to write to ${path}. Check folder permissions and disk space.`;
+	}
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
-  const previousMutex = storageMutex;
-  let releaseLock: () => void;
-  storageMutex = new Promise<void>((resolve) => {
-    releaseLock = resolve;
-  });
-  return previousMutex.then(fn).finally(() => releaseLock());
+	const previousMutex = storageMutex;
+	let releaseLock: () => void;
+	storageMutex = new Promise<void>((resolve) => {
+		releaseLock = resolve;
+	});
+	return previousMutex.then(fn).finally(() => releaseLock());
 }
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 
 type AccountLike = {
-  accountId?: string;
-  email?: string;
-  refreshToken: string;
-  addedAt?: number;
-  lastUsed?: number;
+	accountId?: string;
+	email?: string;
+	refreshToken: string;
+	addedAt?: number;
+	lastUsed?: number;
 };
 
 function looksLikeSyntheticFixtureAccount(account: AccountMetadataV3): boolean {
-	const email = typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
+	const email =
+		typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
 	const refreshToken =
-		typeof account.refreshToken === "string" ? account.refreshToken.trim().toLowerCase() : "";
-	const accountId = typeof account.accountId === "string" ? account.accountId.trim().toLowerCase() : "";
+		typeof account.refreshToken === "string"
+			? account.refreshToken.trim().toLowerCase()
+			: "";
+	const accountId =
+		typeof account.accountId === "string"
+			? account.accountId.trim().toLowerCase()
+			: "";
 	if (!/^account\d+@example\.com$/.test(email)) {
 		return false;
 	}
@@ -134,39 +156,51 @@ function looksLikeSyntheticFixtureAccount(account: AccountMetadataV3): boolean {
 	return /^acc(_|-)?\d+$/.test(accountId);
 }
 
-function looksLikeSyntheticFixtureStorage(storage: AccountStorageV3 | null): boolean {
+function looksLikeSyntheticFixtureStorage(
+	storage: AccountStorageV3 | null,
+): boolean {
 	if (!storage || storage.accounts.length === 0) return false;
-	return storage.accounts.every((account) => looksLikeSyntheticFixtureAccount(account));
+	return storage.accounts.every((account) =>
+		looksLikeSyntheticFixtureAccount(account),
+	);
 }
 
 async function ensureGitignore(storagePath: string): Promise<void> {
-  if (!currentStoragePath) return;
+	if (!currentStoragePath) return;
 
-  const configDir = dirname(storagePath);
-  const inferredProjectRoot = dirname(configDir);
-  const candidateRoots = [currentProjectRoot, inferredProjectRoot].filter(
-    (root): root is string => typeof root === "string" && root.length > 0,
-  );
-  const projectRoot = candidateRoots.find((root) => existsSync(join(root, ".git")));
-  if (!projectRoot) return;
-  const gitignorePath = join(projectRoot, ".gitignore");
+	const configDir = dirname(storagePath);
+	const inferredProjectRoot = dirname(configDir);
+	const candidateRoots = [currentProjectRoot, inferredProjectRoot].filter(
+		(root): root is string => typeof root === "string" && root.length > 0,
+	);
+	const projectRoot = candidateRoots.find((root) =>
+		existsSync(join(root, ".git")),
+	);
+	if (!projectRoot) return;
+	const gitignorePath = join(projectRoot, ".gitignore");
 
-  try {
-    let content = "";
-    if (existsSync(gitignorePath)) {
-      content = await fs.readFile(gitignorePath, "utf-8");
-      const lines = content.split("\n").map((l) => l.trim());
-      if (lines.includes(".codex") || lines.includes(".codex/") || lines.includes("/.codex") || lines.includes("/.codex/")) {
-        return;
-      }
-    }
+	try {
+		let content = "";
+		if (existsSync(gitignorePath)) {
+			content = await fs.readFile(gitignorePath, "utf-8");
+			const lines = content.split("\n").map((l) => l.trim());
+			if (
+				lines.includes(".codex") ||
+				lines.includes(".codex/") ||
+				lines.includes("/.codex") ||
+				lines.includes("/.codex/")
+			) {
+				return;
+			}
+		}
 
-    const newContent = content.endsWith("\n") || content === "" ? content : content + "\n";
-    await fs.writeFile(gitignorePath, newContent + ".codex/\n", "utf-8");
-    log.debug("Added .codex to .gitignore", { path: gitignorePath });
-  } catch (error) {
-    log.warn("Failed to update .gitignore", { error: String(error) });
-  }
+		const newContent =
+			content.endsWith("\n") || content === "" ? content : content + "\n";
+		await fs.writeFile(gitignorePath, newContent + ".codex/\n", "utf-8");
+		log.debug("Added .codex to .gitignore", { path: gitignorePath });
+	} catch (error) {
+		log.warn("Failed to update .gitignore", { error: String(error) });
+	}
 }
 
 let currentStoragePath: string | null = null;
@@ -197,7 +231,9 @@ function getAccountsBackupRecoveryCandidates(path: string): string[] {
 	return candidates;
 }
 
-async function getAccountsBackupRecoveryCandidatesWithDiscovery(path: string): Promise<string[]> {
+async function getAccountsBackupRecoveryCandidatesWithDiscovery(
+	path: string,
+): Promise<string[]> {
 	const knownCandidates = getAccountsBackupRecoveryCandidates(path);
 	const discoveredCandidates = new Set<string>();
 	const candidatePrefix = `${basename(path)}.`;
@@ -265,7 +301,10 @@ async function copyFileWithRetry(
 	}
 }
 
-async function renameFileWithRetry(sourcePath: string, destinationPath: string): Promise<void> {
+async function renameFileWithRetry(
+	sourcePath: string,
+	destinationPath: string,
+): Promise<void> {
 	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
 		try {
 			await fs.rename(sourcePath, destinationPath);
@@ -280,7 +319,10 @@ async function renameFileWithRetry(sourcePath: string, destinationPath: string):
 			}
 			const jitterMs = Math.floor(Math.random() * BACKUP_COPY_BASE_DELAY_MS);
 			await new Promise((resolve) =>
-				setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt + jitterMs),
+				setTimeout(
+					resolve,
+					BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt + jitterMs,
+				),
 			);
 		}
 	}
@@ -301,7 +343,9 @@ async function createRotatingAccountsBackup(path: string): Promise<void> {
 				continue;
 			}
 			const stagedPath = buildStagedPath(currentPath, `slot-${i}`);
-			await copyFileWithRetry(previousPath, stagedPath, { allowMissingSource: true });
+			await copyFileWithRetry(previousPath, stagedPath, {
+				allowMissingSource: true,
+			});
 			if (existsSync(stagedPath)) {
 				stagedWrites.push({ targetPath: currentPath, stagedPath });
 			}
@@ -314,7 +358,10 @@ async function createRotatingAccountsBackup(path: string): Promise<void> {
 		const latestStagedPath = buildStagedPath(latestBackupPath, "latest");
 		await copyFileWithRetry(path, latestStagedPath);
 		if (existsSync(latestStagedPath)) {
-			stagedWrites.push({ targetPath: latestBackupPath, stagedPath: latestStagedPath });
+			stagedWrites.push({
+				targetPath: latestBackupPath,
+				stagedPath: latestStagedPath,
+			});
 		}
 
 		for (const stagedWrite of stagedWrites) {
@@ -334,9 +381,15 @@ async function createRotatingAccountsBackup(path: string): Promise<void> {
 	}
 }
 
-function isRotatingBackupTempArtifact(storagePath: string, candidatePath: string): boolean {
+function isRotatingBackupTempArtifact(
+	storagePath: string,
+	candidatePath: string,
+): boolean {
 	const backupPrefix = `${storagePath}${ACCOUNTS_BACKUP_SUFFIX}`;
-	if (!candidatePath.startsWith(backupPrefix) || !candidatePath.endsWith(".tmp")) {
+	if (
+		!candidatePath.startsWith(backupPrefix) ||
+		!candidatePath.endsWith(".tmp")
+	) {
 		return false;
 	}
 
@@ -354,10 +407,14 @@ function isRotatingBackupTempArtifact(storagePath: string, candidatePath: string
 	return true;
 }
 
-async function cleanupStaleRotatingBackupArtifacts(path: string): Promise<void> {
+async function cleanupStaleRotatingBackupArtifacts(
+	path: string,
+): Promise<void> {
 	const directoryPath = dirname(path);
 	try {
-		const directoryEntries = await fs.readdir(directoryPath, { withFileTypes: true });
+		const directoryEntries = await fs.readdir(directoryPath, {
+			withFileTypes: true,
+		});
 		const staleArtifacts = directoryEntries
 			.filter((entry) => entry.isFile())
 			.map((entry) => join(directoryPath, entry.name))
@@ -404,39 +461,47 @@ export function getLastAccountsSaveTimestamp(): number {
 }
 
 export function setStoragePath(projectPath: string | null): void {
-  if (!projectPath) {
-    currentStoragePath = null;
-    currentLegacyProjectStoragePath = null;
-    currentLegacyWorktreeStoragePath = null;
-    currentProjectRoot = null;
-    return;
-  }
-  
-  const projectRoot = findProjectRoot(projectPath);
-  if (projectRoot) {
-    currentProjectRoot = projectRoot;
-    const identityRoot = resolveProjectStorageIdentityRoot(projectRoot);
-    currentStoragePath = join(getProjectGlobalConfigDir(identityRoot), ACCOUNTS_FILE_NAME);
-    currentLegacyProjectStoragePath = join(getProjectConfigDir(projectRoot), ACCOUNTS_FILE_NAME);
-    const previousWorktreeScopedPath = join(
-      getProjectGlobalConfigDir(projectRoot),
-      ACCOUNTS_FILE_NAME,
-    );
-    currentLegacyWorktreeStoragePath =
-      previousWorktreeScopedPath !== currentStoragePath ? previousWorktreeScopedPath : null;
-  } else {
-    currentStoragePath = null;
-    currentLegacyProjectStoragePath = null;
-    currentLegacyWorktreeStoragePath = null;
-    currentProjectRoot = null;
-  }
+	if (!projectPath) {
+		currentStoragePath = null;
+		currentLegacyProjectStoragePath = null;
+		currentLegacyWorktreeStoragePath = null;
+		currentProjectRoot = null;
+		return;
+	}
+
+	const projectRoot = findProjectRoot(projectPath);
+	if (projectRoot) {
+		currentProjectRoot = projectRoot;
+		const identityRoot = resolveProjectStorageIdentityRoot(projectRoot);
+		currentStoragePath = join(
+			getProjectGlobalConfigDir(identityRoot),
+			ACCOUNTS_FILE_NAME,
+		);
+		currentLegacyProjectStoragePath = join(
+			getProjectConfigDir(projectRoot),
+			ACCOUNTS_FILE_NAME,
+		);
+		const previousWorktreeScopedPath = join(
+			getProjectGlobalConfigDir(projectRoot),
+			ACCOUNTS_FILE_NAME,
+		);
+		currentLegacyWorktreeStoragePath =
+			previousWorktreeScopedPath !== currentStoragePath
+				? previousWorktreeScopedPath
+				: null;
+	} else {
+		currentStoragePath = null;
+		currentLegacyProjectStoragePath = null;
+		currentLegacyWorktreeStoragePath = null;
+		currentProjectRoot = null;
+	}
 }
 
 export function setStoragePathDirect(path: string | null): void {
-  currentStoragePath = path;
-  currentLegacyProjectStoragePath = null;
-  currentLegacyWorktreeStoragePath = null;
-  currentProjectRoot = null;
+	currentStoragePath = path;
+	currentLegacyProjectStoragePath = null;
+	currentLegacyWorktreeStoragePath = null;
+	currentProjectRoot = null;
 }
 
 /**
@@ -444,10 +509,28 @@ export function setStoragePathDirect(path: string | null): void {
  * @returns Absolute path to the accounts.json file
  */
 export function getStoragePath(): string {
-  if (currentStoragePath) {
-    return currentStoragePath;
-  }
-  return join(getConfigDir(), ACCOUNTS_FILE_NAME);
+	if (currentStoragePath) {
+		return currentStoragePath;
+	}
+	return join(getConfigDir(), ACCOUNTS_FILE_NAME);
+}
+
+export function buildNamedBackupPath(name: string): string {
+	return resolveNamedBackupPath(name, getStoragePath());
+}
+
+export async function exportNamedBackup(
+	name: string,
+	options?: { force?: boolean },
+): Promise<string> {
+	return exportNamedBackupFile(
+		name,
+		{
+			getStoragePath,
+			exportAccounts,
+		},
+		options,
+	);
 }
 
 export function getFlaggedAccountsPath(): string {
@@ -459,176 +542,196 @@ function getLegacyFlaggedAccountsPath(): string {
 }
 
 async function migrateLegacyProjectStorageIfNeeded(
-  persist: (storage: AccountStorageV3) => Promise<void> = saveAccounts,
+	persist: (storage: AccountStorageV3) => Promise<void> = saveAccounts,
 ): Promise<AccountStorageV3 | null> {
-  if (!currentStoragePath) {
-    return null;
-  }
+	if (!currentStoragePath) {
+		return null;
+	}
 
-  const candidatePaths = [currentLegacyWorktreeStoragePath, currentLegacyProjectStoragePath]
-    .filter(
-      (path): path is string => typeof path === "string" && path.length > 0 && path !== currentStoragePath,
-    )
-    .filter((path, index, all) => all.indexOf(path) === index);
+	const candidatePaths = [
+		currentLegacyWorktreeStoragePath,
+		currentLegacyProjectStoragePath,
+	]
+		.filter(
+			(path): path is string =>
+				typeof path === "string" &&
+				path.length > 0 &&
+				path !== currentStoragePath,
+		)
+		.filter((path, index, all) => all.indexOf(path) === index);
 
-  if (candidatePaths.length === 0) {
-    return null;
-  }
+	if (candidatePaths.length === 0) {
+		return null;
+	}
 
-  const existingCandidatePaths = candidatePaths.filter((legacyPath) => existsSync(legacyPath));
-  if (existingCandidatePaths.length === 0) {
-    return null;
-  }
+	const existingCandidatePaths = candidatePaths.filter((legacyPath) =>
+		existsSync(legacyPath),
+	);
+	if (existingCandidatePaths.length === 0) {
+		return null;
+	}
 
-  let targetStorage = await loadNormalizedStorageFromPath(currentStoragePath, "current account storage");
-  let migrated = false;
+	let targetStorage = await loadNormalizedStorageFromPath(
+		currentStoragePath,
+		"current account storage",
+	);
+	let migrated = false;
 
-  for (const legacyPath of existingCandidatePaths) {
-    const legacyStorage = await loadNormalizedStorageFromPath(legacyPath, "legacy account storage");
-    if (!legacyStorage) {
-      continue;
-    }
+	for (const legacyPath of existingCandidatePaths) {
+		const legacyStorage = await loadNormalizedStorageFromPath(
+			legacyPath,
+			"legacy account storage",
+		);
+		if (!legacyStorage) {
+			continue;
+		}
 
-    const mergedStorage = mergeStorageForMigration(targetStorage, legacyStorage);
-    const fallbackStorage = targetStorage ?? legacyStorage;
+		const mergedStorage = mergeStorageForMigration(
+			targetStorage,
+			legacyStorage,
+		);
+		const fallbackStorage = targetStorage ?? legacyStorage;
 
-    try {
-      await persist(mergedStorage);
-      targetStorage = mergedStorage;
-      migrated = true;
-    } catch (error) {
-      targetStorage = fallbackStorage;
-      log.warn("Failed to persist migrated account storage", {
-        from: legacyPath,
-        to: currentStoragePath,
-        error: String(error),
-      });
-      continue;
-    }
+		try {
+			await persist(mergedStorage);
+			targetStorage = mergedStorage;
+			migrated = true;
+		} catch (error) {
+			targetStorage = fallbackStorage;
+			log.warn("Failed to persist migrated account storage", {
+				from: legacyPath,
+				to: currentStoragePath,
+				error: String(error),
+			});
+			continue;
+		}
 
-    try {
-      await fs.unlink(legacyPath);
-      log.info("Removed legacy account storage file after migration", {
-        path: legacyPath,
-      });
-    } catch (unlinkError) {
-      const code = (unlinkError as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        log.warn("Failed to remove legacy account storage file after migration", {
-          path: legacyPath,
-          error: String(unlinkError),
-        });
-      }
-    }
+		try {
+			await fs.unlink(legacyPath);
+			log.info("Removed legacy account storage file after migration", {
+				path: legacyPath,
+			});
+		} catch (unlinkError) {
+			const code = (unlinkError as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				log.warn(
+					"Failed to remove legacy account storage file after migration",
+					{
+						path: legacyPath,
+						error: String(unlinkError),
+					},
+				);
+			}
+		}
 
-    log.info("Migrated legacy project account storage", {
-      from: legacyPath,
-      to: currentStoragePath,
-      accounts: mergedStorage.accounts.length,
-    });
-  }
+		log.info("Migrated legacy project account storage", {
+			from: legacyPath,
+			to: currentStoragePath,
+			accounts: mergedStorage.accounts.length,
+		});
+	}
 
-  if (migrated) {
-    return targetStorage;
-  }
-  if (targetStorage && !existsSync(currentStoragePath)) {
-    return targetStorage;
-  }
-  return null;
+	if (migrated) {
+		return targetStorage;
+	}
+	if (targetStorage && !existsSync(currentStoragePath)) {
+		return targetStorage;
+	}
+	return null;
 }
 
 async function loadNormalizedStorageFromPath(
-  path: string,
-  label: string,
+	path: string,
+	label: string,
 ): Promise<AccountStorageV3 | null> {
-  try {
-    const { normalized, schemaErrors } = await loadAccountsFromPath(path);
-    if (schemaErrors.length > 0) {
-      log.warn(`${label} schema validation warnings`, {
-        path,
-        errors: schemaErrors.slice(0, 5),
-      });
-    }
-    return normalized;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      log.warn(`Failed to load ${label}`, {
-        path,
-        error: String(error),
-      });
-    }
-    return null;
-  }
+	try {
+		const { normalized, schemaErrors } = await loadAccountsFromPath(path);
+		if (schemaErrors.length > 0) {
+			log.warn(`${label} schema validation warnings`, {
+				path,
+				errors: schemaErrors.slice(0, 5),
+			});
+		}
+		return normalized;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn(`Failed to load ${label}`, {
+				path,
+				error: String(error),
+			});
+		}
+		return null;
+	}
 }
 
 function mergeStorageForMigration(
-  current: AccountStorageV3 | null,
-  incoming: AccountStorageV3,
+	current: AccountStorageV3 | null,
+	incoming: AccountStorageV3,
 ): AccountStorageV3 {
-  if (!current) {
-    return incoming;
-  }
+	if (!current) {
+		return incoming;
+	}
 
-  const merged = normalizeAccountStorage({
-    version: 3,
-    activeIndex: current.activeIndex,
-    activeIndexByFamily: current.activeIndexByFamily,
-    accounts: [...current.accounts, ...incoming.accounts],
-  });
-  if (!merged) {
-    return current;
-  }
-  return merged;
+	const merged = normalizeAccountStorage({
+		version: 3,
+		activeIndex: current.activeIndex,
+		activeIndexByFamily: current.activeIndexByFamily,
+		accounts: [...current.accounts, ...incoming.accounts],
+	});
+	if (!merged) {
+		return current;
+	}
+	return merged;
 }
 
 function selectNewestAccount<T extends AccountLike>(
-  current: T | undefined,
-  candidate: T,
+	current: T | undefined,
+	candidate: T,
 ): T {
-  if (!current) return candidate;
-  const currentLastUsed = current.lastUsed || 0;
-  const candidateLastUsed = candidate.lastUsed || 0;
-  if (candidateLastUsed > currentLastUsed) return candidate;
-  if (candidateLastUsed < currentLastUsed) return current;
-  const currentAddedAt = current.addedAt || 0;
-  const candidateAddedAt = candidate.addedAt || 0;
-  return candidateAddedAt >= currentAddedAt ? candidate : current;
+	if (!current) return candidate;
+	const currentLastUsed = current.lastUsed || 0;
+	const candidateLastUsed = candidate.lastUsed || 0;
+	if (candidateLastUsed > currentLastUsed) return candidate;
+	if (candidateLastUsed < currentLastUsed) return current;
+	const currentAddedAt = current.addedAt || 0;
+	const candidateAddedAt = candidate.addedAt || 0;
+	return candidateAddedAt >= currentAddedAt ? candidate : current;
 }
 
 function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
-  const keyToIndex = new Map<string, number>();
-  const indicesToKeep = new Set<number>();
+	const keyToIndex = new Map<string, number>();
+	const indicesToKeep = new Set<number>();
 
-  for (let i = 0; i < accounts.length; i += 1) {
-    const account = accounts[i];
-    if (!account) continue;
-    const key = account.accountId || account.refreshToken;
-    if (!key) continue;
+	for (let i = 0; i < accounts.length; i += 1) {
+		const account = accounts[i];
+		if (!account) continue;
+		const key = account.accountId || account.refreshToken;
+		if (!key) continue;
 
-    const existingIndex = keyToIndex.get(key);
-    if (existingIndex === undefined) {
-      keyToIndex.set(key, i);
-      continue;
-    }
+		const existingIndex = keyToIndex.get(key);
+		if (existingIndex === undefined) {
+			keyToIndex.set(key, i);
+			continue;
+		}
 
-    const existing = accounts[existingIndex];
-    const newest = selectNewestAccount(existing, account);
-    keyToIndex.set(key, newest === account ? i : existingIndex);
-  }
+		const existing = accounts[existingIndex];
+		const newest = selectNewestAccount(existing, account);
+		keyToIndex.set(key, newest === account ? i : existingIndex);
+	}
 
-  for (const idx of keyToIndex.values()) {
-    indicesToKeep.add(idx);
-  }
+	for (const idx of keyToIndex.values()) {
+		indicesToKeep.add(idx);
+	}
 
-  const result: T[] = [];
-  for (let i = 0; i < accounts.length; i += 1) {
-    if (indicesToKeep.has(i)) {
-      const account = accounts[i];
-      if (account) result.push(account);
-    }
-  }
-  return result;
+	const result: T[] = [];
+	for (let i = 0; i < accounts.length; i += 1) {
+		if (indicesToKeep.has(i)) {
+			const account = accounts[i];
+			if (account) result.push(account);
+		}
+	}
+	return result;
 }
 
 /**
@@ -637,10 +740,15 @@ function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
  * @param accounts - Array of accounts to deduplicate
  * @returns New array with duplicates removed
  */
-export function deduplicateAccounts<T extends { accountId?: string; refreshToken: string; lastUsed?: number; addedAt?: number }>(
-  accounts: T[],
-): T[] {
-  return deduplicateAccountsByKey(accounts);
+export function deduplicateAccounts<
+	T extends {
+		accountId?: string;
+		refreshToken: string;
+		lastUsed?: number;
+		addedAt?: number;
+	},
+>(accounts: T[]): T[] {
+	return deduplicateAccountsByKey(accounts);
 }
 
 /**
@@ -649,98 +757,105 @@ export function deduplicateAccounts<T extends { accountId?: string; refreshToken
  * @param accounts - Array of accounts to deduplicate
  * @returns New array with email duplicates removed
  */
-export function normalizeEmailKey(email: string | undefined): string | undefined {
-  if (!email) return undefined;
-  const trimmed = email.trim();
-  if (!trimmed) return undefined;
-  return trimmed.toLowerCase();
+export function normalizeEmailKey(
+	email: string | undefined,
+): string | undefined {
+	if (!email) return undefined;
+	const trimmed = email.trim();
+	if (!trimmed) return undefined;
+	return trimmed.toLowerCase();
 }
 
-export function deduplicateAccountsByEmail<T extends { email?: string; lastUsed?: number; addedAt?: number }>(
-  accounts: T[],
-): T[] {
+export function deduplicateAccountsByEmail<
+	T extends { email?: string; lastUsed?: number; addedAt?: number },
+>(accounts: T[]): T[] {
+	const emailToNewestIndex = new Map<string, number>();
+	const indicesToKeep = new Set<number>();
 
-  const emailToNewestIndex = new Map<string, number>();
-  const indicesToKeep = new Set<number>();
+	for (let i = 0; i < accounts.length; i += 1) {
+		const account = accounts[i];
+		if (!account) continue;
 
-  for (let i = 0; i < accounts.length; i += 1) {
-    const account = accounts[i];
-    if (!account) continue;
+		const email = normalizeEmailKey(account.email);
+		if (!email) {
+			indicesToKeep.add(i);
+			continue;
+		}
 
-    const email = normalizeEmailKey(account.email);
-    if (!email) {
-      indicesToKeep.add(i);
-      continue;
-    }
+		const existingIndex = emailToNewestIndex.get(email);
+		if (existingIndex === undefined) {
+			emailToNewestIndex.set(email, i);
+			continue;
+		}
 
-    const existingIndex = emailToNewestIndex.get(email);
-    if (existingIndex === undefined) {
-      emailToNewestIndex.set(email, i);
-      continue;
-    }
+		const existing = accounts[existingIndex];
+		// istanbul ignore next -- defensive code: existingIndex always refers to valid account
+		if (!existing) {
+			emailToNewestIndex.set(email, i);
+			continue;
+		}
 
-    const existing = accounts[existingIndex];
-    // istanbul ignore next -- defensive code: existingIndex always refers to valid account
-    if (!existing) {
-      emailToNewestIndex.set(email, i);
-      continue;
-    }
+		const existingLastUsed = existing.lastUsed || 0;
+		const candidateLastUsed = account.lastUsed || 0;
+		const existingAddedAt = existing.addedAt || 0;
+		const candidateAddedAt = account.addedAt || 0;
 
-    const existingLastUsed = existing.lastUsed || 0;
-    const candidateLastUsed = account.lastUsed || 0;
-    const existingAddedAt = existing.addedAt || 0;
-    const candidateAddedAt = account.addedAt || 0;
+		const isNewer =
+			candidateLastUsed > existingLastUsed ||
+			(candidateLastUsed === existingLastUsed &&
+				candidateAddedAt > existingAddedAt);
 
-    const isNewer =
-      candidateLastUsed > existingLastUsed ||
-      (candidateLastUsed === existingLastUsed && candidateAddedAt > existingAddedAt);
+		if (isNewer) {
+			emailToNewestIndex.set(email, i);
+		}
+	}
 
-    if (isNewer) {
-      emailToNewestIndex.set(email, i);
-    }
-  }
+	for (const idx of emailToNewestIndex.values()) {
+		indicesToKeep.add(idx);
+	}
 
-  for (const idx of emailToNewestIndex.values()) {
-    indicesToKeep.add(idx);
-  }
-
-  const result: T[] = [];
-  for (let i = 0; i < accounts.length; i += 1) {
-    if (indicesToKeep.has(i)) {
-      const account = accounts[i];
-      if (account) result.push(account);
-    }
-  }
-  return result;
+	const result: T[] = [];
+	for (let i = 0; i < accounts.length; i += 1) {
+		if (indicesToKeep.has(i)) {
+			const account = accounts[i];
+			if (account) result.push(account);
+		}
+	}
+	return result;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
+	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function clampIndex(index: number, length: number): number {
-  if (length <= 0) return 0;
-  return Math.max(0, Math.min(index, length - 1));
+	if (length <= 0) return 0;
+	return Math.max(0, Math.min(index, length - 1));
 }
 
-function toAccountKey(account: Pick<AccountMetadataV3, "accountId" | "refreshToken">): string {
-  return account.accountId || account.refreshToken;
+function toAccountKey(
+	account: Pick<AccountMetadataV3, "accountId" | "refreshToken">,
+): string {
+	return account.accountId || account.refreshToken;
 }
 
-function extractActiveKey(accounts: unknown[], activeIndex: number): string | undefined {
-  const candidate = accounts[activeIndex];
-  if (!isRecord(candidate)) return undefined;
+function extractActiveKey(
+	accounts: unknown[],
+	activeIndex: number,
+): string | undefined {
+	const candidate = accounts[activeIndex];
+	if (!isRecord(candidate)) return undefined;
 
-  const accountId =
-    typeof candidate.accountId === "string" && candidate.accountId.trim()
-      ? candidate.accountId
-      : undefined;
-  const refreshToken =
-    typeof candidate.refreshToken === "string" && candidate.refreshToken.trim()
-      ? candidate.refreshToken
-      : undefined;
+	const accountId =
+		typeof candidate.accountId === "string" && candidate.accountId.trim()
+			? candidate.accountId
+			: undefined;
+	const refreshToken =
+		typeof candidate.refreshToken === "string" && candidate.refreshToken.trim()
+			? candidate.refreshToken
+			: undefined;
 
-  return accountId || refreshToken;
+	return accountId || refreshToken;
 }
 
 /**
@@ -749,95 +864,99 @@ function extractActiveKey(accounts: unknown[], activeIndex: number): string | un
  * @param data - Raw storage data (unknown format)
  * @returns Normalized AccountStorageV3 or null if invalid
  */
-export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null {
-  if (!isRecord(data)) {
-    log.warn("Invalid storage format, ignoring");
-    return null;
-  }
+export function normalizeAccountStorage(
+	data: unknown,
+): AccountStorageV3 | null {
+	if (!isRecord(data)) {
+		log.warn("Invalid storage format, ignoring");
+		return null;
+	}
 
-  if (data.version !== 1 && data.version !== 3) {
-    log.warn("Unknown storage version, ignoring", {
-      version: (data as { version?: unknown }).version,
-    });
-    return null;
-  }
+	if (data.version !== 1 && data.version !== 3) {
+		log.warn("Unknown storage version, ignoring", {
+			version: (data as { version?: unknown }).version,
+		});
+		return null;
+	}
 
-  const rawAccounts = data.accounts;
-  if (!Array.isArray(rawAccounts)) {
-    log.warn("Invalid storage format, ignoring");
-    return null;
-  }
+	const rawAccounts = data.accounts;
+	if (!Array.isArray(rawAccounts)) {
+		log.warn("Invalid storage format, ignoring");
+		return null;
+	}
 
-  const activeIndexValue =
-    typeof data.activeIndex === "number" && Number.isFinite(data.activeIndex)
-      ? data.activeIndex
-      : 0;
+	const activeIndexValue =
+		typeof data.activeIndex === "number" && Number.isFinite(data.activeIndex)
+			? data.activeIndex
+			: 0;
 
-  const rawActiveIndex = clampIndex(activeIndexValue, rawAccounts.length);
-  const activeKey = extractActiveKey(rawAccounts, rawActiveIndex);
+	const rawActiveIndex = clampIndex(activeIndexValue, rawAccounts.length);
+	const activeKey = extractActiveKey(rawAccounts, rawActiveIndex);
 
-  const fromVersion = data.version as AnyAccountStorage["version"];
-  const baseStorage: AccountStorageV3 =
-    fromVersion === 1
-      ? migrateV1ToV3(data as unknown as AccountStorageV1)
-      : (data as unknown as AccountStorageV3);
+	const fromVersion = data.version as AnyAccountStorage["version"];
+	const baseStorage: AccountStorageV3 =
+		fromVersion === 1
+			? migrateV1ToV3(data as unknown as AccountStorageV1)
+			: (data as unknown as AccountStorageV3);
 
-  const validAccounts = rawAccounts.filter(
-    (account): account is AccountMetadataV3 =>
-      isRecord(account) && typeof account.refreshToken === "string" && !!account.refreshToken.trim(),
-  );
+	const validAccounts = rawAccounts.filter(
+		(account): account is AccountMetadataV3 =>
+			isRecord(account) &&
+			typeof account.refreshToken === "string" &&
+			!!account.refreshToken.trim(),
+	);
 
-  const deduplicatedAccounts = deduplicateAccountsByEmail(
-    deduplicateAccountsByKey(validAccounts),
-  );
+	const deduplicatedAccounts = deduplicateAccountsByEmail(
+		deduplicateAccountsByKey(validAccounts),
+	);
 
-  const activeIndex = (() => {
-    if (deduplicatedAccounts.length === 0) return 0;
+	const activeIndex = (() => {
+		if (deduplicatedAccounts.length === 0) return 0;
 
-    if (activeKey) {
-      const mappedIndex = deduplicatedAccounts.findIndex(
-        (account) => toAccountKey(account) === activeKey,
-      );
-      if (mappedIndex >= 0) return mappedIndex;
-    }
+		if (activeKey) {
+			const mappedIndex = deduplicatedAccounts.findIndex(
+				(account) => toAccountKey(account) === activeKey,
+			);
+			if (mappedIndex >= 0) return mappedIndex;
+		}
 
-    return clampIndex(rawActiveIndex, deduplicatedAccounts.length);
-  })();
+		return clampIndex(rawActiveIndex, deduplicatedAccounts.length);
+	})();
 
-  const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-  const rawFamilyIndices = isRecord(baseStorage.activeIndexByFamily)
-    ? (baseStorage.activeIndexByFamily as Record<string, unknown>)
-    : {};
+	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+	const rawFamilyIndices = isRecord(baseStorage.activeIndexByFamily)
+		? (baseStorage.activeIndexByFamily as Record<string, unknown>)
+		: {};
 
-  for (const family of MODEL_FAMILIES) {
-    const rawIndexValue = rawFamilyIndices[family];
-    const rawIndex =
-      typeof rawIndexValue === "number" && Number.isFinite(rawIndexValue)
-        ? rawIndexValue
-        : rawActiveIndex;
+	for (const family of MODEL_FAMILIES) {
+		const rawIndexValue = rawFamilyIndices[family];
+		const rawIndex =
+			typeof rawIndexValue === "number" && Number.isFinite(rawIndexValue)
+				? rawIndexValue
+				: rawActiveIndex;
 
-    const clampedRawIndex = clampIndex(rawIndex, rawAccounts.length);
-    const familyKey = extractActiveKey(rawAccounts, clampedRawIndex);
+		const clampedRawIndex = clampIndex(rawIndex, rawAccounts.length);
+		const familyKey = extractActiveKey(rawAccounts, clampedRawIndex);
 
-    let mappedIndex = clampIndex(rawIndex, deduplicatedAccounts.length);
-    if (familyKey && deduplicatedAccounts.length > 0) {
-      const idx = deduplicatedAccounts.findIndex(
-        (account) => toAccountKey(account) === familyKey,
-      );
-      if (idx >= 0) {
-        mappedIndex = idx;
-      }
-    }
+		let mappedIndex = clampIndex(rawIndex, deduplicatedAccounts.length);
+		if (familyKey && deduplicatedAccounts.length > 0) {
+			const idx = deduplicatedAccounts.findIndex(
+				(account) => toAccountKey(account) === familyKey,
+			);
+			if (idx >= 0) {
+				mappedIndex = idx;
+			}
+		}
 
-    activeIndexByFamily[family] = mappedIndex;
-  }
+		activeIndexByFamily[family] = mappedIndex;
+	}
 
-  return {
-    version: 3,
-    accounts: deduplicatedAccounts,
-    activeIndex,
-    activeIndexByFamily,
-  };
+	return {
+		version: 3,
+		accounts: deduplicatedAccounts,
+		activeIndex,
+		activeIndexByFamily,
+	};
 }
 
 /**
@@ -846,7 +965,7 @@ export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null 
  * @returns AccountStorageV3 if file exists and is valid, null otherwise
  */
 export async function loadAccounts(): Promise<AccountStorageV3 | null> {
-  return loadAccountsInternal(saveAccounts);
+	return loadAccountsInternal(saveAccounts);
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -856,7 +975,9 @@ function parseAndNormalizeStorage(data: unknown): {
 } {
 	const schemaErrors = getValidationErrors(AnyAccountStorageSchema, data);
 	const normalized = normalizeAccountStorage(data);
-	const storedVersion = isRecord(data) ? (data as { version?: unknown }).version : undefined;
+	const storedVersion = isRecord(data)
+		? (data as { version?: unknown }).version
+		: undefined;
 	return { normalized, storedVersion, schemaErrors };
 }
 
@@ -870,7 +991,9 @@ async function loadAccountsFromPath(path: string): Promise<{
 	return parseAndNormalizeStorage(data);
 }
 
-async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 | null> {
+async function loadAccountsFromJournal(
+	path: string,
+): Promise<AccountStorageV3 | null> {
 	const walPath = getAccountsWalPath(path);
 	try {
 		const raw = await fs.readFile(walPath, "utf-8");
@@ -878,7 +1001,8 @@ async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 |
 		if (!isRecord(parsed)) return null;
 		const entry = parsed as Partial<AccountsJournalEntry>;
 		if (entry.version !== 1) return null;
-		if (typeof entry.content !== "string" || typeof entry.checksum !== "string") return null;
+		if (typeof entry.content !== "string" || typeof entry.checksum !== "string")
+			return null;
 		const computed = computeSha256(entry.content);
 		if (computed !== entry.checksum) {
 			log.warn("Account journal checksum mismatch", { path: walPath });
@@ -892,14 +1016,17 @@ async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 |
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
-			log.warn("Failed to load account WAL journal", { path: walPath, error: String(error) });
+			log.warn("Failed to load account WAL journal", {
+				path: walPath,
+				error: String(error),
+			});
 		}
 		return null;
 	}
 }
 
 async function loadAccountsInternal(
-  persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
+	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
 ): Promise<AccountStorageV3 | null> {
 	const path = getStoragePath();
 	await cleanupStaleRotatingBackupArtifacts(path);
@@ -907,249 +1034,278 @@ async function loadAccountsInternal(
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;
 
-  try {
-    const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
-    if (schemaErrors.length > 0) {
-      log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
-    }
-    if (normalized && storedVersion !== normalized.version) {
-      log.info("Migrating account storage to v3", { from: storedVersion, to: normalized.version });
-      if (persistMigration) {
-        try {
-          await persistMigration(normalized);
-        } catch (saveError) {
-          log.warn("Failed to persist migrated storage", { error: String(saveError) });
-        }
-      }
-    }
+	try {
+		const { normalized, storedVersion, schemaErrors } =
+			await loadAccountsFromPath(path);
+		if (schemaErrors.length > 0) {
+			log.warn("Account storage schema validation warnings", {
+				errors: schemaErrors.slice(0, 5),
+			});
+		}
+		if (normalized && storedVersion !== normalized.version) {
+			log.info("Migrating account storage to v3", {
+				from: storedVersion,
+				to: normalized.version,
+			});
+			if (persistMigration) {
+				try {
+					await persistMigration(normalized);
+				} catch (saveError) {
+					log.warn("Failed to persist migrated storage", {
+						error: String(saveError),
+					});
+				}
+			}
+		}
 
-	const primaryLooksSynthetic = looksLikeSyntheticFixtureStorage(normalized);
-	if (storageBackupEnabled && normalized && primaryLooksSynthetic) {
-		const backupCandidates = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		for (const backupPath of backupCandidates) {
-			if (backupPath === path) continue;
-			try {
-				const backup = await loadAccountsFromPath(backupPath);
-				if (!backup.normalized) continue;
-				if (looksLikeSyntheticFixtureStorage(backup.normalized)) continue;
-				if (backup.normalized.accounts.length <= 0) continue;
-				log.warn("Detected synthetic primary account storage; promoting backup", {
-					path,
-					backupPath,
-					primaryAccounts: normalized.accounts.length,
-					backupAccounts: backup.normalized.accounts.length,
-				});
-				if (persistMigration) {
-					try {
-						await persistMigration(backup.normalized);
-					} catch (persistError) {
-						log.warn("Failed to persist promoted backup storage", {
+		const primaryLooksSynthetic = looksLikeSyntheticFixtureStorage(normalized);
+		if (storageBackupEnabled && normalized && primaryLooksSynthetic) {
+			const backupCandidates =
+				await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+			for (const backupPath of backupCandidates) {
+				if (backupPath === path) continue;
+				try {
+					const backup = await loadAccountsFromPath(backupPath);
+					if (!backup.normalized) continue;
+					if (looksLikeSyntheticFixtureStorage(backup.normalized)) continue;
+					if (backup.normalized.accounts.length <= 0) continue;
+					log.warn(
+						"Detected synthetic primary account storage; promoting backup",
+						{
 							path,
-							error: String(persistError),
-						});
-					}
-				}
-				return backup.normalized;
-			} catch (backupError) {
-				const backupCode = (backupError as NodeJS.ErrnoException).code;
-				if (backupCode !== "ENOENT") {
-					log.warn("Failed to load candidate backup for synthetic-primary promotion", {
-						path: backupPath,
-						error: String(backupError),
-					});
-				}
-			}
-		}
-	}
-
-    return normalized;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" && migratedLegacyStorage) {
-      return migratedLegacyStorage;
-    }
-
-	const recoveredFromWal = await loadAccountsFromJournal(path);
-	if (recoveredFromWal) {
-		if (persistMigration) {
-			try {
-				await persistMigration(recoveredFromWal);
-			} catch (persistError) {
-				log.warn("Failed to persist WAL-recovered storage", {
-					path,
-					error: String(persistError),
-				});
-			}
-		}
-		return recoveredFromWal;
-	}
-
-	if (storageBackupEnabled) {
-		const backupCandidates = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		for (const backupPath of backupCandidates) {
-			try {
-				const backup = await loadAccountsFromPath(backupPath);
-				if (backup.schemaErrors.length > 0) {
-					log.warn("Backup account storage schema validation warnings", {
-						path: backupPath,
-						errors: backup.schemaErrors.slice(0, 5),
-					});
-				}
-				if (backup.normalized) {
-					log.warn("Recovered account storage from backup file", { path, backupPath });
+							backupPath,
+							primaryAccounts: normalized.accounts.length,
+							backupAccounts: backup.normalized.accounts.length,
+						},
+					);
 					if (persistMigration) {
 						try {
 							await persistMigration(backup.normalized);
 						} catch (persistError) {
-							log.warn("Failed to persist recovered backup storage", {
+							log.warn("Failed to persist promoted backup storage", {
 								path,
 								error: String(persistError),
 							});
 						}
 					}
 					return backup.normalized;
+				} catch (backupError) {
+					const backupCode = (backupError as NodeJS.ErrnoException).code;
+					if (backupCode !== "ENOENT") {
+						log.warn(
+							"Failed to load candidate backup for synthetic-primary promotion",
+							{
+								path: backupPath,
+								error: String(backupError),
+							},
+						);
+					}
 				}
-			} catch (backupError) {
-				const backupCode = (backupError as NodeJS.ErrnoException).code;
-				if (backupCode !== "ENOENT") {
-					log.warn("Failed to load backup account storage", {
-						path: backupPath,
-						error: String(backupError),
+			}
+		}
+
+		return normalized;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" && migratedLegacyStorage) {
+			return migratedLegacyStorage;
+		}
+
+		const recoveredFromWal = await loadAccountsFromJournal(path);
+		if (recoveredFromWal) {
+			if (persistMigration) {
+				try {
+					await persistMigration(recoveredFromWal);
+				} catch (persistError) {
+					log.warn("Failed to persist WAL-recovered storage", {
+						path,
+						error: String(persistError),
 					});
 				}
 			}
+			return recoveredFromWal;
 		}
-	}
 
-    if (code !== "ENOENT") {
-      log.error("Failed to load account storage", { error: String(error) });
-    }
-    return null;
-  }
+		if (storageBackupEnabled) {
+			const backupCandidates =
+				await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+			for (const backupPath of backupCandidates) {
+				try {
+					const backup = await loadAccountsFromPath(backupPath);
+					if (backup.schemaErrors.length > 0) {
+						log.warn("Backup account storage schema validation warnings", {
+							path: backupPath,
+							errors: backup.schemaErrors.slice(0, 5),
+						});
+					}
+					if (backup.normalized) {
+						log.warn("Recovered account storage from backup file", {
+							path,
+							backupPath,
+						});
+						if (persistMigration) {
+							try {
+								await persistMigration(backup.normalized);
+							} catch (persistError) {
+								log.warn("Failed to persist recovered backup storage", {
+									path,
+									error: String(persistError),
+								});
+							}
+						}
+						return backup.normalized;
+					}
+				} catch (backupError) {
+					const backupCode = (backupError as NodeJS.ErrnoException).code;
+					if (backupCode !== "ENOENT") {
+						log.warn("Failed to load backup account storage", {
+							path: backupPath,
+							error: String(backupError),
+						});
+					}
+				}
+			}
+		}
+
+		if (code !== "ENOENT") {
+			log.error("Failed to load account storage", { error: String(error) });
+		}
+		return null;
+	}
 }
 
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
-  const path = getStoragePath();
-  const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-  const tempPath = `${path}.${uniqueSuffix}.tmp`;
-  const walPath = getAccountsWalPath(path);
+	const path = getStoragePath();
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${path}.${uniqueSuffix}.tmp`;
+	const walPath = getAccountsWalPath(path);
 
-  try {
-    await fs.mkdir(dirname(path), { recursive: true });
-    await ensureGitignore(path);
+	try {
+		await fs.mkdir(dirname(path), { recursive: true });
+		await ensureGitignore(path);
 
-	if (looksLikeSyntheticFixtureStorage(storage)) {
-		try {
-			const existing = await loadNormalizedStorageFromPath(path, "existing account storage");
-			if (existing && existing.accounts.length > 0 && !looksLikeSyntheticFixtureStorage(existing)) {
-				throw new StorageError(
-					"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
-					"EINVALID",
+		if (looksLikeSyntheticFixtureStorage(storage)) {
+			try {
+				const existing = await loadNormalizedStorageFromPath(
 					path,
-					"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
+					"existing account storage",
 				);
+				if (
+					existing &&
+					existing.accounts.length > 0 &&
+					!looksLikeSyntheticFixtureStorage(existing)
+				) {
+					throw new StorageError(
+						"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
+						"EINVALID",
+						path,
+						"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
+					);
+				}
+			} catch (error) {
+				if (error instanceof StorageError) {
+					throw error;
+				}
+				// Ignore existing-file probe failures and continue with normal save flow.
 			}
-		} catch (error) {
-			if (error instanceof StorageError) {
-				throw error;
+		}
+
+		if (storageBackupEnabled && existsSync(path)) {
+			try {
+				await createRotatingAccountsBackup(path);
+			} catch (backupError) {
+				log.warn("Failed to create account storage backup", {
+					path,
+					backupPath: getAccountsBackupPath(path),
+					error: String(backupError),
+				});
 			}
-			// Ignore existing-file probe failures and continue with normal save flow.
 		}
-	}
 
-	if (storageBackupEnabled && existsSync(path)) {
-		try {
-			await createRotatingAccountsBackup(path);
-		} catch (backupError) {
-			log.warn("Failed to create account storage backup", {
-				path,
-				backupPath: getAccountsBackupPath(path),
-				error: String(backupError),
-			});
+		const content = JSON.stringify(storage, null, 2);
+		const journalEntry: AccountsJournalEntry = {
+			version: 1,
+			createdAt: Date.now(),
+			path,
+			checksum: computeSha256(content),
+			content,
+		};
+		await fs.writeFile(walPath, JSON.stringify(journalEntry), {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+
+		const stats = await fs.stat(tempPath);
+		if (stats.size === 0) {
+			const emptyError = Object.assign(
+				new Error("File written but size is 0"),
+				{ code: "EEMPTY" },
+			);
+			throw emptyError;
 		}
-	}
 
-    const content = JSON.stringify(storage, null, 2);
-	const journalEntry: AccountsJournalEntry = {
-		version: 1,
-		createdAt: Date.now(),
-		path,
-		checksum: computeSha256(content),
-		content,
-	};
-	await fs.writeFile(walPath, JSON.stringify(journalEntry), {
-		encoding: "utf-8",
-		mode: 0o600,
-	});
-    await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-
-    const stats = await fs.stat(tempPath);
-    if (stats.size === 0) {
-      const emptyError = Object.assign(new Error("File written but size is 0"), { code: "EEMPTY" });
-      throw emptyError;
-    }
-
-    // Retry rename with exponential backoff for Windows EPERM/EBUSY
-    let lastError: NodeJS.ErrnoException | null = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await fs.rename(tempPath, path);
-		lastAccountsSaveTimestamp = Date.now();
+		// Retry rename with exponential backoff for Windows EPERM/EBUSY
+		let lastError: NodeJS.ErrnoException | null = null;
+		for (let attempt = 0; attempt < 5; attempt++) {
+			try {
+				await fs.rename(tempPath, path);
+				lastAccountsSaveTimestamp = Date.now();
+				try {
+					await fs.unlink(walPath);
+				} catch {
+					// Best effort cleanup.
+				}
+				return;
+			} catch (renameError) {
+				const code = (renameError as NodeJS.ErrnoException).code;
+				if (code === "EPERM" || code === "EBUSY") {
+					lastError = renameError as NodeJS.ErrnoException;
+					await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
+					continue;
+				}
+				throw renameError;
+			}
+		}
+		if (lastError) throw lastError;
+	} catch (error) {
 		try {
-			await fs.unlink(walPath);
+			await fs.unlink(tempPath);
 		} catch {
-			// Best effort cleanup.
+			// Ignore cleanup failure.
 		}
-        return;
-      } catch (renameError) {
-        const code = (renameError as NodeJS.ErrnoException).code;
-        if (code === "EPERM" || code === "EBUSY") {
-          lastError = renameError as NodeJS.ErrnoException;
-          await new Promise(r => setTimeout(r, 10 * Math.pow(2, attempt)));
-          continue;
-        }
-        throw renameError;
-      }
-    }
-    if (lastError) throw lastError;
-  } catch (error) {
-    try {
-      await fs.unlink(tempPath);
-    } catch {
-      // Ignore cleanup failure.
-    }
 
-    const err = error as NodeJS.ErrnoException;
-    const code = err?.code || "UNKNOWN";
-    const hint = formatStorageErrorHint(error, path);
+		const err = error as NodeJS.ErrnoException;
+		const code = err?.code || "UNKNOWN";
+		const hint = formatStorageErrorHint(error, path);
 
-    log.error("Failed to save accounts", {
-      path,
-      code,
-      message: err?.message,
-      hint,
-    });
+		log.error("Failed to save accounts", {
+			path,
+			code,
+			message: err?.message,
+			hint,
+		});
 
-    throw new StorageError(
-      `Failed to save accounts: ${err?.message || "Unknown error"}`,
-      code,
-      path,
-      hint,
-      err instanceof Error ? err : undefined
-    );
-  }
+		throw new StorageError(
+			`Failed to save accounts: ${err?.message || "Unknown error"}`,
+			code,
+			path,
+			hint,
+			err instanceof Error ? err : undefined,
+		);
+	}
 }
 
 export async function withAccountStorageTransaction<T>(
-  handler: (
-    current: AccountStorageV3 | null,
-    persist: (storage: AccountStorageV3) => Promise<void>,
-  ) => Promise<T>,
+	handler: (
+		current: AccountStorageV3 | null,
+		persist: (storage: AccountStorageV3) => Promise<void>,
+	) => Promise<T>,
 ): Promise<T> {
-  return withStorageLock(async () => {
-    const current = await loadAccountsInternal(saveAccountsUnlocked);
-    return handler(current, saveAccountsUnlocked);
-  });
+	return withStorageLock(async () => {
+		const current = await loadAccountsInternal(saveAccountsUnlocked);
+		return handler(current, saveAccountsUnlocked);
+	});
 }
 
 /**
@@ -1160,9 +1316,9 @@ export async function withAccountStorageTransaction<T>(
  * @throws StorageError with platform-aware hints on failure
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
-  return withStorageLock(async () => {
-    await saveAccountsUnlocked(storage);
-  });
+	return withStorageLock(async () => {
+		await saveAccountsUnlocked(storage);
+	});
 }
 
 /**
@@ -1170,30 +1326,34 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * Silently ignores if file doesn't exist.
  */
 export async function clearAccounts(): Promise<void> {
-  return withStorageLock(async () => {
-    const path = getStoragePath();
-    const walPath = getAccountsWalPath(path);
-	const backupPaths = getAccountsBackupRecoveryCandidates(path);
-    const clearPath = async (targetPath: string): Promise<void> => {
-      try {
-        await fs.unlink(targetPath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT") {
-          log.error("Failed to clear account storage artifact", {
-            path: targetPath,
-            error: String(error),
-          });
-        }
-      }
-    };
+	return withStorageLock(async () => {
+		const path = getStoragePath();
+		const walPath = getAccountsWalPath(path);
+		const backupPaths = getAccountsBackupRecoveryCandidates(path);
+		const clearPath = async (targetPath: string): Promise<void> => {
+			try {
+				await fs.unlink(targetPath);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.error("Failed to clear account storage artifact", {
+						path: targetPath,
+						error: String(error),
+					});
+				}
+			}
+		};
 
-    try {
-      await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
-    } catch {
-      // Individual path cleanup is already best-effort with per-artifact logging.
-    }
-  });
+		try {
+			await Promise.all([
+				clearPath(path),
+				clearPath(walPath),
+				...backupPaths.map(clearPath),
+			]);
+		} catch {
+			// Individual path cleanup is already best-effort with per-artifact logging.
+		}
+	});
 }
 
 function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
@@ -1205,14 +1365,22 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 	for (const rawAccount of data.accounts) {
 		if (!isRecord(rawAccount)) continue;
 		const refreshToken =
-			typeof rawAccount.refreshToken === "string" ? rawAccount.refreshToken.trim() : "";
+			typeof rawAccount.refreshToken === "string"
+				? rawAccount.refreshToken.trim()
+				: "";
 		if (!refreshToken) continue;
 
-		const flaggedAt = typeof rawAccount.flaggedAt === "number" ? rawAccount.flaggedAt : Date.now();
+		const flaggedAt =
+			typeof rawAccount.flaggedAt === "number"
+				? rawAccount.flaggedAt
+				: Date.now();
 		const isAccountIdSource = (
 			value: unknown,
 		): value is AccountMetadataV3["accountIdSource"] =>
-			value === "token" || value === "id_token" || value === "org" || value === "manual";
+			value === "token" ||
+			value === "id_token" ||
+			value === "org" ||
+			value === "manual";
 		const isSwitchReason = (
 			value: unknown,
 		): value is AccountMetadataV3["lastSwitchReason"] =>
@@ -1220,12 +1388,18 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		const isCooldownReason = (
 			value: unknown,
 		): value is AccountMetadataV3["cooldownReason"] =>
-			value === "auth-failure" || value === "network-error" || value === "rate-limit";
+			value === "auth-failure" ||
+			value === "network-error" ||
+			value === "rate-limit";
 
-		let rateLimitResetTimes: AccountMetadataV3["rateLimitResetTimes"] | undefined;
+		let rateLimitResetTimes:
+			| AccountMetadataV3["rateLimitResetTimes"]
+			| undefined;
 		if (isRecord(rawAccount.rateLimitResetTimes)) {
 			const normalizedRateLimits: Record<string, number | undefined> = {};
-			for (const [key, value] of Object.entries(rawAccount.rateLimitResetTimes)) {
+			for (const [key, value] of Object.entries(
+				rawAccount.rateLimitResetTimes,
+			)) {
 				if (typeof value === "number") {
 					normalizedRateLimits[key] = value;
 				}
@@ -1247,21 +1421,43 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 
 		const normalized: FlaggedAccountMetadataV1 = {
 			refreshToken,
-			addedAt: typeof rawAccount.addedAt === "number" ? rawAccount.addedAt : flaggedAt,
-			lastUsed: typeof rawAccount.lastUsed === "number" ? rawAccount.lastUsed : flaggedAt,
-			accountId: typeof rawAccount.accountId === "string" ? rawAccount.accountId : undefined,
+			addedAt:
+				typeof rawAccount.addedAt === "number" ? rawAccount.addedAt : flaggedAt,
+			lastUsed:
+				typeof rawAccount.lastUsed === "number"
+					? rawAccount.lastUsed
+					: flaggedAt,
+			accountId:
+				typeof rawAccount.accountId === "string"
+					? rawAccount.accountId
+					: undefined,
 			accountIdSource,
-			accountLabel: typeof rawAccount.accountLabel === "string" ? rawAccount.accountLabel : undefined,
-			email: typeof rawAccount.email === "string" ? rawAccount.email : undefined,
-			enabled: typeof rawAccount.enabled === "boolean" ? rawAccount.enabled : undefined,
+			accountLabel:
+				typeof rawAccount.accountLabel === "string"
+					? rawAccount.accountLabel
+					: undefined,
+			email:
+				typeof rawAccount.email === "string" ? rawAccount.email : undefined,
+			enabled:
+				typeof rawAccount.enabled === "boolean"
+					? rawAccount.enabled
+					: undefined,
 			lastSwitchReason,
 			rateLimitResetTimes,
 			coolingDownUntil:
-				typeof rawAccount.coolingDownUntil === "number" ? rawAccount.coolingDownUntil : undefined,
+				typeof rawAccount.coolingDownUntil === "number"
+					? rawAccount.coolingDownUntil
+					: undefined,
 			cooldownReason,
 			flaggedAt,
-			flaggedReason: typeof rawAccount.flaggedReason === "string" ? rawAccount.flaggedReason : undefined,
-			lastError: typeof rawAccount.lastError === "string" ? rawAccount.lastError : undefined,
+			flaggedReason:
+				typeof rawAccount.flaggedReason === "string"
+					? rawAccount.flaggedReason
+					: undefined,
+			lastError:
+				typeof rawAccount.lastError === "string"
+					? rawAccount.lastError
+					: undefined,
 		};
 		byRefreshToken.set(refreshToken, normalized);
 	}
@@ -1283,7 +1479,10 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
-			log.error("Failed to load flagged account storage", { path, error: String(error) });
+			log.error("Failed to load flagged account storage", {
+				path,
+				error: String(error),
+			});
 			return empty;
 		}
 	}
@@ -1321,7 +1520,9 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	}
 }
 
-export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Promise<void> {
+export async function saveFlaggedAccounts(
+	storage: FlaggedAccountStorageV1,
+): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
 		const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
@@ -1338,7 +1539,10 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 			} catch {
 				// Ignore cleanup failures.
 			}
-			log.error("Failed to save flagged account storage", { path, error: String(error) });
+			log.error("Failed to save flagged account storage", {
+				path,
+				error: String(error),
+			});
 			throw error;
 		}
 	});
@@ -1351,7 +1555,9 @@ export async function clearFlaggedAccounts(): Promise<void> {
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code !== "ENOENT") {
-				log.error("Failed to clear flagged account storage", { error: String(error) });
+				log.error("Failed to clear flagged account storage", {
+					error: String(error),
+				});
 			}
 		}
 	});
@@ -1363,23 +1569,31 @@ export async function clearFlaggedAccounts(): Promise<void> {
  * @param force - If true, overwrite existing file (default: true)
  * @throws Error if file exists and force is false, or if no accounts to export
  */
-export async function exportAccounts(filePath: string, force = true): Promise<void> {
-  const resolvedPath = resolvePath(filePath);
-  
-  if (!force && existsSync(resolvedPath)) {
-    throw new Error(`File already exists: ${resolvedPath}`);
-  }
-  
-  const storage = await withAccountStorageTransaction((current) => Promise.resolve(current));
-  if (!storage || storage.accounts.length === 0) {
-    throw new Error("No accounts to export");
-  }
-  
-  await fs.mkdir(dirname(resolvedPath), { recursive: true });
-  
-  const content = JSON.stringify(storage, null, 2);
-  await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
-  log.info("Exported accounts", { path: resolvedPath, count: storage.accounts.length });
+export async function exportAccounts(
+	filePath: string,
+	force = true,
+): Promise<void> {
+	const resolvedPath = resolvePath(filePath);
+
+	if (!force && existsSync(resolvedPath)) {
+		throw new Error(`File already exists: ${resolvedPath}`);
+	}
+
+	const storage = await withAccountStorageTransaction((current) =>
+		Promise.resolve(current),
+	);
+	if (!storage || storage.accounts.length === 0) {
+		throw new Error("No accounts to export");
+	}
+
+	await fs.mkdir(dirname(resolvedPath), { recursive: true });
+
+	const content = JSON.stringify(storage, null, 2);
+	await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
+	log.info("Exported accounts", {
+		path: resolvedPath,
+		count: storage.accounts.length,
+	});
 }
 
 /**
@@ -1388,61 +1602,73 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
  * @param filePath - Source file path
  * @throws Error if file is invalid or would exceed MAX_ACCOUNTS
  */
-export async function importAccounts(filePath: string): Promise<{ imported: number; total: number; skipped: number }> {
-  const resolvedPath = resolvePath(filePath);
-  
-  // Check file exists with friendly error
-  if (!existsSync(resolvedPath)) {
-    throw new Error(`Import file not found: ${resolvedPath}`);
-  }
-  
-  const content = await fs.readFile(resolvedPath, "utf-8");
-  
-  let imported: unknown;
-  try {
-    imported = JSON.parse(content);
-  } catch {
-    throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
-  }
-  
-  const normalized = normalizeAccountStorage(imported);
-  if (!normalized) {
-    throw new Error("Invalid account storage format");
-  }
-  
-  const { imported: importedCount, total, skipped: skippedCount } =
-    await withAccountStorageTransaction(async (existing, persist) => {
-      const existingAccounts = existing?.accounts ?? [];
-      const existingActiveIndex = existing?.activeIndex ?? 0;
+export async function importAccounts(
+	filePath: string,
+): Promise<{ imported: number; total: number; skipped: number }> {
+	const resolvedPath = resolvePath(filePath);
 
-      const merged = [...existingAccounts, ...normalized.accounts];
+	// Check file exists with friendly error
+	if (!existsSync(resolvedPath)) {
+		throw new Error(`Import file not found: ${resolvedPath}`);
+	}
 
-      if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-        const deduped = deduplicateAccountsByEmail(deduplicateAccounts(merged));
-        if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-          throw new Error(
-            `Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`
-          );
-        }
-      }
+	const content = await fs.readFile(resolvedPath, "utf-8");
 
-      const deduplicatedAccounts = deduplicateAccountsByEmail(deduplicateAccounts(merged));
+	let imported: unknown;
+	try {
+		imported = JSON.parse(content);
+	} catch {
+		throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
+	}
 
-      const newStorage: AccountStorageV3 = {
-        version: 3,
-        accounts: deduplicatedAccounts,
-        activeIndex: existingActiveIndex,
-        activeIndexByFamily: existing?.activeIndexByFamily,
-      };
+	const normalized = normalizeAccountStorage(imported);
+	if (!normalized) {
+		throw new Error("Invalid account storage format");
+	}
 
-      await persist(newStorage);
+	const {
+		imported: importedCount,
+		total,
+		skipped: skippedCount,
+	} = await withAccountStorageTransaction(async (existing, persist) => {
+		const existingAccounts = existing?.accounts ?? [];
+		const existingActiveIndex = existing?.activeIndex ?? 0;
 
-      const imported = deduplicatedAccounts.length - existingAccounts.length;
-      const skipped = normalized.accounts.length - imported;
-      return { imported, total: deduplicatedAccounts.length, skipped };
-    });
+		const merged = [...existingAccounts, ...normalized.accounts];
 
-  log.info("Imported accounts", { path: resolvedPath, imported: importedCount, skipped: skippedCount, total });
+		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			const deduped = deduplicateAccountsByEmail(deduplicateAccounts(merged));
+			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+				throw new Error(
+					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
+				);
+			}
+		}
 
-  return { imported: importedCount, total, skipped: skippedCount };
+		const deduplicatedAccounts = deduplicateAccountsByEmail(
+			deduplicateAccounts(merged),
+		);
+
+		const newStorage: AccountStorageV3 = {
+			version: 3,
+			accounts: deduplicatedAccounts,
+			activeIndex: existingActiveIndex,
+			activeIndexByFamily: existing?.activeIndexByFamily,
+		};
+
+		await persist(newStorage);
+
+		const imported = deduplicatedAccounts.length - existingAccounts.length;
+		const skipped = normalized.accounts.length - imported;
+		return { imported, total: deduplicatedAccounts.length, skipped };
+	});
+
+	log.info("Imported accounts", {
+		path: resolvedPath,
+		imported: importedCount,
+		skipped: skippedCount,
+		total,
+	});
+
+	return { imported: importedCount, total, skipped: skippedCount };
 }
