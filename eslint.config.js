@@ -6,7 +6,7 @@ export default [
     ignores: ["dist/**", "coverage/**", "node_modules/**", "winston/**", ".tmp*/**", "vendor/**", "*.cjs", "*.mjs"],
   },
   {
-    files: ["index.ts", "lib/**/*.ts"],
+    files: ["index.ts", "lib/**/*.ts", "runtime/**/*.ts"],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
@@ -33,6 +33,35 @@ export default [
       
       // General best practices
       "no-console": "off", // Allow console for CLI tool
+      "prefer-const": "error",
+      "no-var": "error",
+      "eqeqeq": ["error", "always"],
+      "no-duplicate-imports": "error",
+    },
+  },
+  {
+    files: ["runtime/**/*.ts"],
+    languageOptions: {
+      parser: tsparser,
+      parserOptions: {
+        ecmaVersion: "latest",
+        sourceType: "module",
+        project: "./tsconfig.runtime-opentui.json",
+      },
+    },
+    plugins: {
+      "@typescript-eslint": tseslint,
+    },
+    rules: {
+      "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/explicit-function-return-type": "off",
+      "@typescript-eslint/no-non-null-assertion": "warn",
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/await-thenable": "error",
+      "@typescript-eslint/require-await": "warn",
+      "no-console": "off",
       "prefer-const": "error",
       "no-var": "error",
       "eqeqeq": ["error", "always"],

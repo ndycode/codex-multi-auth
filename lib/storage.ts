@@ -2037,17 +2037,13 @@ export async function importAccounts(filePath: string): Promise<{ imported: numb
       const existingActiveIndex = existing?.activeIndex ?? 0;
 
       const merged = [...existingAccounts, ...normalized.accounts];
-
-      if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-        const deduped = deduplicateAccountsByEmail(deduplicateAccounts(merged));
-        if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-          throw new Error(
-            `Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`
-          );
-        }
-      }
-
       const deduplicatedAccounts = deduplicateAccountsByEmail(deduplicateAccounts(merged));
+
+      if (deduplicatedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+        throw new Error(
+          `Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduplicatedAccounts.length})`
+        );
+      }
 
       const newStorage: AccountStorageV3 = {
         version: 3,

@@ -1,0 +1,7 @@
+preload = ["@opentui/solid/preload"]
+
+[test]
+root = "test/tui"
+
+[build]
+target = "bun"

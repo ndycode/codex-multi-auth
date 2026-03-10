@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const showAuthMenu = vi.fn();
 const showAccountDetails = vi.fn();
 const isTTY = vi.fn();
+const confirm = vi.fn();
 const mockRl = {
 	question: vi.fn(),
 	close: vi.fn(),
@@ -18,15 +19,21 @@ vi.mock("../lib/ui/auth-menu.js", () => ({
 	isTTY,
 }));
 
+vi.mock("../lib/ui/confirm.js", () => ({
+	confirm,
+}));
+
 describe("CLI auth menu shortcuts", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		showAuthMenu.mockReset();
 		showAccountDetails.mockReset();
 		isTTY.mockReset();
+		confirm.mockReset();
 		mockRl.question.mockReset();
 		mockRl.close.mockReset();
 		isTTY.mockReturnValue(true);
+		confirm.mockResolvedValue(true);
 		process.env.FORCE_INTERACTIVE_MODE = "1";
 	});
 
@@ -265,6 +272,31 @@ describe("CLI auth menu shortcuts", () => {
 
 		expect(result).toEqual({ mode: "cancel" });
 		expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Unable to resolve saved account for action"));
+		consoleSpy.mockRestore();
+	});
+
+	it("routes fallback prompt when TTY is unavailable", async () => {
+		isTTY.mockReturnValue(false);
+		mockRl.question.mockResolvedValueOnce("forecast");
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0, email: "ttyless@example.com" }]);
+
+		expect(result).toEqual({ mode: "forecast" });
+		expect(mockRl.question).toHaveBeenCalledTimes(1);
+		expect(mockRl.close).toHaveBeenCalled();
+	});
+
+	it("re-prompts fallback selection until a valid mode is chosen", async () => {
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		isTTY.mockReturnValue(false);
+		mockRl.question.mockResolvedValueOnce("invalid").mockResolvedValueOnce("q");
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0, email: "retry@example.com" }]);
+
+		expect(result).toEqual({ mode: "cancel" });
+		expect(mockRl.question).toHaveBeenCalledTimes(2);
 		consoleSpy.mockRestore();
 	});
 

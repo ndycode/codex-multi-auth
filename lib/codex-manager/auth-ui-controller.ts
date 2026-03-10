@@ -97,6 +97,43 @@ export interface AuthDashboardActionPanelViewModel {
 	stage: string;
 }
 
+export type AuthAccountDetailActionId = "back" | "toggle" | "set-current" | "refresh" | "delete";
+
+export interface AuthAccountDetailActionViewModel {
+	id: AuthAccountDetailActionId;
+	label: string;
+	tone: "green" | "yellow" | "red";
+}
+
+export interface AuthAccountDetailViewModel {
+	account: AuthAccountViewModel;
+	title: string;
+	subtitle: string;
+	actions: AuthAccountDetailActionViewModel[];
+}
+
+export interface AuthConfirmationModalViewModel {
+	id: "delete-all" | "delete-account" | "refresh-account";
+	message: string;
+	confirmStyle: "confirm" | "typed-delete";
+	result: LoginMenuResult;
+	cancelMessage?: string;
+}
+
+export interface AuthDashboardScreenStateViewModel {
+	dashboard: AuthDashboardViewModel;
+	selectedAccountIndex: number | null;
+	detailPane: AuthAccountDetailViewModel | null;
+	modal: AuthConfirmationModalViewModel | null;
+}
+
+export type AuthDashboardInteractionResolution =
+	| { type: "result"; result: LoginMenuResult }
+	| { type: "detail"; detail: AuthAccountDetailViewModel }
+	| { type: "confirm"; modal: AuthConfirmationModalViewModel }
+	| { type: "warning"; message: string }
+	| { type: "continue" };
+
 export type AuthDashboardCommand =
 	| { type: "cancel" }
 	| { type: "add-account" }
@@ -117,6 +154,89 @@ export type AuthDashboardCommand =
 		requiresInlineFlow: boolean;
 		panel?: AuthDashboardActionPanelViewModel;
 	};
+
+function sanitizeTerminalText(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const ansiPattern = new RegExp("\\u001B\\[[0-?]*[ -/]*[@-~]", "g");
+	const controlPattern = new RegExp("[\\u0000-\\u001F\\u007F]", "g");
+	return value
+		.replace(ansiPattern, "")
+		.replace(controlPattern, "")
+		.trim();
+}
+
+function formatRelativeTime(timestamp: number | undefined): string {
+	if (!timestamp) return "never";
+	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
+	if (days <= 0) return "today";
+	if (days === 1) return "yesterday";
+	if (days < 7) return `${days}d ago`;
+	if (days < 30) return `${Math.floor(days / 7)}w ago`;
+	return new Date(timestamp).toLocaleDateString();
+}
+
+function formatDate(timestamp: number | undefined): string {
+	if (!timestamp) return "unknown";
+	return new Date(timestamp).toLocaleDateString();
+}
+
+function formatAccountTitle(account: AuthAccountViewModel): string {
+	const accountNumber = account.quickSwitchNumber ?? (account.index + 1);
+	const base =
+		sanitizeTerminalText(account.email) ||
+		sanitizeTerminalText(account.accountLabel) ||
+		sanitizeTerminalText(account.accountId) ||
+		`Account ${accountNumber}`;
+	return `${accountNumber}. ${base}`;
+}
+
+function resolveManagedAccountIndex(account: Pick<AuthAccountViewModel, "index" | "sourceIndex">): number {
+	const sourceIndex =
+		typeof account.sourceIndex === "number" && Number.isFinite(account.sourceIndex)
+			? Math.max(0, Math.floor(account.sourceIndex))
+			: undefined;
+	if (typeof sourceIndex === "number") return sourceIndex;
+	if (typeof account.index === "number" && Number.isFinite(account.index)) {
+		return Math.max(0, Math.floor(account.index));
+	}
+	return -1;
+}
+
+function buildUnresolvableAccountMessage(
+	account: Pick<AuthAccountViewModel, "index" | "email" | "accountId">,
+): string {
+	const label = account.email?.trim() || account.accountId?.trim() || `index ${account.index + 1}`;
+	return `Unable to resolve saved account for action: ${label}`;
+}
+
+function resolveAccountManageResult(
+	account: Pick<AuthAccountViewModel, "index" | "sourceIndex" | "email" | "accountId">,
+	buildResult: (index: number) => LoginMenuResult,
+): AuthDashboardInteractionResolution {
+	const index = resolveManagedAccountIndex(account);
+	if (index >= 0) {
+		return { type: "result", result: buildResult(index) };
+	}
+	return { type: "warning", message: buildUnresolvableAccountMessage(account) };
+}
+
+function resolveAccountConfirmModal(
+	account: Pick<AuthAccountViewModel, "index" | "sourceIndex" | "email" | "accountId">,
+	modal: Pick<AuthConfirmationModalViewModel, "id" | "message" | "confirmStyle">,
+	buildResult: (index: number) => LoginMenuResult,
+): AuthDashboardInteractionResolution {
+	const index = resolveManagedAccountIndex(account);
+	if (index < 0) {
+		return { type: "warning", message: buildUnresolvableAccountMessage(account) };
+	}
+	return {
+		type: "confirm",
+		modal: {
+			...modal,
+			result: buildResult(index),
+		},
+	};
+}
 
 export function resolveActiveIndex(
 	storage: AccountStorageV3,
@@ -462,6 +582,178 @@ export function buildAuthDashboardViewModel(
 		},
 		sections: buildAuthDashboardSections(flaggedCount),
 	};
+}
+
+export function buildAuthAccountDetailViewModel(
+	account: AuthAccountViewModel,
+): AuthAccountDetailViewModel {
+	const title =
+		`${formatAccountTitle(account)} [${account.status ?? "unknown"}]` +
+		(account.enabled === false ? " [disabled]" : "");
+	const statusLabel = account.status ?? "unknown";
+	return {
+		account,
+		title,
+		subtitle: `Added: ${formatDate(account.addedAt)} | Used: ${formatRelativeTime(account.lastUsed)} | Status: ${statusLabel}`,
+		actions: [
+			{ id: "back", label: UI_COPY.accountDetails.back, tone: "yellow" },
+			{
+				id: "toggle",
+				label: account.enabled === false ? UI_COPY.accountDetails.enable : UI_COPY.accountDetails.disable,
+				tone: account.enabled === false ? "green" : "yellow",
+			},
+			{ id: "set-current", label: UI_COPY.accountDetails.setCurrent, tone: "green" },
+			{ id: "refresh", label: UI_COPY.accountDetails.refresh, tone: "green" },
+			{ id: "delete", label: UI_COPY.accountDetails.remove, tone: "red" },
+		],
+	};
+}
+
+export function buildAuthDashboardScreenState(
+	options: BuildAuthDashboardViewModelOptions,
+): AuthDashboardScreenStateViewModel {
+	const dashboard = buildAuthDashboardViewModel(options);
+	const selectedAccount = dashboard.accounts.find((account) => account.isCurrentAccount) ?? dashboard.accounts[0] ?? null;
+	return {
+		dashboard,
+		selectedAccountIndex: selectedAccount?.index ?? null,
+		detailPane: selectedAccount ? buildAuthAccountDetailViewModel(selectedAccount) : null,
+		modal: null,
+	};
+}
+
+export function resolveAuthDashboardSelection(
+	action: {
+		type:
+			| "add"
+			| "forecast"
+			| "fix"
+			| "settings"
+			| "fresh"
+			| "check"
+			| "deep-check"
+			| "verify-flagged"
+			| "select-account"
+			| "set-current-account"
+			| "refresh-account"
+			| "toggle-account"
+			| "delete-account"
+			| "search"
+			| "delete-all"
+			| "cancel";
+		account?: AuthAccountViewModel;
+	},
+): AuthDashboardInteractionResolution {
+	switch (action.type) {
+		case "add":
+			return { type: "result", result: { mode: "add" } };
+		case "forecast":
+			return { type: "result", result: { mode: "forecast" } };
+		case "fix":
+			return { type: "result", result: { mode: "fix" } };
+		case "settings":
+			return { type: "result", result: { mode: "settings" } };
+		case "check":
+			return { type: "result", result: { mode: "check" } };
+		case "deep-check":
+			return { type: "result", result: { mode: "deep-check" } };
+		case "verify-flagged":
+			return { type: "result", result: { mode: "verify-flagged" } };
+		case "cancel":
+			return { type: "result", result: { mode: "cancel" } };
+		case "search":
+			return { type: "continue" };
+		case "fresh":
+		case "delete-all":
+			return {
+				type: "confirm",
+				modal: {
+					id: "delete-all",
+					message: "Delete all accounts?",
+					confirmStyle: "typed-delete",
+					result: { mode: "fresh", deleteAll: true },
+					cancelMessage: "\nDelete all cancelled.\n",
+				},
+			};
+		case "select-account":
+			if (!action.account) return { type: "continue" };
+			return { type: "detail", detail: buildAuthAccountDetailViewModel(action.account) };
+		case "set-current-account":
+			if (!action.account) return { type: "continue" };
+			return resolveAccountManageResult(action.account, (index) => ({ mode: "manage", switchAccountIndex: index }));
+		case "toggle-account":
+			if (!action.account) return { type: "continue" };
+			return resolveAccountManageResult(action.account, (index) => ({ mode: "manage", toggleAccountIndex: index }));
+		case "refresh-account":
+			if (!action.account) return { type: "continue" };
+			return resolveAccountConfirmModal(
+				action.account,
+				{
+					id: "refresh-account",
+					message: `Re-authenticate ${formatAccountTitle(action.account)}?`,
+					confirmStyle: "confirm",
+				},
+				(index) => ({ mode: "manage", refreshAccountIndex: index }),
+			);
+		case "delete-account":
+			if (!action.account) return { type: "continue" };
+			return resolveAccountConfirmModal(
+				action.account,
+				{
+					id: "delete-account",
+					message: `Delete ${formatAccountTitle(action.account)}?`,
+					confirmStyle: "confirm",
+				},
+				(index) => ({ mode: "manage", deleteAccountIndex: index }),
+			);
+		default:
+			return { type: "continue" };
+	}
+}
+
+export function resolveAuthAccountDetailSelection(
+	account: AuthAccountViewModel,
+	action: AuthAccountDetailActionId | "cancel",
+): AuthDashboardInteractionResolution {
+	switch (action) {
+		case "back":
+		case "cancel":
+			return { type: "continue" };
+		case "set-current":
+			return resolveAccountManageResult(account, (index) => ({ mode: "manage", switchAccountIndex: index }));
+		case "toggle":
+			return resolveAccountManageResult(account, (index) => ({ mode: "manage", toggleAccountIndex: index }));
+		case "refresh":
+			return resolveAccountConfirmModal(
+				account,
+				{
+					id: "refresh-account",
+					message: `Re-authenticate ${formatAccountTitle(account)}?`,
+					confirmStyle: "confirm",
+				},
+				(index) => ({ mode: "manage", refreshAccountIndex: index }),
+			);
+		case "delete":
+			return resolveAccountConfirmModal(
+				account,
+				{
+					id: "delete-account",
+					message: `Delete ${formatAccountTitle(account)}?`,
+					confirmStyle: "confirm",
+				},
+				(index) => ({ mode: "manage", deleteAccountIndex: index }),
+			);
+	}
+}
+
+export function settleAuthConfirmation(
+	modal: AuthConfirmationModalViewModel,
+	confirmed: boolean,
+): AuthDashboardInteractionResolution {
+	if (!confirmed) {
+		return { type: "continue" };
+	}
+	return { type: "result", result: modal.result };
 }
 
 export function resolveAuthDashboardCommand(menuResult: LoginMenuResult): AuthDashboardCommand {

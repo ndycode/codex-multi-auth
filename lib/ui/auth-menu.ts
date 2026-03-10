@@ -1,11 +1,11 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { ANSI, isTTY } from "./ansi.js";
-import { confirm } from "./confirm.js";
 import { getUiRuntimeOptions } from "./runtime.js";
 import { select, type MenuItem } from "./select.js";
 import { paintUiText, formatUiBadge, quotaToneFromLeftPercent } from "./format.js";
 import { UI_COPY, formatCheckFlaggedLabel } from "./copy.js";
+import { buildAuthAccountDetailViewModel } from "../codex-manager/auth-ui-controller.js";
 
 export type AccountStatus =
 	| "active"
@@ -84,9 +84,11 @@ function mainMenuTitleWithVersion(): string {
 
 function sanitizeTerminalText(value: string | undefined): string | undefined {
 	if (!value) return undefined;
+	const ansiPattern = new RegExp("\\u001B\\[[0-?]*[ -/]*[@-~]", "g");
+	const controlPattern = new RegExp("[\\u0000-\\u001F\\u007F]", "g");
 	return value
-		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-		.replace(/[\u0000-\u001f\u007f]/g, "")
+		.replace(ansiPattern, "")
+		.replace(controlPattern, "")
 		.trim();
 }
 
@@ -97,11 +99,6 @@ function formatRelativeTime(timestamp: number | undefined): string {
 	if (days === 1) return "yesterday";
 	if (days < 7) return `${days}d ago`;
 	if (days < 30) return `${Math.floor(days / 7)}w ago`;
-	return new Date(timestamp).toLocaleDateString();
-}
-
-function formatDate(timestamp: number | undefined): string {
-	if (!timestamp) return "unknown";
 	return new Date(timestamp).toLocaleDateString();
 }
 
@@ -601,18 +598,6 @@ export async function showAuthMenu(
 			focusKey = "action:search";
 			continue;
 		}
-		if (result.type === "delete-all") {
-			const confirmed = await confirm("Delete all accounts?");
-			if (!confirmed) continue;
-		}
-		if (result.type === "delete-account") {
-			const confirmed = await confirm(`Delete ${accountTitle(result.account)}?`);
-			if (!confirmed) continue;
-		}
-		if (result.type === "refresh-account") {
-			const confirmed = await confirm(`Re-authenticate ${accountTitle(result.account)}?`);
-			if (!confirmed) continue;
-		}
 		focusKey = authMenuFocusKey(result);
 		return result;
 	}
@@ -620,33 +605,27 @@ export async function showAuthMenu(
 
 export async function showAccountDetails(account: AccountInfo): Promise<AccountAction> {
 	const ui = getUiRuntimeOptions();
-	const header =
-		`${accountTitle(account)} ${statusBadge(account.status)}` +
-		(account.enabled === false
-			? (ui.v2Enabled
-				? ` ${formatUiBadge(ui, "disabled", "danger")}`
-				: ` ${ANSI.red}[disabled]${ANSI.reset}`)
-			: "");
-	const statusLabel = account.status ?? "unknown";
-	const subtitle = `Added: ${formatDate(account.addedAt)} | Used: ${formatRelativeTime(account.lastUsed)} | Status: ${statusLabel}`;
+	const detail = buildAuthAccountDetailViewModel(account);
+	const header = detail.title
+		.replace(" [active]", ` ${statusBadge("active")}`)
+		.replace(" [ok]", ` ${statusBadge("ok")}`)
+		.replace(" [rate-limited]", ` ${statusBadge("rate-limited")}`)
+		.replace(" [cooldown]", ` ${statusBadge("cooldown")}`)
+		.replace(" [disabled]", ui.v2Enabled
+			? ` ${formatUiBadge(ui, "disabled", "danger")}`
+			: ` ${ANSI.red}[disabled]${ANSI.reset}`)
+		.replace(" [error]", ` ${statusBadge("error")}`)
+		.replace(" [flagged]", ` ${statusBadge("flagged")}`)
+		.replace(" [unknown]", ` ${statusBadge("unknown")}`);
+	const subtitle = detail.subtitle;
 	let focusAction: AccountAction = "back";
 
 	while (true) {
-		const items: MenuItem<AccountAction>[] = [
-			{ label: UI_COPY.accountDetails.back, value: "back" },
-			{
-				label: account.enabled === false ? UI_COPY.accountDetails.enable : UI_COPY.accountDetails.disable,
-				value: "toggle",
-				color: account.enabled === false ? "green" : "yellow",
-			},
-			{
-				label: UI_COPY.accountDetails.setCurrent,
-				value: "set-current",
-				color: "green",
-			},
-			{ label: UI_COPY.accountDetails.refresh, value: "refresh", color: "green" },
-			{ label: UI_COPY.accountDetails.remove, value: "delete", color: "red" },
-		];
+		const items: MenuItem<AccountAction>[] = detail.actions.map((action) => ({
+			label: action.label,
+			value: action.id,
+			color: action.tone,
+		}));
 		const initialCursor = items.findIndex((item) => item.value === focusAction);
 		const action = await select<AccountAction>(items, {
 			message: header,
@@ -675,14 +654,6 @@ export async function showAccountDetails(account: AccountInfo): Promise<AccountA
 
 		if (!action) return "cancel";
 		focusAction = action;
-		if (action === "delete") {
-			const confirmed = await confirm(`Delete ${accountTitle(account)}?`);
-			if (!confirmed) continue;
-		}
-		if (action === "refresh") {
-			const confirmed = await confirm(`Re-authenticate ${accountTitle(account)}?`);
-			if (!confirmed) continue;
-		}
 		return action;
 	}
 }

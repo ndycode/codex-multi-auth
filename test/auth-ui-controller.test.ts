@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildAuthAccountDetailViewModel,
+	buildAuthDashboardScreenState,
 	buildAuthDashboardViewModel,
+	resolveAuthAccountDetailSelection,
 	resolveAuthDashboardCommand,
+	resolveAuthDashboardSelection,
+	settleAuthConfirmation,
 } from "../lib/codex-manager/auth-ui-controller.js";
 
 describe("auth ui controller seam", () => {
@@ -117,6 +122,58 @@ describe("auth ui controller seam", () => {
 		expect(viewModel.accounts[1]?.isCurrentAccount).toBe(true);
 	});
 
+	it("builds a renderer-agnostic screen state with default detail-pane data", () => {
+		const now = Date.now();
+		const state = buildAuthDashboardScreenState({
+			storage: {
+				version: 3,
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+				accounts: [
+					{
+						email: "a@example.com",
+						accountId: "acc_a",
+						refreshToken: "refresh-a",
+						accessToken: "access-a",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+					{
+						email: "b@example.com",
+						accountId: "acc_b",
+						refreshToken: "refresh-b",
+						accessToken: "access-b",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			},
+			quotaCache: null,
+			displaySettings: {
+				showPerAccountRows: true,
+				showQuotaDetails: true,
+				showForecastReasons: true,
+				showRecommendations: true,
+				showLiveProbeNotes: true,
+			},
+		});
+
+		expect(state.selectedAccountIndex).toBe(0);
+		expect(state.detailPane?.account.email).toBe("b@example.com");
+		expect(state.detailPane?.actions.map((action) => action.id)).toEqual([
+			"back",
+			"toggle",
+			"set-current",
+			"refresh",
+			"delete",
+		]);
+		expect(state.modal).toBeNull();
+	});
+
 	it("maps login menu outcomes into renderer-agnostic commands", () => {
 		expect(resolveAuthDashboardCommand({ mode: "settings" })).toEqual({
 			type: "open-settings",
@@ -139,5 +196,65 @@ describe("auth ui controller seam", () => {
 			requiresInlineFlow: false,
 			panel: { title: "Applying Change", stage: "Updating selected account" },
 		});
+	});
+
+	it("resolves auth dashboard selections, detail actions, and modal confirmations outside the renderer", () => {
+		const account = {
+			index: 0,
+			sourceIndex: 3,
+			quickSwitchNumber: 4,
+			email: "sorted@example.com",
+			status: "active" as const,
+			enabled: true,
+		};
+
+		expect(resolveAuthDashboardSelection({ type: "set-current-account", account })).toEqual({
+			type: "result",
+			result: { mode: "manage", switchAccountIndex: 3 },
+		});
+
+		const detailResolution = resolveAuthDashboardSelection({ type: "select-account", account });
+		if (detailResolution.type !== "detail") {
+			throw new Error("expected detail resolution");
+		}
+		expect(detailResolution.detail.title).toContain("sorted@example.com");
+
+		const modalResolution = resolveAuthAccountDetailSelection(account, "refresh");
+		if (modalResolution.type !== "confirm") {
+			throw new Error("expected confirm resolution");
+		}
+		expect(modalResolution.modal.id).toBe("refresh-account");
+		expect(settleAuthConfirmation(modalResolution.modal, false)).toEqual({ type: "continue" });
+		expect(settleAuthConfirmation(modalResolution.modal, true)).toEqual({
+			type: "result",
+			result: { mode: "manage", refreshAccountIndex: 3 },
+		});
+
+		expect(resolveAuthDashboardSelection({ type: "delete-all" })).toEqual({
+			type: "confirm",
+			modal: {
+				id: "delete-all",
+				message: "Delete all accounts?",
+				confirmStyle: "typed-delete",
+				result: { mode: "fresh", deleteAll: true },
+				cancelMessage: "\nDelete all cancelled.\n",
+			},
+		});
+	});
+
+	it("builds detail-pane view models without renderer dependencies", () => {
+		const detail = buildAuthAccountDetailViewModel({
+			index: 1,
+			quickSwitchNumber: 2,
+			email: "detail@example.com",
+			status: "disabled",
+			enabled: false,
+			addedAt: 1,
+			lastUsed: 1,
+		});
+
+		expect(detail.title).toContain("detail@example.com");
+		expect(detail.title).toContain("[disabled]");
+		expect(detail.actions[1]).toEqual({ id: "toggle", label: "Enable Account", tone: "green" });
 	});
 });

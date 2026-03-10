@@ -13,7 +13,7 @@ import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
 import {
 	isNonInteractiveMode,
 	promptAddAnotherAccount,
-	promptLoginMode,
+	type LoginMenuResult,
 } from "./cli.js";
 import {
 	extractAccountEmail,
@@ -81,20 +81,21 @@ import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { select, type MenuItem } from "./ui/select.js";
 import {
-	buildAuthDashboardViewModel,
+	buildAuthDashboardScreenState,
 	formatCompactQuotaSnapshot,
 	formatRateLimitEntry,
 	getQuotaCacheEntryForAccount,
 	resolveActiveIndex,
 	resolveAuthDashboardCommand,
 } from "./codex-manager/auth-ui-controller.js";
-import { applyUiThemeFromDashboardSettings, configureUnifiedSettings } from "./codex-manager/settings-hub.js";
+import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, persistOpenTuiSettingsSave } from "./codex-manager/settings-hub.js";
 import {
 	configureInkUnifiedSettings,
 	promptInkAuthDashboard,
 	promptInkRestoreForLogin,
 	type InkShellTone,
 } from "./ui-ink/index.js";
+import { promptOpenTuiAuthDashboard } from "../runtime/opentui/prompt.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 type TokenSuccessWithAccount = TokenSuccess & {
@@ -3557,7 +3558,7 @@ async function clearAccountsAndReset(): Promise<void> {
 
 async function handleManageAction(
 	storage: AccountStorageV3,
-	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
+	menuResult: LoginMenuResult,
 ): Promise<void> {
 	if (typeof menuResult.switchAccountIndex === "number") {
 		const index = menuResult.switchAccountIndex;
@@ -3636,6 +3637,9 @@ async function runAuthLogin(): Promise<number> {
 		let recoveryStatusText = loginStorage.statusText;
 		let recoveryStatusTone = loginStorage.statusTone;
 		if (existingStorage && existingStorage.accounts.length > 0) {
+			if (isNonInteractiveMode()) {
+				existingStorage = null;
+			} else {
 			while (true) {
 				existingStorage = await loadAccounts();
 				if (!existingStorage || existingStorage.accounts.length === 0) {
@@ -3672,22 +3676,40 @@ async function runAuthLogin(): Promise<number> {
 					}
 				}
 				const flaggedStorage = await loadFlaggedAccounts();
-				const dashboardViewModel = buildAuthDashboardViewModel({
+				const dashboardState = buildAuthDashboardScreenState({
 					storage: currentStorage,
 					quotaCache,
 					displaySettings,
 					flaggedCount: flaggedStorage.accounts.length,
 					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
 				});
+				const dashboardViewModel = dashboardState.dashboard;
+				const openTuiDashboardViewModel = recoveryStatusText
+					? {
+						...dashboardViewModel,
+						menuOptions: {
+							...dashboardViewModel.menuOptions,
+							statusMessage: recoveryStatusText,
+						},
+					}
+					: dashboardViewModel;
 
-				const menuResult = await promptInkAuthDashboard({
+				const menuResult = await promptOpenTuiAuthDashboard({
+					dashboard: openTuiDashboardViewModel,
+					onSettingsSave: (event) => {
+						void persistOpenTuiSettingsSave(event).catch((error: unknown) => {
+							console.warn(
+								`OpenTUI settings save failed: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						});
+					},
+				}) ?? await promptInkAuthDashboard({
 					dashboard: dashboardViewModel,
 					statusTextOverride: recoveryStatusText,
 					statusToneOverride: recoveryStatusTone,
-				}) ?? await promptLoginMode(
-					dashboardViewModel.accounts,
-					dashboardViewModel.menuOptions,
-				);
+				}) ?? (isNonInteractiveMode()
+					? { mode: "add" as const }
+					: { mode: "cancel" as const });
 				recoveryStatusText = undefined;
 				recoveryStatusTone = undefined;
 				const command = resolveAuthDashboardCommand(menuResult);
@@ -3756,6 +3778,7 @@ async function runAuthLogin(): Promise<number> {
 					break;
 				}
 			}
+			}
 		}
 
 		const refreshedStorage = await loadAccounts();
@@ -3791,6 +3814,9 @@ async function runAuthLogin(): Promise<number> {
 			const addAnother = await promptAddAnotherAccount(count);
 			if (!addAnother) break;
 			forceNewLogin = true;
+		}
+		if (isNonInteractiveMode()) {
+			return 0;
 		}
 		continue loginFlow;
 	}

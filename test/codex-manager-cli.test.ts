@@ -19,6 +19,7 @@ const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
 const promptLoginModeMock = vi.fn();
+const promptOpenTuiAuthDashboardMock = vi.fn();
 const promptInkAuthDashboardMock = vi.fn();
 const configureInkUnifiedSettingsMock = vi.fn();
 const promptInkRestoreForLoginMock = vi.fn();
@@ -62,6 +63,10 @@ vi.mock("../lib/cli.js", () => ({
 	isNonInteractiveMode: isNonInteractiveModeMock,
 	promptAddAnotherAccount: promptAddAnotherAccountMock,
 	promptLoginMode: promptLoginModeMock,
+}));
+
+vi.mock("../runtime/opentui/prompt.js", () => ({
+	promptOpenTuiAuthDashboard: promptOpenTuiAuthDashboardMock,
 }));
 
 vi.mock("../lib/ui-ink/index.js", () => ({
@@ -140,14 +145,100 @@ vi.mock("../lib/dashboard-settings.js", () => ({
 	saveDashboardDisplaySettings: saveDashboardDisplaySettingsMock,
 }));
 
-vi.mock("../lib/config.js", async () => {
-	const actual = await vi.importActual("../lib/config.js");
-	return {
-		...(actual as Record<string, unknown>),
-		loadPluginConfig: loadPluginConfigMock,
-		savePluginConfig: savePluginConfigMock,
-	};
-});
+vi.mock("../lib/config.js", () => ({
+	DEFAULT_PLUGIN_CONFIG: {
+		codexMode: true,
+		codexTuiV2: true,
+		codexTuiColorProfile: "truecolor",
+		codexTuiGlyphMode: "ascii",
+		fastSession: false,
+		fastSessionStrategy: "hybrid",
+		fastSessionMaxInputItems: 30,
+		retryAllAccountsRateLimited: true,
+		retryAllAccountsMaxWaitMs: 0,
+		retryAllAccountsMaxRetries: Infinity,
+		unsupportedCodexPolicy: "strict",
+		fallbackOnUnsupportedCodexModel: false,
+		fallbackToGpt52OnUnsupportedGpt53: true,
+		unsupportedCodexFallbackChain: {},
+		tokenRefreshSkewMs: 60_000,
+		rateLimitToastDebounceMs: 60_000,
+		toastDurationMs: 5_000,
+		perProjectAccounts: true,
+		sessionRecovery: true,
+		autoResume: true,
+		parallelProbing: false,
+		parallelProbingMaxConcurrency: 2,
+		emptyResponseMaxRetries: 2,
+		emptyResponseRetryDelayMs: 1_000,
+		pidOffsetEnabled: false,
+		fetchTimeoutMs: 60_000,
+		streamStallTimeoutMs: 45_000,
+		liveAccountSync: true,
+		liveAccountSyncDebounceMs: 250,
+		liveAccountSyncPollMs: 2_000,
+		sessionAffinity: true,
+		sessionAffinityTtlMs: 1_200_000,
+		sessionAffinityMaxEntries: 512,
+		proactiveRefreshGuardian: true,
+		proactiveRefreshIntervalMs: 60_000,
+		proactiveRefreshBufferMs: 300_000,
+		networkErrorCooldownMs: 6_000,
+		serverErrorCooldownMs: 4_000,
+		storageBackupEnabled: true,
+		preemptiveQuotaEnabled: true,
+		preemptiveQuotaRemainingPercent5h: 5,
+		preemptiveQuotaRemainingPercent7d: 5,
+		preemptiveQuotaMaxDeferralMs: 7_200_000,
+	},
+	getDefaultPluginConfig: vi.fn(() => ({
+		codexMode: true,
+		codexTuiV2: true,
+		codexTuiColorProfile: "truecolor",
+		codexTuiGlyphMode: "ascii",
+		fastSession: false,
+		fastSessionStrategy: "hybrid",
+		fastSessionMaxInputItems: 30,
+		retryAllAccountsRateLimited: true,
+		retryAllAccountsMaxWaitMs: 0,
+		retryAllAccountsMaxRetries: Infinity,
+		unsupportedCodexPolicy: "strict",
+		fallbackOnUnsupportedCodexModel: false,
+		fallbackToGpt52OnUnsupportedGpt53: true,
+		unsupportedCodexFallbackChain: {},
+		tokenRefreshSkewMs: 60_000,
+		rateLimitToastDebounceMs: 60_000,
+		toastDurationMs: 5_000,
+		perProjectAccounts: true,
+		sessionRecovery: true,
+		autoResume: true,
+		parallelProbing: false,
+		parallelProbingMaxConcurrency: 2,
+		emptyResponseMaxRetries: 2,
+		emptyResponseRetryDelayMs: 1_000,
+		pidOffsetEnabled: false,
+		fetchTimeoutMs: 60_000,
+		streamStallTimeoutMs: 45_000,
+		liveAccountSync: true,
+		liveAccountSyncDebounceMs: 250,
+		liveAccountSyncPollMs: 2_000,
+		sessionAffinity: true,
+		sessionAffinityTtlMs: 1_200_000,
+		sessionAffinityMaxEntries: 512,
+		proactiveRefreshGuardian: true,
+		proactiveRefreshIntervalMs: 60_000,
+		proactiveRefreshBufferMs: 300_000,
+		networkErrorCooldownMs: 6_000,
+		serverErrorCooldownMs: 4_000,
+		storageBackupEnabled: true,
+		preemptiveQuotaEnabled: true,
+		preemptiveQuotaRemainingPercent5h: 5,
+		preemptiveQuotaRemainingPercent7d: 5,
+		preemptiveQuotaMaxDeferralMs: 7_200_000,
+	})),
+	loadPluginConfig: loadPluginConfigMock,
+	savePluginConfig: savePluginConfigMock,
+}));
 
 vi.mock("../lib/quota-cache.js", () => ({
 	loadQuotaCache: loadQuotaCacheMock,
@@ -160,6 +251,7 @@ vi.mock("../lib/ui/select.js", () => ({
 
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+let defaultConsoleLogSpy: ReturnType<typeof vi.spyOn> | null = null;
 
 function setInteractiveTTY(enabled: boolean): void {
 	Object.defineProperty(process.stdin, "isTTY", {
@@ -262,8 +354,9 @@ function createRestoreAssessment(overrides: Partial<{
 
 describe("codex manager cli commands", () => {
 	beforeEach(() => {
-		vi.resetModules();
 		vi.clearAllMocks();
+		defaultConsoleLogSpy?.mockRestore();
+		defaultConsoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		loadAccountsMock.mockReset();
 		loadFlaggedAccountsMock.mockReset();
 		getRestoreAssessmentMock.mockReset();
@@ -276,6 +369,7 @@ describe("codex manager cli commands", () => {
 		setCodexCliActiveSelectionMock.mockReset();
 		promptAddAnotherAccountMock.mockReset();
 		promptLoginModeMock.mockReset();
+		promptOpenTuiAuthDashboardMock.mockReset();
 		promptInkAuthDashboardMock.mockReset();
 		configureInkUnifiedSettingsMock.mockReset();
 		promptInkRestoreForLoginMock.mockReset();
@@ -322,10 +416,12 @@ describe("codex manager cli commands", () => {
 			return !process.stdin.isTTY || !process.stdout.isTTY;
 		});
 		selectMock.mockResolvedValue(undefined);
+		promptOpenTuiAuthDashboardMock.mockResolvedValue(null);
 		promptInkAuthDashboardMock.mockResolvedValue(null);
 		configureInkUnifiedSettingsMock.mockResolvedValue(false);
 		promptInkRestoreForLoginMock.mockResolvedValue(null);
 		restoreTTYDescriptors();
+		setInteractiveTTY(true);
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
 		withAccountStorageTransactionMock.mockImplementation(async (handler) => {
@@ -339,6 +435,8 @@ describe("codex manager cli commands", () => {
 	});
 
 	afterEach(() => {
+		defaultConsoleLogSpy?.mockRestore();
+		defaultConsoleLogSpy = null;
 		restoreTTYDescriptors();
 		vi.restoreAllMocks();
 	});
@@ -883,7 +981,7 @@ describe("codex manager cli commands", () => {
 		};
 		loadAccountsMock.mockResolvedValue(storage);
 		setCodexCliActiveSelectionMock.mockResolvedValue(true);
-		promptInkAuthDashboardMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "manage", switchAccountIndex: 1 })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -891,8 +989,8 @@ describe("codex manager cli commands", () => {
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 		expect(exitCode).toBe(0);
-		expect(promptInkAuthDashboardMock).toHaveBeenCalledTimes(2);
-		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(promptOpenTuiAuthDashboardMock).toHaveBeenCalledTimes(2);
+		expect(promptInkAuthDashboardMock).not.toHaveBeenCalled();
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Switched to account 2"),
@@ -968,7 +1066,7 @@ describe("codex manager cli commands", () => {
 		}));
 		loadAccountsMock.mockResolvedValue(restoredStorage);
 		selectMock.mockResolvedValueOnce(true);
-		promptInkAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptOpenTuiAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
 		promptInkRestoreForLoginMock.mockResolvedValueOnce(true);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -984,14 +1082,17 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		expect(selectMock).not.toHaveBeenCalled();
-		expect(promptInkAuthDashboardMock).toHaveBeenCalledTimes(1);
-		expect(promptInkAuthDashboardMock).toHaveBeenCalledWith(
+		expect(promptOpenTuiAuthDashboardMock).toHaveBeenCalledTimes(1);
+		expect(promptOpenTuiAuthDashboardMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				statusTextOverride: expect.stringContaining("Restored 1 account"),
-				statusToneOverride: "success",
+				dashboard: expect.objectContaining({
+					menuOptions: expect.objectContaining({
+						statusMessage: expect.stringContaining("Restored 1 account"),
+					}),
+				}),
 			}),
 		);
-		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(promptInkAuthDashboardMock).not.toHaveBeenCalled();
 	});
 
 
@@ -1079,6 +1180,7 @@ describe("codex manager cli commands", () => {
 		expect(
 			logSpy.mock.calls.some((call) => String(call[0]).includes("non-interactive mode skips the prompt")),
 		).toBe(true);
+		expect(promptOpenTuiAuthDashboardMock).not.toHaveBeenCalled();
 	});
 
 	it("marks newly added login account active so smart sort reflects it immediately", async () => {
@@ -1118,9 +1220,10 @@ describe("codex manager cli commands", () => {
 		saveAccountsMock.mockImplementation(async (nextStorage) => {
 			storageState = structuredClone(nextStorage);
 		});
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "add" })
 			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce("browser");
 		promptAddAnotherAccountMock.mockResolvedValue(false);
 
 		const authModule = await import("../lib/auth/auth.js");
@@ -1184,7 +1287,7 @@ describe("codex manager cli commands", () => {
 			],
 		};
 		loadAccountsMock.mockResolvedValue(storage);
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "deep-check" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		queuedRefreshMock.mockResolvedValueOnce({
@@ -1223,7 +1326,7 @@ describe("codex manager cli commands", () => {
 			],
 		};
 		loadAccountsMock.mockResolvedValue(storage);
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "check" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -1265,7 +1368,7 @@ describe("codex manager cli commands", () => {
 			menuSortPinCurrent: true,
 			menuSortQuickSwitchVisibleRow: true,
 		});
-		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptOpenTuiAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -1295,7 +1398,7 @@ describe("codex manager cli commands", () => {
 			],
 		};
 		loadAccountsMock.mockResolvedValue(storage);
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		configureInkUnifiedSettingsMock.mockResolvedValueOnce(true);
@@ -1305,7 +1408,8 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(configureInkUnifiedSettingsMock).toHaveBeenCalledTimes(1);
 		expect(selectMock).not.toHaveBeenCalled();
-		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(promptOpenTuiAuthDashboardMock).toHaveBeenCalledTimes(2);
+		expect(promptInkAuthDashboardMock).not.toHaveBeenCalled();
 	});
 
 	it("passes smart-sorted accounts to auth menu while preserving source index mapping", async () => {
@@ -1386,13 +1490,13 @@ describe("codex manager cli commands", () => {
 				},
 			},
 		});
-		promptInkAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptOpenTuiAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		const firstCallAccounts = (promptInkAuthDashboardMock.mock.calls[0]?.[0] as {
+		const firstCallAccounts = (promptOpenTuiAuthDashboardMock.mock.calls[0]?.[0] as {
 			dashboard: { accounts: Array<{
 				email?: string;
 				index: number;
@@ -1473,13 +1577,13 @@ describe("codex manager cli commands", () => {
 				},
 			},
 		});
-		promptInkAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptOpenTuiAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		const firstCallAccounts = (promptInkAuthDashboardMock.mock.calls[0]?.[0] as {
+		const firstCallAccounts = (promptOpenTuiAuthDashboardMock.mock.calls[0]?.[0] as {
 			dashboard: { accounts: Array<{ email?: string; quickSwitchNumber?: number }> };
 		})?.dashboard.accounts ?? [];
 		expect(firstCallAccounts.map((account) => account.email)).toEqual([
@@ -1487,6 +1591,36 @@ describe("codex manager cli commands", () => {
 			"a@example.com",
 		]);
 		expect(firstCallAccounts.map((account) => account.quickSwitchNumber)).toEqual([2, 1]);
+	});
+
+	it("falls back to Ink routing when OpenTUI reports unsupported", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "fallback@example.com",
+					accountId: "acc_fallback",
+					refreshToken: "refresh-fallback",
+					accessToken: "access-fallback",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptOpenTuiAuthDashboardMock.mockResolvedValueOnce(null);
+		promptInkAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptOpenTuiAuthDashboardMock).toHaveBeenCalledTimes(1);
+		expect(promptInkAuthDashboardMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("runs doctor command in json mode", async () => {
@@ -1622,7 +1756,7 @@ describe("codex manager cli commands", () => {
 			],
 		};
 		loadAccountsMock.mockImplementation(async () => structuredClone(storage));
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 
@@ -1840,7 +1974,7 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 
@@ -1882,7 +2016,7 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 
@@ -1929,7 +2063,7 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 
@@ -1974,7 +2108,7 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		const initialSettings = {
@@ -2047,7 +2181,7 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		promptLoginModeMock
+		promptOpenTuiAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 
@@ -2198,130 +2332,5 @@ describe("codex manager cli commands", () => {
 		).toBe(true);
 	});
 
-	it("deletes an account from manage mode and persists storage", async () => {
-		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "first@example.com",
-					refreshToken: "refresh-first",
-					addedAt: now - 2_000,
-					lastUsed: now - 2_000,
-					enabled: true,
-				},
-				{
-					email: "second@example.com",
-					refreshToken: "refresh-second",
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
-			.mockResolvedValueOnce({ mode: "cancel" });
 
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe("first@example.com");
-	});
-
-	it("toggles account enabled state from manage mode", async () => {
-		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "toggle@example.com",
-					refreshToken: "refresh-toggle",
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
-			.mockResolvedValueOnce({ mode: "cancel" });
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(false);
-	});
-
-	it("resets all accounts through transactional persistence", async () => {
-		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "reset@example.com",
-					refreshToken: "refresh-reset",
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "fresh", deleteAll: true })
-			.mockResolvedValueOnce({ mode: "cancel" });
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
-		expect(withAccountStorageTransactionMock).not.toHaveBeenCalled();
-		expect(saveAccountsMock).not.toHaveBeenCalled();
-	});
-
-	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {
-		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "non-tty@example.com",
-					accountId: "acc_non_tty",
-					refreshToken: "refresh-non-tty",
-					accessToken: "access-non-tty",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(selectMock).not.toHaveBeenCalled();
-		expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
-		expect(savePluginConfigMock).not.toHaveBeenCalled();
-	});
 });

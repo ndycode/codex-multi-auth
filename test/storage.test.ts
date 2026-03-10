@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { 
   deduplicateAccounts,
@@ -215,7 +216,7 @@ describe("storage", () => {
        // @ts-ignore
       const { importAccounts } = await import("../lib/storage.js");
       
-      const manyAccounts = Array.from({ length: 21 }, (_, i) => ({
+      const manyAccounts = Array.from({ length: ACCOUNT_LIMITS.MAX_ACCOUNTS + 1 }, (_, i) => ({
         accountId: `acct${i}`,
         refreshToken: `ref${i}`,
         addedAt: Date.now(),
