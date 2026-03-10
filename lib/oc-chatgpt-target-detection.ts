@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, normalize, win32 } from "node:path";
 import {
 	findProjectRoot,
 	getProjectStorageKey,
@@ -103,16 +103,25 @@ function getResolvedUserHomeDir(): string {
 	return firstNonEmpty([process.env.HOME, homedir()]) ?? homedir();
 }
 
+function normalizeCandidatePath(candidate: string): string {
+	const trimmed = candidate.trim();
+	const normalized = normalize(trimmed);
+	if (normalized.length > 1 && /[\/]$/.test(normalized)) {
+		return normalized.replace(/[\/]+$/, "");
+	}
+	return normalized;
+}
+
 function deduplicatePaths(paths: string[]): string[] {
 	const seen = new Set<string>();
 	const result: string[] = [];
 	for (const candidate of paths) {
-		const trimmed = candidate.trim();
-		if (trimmed.length === 0) continue;
-		const key = process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+		const normalized = normalizeCandidatePath(candidate);
+		if (normalized.length === 0) continue;
+		const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
 		if (seen.has(key)) continue;
 		seen.add(key);
-		result.push(trimmed);
+		result.push(normalized);
 	}
 	return result;
 }
