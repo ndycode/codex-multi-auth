@@ -8,6 +8,13 @@ const log = createLogger("response-handler");
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
 const DEFAULT_STREAM_STALL_TIMEOUT_MS = 45_000;
 
+type MinimalReadableStreamReader = Pick<
+  ReadableStreamDefaultReader<Uint8Array>,
+  "read" | "cancel" | "releaseLock"
+>;
+
+type StreamReadResult = Awaited<ReturnType<MinimalReadableStreamReader["read"]>>;
+
 /**
 
  * Parse SSE stream to extract final response
@@ -135,9 +142,9 @@ export function ensureContentType(headers: Headers): Headers {
 }
 
 async function readWithTimeout(
-	reader: ReadableStreamDefaultReader<Uint8Array>,
+	reader: MinimalReadableStreamReader,
 	timeoutMs: number,
-): Promise<{ done: boolean; value?: Uint8Array }> {
+): Promise<StreamReadResult> {
 	let timeoutId: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([

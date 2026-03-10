@@ -197,4 +197,24 @@ describe("auth-menu hotkeys", () => {
 		const options = selectMock.mock.calls[0]?.[1] as { message?: string };
 		expect(options?.message).toBe("Accounts Dashboard (v0.1.6)");
 	});
+
+	it.each([
+		{ input: "s", expected: "set-current" },
+		{ input: "r", expected: "refresh" },
+		{ input: "t", expected: "toggle" },
+		{ input: "e", expected: "toggle" },
+		{ input: "x", expected: "toggle" },
+		{ input: "d", expected: "delete" },
+		{ input: "q", expected: "cancel" },
+	])("honors account detail hotkey %s", async ({ input, expected }) => {
+		selectMock.mockImplementationOnce(async (_items: unknown[], options: { onInput?: (raw: string) => unknown }) => {
+			const onInput = options.onInput;
+			return onInput ? onInput(input) : null;
+		});
+
+		const { showAccountDetails } = await import("../lib/ui/auth-menu.js");
+		const result = await showAccountDetails(createAccounts()[0]);
+
+		expect(result).toBe(expected);
+	});
 });

@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
+    "types": [
+      "node",
+      "bun-types"
+    ]
+  },
+  "include": [
+    "runtime/**/*.ts",
+    "runtime/**/*.tsx"
+  ]
+}

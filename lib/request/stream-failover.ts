@@ -13,6 +13,9 @@ const DEFAULT_STALL_TIMEOUT_MS = 45_000;
 const DEFAULT_SOFT_TIMEOUT_MS = 15_000;
 const MAX_REQUEST_INSTANCE_ID_LENGTH = 64;
 
+type StreamReader = Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "cancel" | "releaseLock">;
+type StreamReadResult = Awaited<ReturnType<StreamReader["read"]>>;
+
 class StallTimeoutError extends Error {
 	readonly isStallTimeout = true;
 
@@ -32,9 +35,9 @@ class StallTimeoutError extends Error {
  * @returns The result of `reader.read()`: an object with `done` and `value` (`Uint8Array | undefined`).
  */
 async function readChunkWithTimeout(
-	readPromise: Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>>,
+	readPromise: Promise<StreamReadResult>,
 	timeoutMs: number,
-): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
+): Promise<StreamReadResult> {
 	let timeoutId: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([
@@ -85,10 +88,11 @@ function normalizeRequestInstanceId(value: string | undefined): string | null {
 }
 
 async function readChunkWithSoftHardTimeout(
-	reader: ReadableStreamDefaultReader<Uint8Array>,
+	reader: StreamReader,
 	softTimeoutMs: number,
 	hardTimeoutMs: number,
-): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
+
+): Promise<StreamReadResult> {
 	const readPromise = reader.read();
 	try {
 		return await readChunkWithTimeout(readPromise, softTimeoutMs);

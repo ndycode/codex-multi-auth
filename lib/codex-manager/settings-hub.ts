@@ -20,6 +20,15 @@ import {
 	persistDashboardSettingsSelection,
 	withQueuedRetry,
 } from "./settings-persistence.js";
+import {
+	ACCOUNT_LIST_PANEL_KEYS,
+	BEHAVIOR_PANEL_KEYS,
+	buildSettingsHubViewModel,
+	resolveSettingsHubCommand,
+	STATUSLINE_PANEL_KEYS,
+	THEME_PANEL_KEYS,
+	type SettingsHubAction,
+} from "./settings-ui-controller.js";
 
 
 type DashboardDisplaySettingKey =
@@ -239,14 +248,6 @@ type BackendSettingsHubAction =
 	| { type: "reset" }
 	| { type: "save" }
 	| { type: "cancel" };
-
-type SettingsHubAction =
-	| { type: "account-list" }
-	| { type: "summary-fields" }
-	| { type: "behavior" }
-	| { type: "theme" }
-	| { type: "backend" }
-	| { type: "back" };
 
 const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
 	{
@@ -518,32 +519,6 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 ];
 
 type DashboardSettingKey = keyof DashboardDisplaySettings;
-
-const ACCOUNT_LIST_PANEL_KEYS = [
-	"menuShowStatusBadge",
-	"menuShowCurrentBadge",
-	"menuShowLastUsed",
-	"menuShowQuotaSummary",
-	"menuShowQuotaCooldown",
-	"menuShowFetchStatus",
-	"menuShowDetailsForUnselectedRows",
-	"menuHighlightCurrentRow",
-	"menuSortEnabled",
-	"menuSortMode",
-	"menuSortPinCurrent",
-	"menuSortQuickSwitchVisibleRow",
-	"menuLayoutMode",
-] as const satisfies readonly DashboardSettingKey[];
-
-const STATUSLINE_PANEL_KEYS = ["menuStatuslineFields"] as const satisfies readonly DashboardSettingKey[];
-const BEHAVIOR_PANEL_KEYS = [
-	"actionAutoReturnMs",
-	"actionPauseOnKey",
-	"menuAutoFetchLimits",
-	"menuShowFetchStatus",
-	"menuQuotaTtlMs",
-] as const satisfies readonly DashboardSettingKey[];
-const THEME_PANEL_KEYS = ["uiThemePreset", "uiAccentColor"] as const satisfies readonly DashboardSettingKey[];
 
 function copyDashboardSettingValue(
 	target: DashboardDisplaySettings,
@@ -968,6 +943,36 @@ async function persistBackendConfigSelectionForTests(
 	return persistBackendConfigSelection(selected, scope, {
 		cloneConfig: cloneBackendPluginConfig,
 		buildPatch: buildBackendConfigPatch,
+	});
+}
+
+async function persistOpenTuiSettingsSave(event: {
+	kind: "dashboard";
+	panel: "account-list" | "summary-fields" | "behavior" | "theme";
+	selected: DashboardDisplaySettings;
+} | {
+	kind: "backend";
+	selected: PluginConfig;
+}): Promise<void> {
+	if (event.kind === "backend") {
+		await persistBackendConfigSelection(event.selected, "backend", {
+			cloneConfig: cloneBackendPluginConfig,
+			buildPatch: buildBackendConfigPatch,
+		});
+		return;
+	}
+
+	const keys = event.panel === "account-list"
+		? ACCOUNT_LIST_PANEL_KEYS
+		: event.panel === "summary-fields"
+			? STATUSLINE_PANEL_KEYS
+			: event.panel === "behavior"
+				? BEHAVIOR_PANEL_KEYS
+				: THEME_PANEL_KEYS;
+
+	await persistDashboardSettingsSelection(event.selected, keys, event.panel, {
+		cloneSettings: cloneDashboardSettings,
+		mergeSettingsForKeys: mergeDashboardSettingsForKeys,
 	});
 }
 
@@ -1950,19 +1955,21 @@ async function promptSettingsHub(
 ): Promise<SettingsHubAction | null> {
 	if (!input.isTTY || !output.isTTY) return null;
 	const ui = getUiRuntimeOptions();
-	const items: MenuItem<SettingsHubAction>[] = [
-		{ label: UI_COPY.settings.sectionTitle, value: { type: "back" }, kind: "heading" },
-		{ label: UI_COPY.settings.accountList, value: { type: "account-list" }, color: "green" },
-		{ label: UI_COPY.settings.summaryFields, value: { type: "summary-fields" }, color: "green" },
-		{ label: UI_COPY.settings.behavior, value: { type: "behavior" }, color: "green" },
-		{ label: UI_COPY.settings.theme, value: { type: "theme" }, color: "green" },
-		{ label: "", value: { type: "back" }, separator: true },
-		{ label: UI_COPY.settings.advancedTitle, value: { type: "back" }, kind: "heading" },
-		{ label: UI_COPY.settings.backend, value: { type: "backend" }, color: "green" },
-		{ label: "", value: { type: "back" }, separator: true },
-		{ label: UI_COPY.settings.exitTitle, value: { type: "back" }, kind: "heading" },
-		{ label: UI_COPY.settings.back, value: { type: "back" }, color: "red" },
-	];
+	const viewModel = buildSettingsHubViewModel();
+	const items: MenuItem<SettingsHubAction>[] = [];
+	for (const section of viewModel.sections) {
+		items.push({ label: section.title, value: { type: "back" }, kind: "heading" });
+		for (const action of section.actions) {
+			items.push({
+				label: action.label,
+				value: { type: action.id },
+				color: action.tone,
+			});
+		}
+		if (section.id !== "exit") {
+			items.push({ label: "", value: { type: "back" }, separator: true });
+		}
+	}
 	const initialCursor = items.findIndex((item) => {
 		if (item.separator || item.disabled || item.kind === "heading") return false;
 		return item.value.type === initialFocus;
@@ -1994,19 +2001,23 @@ async function configureUnifiedSettings(
 	let hubFocus: SettingsHubAction["type"] = "account-list";
 	while (true) {
 		const action = await promptSettingsHub(hubFocus);
-		if (!action || action.type === "back") {
+		if (!action) {
 			return current;
 		}
 		hubFocus = action.type;
-		if (action.type === "account-list") {
+		const command = resolveSettingsHubCommand(action);
+		if (command.type === "back") {
+			return current;
+		}
+		if (command.type === "open-dashboard-panel" && command.panel === "account-list") {
 			current = await configureDashboardDisplaySettings(current);
 			continue;
 		}
-		if (action.type === "summary-fields") {
+		if (command.type === "open-dashboard-panel" && command.panel === "summary-fields") {
 			current = await configureStatuslineSettings(current);
 			continue;
 		}
-		if (action.type === "behavior") {
+		if (command.type === "open-dashboard-panel" && command.panel === "behavior") {
 			const selected = await promptBehaviorSettings(current);
 			if (selected && !dashboardSettingsEqual(current, selected)) {
 				current = await persistDashboardSettingsSelection(selected, BEHAVIOR_PANEL_KEYS, "behavior", {
@@ -2016,7 +2027,7 @@ async function configureUnifiedSettings(
 			}
 			continue;
 		}
-		if (action.type === "theme") {
+		if (command.type === "open-dashboard-panel" && command.panel === "theme") {
 			const selected = await promptThemeSettings(current);
 			if (selected && !dashboardSettingsEqual(current, selected)) {
 				current = await persistDashboardSettingsSelection(selected, THEME_PANEL_KEYS, "theme", {
@@ -2027,11 +2038,29 @@ async function configureUnifiedSettings(
 			}
 			continue;
 		}
-		if (action.type === "backend") {
+		if (command.type === "open-backend-settings") {
 			backendConfig = await configureBackendSettings(backendConfig);
 		}
 	}
 }
 
-export { configureUnifiedSettings, applyUiThemeFromDashboardSettings, resolveMenuLayoutMode, __testOnly };
+export {
+	configureUnifiedSettings,
+	persistOpenTuiSettingsSave,
+	applyDashboardDefaultsForKeys,
+	applyUiThemeFromDashboardSettings,
+	clampBackendNumber,
+	cloneBackendPluginConfig,
+	cloneDashboardSettings,
+	dashboardSettingsEqual,
+	backendSettingsEqual,
+	formatBackendNumberValue,
+	formatDashboardSettingState,
+	formatMenuLayoutMode,
+	formatMenuQuotaTtl,
+	formatMenuSortMode,
+	normalizeStatuslineFields,
+	resolveMenuLayoutMode,
+	__testOnly,
+};
 

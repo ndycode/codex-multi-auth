@@ -7,7 +7,15 @@ import {
 	isTTY,
 	type AccountStatus,
 } from "./ui/auth-menu.js";
+import { confirm } from "./ui/confirm.js";
 import { UI_COPY } from "./ui/copy.js";
+import {
+	resolveAuthAccountDetailSelection,
+	resolveAuthDashboardSelection,
+	settleAuthConfirmation,
+	type AuthConfirmationModalViewModel,
+	type AuthDashboardInteractionResolution,
+} from "./codex-manager/auth-ui-controller.js";
 
 /**
  * Detect if running in host Desktop/TUI mode where readline prompts don't work.
@@ -110,23 +118,6 @@ function formatAccountLabel(account: ExistingAccountInfo, index: number): string
 	return `${num}. Account`;
 }
 
-function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
-	const sourceIndex =
-		typeof account.sourceIndex === "number" && Number.isFinite(account.sourceIndex)
-			? Math.max(0, Math.floor(account.sourceIndex))
-			: undefined;
-	if (typeof sourceIndex === "number") return sourceIndex;
-	if (typeof account.index === "number" && Number.isFinite(account.index)) {
-		return Math.max(0, Math.floor(account.index));
-	}
-	return -1;
-}
-
-function warnUnresolvableAccountSelection(account: ExistingAccountInfo): void {
-	const label = account.email?.trim() || account.accountId?.trim() || `index ${account.index + 1}`;
-	console.log(`Unable to resolve saved account for action: ${label}`);
-}
-
 async function promptDeleteAllTypedConfirm(): Promise<boolean> {
 	const rl = createInterface({ input, output });
 	try {
@@ -135,6 +126,30 @@ async function promptDeleteAllTypedConfirm(): Promise<boolean> {
 	} finally {
 		rl.close();
 	}
+}
+
+async function promptAuthConfirmation(modal: AuthConfirmationModalViewModel): Promise<boolean> {
+	if (modal.confirmStyle === "typed-delete") {
+		return promptDeleteAllTypedConfirm();
+	}
+	return confirm(modal.message);
+}
+
+async function resolveAuthInteraction(
+	resolution: AuthDashboardInteractionResolution,
+): Promise<AuthDashboardInteractionResolution> {
+	if (resolution.type === "detail") {
+		const action = await showAccountDetails(resolution.detail.account);
+		return resolveAuthAccountDetailSelection(resolution.detail.account, action);
+	}
+	if (resolution.type === "confirm") {
+		const confirmed = await promptAuthConfirmation(resolution.modal);
+		if (!confirmed && resolution.modal.cancelMessage) {
+			console.log(resolution.modal.cancelMessage);
+		}
+		return settleAuthConfirmation(resolution.modal, confirmed);
+	}
+	return resolution;
 }
 
 async function promptLoginModeFallback(existingAccounts: ExistingAccountInfo[]): Promise<LoginMenuResult> {
@@ -195,95 +210,23 @@ export async function promptLoginMode(
 	}
 
 	while (true) {
-		const action = await showAuthMenu(existingAccounts, {
+		let resolution = resolveAuthDashboardSelection(await showAuthMenu(existingAccounts, {
 			flaggedCount: options.flaggedCount ?? 0,
 			statusMessage: options.statusMessage,
-		});
+		}));
 
-		switch (action.type) {
-			case "add":
-				return { mode: "add" };
-			case "forecast":
-				return { mode: "forecast" };
-			case "fix":
-				return { mode: "fix" };
-			case "settings":
-				return { mode: "settings" };
-			case "fresh":
-				if (!(await promptDeleteAllTypedConfirm())) {
-					console.log("\nDelete all cancelled.\n");
-					continue;
-				}
-				return { mode: "fresh", deleteAll: true };
-			case "check":
-				return { mode: "check" };
-			case "deep-check":
-				return { mode: "deep-check" };
-			case "verify-flagged":
-				return { mode: "verify-flagged" };
-			case "select-account": {
-				const accountAction = await showAccountDetails(action.account);
-				if (accountAction === "delete") {
-					const index = resolveAccountSourceIndex(action.account);
-					if (index >= 0) return { mode: "manage", deleteAccountIndex: index };
-					warnUnresolvableAccountSelection(action.account);
-					continue;
-				}
-				if (accountAction === "set-current") {
-					const index = resolveAccountSourceIndex(action.account);
-					if (index >= 0) return { mode: "manage", switchAccountIndex: index };
-					warnUnresolvableAccountSelection(action.account);
-					continue;
-				}
-				if (accountAction === "refresh") {
-					const index = resolveAccountSourceIndex(action.account);
-					if (index >= 0) return { mode: "manage", refreshAccountIndex: index };
-					warnUnresolvableAccountSelection(action.account);
-					continue;
-				}
-				if (accountAction === "toggle") {
-					const index = resolveAccountSourceIndex(action.account);
-					if (index >= 0) return { mode: "manage", toggleAccountIndex: index };
-					warnUnresolvableAccountSelection(action.account);
-					continue;
-				}
-				continue;
+		while (true) {
+			resolution = await resolveAuthInteraction(resolution);
+			if (resolution.type === "result") {
+				return resolution.result;
 			}
-			case "set-current-account": {
-				const index = resolveAccountSourceIndex(action.account);
-				if (index >= 0) return { mode: "manage", switchAccountIndex: index };
-				warnUnresolvableAccountSelection(action.account);
-				continue;
+			if (resolution.type === "warning") {
+				console.log(resolution.message);
+				break;
 			}
-			case "refresh-account": {
-				const index = resolveAccountSourceIndex(action.account);
-				if (index >= 0) return { mode: "manage", refreshAccountIndex: index };
-				warnUnresolvableAccountSelection(action.account);
-				continue;
+			if (resolution.type === "continue") {
+				break;
 			}
-			case "toggle-account": {
-				const index = resolveAccountSourceIndex(action.account);
-				if (index >= 0) return { mode: "manage", toggleAccountIndex: index };
-				warnUnresolvableAccountSelection(action.account);
-				continue;
-			}
-			case "delete-account": {
-				const index = resolveAccountSourceIndex(action.account);
-				if (index >= 0) return { mode: "manage", deleteAccountIndex: index };
-				warnUnresolvableAccountSelection(action.account);
-				continue;
-			}
-			case "search":
-				// Search is handled in showAuthMenu; keep the main loop active.
-				continue;
-			case "delete-all":
-				if (!(await promptDeleteAllTypedConfirm())) {
-					console.log("\nDelete all cancelled.\n");
-					continue;
-				}
-				return { mode: "fresh", deleteAll: true };
-			case "cancel":
-				return { mode: "cancel" };
 		}
 	}
 }
