@@ -425,7 +425,6 @@ describe("codex manager cli commands", () => {
 		detectOcChatgptMultiAuthTargetMock.mockReset();
 		exportNamedBackupMock.mockReset();
 		normalizeAccountStorageMock.mockReset();
-		normalizeAccountStorageMock.mockImplementation((value) => value);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
