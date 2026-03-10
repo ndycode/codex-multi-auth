@@ -12,6 +12,29 @@ import {
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
+
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
+
 describe("codex-cli sync", () => {
 	let tempDir: string;
 	let accountsPath: string;
@@ -61,7 +84,7 @@ describe("codex-cli sync", () => {
 			process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE =
 				previousEnforceFileStore;
 		}
-		await rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("does not seed canonical storage from Codex CLI mirror files", async () => {
@@ -317,5 +340,20 @@ describe("codex-cli sync", () => {
 				family,
 			),
 		).toBe(0);
+
+		expect(
+			getActiveSelectionForFamily(
+				{
+					version: 3,
+					accounts: [
+						{ refreshToken: "a", addedAt: 1, lastUsed: 1 },
+						{ refreshToken: "b", addedAt: 1, lastUsed: 1 },
+					],
+					activeIndex: 1.9,
+					activeIndexByFamily: { [family]: 1.9 },
+				},
+				family,
+			),
+		).toBe(1);
 	});
 });
