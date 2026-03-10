@@ -103,6 +103,42 @@ function summarizeAccount(account: AccountMetadataV3): OcChatgptAccountRef {
 	};
 }
 
+function findNormalizedAccountIndex(
+	accounts: AccountMetadataV3[],
+	target: AccountMetadataV3 | null | undefined,
+): number | null {
+	if (!target) return null;
+	const targetAccountId = target.accountId?.trim();
+	if (targetAccountId) {
+		const idx = accounts.findIndex((account) => account.accountId?.trim() === targetAccountId);
+		if (idx >= 0) return idx;
+	}
+	const targetEmail = normalizeEmailKey(target.email);
+	if (targetEmail) {
+		const idx = accounts.findIndex(
+			(account) => !account.accountId && normalizeEmailKey(account.email) === targetEmail,
+		);
+		if (idx >= 0) return idx;
+	}
+	const idx = accounts.findIndex(
+		(account) => !account.accountId && !normalizeEmailKey(account.email) && account.refreshToken === target.refreshToken,
+	);
+	return idx >= 0 ? idx : null;
+}
+
+function remapActiveIndex(
+	originalAccounts: AccountMetadataV3[] | undefined,
+	originalIndex: number | undefined,
+	normalizedAccounts: AccountMetadataV3[],
+): number {
+	if (!originalAccounts || originalAccounts.length === 0) return clampIndex(0, normalizedAccounts.length);
+	const safeOriginalIndex = clampIndex(originalIndex ?? 0, originalAccounts.length);
+	const originalActive = originalAccounts[safeOriginalIndex];
+	const remapped = findNormalizedAccountIndex(normalizedAccounts, originalActive);
+	if (remapped !== null) return remapped;
+	return clampIndex(safeOriginalIndex, normalizedAccounts.length);
+}
+
 function normalizeActiveIndexByFamily(
 	activeIndexByFamily: AccountStorageV3["activeIndexByFamily"],
 	length: number,
@@ -238,7 +274,7 @@ function normalizeStorageForTarget(
 	const { accounts, skipped } = normalizeAccountsForTarget(
 		storage?.accounts ?? [],
 	);
-	const activeIndex = clampIndex(storage?.activeIndex ?? 0, accounts.length);
+	const activeIndex = remapActiveIndex(storage?.accounts, storage?.activeIndex, accounts);
 	const activeIndexByFamily = normalizeActiveIndexByFamily(
 		storage?.activeIndexByFamily,
 		accounts.length,

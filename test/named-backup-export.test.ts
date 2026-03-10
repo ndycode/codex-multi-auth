@@ -14,6 +14,24 @@ import {
 	setStoragePathDirect,
 } from "../lib/storage.js";
 
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	const retryable = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !retryable.has(code) || attempt === 5) throw error;
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
+
 describe("named backup export", () => {
 	const testRoot = join(
 		tmpdir(),
@@ -29,7 +47,7 @@ describe("named backup export", () => {
 
 	afterEach(async () => {
 		setStoragePathDirect(null);
-		await fs.rm(testRoot, { recursive: true, force: true });
+		await removeWithRetry(testRoot, { recursive: true, force: true });
 	});
 
 	it("normalizes backup-2026-03-09 to a .json file in the local backup namespace", () => {
