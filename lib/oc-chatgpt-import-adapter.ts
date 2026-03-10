@@ -103,19 +103,53 @@ function summarizeAccount(account: AccountMetadataV3): OcChatgptAccountRef {
 	};
 }
 
-function normalizeActiveIndexByFamily(
+function findNormalizedAccountIndex(
+	accounts: AccountMetadataV3[],
+	target: AccountMetadataV3 | undefined,
+): number | null {
+	if (!target) return null;
+	const targetAccountId = target.accountId?.trim();
+	if (targetAccountId) {
+		const idx = accounts.findIndex((account) => account.accountId?.trim() === targetAccountId);
+		if (idx >= 0) return idx;
+	}
+	const targetEmail = normalizeEmailKey(target.email);
+	if (targetEmail) {
+		const idx = accounts.findIndex(
+			(account) => !account.accountId && normalizeEmailKey(account.email) === targetEmail,
+		);
+		if (idx >= 0) return idx;
+	}
+	const idx = accounts.findIndex(
+		(account) => !account.accountId && !normalizeEmailKey(account.email) && account.refreshToken === target.refreshToken,
+	);
+	return idx >= 0 ? idx : null;
+}
+
+function remapActiveIndex(
+	originalAccounts: AccountMetadataV3[] | undefined,
+	originalIndex: number | undefined,
+	normalizedAccounts: AccountMetadataV3[],
+): number {
+	if (!originalAccounts || originalAccounts.length === 0) return clampIndex(0, normalizedAccounts.length);
+	const safeOriginalIndex = clampIndex(originalIndex ?? 0, originalAccounts.length);
+	const originalActive = originalAccounts[safeOriginalIndex];
+	const remapped = findNormalizedAccountIndex(normalizedAccounts, originalActive);
+	if (remapped !== null) return remapped;
+	return clampIndex(safeOriginalIndex, normalizedAccounts.length);
+}
+
+function remapActiveIndexByFamily(
 	activeIndexByFamily: AccountStorageV3["activeIndexByFamily"],
-	length: number,
-	defaultIndex: number,
+	originalAccounts: AccountMetadataV3[] | undefined,
+	normalizedAccounts: AccountMetadataV3[],
 ): AccountStorageV3["activeIndexByFamily"] {
 	if (!activeIndexByFamily) return undefined;
 	const normalized: Partial<Record<ModelFamily, number>> = {};
 	for (const family of MODEL_FAMILIES) {
-		const raw = (activeIndexByFamily as Partial<Record<ModelFamily, unknown>>)[
-			family
-		];
+		const raw = (activeIndexByFamily as Partial<Record<ModelFamily, unknown>>)[family];
 		if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
-		normalized[family] = clampIndex(raw, length) ?? defaultIndex;
+		normalized[family] = remapActiveIndex(originalAccounts, raw, normalizedAccounts);
 	}
 	return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
@@ -239,10 +273,10 @@ function normalizeStorageForTarget(
 		storage?.accounts ?? [],
 	);
 	const activeIndex = clampIndex(storage?.activeIndex ?? 0, accounts.length);
-	const activeIndexByFamily = normalizeActiveIndexByFamily(
+	const activeIndexByFamily = remapActiveIndexByFamily(
 		storage?.activeIndexByFamily,
-		accounts.length,
-		activeIndex,
+		storage?.accounts,
+		accounts
 	);
 	return {
 		storage: {

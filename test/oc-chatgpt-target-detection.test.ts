@@ -11,6 +11,24 @@ import {
 	resolveProjectStorageIdentityRoot,
 } from "../lib/storage/paths.js";
 
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	const retryable = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !retryable.has(code) || attempt == 5) throw error;
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
+
 describe("oc-chatgpt target detection", () => {
 	const originalHome = process.env.HOME;
 	const originalUserProfile = process.env.USERPROFILE;
@@ -38,7 +56,7 @@ describe("oc-chatgpt target detection", () => {
 		if (originalOverride === undefined)
 			delete process.env.OC_CHATGPT_MULTI_AUTH_DIR;
 		else process.env.OC_CHATGPT_MULTI_AUTH_DIR = originalOverride;
-		await fs.rm(workDir, { recursive: true, force: true });
+		await removeWithRetry(workDir, { recursive: true, force: true });
 	});
 
 	function assertTarget(
@@ -243,6 +261,16 @@ describe("oc-chatgpt target detection", () => {
 		if (result.kind === "target") {
 			expect(result.descriptor.resolution).toBe("signals");
 		}
+	});
+
+
+	it("deduplicates equivalent explicit roots that differ only by trailing separator", async () => {
+		const explicitRoot = join(homeDir, ".opencode");
+		await fs.mkdir(join(explicitRoot, "backups"), { recursive: true });
+		process.env.OC_CHATGPT_MULTI_AUTH_DIR = `${explicitRoot}/`;
+
+		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
+		assertTarget(result, "global", explicitRoot);
 	});
 
 });

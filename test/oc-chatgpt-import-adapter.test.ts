@@ -318,4 +318,42 @@ describe("oc-chatgpt import adapter", () => {
 		expect(preview.activeSelectionBehavior).toBe("preserve-destination");
 	});
 
+
+	it("remaps destination active indices after normalization changes account ordering", () => {
+		const destination: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 2,
+			activeIndexByFamily: { codex: 2 },
+			accounts: [
+				{ accountId: "acc-1", email: "first@example.com", refreshToken: "token-1", addedAt: 1, lastUsed: 1 },
+				{ accountId: "acc-1", email: "first@example.com", refreshToken: "token-1-old", addedAt: 0, lastUsed: 0 },
+				{ email: "legacy@example.com", refreshToken: "legacy-token", addedAt: 3, lastUsed: 3 },
+			],
+		};
+		const source: AccountStorageV3 = { version: 3, activeIndex: 0, accounts: [] };
+		const preview = previewOcChatgptImportMerge({ source, destination });
+		expect(preview.merged.activeIndex).toBe(1);
+		expect(preview.merged.activeIndexByFamily?.codex).toBe(1);
+		expect(preview.merged.accounts[1]?.email).toBe("legacy@example.com");
+	});
+
+
+	it("remaps active indices after dedupe changes account ordering", () => {
+		const destination: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 2,
+			activeIndexByFamily: { codex: 2 },
+			accounts: [
+				{ accountId: "acc-1", email: "first@example.com", refreshToken: "token-1", addedAt: 1, lastUsed: 1 },
+				{ accountId: "acc-1", email: "first@example.com", refreshToken: "token-1-old", addedAt: 0, lastUsed: 0 },
+				{ email: "legacy@example.com", refreshToken: "legacy-token", addedAt: 3, lastUsed: 3 },
+			],
+		};
+		const source: AccountStorageV3 = { version: 3, activeIndex: 0, accounts: [] };
+		const preview = previewOcChatgptImportMerge({ source, destination });
+		expect(preview.merged.activeIndex).toBe(1);
+		expect(preview.merged.activeIndexByFamily?.codex).toBe(1);
+		expect(preview.merged.accounts[1]?.email).toBe("legacy@example.com");
+	});
+
 });
