@@ -158,8 +158,24 @@ async function persistMergedDefault(
 	merged: AccountStorageV3,
 ): Promise<string> {
 	const path = target.accountPath;
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${path}.${uniqueSuffix}.tmp`;
 	await fs.mkdir(dirname(path), { recursive: true });
-	await fs.writeFile(path, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
+	try {
+		await fs.writeFile(
+			tempPath,
+			`${JSON.stringify(merged, null, 2)}\n`,
+			"utf-8",
+		);
+		await fs.rename(tempPath, path);
+	} catch (error) {
+		try {
+			await fs.unlink(tempPath);
+		} catch {
+			// Ignore cleanup failures for apply temp files.
+		}
+		throw error;
+	}
 	return path;
 }
 
