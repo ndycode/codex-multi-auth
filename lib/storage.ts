@@ -1,10 +1,11 @@
 import { promises as fs, existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, normalize } from "node:path";
 import { createHash } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
+import { getLegacyCodexDir } from "./runtime-paths.js";
 import {
 	getConfigDir,
 	getProjectConfigDir,
@@ -34,6 +35,7 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const RESET_MARKER_SUFFIX = ".reset-intent";
 
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -113,6 +115,13 @@ type AccountLike = {
   addedAt?: number;
   lastUsed?: number;
 };
+
+type RestoreMetadata = {
+	restoreEligible?: boolean;
+	restoreReason?: "empty-storage" | "intentional-reset" | "missing-storage";
+};
+
+export type AccountStorageWithMetadata = AccountStorageV3 & RestoreMetadata;
 
 function looksLikeSyntheticFixtureAccount(account: AccountMetadataV3): boolean {
 	const email = typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
@@ -197,6 +206,11 @@ function getAccountsBackupRecoveryCandidates(path: string): string[] {
 	return candidates;
 }
 
+function isCacheLikeBackupArtifactName(entryName: string): boolean {
+	const lower = entryName.toLowerCase();
+	return lower.includes(".cache");
+}
+
 async function getAccountsBackupRecoveryCandidatesWithDiscovery(path: string): Promise<string[]> {
 	const knownCandidates = getAccountsBackupRecoveryCandidates(path);
 	const discoveredCandidates = new Set<string>();
@@ -209,6 +223,7 @@ async function getAccountsBackupRecoveryCandidatesWithDiscovery(path: string): P
 		for (const entry of entries) {
 			if (!entry.isFile()) continue;
 			if (!entry.name.startsWith(candidatePrefix)) continue;
+			if (isCacheLikeBackupArtifactName(entry.name)) continue;
 			if (entry.name.endsWith(".tmp")) continue;
 			if (entry.name.includes(".rotate.")) continue;
 			if (entry.name.endsWith(ACCOUNTS_WAL_SUFFIX)) continue;
@@ -234,6 +249,48 @@ async function getAccountsBackupRecoveryCandidatesWithDiscovery(path: string): P
 
 function getAccountsWalPath(path: string): string {
 	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
+}
+
+function normalizePathForDedup(pathValue: string): string {
+	const normalized = normalize(pathValue.trim());
+	return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function deduplicatePathList(paths: string[]): string[] {
+	const seen = new Set<string>();
+	const result: string[] = [];
+
+	for (const candidate of paths) {
+		const trimmed = candidate.trim();
+		if (!trimmed) continue;
+		const key = normalizePathForDedup(trimmed);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		result.push(trimmed);
+	}
+
+	return result;
+}
+
+function pathsEqualNormalized(a: string, b: string): boolean {
+	return normalizePathForDedup(a) === normalizePathForDedup(b);
+}
+
+function getFallbackAccountStoragePaths(currentPath: string): string[] {
+	const canonicalRoot = dirname(currentPath);
+	const canonicalHome = dirname(canonicalRoot);
+	const legacyRoot = getLegacyCodexDir();
+	const candidateHomes = deduplicatePathList([dirname(canonicalHome), dirname(legacyRoot)]);
+
+	const candidates = deduplicatePathList(
+		candidateHomes.flatMap((home) => [
+			join(home, "DevTools", "config", "codex", "multi-auth", ACCOUNTS_FILE_NAME),
+			join(home, ".codex", "multi-auth", ACCOUNTS_FILE_NAME),
+			join(home, ".codex", ACCOUNTS_FILE_NAME),
+		]),
+	);
+
+	return candidates.filter((candidate) => !pathsEqualNormalized(candidate, currentPath));
 }
 
 async function copyFileWithRetry(
@@ -391,6 +448,364 @@ function computeSha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+export type BackupSnapshotKind =
+	| "accounts-primary"
+	| "accounts-wal"
+	| "accounts-backup"
+	| "accounts-backup-history"
+	| "accounts-discovered-backup"
+	| "flagged-primary"
+	| "flagged-backup"
+	| "flagged-backup-history"
+	| "flagged-discovered-backup";
+
+export interface BackupSnapshotMetadata {
+	kind: BackupSnapshotKind;
+	path: string;
+	index?: number;
+	exists: boolean;
+	valid: boolean;
+	bytes?: number;
+	mtimeMs?: number;
+	version?: number;
+	accountCount?: number;
+	flaggedCount?: number;
+	schemaErrors?: string[];
+}
+
+export interface BackupMetadataSection {
+	storagePath: string;
+	latestValidPath?: string;
+	snapshotCount: number;
+	validSnapshotCount: number;
+	snapshots: BackupSnapshotMetadata[];
+}
+
+export interface BackupMetadata {
+	accounts: BackupMetadataSection;
+	flaggedAccounts: BackupMetadataSection;
+}
+
+export interface RestoreAssessment {
+	storagePath: string;
+	restoreEligible: boolean;
+	restoreReason?: RestoreMetadata["restoreReason"];
+	latestSnapshot?: BackupSnapshotMetadata;
+	backupMetadata: BackupMetadata;
+}
+
+async function describePathStats(
+	path: string,
+	kind: BackupSnapshotKind,
+	index?: number,
+): Promise<Omit<BackupSnapshotMetadata, "valid" | "version" | "accountCount" | "flaggedCount" | "schemaErrors">> {
+	try {
+		const stats = await fs.stat(path);
+		return {
+			kind,
+			path,
+			index,
+			exists: true,
+			bytes: stats.size,
+			mtimeMs: stats.mtimeMs,
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to stat backup candidate", { path, error: String(error) });
+		}
+		return { kind, path, index, exists: false };
+	}
+}
+
+async function describeAccountSnapshot(
+	path: string,
+	kind: BackupSnapshotKind,
+	index?: number,
+): Promise<BackupSnapshotMetadata> {
+	const base = await describePathStats(path, kind, index);
+	if (!base.exists) {
+		return { ...base, valid: false };
+	}
+
+	try {
+		const { normalized, schemaErrors, storedVersion } = await loadAccountsFromPath(path);
+		return {
+			...base,
+			valid: !!normalized,
+			version: typeof storedVersion === "number" ? storedVersion : undefined,
+			accountCount: normalized?.accounts.length,
+			schemaErrors: schemaErrors.length > 0 ? schemaErrors : undefined,
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to inspect account snapshot", {
+				path,
+				error: String(error),
+			});
+		}
+		return { ...base, valid: false };
+	}
+}
+
+async function describeAccountsWalSnapshot(path: string): Promise<BackupSnapshotMetadata> {
+	const base = await describePathStats(path, "accounts-wal");
+	if (!base.exists) {
+		return { ...base, valid: false };
+	}
+
+	try {
+		const raw = await fs.readFile(path, "utf-8");
+		const parsed = JSON.parse(raw) as unknown;
+		if (!isRecord(parsed)) return { ...base, valid: false };
+		const entry = parsed as Partial<AccountsJournalEntry>;
+		if (entry.version !== 1) return { ...base, valid: false };
+		if (typeof entry.content !== "string" || typeof entry.checksum !== "string") {
+			return { ...base, valid: false };
+		}
+		const computed = computeSha256(entry.content);
+		if (computed !== entry.checksum) {
+			return { ...base, valid: false };
+		}
+		const data = JSON.parse(entry.content) as unknown;
+		const { normalized, schemaErrors, storedVersion } = parseAndNormalizeStorage(data);
+		return {
+			...base,
+			valid: !!normalized,
+			version: typeof storedVersion === "number" ? storedVersion : undefined,
+			accountCount: normalized?.accounts.length,
+			schemaErrors: schemaErrors.length > 0 ? schemaErrors : undefined,
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to inspect account WAL snapshot", {
+				path,
+				error: String(error),
+			});
+		}
+		return { ...base, valid: false };
+	}
+}
+
+async function loadFlaggedAccountsFromPath(path: string): Promise<FlaggedAccountStorageV1> {
+	const content = await fs.readFile(path, "utf-8");
+	const data = JSON.parse(content) as unknown;
+	return normalizeFlaggedStorage(data);
+}
+
+async function describeFlaggedSnapshot(
+	path: string,
+	kind: BackupSnapshotKind,
+	index?: number,
+): Promise<BackupSnapshotMetadata> {
+	const base = await describePathStats(path, kind, index);
+	if (!base.exists) {
+		return { ...base, valid: false };
+	}
+
+	try {
+		const storage = await loadFlaggedAccountsFromPath(path);
+		return {
+			...base,
+			valid: true,
+			version: storage.version,
+			flaggedCount: storage.accounts.length,
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to inspect flagged account snapshot", {
+				path,
+				error: String(error),
+			});
+		}
+		return { ...base, valid: false };
+	}
+}
+
+async function recoverFlaggedAccountsFromBackups(path: string): Promise<FlaggedAccountStorageV1 | null> {
+	const candidates = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+	for (const candidate of candidates) {
+		try {
+			const recovered = await loadFlaggedAccountsFromPath(candidate);
+			log.warn("Recovered flagged account storage from backup file", {
+				path,
+				backupPath: candidate,
+				accounts: recovered.accounts.length,
+			});
+			try {
+				await saveFlaggedAccounts(recovered);
+			} catch (persistError) {
+				log.warn("Failed to persist recovered flagged account storage", {
+					path,
+					error: String(persistError),
+				});
+			}
+			return recovered;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				log.warn("Failed to load flagged account backup", {
+					path: candidate,
+					error: String(error),
+				});
+			}
+		}
+	}
+	return null;
+}
+
+function selectLatestValidSnapshotPath(snapshots: BackupSnapshotMetadata[]): string | undefined {
+	const firstValid = snapshots.find((snapshot) => snapshot.valid);
+	return firstValid?.path;
+}
+
+function selectSnapshotByPath(
+	section: BackupMetadataSection,
+	path: string | undefined,
+): BackupSnapshotMetadata | undefined {
+	if (!path) return undefined;
+	return section.snapshots.find((snapshot) => snapshot.path === path);
+}
+
+export async function getBackupMetadata(): Promise<BackupMetadata> {
+	const storagePath = getStoragePath();
+	const flaggedPath = getFlaggedAccountsPath();
+
+	const accountSnapshots: BackupSnapshotMetadata[] = [];
+	accountSnapshots.push(await describeAccountSnapshot(storagePath, "accounts-primary"));
+	accountSnapshots.push(await describeAccountsWalSnapshot(getAccountsWalPath(storagePath)));
+
+	const knownAccountBackups = getAccountsBackupRecoveryCandidates(storagePath);
+	for (let i = 0; i < knownAccountBackups.length; i += 1) {
+		const candidate = knownAccountBackups[i];
+		if (!candidate) continue;
+		const kind = i === 0 ? "accounts-backup" : "accounts-backup-history";
+		accountSnapshots.push(await describeAccountSnapshot(candidate, kind, i));
+	}
+
+	const knownAccountSet = new Set(knownAccountBackups);
+	const discoveredAccountBackups = await getAccountsBackupRecoveryCandidatesWithDiscovery(storagePath);
+	for (const candidate of discoveredAccountBackups) {
+		if (knownAccountSet.has(candidate)) continue;
+		accountSnapshots.push(await describeAccountSnapshot(candidate, "accounts-discovered-backup"));
+	}
+
+	const accountsSection: BackupMetadataSection = {
+		storagePath,
+		latestValidPath: selectLatestValidSnapshotPath(accountSnapshots),
+		snapshotCount: accountSnapshots.length,
+		validSnapshotCount: accountSnapshots.filter((snapshot) => snapshot.valid).length,
+		snapshots: accountSnapshots,
+	};
+
+	const flaggedSnapshots: BackupSnapshotMetadata[] = [];
+	flaggedSnapshots.push(await describeFlaggedSnapshot(flaggedPath, "flagged-primary"));
+
+	const knownFlaggedBackups = getAccountsBackupRecoveryCandidates(flaggedPath);
+	for (let i = 0; i < knownFlaggedBackups.length; i += 1) {
+		const candidate = knownFlaggedBackups[i];
+		if (!candidate) continue;
+		const kind = i === 0 ? "flagged-backup" : "flagged-backup-history";
+		flaggedSnapshots.push(await describeFlaggedSnapshot(candidate, kind, i));
+	}
+
+	const knownFlaggedSet = new Set(knownFlaggedBackups);
+	const discoveredFlaggedBackups = await getAccountsBackupRecoveryCandidatesWithDiscovery(flaggedPath);
+	for (const candidate of discoveredFlaggedBackups) {
+		if (knownFlaggedSet.has(candidate)) continue;
+		flaggedSnapshots.push(await describeFlaggedSnapshot(candidate, "flagged-discovered-backup"));
+	}
+
+	const flaggedSection: BackupMetadataSection = {
+		storagePath: flaggedPath,
+		latestValidPath: selectLatestValidSnapshotPath(flaggedSnapshots),
+		snapshotCount: flaggedSnapshots.length,
+		validSnapshotCount: flaggedSnapshots.filter((snapshot) => snapshot.valid).length,
+		snapshots: flaggedSnapshots,
+	};
+
+	return { accounts: accountsSection, flaggedAccounts: flaggedSection };
+}
+
+async function loadAccountsForRestoreAssessment(path: string): Promise<AccountStorageWithMetadata | null> {
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
+	const hasIntentionalResetMarker = existsSync(resetMarkerPath);
+
+	try {
+		const { normalized, schemaErrors } = await loadAccountsFromPath(path);
+		if (schemaErrors.length > 0) {
+			log.warn("Account storage schema validation warnings", {
+				errors: schemaErrors.slice(0, 5),
+			});
+		}
+		if (!normalized) {
+			return null;
+		}
+
+		if (hasIntentionalResetMarker) {
+			await removeIntentionalResetMarker(path);
+		}
+
+		const annotated: AccountStorageWithMetadata = { ...normalized };
+		if (annotated.accounts.length === 0) {
+			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
+			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
+		} else if (hasIntentionalResetMarker) {
+			annotated.restoreEligible = false;
+			annotated.restoreReason = "intentional-reset";
+		}
+
+		return annotated;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			if (hasIntentionalResetMarker) {
+				await removeIntentionalResetMarker(path);
+				return {
+					...createEmptyAccountStorage(),
+					restoreEligible: false,
+					restoreReason: "intentional-reset",
+				};
+			}
+			return {
+				...createEmptyAccountStorage(),
+				restoreEligible: true,
+				restoreReason: "missing-storage",
+			};
+		}
+
+		log.warn("Failed to load account storage for restore assessment", {
+			path,
+			error: String(error),
+		});
+		return null;
+	}
+}
+
+export async function getRestoreAssessment(): Promise<RestoreAssessment> {
+	const storagePath = getStoragePath();
+	const [storage, backupMetadata] = await Promise.all([
+		loadAccountsForRestoreAssessment(storagePath),
+		getBackupMetadata(),
+	]);
+
+	const latestSnapshot = selectSnapshotByPath(
+		backupMetadata.accounts,
+		backupMetadata.accounts.latestValidPath,
+	);
+
+	return {
+		storagePath,
+		restoreEligible: storage?.restoreEligible ?? false,
+		restoreReason: storage?.restoreReason,
+		latestSnapshot,
+		backupMetadata,
+	};
+}
+
 type AccountsJournalEntry = {
 	version: 1;
 	createdAt: number;
@@ -448,6 +863,38 @@ export function getStoragePath(): string {
     return currentStoragePath;
   }
   return join(getConfigDir(), ACCOUNTS_FILE_NAME);
+}
+
+function getIntentionalResetMarkerPath(storagePath: string): string {
+	return `${storagePath}${RESET_MARKER_SUFFIX}`;
+}
+
+async function writeIntentionalResetMarker(storagePath: string): Promise<void> {
+	const markerPath = getIntentionalResetMarkerPath(storagePath);
+	try {
+		await fs.writeFile(
+			markerPath,
+			JSON.stringify({ version: 1, createdAt: Date.now() }),
+			"utf-8",
+		);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to write reset marker", { path: markerPath, error: String(error) });
+		}
+	}
+}
+
+async function removeIntentionalResetMarker(storagePath: string): Promise<void> {
+	const markerPath = getIntentionalResetMarkerPath(storagePath);
+	try {
+		await fs.unlink(markerPath);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to remove reset marker", { path: markerPath, error: String(error) });
+		}
+	}
 }
 
 export function getFlaggedAccountsPath(): string {
@@ -535,6 +982,59 @@ async function migrateLegacyProjectStorageIfNeeded(
     return targetStorage;
   }
   return null;
+}
+
+async function migrateFallbackAccountStorageIfNeeded(
+	path: string,
+	persist: (storage: AccountStorageV3) => Promise<void>,
+): Promise<AccountStorageV3 | null> {
+	if (existsSync(path)) {
+		return null;
+	}
+
+	const candidates = getFallbackAccountStoragePaths(path);
+	for (const candidate of candidates) {
+		if (!existsSync(candidate)) continue;
+
+		const fallbackStorage = await loadNormalizedStorageFromPath(
+			candidate,
+			"fallback account storage",
+		);
+		if (!fallbackStorage) {
+			continue;
+		}
+
+		try {
+			await persist(fallbackStorage);
+			try {
+				await fs.unlink(candidate);
+			} catch (unlinkError) {
+				const code = (unlinkError as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.warn("Failed to remove fallback account storage after migration", {
+						path: candidate,
+						error: String(unlinkError),
+					});
+				}
+			}
+			log.info("Migrated fallback account storage into canonical root", {
+				from: candidate,
+				to: path,
+				accounts: fallbackStorage.accounts.length,
+			});
+		} catch (persistError) {
+			log.warn("Failed to persist fallback account storage into canonical root", {
+				from: candidate,
+				to: path,
+				error: String(persistError),
+			});
+			return fallbackStorage;
+		}
+
+		return fallbackStorage;
+	}
+
+	return null;
 }
 
 async function loadNormalizedStorageFromPath(
@@ -845,8 +1345,8 @@ export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null 
  * Automatically migrates v1 storage to v3 format if needed.
  * @returns AccountStorageV3 if file exists and is valid, null otherwise
  */
-export async function loadAccounts(): Promise<AccountStorageV3 | null> {
-  return loadAccountsInternal(saveAccounts);
+export async function loadAccounts(): Promise<AccountStorageWithMetadata | null> {
+	return loadAccountsInternal(saveAccounts);
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -899,22 +1399,40 @@ async function loadAccountsFromJournal(path: string): Promise<AccountStorageV3 |
 }
 
 async function loadAccountsInternal(
-  persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
-): Promise<AccountStorageV3 | null> {
+	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
+): Promise<AccountStorageWithMetadata | null> {
 	const path = getStoragePath();
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
+	const hasIntentionalResetMarker = existsSync(resetMarkerPath);
 	await cleanupStaleRotatingBackupArtifacts(path);
 	const migratedLegacyStorage = persistMigration
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;
+	const migratedFallbackStorage = persistMigration
+		? await migrateFallbackAccountStorageIfNeeded(path, persistMigration)
+		: null;
 
-  try {
-    const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
-    if (schemaErrors.length > 0) {
-      log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
-    }
-    if (normalized && storedVersion !== normalized.version) {
-      log.info("Migrating account storage to v3", { from: storedVersion, to: normalized.version });
-      if (persistMigration) {
+	if (hasIntentionalResetMarker && !existsSync(path)) {
+		await removeIntentionalResetMarker(path);
+		const emptyStorageWithMetadata: AccountStorageWithMetadata = {
+			...createEmptyAccountStorage(),
+			restoreEligible: false,
+			restoreReason: "intentional-reset",
+		};
+		return emptyStorageWithMetadata;
+	}
+
+	try {
+		const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
+		if (schemaErrors.length > 0) {
+			log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
+		}
+		if (!normalized) {
+			return null;
+		}
+		if (normalized && storedVersion !== normalized.version) {
+			log.info("Migrating account storage to v3", { from: storedVersion, to: normalized.version });
+			if (persistMigration) {
         try {
           await persistMigration(normalized);
         } catch (saveError) {
@@ -949,7 +1467,8 @@ async function loadAccountsInternal(
 						});
 					}
 				}
-				return backup.normalized;
+				const annotated: AccountStorageWithMetadata = { ...backup.normalized };
+				return annotated;
 			} catch (backupError) {
 				const backupCode = (backupError as NodeJS.ErrnoException).code;
 				if (backupCode !== "ENOENT") {
@@ -962,12 +1481,38 @@ async function loadAccountsInternal(
 		}
 	}
 
-    return normalized;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" && migratedLegacyStorage) {
-      return migratedLegacyStorage;
-    }
+		if (hasIntentionalResetMarker) {
+			await removeIntentionalResetMarker(path);
+		}
+
+		const annotated: AccountStorageWithMetadata = { ...normalized };
+		if (annotated.accounts.length === 0) {
+			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
+			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
+		} else if (hasIntentionalResetMarker) {
+			annotated.restoreEligible = false;
+			annotated.restoreReason = "intentional-reset";
+		}
+
+		return annotated;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			if (migratedFallbackStorage) {
+				return migratedFallbackStorage;
+			}
+			if (migratedLegacyStorage) {
+				return migratedLegacyStorage;
+			}
+		}
+		if (code === "ENOENT" && hasIntentionalResetMarker) {
+			await removeIntentionalResetMarker(path);
+			return {
+				...createEmptyAccountStorage(),
+				restoreEligible: false,
+				restoreReason: "intentional-reset",
+			};
+		}
 
 	const recoveredFromWal = await loadAccountsFromJournal(path);
 	if (recoveredFromWal) {
@@ -981,7 +1526,15 @@ async function loadAccountsInternal(
 				});
 			}
 		}
-		return recoveredFromWal;
+		if (hasIntentionalResetMarker) {
+			await removeIntentionalResetMarker(path);
+		}
+		const annotated: AccountStorageWithMetadata = { ...recoveredFromWal };
+		if (annotated.accounts.length === 0) {
+			annotated.restoreEligible = true;
+			annotated.restoreReason = "empty-storage";
+		}
+		return annotated;
 	}
 
 	if (storageBackupEnabled) {
@@ -1007,7 +1560,15 @@ async function loadAccountsInternal(
 							});
 						}
 					}
-					return backup.normalized;
+					if (hasIntentionalResetMarker) {
+						await removeIntentionalResetMarker(path);
+					}
+					const annotated: AccountStorageWithMetadata = { ...backup.normalized };
+					if (annotated.accounts.length === 0) {
+						annotated.restoreEligible = true;
+						annotated.restoreReason = "empty-storage";
+					}
+					return annotated;
 				}
 			} catch (backupError) {
 				const backupCode = (backupError as NodeJS.ErrnoException).code;
@@ -1021,10 +1582,16 @@ async function loadAccountsInternal(
 		}
 	}
 
-    if (code !== "ENOENT") {
-      log.error("Failed to load account storage", { error: String(error) });
-    }
-    return null;
+		if (code === "ENOENT") {
+			return {
+				...createEmptyAccountStorage(),
+				restoreEligible: true,
+				restoreReason: "missing-storage",
+			};
+		}
+
+		log.error("Failed to load account storage", { error: String(error) });
+		return null;
   }
 }
 
@@ -1034,9 +1601,10 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   const tempPath = `${path}.${uniqueSuffix}.tmp`;
   const walPath = getAccountsWalPath(path);
 
-  try {
-    await fs.mkdir(dirname(path), { recursive: true });
-    await ensureGitignore(path);
+	try {
+		await fs.mkdir(dirname(path), { recursive: true });
+		await ensureGitignore(path);
+		await removeIntentionalResetMarker(path);
 
 	if (looksLikeSyntheticFixtureStorage(storage)) {
 		try {
@@ -1152,6 +1720,34 @@ export async function withAccountStorageTransaction<T>(
   });
 }
 
+export function cloneAccountStorage(storage: AccountStorageV3 | null): AccountStorageV3 | null {
+  if (!storage) {
+    return null;
+  }
+
+  return {
+    ...storage,
+    accounts: storage.accounts.map((account) => ({ ...account })),
+    activeIndexByFamily: storage.activeIndexByFamily
+      ? { ...storage.activeIndexByFamily }
+      : undefined,
+  };
+}
+
+export function createEmptyAccountStorage(): AccountStorageV3 {
+	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+	for (const family of MODEL_FAMILIES) {
+		activeIndexByFamily[family] = 0;
+	}
+
+	return {
+		version: 3,
+		accounts: [],
+		activeIndex: 0,
+		activeIndexByFamily,
+	};
+}
+
 /**
  * Persists account storage to disk using atomic write (temp file + rename).
  * Creates the Codex multi-auth storage directory if it doesn't exist.
@@ -1167,32 +1763,32 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
 
 /**
  * Deletes the account storage file from disk.
- * Silently ignores if file doesn't exist.
+ * Preserves recovery artifacts while marking an intentional reset to suppress automatic restore.
  */
 export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
     const path = getStoragePath();
-    const walPath = getAccountsWalPath(path);
-	const backupPaths = getAccountsBackupRecoveryCandidates(path);
-    const clearPath = async (targetPath: string): Promise<void> => {
-      try {
-        await fs.unlink(targetPath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT") {
-          log.error("Failed to clear account storage artifact", {
-            path: targetPath,
-            error: String(error),
-          });
-        }
-      }
-    };
+	const markerPath = getIntentionalResetMarkerPath(path);
 
-    try {
-      await Promise.all([clearPath(path), clearPath(walPath), ...backupPaths.map(clearPath)]);
-    } catch {
-      // Individual path cleanup is already best-effort with per-artifact logging.
-    }
+	try {
+		await fs.mkdir(dirname(path), { recursive: true });
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "EEXIST" && code !== "ENOENT") {
+			log.warn("Failed to ensure storage directory before reset", { path, error: String(error) });
+		}
+	}
+
+	await writeIntentionalResetMarker(path);
+
+	try {
+		await fs.unlink(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.error("Failed to clear account storage", { path, markerPath, error: String(error) });
+		}
+	}
   });
 }
 
@@ -1277,15 +1873,17 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
 
 	try {
-		const content = await fs.readFile(path, "utf-8");
-		const data = JSON.parse(content) as unknown;
-		return normalizeFlaggedStorage(data);
+		return await loadFlaggedAccountsFromPath(path);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
 			log.error("Failed to load flagged account storage", { path, error: String(error) });
-			return empty;
 		}
+	}
+
+	const recovered = storageBackupEnabled ? await recoverFlaggedAccountsFromBackups(path) : null;
+	if (recovered) {
+		return recovered;
 	}
 
 	const legacyPath = getLegacyFlaggedAccountsPath();
@@ -1329,6 +1927,16 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 
 		try {
 			await fs.mkdir(dirname(path), { recursive: true });
+			if (storageBackupEnabled && existsSync(path)) {
+				try {
+					await createRotatingAccountsBackup(path);
+				} catch (backupError) {
+					log.warn("Failed to create flagged account storage backup", {
+						path,
+						error: String(backupError),
+					});
+				}
+			}
 			const content = JSON.stringify(normalizeFlaggedStorage(storage), null, 2);
 			await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 			await fs.rename(tempPath, path);
@@ -1346,13 +1954,26 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 
 export async function clearFlaggedAccounts(): Promise<void> {
 	return withStorageLock(async () => {
-		try {
-			await fs.unlink(getFlaggedAccountsPath());
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== "ENOENT") {
-				log.error("Failed to clear flagged account storage", { error: String(error) });
+		const path = getFlaggedAccountsPath();
+		const backupPaths = getAccountsBackupRecoveryCandidates(path);
+		const clearPath = async (targetPath: string): Promise<void> => {
+			try {
+				await fs.unlink(targetPath);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.error("Failed to clear flagged account storage artifact", {
+						path: targetPath,
+						error: String(error),
+					});
+				}
 			}
+		};
+
+		try {
+			await Promise.all([clearPath(path), ...backupPaths.map(clearPath)]);
+		} catch {
+			// Individual cleanup is already best effort with per-artifact logging.
 		}
 	});
 }
