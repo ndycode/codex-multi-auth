@@ -772,13 +772,9 @@ async function loadAccountsForRestoreAssessment(path: string): Promise<AccountSt
 
 		const annotated: AccountStorageWithMetadata = { ...normalized };
 		if (annotated.accounts.length === 0) {
-			if (hasIntentionalResetMarker) {
-				await removeIntentionalResetMarker(path);
-			}
-			annotated.restoreEligible = true;
-			annotated.restoreReason = "empty-storage";
+			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
+			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
 		} else if (hasIntentionalResetMarker) {
-			await removeIntentionalResetMarker(path);
 			annotated.restoreEligible = false;
 			annotated.restoreReason = "intentional-reset";
 		}
@@ -1003,6 +999,9 @@ async function migrateFallbackAccountStorageIfNeeded(
 	path: string,
 	persist: (storage: AccountStorageV3) => Promise<void>,
 ): Promise<AccountStorageV3 | null> {
+	if (currentProjectRoot) {
+		return null;
+	}
 	if (existsSync(path)) {
 		return null;
 	}
@@ -1493,14 +1492,10 @@ async function loadAccountsInternal(
 		}
 	}
 
-		if (hasIntentionalResetMarker) {
-			await removeIntentionalResetMarker(path);
-		}
-
 		const annotated: AccountStorageWithMetadata = { ...normalized };
 		if (annotated.accounts.length === 0) {
-			annotated.restoreEligible = true;
-			annotated.restoreReason = "empty-storage";
+			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
+			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
 		} else if (hasIntentionalResetMarker) {
 			annotated.restoreEligible = false;
 			annotated.restoreReason = "intentional-reset";
@@ -1537,13 +1532,10 @@ async function loadAccountsInternal(
 				});
 			}
 		}
-		if (hasIntentionalResetMarker) {
-			await removeIntentionalResetMarker(path);
-		}
 		const annotated: AccountStorageWithMetadata = { ...recoveredFromWal };
 		if (annotated.accounts.length === 0) {
-			annotated.restoreEligible = true;
-			annotated.restoreReason = "empty-storage";
+			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
+			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
 		}
 		return annotated;
 	}
@@ -1571,13 +1563,10 @@ async function loadAccountsInternal(
 							});
 						}
 					}
-					if (hasIntentionalResetMarker) {
-						await removeIntentionalResetMarker(path);
-					}
 					const annotated: AccountStorageWithMetadata = { ...backup.normalized };
 					if (annotated.accounts.length === 0) {
-						annotated.restoreEligible = true;
-						annotated.restoreReason = "empty-storage";
+						annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
+						annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
 					}
 					return annotated;
 				}
@@ -1615,7 +1604,6 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	try {
 		await fs.mkdir(dirname(path), { recursive: true });
 		await ensureGitignore(path);
-		await removeIntentionalResetMarker(path);
 
 	if (looksLikeSyntheticFixtureStorage(storage)) {
 		try {
@@ -1678,6 +1666,11 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			await fs.unlink(walPath);
 		} catch {
 			// Best effort cleanup.
+		}
+		try {
+			await removeIntentionalResetMarker(path);
+		} catch {
+			// Best effort cleanup. Saved storage remains authoritative even if marker removal is delayed.
 		}
         return;
       } catch (renameError) {

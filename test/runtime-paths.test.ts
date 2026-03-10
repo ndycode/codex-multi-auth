@@ -135,6 +135,25 @@ describe("runtime-paths", () => {
 		}
 	});
 
+	it("treats default Windows CODEX_HOME with a trailing separator as the default root", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Users\\Neil");
+			process.env.CODEX_HOME = "C:\\Users\\Neil\\.codex\\";
+			const fallback = "C:\\Users\\Neil\\DevTools\\config\\codex\\multi-auth";
+
+			existsSync.mockImplementation((candidate: unknown) => {
+				if (typeof candidate !== "string") return false;
+				return candidate === path.join(fallback, "openai-codex-accounts.json");
+			});
+
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexMultiAuthDir()).toBe(fallback);
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
 	it("prefers USERPROFILE over os.homedir on Windows when CODEX_HOME is unset", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
 		try {

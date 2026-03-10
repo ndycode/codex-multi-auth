@@ -76,7 +76,11 @@ function pathsEqualNormalized(a: string, b: string): boolean {
 	const normalize = (value: string): string => {
 		const trimmed = value.trim();
 		if (process.platform === "win32") {
-			return win32.normalize(trimmed).toLowerCase();
+			const normalized = win32.normalize(trimmed);
+			const root = win32.parse(normalized).root;
+			const withoutTrailing =
+				normalized === root ? normalized : normalized.replace(/[\\/]+$/, "");
+			return withoutTrailing.toLowerCase();
 		}
 		return trimmed === "/" ? "/" : trimmed.replace(/\/+$/, "");
 	};
