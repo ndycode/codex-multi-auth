@@ -26,6 +26,15 @@ npm test
 npm run build
 ```
 
+Isolated-path variants for restart work and TUI experiments:
+
+```bash
+npm run isolated:env
+npm run isolated:typecheck
+```
+
+These commands force `CODEX_HOME`, `CODEX_MULTI_AUTH_DIR`, and related home/config variables into a worktree-local sandbox under `.sandbox/isolated-codex-env/` so no local TUI/build/test work touches the live global multi-auth storage path.
+
 Optional:
 
 ```bash
