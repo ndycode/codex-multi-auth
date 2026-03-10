@@ -110,7 +110,6 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
-let storageLockDepth = 0;
 let activeTransactionStorage: AccountStorageV3 | null | undefined;
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -119,16 +118,7 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	storageMutex = new Promise<void>((resolve) => {
 		releaseLock = resolve;
 	});
-	return previousMutex
-		.then(async () => {
-			storageLockDepth += 1;
-			try {
-				return await fn();
-			} finally {
-				storageLockDepth -= 1;
-			}
-		})
-		.finally(() => releaseLock());
+	return previousMutex.then(fn).finally(() => releaseLock());
 }
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
@@ -1612,6 +1602,10 @@ export async function exportAccounts(
 		throw new Error(`File already exists: ${resolvedPath}`);
 	}
 
+	// NOTE: when called inside withAccountStorageTransaction(), this exports the
+	// in-flight transaction snapshot, including any mutations made to `current`
+	// before `persist()` is called. Callers that need a committed-state backup
+	// must persist first and export afterward.
 	const storage =
 		activeTransactionStorage !== undefined
 			? activeTransactionStorage
