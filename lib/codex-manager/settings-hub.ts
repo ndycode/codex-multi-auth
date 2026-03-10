@@ -2600,7 +2600,7 @@ async function promptExperimentalSettings(
 			draft = {
 				...draft,
 				proactiveRefreshIntervalMs: Math.max(
-					5_000,
+					60_000,
 					(draft.proactiveRefreshIntervalMs ?? 60000) - 60000,
 				),
 			};
@@ -2680,7 +2680,7 @@ async function promptExperimentalSettings(
 						{
 							message: UI_COPY.settings.experimentalTitle,
 							subtitle: UI_COPY.settings.experimentalSubtitle,
-							help: UI_COPY.settings.experimentalHelpPreview,
+							help: UI_COPY.settings.experimentalHelpStatus,
 							clearScreen: true,
 							theme: ui.theme,
 							selectedEmphasis: "minimal",
@@ -2815,6 +2815,8 @@ async function promptExperimentalSettings(
 
 		const applied = await applyOcChatgptSync({
 			source,
+			destination:
+				targetState.kind === "target" ? targetState.destination : undefined,
 			dependencies:
 				targetState.kind === "target"
 					? { detectTarget: () => targetState.detection }
