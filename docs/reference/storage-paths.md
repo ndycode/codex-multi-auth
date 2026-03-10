@@ -36,6 +36,7 @@ Ownership note:
 - `~/.codex/multi-auth/*` is managed by this project.
 - `~/.codex/accounts.json` and `~/.codex/auth.json` are managed by official Codex CLI.
 - The `codex` wrapper preserves that official CLI file-backed auth layout by forwarding non-auth commands with `-c cli_auth_credentials_store="file"`, unless the caller already set `cli_auth_credentials_store` explicitly.
+- Set `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0` to opt out of that wrapper-injected file-store override and leave the downstream CLI auth store untouched.
 
 Compatibility note:
 
@@ -87,6 +88,7 @@ Experimental named backup exports are written under the local plugin-owned backu
 Rules:
 
 - `.json` is appended when omitted
+- backup names may only contain letters, numbers, `_`, and `-`
 - path separators and `..` are rejected
 - `.rotate.`, `.tmp`, and `.wal` names are rejected
 - existing files are not overwritten unless a lower-level force path is used explicitly

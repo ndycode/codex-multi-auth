@@ -215,11 +215,25 @@ describe("Documentation Integrity", () => {
 		const storagePaths = read("docs/reference/storage-paths.md");
 
 		expect(commandRef).toContain("primary wrapper entrypoint");
-		expect(commandRef).toContain("auth flows degrade to deterministic text behavior");
+		expect(commandRef).toContain(
+			"auth flows degrade to deterministic text behavior",
+		);
 		expect(commandRef).toContain("defaults to add-account mode");
+		expect(commandRef).toContain("Account List View:");
+		expect(commandRef).toContain("Summary Line:");
+		expect(commandRef).toContain("Menu Behavior:");
+		expect(commandRef).toContain("Backend Controls:");
 
-		expect(storagePaths).toContain("cli_auth_credentials_store=\"file\"");
+		expect(storagePaths).toContain('cli_auth_credentials_store="file"');
+		expect(storagePaths).toContain("CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0");
 		expect(storagePaths).toContain("outside interactive terminals");
+		expect(storagePaths).toContain("letters, numbers, `_`, and `-`");
+		expect(storagePaths).toContain(
+			"global root: `~/.codex/multi-auth/backups/<name>.json`",
+		);
+		expect(storagePaths).toContain(
+			"project target: `~/.opencode/projects/<project-key>/openai-codex-accounts.json`",
+		);
 	});
 
 	it("documents public API stability tiers and error contracts", () => {

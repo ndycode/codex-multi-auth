@@ -88,15 +88,13 @@ Compatibility aliases are supported:
 
 ### Settings Screens
 
-| Key | Action |
-| --- | --- |
-| `Enter` | Toggle/select/open |
-| `1-9` | Quick toggle for numbered options |
-| `S` | Save |
-| `R` | Reset |
-| `Q` | Back/cancel without saving draft changes |
-| `[` / `]` | Reorder fields in summary settings |
-| `+` / `-` | Adjust focused numeric backend setting |
+Settings screen hotkeys are panel-specific:
+
+- Account List View: `Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)`
+- Summary Line: `Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)`
+- Menu Behavior: `Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)`
+- Color Theme: `Enter Select | 1-2 Base | S Save | Q Back (No Save)`
+- Backend Controls: `Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)`
 
 ---
 
