@@ -418,6 +418,14 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		selectMock.mockReset();
+		planOcChatgptSyncMock.mockReset();
+		applyOcChatgptSyncMock.mockReset();
+		runNamedBackupExportMock.mockReset();
+		promptQuestionMock.mockReset();
+		detectOcChatgptMultiAuthTargetMock.mockReset();
+		exportNamedBackupMock.mockReset();
+		normalizeAccountStorageMock.mockReset();
+		normalizeAccountStorageMock.mockImplementation((value) => value);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -1630,9 +1638,62 @@ describe("codex manager cli commands", () => {
 		expect(payload.accounts.disabled).toBe(1);
 	});
 
-	it("drives interactive settings hub across sections and persists dashboard/backend changes", async () => {
+	it("drives interactive settings hub across legacy panels plus Experimental and persists changes", async () => {
 		const now = Date.now();
 		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({
+			kind: "target",
+			descriptor: {
+				scope: "global",
+				root: "C:/target",
+				accountPath: "C:/target/openai-codex-accounts.json",
+				backupRoot: "C:/target/backups",
+				source: "default-global",
+				resolution: "accounts",
+			},
+		});
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "ready",
+			target: {
+				scope: "global",
+				root: "C:/target",
+				accountPath: "C:/target/openai-codex-accounts.json",
+				backupRoot: "C:/target/backups",
+				source: "default-global",
+				resolution: "accounts",
+			},
+			preview: {
+				payload: { version: 3, accounts: [], activeIndex: 0 },
+				merged: { version: 3, accounts: [], activeIndex: 0 },
+				toAdd: [{ refreshTokenLast4: "1234" }],
+				toUpdate: [],
+				toSkip: [],
+				unchangedDestinationOnly: [{ refreshTokenLast4: "9876" }],
+				activeSelectionBehavior: "preserve-destination",
+			},
+			payload: { version: 3, accounts: [], activeIndex: 0 },
+			destination: { version: 3, accounts: [], activeIndex: 0 },
+		});
+		applyOcChatgptSyncMock.mockResolvedValue({
+			kind: "applied",
+			target: {
+				scope: "global",
+				root: "C:/target",
+				accountPath: "C:/target/openai-codex-accounts.json",
+				backupRoot: "C:/target/backups",
+				source: "default-global",
+				resolution: "accounts",
+			},
+			preview: { merged: { version: 3, accounts: [], activeIndex: 0 } },
+			merged: { version: 3, accounts: [], activeIndex: 0 },
+			destination: { version: 3, accounts: [], activeIndex: 0 },
+			persistedPath: "C:/target/openai-codex-accounts.json",
+		});
+		promptQuestionMock.mockResolvedValueOnce("settings-hub-backup");
+		runNamedBackupExportMock.mockResolvedValueOnce({
+			kind: "exported",
+			path: "/mock/backups/settings-hub-backup.json",
+		});
 
 		const selectSequence = queueSettingsSelectSequence([
 			{ type: "account-list" },
@@ -1654,6 +1715,15 @@ describe("codex manager cli commands", () => {
 			{ type: "set-palette", palette: "blue" },
 			{ type: "set-accent", accent: "cyan" },
 			{ type: "save" },
+			{ type: "experimental" },
+			{ type: "sync" },
+			{ type: "apply" },
+			{ type: "back" },
+			{ type: "backup" },
+			{ type: "back" },
+			{ type: "toggle-refresh-guardian" },
+			{ type: "increase-refresh-interval" },
+			{ type: "save" },
 			{ type: "backend" },
 			{ type: "open-category", key: "rotation-quota" },
 			{ type: "toggle", key: "preemptiveQuotaEnabled" },
@@ -1671,7 +1741,19 @@ describe("codex manager cli commands", () => {
 		);
 		expect(selectSequence.remaining()).toBe(0);
 		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalled();
-		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
+		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(applyOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(promptQuestionMock).toHaveBeenCalledOnce();
+		expect(runNamedBackupExportMock).toHaveBeenCalledWith({
+			name: "settings-hub-backup",
+		});
+		expect(savePluginConfigMock).toHaveBeenCalledTimes(2);
+		expect(savePluginConfigMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				proactiveRefreshGuardian: expect.any(Boolean),
+				proactiveRefreshIntervalMs: expect.any(Number),
+			}),
+		);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				preemptiveQuotaEnabled: expect.any(Boolean),

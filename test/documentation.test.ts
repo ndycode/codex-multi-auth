@@ -45,6 +45,8 @@ const compatibilityAliasAllowedFiles = new Set([
   'docs/upgrade.md',
 ]);
 
+const opencodeReferenceAllowedFiles = new Set(['docs/reference/storage-paths.md']);
+
 function read(filePath: string): string {
   return readFileSync(join(projectRoot, filePath), 'utf-8');
 }
@@ -150,7 +152,12 @@ describe('Documentation Integrity', () => {
     for (const filePath of userDocs) {
       const content = read(filePath).toLowerCase();
       const hasLegacyHostWord = content.includes('opencode');
-      expect(hasLegacyHostWord, `${filePath} should not include opencode references`).toBe(false);
+      if (hasLegacyHostWord) {
+        expect(
+          opencodeReferenceAllowedFiles.has(filePath),
+          `${filePath} should not include opencode references`,
+        ).toBe(true);
+      }
     }
   });
 
@@ -289,12 +296,40 @@ describe('Documentation Integrity', () => {
     expect(settingsRef).toContain('### Rotation & Quota');
     expect(settingsRef).toContain('### Refresh & Recovery');
     expect(settingsRef).toContain('preview is always shown before apply');
+    expect(settingsRef).toContain('blocked target states only show guidance and do not apply changes');
+    expect(settingsRef).toContain('destination active selection is preserved');
+    expect(settingsRef).toContain('destination-only accounts are preserved by the merge preview/apply path');
     expect(settingsRef).toContain('Named backup behavior:');
+    expect(settingsRef).toContain('appends `.json` when omitted');
+    expect(settingsRef).toContain('rejects separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes');
     expect(settingsRef).toContain('### Performance & Timeouts');
     expect(settingsRef).toContain('- `menuShowLastUsed`');
     expect(settingsRef).toContain('- `menuShowQuotaSummary`');
     expect(settingsRef).toContain('- `menuShowFetchStatus`');
     expect(settingsRef).toContain('- `menuStatuslineFields`');
+  });
+
+  it('documents Experimental sync, backup, and target-path semantics consistently', () => {
+    const readme = read('README.md');
+    const storagePaths = read('docs/reference/storage-paths.md');
+
+    expect(readme).toContain('preview-first sync into `oc-chatgpt-multi-auth`');
+    expect(readme).toContain("Blocked sync targets only show guidance, they don't write anything.");
+    expect(readme).toContain('Successful sync keeps the destination active selection');
+    expect(readme).toContain('destination-only accounts are preserved');
+    expect(readme).toContain('append `.json` when needed');
+    expect(readme).toContain('rejecting separators, traversal, `.rotate.`, `.tmp`, and `.wal` patterns');
+
+    expect(storagePaths).toContain('## Experimental Local Backup Paths');
+    expect(storagePaths).toContain('`~/.codex/multi-auth/backups/<name>.json`');
+    expect(storagePaths).toContain('`~/.codex/multi-auth/projects/<project-key>/backups/<name>.json`');
+    expect(storagePaths).toContain('collisions fail safely instead of overwriting by default');
+    expect(storagePaths).toContain('## Experimental Sync Target Paths');
+    expect(storagePaths).toContain('`OC_CHATGPT_MULTI_AUTH_DIR`');
+    expect(storagePaths).toContain('`~/.opencode`');
+    expect(storagePaths).toContain('`~/.opencode/projects/<project-key>`');
+    expect(storagePaths).toContain('sync blocks and only shows guidance instead of applying changes');
+    expect(storagePaths).toContain('keeps the destination active selection and preserves destination-only accounts');
   });
 
   it('keeps changelog aligned with canonical 0.x release policy', () => {
@@ -322,36 +357,28 @@ describe('Documentation Integrity', () => {
     }
   });
 
-  it('keeps CODEX_MULTI_AUTH_CONFIG_PATH fallback and env override precedence aligned with docs', () => {
+  it('keeps CODEX_MULTI_AUTH_CONFIG_PATH fallback and env override precedence aligned with docs', async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'codex-doc-config-'));
     const fallbackConfigPath = join(tempRoot, 'fallback-config.json');
+    const originalEnv = { ...process.env };
 
     try {
       writeFileSync(
         fallbackConfigPath,
-        `${JSON.stringify({ codexMode: false, toastDurationMs: 7777 }, null, 2)}\n`,
+        `${JSON.stringify({ codexMode: false, toastDurationMs: 7777 }, null, 2)}
+`,
         'utf-8',
       );
-      const script = [
-        "import { loadPluginConfig, getCodexMode } from './dist/lib/config.js';",
-        'const loaded = loadPluginConfig();',
-        "process.stdout.write(JSON.stringify({ raw: loaded.codexMode, resolved: getCodexMode(loaded) }));",
-      ].join('\n');
-      const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
-        cwd: projectRoot,
-        env: {
-          ...process.env,
-          CODEX_MULTI_AUTH_DIR: tempRoot,
-          CODEX_MULTI_AUTH_CONFIG_PATH: fallbackConfigPath,
-          CODEX_MODE: '1',
-          HOME: tempRoot,
-          USERPROFILE: tempRoot,
-        },
-        encoding: 'utf-8',
-      });
-      const parsed = JSON.parse(output) as { raw: boolean; resolved: boolean };
-      expect(parsed.raw).toBe(false);
-      expect(parsed.resolved).toBe(true);
+      process.env.CODEX_MULTI_AUTH_DIR = tempRoot;
+      process.env.CODEX_MULTI_AUTH_CONFIG_PATH = fallbackConfigPath;
+      process.env.CODEX_MODE = '1';
+      process.env.HOME = tempRoot;
+      process.env.USERPROFILE = tempRoot;
+
+      const { loadPluginConfig, getCodexMode } = await import('../lib/config.js');
+      const loaded = loadPluginConfig();
+      expect(loaded.codexMode).toBe(false);
+      expect(getCodexMode(loaded)).toBe(true);
 
       const configFlow = read('docs/development/CONFIG_FLOW.md');
       const configGuide = read('docs/configuration.md');
@@ -359,6 +386,18 @@ describe('Documentation Integrity', () => {
       expect(configFlow).toContain('After source selection, environment variables apply per-setting overrides.');
       expect(configGuide).toContain('CODEX_MULTI_AUTH_CONFIG_PATH');
     } finally {
+      for (const key of Object.keys(process.env)) {
+        if (!(key in originalEnv)) {
+          delete process.env[key];
+        }
+      }
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
