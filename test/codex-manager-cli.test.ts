@@ -1957,6 +1957,7 @@ describe("codex manager cli commands", () => {
 			expect(exitCode).toBe(0);
 			expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
 			expect(savePluginConfigMock).not.toHaveBeenCalled();
+			expect(saveAccountsMock).not.toHaveBeenCalled();
 			if (panel === "theme") {
 				const runtime = await import("../lib/ui/runtime.js");
 				const restored = runtime.getUiRuntimeOptions();
@@ -2022,7 +2023,7 @@ describe("codex manager cli commands", () => {
 		]);
 
 		const rateLimitError = Object.assign(new Error("rate limited"), {
-			status: 429,
+			statusCode: 429,
 			retryAfterMs: 1,
 		});
 		savePluginConfigMock
