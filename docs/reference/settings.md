@@ -19,51 +19,78 @@ When `CODEX_MULTI_AUTH_DIR` is set, this root moves accordingly.
 
 ---
 
-## Dashboard Display Settings
-
-### Account List View
+## Account List View
 
 Controls account-row display and sorting behavior:
 
-- status badge visibility
-- current badge visibility
-- last-used visibility
-- quota/cooldown visibility
-- fetch status visibility
-- current row highlighting
-- smart sort enable and mode
-- compact versus expanded layout mode
+- `menuShowStatusBadge`
+- `menuShowCurrentBadge`
+- `menuShowLastUsed`
+- `menuShowQuotaSummary`
+- `menuShowQuotaCooldown`
+- `menuShowFetchStatus`
+- `menuShowDetailsForUnselectedRows`
+- `menuHighlightCurrentRow`
+- `menuSortEnabled`
+- `menuSortMode`
+- `menuSortPinCurrent`
+- `menuSortQuickSwitchVisibleRow`
+- `menuLayoutMode`
 
-### Summary Fields
+## Summary Line
 
 Controls detail-line fields and order:
 
+- `menuStatuslineFields`
 - `last-used`
 - `limits`
 - `status`
 
-### Behavior
+## Menu Behavior
 
 Controls result-screen and fetch behavior:
 
-- auto-return delay
-- pause-on-key
-- auto-fetch limits
-- fetch TTL
+- `actionAutoReturnMs`
+- `actionPauseOnKey`
+- `menuAutoFetchLimits`
+- `menuShowFetchStatus`
+- `menuQuotaTtlMs`
 
-### Theme
+## Color Theme
 
 Controls display style:
 
-- theme preset
-- accent color
-- focus style
+- `uiThemePreset`
+- `uiAccentColor`
+- `menuFocusStyle`
 
 ---
 
-## Backend Categories
+## Experimental
 
-### Session and Sync
+Experimental currently hosts:
+
+- one-way sync preview and apply into `oc-chatgpt-multi-auth`
+- named local pool backup export with filename prompt
+- refresh guard controls (`proactiveRefreshGuardian`, `proactiveRefreshIntervalMs`)
+
+Sync behavior:
+
+- preview is always shown before apply
+- blocked target states do not apply changes
+- destination active selection is preserved
+- destination-only accounts are preserved by the merge preview/apply path
+
+Named backup behavior:
+
+- prompts for a filename
+- appends `.json` when omitted
+- rejects separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes
+- fails safely on collisions instead of overwriting by default
+
+## Backend Controls
+
+### Session & Sync
 
 Examples:
 
@@ -75,7 +102,7 @@ Examples:
 - `sessionAffinityMaxEntries`
 - `perProjectAccounts`
 
-### Rotation and Quota
+### Rotation & Quota
 
 Examples:
 
@@ -87,18 +114,17 @@ Examples:
 - `retryAllAccountsMaxWaitMs`
 - `retryAllAccountsMaxRetries`
 
-### Refresh and Recovery
+### Refresh & Recovery
 
 Examples:
 
 - `tokenRefreshSkewMs`
-- `proactiveRefreshGuardian`
-- `proactiveRefreshIntervalMs`
 - `proactiveRefreshBufferMs`
+- `storageBackupEnabled`
 - `sessionRecovery`
 - `autoResume`
 
-### Performance and Timeouts
+### Performance & Timeouts
 
 Examples:
 
