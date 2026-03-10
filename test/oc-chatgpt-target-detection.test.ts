@@ -68,10 +68,10 @@ describe("oc-chatgpt target detection", () => {
 		result: OcChatgptTargetDetectionResult,
 		expectedScope: "global" | "project",
 		expectedRoot: string,
-	): asserts result is {
-		kind: "target";
-		descriptor: { scope: string; root: string };
-	} {
+	): asserts result is Extract<
+		OcChatgptTargetDetectionResult,
+		{ kind: "target" }
+	> {
 		expect(result.kind).toBe("target");
 		if (result.kind !== "target") return;
 		expect(result.descriptor.scope).toBe(expectedScope);
@@ -180,6 +180,33 @@ describe("oc-chatgpt target detection", () => {
 					hasSignals: true,
 				},
 			]);
+		}
+	});
+
+	it("keeps the canonical home root global when the home path contains a projects segment", async () => {
+		const nestedHome = join(workDir, "projects", "dev-home");
+		await fs.mkdir(nestedHome, { recursive: true });
+		process.env.HOME = nestedHome;
+		process.env.USERPROFILE = nestedHome;
+
+		const canonicalRoot = join(nestedHome, ".opencode");
+		await fs.mkdir(join(canonicalRoot, "backups"), { recursive: true });
+
+		const result = detectOcChatgptMultiAuthTarget();
+		assertTarget(result, "global", canonicalRoot);
+		if (result.kind === "target") {
+			expect(result.descriptor.source).toBe("default-global");
+		}
+	});
+
+	it("keeps explicit roots global even when their path includes the word projects", async () => {
+		const explicitRoot = join(workDir, "my-projects", ".opencode");
+		await fs.mkdir(join(explicitRoot, "backups"), { recursive: true });
+
+		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
+		assertTarget(result, "global", explicitRoot);
+		if (result.kind === "target") {
+			expect(result.descriptor.source).toBe("explicit");
 		}
 	});
 

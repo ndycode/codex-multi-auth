@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, normalize, win32 } from "node:path";
+import { join, normalize, relative, sep, win32 } from "node:path";
 import {
 	findProjectRoot,
 	getProjectStorageKey,
@@ -179,8 +179,14 @@ function hasStorageSignals(root: string): boolean {
 	);
 }
 
-function inferScopeFromRoot(root: string): OcChatgptTargetScope {
-	return root.split(/[\\/]/).includes(PROJECTS_DIR_NAME) ? "project" : "global";
+function inferScopeFromRoot(
+	root: string,
+	canonicalRoot: string,
+): OcChatgptTargetScope {
+	const relativeRoot = relative(canonicalRoot, root);
+	return relativeRoot.startsWith(`${PROJECTS_DIR_NAME}${sep}`)
+		? "project"
+		: "global";
 }
 
 export function detectOcChatgptMultiAuthTarget(options?: {
@@ -209,7 +215,7 @@ export function detectOcChatgptMultiAuthTarget(options?: {
 	);
 
 	const candidates: OcChatgptTargetCandidate[] = orderedRoots.map((root) => {
-		const inferredScope = inferScopeFromRoot(root);
+		const inferredScope = inferScopeFromRoot(root, canonicalRoot);
 		const source: OcChatgptTargetSource =
 			root === normalizedExplicitRoot
 				? "explicit"

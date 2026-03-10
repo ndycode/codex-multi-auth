@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import {
+	type AccountStorageV3,
 	buildNamedBackupPath,
 	clearAccounts,
 	deduplicateAccounts,
@@ -169,20 +170,17 @@ describe("storage", () => {
 		});
 
 		it("should export accounts to a file", async () => {
-			// @ts-expect-error - exportAccounts doesn't exist yet
 			const { exportAccounts } = await import("../lib/storage.js");
 
-			const storage = {
-				version: 3,
+			const storage: AccountStorageV3 = {
+				version: 3 as const,
 				activeIndex: 0,
 				accounts: [
 					{ accountId: "test", refreshToken: "ref", addedAt: 1, lastUsed: 2 },
 				],
 			};
-			// @ts-expect-error
 			await saveAccounts(storage);
 
-			// @ts-expect-error
 			await exportAccounts(exportPath);
 
 			expect(existsSync(exportPath)).toBe(true);
@@ -191,11 +189,9 @@ describe("storage", () => {
 		});
 
 		it("should fail export if file exists and force is false", async () => {
-			// @ts-expect-error
 			const { exportAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "exists");
 
-			// @ts-expect-error
 			await expect(exportAccounts(exportPath, false)).rejects.toThrow(
 				/already exists/,
 			);
@@ -230,11 +226,10 @@ describe("storage", () => {
 		});
 
 		it("should import accounts from a file and merge", async () => {
-			// @ts-expect-error
 			const { importAccounts } = await import("../lib/storage.js");
 
-			const existing = {
-				version: 3,
+			const existing: AccountStorageV3 = {
+				version: 3 as const,
 				activeIndex: 0,
 				accounts: [
 					{
@@ -245,11 +240,10 @@ describe("storage", () => {
 					},
 				],
 			};
-			// @ts-expect-error
 			await saveAccounts(existing);
 
-			const toImport = {
-				version: 3,
+			const toImport: AccountStorageV3 = {
+				version: 3 as const,
 				activeIndex: 0,
 				accounts: [
 					{ accountId: "new", refreshToken: "ref2", addedAt: 3, lastUsed: 4 },
@@ -257,7 +251,6 @@ describe("storage", () => {
 			};
 			await fs.writeFile(exportPath, JSON.stringify(toImport));
 
-			// @ts-expect-error
 			await importAccounts(exportPath);
 
 			const loaded = await loadAccounts();
@@ -310,7 +303,6 @@ describe("storage", () => {
 		});
 
 		it("should enforce MAX_ACCOUNTS during import", async () => {
-			// @ts-expect-error
 			const { importAccounts } = await import("../lib/storage.js");
 
 			const manyAccounts = Array.from({ length: 21 }, (_, i) => ({
@@ -320,14 +312,13 @@ describe("storage", () => {
 				lastUsed: Date.now(),
 			}));
 
-			const toImport = {
-				version: 3,
+			const toImport: AccountStorageV3 = {
+				version: 3 as const,
 				activeIndex: 0,
 				accounts: manyAccounts,
 			};
 			await fs.writeFile(exportPath, JSON.stringify(toImport));
 
-			// @ts-expect-error
 			await expect(importAccounts(exportPath)).rejects.toThrow(
 				/exceed maximum/,
 			);

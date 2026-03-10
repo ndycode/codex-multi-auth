@@ -82,6 +82,7 @@ describe("named backup export", () => {
 		"backup.rotate.snapshot",
 		"backup.tmp",
 		"backup.wal",
+		"backup.tmp.json",
 	])("rejects recovery-conflicting backup name %j", (input) => {
 		expect(() => normalizeNamedBackupFileName(input)).toThrow();
 	});
@@ -212,17 +213,26 @@ describe("named backup export", () => {
 		});
 
 		const { withAccountStorageTransaction } = await import("../lib/storage.js");
-		const backupPath = await withAccountStorageTransaction(async () =>
-			exportNamedBackupFile(
+		const backupPath = await withAccountStorageTransaction(async (current) => {
+			const account = current?.accounts[0];
+			expect(account).toBeDefined();
+			if (account) {
+				account.accountId = "acct-transaction-updated";
+			}
+			return await exportNamedBackupFile(
 				"backup-2026-03-11",
 				{
 					getStoragePath,
 					exportAccounts,
 				},
 				{ force: true },
-			),
-		);
+			);
+		});
 
 		expect(existsSync(backupPath)).toBe(true);
+		const exported = JSON.parse(await fs.readFile(backupPath, "utf-8")) as {
+			accounts: Array<{ accountId?: string }>;
+		};
+		expect(exported.accounts[0]?.accountId).toBe("acct-transaction-updated");
 	});
 });

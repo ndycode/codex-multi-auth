@@ -9,6 +9,13 @@ type MatchStrategy = "accountId" | "email" | "refreshToken";
 
 export type OcChatgptImportPayload = AccountStorageV3;
 
+export type OcChatgptPreviewPayload = {
+	version: 3;
+	activeIndex: number;
+	activeIndexByFamily?: AccountStorageV3["activeIndexByFamily"];
+	accounts: OcChatgptAccountRef[];
+};
+
 export type OcChatgptAccountRef = {
 	accountId?: string;
 	email?: string;
@@ -16,7 +23,7 @@ export type OcChatgptAccountRef = {
 };
 
 export type OcChatgptMergePreview = {
-	payload: OcChatgptImportPayload;
+	payload: OcChatgptPreviewPayload;
 	merged: AccountStorageV3;
 	toAdd: OcChatgptAccountRef[];
 	toUpdate: Array<{
@@ -103,6 +110,19 @@ function summarizeAccount(account: AccountMetadataV3): OcChatgptAccountRef {
 	};
 }
 
+function buildPreviewPayload(
+	storage: AccountStorageV3,
+): OcChatgptPreviewPayload {
+	return {
+		version: 3,
+		activeIndex: storage.activeIndex,
+		activeIndexByFamily: storage.activeIndexByFamily
+			? { ...storage.activeIndexByFamily }
+			: undefined,
+		accounts: storage.accounts.map(summarizeAccount),
+	};
+}
+
 function findNormalizedAccountIndex(
 	accounts: AccountMetadataV3[],
 	target: AccountMetadataV3 | null | undefined,
@@ -110,18 +130,24 @@ function findNormalizedAccountIndex(
 	if (!target) return null;
 	const targetAccountId = target.accountId?.trim();
 	if (targetAccountId) {
-		const idx = accounts.findIndex((account) => account.accountId?.trim() === targetAccountId);
+		const idx = accounts.findIndex(
+			(account) => account.accountId?.trim() === targetAccountId,
+		);
 		if (idx >= 0) return idx;
 	}
 	const targetEmail = normalizeEmailKey(target.email);
 	if (targetEmail) {
 		const idx = accounts.findIndex(
-			(account) => !account.accountId && normalizeEmailKey(account.email) === targetEmail,
+			(account) =>
+				!account.accountId && normalizeEmailKey(account.email) === targetEmail,
 		);
 		if (idx >= 0) return idx;
 	}
 	const idx = accounts.findIndex(
-		(account) => !account.accountId && !normalizeEmailKey(account.email) && account.refreshToken === target.refreshToken,
+		(account) =>
+			!account.accountId &&
+			!normalizeEmailKey(account.email) &&
+			account.refreshToken === target.refreshToken,
 	);
 	return idx >= 0 ? idx : null;
 }
@@ -131,10 +157,17 @@ function remapActiveIndex(
 	originalIndex: number | undefined,
 	normalizedAccounts: AccountMetadataV3[],
 ): number {
-	if (!originalAccounts || originalAccounts.length === 0) return clampIndex(0, normalizedAccounts.length);
-	const safeOriginalIndex = clampIndex(originalIndex ?? 0, originalAccounts.length);
+	if (!originalAccounts || originalAccounts.length === 0)
+		return clampIndex(0, normalizedAccounts.length);
+	const safeOriginalIndex = clampIndex(
+		originalIndex ?? 0,
+		originalAccounts.length,
+	);
 	const originalActive = originalAccounts[safeOriginalIndex];
-	const remapped = findNormalizedAccountIndex(normalizedAccounts, originalActive);
+	const remapped = findNormalizedAccountIndex(
+		normalizedAccounts,
+		originalActive,
+	);
 	if (remapped !== null) return remapped;
 	return clampIndex(safeOriginalIndex, normalizedAccounts.length);
 }
@@ -148,9 +181,15 @@ function normalizeActiveIndexByFamily(
 	if (!activeIndexByFamily) return undefined;
 	const normalized: Partial<Record<ModelFamily, number>> = {};
 	for (const family of MODEL_FAMILIES) {
-		const raw = (activeIndexByFamily as Partial<Record<ModelFamily, unknown>>)[family];
+		const raw = (activeIndexByFamily as Partial<Record<ModelFamily, unknown>>)[
+			family
+		];
 		if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
-		normalized[family] = remapActiveIndex(originalAccounts, raw, normalizedAccounts);
+		normalized[family] = remapActiveIndex(
+			originalAccounts,
+			raw,
+			normalizedAccounts,
+		);
 	}
 	return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
@@ -273,7 +312,11 @@ function normalizeStorageForTarget(
 	const { accounts, skipped } = normalizeAccountsForTarget(
 		storage?.accounts ?? [],
 	);
-	const activeIndex = remapActiveIndex(storage?.accounts, storage?.activeIndex, accounts);
+	const activeIndex = remapActiveIndex(
+		storage?.accounts,
+		storage?.activeIndex,
+		accounts,
+	);
 	const activeIndexByFamily = normalizeActiveIndexByFamily(
 		storage?.activeIndexByFamily,
 		storage?.accounts,
@@ -354,6 +397,10 @@ export function previewOcChatgptImportMerge(options: {
 	const destinationNormalized = normalizeStorageForTarget(options.destination);
 
 	const merged = cloneStorage(destinationNormalized.storage);
+	const destinationAccounts = merged.accounts.slice(
+		0,
+		destinationNormalized.storage.accounts.length,
+	);
 	const usedDestinationIndexes = new Set<number>();
 
 	const toAdd: OcChatgptAccountRef[] = [];
@@ -363,7 +410,7 @@ export function previewOcChatgptImportMerge(options: {
 	for (const account of sourceNormalized.storage.accounts) {
 		const match = matchDestination(
 			account,
-			merged.accounts,
+			destinationAccounts,
 			usedDestinationIndexes,
 		);
 		if (!match) {
@@ -406,7 +453,7 @@ export function previewOcChatgptImportMerge(options: {
 	}
 
 	return {
-		payload: sourceNormalized.storage,
+		payload: buildPreviewPayload(sourceNormalized.storage),
 		merged,
 		toAdd,
 		toUpdate,

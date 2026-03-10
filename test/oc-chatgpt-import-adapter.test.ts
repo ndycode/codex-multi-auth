@@ -86,7 +86,6 @@ describe("oc-chatgpt import adapter", () => {
 					accountId: "acc-2",
 					email: "same@example.com",
 					refreshToken: "token-two",
-					organizationId: "org-dest-2",
 					accountLabel: "Destination only",
 					addedAt: 2,
 					lastUsed: 2,
@@ -129,6 +128,23 @@ describe("oc-chatgpt import adapter", () => {
 
 		const preview = previewOcChatgptImportMerge({ source, destination });
 		expect(preview.activeSelectionBehavior).toBe("preserve-destination");
+		expect(preview.payload.accounts).toEqual([
+			{
+				accountId: "acc-1",
+				email: "same@example.com",
+				refreshTokenLast4: "-new",
+			},
+			{
+				accountId: "acc-3",
+				email: "same@example.com",
+				refreshTokenLast4: "hree",
+			},
+			{
+				accountId: undefined,
+				email: "legacy-only@example.com",
+				refreshTokenLast4: "-new",
+			},
+		]);
 		expect(preview.toAdd).toHaveLength(1);
 		expect(preview.toUpdate).toHaveLength(2);
 		expect(preview.toSkip).toHaveLength(0);
@@ -248,7 +264,6 @@ describe("oc-chatgpt import adapter", () => {
 				{
 					refreshToken: "shared-refresh-token",
 					accountLabel: "Destination winner",
-					organizationId: "org-dest",
 					addedAt: 10,
 					lastUsed: 20,
 				},
@@ -262,7 +277,6 @@ describe("oc-chatgpt import adapter", () => {
 				{
 					refreshToken: "shared-refresh-token",
 					accountLabel: "Older source",
-					organizationId: "org-source",
 					addedAt: 5,
 					lastUsed: 15,
 				},
@@ -289,22 +303,49 @@ describe("oc-chatgpt import adapter", () => {
 	});
 
 	it("records exact matchedBy counts and skip reasons for additive merge", () => {
-		const destination = {
+		const destination: AccountStorageV3 = {
 			version: 3,
 			activeIndex: 0,
 			accounts: [
-				{ accountId: "acc-1", email: "match@example.com", refreshToken: "token-old", addedAt: 1, lastUsed: 1 },
-				{ email: "dest-only@example.com", refreshToken: "dest-only", addedAt: 2, lastUsed: 2 },
+				{
+					accountId: "acc-1",
+					email: "match@example.com",
+					refreshToken: "token-old",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					email: "dest-only@example.com",
+					refreshToken: "dest-only",
+					addedAt: 2,
+					lastUsed: 2,
+				},
 			],
 		};
 
-		const source = {
+		const source: AccountStorageV3 = {
 			version: 3,
 			activeIndex: 0,
 			accounts: [
-				{ accountId: "acc-1", email: "match@example.com", refreshToken: "token-new", addedAt: 3, lastUsed: 5 },
-				{ email: "new@example.com", refreshToken: "token-add", addedAt: 4, lastUsed: 4 },
-				{ email: "bad@example.com", refreshToken: "   ", addedAt: 5, lastUsed: 5 },
+				{
+					accountId: "acc-1",
+					email: "match@example.com",
+					refreshToken: "token-new",
+					addedAt: 3,
+					lastUsed: 5,
+				},
+				{
+					email: "new@example.com",
+					refreshToken: "token-add",
+					addedAt: 4,
+					lastUsed: 4,
+				},
+				{
+					email: "bad@example.com",
+					refreshToken: "   ",
+					addedAt: 5,
+					lastUsed: 5,
+				},
 			],
 		};
 
@@ -317,5 +358,4 @@ describe("oc-chatgpt import adapter", () => {
 		expect(preview.unchangedDestinationOnly).toHaveLength(1);
 		expect(preview.activeSelectionBehavior).toBe("preserve-destination");
 	});
-
 });

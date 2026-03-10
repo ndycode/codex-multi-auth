@@ -111,6 +111,7 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 
 let storageMutex: Promise<void> = Promise.resolve();
 let storageLockDepth = 0;
+let activeTransactionStorage: AccountStorageV3 | null | undefined;
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previousMutex = storageMutex;
@@ -1318,7 +1319,16 @@ export async function withAccountStorageTransaction<T>(
 ): Promise<T> {
 	return withStorageLock(async () => {
 		const current = await loadAccountsInternal(saveAccountsUnlocked);
-		return handler(current, saveAccountsUnlocked);
+		activeTransactionStorage = current;
+		const persist = async (storage: AccountStorageV3): Promise<void> => {
+			activeTransactionStorage = storage;
+			await saveAccountsUnlocked(storage);
+		};
+		try {
+			return await handler(current, persist);
+		} finally {
+			activeTransactionStorage = undefined;
+		}
 	});
 }
 
@@ -1604,7 +1614,7 @@ export async function exportAccounts(
 
 	const storage =
 		storageLockDepth > 0
-			? await loadAccountsUnlocked()
+			? (activeTransactionStorage ?? (await loadAccountsUnlocked()))
 			: await withAccountStorageTransaction((current) =>
 					Promise.resolve(current),
 				);
@@ -1619,7 +1629,7 @@ export async function exportAccounts(
 	const tempPath = `${resolvedPath}.${uniqueSuffix}.tmp`;
 	try {
 		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-		await fs.rename(tempPath, resolvedPath);
+		await renameFileWithRetry(tempPath, resolvedPath);
 	} catch (error) {
 		try {
 			await fs.unlink(tempPath);

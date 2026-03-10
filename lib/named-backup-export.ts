@@ -45,9 +45,6 @@ export function normalizeNamedBackupFileName(name: string): string {
 	if (BACKUP_PROHIBITED_SUBSTRINGS.some((value) => lower.includes(value))) {
 		throw new Error("Backup filename may not contain rotation-style sequences");
 	}
-	if (BACKUP_INVALID_SUFFIXES.some((value) => lower.endsWith(value))) {
-		throw new Error("Backup filename may not end with temporary suffixes");
-	}
 
 	const hasJsonExtension = lower.endsWith(BACKUP_FILE_EXTENSION);
 	const baseName = hasJsonExtension
@@ -55,6 +52,10 @@ export function normalizeNamedBackupFileName(name: string): string {
 		: trimmed;
 	if (baseName.length === 0) {
 		throw new Error("Backup filename cannot be just an extension");
+	}
+	const baseLower = baseName.toLowerCase();
+	if (BACKUP_INVALID_SUFFIXES.some((value) => baseLower.endsWith(value))) {
+		throw new Error("Backup filename may not end with temporary suffixes");
 	}
 	if (!BACKUP_SAFE_NAME_REGEX.test(baseName)) {
 		throw new Error(
