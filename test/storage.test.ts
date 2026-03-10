@@ -638,10 +638,12 @@ describe("storage", () => {
       await fs.rm(testWorkDir, { recursive: true, force: true });
     });
 
-    it("returns null when file does not exist", async () => {
-      const result = await loadAccounts();
-      expect(result).toBeNull();
-    });
+		it("returns null when file does not exist", async () => {
+			const result = await loadAccounts();
+			expect(result?.accounts).toHaveLength(0);
+			expect(result?.restoreEligible).toBe(true);
+			expect(result?.restoreReason).toBe("missing-storage");
+		});
 
     it("returns null on parse error", async () => {
       await fs.writeFile(testStoragePath, "not valid json{{{", "utf-8");
@@ -1060,6 +1062,37 @@ describe("storage", () => {
       expect(existsSync(legacyStoragePath)).toBe(false);
       expect(existsSync(getStoragePath())).toBe(true);
     });
+
+		it("migrates populated fallback root only after canonical write succeeds", async () => {
+			const fakeHome = join(testWorkDir, "home-fallback");
+			const canonicalPath = join(fakeHome, ".codex", "multi-auth", "openai-codex-accounts.json");
+			const fallbackPath = join(fakeHome, "DevTools", "config", "codex", "multi-auth", "openai-codex-accounts.json");
+
+			await fs.mkdir(dirname(fallbackPath), { recursive: true });
+			await fs.writeFile(
+				fallbackPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							refreshToken: "fallback-refresh",
+							accountId: "fallback-account",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			setStoragePathDirect(canonicalPath);
+			const loaded = await loadAccounts();
+
+			expect(loaded?.accounts?.[0]?.accountId).toBe("fallback-account");
+			expect(existsSync(canonicalPath)).toBe(true);
+			expect(existsSync(fallbackPath)).toBe(false);
+		});
   });
 
   describe("worktree-scoped storage migration", () => {
@@ -1830,14 +1863,14 @@ describe("storage", () => {
       expect(existsSync(`${storagePath}.bak.2`)).toBe(true);
       expect(existsSync(`${storagePath}.wal`)).toBe(true);
 
-      await clearAccounts();
+		await clearAccounts();
 
-      expect(existsSync(storagePath)).toBe(false);
-      expect(existsSync(`${storagePath}.bak`)).toBe(false);
-      expect(existsSync(`${storagePath}.bak.1`)).toBe(false);
-      expect(existsSync(`${storagePath}.bak.2`)).toBe(false);
-      expect(existsSync(`${storagePath}.wal`)).toBe(false);
-    });
+		expect(existsSync(storagePath)).toBe(false);
+		expect(existsSync(`${storagePath}.bak`)).toBe(true);
+		expect(existsSync(`${storagePath}.bak.1`)).toBe(true);
+		expect(existsSync(`${storagePath}.bak.2`)).toBe(true);
+		expect(existsSync(`${storagePath}.wal`)).toBe(true);
+	});
 
     it("logs error for non-ENOENT errors during clear", async () => {
       const unlinkSpy = vi.spyOn(fs, "unlink").mockRejectedValue(

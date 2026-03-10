@@ -5,10 +5,24 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
 	loadAccounts,
+	getBackupMetadata,
 	saveAccounts,
 	setStorageBackupEnabled,
 	setStoragePathDirect,
+	clearAccounts,
+	getRestoreAssessment,
 } from "../lib/storage.js";
+
+function getRestoreEligibility(value: unknown): { restoreEligible?: boolean; restoreReason?: string } {
+	if (value && typeof value === "object" && "restoreEligible" in value) {
+		const candidate = value as { restoreEligible?: unknown; restoreReason?: unknown };
+		return {
+			restoreEligible: typeof candidate.restoreEligible === "boolean" ? candidate.restoreEligible : undefined,
+			restoreReason: typeof candidate.restoreReason === "string" ? candidate.restoreReason : undefined,
+		};
+	}
+	return {};
+}
 
 function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
@@ -326,6 +340,180 @@ describe("storage recovery paths", () => {
 		expect(persisted.accounts?.[0]?.email).toBe("realuser@gmail.com");
 	});
 
+	it("surfaces restore eligibility when account pool is missing", async () => {
+		await fs.rm(storagePath, { force: true });
+
+		const recovered = await loadAccounts();
+		const eligibility = getRestoreEligibility(recovered);
+
+		expect(eligibility.restoreEligible).toBe(true);
+		expect(eligibility.restoreReason).toBe("missing-storage");
+	});
+
+	it("surfaces restore eligibility when account pool is empty", async () => {
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+
+		const recovered = await loadAccounts();
+		const eligibility = getRestoreEligibility(recovered);
+
+		expect(eligibility.restoreEligible).toBe(true);
+		expect(eligibility.restoreReason).toBe("empty-storage");
+	});
+
+	it("suppresses restore eligibility after intentional reset but flags unexpected empty state", async () => {
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "token-reset",
+					accountId: "reset-account",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await clearAccounts();
+		const afterIntentionalReset = await loadAccounts();
+		const intentionalEligibility = getRestoreEligibility(afterIntentionalReset);
+		expect(intentionalEligibility.restoreEligible).toBe(false);
+
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+		const afterAccidentalEmpty = await loadAccounts();
+		const accidentalEligibility = getRestoreEligibility(afterAccidentalEmpty);
+		expect(accidentalEligibility.restoreEligible).toBe(true);
+	});
+
+	it("assesses restore state with latest snapshot metadata", async () => {
+		const backupPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "backup-refresh",
+					accountId: "from-backup",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		await fs.writeFile(`${storagePath}.bak`, JSON.stringify(backupPayload), "utf-8");
+
+		const assessment = await getRestoreAssessment();
+
+		expect(assessment.restoreEligible).toBe(true);
+		expect(assessment.restoreReason).toBe("missing-storage");
+		expect(assessment.latestSnapshot?.path).toBe(`${storagePath}.bak`);
+		expect(assessment.backupMetadata.accounts.latestValidPath).toBe(`${storagePath}.bak`);
+	});
+
+	it("ignores Codex CLI mirror files during restore assessment", async () => {
+		const codexCliAccountsPath = join(workDir, "accounts.json");
+		const codexCliAuthPath = join(workDir, "auth.json");
+		await fs.writeFile(
+			codexCliAccountsPath,
+			JSON.stringify({
+				activeAccountId: "mirror-account",
+				accounts: [
+					{
+						accountId: "mirror-account",
+						email: "mirror@example.com",
+						auth: {
+							tokens: {
+								access_token: "mirror-access",
+								refresh_token: "mirror-refresh",
+							},
+						},
+					},
+				],
+			}),
+			"utf-8",
+		);
+		await fs.writeFile(
+			codexCliAuthPath,
+			JSON.stringify({
+				auth_mode: "chatgpt",
+				tokens: {
+					access_token: "mirror-access",
+					refresh_token: "mirror-refresh",
+					account_id: "mirror-account",
+				},
+			}),
+			"utf-8",
+		);
+
+		const recovered = await loadAccounts();
+		const eligibility = getRestoreEligibility(recovered);
+		expect(recovered?.accounts).toHaveLength(0);
+		expect(eligibility.restoreEligible).toBe(true);
+		expect(eligibility.restoreReason).toBe("missing-storage");
+
+		const assessment = await getRestoreAssessment();
+		expect(assessment.restoreEligible).toBe(true);
+		expect(assessment.restoreReason).toBe("missing-storage");
+		expect(assessment.latestSnapshot).toBeUndefined();
+		expect(assessment.backupMetadata.accounts.latestValidPath).toBeUndefined();
+		expect(
+			assessment.backupMetadata.accounts.snapshots.some(
+				(snapshot) => snapshot.path === codexCliAccountsPath || snapshot.path === codexCliAuthPath,
+			),
+		).toBe(false);
+	});
+
+	it("returns restore eligibility and snapshot when storage is empty", async () => {
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+
+		const assessment = await getRestoreAssessment();
+
+		expect(assessment.restoreEligible).toBe(true);
+		expect(assessment.restoreReason).toBe("empty-storage");
+		expect(assessment.latestSnapshot?.path).toBe(storagePath);
+	});
+
+	it("suppresses restore once after intentional reset marker", async () => {
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "token-reset",
+					accountId: "reset-account",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await clearAccounts();
+
+		const suppressed = await getRestoreAssessment();
+		expect(suppressed.restoreEligible).toBe(false);
+		expect(suppressed.restoreReason).toBe("intentional-reset");
+
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+
+		const eligibleAfterReset = await getRestoreAssessment();
+		expect(eligibleAfterReset.restoreEligible).toBe(true);
+		expect(eligibleAfterReset.restoreReason).toBe("empty-storage");
+	});
+
 	it("cleans up stale staged backup artifacts during load", async () => {
 		await fs.writeFile(
 			storagePath,
@@ -375,6 +563,78 @@ describe("storage recovery paths", () => {
 
 		const recovered = await loadAccounts();
 		expect(recovered).toBeNull();
+	});
+
+	it("exposes snapshot metadata and ignores cache-like artifacts", async () => {
+		await fs.writeFile(storagePath, "{invalid-json", "utf-8");
+
+		const walPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "wal-refresh-meta",
+					accountId: "wal-account",
+					addedAt: 10,
+					lastUsed: 10,
+				},
+			],
+		};
+		const walContent = JSON.stringify(walPayload);
+		const walEntry = {
+			version: 1,
+			createdAt: Date.now(),
+			path: storagePath,
+			checksum: sha256(walContent),
+			content: walContent,
+		};
+		await fs.writeFile(`${storagePath}.wal`, JSON.stringify(walEntry), "utf-8");
+
+		await fs.writeFile(
+			`${storagePath}.bak`,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "bak-refresh-meta",
+						accountId: "bak-account",
+						addedAt: 5,
+						lastUsed: 5,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		await fs.writeFile(`${storagePath}.cache`, "noise", "utf-8");
+		await fs.writeFile(
+			`${storagePath}.manual-meta-checkpoint`,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "manual-refresh-meta",
+						accountId: "manual-account",
+						addedAt: 7,
+						lastUsed: 7,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const metadata = await getBackupMetadata();
+		const accountSnapshots = metadata.accounts.snapshots;
+		const cacheEntries = accountSnapshots.filter((snapshot) => snapshot.path.endsWith(".cache"));
+		expect(cacheEntries).toHaveLength(0);
+		expect(metadata.accounts.latestValidPath).toBe(`${storagePath}.wal`);
+		const discovered = accountSnapshots.find((snapshot) => snapshot.path.endsWith("manual-meta-checkpoint"));
+		expect(discovered?.kind).toBe("accounts-discovered-backup");
+		expect(discovered?.valid).toBe(true);
+		expect(discovered?.accountCount).toBe(1);
+		expect(metadata.accounts.snapshotCount).toBeGreaterThanOrEqual(4);
 	});
 });
 
