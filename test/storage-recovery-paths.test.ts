@@ -384,11 +384,7 @@ describe("storage recovery paths", () => {
 		const intentionalEligibility = getRestoreEligibility(afterIntentionalReset);
 		expect(intentionalEligibility.restoreEligible).toBe(false);
 
-		await fs.writeFile(
-			storagePath,
-			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
-			"utf-8",
-		);
+		await saveAccounts({ version: 3, activeIndex: 0, accounts: [] });
 		const afterAccidentalEmpty = await loadAccounts();
 		const accidentalEligibility = getRestoreEligibility(afterAccidentalEmpty);
 		expect(accidentalEligibility.restoreEligible).toBe(true);
@@ -504,11 +500,7 @@ describe("storage recovery paths", () => {
 		expect(suppressed.restoreEligible).toBe(false);
 		expect(suppressed.restoreReason).toBe("intentional-reset");
 
-		await fs.writeFile(
-			storagePath,
-			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
-			"utf-8",
-		);
+		await saveAccounts({ version: 3, activeIndex: 0, accounts: [] });
 
 		const eligibleAfterReset = await getRestoreAssessment();
 		expect(eligibleAfterReset.restoreEligible).toBe(true);

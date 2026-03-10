@@ -639,7 +639,7 @@ describe("storage", () => {
       await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
-		it("returns null when file does not exist", async () => {
+		it("returns restore-suppressed empty state when file does not exist", async () => {
 			const result = await loadAccounts();
 			expect(result?.accounts).toHaveLength(0);
 			expect(result?.restoreEligible).toBe(true);
@@ -855,6 +855,57 @@ describe("storage", () => {
       setStoragePathDirect(null);
       const path = getStoragePath();
       expect(path).toContain("openai-codex-accounts.json");
+    });
+  });
+
+  describe("fallback migration scoping", () => {
+    const testWorkDir = join(tmpdir(), "codex-fallback-scope-" + Math.random().toString(36).slice(2));
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+
+    beforeEach(async () => {
+      await fs.mkdir(testWorkDir, { recursive: true });
+      process.env.HOME = testWorkDir;
+      process.env.USERPROFILE = testWorkDir;
+    });
+
+    afterEach(async () => {
+      setStoragePathDirect(null);
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
+    });
+
+    it("does not migrate global fallback storage into project-scoped storage", async () => {
+      const projectDir = join(testWorkDir, "project-scope");
+      const globalFallbackPath = join(testWorkDir, ".codex", "openai-codex-accounts.json");
+      await fs.mkdir(projectDir, { recursive: true });
+      await fs.mkdir(join(projectDir, ".git"), { recursive: true });
+      await fs.mkdir(dirname(globalFallbackPath), { recursive: true });
+      await fs.writeFile(
+        globalFallbackPath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "global-refresh",
+              accountId: "global-account",
+              addedAt: 1,
+              lastUsed: 1,
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      setStoragePath(projectDir);
+      const result = await loadAccounts();
+
+      expect(result?.accounts).toHaveLength(0);
+      expect(existsSync(globalFallbackPath)).toBe(true);
     });
   });
 
@@ -1866,7 +1917,7 @@ describe("storage", () => {
   });
 
   describe("clearAccounts edge cases", () => {
-    it("removes primary, backup, and wal artifacts", async () => {
+    it("removes primary and wal artifacts while preserving backups", async () => {
       const now = Date.now();
       const storage = {
         version: 3 as const,
