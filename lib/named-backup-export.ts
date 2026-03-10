@@ -59,7 +59,7 @@ export function normalizeNamedBackupFileName(name: string): string {
 	}
 	if (!BACKUP_SAFE_NAME_REGEX.test(baseName)) {
 		throw new Error(
-			"Backup filename may only contain letters, numbers, hyphens, and underscores",
+			"Backup filename may only contain letters, numbers, hyphens, and underscores; dots (.) are not allowed",
 		);
 	}
 

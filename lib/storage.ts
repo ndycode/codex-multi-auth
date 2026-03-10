@@ -1565,7 +1565,7 @@ export async function saveFlaggedAccounts(
 			await fs.mkdir(dirname(path), { recursive: true });
 			const content = JSON.stringify(normalizeFlaggedStorage(storage), null, 2);
 			await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-			await fs.rename(tempPath, path);
+			await renameFileWithRetry(tempPath, path);
 		} catch (error) {
 			try {
 				await fs.unlink(tempPath);
@@ -1613,8 +1613,8 @@ export async function exportAccounts(
 	}
 
 	const storage =
-		storageLockDepth > 0
-			? (activeTransactionStorage ?? (await loadAccountsUnlocked()))
+		activeTransactionStorage !== undefined
+			? activeTransactionStorage
 			: await withAccountStorageTransaction((current) =>
 					Promise.resolve(current),
 				);

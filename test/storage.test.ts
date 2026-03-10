@@ -23,6 +23,29 @@ import {
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
 
+async function removeWithRetry(
+	targetPath: string,
+	attempts = 6,
+): Promise<void> {
+	for (let attempt = 0; attempt < attempts; attempt += 1) {
+		try {
+			await fs.rm(targetPath, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			const retryable =
+				code === "EBUSY" ||
+				code === "EPERM" ||
+				code === "ENOTEMPTY" ||
+				code === "EACCES";
+			if (!retryable || attempt + 1 >= attempts) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+		}
+	}
+}
+
 // Mocking the behavior we're about to implement for TDD
 // Since the functions aren't in lib/storage.ts yet, we'll need to mock them or
 // accept that this test won't even compile/run until we add them.
@@ -166,7 +189,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 		});
 
 		it("should export accounts to a file", async () => {
@@ -892,7 +915,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 		});
 
 		it("returns null when file does not exist", async () => {
@@ -994,7 +1017,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 		});
 
 		it("creates directory and saves file", async () => {
@@ -1044,7 +1067,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 		});
 
 		it("deletes the file when it exists", async () => {
@@ -1129,7 +1152,7 @@ describe("storage", () => {
 				else process.env.HOME = originalHome;
 				if (originalUserProfile === undefined) delete process.env.USERPROFILE;
 				else process.env.USERPROFILE = originalUserProfile;
-				await fs.rm(testWorkDir, { recursive: true, force: true });
+				await removeWithRetry(testWorkDir);
 			}
 		});
 	});
@@ -1206,7 +1229,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 		});
 
 		it("logs but does not throw on non-ENOENT errors", async () => {
@@ -1267,7 +1290,7 @@ describe("storage", () => {
 			else process.env.HOME = originalHome;
 			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
 			else process.env.USERPROFILE = originalUserProfile;
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 		});
 
 		it("writes .gitignore in project root when storage path is externalized", async () => {
@@ -1384,7 +1407,7 @@ describe("storage", () => {
 			else process.env.HOME = originalHome;
 			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
 			else process.env.USERPROFILE = originalUserProfile;
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 		});
 
 		it("removes legacy project storage file after successful migration", async () => {
@@ -1543,7 +1566,7 @@ describe("storage", () => {
 			if (originalMultiAuthDir === undefined)
 				delete process.env.CODEX_MULTI_AUTH_DIR;
 			else process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 			vi.restoreAllMocks();
 		});
 
@@ -1856,7 +1879,7 @@ describe("storage", () => {
 		afterEach(async () => {
 			vi.useRealTimers();
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir);
 		});
 
 		it("retries on EPERM and succeeds on second attempt", async () => {

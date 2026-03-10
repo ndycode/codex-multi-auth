@@ -176,7 +176,6 @@ function normalizeActiveIndexByFamily(
 	activeIndexByFamily: AccountStorageV3["activeIndexByFamily"],
 	originalAccounts: AccountMetadataV3[] | undefined,
 	normalizedAccounts: AccountMetadataV3[],
-	defaultIndex: number,
 ): AccountStorageV3["activeIndexByFamily"] {
 	if (!activeIndexByFamily) return undefined;
 	const normalized: Partial<Record<ModelFamily, number>> = {};
@@ -321,7 +320,6 @@ function normalizeStorageForTarget(
 		storage?.activeIndexByFamily,
 		storage?.accounts,
 		accounts,
-		activeIndex,
 	);
 	return {
 		storage: {

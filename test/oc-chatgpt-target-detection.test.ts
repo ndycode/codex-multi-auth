@@ -200,7 +200,13 @@ describe("oc-chatgpt target detection", () => {
 	});
 
 	it("keeps explicit roots global even when their path includes the word projects", async () => {
-		const explicitRoot = join(workDir, "my-projects", ".opencode");
+		const explicitRoot = join(
+			workDir,
+			"custom-root",
+			"projects",
+			"manual",
+			".opencode",
+		);
 		await fs.mkdir(join(explicitRoot, "backups"), { recursive: true });
 
 		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
