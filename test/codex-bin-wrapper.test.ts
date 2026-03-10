@@ -74,6 +74,12 @@ function createFakeCodexBin(rootDir: string): string {
 	return fakeBin;
 }
 
+function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
+	const fakeBin = join(rootDir, `fake-codex-${createdDirs.length}.js`);
+	writeFileSync(fakeBin, lines.join("\n"), "utf8");
+	return fakeBin;
+}
+
 function runWrapper(
 	fixtureRoot: string,
 	args: string[],
@@ -224,6 +230,43 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:exec status");
 		expect(result.stdout).not.toContain('cli_auth_credentials_store="file"');
+	});
+
+	it("does not double-inject file auth store when caller already set it", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "-c", 'cli_auth_credentials_store="keychain"'],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="keychain"',
+		);
+		expect(
+			result.stdout.match(/cli_auth_credentials_store=/g) ?? [],
+		).toHaveLength(1);
+	});
+
+	it("propagates downstream file-store write errors from forwarded wrapper execution", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const forwarded = process.argv.slice(2);",
+			"if (!forwarded.includes('cli_auth_credentials_store=\"file\"')) process.exit(99);",
+			'process.stderr.write("EPERM: locked auth store\\n");',
+			"process.exit(13);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(13);
+		expect(combinedOutput(result)).toContain("EPERM: locked auth store");
 	});
 
 	it("installs Windows codex shell guards to survive shim takeover", () => {
