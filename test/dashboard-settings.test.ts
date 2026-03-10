@@ -138,6 +138,10 @@ describe("dashboard settings", () => {
 
 		await saveDashboardDisplaySettings({
 			showPerAccountRows: false,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
 			menuShowLastUsed: false,
 			uiThemePreset: "blue",
 		});
@@ -253,7 +257,7 @@ describe("dashboard settings", () => {
 		const loaded = await loadDashboardDisplaySettings();
 		expect(loaded.showPerAccountRows).toBe(false);
 		expect(loaded.menuShowQuotaSummary).toBe(false);
-		expect(readSpy).toHaveBeenCalled();
+		expect(readSpy).toHaveBeenCalledTimes(2);
 		readSpy.mockRestore();
 	});
 
@@ -385,105 +389,82 @@ describe("dashboard settings", () => {
 		expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
 	});
 	it("uses hard fallback literals when optional defaults are undefined", async () => {
+		vi.resetModules();
+		vi.doMock("../lib/dashboard-settings.js", async () => {
+			const actual = await vi.importActual<
+				typeof import("../lib/dashboard-settings.js")
+			>("../lib/dashboard-settings.js");
+			return {
+				...actual,
+				DEFAULT_DASHBOARD_DISPLAY_SETTINGS: {
+					...actual.DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+					actionAutoReturnMs: undefined,
+					actionPauseOnKey: undefined,
+					menuAutoFetchLimits: undefined,
+					menuSortEnabled: undefined,
+					menuSortMode: undefined,
+					menuSortPinCurrent: undefined,
+					menuSortQuickSwitchVisibleRow: undefined,
+					menuShowStatusBadge: undefined,
+					menuShowCurrentBadge: undefined,
+					menuShowLastUsed: undefined,
+					menuShowQuotaSummary: undefined,
+					menuShowQuotaCooldown: undefined,
+					menuShowFetchStatus: undefined,
+					menuQuotaTtlMs: undefined,
+					menuHighlightCurrentRow: undefined,
+					menuStatuslineFields: undefined,
+				},
+			};
+		});
+
 		const dashboardModule = await import("../lib/dashboard-settings.js");
-		const defaults = dashboardModule.DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
-		const original = {
-			actionAutoReturnMs: defaults.actionAutoReturnMs,
-			actionPauseOnKey: defaults.actionPauseOnKey,
-			menuAutoFetchLimits: defaults.menuAutoFetchLimits,
-			menuSortEnabled: defaults.menuSortEnabled,
-			menuSortMode: defaults.menuSortMode,
-			menuSortPinCurrent: defaults.menuSortPinCurrent,
-			menuSortQuickSwitchVisibleRow: defaults.menuSortQuickSwitchVisibleRow,
-			menuShowStatusBadge: defaults.menuShowStatusBadge,
-			menuShowCurrentBadge: defaults.menuShowCurrentBadge,
-			menuShowLastUsed: defaults.menuShowLastUsed,
-			menuShowQuotaSummary: defaults.menuShowQuotaSummary,
-			menuShowQuotaCooldown: defaults.menuShowQuotaCooldown,
-			menuShowFetchStatus: defaults.menuShowFetchStatus,
-			menuQuotaTtlMs: defaults.menuQuotaTtlMs,
-			menuHighlightCurrentRow: defaults.menuHighlightCurrentRow,
-			menuStatuslineFields: defaults.menuStatuslineFields,
-		};
+		const normalized = dashboardModule.normalizeDashboardDisplaySettings({
+			actionAutoReturnMs: "bad",
+			actionPauseOnKey: "bad",
+			menuAutoFetchLimits: "bad",
+			menuSortEnabled: "bad",
+			menuSortMode: "bad",
+			menuSortPinCurrent: "bad",
+			menuSortQuickSwitchVisibleRow: "bad",
+			menuShowStatusBadge: "bad",
+			menuShowCurrentBadge: "bad",
+			menuShowLastUsed: "bad",
+			menuShowQuotaSummary: "bad",
+			menuShowQuotaCooldown: "bad",
+			menuShowFetchStatus: "bad",
+			menuQuotaTtlMs: "bad",
+			menuHighlightCurrentRow: "bad",
+			uiAccentColor: "blue",
+			menuStatuslineFields: "not-array",
+		});
 
-		defaults.actionAutoReturnMs = undefined;
-		defaults.actionPauseOnKey = undefined;
-		defaults.menuAutoFetchLimits = undefined;
-		defaults.menuSortEnabled = undefined;
-		defaults.menuSortMode = undefined;
-		defaults.menuSortPinCurrent = undefined;
-		defaults.menuSortQuickSwitchVisibleRow = undefined;
-		defaults.menuShowStatusBadge = undefined;
-		defaults.menuShowCurrentBadge = undefined;
-		defaults.menuShowLastUsed = undefined;
-		defaults.menuShowQuotaSummary = undefined;
-		defaults.menuShowQuotaCooldown = undefined;
-		defaults.menuShowFetchStatus = undefined;
-		defaults.menuQuotaTtlMs = undefined;
-		defaults.menuHighlightCurrentRow = undefined;
-		defaults.menuStatuslineFields = undefined;
-
-		try {
-			const normalized = dashboardModule.normalizeDashboardDisplaySettings({
-				actionAutoReturnMs: "bad",
-				actionPauseOnKey: "bad",
-				menuAutoFetchLimits: "bad",
-				menuSortEnabled: "bad",
-				menuSortMode: "bad",
-				menuSortPinCurrent: "bad",
-				menuSortQuickSwitchVisibleRow: "bad",
-				menuShowStatusBadge: "bad",
-				menuShowCurrentBadge: "bad",
-				menuShowLastUsed: "bad",
-				menuShowQuotaSummary: "bad",
-				menuShowQuotaCooldown: "bad",
-				menuShowFetchStatus: "bad",
-				menuQuotaTtlMs: "bad",
-				menuHighlightCurrentRow: "bad",
-				uiAccentColor: "blue",
-				menuStatuslineFields: "not-array",
-			});
-
-			expect(normalized.actionAutoReturnMs).toBe(2_000);
-			expect(normalized.actionPauseOnKey).toBe(true);
-			expect(normalized.menuAutoFetchLimits).toBe(true);
-			expect(normalized.menuSortEnabled).toBe(false);
-			expect(normalized.menuSortMode).toBe("ready-first");
-			expect(normalized.menuSortPinCurrent).toBe(true);
-			expect(normalized.menuSortQuickSwitchVisibleRow).toBe(true);
-			expect(normalized.menuShowStatusBadge).toBe(true);
-			expect(normalized.menuShowCurrentBadge).toBe(true);
-			expect(normalized.menuShowLastUsed).toBe(true);
-			expect(normalized.menuShowQuotaSummary).toBe(true);
-			expect(normalized.menuShowQuotaCooldown).toBe(true);
-			expect(normalized.menuShowFetchStatus).toBe(true);
-			expect(normalized.menuQuotaTtlMs).toBe(300_000);
-			expect(normalized.menuHighlightCurrentRow).toBe(true);
-			expect(normalized.menuStatuslineFields).toEqual([]);
-			expect(normalized.uiAccentColor).toBe("blue");
-		} finally {
-			defaults.actionAutoReturnMs = original.actionAutoReturnMs;
-			defaults.actionPauseOnKey = original.actionPauseOnKey;
-			defaults.menuAutoFetchLimits = original.menuAutoFetchLimits;
-			defaults.menuSortEnabled = original.menuSortEnabled;
-			defaults.menuSortMode = original.menuSortMode;
-			defaults.menuSortPinCurrent = original.menuSortPinCurrent;
-			defaults.menuSortQuickSwitchVisibleRow =
-				original.menuSortQuickSwitchVisibleRow;
-			defaults.menuShowStatusBadge = original.menuShowStatusBadge;
-			defaults.menuShowCurrentBadge = original.menuShowCurrentBadge;
-			defaults.menuShowLastUsed = original.menuShowLastUsed;
-			defaults.menuShowQuotaSummary = original.menuShowQuotaSummary;
-			defaults.menuShowQuotaCooldown = original.menuShowQuotaCooldown;
-			defaults.menuShowFetchStatus = original.menuShowFetchStatus;
-			defaults.menuQuotaTtlMs = original.menuQuotaTtlMs;
-			defaults.menuHighlightCurrentRow = original.menuHighlightCurrentRow;
-			defaults.menuStatuslineFields = original.menuStatuslineFields;
-		}
+		expect(normalized.actionAutoReturnMs).toBe(2_000);
+		expect(normalized.actionPauseOnKey).toBe(true);
+		expect(normalized.menuAutoFetchLimits).toBe(true);
+		expect(normalized.menuSortEnabled).toBe(true);
+		expect(normalized.menuSortMode).toBe("ready-first");
+		expect(normalized.menuSortPinCurrent).toBe(false);
+		expect(normalized.menuSortQuickSwitchVisibleRow).toBe(true);
+		expect(normalized.menuShowStatusBadge).toBe(true);
+		expect(normalized.menuShowCurrentBadge).toBe(true);
+		expect(normalized.menuShowLastUsed).toBe(true);
+		expect(normalized.menuShowQuotaSummary).toBe(true);
+		expect(normalized.menuShowQuotaCooldown).toBe(true);
+		expect(normalized.menuShowFetchStatus).toBe(true);
+		expect(normalized.menuQuotaTtlMs).toBe(300_000);
+		expect(normalized.menuHighlightCurrentRow).toBe(true);
+		expect(normalized.menuStatuslineFields).toEqual([
+			"last-used",
+			"limits",
+			"status",
+		]);
+		expect(normalized.uiAccentColor).toBe("blue");
 	});
 
 	it("logs stringified legacy read failures thrown as non-Error values", async () => {
 		vi.resetModules();
+		vi.doUnmock("../lib/dashboard-settings.js");
 		const warnMock = vi.fn();
 		vi.doMock("../lib/logger.js", () => ({
 			logWarn: warnMock,
