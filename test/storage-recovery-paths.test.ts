@@ -3,6 +3,7 @@ import { promises as fs, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
 	loadAccounts,
 	getBackupMetadata,
@@ -12,29 +13,6 @@ import {
 	clearAccounts,
 	getRestoreAssessment,
 } from "../lib/storage.js";
-
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
-
-async function removeWithRetry(
-	targetPath: string,
-	options: { recursive?: boolean; force?: boolean },
-): Promise<void> {
-	for (let attempt = 0; attempt < 6; attempt += 1) {
-		try {
-			await fs.rm(targetPath, options);
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				return;
-			}
-			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
-				throw error;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
-		}
-	}
-}
 
 function getRestoreEligibility(value: unknown): { restoreEligible?: boolean; restoreReason?: string } {
 	if (value && typeof value === "object" && "restoreEligible" in value) {
@@ -570,6 +548,30 @@ describe("storage recovery paths", () => {
 		const reloaded = await loadAccounts();
 		expect(reloaded?.accounts).toHaveLength(0);
 		expect(getRestoreEligibility(reloaded).restoreReason).toBe("intentional-reset");
+	});
+
+	it("excludes reset markers from discovered backup metadata", async () => {
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "marker-refresh",
+					accountId: "marker-account",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await clearAccounts();
+
+		const metadata = await getBackupMetadata();
+		expect(
+			metadata.accounts.snapshots.some((snapshot) =>
+				snapshot.path.endsWith(".reset-intent"),
+			),
+		).toBe(false);
 	});
 
 	it("cleans up stale staged backup artifacts during load", async () => {
