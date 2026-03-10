@@ -526,6 +526,48 @@ describe("oc-chatgpt orchestrator", () => {
 		}
 	});
 
+	it("unlinks temp apply files when all rename retries are exhausted", async () => {
+		const renameError = Object.assign(new Error("busy"), { code: "EBUSY" });
+		const writeFile = vi
+			.spyOn(fs, "writeFile")
+			.mockResolvedValue(undefined as never);
+		const rename = vi
+			.spyOn(fs, "rename")
+			.mockRejectedValue(renameError as never);
+		const mkdir = vi.spyOn(fs, "mkdir").mockResolvedValue(undefined as never);
+		const unlink = vi.spyOn(fs, "unlink").mockResolvedValue(undefined as never);
+
+		try {
+			const result = await applyOcChatgptSync({
+				source: sourceStorage,
+				destination: destinationStorage,
+				dependencies: {
+					detectTarget: () => ({
+						kind: "target",
+						descriptor: {
+							scope: "global",
+							root: "C:/target",
+							accountPath: "C:/target/openai-codex-accounts.json",
+							backupRoot: "C:/target/backups",
+							source: "default-global",
+							resolution: "accounts",
+						},
+					}),
+				},
+			});
+
+			expect(result.kind).toBe("error");
+			expect(rename).toHaveBeenCalledTimes(5);
+			expect(unlink).toHaveBeenCalledOnce();
+			expect(unlink).toHaveBeenCalledWith(expect.stringMatching(/\.tmp$/));
+		} finally {
+			writeFile.mockRestore();
+			rename.mockRestore();
+			mkdir.mockRestore();
+			unlink.mockRestore();
+		}
+	});
+
 	it("preserves the original apply error when recovery detection returns blocked", async () => {
 		const loadError = Object.assign(new Error("EACCES: permission denied"), {
 			code: "EACCES",

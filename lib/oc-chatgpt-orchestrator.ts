@@ -127,7 +127,7 @@ type ApplyDependencies = PlanDependencies & {
 	persistMerged?: (
 		target: OcChatgptTargetDescriptor,
 		merged: AccountStorageV3,
-	) => Promise<string | void>;
+	) => Promise<string | undefined>;
 };
 
 export type ApplyOcChatgptSyncOptions = {
@@ -145,7 +145,7 @@ export type OcChatgptSyncApplyResult =
 			preview: OcChatgptMergePreview;
 			merged: AccountStorageV3;
 			destination: AccountStorageV3 | null;
-			persistedPath?: string | void;
+			persistedPath?: string;
 	  }
 	| {
 			kind: "error";
