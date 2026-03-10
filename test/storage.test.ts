@@ -201,6 +201,34 @@ describe("storage", () => {
 			);
 		});
 
+		it("clears the primary storage even when backup discovery fails", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref1",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockRejectedValueOnce(
+					Object.assign(new Error("discovery failed"), { code: "EACCES" }),
+				);
+
+			try {
+				await clearAccounts();
+				expect(existsSync(testStoragePath)).toBe(false);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
 		it("should import accounts from a file and merge", async () => {
 			// @ts-expect-error
 			const { importAccounts } = await import("../lib/storage.js");

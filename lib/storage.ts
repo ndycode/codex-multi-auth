@@ -110,6 +110,7 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
+let storageLockDepth = 0;
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previousMutex = storageMutex;
@@ -117,7 +118,16 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	storageMutex = new Promise<void>((resolve) => {
 		releaseLock = resolve;
 	});
-	return previousMutex.then(fn).finally(() => releaseLock());
+	return previousMutex
+		.then(async () => {
+			storageLockDepth += 1;
+			try {
+				return await fn();
+			} finally {
+				storageLockDepth -= 1;
+			}
+		})
+		.finally(() => releaseLock());
 }
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
@@ -1296,6 +1306,10 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	}
 }
 
+async function loadAccountsUnlocked(): Promise<AccountStorageV3 | null> {
+	return loadAccountsInternal(saveAccountsUnlocked);
+}
+
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -1329,8 +1343,16 @@ export async function clearAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getStoragePath();
 		const walPath = getAccountsWalPath(path);
-		const backupPaths =
-			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+		let backupPaths: string[] = [];
+		try {
+			backupPaths =
+				await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+		} catch (error) {
+			log.warn("Failed to discover backup recovery candidates during clear", {
+				path,
+				error: String(error),
+			});
+		}
 		const clearPath = async (targetPath: string): Promise<void> => {
 			try {
 				await fs.unlink(targetPath);
@@ -1580,9 +1602,12 @@ export async function exportAccounts(
 		throw new Error(`File already exists: ${resolvedPath}`);
 	}
 
-	const storage = await withAccountStorageTransaction((current) =>
-		Promise.resolve(current),
-	);
+	const storage =
+		storageLockDepth > 0
+			? await loadAccountsUnlocked()
+			: await withAccountStorageTransaction((current) =>
+					Promise.resolve(current),
+				);
 	if (!storage || storage.accounts.length === 0) {
 		throw new Error("No accounts to export");
 	}

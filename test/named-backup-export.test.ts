@@ -196,4 +196,33 @@ describe("named backup export", () => {
 		expect(exported.stale).toBeUndefined();
 		expect(exported.accounts[0]?.accountId).toBe("acct-force");
 	});
+
+	it("exports named backups without deadlocking inside a storage transaction", async () => {
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acct-transaction",
+					refreshToken: "refresh-transaction",
+					addedAt: 30,
+					lastUsed: 40,
+				},
+			],
+		});
+
+		const { withAccountStorageTransaction } = await import("../lib/storage.js");
+		const backupPath = await withAccountStorageTransaction(async () =>
+			exportNamedBackupFile(
+				"backup-2026-03-11",
+				{
+					getStoragePath,
+					exportAccounts,
+				},
+				{ force: true },
+			),
+		);
+
+		expect(existsSync(backupPath)).toBe(true);
+	});
 });
