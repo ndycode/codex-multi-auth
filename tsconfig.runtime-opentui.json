@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+	"compilerOptions": {
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"jsx": "preserve",
+		"jsxImportSource": "@opentui/solid",
+		"lib": ["ES2022"],
+		"types": ["bun-types"]
+	},
+  "include": [
+    "runtime/opentui/**/*.ts",
+    "runtime/opentui/**/*.tsx",
+    "test/tui/**/*.ts",
+    "test/tui/**/*.tsx"
+  ]
+}

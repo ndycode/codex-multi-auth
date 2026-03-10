@@ -39,13 +39,19 @@
   },
   "scripts": {
     "build": "tsc && node scripts/copy-oauth-success.js",
+    "bun:build:opentui": "node scripts/with-isolated-codex-env.mjs bun run runtime/opentui/build.ts",
     "typecheck": "tsc --noEmit",
+    "isolated:env": "node scripts/with-isolated-codex-env.mjs --print-env",
+    "isolated:typecheck": "node scripts/with-isolated-codex-env.mjs npm run typecheck",
+    "test:tui:contracts": "node scripts/with-isolated-codex-env.mjs npx vitest run test/tui/contracts.test.ts test/runtime-paths.test.ts test/cli-auth-menu.test.ts",
+    "test:tui:frames": "node scripts/with-isolated-codex-env.mjs bun test test/tui/frame-harness.test.tsx",
+    "test:tui:e2e": "node scripts/with-isolated-codex-env.mjs bun test test/tui/e2e-harness.test.tsx",
     "lint": "npm run lint:ts && npm run lint:scripts",
-    "lint:ts": "eslint . --ext .ts",
-    "lint:scripts": "eslint scripts --ext .js",
+    "lint:ts": "eslint . --ext .ts,.tsx",
+    "lint:scripts": "eslint scripts --ext .js,.mjs",
     "lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
-    "lint:ts:fix": "eslint . --ext .ts --fix",
-    "lint:scripts:fix": "eslint scripts --ext .js --fix",
+    "lint:ts:fix": "eslint . --ext .ts,.tsx --fix",
+    "lint:scripts:fix": "eslint scripts --ext .js,.mjs --fix",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
@@ -86,10 +92,10 @@
     "@codex-ai/plugin"
   ],
   "lint-staged": {
-    "*.ts": [
+    "**/*.{ts,tsx}": [
       "eslint --max-warnings=0 --fix --no-warn-ignored"
     ],
-    "scripts/**/*.js": [
+    "scripts/**/*.{js,mjs}": [
       "eslint --max-warnings=0 --fix --no-warn-ignored"
     ]
   },
@@ -102,6 +108,7 @@
   "devDependencies": {
     "@fast-check/vitest": "^0.2.4",
     "@codex-ai/sdk": "file:vendor/codex-ai-sdk",
+    "bun-types": "^1.2.21",
     "@types/node": "^25.3.0",
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",
@@ -117,8 +124,11 @@
   },
   "dependencies": {
     "@openauthjs/openauth": "^0.4.3",
+    "@opentui/core": "^0.1.87",
+    "@opentui/solid": "^0.1.87",
     "@codex-ai/plugin": "file:vendor/codex-ai-plugin",
     "hono": "4.12.6",
+    "solid-js": "1.9.9",
     "zod": "^4.3.6"
   },
   "overrides": {

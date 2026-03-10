@@ -3,7 +3,7 @@ import tsparser from "@typescript-eslint/parser";
 
 export default [
   {
-    ignores: ["dist/**", "coverage/**", "node_modules/**", "winston/**", ".tmp*/**", "vendor/**", "*.cjs", "*.mjs"],
+    ignores: ["dist/**", "coverage/**", "node_modules/**", "winston/**", ".tmp*/**", "vendor/**", "bench/**", "*.cjs"],
   },
   {
     files: ["index.ts", "lib/**/*.ts"],
@@ -40,7 +40,36 @@ export default [
     },
   },
   {
-    files: ["scripts/**/*.js"],
+    files: ["runtime/**/*.ts", "runtime/**/*.tsx"],
+    languageOptions: {
+      parser: tsparser,
+      parserOptions: {
+        ecmaVersion: "latest",
+        sourceType: "module",
+        project: "./tsconfig.runtime-opentui.json",
+      },
+    },
+    plugins: {
+      "@typescript-eslint": tseslint,
+    },
+    rules: {
+      "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/explicit-function-return-type": "off",
+      "@typescript-eslint/no-non-null-assertion": "warn",
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/await-thenable": "error",
+      "@typescript-eslint/require-await": "warn",
+      "no-console": "off",
+      "prefer-const": "error",
+      "no-var": "error",
+      "eqeqeq": ["error", "always"],
+      "no-duplicate-imports": "error",
+    },
+  },
+  {
+    files: ["scripts/**/*.js", "scripts/**/*.mjs"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",
@@ -54,7 +83,7 @@ export default [
     },
   },
   {
-    files: ["test/**/*.ts"],
+    files: ["test/**/*.ts", "test/**/*.tsx"],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
