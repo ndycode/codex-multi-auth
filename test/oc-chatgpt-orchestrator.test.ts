@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -14,7 +15,6 @@ const sourceStorage: AccountStorageV3 = {
 			email: "user@example.com",
 			refreshToken: "refresh-token-1",
 			accountId: "acc_1",
-			organizationId: "org_1",
 			lastUsed: 100,
 			addedAt: 50,
 		},
@@ -29,7 +29,6 @@ const destinationStorage: AccountStorageV3 = {
 			email: "dest@example.com",
 			refreshToken: "refresh-token-dest",
 			accountId: "acc_dest",
-			organizationId: "org_dest",
 			lastUsed: 10,
 			addedAt: 5,
 		},
@@ -219,9 +218,12 @@ describe("oc-chatgpt orchestrator", () => {
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") {
 			expect(result.error).toBe(persistError);
-			expect(result.target.accountPath).toBe(
-				"C:/locked/openai-codex-accounts.json",
-			);
+			const { target } = result;
+			expect(target).toBeDefined();
+			if (!target) {
+				throw new Error("expected error target");
+			}
+			expect(target.accountPath).toBe("C:/locked/openai-codex-accounts.json");
 		}
 	});
 
@@ -243,6 +245,26 @@ describe("oc-chatgpt orchestrator", () => {
 		if (result.kind === "collision") {
 			expect(result.path).toContain("backup-2026-03-10.json");
 		}
+	});
+
+	it("returns collision when named backup export fails with EEXIST on a json file path", async () => {
+		const result = await runNamedBackupExport({
+			name: "backup-2026-03-10-code",
+			dependencies: {
+				exportBackup: async () => {
+					const error = Object.assign(new Error("EEXIST"), {
+						code: "EEXIST",
+						path: "C:/target/backups/backup-2026-03-10-code.json",
+					}) as NodeJS.ErrnoException;
+					throw error;
+				},
+			},
+		});
+
+		expect(result).toEqual({
+			kind: "collision",
+			path: "C:/target/backups/backup-2026-03-10-code.json",
+		});
 	});
 
 	it("forwards force=true to named backup export dependencies", async () => {
@@ -298,6 +320,28 @@ describe("oc-chatgpt orchestrator", () => {
 			expect(result.path).toBeUndefined();
 			expect(result.error).toBe(backupError);
 		}
+	});
+
+	it("does not treat non-json EEXIST paths as backup collisions", async () => {
+		const backupError = Object.assign(new Error("EEXIST"), {
+			code: "EEXIST",
+			path: "C:/target/backups",
+		}) as NodeJS.ErrnoException;
+
+		const result = await runNamedBackupExport({
+			name: "backup-dir-collision",
+			dependencies: {
+				exportBackup: async () => {
+					throw backupError;
+				},
+			},
+		});
+
+		expect(result).toEqual({
+			kind: "error",
+			path: undefined,
+			error: backupError,
+		});
 	});
 
 	it("passes injected loadTargetStorage through apply planning when destination is omitted", async () => {
@@ -385,9 +429,140 @@ describe("oc-chatgpt orchestrator", () => {
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") {
 			expect(result.error).toBe(loadError);
-			expect(result.target.accountPath).toBe(
-				"C:/target/openai-codex-accounts.json",
-			);
+			const { target } = result;
+			expect(target).toBeDefined();
+			if (!target) {
+				throw new Error("expected error target");
+			}
+			expect(target.accountPath).toBe("C:/target/openai-codex-accounts.json");
 		}
+	});
+
+	it("returns the original apply error when recovery detection throws", async () => {
+		const loadError = Object.assign(new Error("EACCES: permission denied"), {
+			code: "EACCES",
+		});
+
+		const detectTarget = vi
+			.fn()
+			.mockReturnValueOnce({
+				kind: "target",
+				descriptor: {
+					scope: "global",
+					root: "C:/target",
+					accountPath: "C:/target/openai-codex-accounts.json",
+					backupRoot: "C:/target/backups",
+					source: "default-global",
+					resolution: "accounts",
+				},
+			})
+			.mockImplementationOnce(() => {
+				throw new Error("recovery detection failed");
+			});
+
+		const result = await applyOcChatgptSync({
+			source: sourceStorage,
+			dependencies: {
+				detectTarget,
+				loadTargetStorage: async () => {
+					throw loadError;
+				},
+			},
+		});
+
+		expect(detectTarget).toHaveBeenCalledTimes(2);
+		expect(result).toEqual({
+			kind: "error",
+			error: loadError,
+		});
+	});
+
+	it("writes apply temp files with restrictive permissions and retries transient rename failures", async () => {
+		const writeFile = vi
+			.spyOn(fs, "writeFile")
+			.mockResolvedValue(undefined as never);
+		const rename = vi
+			.spyOn(fs, "rename")
+			.mockRejectedValueOnce(
+				Object.assign(new Error("busy"), { code: "EBUSY" }),
+			)
+			.mockResolvedValue(undefined as never);
+		const mkdir = vi.spyOn(fs, "mkdir").mockResolvedValue(undefined as never);
+		const unlink = vi.spyOn(fs, "unlink").mockResolvedValue(undefined as never);
+
+		try {
+			const result = await applyOcChatgptSync({
+				source: sourceStorage,
+				destination: destinationStorage,
+				dependencies: {
+					detectTarget: () => ({
+						kind: "target",
+						descriptor: {
+							scope: "global",
+							root: "C:/target",
+							accountPath: "C:/target/openai-codex-accounts.json",
+							backupRoot: "C:/target/backups",
+							source: "default-global",
+							resolution: "accounts",
+						},
+					}),
+				},
+			});
+
+			expect(result.kind).toBe("applied");
+			expect(mkdir).toHaveBeenCalledOnce();
+			expect(writeFile).toHaveBeenCalledWith(
+				expect.stringMatching(/\.tmp$/),
+				expect.any(String),
+				{ encoding: "utf-8", mode: 0o600 },
+			);
+			expect(rename).toHaveBeenCalledTimes(2);
+			expect(unlink).not.toHaveBeenCalled();
+		} finally {
+			writeFile.mockRestore();
+			rename.mockRestore();
+			mkdir.mockRestore();
+			unlink.mockRestore();
+		}
+	});
+
+	it("preserves the original apply error when recovery detection returns blocked", async () => {
+		const loadError = Object.assign(new Error("EACCES: permission denied"), {
+			code: "EACCES",
+		});
+
+		const detectTarget = vi
+			.fn()
+			.mockReturnValueOnce({
+				kind: "target",
+				descriptor: {
+					scope: "global",
+					root: "C:/target",
+					accountPath: "C:/target/openai-codex-accounts.json",
+					backupRoot: "C:/target/backups",
+					source: "default-global",
+					resolution: "accounts",
+				},
+			})
+			.mockReturnValueOnce({
+				kind: "none",
+				reason: "missing",
+				tried: [],
+			});
+
+		const result = await applyOcChatgptSync({
+			source: sourceStorage,
+			dependencies: {
+				detectTarget,
+				loadTargetStorage: async () => {
+					throw loadError;
+				},
+			},
+		});
+
+		expect(result).toEqual({
+			kind: "error",
+			error: loadError,
+		});
 	});
 });

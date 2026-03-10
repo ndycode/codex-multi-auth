@@ -149,9 +149,39 @@ export type OcChatgptSyncApplyResult =
 	  }
 	| {
 			kind: "error";
-			target: OcChatgptTargetDescriptor;
+			target?: OcChatgptTargetDescriptor;
 			error: unknown;
 	  };
+
+function isJsonFilePath(path: string): boolean {
+	return path.trim().toLowerCase().endsWith(".json");
+}
+
+const PERSIST_RENAME_MAX_ATTEMPTS = 5;
+const PERSIST_RENAME_BASE_DELAY_MS = 10;
+
+async function renameWithRetry(
+	sourcePath: string,
+	destinationPath: string,
+): Promise<void> {
+	for (let attempt = 0; attempt < PERSIST_RENAME_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.rename(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			const canRetry =
+				(code === "EPERM" || code === "EBUSY" || code === "EAGAIN") &&
+				attempt + 1 < PERSIST_RENAME_MAX_ATTEMPTS;
+			if (!canRetry) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, PERSIST_RENAME_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
+	}
+}
 
 async function persistMergedDefault(
 	target: OcChatgptTargetDescriptor,
@@ -162,12 +192,11 @@ async function persistMergedDefault(
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
 	await fs.mkdir(dirname(path), { recursive: true });
 	try {
-		await fs.writeFile(
-			tempPath,
-			`${JSON.stringify(merged, null, 2)}\n`,
-			"utf-8",
-		);
-		await fs.rename(tempPath, path);
+		await fs.writeFile(tempPath, `${JSON.stringify(merged, null, 2)}\n`, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		await renameWithRetry(tempPath, path);
 	} catch (error) {
 		try {
 			await fs.unlink(tempPath);
@@ -183,6 +212,8 @@ export async function applyOcChatgptSync(
 	options: ApplyOcChatgptSyncOptions,
 ): Promise<OcChatgptSyncApplyResult> {
 	const dependencies = options.dependencies ?? {};
+	const detectTarget =
+		dependencies.detectTarget ?? detectOcChatgptMultiAuthTarget;
 	let plan: OcChatgptSyncPlanResult | undefined;
 	try {
 		plan = await planOcChatgptSync({
@@ -190,7 +221,7 @@ export async function applyOcChatgptSync(
 			destination: options.destination,
 			detectOptions: options.detectOptions,
 			dependencies: {
-				detectTarget: dependencies.detectTarget,
+				detectTarget: detectTarget,
 				previewMerge: dependencies.previewMerge,
 				loadTargetStorage: dependencies.loadTargetStorage,
 			},
@@ -214,15 +245,15 @@ export async function applyOcChatgptSync(
 		if (plan?.kind === "ready") {
 			return { kind: "error", target: plan.target, error };
 		}
-		const detection =
-			dependencies.detectTarget?.(options.detectOptions) ??
-			detectOcChatgptMultiAuthTarget(options.detectOptions);
-		const blocked = mapDetectionToBlocked(detection);
-		if (blocked) {
-			return blocked;
+		let detection: OcChatgptTargetDetectionResult;
+		try {
+			detection = detectTarget(options.detectOptions);
+		} catch {
+			return { kind: "error", error };
 		}
-		if (detection.kind !== "target") {
-			throw new Error("Unexpected oc target detection result");
+		const blocked = mapDetectionToBlocked(detection);
+		if (blocked || detection.kind !== "target") {
+			return { kind: "error", error };
 		}
 		return { kind: "error", target: detection.descriptor, error };
 	}
@@ -258,7 +289,8 @@ function extractCollisionPath(error: unknown): string | undefined {
 	if (
 		asErr?.code === "EEXIST" &&
 		typeof asErr?.path === "string" &&
-		asErr.path.trim().length > 0
+		asErr.path.trim().length > 0 &&
+		isJsonFilePath(asErr.path)
 	) {
 		return asErr.path;
 	}
@@ -266,7 +298,8 @@ function extractCollisionPath(error: unknown): string | undefined {
 	if (message.length === 0) return undefined;
 	const match = message.match(/already exists: (?<path>.+)$/i);
 	if (match?.groups?.path) {
-		return match.groups.path.trim();
+		const path = match.groups.path.trim();
+		return isJsonFilePath(path) ? path : undefined;
 	}
 	return undefined;
 }
