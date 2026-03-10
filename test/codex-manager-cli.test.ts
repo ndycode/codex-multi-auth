@@ -18,6 +18,13 @@ const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const selectMock = vi.fn();
+const planOcChatgptSyncMock = vi.fn();
+const applyOcChatgptSyncMock = vi.fn();
+const runNamedBackupExportMock = vi.fn();
+const exportNamedBackupMock = vi.fn();
+const promptQuestionMock = vi.fn();
+const detectOcChatgptMultiAuthTargetMock = vi.fn();
+const normalizeAccountStorageMock = vi.fn((value) => value);
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -85,6 +92,8 @@ vi.mock("../lib/storage.js", () => ({
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
 	setStoragePath: setStoragePathMock,
 	getStoragePath: getStoragePathMock,
+	exportNamedBackup: exportNamedBackupMock,
+	normalizeAccountStorage: normalizeAccountStorageMock,
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -136,8 +145,22 @@ vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
 }));
 
+vi.mock("../lib/oc-chatgpt-orchestrator.js", () => ({
+	planOcChatgptSync: planOcChatgptSyncMock,
+	applyOcChatgptSync: applyOcChatgptSyncMock,
+	runNamedBackupExport: runNamedBackupExportMock,
+}));
 
+vi.mock("../lib/oc-chatgpt-target-detection.js", () => ({
+	detectOcChatgptMultiAuthTarget: detectOcChatgptMultiAuthTargetMock,
+}));
 
+vi.mock("node:readline/promises", () => ({
+	createInterface: vi.fn(() => ({
+		question: promptQuestionMock,
+		close: vi.fn(),
+	})),
+}));
 
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(
 	process.stdin,
@@ -236,6 +259,7 @@ const SETTINGS_HUB_MENU_ORDER = [
 	"summary-fields",
 	"behavior",
 	"theme",
+	"experimental",
 	"backend",
 ] as const;
 
@@ -1656,13 +1680,196 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("shows experimental settings in the settings hub", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		queueSettingsSelectSequence([{ type: "back" }]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(readSettingsHubPanelContract()).toEqual(SETTINGS_HUB_MENU_ORDER);
+	});
+
+	it("runs experimental oc sync with mandatory preview before apply", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({ kind: "target", descriptor: { scope: "global", root: "C:/target", accountPath: "C:/target/openai-codex-accounts.json", backupRoot: "C:/target/backups", source: "default-global", resolution: "accounts" } });
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "ready",
+			target: {
+				scope: "global",
+				root: "C:/target",
+				accountPath: "C:/target/openai-codex-accounts.json",
+				backupRoot: "C:/target/backups",
+				source: "default-global",
+				resolution: "accounts",
+			},
+			preview: {
+				payload: { version: 3, accounts: [], activeIndex: 0 },
+				merged: { version: 3, accounts: [], activeIndex: 0 },
+				toAdd: [{ refreshTokenLast4: "1234" }],
+				toUpdate: [],
+				toSkip: [],
+				unchangedDestinationOnly: [],
+				activeSelectionBehavior: "preserve-destination",
+			},
+			payload: { version: 3, accounts: [], activeIndex: 0 },
+			destination: null,
+		});
+		applyOcChatgptSyncMock.mockResolvedValue({
+			kind: "applied",
+			target: {
+				scope: "global",
+				root: "C:/target",
+				accountPath: "C:/target/openai-codex-accounts.json",
+				backupRoot: "C:/target/backups",
+				source: "default-global",
+				resolution: "accounts",
+			},
+			preview: { merged: { version: 3, accounts: [], activeIndex: 0 } },
+			merged: { version: 3, accounts: [], activeIndex: 0 },
+			destination: null,
+			persistedPath: "C:/target/openai-codex-accounts.json",
+		});
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "sync" },
+			{ type: "apply" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(applyOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(selectMock).toHaveBeenCalledWith(
+			expect.arrayContaining([
+				expect.objectContaining({ label: expect.stringContaining("Active selection: preserve-destination") }),
+			]),
+			expect.any(Object),
+		);
+	});
+
+	it("shows guidance when experimental oc sync target is ambiguous or unreadable", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({ kind: "target", descriptor: { scope: "global", root: "C:/target", accountPath: "C:/target/openai-codex-accounts.json", backupRoot: "C:/target/backups", source: "default-global", resolution: "accounts" } });
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "blocked-ambiguous",
+			detection: { kind: "ambiguous", reason: "multiple targets", candidates: [] },
+		});
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "sync" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(applyOcChatgptSyncMock).not.toHaveBeenCalled();
+	});
 
 
+	it("exports named pool backup from experimental settings", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		promptQuestionMock.mockResolvedValueOnce("backup-2026-03-10");
+		runNamedBackupExportMock.mockResolvedValueOnce({ kind: "exported", path: "/mock/backups/backup-2026-03-10.json" });
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "backup" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
 
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(promptQuestionMock).toHaveBeenCalledOnce();
+		expect(runNamedBackupExportMock).toHaveBeenCalledWith({ name: "backup-2026-03-10" });
+	});
 
+	it("rejects invalid or colliding experimental backup filenames", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		promptQuestionMock.mockResolvedValueOnce("../bad-name");
+		runNamedBackupExportMock.mockResolvedValueOnce({ kind: "collision", path: "/mock/backups/bad-name.json" });
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "backup" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
 
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(promptQuestionMock).toHaveBeenCalledOnce();
+		expect(runNamedBackupExportMock).toHaveBeenCalledWith({ name: "../bad-name" });
+	});
+
+	it("backs out of experimental sync preview without applying", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({ kind: "target", descriptor: { scope: "global", root: "C:/target", accountPath: "C:/target/openai-codex-accounts.json", backupRoot: "C:/target/backups", source: "default-global", resolution: "accounts" } });
+		normalizeAccountStorageMock.mockReturnValue({ version: 3, accounts: [], activeIndex: 0 });
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "ready",
+			target: { scope: "global", root: "C:/target", accountPath: "C:/target/openai-codex-accounts.json", backupRoot: "C:/target/backups", source: "default-global", resolution: "accounts" },
+			preview: { payload: { version: 3, accounts: [], activeIndex: 0 }, merged: { version: 3, accounts: [], activeIndex: 0 }, toAdd: [], toUpdate: [], toSkip: [], unchangedDestinationOnly: [], activeSelectionBehavior: "preserve-destination" },
+			payload: { version: 3, accounts: [], activeIndex: 0 },
+			destination: { version: 3, accounts: [], activeIndex: 0 },
+		});
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "sync" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(applyOcChatgptSyncMock).not.toHaveBeenCalled();
+	});
+
+	it("cancels experimental backup prompt on blank or q input", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		promptQuestionMock.mockResolvedValueOnce("q");
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "backup" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(runNamedBackupExportMock).not.toHaveBeenCalled();
+	});
 	it("drives current settings panels through representative hotkeys and persists each section", async () => {
 		const now = Date.now();
 		setupInteractiveSettingsLogin(
@@ -1774,6 +1981,32 @@ describe("codex manager cli commands", () => {
 	});
 
 
+	it("moves guardian controls into experimental settings", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+		loadPluginConfigMock.mockReturnValue(structuredClone(defaults));
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "toggle-refresh-guardian" },
+			{ type: "increase-refresh-interval" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(savePluginConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
+				proactiveRefreshIntervalMs: (defaults.proactiveRefreshIntervalMs ?? 60000) + 60000,
+			}),
+		);
+	});
 
 	it("persists representative backend edits across all current backend categories", async () => {
 		const now = Date.now();
