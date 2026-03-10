@@ -328,7 +328,7 @@ function createSettingsCancelSequence(
 		return [
 			{ type: panel },
 			{ type: "toggle", key: "menuShowStatusBadge" },
-			triggerSettingsHotkey("q"),
+			triggerSettingsHotkey("q", { type: "cancel" }),
 			{ type: "back" },
 		];
 	}
@@ -336,7 +336,7 @@ function createSettingsCancelSequence(
 		return [
 			{ type: panel },
 			{ type: "toggle", key: "status" },
-			triggerSettingsHotkey("q"),
+			triggerSettingsHotkey("q", { type: "cancel" }),
 			{ type: "back" },
 		];
 	}
@@ -344,7 +344,7 @@ function createSettingsCancelSequence(
 		return [
 			{ type: panel },
 			{ type: "toggle-pause" },
-			triggerSettingsHotkey("q"),
+			triggerSettingsHotkey("q", { type: "cancel" }),
 			{ type: "back" },
 		];
 	}
@@ -352,7 +352,7 @@ function createSettingsCancelSequence(
 		return [
 			{ type: panel },
 			{ type: "set-palette", palette: "blue" },
-			triggerSettingsHotkey("q"),
+			triggerSettingsHotkey("q", { type: "cancel" }),
 			{ type: "back" },
 		];
 	}
@@ -361,7 +361,7 @@ function createSettingsCancelSequence(
 		{ type: "open-category", key: "rotation-quota" },
 		{ type: "toggle", key: "preemptiveQuotaEnabled" },
 		{ type: "back" },
-		triggerSettingsHotkey("q"),
+		triggerSettingsHotkey("q", { type: "cancel" }),
 		{ type: "back" },
 	];
 }
@@ -1926,6 +1926,7 @@ describe("codex manager cli commands", () => {
 				const busy = makeErrnoError("busy", "EBUSY");
 				saveDashboardDisplaySettingsMock.mockRejectedValue(busy);
 				savePluginConfigMock.mockRejectedValue(busy);
+				saveAccountsMock.mockRejectedValue(busy);
 			}
 			if (mode === "concurrent-save-ordering") {
 				const dashboardDeferred = createDeferred<void>();
@@ -1973,6 +1974,9 @@ describe("codex manager cli commands", () => {
 			expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
 			expect(savePluginConfigMock).not.toHaveBeenCalled();
 			expect(saveAccountsMock).not.toHaveBeenCalled();
+			if (mode === "token-refresh-race") {
+				expect(queuedRefreshMock).not.toHaveBeenCalled();
+			}
 			if (panel === "theme") {
 				const runtime = await import("../lib/ui/runtime.js");
 				const restored = runtime.getUiRuntimeOptions();
