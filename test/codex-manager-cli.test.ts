@@ -299,15 +299,26 @@ function queueSettingsSelectSequence(
 
 function triggerSettingsHotkey(
 	raw: string,
-	fallback: Record<string, unknown> = { type: "cancel" },
+	fallback?: Record<string, unknown>,
 	inputState: Partial<SettingsSelectInputState> = {},
 ): SettingsSelectSequenceStep {
-	return (options) =>
-		options?.onInput?.(raw, {
+	return (options) => {
+		if (!options?.onInput) {
+			return fallback ?? { type: "cancel" };
+		}
+		const result = options.onInput(raw, {
 			cursor: inputState.cursor ?? 0,
 			items: inputState.items ?? [],
 			requestRerender: inputState.requestRerender ?? (() => undefined),
-		}) ?? fallback;
+		});
+		if (result !== undefined) {
+			return result;
+		}
+		if (fallback !== undefined) {
+			return structuredClone(fallback);
+		}
+		throw new Error(`unhandled settings hotkey "${raw}"`);
+	};
 }
 
 function createSettingsCancelSequence(
@@ -1087,6 +1098,7 @@ describe("codex manager cli commands", () => {
 		const oauthServer: Awaited<
 			ReturnType<typeof serverModule.startLocalOAuthServer>
 		> = {
+			port: 1455,
 			ready: true,
 			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
 			close: vi.fn(),
@@ -1949,12 +1961,15 @@ describe("codex manager cli commands", () => {
 				});
 			}
 
-			queueSettingsSelectSequence(createSettingsCancelSequence(panel));
+			const selectSequence = queueSettingsSelectSequence(
+				createSettingsCancelSequence(panel),
+			);
 
 			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 			expect(exitCode).toBe(0);
+			expect(selectSequence.remaining()).toBe(0);
 			expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
 			expect(savePluginConfigMock).not.toHaveBeenCalled();
 			expect(saveAccountsMock).not.toHaveBeenCalled();
