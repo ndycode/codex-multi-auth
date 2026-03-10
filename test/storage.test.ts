@@ -2317,3 +2317,36 @@ describe("storage", () => {
 		});
 	});
 });
+
+
+	it("clearAccounts removes discovered backup artifacts as well as fixed slots", async () => {
+		const storagePath = getStoragePath();
+		const discoveredBackup = join(
+			dirname(storagePath),
+			"openai-codex-accounts.json.20260310-010101.json",
+		);
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "clear@example.com",
+					refreshToken: "refresh-clear",
+					accessToken: "access-clear",
+					expiresAt: Date.now() + 3_600_000,
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+					accountId: "acc-clear",
+					enabled: true,
+				},
+			],
+		};
+		await fs.writeFile(storagePath, JSON.stringify(storage), "utf-8");
+		await fs.writeFile(discoveredBackup, JSON.stringify(storage), "utf-8");
+
+		await clearAccounts();
+
+		expect(existsSync(storagePath)).toBe(false);
+		expect(existsSync(discoveredBackup)).toBe(false);
+	});
