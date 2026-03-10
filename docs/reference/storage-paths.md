@@ -87,6 +87,8 @@ The `Experimental` -> `Sync Accounts to oc-chatgpt-multi-auth` flow detects the 
 - default global root: `~/.opencode`
 - project root: `~/.opencode/projects/<project-key>`
 
+On Windows, `~/.opencode` maps to `%USERPROFILE%\.opencode` (falling back to `HOME` or `HOMEDRIVE` + `HOMEPATH` when needed), and project roots follow `%USERPROFILE%\.opencode\projects\<project-key>`.
+
 For each target root, the sync preview/apply flow reads or writes:
 
 - target accounts: `<root>/openai-codex-accounts.json`

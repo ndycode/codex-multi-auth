@@ -85,7 +85,7 @@ Named backup behavior:
 
 - prompts for a filename
 - appends `.json` when omitted
-- allows only letters, numbers, hyphens, and underscores in the backup basename
+- allows only ASCII letters, digits, underscores, and hyphens in the backup basename
 - rejects spaces, extra dots, separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes
 - fails safely on collisions instead of overwriting by default
 
