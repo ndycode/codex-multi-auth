@@ -2303,21 +2303,6 @@ describe("storage", () => {
 			expect(existsSync(`${storagePath}.wal`)).toBe(false);
 		});
 
-		it("logs error for non-ENOENT errors during clear", async () => {
-			const unlinkSpy = vi
-				.spyOn(fs, "unlink")
-				.mockRejectedValue(
-					Object.assign(new Error("EACCES error"), { code: "EACCES" }),
-				);
-
-			await clearAccounts();
-
-			expect(unlinkSpy).toHaveBeenCalled();
-			unlinkSpy.mockRestore();
-		});
-	});
-});
-
 
 	it("clearAccounts removes discovered backup artifacts as well as fixed slots", async () => {
 		const storagePath = getStoragePath();
@@ -2350,3 +2335,18 @@ describe("storage", () => {
 		expect(existsSync(storagePath)).toBe(false);
 		expect(existsSync(discoveredBackup)).toBe(false);
 	});
+		it("logs error for non-ENOENT errors during clear", async () => {
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockRejectedValue(
+					Object.assign(new Error("EACCES error"), { code: "EACCES" }),
+				);
+
+			await clearAccounts();
+
+			expect(unlinkSpy).toHaveBeenCalled();
+			unlinkSpy.mockRestore();
+		});
+	});
+});
+
