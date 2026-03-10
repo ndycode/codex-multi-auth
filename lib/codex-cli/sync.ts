@@ -33,13 +33,21 @@ function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 	}
 	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
 	for (const family of MODEL_FAMILIES) {
+		const hasFamilyIndex = Object.prototype.hasOwnProperty.call(
+			storage.activeIndexByFamily,
+			family,
+		);
 		const raw = storage.activeIndexByFamily[family];
 		const resolved =
 			typeof raw === "number"
 				? normalizeIndexCandidate(raw, storage.activeIndex)
 				: storage.activeIndex;
-		storage.activeIndexByFamily[family] =
+		const familyIndex =
 			count === 0 ? 0 : Math.max(0, Math.min(resolved, count - 1));
+		if (!hasFamilyIndex && familyIndex === storage.activeIndex) {
+			continue;
+		}
+		storage.activeIndexByFamily[family] = familyIndex;
 	}
 }
 
