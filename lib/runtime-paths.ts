@@ -72,6 +72,17 @@ function deduplicatePaths(paths: string[]): string[] {
 	return result;
 }
 
+function pathsEqualNormalized(a: string, b: string): boolean {
+	const normalize = (value: string): string => {
+		const trimmed = value.trim();
+		if (process.platform === "win32") {
+			return win32.normalize(trimmed).toLowerCase();
+		}
+		return trimmed;
+	};
+	return normalize(a) === normalize(b);
+}
+
 /**
  * Detects whether a directory contains known Codex storage indicators.
  *
@@ -169,12 +180,21 @@ export function getCodexMultiAuthDir(): string {
 		return fromEnv;
 	}
 
+	const codexHomeFromEnv = (process.env.CODEX_HOME ?? "").trim();
+	const defaultCodexHome = join(getResolvedUserHomeDir(), ".codex");
+	const isExplicitNonDefaultHome =
+		codexHomeFromEnv.length > 0 && !pathsEqualNormalized(codexHomeFromEnv, defaultCodexHome);
+
 	const primary = join(getCodexHomeDir(), "multi-auth");
 	const fallbackCandidates = deduplicatePaths([
 		...getFallbackCodexHomeDirs().map((dir) => join(dir, "multi-auth")),
 		getLegacyCodexDir(),
 	]);
 	const orderedCandidates = deduplicatePaths([primary, ...fallbackCandidates]);
+
+	if (isExplicitNonDefaultHome) {
+		return primary;
+	}
 
 	// Prefer candidates that actually contain account storage. This prevents
 	// accidentally switching to a fresh empty directory that only has settings files.
