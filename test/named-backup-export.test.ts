@@ -157,4 +157,43 @@ describe("named backup export", () => {
 		};
 		expect(exported.accounts[0]?.accountId).toBe("acct-1");
 	});
+
+	it("overwrites an existing backup when force is enabled", async () => {
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acct-force",
+					refreshToken: "refresh-force",
+					addedAt: 10,
+					lastUsed: 20,
+				},
+			],
+		});
+
+		const destination = resolveNamedBackupPath(
+			"backup-2026-03-10",
+			storagePath,
+		);
+		await fs.mkdir(dirname(destination), { recursive: true });
+		await fs.writeFile(destination, JSON.stringify({ stale: true }), "utf-8");
+
+		const backupPath = await exportNamedBackupFile(
+			"backup-2026-03-10",
+			{
+				getStoragePath,
+				exportAccounts,
+			},
+			{ force: true },
+		);
+
+		expect(backupPath).toBe(destination);
+		const exported = JSON.parse(await fs.readFile(backupPath, "utf-8")) as {
+			accounts: Array<{ accountId?: string }>;
+			stale?: boolean;
+		};
+		expect(exported.stale).toBeUndefined();
+		expect(exported.accounts[0]?.accountId).toBe("acct-force");
+	});
 });

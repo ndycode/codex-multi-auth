@@ -1329,7 +1329,8 @@ export async function clearAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getStoragePath();
 		const walPath = getAccountsWalPath(path);
-		const backupPaths = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+		const backupPaths =
+			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
 		const clearPath = async (targetPath: string): Promise<void> => {
 			try {
 				await fs.unlink(targetPath);
@@ -1589,7 +1590,19 @@ export async function exportAccounts(
 	await fs.mkdir(dirname(resolvedPath), { recursive: true });
 
 	const content = JSON.stringify(storage, null, 2);
-	await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${resolvedPath}.${uniqueSuffix}.tmp`;
+	try {
+		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+		await fs.rename(tempPath, resolvedPath);
+	} catch (error) {
+		try {
+			await fs.unlink(tempPath);
+		} catch {
+			// Ignore cleanup failures for export temp files.
+		}
+		throw error;
+	}
 	log.info("Exported accounts", {
 		path: resolvedPath,
 		count: storage.accounts.length,
