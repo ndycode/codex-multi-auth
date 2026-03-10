@@ -22,6 +22,12 @@ type SettingsHubTestApi = {
 		settings: DashboardDisplaySettings,
 	) => DashboardDisplaySettings;
 	withQueuedRetry: <T>(pathKey: string, task: () => Promise<T>) => Promise<T>;
+	loadExperimentalSyncTarget: () => Promise<
+		| { kind: "blocked-ambiguous"; detection: unknown }
+		| { kind: "blocked-none"; detection: unknown }
+		| { kind: "error"; message: string }
+		| { kind: "target"; detection: unknown; destination: unknown }
+	>;
 	persistDashboardSettingsSelection: (
 		selected: DashboardDisplaySettings,
 		keys: ReadonlyArray<string>,
@@ -60,6 +66,9 @@ type SettingsHubTestApi = {
 		initial: DashboardDisplaySettings,
 	) => Promise<DashboardDisplaySettings | null>;
 	promptBackendSettings: (
+		initial: PluginConfig,
+	) => Promise<PluginConfig | null>;
+	promptExperimentalSettings: (
 		initial: PluginConfig,
 	) => Promise<PluginConfig | null>;
 };
@@ -101,7 +110,7 @@ function restoreStreamIsTTY(
 		Object.defineProperty(stream, "isTTY", descriptor);
 		return;
 	}
-	 
+
 	delete (stream as any).isTTY;
 }
 
@@ -546,7 +555,6 @@ describe("settings-hub utility coverage", () => {
 		expect(selected).toBeNull();
 	});
 
-
 	describe("settings-hub preview helpers", () => {
 		it("builds account preview hint with details info", async () => {
 			const api = await loadSettingsHubTestApi();
@@ -645,6 +653,48 @@ describe("settings-hub utility coverage", () => {
 				}),
 			);
 			setSpy.mockRestore();
+		});
+
+		it("retries experimental target reads for retryable filesystem errors", async () => {
+			vi.doMock("../lib/oc-chatgpt-target-detection.js", () => ({
+				detectOcChatgptMultiAuthTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: tempRoot,
+						accountPath: join(tempRoot, "openai-codex-accounts.json"),
+						backupRoot: join(tempRoot, "backups"),
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+			}));
+			const nodeFs = await import("node:fs");
+			const busyError = new Error("busy") as NodeJS.ErrnoException;
+			busyError.code = "EBUSY";
+			const readSpy = vi
+				.spyOn(nodeFs.promises, "readFile")
+				.mockRejectedValueOnce(busyError)
+				.mockResolvedValueOnce(
+					JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+				);
+			const api = await loadSettingsHubTestApi();
+			const result = await api.loadExperimentalSyncTarget();
+			expect(result.kind).toBe("target");
+			expect(readSpy).toHaveBeenCalledTimes(2);
+			readSpy.mockRestore();
+		});
+
+		it("decreases experimental refresh interval down to the configured minimum", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "decrease-refresh-interval" },
+				{ type: "save" },
+			);
+			const selected = await api.promptExperimentalSettings({
+				proactiveRefreshIntervalMs: 30_000,
+			});
+			expect(selected?.proactiveRefreshIntervalMs).toBe(5_000);
 		});
 	});
 });
