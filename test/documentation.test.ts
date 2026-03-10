@@ -1,5 +1,4 @@
-import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -301,7 +300,7 @@ describe('Documentation Integrity', () => {
     expect(settingsRef).toContain('destination-only accounts are preserved by the merge preview/apply path');
     expect(settingsRef).toContain('Named backup behavior:');
     expect(settingsRef).toContain('appends `.json` when omitted');
-    expect(settingsRef).toContain('rejects separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes');
+    expect(settingsRef).toContain('rejects spaces, extra dots, separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes');
     expect(settingsRef).toContain('### Performance & Timeouts');
     expect(settingsRef).toContain('- `menuShowLastUsed`');
     expect(settingsRef).toContain('- `menuShowQuotaSummary`');
@@ -318,11 +317,13 @@ describe('Documentation Integrity', () => {
     expect(readme).toContain('Successful sync keeps the destination active selection');
     expect(readme).toContain('destination-only accounts are preserved');
     expect(readme).toContain('append `.json` when needed');
-    expect(readme).toContain('rejecting separators, traversal, `.rotate.`, `.tmp`, and `.wal` patterns');
+    expect(readme).toContain('reject spaces, extra dots, separators, traversal, `.rotate.`, `.tmp`, and `.wal` patterns');
 
     expect(storagePaths).toContain('## Experimental Local Backup Paths');
     expect(storagePaths).toContain('`~/.codex/multi-auth/backups/<name>.json`');
     expect(storagePaths).toContain('`~/.codex/multi-auth/projects/<project-key>/backups/<name>.json`');
+    expect(storagePaths).toContain('only ASCII letters, digits, underscores, and hyphens are allowed in the basename before `.json`');
+    expect(storagePaths).toContain('rejects spaces, extra dots, separators, traversal (`..`), rotation-style names containing `.rotate.`, and temporary suffixes ending in `.tmp` or `.wal`');
     expect(storagePaths).toContain('collisions fail safely instead of overwriting by default');
     expect(storagePaths).toContain('## Experimental Sync Target Paths');
     expect(storagePaths).toContain('`OC_CHATGPT_MULTI_AUTH_DIR`');
@@ -375,6 +376,7 @@ describe('Documentation Integrity', () => {
       process.env.HOME = tempRoot;
       process.env.USERPROFILE = tempRoot;
 
+      vi.resetModules();
       const { loadPluginConfig, getCodexMode } = await import('../lib/config.js');
       const loaded = loadPluginConfig();
       expect(loaded.codexMode).toBe(false);
@@ -398,6 +400,7 @@ describe('Documentation Integrity', () => {
           process.env[key] = value;
         }
       }
+      vi.resetModules();
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
