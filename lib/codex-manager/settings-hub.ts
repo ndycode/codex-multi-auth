@@ -1,4 +1,4 @@
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
@@ -2464,9 +2464,6 @@ async function loadExperimentalSyncTarget(): Promise<
 		return { kind: "blocked-none", detection };
 	}
 	try {
-		if (!existsSync(detection.descriptor.accountPath)) {
-			return { kind: "target", detection, destination: null };
-		}
 		const raw = JSON.parse(await fs.readFile(detection.descriptor.accountPath, "utf-8"));
 		const normalized = normalizeAccountStorage(raw);
 		if (!normalized) {
@@ -2474,6 +2471,10 @@ async function loadExperimentalSyncTarget(): Promise<
 		}
 		return { kind: "target", detection, destination: normalized };
 	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return { kind: "target", detection, destination: null };
+		}
 		return { kind: "error", message: error instanceof Error ? error.message : String(error) };
 	}
 }
@@ -2497,7 +2498,7 @@ async function promptExperimentalSettings(initialConfig: PluginConfig): Promise<
 			{
 				message: UI_COPY.settings.experimentalTitle,
 				subtitle: UI_COPY.settings.experimentalSubtitle,
-				help: UI_COPY.settings.experimentalHelp,
+				help: UI_COPY.settings.experimentalHelpMenu,
 				clearScreen: true,
 				theme: ui.theme,
 				selectedEmphasis: "minimal",
@@ -2538,7 +2539,7 @@ async function promptExperimentalSettings(initialConfig: PluginConfig): Promise<
 					], {
 						message: UI_COPY.settings.experimentalTitle,
 						subtitle: UI_COPY.settings.experimentalSubtitle,
-						help: UI_COPY.settings.experimentalHelp,
+						help: UI_COPY.settings.experimentalHelpMenu,
 						clearScreen: true,
 						theme: ui.theme,
 						selectedEmphasis: "minimal",
@@ -2551,7 +2552,7 @@ async function promptExperimentalSettings(initialConfig: PluginConfig): Promise<
 					], {
 						message: UI_COPY.settings.experimentalTitle,
 						subtitle: UI_COPY.settings.experimentalSubtitle,
-						help: UI_COPY.settings.experimentalHelp,
+						help: UI_COPY.settings.experimentalHelpPreview,
 						clearScreen: true,
 						theme: ui.theme,
 						selectedEmphasis: "minimal",
@@ -2572,7 +2573,7 @@ async function promptExperimentalSettings(initialConfig: PluginConfig): Promise<
 			], {
 				message: UI_COPY.settings.experimentalTitle,
 				subtitle: UI_COPY.settings.experimentalSubtitle,
-				help: UI_COPY.settings.experimentalHelp,
+				help: UI_COPY.settings.experimentalHelpPreview,
 				clearScreen: true,
 				theme: ui.theme,
 				selectedEmphasis: "minimal",
@@ -2599,7 +2600,7 @@ async function promptExperimentalSettings(initialConfig: PluginConfig): Promise<
 				{
 					message: UI_COPY.settings.experimentalTitle,
 					subtitle: UI_COPY.settings.experimentalSubtitle,
-					help: UI_COPY.settings.experimentalHelp,
+					help: UI_COPY.settings.experimentalHelpStatus,
 					clearScreen: true,
 					theme: ui.theme,
 					selectedEmphasis: "minimal",
@@ -2619,7 +2620,7 @@ async function promptExperimentalSettings(initialConfig: PluginConfig): Promise<
 			{
 				message: UI_COPY.settings.experimentalTitle,
 				subtitle: UI_COPY.settings.experimentalSubtitle,
-				help: UI_COPY.settings.experimentalHelp,
+				help: UI_COPY.settings.experimentalHelpStatus,
 				clearScreen: true,
 				theme: ui.theme,
 				selectedEmphasis: "minimal",
@@ -2637,7 +2638,7 @@ async function promptExperimentalSettings(initialConfig: PluginConfig): Promise<
 			{
 				message: UI_COPY.settings.experimentalTitle,
 				subtitle: UI_COPY.settings.experimentalSubtitle,
-				help: UI_COPY.settings.experimentalHelp,
+				help: UI_COPY.settings.experimentalHelpStatus,
 				clearScreen: true,
 				theme: ui.theme,
 				selectedEmphasis: "minimal",

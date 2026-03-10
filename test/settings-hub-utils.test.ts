@@ -276,6 +276,20 @@ describe("settings-hub utility coverage", () => {
 		expect(attempts).toBe(3);
 	});
 
+	it("propagates non-retryable filesystem errors immediately", async () => {
+		const api = await loadSettingsHubTestApi();
+		let attempts = 0;
+		await expect(
+			api.withQueuedRetry("settings-path-enoent", async () => {
+				attempts += 1;
+				const error = new Error("not found") as NodeJS.ErrnoException;
+				error.code = "ENOENT";
+				throw error;
+			}),
+		).rejects.toThrow("not found");
+		expect(attempts).toBe(1);
+	});
+
 	it("serializes concurrent writes for the same path key", async () => {
 		const api = await loadSettingsHubTestApi();
 		const order: string[] = [];
@@ -521,6 +535,17 @@ describe("settings-hub utility coverage", () => {
 			}),
 		);
 	});
+	it("returns null for promptBackendSettings cancel without mutating runtime state", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		queueSelectResults({ type: "cancel" });
+		const selected = await api.promptBackendSettings({
+			...configModule.getDefaultPluginConfig(),
+			fetchTimeoutMs: 12_345,
+		});
+		expect(selected).toBeNull();
+	});
+
 
 	describe("settings-hub preview helpers", () => {
 		it("builds account preview hint with details info", async () => {
