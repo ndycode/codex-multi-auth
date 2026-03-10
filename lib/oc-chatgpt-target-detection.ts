@@ -103,11 +103,19 @@ function getResolvedUserHomeDir(): string {
 	return firstNonEmpty([process.env.HOME, homedir()]) ?? homedir();
 }
 
+function isWindowsDriveRoot(candidate: string): boolean {
+	return /^[a-zA-Z]:\\?$/.test(candidate);
+}
+
 function normalizeCandidatePath(candidate: string): string {
 	const trimmed = candidate.trim();
+	if (trimmed.length === 0) return "";
 	const normalized = normalize(trimmed);
-	if (normalized.length > 1 && /[\/]$/.test(normalized)) {
-		return normalized.replace(/[\/]+$/, "");
+	if (process.platform === "win32" && isWindowsDriveRoot(normalized)) {
+		return normalized.endsWith("\\") ? normalized : normalized + "\\";
+	}
+	if (normalized.length > 1 && /[\\/]$/.test(normalized)) {
+		return normalized.replace(/[\\/]+$/, "");
 	}
 	return normalized;
 }
@@ -118,7 +126,8 @@ function deduplicatePaths(paths: string[]): string[] {
 	for (const candidate of paths) {
 		const normalized = normalizeCandidatePath(candidate);
 		if (normalized.length === 0) continue;
-		const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+		const key =
+			process.platform === "win32" ? normalized.toLowerCase() : normalized;
 		if (seen.has(key)) continue;
 		seen.add(key);
 		result.push(normalized);
@@ -190,8 +199,11 @@ export function detectOcChatgptMultiAuthTarget(options?: {
 		? join(canonicalRoot, PROJECTS_DIR_NAME, getProjectStorageKey(identityRoot))
 		: null;
 
+	const normalizedExplicitRoot = explicitRoot
+		? normalizeCandidatePath(explicitRoot)
+		: "";
 	const orderedRoots = deduplicatePaths(
-		[explicitRoot, canonicalRoot, projectStorageRoot].filter(
+		[normalizedExplicitRoot, canonicalRoot, projectStorageRoot].filter(
 			(entry): entry is string => Boolean(entry),
 		),
 	);
@@ -199,7 +211,7 @@ export function detectOcChatgptMultiAuthTarget(options?: {
 	const candidates: OcChatgptTargetCandidate[] = orderedRoots.map((root) => {
 		const inferredScope = inferScopeFromRoot(root);
 		const source: OcChatgptTargetSource =
-			root === explicitRoot
+			root === normalizedExplicitRoot
 				? "explicit"
 				: inferredScope === "project"
 					? "project"
