@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { 
   deduplicateAccounts,
@@ -19,29 +20,6 @@ import {
   importAccounts,
   withAccountStorageTransaction,
 } from "../lib/storage.js";
-
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
-
-async function removeWithRetry(
-  targetPath: string,
-  options: { recursive?: boolean; force?: boolean },
-): Promise<void> {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    try {
-      await fs.rm(targetPath, options);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
-        return;
-      }
-      if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
-    }
-  }
-}
 
 // Mocking the behavior we're about to implement for TDD
 // Since the functions aren't in lib/storage.ts yet, we'll need to mock them or 
@@ -777,6 +755,29 @@ describe("storage", () => {
 
     it("does not throw when file does not exist", async () => {
       await expect(clearAccounts()).resolves.not.toThrow();
+    });
+
+    it("aborts reset when the reset marker cannot be written", async () => {
+      const walPath = `${testStoragePath}.wal`;
+      await fs.writeFile(testStoragePath, "{}", "utf-8");
+      await fs.writeFile(walPath, "{}", "utf-8");
+
+      const originalWriteFile = fs.writeFile.bind(fs);
+      const writeSpy = vi.spyOn(fs, "writeFile").mockImplementation(async (...args) => {
+        const [targetPath] = args;
+        if (typeof targetPath === "string" && targetPath.endsWith(".reset-intent")) {
+          const error = new Error("EPERM marker write") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        }
+        return originalWriteFile(...args);
+      });
+
+      await expect(clearAccounts()).rejects.toThrow("EPERM marker write");
+      expect(existsSync(testStoragePath)).toBe(true);
+      expect(existsSync(walPath)).toBe(true);
+
+      writeSpy.mockRestore();
     });
   });
 

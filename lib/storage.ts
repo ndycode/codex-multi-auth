@@ -224,6 +224,7 @@ async function getAccountsBackupRecoveryCandidatesWithDiscovery(path: string): P
 			if (!entry.isFile()) continue;
 			if (!entry.name.startsWith(candidatePrefix)) continue;
 			if (isCacheLikeBackupArtifactName(entry.name)) continue;
+			if (entry.name.endsWith(RESET_MARKER_SUFFIX)) continue;
 			if (entry.name.endsWith(".tmp")) continue;
 			if (entry.name.includes(".rotate.")) continue;
 			if (entry.name.endsWith(ACCOUNTS_WAL_SUFFIX)) continue;
@@ -810,10 +811,8 @@ async function loadAccountsForRestoreAssessment(path: string): Promise<AccountSt
 
 export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 	const storagePath = getStoragePath();
-	const [storage, backupMetadata] = await Promise.all([
-		loadAccountsForRestoreAssessment(storagePath),
-		getBackupMetadata(),
-	]);
+	const storage = await loadAccountsForRestoreAssessment(storagePath);
+	const backupMetadata = await getBackupMetadata();
 
 	const latestSnapshot = selectSnapshotByPath(
 		backupMetadata.accounts,
@@ -894,18 +893,11 @@ function getIntentionalResetMarkerPath(storagePath: string): string {
 
 async function writeIntentionalResetMarker(storagePath: string): Promise<void> {
 	const markerPath = getIntentionalResetMarkerPath(storagePath);
-	try {
-		await fs.writeFile(
-			markerPath,
-			JSON.stringify({ version: 1, createdAt: Date.now() }),
-			"utf-8",
-		);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to write reset marker", { path: markerPath, error: String(error) });
-		}
-	}
+	await fs.writeFile(
+		markerPath,
+		JSON.stringify({ version: 1, createdAt: Date.now() }),
+		"utf-8",
+	);
 }
 
 async function removeIntentionalResetMarker(storagePath: string): Promise<void> {
@@ -1803,7 +1795,16 @@ export async function clearAccounts(): Promise<void> {
 	// before the primary disappears, later loads still require a canonical file and never revive
 	// token-bearing WAL or backup artifacts while the marker is present. Logging stays path-only.
 	// See test/storage-recovery-paths.test.ts for the reset -> assessment -> load regression.
-	await writeIntentionalResetMarker(path);
+	try {
+		await writeIntentionalResetMarker(path);
+	} catch (error) {
+		log.error("Failed to write reset marker; aborting reset to prevent token revival", {
+			path,
+			markerPath,
+			error: String(error),
+		});
+		throw error;
+	}
 
 	for (const targetPath of [path, walPath]) {
 		try {
