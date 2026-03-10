@@ -73,7 +73,8 @@ Examples:
 Filename rules:
 
 - prompts for a filename and appends `.json` when omitted
-- rejects separators, traversal (`..`), rotation-style names containing `.rotate.`, and temporary suffixes ending in `.tmp` or `.wal`
+- only ASCII letters, digits, underscores, and hyphens are allowed in the basename before `.json`
+- rejects spaces, extra dots, separators, traversal (`..`), rotation-style names containing `.rotate.`, and temporary suffixes ending in `.tmp` or `.wal`
 - collisions fail safely instead of overwriting by default
 
 ---
