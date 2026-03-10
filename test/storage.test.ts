@@ -44,6 +44,47 @@ describe("storage", () => {
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
 	});
 	describe("deduplication", () => {
+		it("remaps activeIndexByFamily after deduplication using the active account key", () => {
+			const now = Date.now();
+
+			const raw = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 3 },
+				accounts: [
+					{
+						accountId: "acctA",
+						refreshToken: "tokenA-old",
+						addedAt: now - 3_000,
+						lastUsed: now - 3_000,
+					},
+					{
+						accountId: "acctA",
+						refreshToken: "tokenA-new",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+					{
+						accountId: "acctB",
+						refreshToken: "tokenB-old",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+					{
+						accountId: "acctB",
+						refreshToken: "tokenB-new",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+
+			const normalized = normalizeAccountStorage(raw);
+			expect(normalized).not.toBeNull();
+			expect(normalized?.accounts).toHaveLength(2);
+			expect(normalized?.activeIndexByFamily?.codex).toBe(1);
+		});
+
 		it("remaps activeIndex after deduplication using active account key", () => {
 			const now = Date.now();
 
@@ -2318,35 +2359,34 @@ describe("storage", () => {
 	});
 });
 
+it("clearAccounts removes discovered backup artifacts as well as fixed slots", async () => {
+	const storagePath = getStoragePath();
+	const discoveredBackup = join(
+		dirname(storagePath),
+		"openai-codex-accounts.json.20260310-010101.json",
+	);
+	const storage = {
+		version: 3,
+		activeIndex: 0,
+		activeIndexByFamily: { codex: 0 },
+		accounts: [
+			{
+				email: "clear@example.com",
+				refreshToken: "refresh-clear",
+				accessToken: "access-clear",
+				expiresAt: Date.now() + 3_600_000,
+				addedAt: Date.now(),
+				lastUsed: Date.now(),
+				accountId: "acc-clear",
+				enabled: true,
+			},
+		],
+	};
+	await fs.writeFile(storagePath, JSON.stringify(storage), "utf-8");
+	await fs.writeFile(discoveredBackup, JSON.stringify(storage), "utf-8");
 
-	it("clearAccounts removes discovered backup artifacts as well as fixed slots", async () => {
-		const storagePath = getStoragePath();
-		const discoveredBackup = join(
-			dirname(storagePath),
-			"openai-codex-accounts.json.20260310-010101.json",
-		);
-		const storage = {
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "clear@example.com",
-					refreshToken: "refresh-clear",
-					accessToken: "access-clear",
-					expiresAt: Date.now() + 3_600_000,
-					addedAt: Date.now(),
-					lastUsed: Date.now(),
-					accountId: "acc-clear",
-					enabled: true,
-				},
-			],
-		};
-		await fs.writeFile(storagePath, JSON.stringify(storage), "utf-8");
-		await fs.writeFile(discoveredBackup, JSON.stringify(storage), "utf-8");
+	await clearAccounts();
 
-		await clearAccounts();
-
-		expect(existsSync(storagePath)).toBe(false);
-		expect(existsSync(discoveredBackup)).toBe(false);
-	});
+	expect(existsSync(storagePath)).toBe(false);
+	expect(existsSync(discoveredBackup)).toBe(false);
+});
