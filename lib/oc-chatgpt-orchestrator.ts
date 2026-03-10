@@ -12,7 +12,11 @@ import {
 	type OcChatgptTargetDetectionResult,
 	type OcChatgptTargetNone,
 } from "./oc-chatgpt-target-detection.js";
-import { type AccountStorageV3, exportNamedBackup, normalizeAccountStorage } from "./storage.js";
+import {
+	type AccountStorageV3,
+	exportNamedBackup,
+	normalizeAccountStorage,
+} from "./storage.js";
 
 type BlockedAmbiguous = {
 	kind: "blocked-ambiguous";
@@ -44,7 +48,9 @@ type DetectOptions = {
 type PlanDependencies = {
 	detectTarget?: typeof detectOcChatgptMultiAuthTarget;
 	previewMerge?: typeof previewOcChatgptImportMerge;
-	loadTargetStorage?: (target: OcChatgptTargetDescriptor) => Promise<AccountStorageV3 | null>;
+	loadTargetStorage?: (
+		target: OcChatgptTargetDescriptor,
+	) => Promise<AccountStorageV3 | null>;
 };
 
 export type PlanOcChatgptSyncOptions = {
@@ -66,7 +72,9 @@ function mapDetectionToBlocked(
 	return null;
 }
 
-async function loadTargetStorageDefault(target: OcChatgptTargetDescriptor): Promise<AccountStorageV3 | null> {
+async function loadTargetStorageDefault(
+	target: OcChatgptTargetDescriptor,
+): Promise<AccountStorageV3 | null> {
 	try {
 		const raw = JSON.parse(await fs.readFile(target.accountPath, "utf-8"));
 		return normalizeAccountStorage(raw);
@@ -95,9 +103,12 @@ export async function planOcChatgptSync(
 	}
 
 	const descriptor = detection.descriptor;
-	const destination = options.destination === undefined
-		? await (options.dependencies?.loadTargetStorage ?? loadTargetStorageDefault)(descriptor)
-		: options.destination;
+	const destination =
+		options.destination === undefined
+			? await (
+					options.dependencies?.loadTargetStorage ?? loadTargetStorageDefault
+				)(descriptor)
+			: options.destination;
 	const preview = previewMerge({
 		source: options.source,
 		destination,
@@ -156,23 +167,23 @@ export async function applyOcChatgptSync(
 	options: ApplyOcChatgptSyncOptions,
 ): Promise<OcChatgptSyncApplyResult> {
 	const dependencies = options.dependencies ?? {};
-	const plan = await planOcChatgptSync({
-		source: options.source,
-		destination: options.destination,
-		detectOptions: options.detectOptions,
-		dependencies: {
-			detectTarget: dependencies.detectTarget,
-			previewMerge: dependencies.previewMerge,
-			loadTargetStorage: dependencies.loadTargetStorage,
-		},
-	});
-
-	if (plan.kind !== "ready") {
-		return plan;
-	}
-
-	const persistMerged = dependencies.persistMerged ?? persistMergedDefault;
 	try {
+		const plan = await planOcChatgptSync({
+			source: options.source,
+			destination: options.destination,
+			detectOptions: options.detectOptions,
+			dependencies: {
+				detectTarget: dependencies.detectTarget,
+				previewMerge: dependencies.previewMerge,
+				loadTargetStorage: dependencies.loadTargetStorage,
+			},
+		});
+
+		if (plan.kind !== "ready") {
+			return plan;
+		}
+
+		const persistMerged = dependencies.persistMerged ?? persistMergedDefault;
 		const persistedPath = await persistMerged(plan.target, plan.preview.merged);
 		return {
 			kind: "applied",
@@ -183,7 +194,17 @@ export async function applyOcChatgptSync(
 			persistedPath,
 		};
 	} catch (error) {
-		return { kind: "error", target: plan.target, error };
+		const detection =
+			dependencies.detectTarget?.(options.detectOptions) ??
+			detectOcChatgptMultiAuthTarget(options.detectOptions);
+		const blocked = mapDetectionToBlocked(detection);
+		if (blocked) {
+			return blocked;
+		}
+		if (detection.kind !== "target") {
+			throw new Error("Unexpected oc target detection result");
+		}
+		return { kind: "error", target: detection.descriptor, error };
 	}
 }
 
@@ -214,7 +235,11 @@ export type RunNamedBackupExportResult =
 
 function extractCollisionPath(error: unknown): string | undefined {
 	const asErr = error as Partial<NodeJS.ErrnoException> & { message?: string };
-	if (asErr?.code === "EEXIST" && typeof asErr?.path === "string" && asErr.path.trim().length > 0) {
+	if (
+		asErr?.code === "EEXIST" &&
+		typeof asErr?.path === "string" &&
+		asErr.path.trim().length > 0
+	) {
 		return asErr.path;
 	}
 	const message = (asErr?.message ?? "").trim();

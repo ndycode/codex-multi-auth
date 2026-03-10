@@ -33,6 +33,7 @@ describe("oc-chatgpt target detection", () => {
 	const originalHome = process.env.HOME;
 	const originalUserProfile = process.env.USERPROFILE;
 	const originalOverride = process.env.OC_CHATGPT_MULTI_AUTH_DIR;
+	const originalPlatform = process.platform;
 	let workDir: string;
 	let homeDir: string;
 
@@ -56,6 +57,10 @@ describe("oc-chatgpt target detection", () => {
 		if (originalOverride === undefined)
 			delete process.env.OC_CHATGPT_MULTI_AUTH_DIR;
 		else process.env.OC_CHATGPT_MULTI_AUTH_DIR = originalOverride;
+		Object.defineProperty(process, "platform", {
+			value: originalPlatform,
+			configurable: true,
+		});
 		await removeWithRetry(workDir, { recursive: true, force: true });
 	});
 
@@ -178,6 +183,19 @@ describe("oc-chatgpt target detection", () => {
 		}
 	});
 
+	it("preserves Windows drive roots and matches explicit roots after normalization", async () => {
+		Object.defineProperty(process, "platform", {
+			value: "win32",
+			configurable: true,
+		});
+		const explicitRoot = "C:\\";
+		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
+		expect(result.kind).toBe("none");
+		if (result.kind === "none") {
+			expect(result.tried[0]?.root).toBe("C:\\");
+		}
+	});
+
 	it("prefers explicit override containing backup artifacts", async () => {
 		const overrideRoot = join(workDir, "override-root");
 		const backupsDir = join(overrideRoot, "backups");
@@ -253,8 +271,16 @@ describe("oc-chatgpt target detection", () => {
 		const explicitRoot = join(workDir, "artifact-filter-root");
 		const backupsDir = join(explicitRoot, "backups");
 		await fs.mkdir(backupsDir, { recursive: true });
-		await fs.writeFile(join(backupsDir, "openai-codex-accounts.json.rotate.1"), "{}", "utf-8");
-		await fs.writeFile(join(backupsDir, "openai-codex-accounts.json.tmp"), "{}", "utf-8");
+		await fs.writeFile(
+			join(backupsDir, "openai-codex-accounts.json.rotate.1"),
+			"{}",
+			"utf-8",
+		);
+		await fs.writeFile(
+			join(backupsDir, "openai-codex-accounts.json.tmp"),
+			"{}",
+			"utf-8",
+		);
 
 		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
 		assertTarget(result, "global", explicitRoot);
@@ -262,5 +288,4 @@ describe("oc-chatgpt target detection", () => {
 			expect(result.descriptor.resolution).toBe("signals");
 		}
 	});
-
 });

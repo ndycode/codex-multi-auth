@@ -219,7 +219,9 @@ describe("oc-chatgpt orchestrator", () => {
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") {
 			expect(result.error).toBe(persistError);
-			expect(result.target.accountPath).toBe("C:/locked/openai-codex-accounts.json");
+			expect(result.target.accountPath).toBe(
+				"C:/locked/openai-codex-accounts.json",
+			);
 		}
 	});
 
@@ -286,7 +288,9 @@ describe("oc-chatgpt orchestrator", () => {
 	it("passes injected loadTargetStorage through apply planning when destination is omitted", async () => {
 		const loadedDestination = { ...destinationStorage, activeIndex: 0 };
 		const loadTargetStorage = vi.fn(async () => loadedDestination);
-		const persistMerged = vi.fn(async () => "C:/target/openai-codex-accounts.json");
+		const persistMerged = vi.fn(
+			async () => "C:/target/openai-codex-accounts.json",
+		);
 		const result = await applyOcChatgptSync({
 			source: sourceStorage,
 			dependencies: {
@@ -309,4 +313,37 @@ describe("oc-chatgpt orchestrator", () => {
 		expect(result.kind).toBe("applied");
 	});
 
+	it("returns structured error when loadTargetStorage throws during apply", async () => {
+		const loadError = Object.assign(new Error("EACCES: permission denied"), {
+			code: "EACCES",
+		});
+
+		const result = await applyOcChatgptSync({
+			source: sourceStorage,
+			dependencies: {
+				detectTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: "C:/target",
+						accountPath: "C:/target/openai-codex-accounts.json",
+						backupRoot: "C:/target/backups",
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+				loadTargetStorage: async () => {
+					throw loadError;
+				},
+			},
+		});
+
+		expect(result.kind).toBe("error");
+		if (result.kind === "error") {
+			expect(result.error).toBe(loadError);
+			expect(result.target.accountPath).toBe(
+				"C:/target/openai-codex-accounts.json",
+			);
+		}
+	});
 });
