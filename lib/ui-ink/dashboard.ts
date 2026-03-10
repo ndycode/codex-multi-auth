@@ -87,6 +87,16 @@ function formatRelativeTime(timestamp: number | undefined): string {
 	return new Date(timestamp).toLocaleDateString();
 }
 
+function sanitizeTerminalText(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const ansiPattern = new RegExp("\\u001B\\[[0-?]*[ -/]*[@-~]", "g");
+	const controlPattern = new RegExp("[\\u0000-\\u001F\\u007F]", "g");
+	return value
+		.replace(ansiPattern, "")
+		.replace(controlPattern, "")
+		.trim();
+}
+
 function actionTone(action: AuthDashboardActionViewModel): InkShellTone {
 	switch (action.tone) {
 		case "red":
@@ -117,7 +127,11 @@ function accountTone(account: AuthAccountViewModel): InkShellTone {
 
 function formatAccountLabel(account: AuthAccountViewModel, displayIndex: number): string {
 	const number = account.quickSwitchNumber ?? (displayIndex + 1);
-	const base = account.email ?? account.accountLabel ?? account.accountId ?? `Account ${number}`;
+	const base =
+		sanitizeTerminalText(account.email) ??
+		sanitizeTerminalText(account.accountLabel) ??
+		sanitizeTerminalText(account.accountId) ??
+		`Account ${number}`;
 	return `${number}. ${base}`;
 }
 
@@ -128,7 +142,12 @@ function formatAccountDetail(account: AuthAccountViewModel): string | undefined 
 	if (account.showLastUsed !== false) {
 		parts.push(`last used ${formatRelativeTime(account.lastUsed)}`);
 	}
-	if (account.quotaSummary) parts.push(account.quotaSummary);
+	if (account.quotaSummary) {
+		const sanitizedQuota = sanitizeTerminalText(account.quotaSummary);
+		if (sanitizedQuota) {
+			parts.push(sanitizedQuota);
+		}
+	}
 	return parts.length > 0 ? parts.join(" | ") : undefined;
 }
 

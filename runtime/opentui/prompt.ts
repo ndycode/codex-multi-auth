@@ -137,6 +137,13 @@ export async function promptOpenTuiAuthDashboard(
 				options.onWorkspaceAction?.(action);
 			},
 			onExit: (reason, renderer) => {
+				if (!destroyRenderer) {
+					destroyRenderer = () => {
+						if (!renderer.isDestroyed) {
+							renderer.destroy();
+						}
+					};
+				}
 				options.onExit?.(reason, renderer);
 				finish({ mode: "cancel" });
 			},

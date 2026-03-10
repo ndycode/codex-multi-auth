@@ -228,9 +228,6 @@ function InkTextConfirmApp(props: InkTextConfirmAppProps) {
 		const nextValue = `${valueRef.current}${nextLetters}`.slice(0, confirmText.length);
 		valueRef.current = nextValue;
 		setValue(nextValue);
-		if (nextValue.toUpperCase() === confirmText) {
-			resolve(true);
-		}
 	});
 
 	return createElement(

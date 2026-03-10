@@ -335,9 +335,9 @@ export function createDefaultOpenTuiDashboard(): AuthDashboardViewModel {
 			accounts: [
 				{
 					email: "alpha@example.com",
-					accountId: "acc_alpha",
-					refreshToken: "refresh-alpha",
-					accessToken: "access-alpha",
+					accountId: "sample-alpha",
+					refreshToken: "placeholder-alpha",
+					accessToken: "placeholder-alpha-access",
 					expiresAt: now + 3_600_000,
 					addedAt: now - 400_000,
 					lastUsed: now - 86_400_000,
@@ -345,9 +345,9 @@ export function createDefaultOpenTuiDashboard(): AuthDashboardViewModel {
 				},
 				{
 					email: "beta@example.com",
-					accountId: "acc_beta",
-					refreshToken: "refresh-beta",
-					accessToken: "access-beta",
+					accountId: "sample-beta",
+					refreshToken: "placeholder-beta",
+					accessToken: "placeholder-beta-access",
 					expiresAt: now + 3_600_000,
 					addedAt: now - 200_000,
 					lastUsed: now - 1_000,
@@ -355,9 +355,9 @@ export function createDefaultOpenTuiDashboard(): AuthDashboardViewModel {
 				},
 				{
 					email: "gamma@example.com",
-					accountId: "acc_gamma",
-					refreshToken: "refresh-gamma",
-					accessToken: "access-gamma",
+					accountId: "sample-gamma",
+					refreshToken: "placeholder-gamma",
+					accessToken: "placeholder-gamma-access",
 					expiresAt: now + 3_600_000,
 					addedAt: now - 100_000,
 					lastUsed: now - 172_800_000,
@@ -402,3 +402,4 @@ export function createDefaultOpenTuiDashboard(): AuthDashboardViewModel {
 		statusMessage: "Loading live limits...",
 	});
 }
+

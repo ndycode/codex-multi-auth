@@ -118,9 +118,11 @@ describe("ink detail and recovery flows", () => {
 		});
 
 		await new Promise((resolve) => setTimeout(resolve, 30));
-		for (const key of ["D", "E", "L", "E", "T", "E", "\r"]) {
+		for (const key of ["D", "E", "L", "E", "T", "E"]) {
 			input.push(key);
+			await new Promise((resolve) => setTimeout(resolve, 15));
 		}
+		input.push("\r");
 
 		await expect(resultPromise).resolves.toBe(true);
 	});
