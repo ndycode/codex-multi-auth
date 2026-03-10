@@ -29,6 +29,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Security audit (CI policy)
+        run: npm run audit:ci
+
+      - name: Lockfile floor guard
+        run: npm run test -- test/lockfile-version-floor.test.ts
+
       - name: Repository hygiene check
         run: npm run clean:repo:check
 
