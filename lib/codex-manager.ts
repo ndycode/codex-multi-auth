@@ -3808,7 +3808,7 @@ async function runAuthLogin(): Promise<number> {
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
 					await runActionPanel("Reset Accounts", "Deleting all saved accounts", async () => {
 						await clearAccountsAndReset();
-						console.log("Deleted all accounts.");
+						console.log("Cleared saved accounts from active storage. Recovery snapshots remain available.");
 					}, displaySettings);
 					continue;
 				}

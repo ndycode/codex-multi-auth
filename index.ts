@@ -3180,7 +3180,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 											await clearAccounts();
 											await clearFlaggedAccounts();
 											invalidateAccountManagerCache();
-											console.log("\nDeleted all accounts. Starting fresh.\n");
+											console.log(
+												"\nCleared saved accounts from active storage. Recovery snapshots remain available. Starting fresh.\n",
+											);
 										}
 										break;
 									}

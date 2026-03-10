@@ -276,11 +276,35 @@ function pathsEqualNormalized(a: string, b: string): boolean {
 	return normalizePathForDedup(a) === normalizePathForDedup(b);
 }
 
+function inferHomeFromStoragePath(currentPath: string): string | null {
+	const storageDir = dirname(currentPath);
+	if (basename(storageDir) === "multi-auth") {
+		const codexRoot = dirname(storageDir);
+		if (basename(codexRoot) === ".codex") {
+			return dirname(codexRoot);
+		}
+		if (
+			basename(codexRoot) === "codex" &&
+			basename(dirname(codexRoot)) === "config" &&
+			basename(dirname(dirname(codexRoot))) === "DevTools"
+		) {
+			return dirname(dirname(dirname(codexRoot)));
+		}
+	}
+
+	if (basename(storageDir) === ".codex") {
+		return dirname(storageDir);
+	}
+
+	return null;
+}
+
 function getFallbackAccountStoragePaths(currentPath: string): string[] {
-	const canonicalRoot = dirname(currentPath);
-	const canonicalHome = dirname(canonicalRoot);
 	const legacyRoot = getLegacyCodexDir();
-	const candidateHomes = deduplicatePathList([dirname(canonicalHome), dirname(legacyRoot)]);
+	const inferredHome = inferHomeFromStoragePath(currentPath);
+	const candidateHomes = inferredHome
+		? deduplicatePathList([inferredHome, dirname(legacyRoot)])
+		: [];
 
 	const candidates = deduplicatePathList(
 		candidateHomes.flatMap((home) => [
