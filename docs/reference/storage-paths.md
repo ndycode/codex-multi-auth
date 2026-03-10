@@ -35,6 +35,11 @@ Ownership note:
 
 - `~/.codex/multi-auth/*` is managed by this project.
 - `~/.codex/accounts.json` and `~/.codex/auth.json` are managed by official Codex CLI.
+- The `codex` wrapper preserves that official CLI file-backed auth layout by forwarding non-auth commands with `-c cli_auth_credentials_store="file"`, unless the caller already set `cli_auth_credentials_store` explicitly.
+
+Compatibility note:
+
+- This file-store forwarding keeps auth state readable from disk outside interactive terminals, so wrapper forwarding and non-TTY auth flows stay deterministic after the Ink migration.
 
 ---
 
@@ -69,6 +74,32 @@ Examples:
 
 - `~/DevTools/config/codex/`
 - older pre-`~/.codex/multi-auth` custom roots
+
+---
+
+## Named Backup Exports
+
+Experimental named backup exports are written under the local plugin-owned backup namespace beside the active accounts file:
+
+- global root: `~/.codex/multi-auth/backups/<name>.json`
+- project root: `~/.codex/multi-auth/projects/<project-key>/backups/<name>.json`
+
+Rules:
+
+- `.json` is appended when omitted
+- path separators and `..` are rejected
+- `.rotate.`, `.tmp`, and `.wal` names are rejected
+- existing files are not overwritten unless a lower-level force path is used explicitly
+
+---
+
+## oc-chatgpt Target Paths
+
+Experimental sync targets the companion `oc-chatgpt-multi-auth` storage layout:
+
+- global target: `~/.opencode/openai-codex-accounts.json`
+- project target: `~/.opencode/projects/<project-key>/openai-codex-accounts.json`
+- target backups: `~/.opencode/backups/` or project-local `backups/` beside the target account file
 
 ---
 
