@@ -10,7 +10,11 @@ import {
 } from "./auth/auth.js";
 import { startLocalOAuthServer } from "./auth/server.js";
 import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
-import { promptAddAnotherAccount, promptLoginMode, type ExistingAccountInfo } from "./cli.js";
+import {
+	isNonInteractiveMode,
+	promptAddAnotherAccount,
+	promptLoginMode,
+} from "./cli.js";
 import {
 	extractAccountEmail,
 	extractAccountId,
@@ -27,7 +31,6 @@ import {
 	loadDashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 	type DashboardDisplaySettings,
-	type DashboardAccountSortMode,
 } from "./dashboard-settings.js";
 import {
 	evaluateForecastAccounts,
@@ -50,6 +53,10 @@ import {
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
 import {
+	cloneAccountStorage,
+	createEmptyAccountStorage,
+	clearAccounts,
+	getRestoreAssessment,
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
@@ -59,6 +66,7 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
+	withAccountStorageTransaction,
 } from "./storage.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import {
@@ -72,7 +80,21 @@ import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { select, type MenuItem } from "./ui/select.js";
-import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, resolveMenuLayoutMode } from "./codex-manager/settings-hub.js";
+import {
+	buildAuthDashboardViewModel,
+	formatCompactQuotaSnapshot,
+	formatRateLimitEntry,
+	getQuotaCacheEntryForAccount,
+	resolveActiveIndex,
+	resolveAuthDashboardCommand,
+} from "./codex-manager/auth-ui-controller.js";
+import { applyUiThemeFromDashboardSettings, configureUnifiedSettings } from "./codex-manager/settings-hub.js";
+import {
+	configureInkUnifiedSettings,
+	promptInkAuthDashboard,
+	promptInkRestoreForLogin,
+	type InkShellTone,
+} from "./ui-ink/index.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 type TokenSuccessWithAccount = TokenSuccess & {
@@ -300,7 +322,7 @@ function printUsage(): void {
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
-			"  - Syncs active account into Codex CLI auth state",
+			"  - Syncs active account into Codex CLI auth mirror",
 		].join("\n"),
 	);
 }
@@ -362,141 +384,6 @@ function runFeaturesReport(): number {
 	return 0;
 }
 
-function resolveActiveIndex(
-	storage: AccountStorageV3,
-	family: ModelFamily = "codex",
-): number {
-	const total = storage.accounts.length;
-	if (total === 0) return 0;
-	const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-	const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-	return Math.max(0, Math.min(raw, total - 1));
-}
-
-function getRateLimitResetTimeForFamily(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily,
-): number | null {
-	const times = account.rateLimitResetTimes;
-	if (!times) return null;
-
-	let minReset: number | null = null;
-	const prefix = `${family}:`;
-	for (const [key, value] of Object.entries(times)) {
-		if (typeof value !== "number") continue;
-		if (value <= now) continue;
-		if (key !== family && !key.startsWith(prefix)) continue;
-		if (minReset === null || value < minReset) {
-			minReset = value;
-		}
-	}
-
-	return minReset;
-}
-
-function formatRateLimitEntry(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily = "codex",
-): string | null {
-	const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-	if (typeof resetAt !== "number") return null;
-	const remaining = resetAt - now;
-	if (remaining <= 0) return null;
-	return `resets in ${formatWaitTime(remaining)}`;
-}
-
-function normalizeQuotaEmail(email: string | undefined): string | null {
-	const normalized = sanitizeEmail(email);
-	return normalized && normalized.length > 0 ? normalized : null;
-}
-
-function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
-	return {
-		status: entry.status,
-		planType: entry.planType,
-		model: entry.model,
-		primary: {
-			usedPercent: entry.primary.usedPercent,
-			windowMinutes: entry.primary.windowMinutes,
-			resetAtMs: entry.primary.resetAtMs,
-		},
-		secondary: {
-			usedPercent: entry.secondary.usedPercent,
-			windowMinutes: entry.secondary.windowMinutes,
-			resetAtMs: entry.secondary.resetAtMs,
-		},
-	};
-}
-
-function formatCompactQuotaWindowLabel(windowMinutes: number | undefined): string {
-	if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
-		return "quota";
-	}
-	if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`;
-	if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
-	return `${windowMinutes}m`;
-}
-
-function formatCompactQuotaPart(windowMinutes: number | undefined, usedPercent: number | undefined): string | null {
-	const label = formatCompactQuotaWindowLabel(windowMinutes);
-	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
-		return null;
-	}
-	const left = quotaLeftPercentFromUsed(usedPercent);
-	return `${label} ${left}%`;
-}
-
-function quotaLeftPercentFromUsed(usedPercent: number | undefined): number | undefined {
-	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
-		return undefined;
-	}
-	return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
-}
-
-function formatCompactQuotaSnapshot(snapshot: CodexQuotaSnapshot): string {
-	const parts = [
-		formatCompactQuotaPart(snapshot.primary.windowMinutes, snapshot.primary.usedPercent),
-		formatCompactQuotaPart(snapshot.secondary.windowMinutes, snapshot.secondary.usedPercent),
-	].filter((value): value is string => typeof value === "string" && value.length > 0);
-	if (snapshot.status === 429) {
-		parts.push("rate-limited");
-	}
-	if (parts.length > 0) {
-		return parts.join(" | ");
-	}
-	return formatQuotaSnapshotLine(snapshot);
-}
-
-function formatAccountQuotaSummary(entry: QuotaCacheEntry): string {
-	const parts = [
-		formatCompactQuotaPart(entry.primary.windowMinutes, entry.primary.usedPercent),
-		formatCompactQuotaPart(entry.secondary.windowMinutes, entry.secondary.usedPercent),
-	].filter((value): value is string => typeof value === "string" && value.length > 0);
-	if (entry.status === 429) {
-		parts.push("rate-limited");
-	}
-	if (parts.length > 0) {
-		return parts.join(" | ");
-	}
-	return formatQuotaSnapshotLine(quotaCacheEntryToSnapshot(entry));
-}
-
-function getQuotaCacheEntryForAccount(
-	cache: QuotaCacheData,
-	account: Pick<AccountMetadataV3, "accountId" | "email">,
-): QuotaCacheEntry | null {
-	if (account.accountId && cache.byAccountId[account.accountId]) {
-		return cache.byAccountId[account.accountId] ?? null;
-	}
-	const email = normalizeQuotaEmail(account.email);
-	if (email && cache.byEmail[email]) {
-		return cache.byEmail[email] ?? null;
-	}
-	return null;
-}
-
 function updateQuotaCacheForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
@@ -524,7 +411,7 @@ function updateQuotaCacheForAccount(
 		cache.byAccountId[account.accountId] = nextEntry;
 		changed = true;
 	}
-	const email = normalizeQuotaEmail(account.email);
+	const email = sanitizeEmail(account.email);
 	if (email) {
 		cache.byEmail[email] = nextEntry;
 		changed = true;
@@ -659,167 +546,6 @@ function hasLikelyInvalidRefreshToken(refreshToken: string | undefined): boolean
 	return trimmed.startsWith("token-");
 }
 
-function mapAccountStatus(
-	account: AccountMetadataV3,
-	index: number,
-	activeIndex: number,
-	now: number,
-): ExistingAccountInfo["status"] {
-	if (account.enabled === false) return "disabled";
-	if (typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now) {
-		return "cooldown";
-	}
-	const rateLimit = formatRateLimitEntry(account, now, "codex");
-	if (rateLimit) return "rate-limited";
-	if (index === activeIndex) return "active";
-	return "ok";
-}
-
-function parseLeftPercentFromQuotaSummary(
-	summary: string | undefined,
-	windowLabel: "5h" | "7d",
-): number {
-	if (!summary) return -1;
-	const match = summary.match(new RegExp(`(?:^|\\|)\\s*${windowLabel}\\s+(\\d{1,3})%`, "i"));
-	const value = Number.parseInt(match?.[1] ?? "", 10);
-	if (!Number.isFinite(value)) return -1;
-	return Math.max(0, Math.min(100, value));
-}
-
-function readQuotaLeftPercent(
-	account: ExistingAccountInfo,
-	windowLabel: "5h" | "7d",
-): number {
-	const direct = windowLabel === "5h" ? account.quota5hLeftPercent : account.quota7dLeftPercent;
-	if (typeof direct === "number" && Number.isFinite(direct)) {
-		return Math.max(0, Math.min(100, Math.round(direct)));
-	}
-	return parseLeftPercentFromQuotaSummary(account.quotaSummary, windowLabel);
-}
-
-function accountStatusSortBucket(status: ExistingAccountInfo["status"]): number {
-	switch (status) {
-		case "active":
-		case "ok":
-			return 0;
-		case "unknown":
-			return 1;
-		case "cooldown":
-		case "rate-limited":
-			return 2;
-		case "disabled":
-		case "error":
-		case "flagged":
-			return 3;
-		default:
-			return 1;
-	}
-}
-
-function compareReadyFirstAccounts(
-	left: ExistingAccountInfo,
-	right: ExistingAccountInfo,
-): number {
-	const left5h = readQuotaLeftPercent(left, "5h");
-	const right5h = readQuotaLeftPercent(right, "5h");
-	if (left5h !== right5h) return right5h - left5h;
-
-	const left7d = readQuotaLeftPercent(left, "7d");
-	const right7d = readQuotaLeftPercent(right, "7d");
-	if (left7d !== right7d) return right7d - left7d;
-
-	const bucketDelta = accountStatusSortBucket(left.status) - accountStatusSortBucket(right.status);
-	if (bucketDelta !== 0) return bucketDelta;
-
-	const leftLastUsed = left.lastUsed ?? 0;
-	const rightLastUsed = right.lastUsed ?? 0;
-	if (leftLastUsed !== rightLastUsed) return rightLastUsed - leftLastUsed;
-
-	const leftSource = left.sourceIndex ?? left.index;
-	const rightSource = right.sourceIndex ?? right.index;
-	return leftSource - rightSource;
-}
-
-function applyAccountMenuOrdering(
-	accounts: ExistingAccountInfo[],
-	displaySettings: DashboardDisplaySettings,
-): ExistingAccountInfo[] {
-	const sortEnabled =
-		displaySettings.menuSortEnabled ?? (DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ?? true);
-	const sortMode: DashboardAccountSortMode =
-		displaySettings.menuSortMode ?? (DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ?? "ready-first");
-	if (!sortEnabled || sortMode !== "ready-first") {
-		return [...accounts];
-	}
-
-	const sorted = [...accounts].sort(compareReadyFirstAccounts);
-	const pinCurrent = displaySettings.menuSortPinCurrent ??
-		(DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortPinCurrent ?? false);
-	if (pinCurrent) {
-		const currentIndex = sorted.findIndex((account) => account.isCurrentAccount);
-		if (currentIndex > 0) {
-			const current = sorted.splice(currentIndex, 1)[0];
-			const first = sorted[0];
-			if (current && first && compareReadyFirstAccounts(current, first) <= 0) {
-				sorted.unshift(current);
-			} else if (current) {
-				sorted.splice(currentIndex, 0, current);
-			}
-		}
-	}
-	return sorted;
-}
-
-function toExistingAccountInfo(
-	storage: AccountStorageV3,
-	quotaCache: QuotaCacheData | null,
-	displaySettings: DashboardDisplaySettings,
-): ExistingAccountInfo[] {
-	const now = Date.now();
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	const layoutMode = resolveMenuLayoutMode(displaySettings);
-	const baseAccounts = storage.accounts.map((account, index) => {
-		const entry = quotaCache ? getQuotaCacheEntryForAccount(quotaCache, account) : null;
-		return {
-			index,
-			sourceIndex: index,
-			accountId: account.accountId,
-			accountLabel: account.accountLabel,
-			email: account.email,
-			addedAt: account.addedAt,
-			lastUsed: account.lastUsed,
-			status: mapAccountStatus(account, index, activeIndex, now),
-			quotaSummary: (displaySettings.menuShowQuotaSummary ?? true) && entry
-				? formatAccountQuotaSummary(entry)
-				: undefined,
-			quota5hLeftPercent: quotaLeftPercentFromUsed(entry?.primary.usedPercent),
-			quota5hResetAtMs: entry?.primary.resetAtMs,
-			quota7dLeftPercent: quotaLeftPercentFromUsed(entry?.secondary.usedPercent),
-			quota7dResetAtMs: entry?.secondary.resetAtMs,
-			quotaRateLimited: entry?.status === 429,
-			isCurrentAccount: index === activeIndex,
-			enabled: account.enabled !== false,
-			showStatusBadge: displaySettings.menuShowStatusBadge ?? true,
-			showCurrentBadge: displaySettings.menuShowCurrentBadge ?? true,
-			showLastUsed: displaySettings.menuShowLastUsed ?? true,
-			showQuotaCooldown: displaySettings.menuShowQuotaCooldown ?? true,
-			showHintsForUnselectedRows: layoutMode === "expanded-rows",
-			highlightCurrentRow: displaySettings.menuHighlightCurrentRow ?? true,
-			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
-			statuslineFields: displaySettings.menuStatuslineFields ?? ["last-used", "limits", "status"],
-		};
-	});
-	const orderedAccounts = applyAccountMenuOrdering(baseAccounts, displaySettings);
-	const quickSwitchUsesVisibleRows = displaySettings.menuSortQuickSwitchVisibleRow ?? true;
-	return orderedAccounts.map((account, displayIndex) => ({
-		...account,
-		index: displayIndex,
-		quickSwitchNumber: quickSwitchUsesVisibleRows
-			? displayIndex + 1
-			: (account.sourceIndex ?? displayIndex) + 1,
-	}));
-}
-
 function resolveAccountSelection(tokens: TokenSuccess): TokenSuccessWithAccount {
 	const override = (process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
 	if (override) {
@@ -929,6 +655,196 @@ async function promptOAuthSignInMode(): Promise<OAuthSignInMode> {
 	});
 
 	return selected ?? "cancel";
+}
+
+function formatRestoreReasonText(reason: "empty-storage" | "intentional-reset" | "missing-storage" | undefined): string {
+	if (reason === "missing-storage") {
+		return "No saved account pool was found.";
+	}
+	if (reason === "empty-storage") {
+		return "The saved account pool is currently empty.";
+	}
+	if (reason === "intentional-reset") {
+		return "The saved account pool was intentionally reset.";
+	}
+	return "Saved accounts may be recoverable.";
+}
+
+function formatRestoreSnapshotKind(kind: string): string {
+	switch (kind) {
+		case "accounts-wal":
+			return "journal snapshot";
+		case "accounts-backup":
+			return "latest backup";
+		case "accounts-backup-history":
+			return "backup history";
+		case "accounts-discovered-backup":
+			return "discovered backup";
+		default:
+			return "saved snapshot";
+	}
+}
+
+function formatRestoreSnapshotInfo(
+	snapshot: {
+		kind: string;
+		path: string;
+		accountCount?: number;
+		bytes?: number;
+		mtimeMs?: number;
+	},
+): string {
+	const count = typeof snapshot.accountCount === "number"
+		? `${snapshot.accountCount} account${snapshot.accountCount === 1 ? "" : "s"}`
+		: "unknown account count";
+	const bytes = typeof snapshot.bytes === "number" ? `${snapshot.bytes} bytes` : "unknown size";
+	const updatedAt = typeof snapshot.mtimeMs === "number" && Number.isFinite(snapshot.mtimeMs)
+		? new Date(snapshot.mtimeMs).toLocaleString()
+		: "unknown time";
+	return `${formatRestoreSnapshotKind(snapshot.kind)} | ${count} | ${bytes} | ${updatedAt}\n${snapshot.path}`;
+}
+
+function findLatestRestorableSnapshot(
+	assessment: Awaited<ReturnType<typeof getRestoreAssessment>>,
+): Awaited<ReturnType<typeof getRestoreAssessment>>["latestSnapshot"] {
+	return assessment.backupMetadata.accounts.snapshots.find((snapshot) =>
+		snapshot.valid &&
+		snapshot.path !== assessment.storagePath &&
+		(snapshot.accountCount ?? 0) > 0,
+	) ?? undefined;
+}
+
+async function ensureEmptyAccountPoolExists(): Promise<void> {
+	if (existsSync(getStoragePath())) return;
+	await saveAccounts(createEmptyAccountStorage());
+}
+
+async function promptRestoreForLogin(
+	assessment: Awaited<ReturnType<typeof getRestoreAssessment>>,
+	snapshot: NonNullable<Awaited<ReturnType<typeof getRestoreAssessment>>["latestSnapshot"]>,
+): Promise<boolean> {
+	if (isNonInteractiveMode() || !input.isTTY || !output.isTTY) {
+		return false;
+	}
+
+	const inkResult = await promptInkRestoreForLogin({
+		reasonText: formatRestoreReasonText(assessment.restoreReason),
+		snapshotInfo: formatRestoreSnapshotInfo(snapshot),
+		snapshotCount: snapshot.accountCount ?? 0,
+	});
+	if (inkResult !== null) {
+		return inkResult;
+	}
+
+	const ui = getUiRuntimeOptions();
+	const items: MenuItem<boolean>[] = [
+		{
+			label: `Restore ${snapshot.accountCount ?? 0} saved account${snapshot.accountCount === 1 ? "" : "s"}`,
+			value: true,
+			color: "green",
+		},
+		{
+			label: "Continue to sign in",
+			value: false,
+			color: "yellow",
+		},
+	];
+
+	const selected = await select(items, {
+		message: "Restore saved accounts before signing in?",
+		subtitle: `${formatRestoreReasonText(assessment.restoreReason)}\n${formatRestoreSnapshotInfo(snapshot)}`,
+		help: "↑↓ Move | Enter Select | 1 Restore | 2 Continue | Q Continue",
+		clearScreen: true,
+		theme: ui.theme,
+		selectedEmphasis: "minimal",
+		allowEscape: false,
+		onInput: (raw) => {
+			const lower = raw.toLowerCase();
+			if (lower === "1" || lower === "r") return true;
+			if (lower === "2" || lower === "s" || lower === "q") return false;
+			return undefined;
+		},
+	});
+
+	return selected === true;
+}
+
+interface LoginStorageResolution {
+	storage: AccountStorageV3 | null;
+	statusText?: string;
+	statusTone?: InkShellTone;
+}
+
+async function promptDeleteAllForDashboard(): Promise<boolean> {
+	if (isNonInteractiveMode() || !input.isTTY || !output.isTTY) {
+		return false;
+	}
+	const rl = createInterface({ input, output });
+	try {
+		const answer = await rl.question("Type DELETE to remove all saved accounts: ");
+		return answer.trim() === "DELETE";
+	} finally {
+		rl.close();
+	}
+}
+
+async function resolveLoginStorage(): Promise<LoginStorageResolution> {
+	const assessment = await getRestoreAssessment();
+	const latestSnapshot = assessment.restoreEligible ? findLatestRestorableSnapshot(assessment) : undefined;
+
+	if (!assessment.restoreEligible || !latestSnapshot) {
+		return { storage: await loadAccounts() };
+	}
+
+	if (isNonInteractiveMode()) {
+		await ensureEmptyAccountPoolExists();
+		console.log(
+			stylePromptText(
+				`Restore available from ${formatRestoreSnapshotKind(latestSnapshot.kind)}; non-interactive mode skips the prompt and continues to sign in.`,
+				"muted",
+			),
+		);
+		return { storage: createEmptyAccountStorage() };
+	}
+
+	const shouldRestore = await promptRestoreForLogin(assessment, latestSnapshot);
+	if (!shouldRestore) {
+		await ensureEmptyAccountPoolExists();
+		return {
+			storage: createEmptyAccountStorage(),
+			statusText: "Skipping restore and continuing to sign in.",
+			statusTone: "warning",
+		};
+	}
+
+	if (assessment.restoreReason === "empty-storage") {
+		try {
+			await fs.unlink(assessment.storagePath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				console.warn(
+					`Restore preparation failed for ${assessment.storagePath}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+
+	const restored = await loadAccounts();
+	if (restored && restored.accounts.length > 0) {
+		return {
+			storage: restored,
+			statusText: `Restored ${restored.accounts.length} account${restored.accounts.length === 1 ? "" : "s"} from ${formatRestoreSnapshotKind(latestSnapshot.kind)}.`,
+			statusTone: "success",
+		};
+	}
+
+	await ensureEmptyAccountPoolExists();
+	return {
+		storage: createEmptyAccountStorage(),
+		statusText: `Restore did not recover any accounts from ${formatRestoreSnapshotKind(latestSnapshot.kind)}. Continuing to sign in.`,
+		statusTone: "warning",
+	};
 }
 
 interface WaitForReturnOptions {
@@ -1260,128 +1176,127 @@ async function persistAccountPool(
 ): Promise<void> {
 	if (results.length === 0) return;
 
-	const loadedStorage = replaceAll
-		? null
-		: await loadAccounts();
-	const now = Date.now();
-	const accounts = loadedStorage?.accounts ? [...loadedStorage.accounts] : [];
+	await withAccountStorageTransaction(async (current, persist) => {
+		const loadedStorage = replaceAll ? null : cloneAccountStorage(current);
+		const now = Date.now();
+		const accounts = loadedStorage?.accounts ? [...loadedStorage.accounts] : [];
 
-	const indexByRefreshToken = new Map<string, number>();
-	const indexByAccountId = new Map<string, number>();
-	const indexByEmail = new Map<string, number>();
-	let selectedAccountIndex: number | null = null;
+		const indexByRefreshToken = new Map<string, number>();
+		const indexByAccountId = new Map<string, number>();
+		const indexByEmail = new Map<string, number>();
+		let selectedAccountIndex: number | null = null;
 
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account) continue;
-		if (account.refreshToken) indexByRefreshToken.set(account.refreshToken, i);
-		if (account.accountId) indexByAccountId.set(account.accountId, i);
-		if (account.email) indexByEmail.set(account.email, i);
-	}
+		for (let i = 0; i < accounts.length; i += 1) {
+			const account = accounts[i];
+			if (!account) continue;
+			if (account.refreshToken) indexByRefreshToken.set(account.refreshToken, i);
+			if (account.accountId) indexByAccountId.set(account.accountId, i);
+			if (account.email) indexByEmail.set(account.email, i);
+		}
 
-	for (const result of results) {
-		const tokenAccountId = extractAccountId(result.access);
-		const accountId = resolveRequestAccountId(
-			result.accountIdOverride,
-			result.accountIdSource,
-			tokenAccountId,
-		);
-		const accountIdSource = accountId
-			? (result.accountIdSource ?? (result.accountIdOverride ? "manual" : "token"))
-			: undefined;
-		const accountLabel = result.accountLabel;
-		const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
-
-		const existingByEmail =
-			accountEmail && indexByEmail.has(accountEmail)
-				? indexByEmail.get(accountEmail)
+		for (const result of results) {
+			const tokenAccountId = extractAccountId(result.access);
+			const accountId = resolveRequestAccountId(
+				result.accountIdOverride,
+				result.accountIdSource,
+				tokenAccountId,
+			);
+			const accountIdSource = accountId
+				? (result.accountIdSource ?? (result.accountIdOverride ? "manual" : "token"))
 				: undefined;
-		const existingById =
-			accountId && indexByAccountId.has(accountId)
-				? indexByAccountId.get(accountId)
-				: undefined;
-		const existingByToken = indexByRefreshToken.get(result.refresh);
-		const existingIndex = existingById ?? existingByEmail ?? existingByToken;
+			const accountLabel = result.accountLabel;
+			const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
 
-		if (existingIndex === undefined) {
-			const newIndex = accounts.length;
-			accounts.push({
-				accountId,
-				accountIdSource,
-				accountLabel,
-				email: accountEmail,
+			const existingByEmail =
+				accountEmail && indexByEmail.has(accountEmail)
+					? indexByEmail.get(accountEmail)
+					: undefined;
+			const existingById =
+				accountId && indexByAccountId.has(accountId)
+					? indexByAccountId.get(accountId)
+					: undefined;
+			const existingByToken = indexByRefreshToken.get(result.refresh);
+			const existingIndex = existingById ?? existingByEmail ?? existingByToken;
+
+			if (existingIndex === undefined) {
+				const newIndex = accounts.length;
+				accounts.push({
+					accountId,
+					accountIdSource,
+					accountLabel,
+					email: accountEmail,
+					refreshToken: result.refresh,
+					accessToken: result.access,
+					expiresAt: result.expires,
+					enabled: true,
+					addedAt: now,
+					lastUsed: now,
+				});
+				indexByRefreshToken.set(result.refresh, newIndex);
+				if (accountId) indexByAccountId.set(accountId, newIndex);
+				if (accountEmail) indexByEmail.set(accountEmail, newIndex);
+				selectedAccountIndex = newIndex;
+				continue;
+			}
+
+			const existing = accounts[existingIndex];
+			if (!existing) continue;
+
+			const oldToken = existing.refreshToken;
+			const oldEmail = existing.email;
+			const nextEmail = accountEmail ?? existing.email;
+			const nextAccountId = accountId ?? existing.accountId;
+			const nextAccountIdSource = accountId
+				? (accountIdSource ?? existing.accountIdSource)
+				: existing.accountIdSource;
+
+			accounts[existingIndex] = {
+				...existing,
+				accountId: nextAccountId,
+				accountIdSource: nextAccountIdSource,
+				accountLabel: accountLabel ?? existing.accountLabel,
+				email: nextEmail,
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
 				enabled: true,
-				addedAt: now,
 				lastUsed: now,
-			});
-			indexByRefreshToken.set(result.refresh, newIndex);
-			if (accountId) indexByAccountId.set(accountId, newIndex);
-			if (accountEmail) indexByEmail.set(accountEmail, newIndex);
-			selectedAccountIndex = newIndex;
-			continue;
+			};
+			if (oldToken !== result.refresh) {
+				indexByRefreshToken.delete(oldToken);
+				indexByRefreshToken.set(result.refresh, existingIndex);
+			}
+			if (nextAccountId) {
+				indexByAccountId.set(nextAccountId, existingIndex);
+			}
+			if (oldEmail && oldEmail !== nextEmail) {
+				indexByEmail.delete(oldEmail);
+			}
+			if (nextEmail) {
+				indexByEmail.set(nextEmail, existingIndex);
+			}
+			selectedAccountIndex = existingIndex;
 		}
 
-		const existing = accounts[existingIndex];
-		if (!existing) continue;
-
-		const oldToken = existing.refreshToken;
-		const oldEmail = existing.email;
-		const nextEmail = accountEmail ?? existing.email;
-		const nextAccountId = accountId ?? existing.accountId;
-		const nextAccountIdSource = accountId
-			? (accountIdSource ?? existing.accountIdSource)
-			: existing.accountIdSource;
-
-		accounts[existingIndex] = {
-			...existing,
-			accountId: nextAccountId,
-			accountIdSource: nextAccountIdSource,
-			accountLabel: accountLabel ?? existing.accountLabel,
-			email: nextEmail,
-			refreshToken: result.refresh,
-			accessToken: result.access,
-			expiresAt: result.expires,
-			enabled: true,
-			lastUsed: now,
-		};
-
-		if (oldToken !== result.refresh) {
-			indexByRefreshToken.delete(oldToken);
-			indexByRefreshToken.set(result.refresh, existingIndex);
+		const fallbackActiveIndex = accounts.length === 0
+			? 0
+			: Math.max(0, Math.min(loadedStorage?.activeIndex ?? 0, accounts.length - 1));
+		const nextActiveIndex = accounts.length === 0
+			? 0
+			: selectedAccountIndex === null
+				? fallbackActiveIndex
+				: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
+		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+		for (const family of MODEL_FAMILIES) {
+			activeIndexByFamily[family] = nextActiveIndex;
 		}
-		if (nextAccountId) {
-			indexByAccountId.set(nextAccountId, existingIndex);
-		}
-		if (oldEmail && oldEmail !== nextEmail) {
-			indexByEmail.delete(oldEmail);
-		}
-		if (nextEmail) {
-			indexByEmail.set(nextEmail, existingIndex);
-		}
-		selectedAccountIndex = existingIndex;
-	}
 
-	const fallbackActiveIndex = accounts.length === 0
-		? 0
-		: Math.max(0, Math.min(loadedStorage?.activeIndex ?? 0, accounts.length - 1));
-	const nextActiveIndex = accounts.length === 0
-		? 0
-		: selectedAccountIndex === null
-			? fallbackActiveIndex
-			: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = nextActiveIndex;
-	}
-
-	await saveAccounts({
-		version: 3,
-		accounts,
-		activeIndex: nextActiveIndex,
-		activeIndexByFamily,
+		await persist({
+			version: 3,
+			accounts,
+			activeIndex: nextActiveIndex,
+			activeIndexByFamily,
+		});
 	});
 }
 
@@ -2385,19 +2300,6 @@ interface VerifyFlaggedReport {
 	message: string;
 }
 
-function createEmptyAccountStorage(): AccountStorageV3 {
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = 0;
-	}
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily,
-	};
-}
-
 function findExistingAccountIndexForFlagged(
 	storage: AccountStorageV3,
 	flagged: FlaggedAccountMetadataV1,
@@ -3340,9 +3242,9 @@ async function runDoctor(args: string[]): Promise<number> {
 		key: "codex-cli-state",
 		severity: codexCliState ? "ok" : "warn",
 		message: codexCliState
-			? "Codex CLI state loaded"
-			: "Codex CLI state unavailable",
-		details: codexCliState?.path,
+			? "Codex CLI mirror state loaded"
+			: "Codex CLI mirror state unavailable",
+		details: codexCliState?.path ? `${codexCliState.path} (mirror only)` : undefined,
 	});
 
 	const storage = await loadAccounts();
@@ -3501,8 +3403,8 @@ async function runDoctor(args: string[]): Promise<number> {
 				severity: isEmailMismatch || isAccountIdMismatch ? "warn" : "ok",
 				message:
 					isEmailMismatch || isAccountIdMismatch
-						? "Manager active account and Codex active account are not aligned"
-						: "Manager active account and Codex active account are aligned",
+						? "Manager active account and Codex mirror are not aligned"
+						: "Manager active account and Codex mirror are aligned",
 				details: `manager=${managerActiveEmail ?? managerActiveAccountId ?? "unknown"} | codex=${codexActiveEmail ?? codexActiveAccountId ?? "unknown"}`,
 			});
 
@@ -3574,13 +3476,13 @@ async function runDoctor(args: string[]): Promise<number> {
 						fixChanged = true;
 						fixActions.push({
 							key: "codex-active-sync",
-							message: "Synced manager active account into Codex auth state",
+							message: "Synced manager active account into Codex auth mirror",
 						});
 					} else {
 						addCheck({
 							key: "codex-active-sync",
 							severity: "warn",
-							message: "Failed to sync manager active account into Codex auth state",
+							message: "Failed to sync manager active account into Codex auth mirror",
 						});
 					}
 				} else {
@@ -3650,12 +3552,7 @@ async function runDoctor(args: string[]): Promise<number> {
 }
 
 async function clearAccountsAndReset(): Promise<void> {
-	await saveAccounts({
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-	});
+	await clearAccounts();
 }
 
 async function handleManageAction(
@@ -3671,13 +3568,19 @@ async function handleManageAction(
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
-			storage.accounts.splice(idx, 1);
-			storage.activeIndex = 0;
-			storage.activeIndexByFamily = {};
-			for (const family of MODEL_FAMILIES) {
-				storage.activeIndexByFamily[family] = 0;
-			}
-			await saveAccounts(storage);
+			await withAccountStorageTransaction(async (current, persist) => {
+				const nextStorage = cloneAccountStorage(current) ?? createEmptyAccountStorage();
+				if (idx < 0 || idx >= nextStorage.accounts.length) {
+					return;
+				}
+				nextStorage.accounts.splice(idx, 1);
+				nextStorage.activeIndex = 0;
+				nextStorage.activeIndexByFamily = {};
+				for (const family of MODEL_FAMILIES) {
+					nextStorage.activeIndexByFamily[family] = 0;
+				}
+				await persist(nextStorage);
+			});
 			console.log(`Deleted account ${idx + 1}.`);
 		}
 		return;
@@ -3687,10 +3590,18 @@ async function handleManageAction(
 		const idx = menuResult.toggleAccountIndex;
 		const account = storage.accounts[idx];
 		if (account) {
-			account.enabled = account.enabled === false;
-			await saveAccounts(storage);
+			const enabled = account.enabled === false;
+			await withAccountStorageTransaction(async (current, persist) => {
+				const nextStorage = cloneAccountStorage(current) ?? createEmptyAccountStorage();
+				const nextAccount = nextStorage.accounts[idx];
+				if (!nextAccount) {
+					return;
+				}
+				nextAccount.enabled = enabled;
+				await persist(nextStorage);
+			});
 			console.log(
-				`${account.enabled === false ? "Disabled" : "Enabled"} account ${idx + 1}.`,
+				`${enabled === false ? "Disabled" : "Enabled"} account ${idx + 1}.`,
 			);
 		}
 		return;
@@ -3720,7 +3631,10 @@ async function runAuthLogin(): Promise<number> {
 	let menuQuotaRefreshStatus: string | undefined;
 	loginFlow:
 	while (true) {
-		let existingStorage = await loadAccounts();
+		const loginStorage = await resolveLoginStorage();
+		let existingStorage = loginStorage.storage;
+		let recoveryStatusText = loginStorage.statusText;
+		let recoveryStatusTone = loginStorage.statusTone;
 		if (existingStorage && existingStorage.accounts.length > 0) {
 			while (true) {
 				existingStorage = await loadAccounts();
@@ -3758,72 +3672,87 @@ async function runAuthLogin(): Promise<number> {
 					}
 				}
 				const flaggedStorage = await loadFlaggedAccounts();
+				const dashboardViewModel = buildAuthDashboardViewModel({
+					storage: currentStorage,
+					quotaCache,
+					displaySettings,
+					flaggedCount: flaggedStorage.accounts.length,
+					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
+				});
 
-				const menuResult = await promptLoginMode(
-					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
-					{
-						flaggedCount: flaggedStorage.accounts.length,
-						statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
-					},
+				const menuResult = await promptInkAuthDashboard({
+					dashboard: dashboardViewModel,
+					statusTextOverride: recoveryStatusText,
+					statusToneOverride: recoveryStatusTone,
+				}) ?? await promptLoginMode(
+					dashboardViewModel.accounts,
+					dashboardViewModel.menuOptions,
 				);
+				recoveryStatusText = undefined;
+				recoveryStatusTone = undefined;
+				const command = resolveAuthDashboardCommand(menuResult);
 
-				if (menuResult.mode === "cancel") {
+				if (command.type === "cancel") {
 					console.log("Cancelled.");
 					return 0;
 				}
-				if (menuResult.mode === "check") {
-					await runActionPanel("Quick Check", "Checking local session + live status", async () => {
-						await runHealthCheck({ forceRefresh: false, liveProbe: true });
+				if (command.type === "run-health-check") {
+					await runActionPanel(command.panel.title, command.panel.stage, async () => {
+						await runHealthCheck({
+							forceRefresh: command.forceRefresh,
+							liveProbe: command.liveProbe,
+						});
 					}, displaySettings);
 					continue;
 				}
-				if (menuResult.mode === "deep-check") {
-					await runActionPanel("Deep Check", "Refreshing and testing all accounts", async () => {
-						await runHealthCheck({ forceRefresh: true, liveProbe: true });
+				if (command.type === "run-forecast") {
+					await runActionPanel(command.panel.title, command.panel.stage, async () => {
+						await runForecast(command.args);
 					}, displaySettings);
 					continue;
 				}
-				if (menuResult.mode === "forecast") {
-					await runActionPanel("Best Account", "Comparing accounts", async () => {
-						await runForecast(["--live"]);
+				if (command.type === "run-fix") {
+					await runActionPanel(command.panel.title, command.panel.stage, async () => {
+						await runFix(command.args);
 					}, displaySettings);
 					continue;
 				}
-				if (menuResult.mode === "fix") {
-					await runActionPanel("Auto-Fix", "Checking and fixing common issues", async () => {
-						await runFix(["--live"]);
+				if (command.type === "open-settings") {
+					const inkHandled = await configureInkUnifiedSettings(displaySettings);
+					if (!inkHandled) {
+						await configureUnifiedSettings(displaySettings);
+					}
+					continue;
+				}
+				if (command.type === "run-verify-flagged") {
+					await runActionPanel(command.panel.title, command.panel.stage, async () => {
+						await runVerifyFlagged(command.args);
 					}, displaySettings);
 					continue;
 				}
-				if (menuResult.mode === "settings") {
-					await configureUnifiedSettings(displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "verify-flagged") {
-					await runActionPanel("Problem Account Check", "Checking problem accounts", async () => {
-						await runVerifyFlagged([]);
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
-					await runActionPanel("Reset Accounts", "Deleting all saved accounts", async () => {
+				if (command.type === "reset-accounts") {
+					const confirmedDeleteAll = menuResult.deleteAll === true || await promptDeleteAllForDashboard();
+					if (!confirmedDeleteAll) {
+						console.log("\nDelete all cancelled.\n");
+						continue;
+					}
+					await runActionPanel(command.panel.title, command.panel.stage, async () => {
 						await clearAccountsAndReset();
 						console.log("Deleted all accounts.");
 					}, displaySettings);
 					continue;
 				}
-				if (menuResult.mode === "manage") {
-					const requiresInteractiveOAuth = typeof menuResult.refreshAccountIndex === "number";
-					if (requiresInteractiveOAuth) {
-						await handleManageAction(currentStorage, menuResult);
+				if (command.type === "manage-account") {
+					if (command.requiresInlineFlow) {
+						await handleManageAction(currentStorage, command.menuResult);
 						continue;
 					}
-					await runActionPanel("Applying Change", "Updating selected account", async () => {
-						await handleManageAction(currentStorage, menuResult);
+					await runActionPanel(command.panel?.title ?? "Applying Change", command.panel?.stage ?? "Updating selected account", async () => {
+						await handleManageAction(currentStorage, command.menuResult);
 					}, displaySettings);
 					continue;
 				}
-				if (menuResult.mode === "add") {
+				if (command.type === "add-account") {
 					break;
 				}
 			}
@@ -3896,16 +3825,7 @@ async function runSwitch(args: string[]): Promise<number> {
 		console.error(`Account ${parsed} not found.`);
 		return 1;
 	}
-
-	storage.activeIndex = targetIndex;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = targetIndex;
-	}
 	const wasDisabled = account.enabled === false;
-	if (wasDisabled) {
-		account.enabled = true;
-	}
 	const switchNow = Date.now();
 	let syncAccessToken = account.accessToken;
 	let syncRefreshToken = account.refreshToken;
@@ -3915,24 +3835,6 @@ async function runSwitch(args: string[]): Promise<number> {
 	if (!hasUsableAccessToken(account, switchNow)) {
 		const refreshResult = await queuedRefresh(account.refreshToken);
 		if (refreshResult.type === "success") {
-			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-			}
-			if (tokenAccountId && tokenAccountId !== account.accountId) {
-				account.accountId = tokenAccountId;
-				account.accountIdSource = "token";
-			}
 			syncAccessToken = refreshResult.access;
 			syncRefreshToken = refreshResult.refresh;
 			syncExpiresAt = refreshResult.expires;
@@ -3944,13 +3846,57 @@ async function runSwitch(args: string[]): Promise<number> {
 		}
 	}
 
-	account.lastUsed = switchNow;
-	account.lastSwitchReason = "rotation";
-	await saveAccounts(storage);
+	const persisted = await withAccountStorageTransaction(async (current, persist) => {
+		const nextStorage = cloneAccountStorage(current);
+		if (!nextStorage || targetIndex < 0 || targetIndex >= nextStorage.accounts.length) {
+			return null;
+		}
+
+		nextStorage.activeIndex = targetIndex;
+		nextStorage.activeIndexByFamily = nextStorage.activeIndexByFamily ?? {};
+		for (const family of MODEL_FAMILIES) {
+			nextStorage.activeIndexByFamily[family] = targetIndex;
+		}
+
+		const nextAccount = nextStorage.accounts[targetIndex];
+		if (!nextAccount) {
+			return null;
+		}
+		if (wasDisabled) {
+			nextAccount.enabled = true;
+		}
+		if (syncRefreshToken && syncRefreshToken !== nextAccount.refreshToken) {
+			nextAccount.refreshToken = syncRefreshToken;
+		}
+		if (syncAccessToken && syncAccessToken !== nextAccount.accessToken) {
+			nextAccount.accessToken = syncAccessToken;
+		}
+		if (syncExpiresAt !== nextAccount.expiresAt) {
+			nextAccount.expiresAt = syncExpiresAt;
+		}
+		const nextEmail = sanitizeEmail(extractAccountEmail(syncAccessToken, syncIdToken)) ?? nextAccount.email;
+		if (nextEmail && nextEmail !== nextAccount.email) {
+			nextAccount.email = nextEmail;
+		}
+		const tokenAccountId = syncAccessToken ? extractAccountId(syncAccessToken) : undefined;
+		if (tokenAccountId && tokenAccountId !== nextAccount.accountId) {
+			nextAccount.accountId = tokenAccountId;
+			nextAccount.accountIdSource = "token";
+		}
+		nextAccount.lastUsed = switchNow;
+		nextAccount.lastSwitchReason = "rotation";
+
+		await persist(nextStorage);
+		return { account: { ...nextAccount } };
+	});
+	if (!persisted?.account) {
+		console.error("Account changed before switch could be saved. Please try again.");
+		return 1;
+	}
 
 	const synced = await setCodexCliActiveSelection({
-		accountId: account.accountId,
-		email: account.email,
+		accountId: persisted.account.accountId,
+		email: persisted.account.email,
 		accessToken: syncAccessToken,
 		refreshToken: syncRefreshToken,
 		expiresAt: syncExpiresAt,
@@ -3963,7 +3909,7 @@ async function runSwitch(args: string[]): Promise<number> {
 	}
 
 	console.log(
-		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
+		`Switched to account ${parsed}: ${formatAccountLabel(persisted.account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
 	);
 	return 0;
 }
@@ -3995,38 +3941,63 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	if (!hasUsableAccessToken(account, now)) {
 		const refreshResult = await queuedRefresh(account.refreshToken);
 		if (refreshResult.type === "success") {
-			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-				changed = true;
-			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-				changed = true;
-			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-				changed = true;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-				changed = true;
-			}
-			if (tokenAccountId && tokenAccountId !== account.accountId) {
-				account.accountId = tokenAccountId;
-				account.accountIdSource = "token";
-				changed = true;
-			}
 			syncAccessToken = refreshResult.access;
 			syncRefreshToken = refreshResult.refresh;
 			syncExpiresAt = refreshResult.expires;
 			syncIdToken = refreshResult.idToken;
+			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
+			const tokenAccountId = extractAccountId(refreshResult.access);
+			changed =
+				refreshResult.refresh !== account.refreshToken ||
+				refreshResult.access !== account.accessToken ||
+				refreshResult.expires !== account.expiresAt ||
+				(nextEmail !== undefined && nextEmail !== account.email) ||
+				(tokenAccountId !== undefined && tokenAccountId !== account.accountId);
 		}
 	}
 
 	if (changed) {
-		await saveAccounts(storage);
+		const persisted = await withAccountStorageTransaction(async (current, persist) => {
+			const nextStorage = cloneAccountStorage(current);
+			if (!nextStorage || activeIndex < 0 || activeIndex >= nextStorage.accounts.length) {
+				return null;
+			}
+			const nextAccount = nextStorage.accounts[activeIndex];
+			if (!nextAccount) {
+				return null;
+			}
+			if (syncRefreshToken !== nextAccount.refreshToken) {
+				nextAccount.refreshToken = syncRefreshToken;
+			}
+			if (syncAccessToken !== nextAccount.accessToken) {
+				nextAccount.accessToken = syncAccessToken;
+			}
+			if (syncExpiresAt !== nextAccount.expiresAt) {
+				nextAccount.expiresAt = syncExpiresAt;
+			}
+			const nextEmail = sanitizeEmail(extractAccountEmail(syncAccessToken, syncIdToken));
+			if (nextEmail && nextEmail !== nextAccount.email) {
+				nextAccount.email = nextEmail;
+			}
+			const tokenAccountId = extractAccountId(syncAccessToken);
+			if (tokenAccountId && tokenAccountId !== nextAccount.accountId) {
+				nextAccount.accountId = tokenAccountId;
+				nextAccount.accountIdSource = "token";
+			}
+			await persist(nextStorage);
+			return { account: { ...nextAccount } };
+		});
+		if (!persisted?.account) {
+			return false;
+		}
+		return setCodexCliActiveSelection({
+			accountId: persisted.account.accountId,
+			email: persisted.account.email,
+			accessToken: syncAccessToken,
+			refreshToken: syncRefreshToken,
+			expiresAt: syncExpiresAt,
+			...(syncIdToken ? { idToken: syncIdToken } : {}),
+		});
 	}
 
 	return setCodexCliActiveSelection({

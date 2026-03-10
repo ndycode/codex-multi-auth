@@ -2,14 +2,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const loadAccountsMock = vi.fn();
 const loadFlaggedAccountsMock = vi.fn();
+const getRestoreAssessmentMock = vi.fn();
 const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
+const clearAccountsMock = vi.fn();
+const createEmptyAccountStorageMock = vi.fn(() => ({
+	version: 3,
+	accounts: [],
+	activeIndex: 0,
+	activeIndexByFamily: { codex: 0 },
+}));
+const withAccountStorageTransactionMock = vi.fn();
 const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
 const promptLoginModeMock = vi.fn();
+const promptInkAuthDashboardMock = vi.fn();
+const configureInkUnifiedSettingsMock = vi.fn();
+const promptInkRestoreForLoginMock = vi.fn();
+const isNonInteractiveModeMock = vi.fn();
 const fetchCodexQuotaSnapshotMock = vi.fn();
 const loadDashboardDisplaySettingsMock = vi.fn();
 const saveDashboardDisplaySettingsMock = vi.fn();
@@ -46,8 +59,15 @@ vi.mock("../lib/auth/server.js", () => ({
 }));
 
 vi.mock("../lib/cli.js", () => ({
+	isNonInteractiveMode: isNonInteractiveModeMock,
 	promptAddAnotherAccount: promptAddAnotherAccountMock,
 	promptLoginMode: promptLoginModeMock,
+}));
+
+vi.mock("../lib/ui-ink/index.js", () => ({
+	configureInkUnifiedSettings: configureInkUnifiedSettingsMock,
+	promptInkAuthDashboard: promptInkAuthDashboardMock,
+	promptInkRestoreForLogin: promptInkRestoreForLoginMock,
 }));
 
 vi.mock("../lib/prompts/codex.js", () => ({
@@ -74,12 +94,19 @@ vi.mock("../lib/accounts.js", () => ({
 }));
 
 vi.mock("../lib/storage.js", () => ({
+	cloneAccountStorage: vi.fn((storage: unknown) =>
+		storage == null ? storage : structuredClone(storage),
+	),
+	createEmptyAccountStorage: createEmptyAccountStorageMock,
+	getRestoreAssessment: getRestoreAssessmentMock,
 	loadAccounts: loadAccountsMock,
 	loadFlaggedAccounts: loadFlaggedAccountsMock,
 	saveAccounts: saveAccountsMock,
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
+	clearAccounts: clearAccountsMock,
 	setStoragePath: setStoragePathMock,
 	getStoragePath: getStoragePathMock,
+	withAccountStorageTransaction: withAccountStorageTransactionMock,
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -178,18 +205,81 @@ function makeErrnoError(message: string, code: string): NodeJS.ErrnoException {
 	return error;
 }
 
+function createRestoreAssessment(overrides: Partial<{
+	storagePath: string;
+	restoreEligible: boolean;
+	restoreReason: "empty-storage" | "intentional-reset" | "missing-storage";
+	latestSnapshot: {
+		kind: string;
+		path: string;
+		exists: boolean;
+		valid: boolean;
+		accountCount?: number;
+		bytes?: number;
+		mtimeMs?: number;
+		version?: number;
+	};
+	backupMetadata: {
+		accounts: {
+			storagePath: string;
+			latestValidPath?: string;
+			snapshotCount: number;
+			validSnapshotCount: number;
+			snapshots: Array<Record<string, unknown>>;
+		};
+		flaggedAccounts: {
+			storagePath: string;
+			latestValidPath?: string;
+			snapshotCount: number;
+			validSnapshotCount: number;
+			snapshots: Array<Record<string, unknown>>;
+		};
+	};
+}> = {}) {
+	const storagePath = overrides.storagePath ?? "/mock/openai-codex-accounts.json";
+	const flaggedPath = "/mock/openai-codex-flagged-accounts.json";
+	return {
+		storagePath,
+		restoreEligible: overrides.restoreEligible ?? false,
+		restoreReason: overrides.restoreReason,
+		latestSnapshot: overrides.latestSnapshot,
+		backupMetadata: overrides.backupMetadata ?? {
+			accounts: {
+				storagePath,
+				snapshotCount: 0,
+				validSnapshotCount: 0,
+				snapshots: [],
+			},
+			flaggedAccounts: {
+				storagePath: flaggedPath,
+				snapshotCount: 0,
+				validSnapshotCount: 0,
+				snapshots: [],
+			},
+		},
+	};
+}
+
 describe("codex manager cli commands", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.clearAllMocks();
 		loadAccountsMock.mockReset();
 		loadFlaggedAccountsMock.mockReset();
+		getRestoreAssessmentMock.mockReset();
 		saveAccountsMock.mockReset();
 		saveFlaggedAccountsMock.mockReset();
+		clearAccountsMock.mockReset();
+		createEmptyAccountStorageMock.mockReset();
+		withAccountStorageTransactionMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
 		promptAddAnotherAccountMock.mockReset();
 		promptLoginModeMock.mockReset();
+		promptInkAuthDashboardMock.mockReset();
+		configureInkUnifiedSettingsMock.mockReset();
+		promptInkRestoreForLoginMock.mockReset();
+		isNonInteractiveModeMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockReset();
 		loadDashboardDisplaySettingsMock.mockReset();
 		saveDashboardDisplaySettingsMock.mockReset();
@@ -212,6 +302,7 @@ describe("codex manager cli commands", () => {
 			version: 1,
 			accounts: [],
 		});
+		getRestoreAssessmentMock.mockResolvedValue(createRestoreAssessment());
 		loadDashboardDisplaySettingsMock.mockResolvedValue({
 			showPerAccountRows: true,
 			showQuotaDetails: true,
@@ -226,10 +317,25 @@ describe("codex manager cli commands", () => {
 		});
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
+		isNonInteractiveModeMock.mockImplementation(() => {
+			if (process.env.FORCE_INTERACTIVE_MODE === "1") return false;
+			return !process.stdin.isTTY || !process.stdout.isTTY;
+		});
 		selectMock.mockResolvedValue(undefined);
+		promptInkAuthDashboardMock.mockResolvedValue(null);
+		configureInkUnifiedSettingsMock.mockResolvedValue(false);
+		promptInkRestoreForLoginMock.mockResolvedValue(null);
 		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
+		withAccountStorageTransactionMock.mockImplementation(async (handler) => {
+			const latestLoadResult = loadAccountsMock.mock.results[loadAccountsMock.mock.results.length - 1];
+			const current = latestLoadResult ? await latestLoadResult.value : await loadAccountsMock();
+			return handler(
+				current == null ? current : structuredClone(current),
+				async (storage) => saveAccountsMock(storage),
+			);
+		});
 	});
 
 	afterEach(() => {
@@ -777,7 +883,7 @@ describe("codex manager cli commands", () => {
 		};
 		loadAccountsMock.mockResolvedValue(storage);
 		setCodexCliActiveSelectionMock.mockResolvedValue(true);
-		promptLoginModeMock
+		promptInkAuthDashboardMock
 			.mockResolvedValueOnce({ mode: "manage", switchAccountIndex: 1 })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -785,12 +891,194 @@ describe("codex manager cli commands", () => {
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 		expect(exitCode).toBe(0);
-		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(promptInkAuthDashboardMock).toHaveBeenCalledTimes(2);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Switched to account 2"),
 		);
 		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
+	it("prompts to restore the latest backup before opening the login dashboard", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const restoredStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "restored@example.com",
+					accountId: "acc_restored",
+					refreshToken: "refresh-restored",
+					accessToken: "access-restored",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		getRestoreAssessmentMock.mockResolvedValueOnce(createRestoreAssessment({
+			restoreEligible: true,
+			restoreReason: "missing-storage",
+			latestSnapshot: {
+				kind: "accounts-backup",
+				path: "/mock/openai-codex-accounts.json.bak",
+				exists: true,
+				valid: true,
+				accountCount: 1,
+				bytes: 512,
+				mtimeMs: now - 10_000,
+				version: 3,
+			},
+			backupMetadata: {
+				accounts: {
+					storagePath: "/mock/openai-codex-accounts.json",
+					latestValidPath: "/mock/openai-codex-accounts.json.bak",
+					snapshotCount: 2,
+					validSnapshotCount: 1,
+					snapshots: [
+						{
+							kind: "accounts-primary",
+							path: "/mock/openai-codex-accounts.json",
+							exists: false,
+							valid: false,
+						},
+						{
+							kind: "accounts-backup",
+							path: "/mock/openai-codex-accounts.json.bak",
+							exists: true,
+							valid: true,
+							accountCount: 1,
+							bytes: 512,
+							mtimeMs: now - 10_000,
+							version: 3,
+						},
+					],
+				},
+				flaggedAccounts: {
+					storagePath: "/mock/openai-codex-flagged-accounts.json",
+					snapshotCount: 0,
+					validSnapshotCount: 0,
+					snapshots: [],
+				},
+			},
+		}));
+		loadAccountsMock.mockResolvedValue(restoredStorage);
+		selectMock.mockResolvedValueOnce(true);
+		promptInkAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptInkRestoreForLoginMock.mockResolvedValueOnce(true);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptInkRestoreForLoginMock).toHaveBeenCalledTimes(1);
+		expect(promptInkRestoreForLoginMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reasonText: expect.stringContaining("No saved account pool was found."),
+				snapshotInfo: expect.stringContaining("/mock/openai-codex-accounts.json.bak"),
+				snapshotCount: 1,
+			}),
+		);
+		expect(selectMock).not.toHaveBeenCalled();
+		expect(promptInkAuthDashboardMock).toHaveBeenCalledTimes(1);
+		expect(promptInkAuthDashboardMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				statusTextOverride: expect.stringContaining("Restored 1 account"),
+				statusToneOverride: "success",
+			}),
+		);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+	});
+
+
+	it("skips restore prompting deterministically in non-interactive mode", async () => {
+		setInteractiveTTY(false);
+		const now = Date.now();
+		getRestoreAssessmentMock.mockResolvedValueOnce(createRestoreAssessment({
+			restoreEligible: true,
+			restoreReason: "missing-storage",
+			latestSnapshot: {
+				kind: "accounts-backup",
+				path: "/mock/openai-codex-accounts.json.bak",
+				exists: true,
+				valid: true,
+				accountCount: 2,
+				bytes: 768,
+				mtimeMs: now - 10_000,
+				version: 3,
+			},
+			backupMetadata: {
+				accounts: {
+					storagePath: "/mock/openai-codex-accounts.json",
+					latestValidPath: "/mock/openai-codex-accounts.json.bak",
+					snapshotCount: 2,
+					validSnapshotCount: 1,
+					snapshots: [
+						{
+							kind: "accounts-primary",
+							path: "/mock/openai-codex-accounts.json",
+							exists: false,
+							valid: false,
+						},
+						{
+							kind: "accounts-backup",
+							path: "/mock/openai-codex-accounts.json.bak",
+							exists: true,
+							valid: true,
+							accountCount: 2,
+							bytes: 768,
+							mtimeMs: now - 10_000,
+							version: 3,
+						},
+					],
+				},
+				flaggedAccounts: {
+					storagePath: "/mock/openai-codex-flagged-accounts.json",
+					snapshotCount: 0,
+					validSnapshotCount: 0,
+					snapshots: [],
+				},
+			},
+		}));
+
+		const authModule = await import("../lib/auth/auth.js");
+		const createAuthorizationFlowMock = vi.mocked(authModule.createAuthorizationFlow);
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		const startLocalOAuthServerMock = vi.mocked(serverModule.startLocalOAuthServer);
+
+		createAuthorizationFlowMock.mockResolvedValue({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		openBrowserUrlMock.mockReturnValue(true);
+		startLocalOAuthServerMock.mockResolvedValue({
+			ready: false,
+			waitForCode: vi.fn(async () => null),
+			close: vi.fn(),
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).toHaveBeenCalledWith({
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		});
+		expect(
+			logSpy.mock.calls.some((call) => String(call[0]).includes("non-interactive mode skips the prompt")),
+		).toBe(true);
 	});
 
 	it("marks newly added login account active so smart sort reflects it immediately", async () => {
@@ -1010,10 +1298,13 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
+		configureInkUnifiedSettingsMock.mockResolvedValueOnce(true);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 		expect(exitCode).toBe(0);
+		expect(configureInkUnifiedSettingsMock).toHaveBeenCalledTimes(1);
+		expect(selectMock).not.toHaveBeenCalled();
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 	});
 
@@ -1095,19 +1386,21 @@ describe("codex manager cli commands", () => {
 				},
 			},
 		});
-		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptInkAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
-			email?: string;
-			index: number;
-			sourceIndex?: number;
-			quickSwitchNumber?: number;
-			isCurrentAccount?: boolean;
-		}>;
+		const firstCallAccounts = (promptInkAuthDashboardMock.mock.calls[0]?.[0] as {
+			dashboard: { accounts: Array<{
+				email?: string;
+				index: number;
+				sourceIndex?: number;
+				quickSwitchNumber?: number;
+				isCurrentAccount?: boolean;
+			}> };
+		})?.dashboard.accounts ?? [];
 		expect(firstCallAccounts.map((account) => account.email)).toEqual([
 			"b@example.com",
 			"c@example.com",
@@ -1180,16 +1473,15 @@ describe("codex manager cli commands", () => {
 				},
 			},
 		});
-		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptInkAuthDashboardMock.mockResolvedValueOnce({ mode: "cancel" });
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
-			email?: string;
-			quickSwitchNumber?: number;
-		}>;
+		const firstCallAccounts = (promptInkAuthDashboardMock.mock.calls[0]?.[0] as {
+			dashboard: { accounts: Array<{ email?: string; quickSwitchNumber?: number }> };
+		})?.dashboard.accounts ?? [];
 		expect(firstCallAccounts.map((account) => account.email)).toEqual([
 			"b@example.com",
 			"a@example.com",
@@ -1938,6 +2230,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(1);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe("first@example.com");
 	});
@@ -1967,7 +2260,37 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(false);
+	});
+
+	it("resets all accounts through transactional persistence", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "reset@example.com",
+					refreshToken: "refresh-reset",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "fresh", deleteAll: true })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+		expect(withAccountStorageTransactionMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
 	});
 
 	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {
