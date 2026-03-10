@@ -141,17 +141,16 @@ function remapActiveIndex(
 
 function normalizeActiveIndexByFamily(
 	activeIndexByFamily: AccountStorageV3["activeIndexByFamily"],
-	length: number,
+	originalAccounts: AccountMetadataV3[] | undefined,
+	normalizedAccounts: AccountMetadataV3[],
 	defaultIndex: number,
 ): AccountStorageV3["activeIndexByFamily"] {
 	if (!activeIndexByFamily) return undefined;
 	const normalized: Partial<Record<ModelFamily, number>> = {};
 	for (const family of MODEL_FAMILIES) {
-		const raw = (activeIndexByFamily as Partial<Record<ModelFamily, unknown>>)[
-			family
-		];
+		const raw = (activeIndexByFamily as Partial<Record<ModelFamily, unknown>>)[family];
 		if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
-		normalized[family] = clampIndex(raw, length) ?? defaultIndex;
+		normalized[family] = remapActiveIndex(originalAccounts, raw, normalizedAccounts);
 	}
 	return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
@@ -277,7 +276,8 @@ function normalizeStorageForTarget(
 	const activeIndex = remapActiveIndex(storage?.accounts, storage?.activeIndex, accounts);
 	const activeIndexByFamily = normalizeActiveIndexByFamily(
 		storage?.activeIndexByFamily,
-		accounts.length,
+		storage?.accounts,
+		accounts,
 		activeIndex,
 	);
 	return {
