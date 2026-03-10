@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   clearFlaggedAccounts,
+  getBackupMetadata,
   getFlaggedAccountsPath,
   getStoragePath,
   loadFlaggedAccounts,
@@ -166,8 +167,50 @@ describe("flagged account storage", () => {
     await clearFlaggedAccounts();
     await clearFlaggedAccounts();
 
-    expect(existsSync(getFlaggedAccountsPath())).toBe(false);
-  });
+		expect(existsSync(getFlaggedAccountsPath())).toBe(false);
+	});
+
+	it("emits snapshot metadata for flagged account backups", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "first-flagged",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "first-flagged",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					refreshToken: "second-flagged",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		const metadata = await getBackupMetadata();
+		const flagged = metadata.flaggedAccounts;
+		expect(flagged.snapshotCount).toBeGreaterThanOrEqual(2);
+		expect(flagged.latestValidPath).toBe(getFlaggedAccountsPath());
+		const primary = flagged.snapshots.find((snapshot) => snapshot.kind === "flagged-primary");
+		const backup = flagged.snapshots.find((snapshot) => snapshot.kind === "flagged-backup");
+		expect(primary?.flaggedCount).toBe(2);
+		expect(backup?.valid).toBe(true);
+		expect(backup?.flaggedCount).toBe(1);
+	});
 
   it("cleans temporary file when flagged save fails", async () => {
     const flaggedPath = getFlaggedAccountsPath();
