@@ -61,6 +61,44 @@ Implementation reference: `lib/storage/paths.ts` (`deriveProjectKey`).
 
 ---
 
+## Experimental Local Backup Paths
+
+The `Experimental` -> `Save Pool Backup` action exports a JSON snapshot of the current local account pool into a sibling `backups/` directory next to the active storage file.
+
+Examples:
+
+- global pool: `~/.codex/multi-auth/backups/<name>.json`
+- project pool: `~/.codex/multi-auth/projects/<project-key>/backups/<name>.json`
+
+Filename rules:
+
+- prompts for a filename and appends `.json` when omitted
+- rejects separators, traversal (`..`), rotation-style names containing `.rotate.`, and temporary suffixes ending in `.tmp` or `.wal`
+- collisions fail safely instead of overwriting by default
+
+---
+
+## Experimental Sync Target Paths
+
+The `Experimental` -> `Sync Accounts to oc-chatgpt-multi-auth` flow detects the target root in this order:
+
+- `OC_CHATGPT_MULTI_AUTH_DIR`
+- default global root: `~/.opencode`
+- project root: `~/.opencode/projects/<project-key>`
+
+For each target root, the sync preview/apply flow reads or writes:
+
+- target accounts: `<root>/openai-codex-accounts.json`
+- target backups: `<root>/backups/`
+
+Detection notes:
+
+- sync prefers roots with account artifacts, then falls back to storage signals such as `backups/` or `projects/`
+- when multiple candidate roots contain artifacts or signals, sync blocks and only shows guidance instead of applying changes
+- preview/apply keeps the destination active selection and preserves destination-only accounts
+
+---
+
 ## Legacy Compatibility Paths
 
 Older installations may still have compatibility-read paths during migration. These are migration-only and not canonical for new setup.
@@ -84,5 +122,6 @@ codex auth list
 ## Related
 
 - [../configuration.md](../configuration.md)
+- [settings.md](settings.md)
 - [../upgrade.md](../upgrade.md)
 - [../privacy.md](../privacy.md)

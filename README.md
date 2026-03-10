@@ -210,6 +210,8 @@ The Settings menu now includes an `Experimental` section for staged features:
 
 These flows are intentionally non-destructive by default: sync previews before apply, destination-only accounts are preserved, and backup filename collisions fail safely.
 
+Blocked sync targets only show guidance, they don't write anything. Successful sync keeps the destination active selection, and named backups append `.json` when needed while rejecting separators, traversal, `.rotate.`, `.tmp`, and `.wal` patterns.
+
 ---
 
 ## Troubleshooting

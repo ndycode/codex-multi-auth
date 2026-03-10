@@ -77,7 +77,7 @@ Experimental currently hosts:
 Sync behavior:
 
 - preview is always shown before apply
-- blocked target states do not apply changes
+- blocked target states only show guidance and do not apply changes
 - destination active selection is preserved
 - destination-only accounts are preserved by the merge preview/apply path
 
