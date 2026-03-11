@@ -211,6 +211,34 @@ describe("storage", () => {
 			expect(exported.accounts[0].accountId).toBe("test");
 		});
 
+		it("should overwrite an existing export file when force is omitted", async () => {
+			const { exportAccounts } = await import("../lib/storage.js");
+
+			const storage: AccountStorageV3 = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "overwrite",
+						refreshToken: "ref-new",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			};
+			await saveAccounts(storage);
+			await fs.writeFile(exportPath, JSON.stringify({ stale: true }), "utf-8");
+
+			await exportAccounts(exportPath);
+
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
+				accounts: Array<{ accountId?: string }>;
+				stale?: boolean;
+			};
+			expect(exported.stale).toBeUndefined();
+			expect(exported.accounts[0]?.accountId).toBe("overwrite");
+		});
+
 		it("should fail export if file exists and force is false", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "exists");
@@ -323,6 +351,52 @@ describe("storage", () => {
 			expect(
 				new Set(loaded?.accounts.map((account) => account.accountId)),
 			).toEqual(new Set(["acct-a", "acct-b"]));
+		});
+
+		it("should not leak another transaction's in-flight snapshot to an unrelated export", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "committed",
+						refreshToken: "ref-committed",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			let releaseTransaction: (() => void) | undefined;
+			let transactionReadyResolve: (() => void) | undefined;
+			const transactionReady = new Promise<void>((resolve) => {
+				transactionReadyResolve = resolve;
+			});
+
+			const transactionPromise = withAccountStorageTransaction(
+				async (current) => {
+					const account = current?.accounts[0];
+					expect(account).toBeDefined();
+					if (account) {
+						account.accountId = "in-flight";
+					}
+					transactionReadyResolve?.();
+					await new Promise<void>((resolve) => {
+						releaseTransaction = resolve;
+					});
+				},
+			);
+
+			await transactionReady;
+			const exportPromise = exportAccounts(exportPath);
+			releaseTransaction?.();
+			await transactionPromise;
+			await exportPromise;
+
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
+				accounts: Array<{ accountId?: string }>;
+			};
+			expect(exported.accounts[0]?.accountId).toBe("committed");
 		});
 
 		it("should enforce MAX_ACCOUNTS during import", async () => {
@@ -663,6 +737,26 @@ describe("storage", () => {
 			const deduped = deduplicateAccounts(accounts);
 			expect(deduped).toHaveLength(1);
 			expect(deduped[0]?.lastUsed).toBe(100);
+		});
+
+		it("preserves the current account when timestamps tie exactly", () => {
+			const accounts = [
+				{
+					accountId: "A",
+					refreshToken: "current",
+					addedAt: 100,
+					lastUsed: 200,
+				},
+				{
+					accountId: "A",
+					refreshToken: "candidate",
+					addedAt: 100,
+					lastUsed: 200,
+				},
+			];
+			const deduped = deduplicateAccounts(accounts);
+			expect(deduped).toHaveLength(1);
+			expect(deduped[0]?.refreshToken).toBe("current");
 		});
 	});
 

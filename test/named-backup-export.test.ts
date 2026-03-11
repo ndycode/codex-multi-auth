@@ -116,6 +116,55 @@ describe("named backup export", () => {
 		).rejects.toThrow(/already exists/);
 	});
 
+	it("allows only one concurrent export for the same backup name by default", async () => {
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acct-concurrent",
+					refreshToken: "refresh-concurrent",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		const results = await Promise.allSettled([
+			exportNamedBackupFile("backup-2026-03-09-concurrent", {
+				getStoragePath,
+				exportAccounts,
+			}),
+			exportNamedBackupFile("backup-2026-03-09-concurrent", {
+				getStoragePath,
+				exportAccounts,
+			}),
+		]);
+
+		const fulfilled = results.filter(
+			(result): result is PromiseFulfilledResult<string> =>
+				result.status === "fulfilled",
+		);
+		const rejected = results.filter(
+			(result): result is PromiseRejectedResult => result.status === "rejected",
+		);
+
+		expect(fulfilled).toHaveLength(1);
+		expect(rejected).toHaveLength(1);
+		expect(String(rejected[0]?.reason)).toMatch(/already exists/);
+
+		const backupPath = fulfilled[0]?.value;
+		expect(backupPath).toBeDefined();
+		if (!backupPath) {
+			throw new Error("Expected one concurrent export to succeed");
+		}
+
+		const exported = JSON.parse(await fs.readFile(backupPath, "utf-8")) as {
+			accounts: Array<{ accountId?: string }>;
+		};
+		expect(exported.accounts[0]?.accountId).toBe("acct-concurrent");
+	});
+
 	it("never resolves outside the intended local backup namespace", () => {
 		const safePath = resolveNamedBackupPath("backup-2026-03-09", storagePath);
 		expect(safePath.startsWith(join(dirname(storagePath), "backups"))).toBe(

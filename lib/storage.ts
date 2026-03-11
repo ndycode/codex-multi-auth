@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -110,7 +111,9 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
-let activeTransactionStorage: AccountStorageV3 | null | undefined;
+const transactionSnapshotContext = new AsyncLocalStorage<{
+	snapshot: AccountStorageV3 | null;
+}>();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previousMutex = storageMutex;
@@ -697,7 +700,7 @@ function selectNewestAccount<T extends AccountLike>(
 	if (candidateLastUsed < currentLastUsed) return current;
 	const currentAddedAt = current.addedAt || 0;
 	const candidateAddedAt = candidate.addedAt || 0;
-	return candidateAddedAt >= currentAddedAt ? candidate : current;
+	return candidateAddedAt > currentAddedAt ? candidate : current;
 }
 
 function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
@@ -1309,16 +1312,15 @@ export async function withAccountStorageTransaction<T>(
 ): Promise<T> {
 	return withStorageLock(async () => {
 		const current = await loadAccountsInternal(saveAccountsUnlocked);
-		activeTransactionStorage = current;
+		const context = { snapshot: current };
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			activeTransactionStorage = storage;
+			context.snapshot = storage;
 			await saveAccountsUnlocked(storage);
 		};
-		try {
-			return await handler(current, persist);
-		} finally {
-			activeTransactionStorage = undefined;
-		}
+		return await transactionSnapshotContext.run(
+			context,
+			async () => await handler(current, persist),
+		);
 	});
 }
 
@@ -1598,43 +1600,54 @@ export async function exportAccounts(
 ): Promise<void> {
 	const resolvedPath = resolvePath(filePath);
 
-	if (!force && existsSync(resolvedPath)) {
-		throw new Error(`File already exists: ${resolvedPath}`);
-	}
+	const writeExport = async (
+		storage: AccountStorageV3 | null,
+	): Promise<void> => {
+		if (!force && existsSync(resolvedPath)) {
+			throw new Error(`File already exists: ${resolvedPath}`);
+		}
+		if (!storage || storage.accounts.length === 0) {
+			throw new Error("No accounts to export");
+		}
+
+		await fs.mkdir(dirname(resolvedPath), { recursive: true });
+
+		const content = JSON.stringify(storage, null, 2);
+		const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+		const tempPath = `${resolvedPath}.${uniqueSuffix}.tmp`;
+		try {
+			await fs.writeFile(tempPath, content, {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
+			await renameFileWithRetry(tempPath, resolvedPath);
+		} catch (error) {
+			try {
+				await fs.unlink(tempPath);
+			} catch {
+				// Ignore cleanup failures for export temp files.
+			}
+			throw error;
+		}
+		log.info("Exported accounts", {
+			path: resolvedPath,
+			count: storage.accounts.length,
+		});
+	};
 
 	// NOTE: when called inside withAccountStorageTransaction(), this exports the
 	// in-flight transaction snapshot, including any mutations made to `current`
 	// before `persist()` is called. Callers that need a committed-state backup
 	// must persist first and export afterward.
-	const storage =
-		activeTransactionStorage !== undefined
-			? activeTransactionStorage
-			: await withAccountStorageTransaction((current) =>
-					Promise.resolve(current),
-				);
-	if (!storage || storage.accounts.length === 0) {
-		throw new Error("No accounts to export");
+	const transactionContext = transactionSnapshotContext.getStore();
+	if (transactionContext) {
+		await writeExport(transactionContext.snapshot);
+		return;
 	}
 
-	await fs.mkdir(dirname(resolvedPath), { recursive: true });
-
-	const content = JSON.stringify(storage, null, 2);
-	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-	const tempPath = `${resolvedPath}.${uniqueSuffix}.tmp`;
-	try {
-		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-		await renameFileWithRetry(tempPath, resolvedPath);
-	} catch (error) {
-		try {
-			await fs.unlink(tempPath);
-		} catch {
-			// Ignore cleanup failures for export temp files.
-		}
-		throw error;
-	}
-	log.info("Exported accounts", {
-		path: resolvedPath,
-		count: storage.accounts.length,
+	await withStorageLock(async () => {
+		const storage = await loadAccountsInternal(saveAccountsUnlocked);
+		await writeExport(storage);
 	});
 }
 
