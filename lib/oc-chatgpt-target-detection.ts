@@ -148,6 +148,7 @@ function hasAccountArtifacts(root: string): boolean {
 				if (!entry.isFile()) continue;
 				if (!entry.name.startsWith(`${ACCOUNT_FILE_NAME}.`)) continue;
 				if (entry.name.endsWith(".tmp")) continue;
+				if (entry.name.endsWith(".wal")) continue;
 				if (entry.name.includes(".rotate.")) continue;
 				return true;
 			}

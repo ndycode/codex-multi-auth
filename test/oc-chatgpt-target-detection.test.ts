@@ -358,6 +358,11 @@ describe("oc-chatgpt target detection", () => {
 			"{}",
 			"utf-8",
 		);
+		await fs.writeFile(
+			join(backupsDir, "openai-codex-accounts.json.wal"),
+			"{}",
+			"utf-8",
+		);
 
 		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
 		assertTarget(result, "global", explicitRoot);
