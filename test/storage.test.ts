@@ -497,13 +497,83 @@ describe("storage", () => {
 				await fs.readFile(testStoragePath, "utf-8"),
 			) as {
 				accounts?: Array<{ accountId?: string }>;
-				activeIndexByFamily?: unknown;
+				activeIndexByFamily?: Record<string, unknown>;
 			};
 			expect(persisted.accounts?.map((account) => account.accountId)).toEqual([
 				"from-wal",
 				"imported",
 			]);
-			expect(persisted.activeIndexByFamily).toBeUndefined();
+			expect(persisted.activeIndexByFamily).toBeDefined();
+			expect(Object.values(persisted.activeIndexByFamily ?? {})).toSatisfy(
+				(values: unknown[]) => values.every((value) => value === 0),
+			);
+		});
+
+		it("preserves family selections written while import waits on the storage lock", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+
+			await fs.writeFile(
+				testStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "existing",
+							refreshToken: "ref-existing",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const toImport: AccountStorageV3 = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "new",
+						refreshToken: "ref-new",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			};
+			await fs.writeFile(exportPath, JSON.stringify(toImport), "utf-8");
+
+			let importPromise:
+				| Promise<{
+						imported: number;
+						total: number;
+						skipped: number;
+				  }>
+				| undefined;
+			await withAccountStorageTransaction(async (current, persist) => {
+				importPromise = importAccounts(exportPath);
+				await persist({
+					...(current ?? {
+						version: 3 as const,
+						activeIndex: 0,
+						accounts: [],
+					}),
+					activeIndexByFamily: { codex: 0, "gpt-5.1": 0 },
+				});
+			});
+
+			const result = await importPromise;
+			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+
+			const persisted = JSON.parse(
+				await fs.readFile(testStoragePath, "utf-8"),
+			) as { activeIndexByFamily?: Record<string, unknown> };
+			expect(persisted.activeIndexByFamily).toBeDefined();
+			expect(persisted.activeIndexByFamily?.codex).toBe(0);
+			expect(persisted.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
+			expect(Object.values(persisted.activeIndexByFamily ?? {})).toSatisfy(
+				(values: unknown[]) => values.every((value) => value === 0),
+			);
 		});
 
 		it("preserves undefined activeIndexByFamily when importing into storage without family selections", async () => {
@@ -637,6 +707,77 @@ describe("storage", () => {
 				accounts: Array<{ accountId?: string }>;
 			};
 			expect(exported.accounts[0]?.accountId).toBe("committed");
+		});
+
+		it("does not treat detached async exports as active transactions", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "committed",
+						refreshToken: "ref-committed",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			let detachedExport: Promise<void> | undefined;
+			await withAccountStorageTransaction(async (current) => {
+				const account = current?.accounts[0];
+				expect(account).toBeDefined();
+				if (account) {
+					account.accountId = "detached-mutation";
+				}
+				detachedExport = new Promise<void>((resolve, reject) => {
+					setTimeout(() => {
+						exportAccounts(exportPath).then(resolve, reject);
+					}, 0);
+				});
+			});
+
+			await detachedExport;
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
+				accounts: Array<{ accountId?: string }>;
+			};
+			expect(exported.accounts[0]?.accountId).toBe("committed");
+		});
+
+		it("retries transient EAGAIN errors on the primary storage rename path", async () => {
+			const originalRename = fs.rename.bind(fs);
+			let transientFailures = 0;
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (oldPath, newPath) => {
+					if (newPath === testStoragePath && transientFailures === 0) {
+						transientFailures += 1;
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalRename(oldPath, newPath);
+				});
+
+			try {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "retry-eagain",
+							refreshToken: "ref-retry-eagain",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			expect(transientFailures).toBe(1);
+			expect(existsSync(testStoragePath)).toBe(true);
 		});
 
 		it("keeps the last committed snapshot when persist fails inside a transaction", async () => {

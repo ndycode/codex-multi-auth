@@ -113,6 +113,7 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 let storageMutex: Promise<void> = Promise.resolve();
 const transactionSnapshotContext = new AsyncLocalStorage<{
 	snapshot: AccountStorageV3 | null;
+	active: boolean;
 }>();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -1380,15 +1381,18 @@ export async function withAccountStorageTransaction<T>(
 ): Promise<T> {
 	return withStorageLock(async () => {
 		const current = await loadAccountsUnlocked();
-		const context = { snapshot: current };
+		const context = { snapshot: current, active: true };
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
 			await saveAccountsUnlocked(storage);
 			context.snapshot = storage;
 		};
-		return await transactionSnapshotContext.run(
-			context,
-			async () => await handler(current, persist),
-		);
+		return await transactionSnapshotContext.run(context, async () => {
+			try {
+				return await handler(current, persist);
+			} finally {
+				context.active = false;
+			}
+		});
 	});
 }
 
@@ -1710,7 +1714,7 @@ export async function exportAccounts(
 	// before `persist()` is called. Callers that need a committed-state backup
 	// must persist first and export afterward.
 	const transactionContext = transactionSnapshotContext.getStore();
-	if (transactionContext) {
+	if (transactionContext?.active) {
 		await writeExport(transactionContext.snapshot);
 		return;
 	}
@@ -1751,14 +1755,13 @@ export async function importAccounts(
 	if (!normalized) {
 		throw new Error("Invalid account storage format");
 	}
-	const preserveFamilySelections =
-		await hasPersistedActiveIndexByFamily(existingStoragePath);
-
 	const {
 		imported: importedCount,
 		total,
 		skipped: skippedCount,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
+		const preserveFamilySelections =
+			await hasPersistedActiveIndexByFamily(existingStoragePath);
 		const existingAccounts = existing?.accounts ?? [];
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
