@@ -154,6 +154,20 @@ describe("runtime-paths", () => {
 		}
 	});
 
+	it("treats normalized POSIX CODEX_HOME variants of the default root as default", async () => {
+		homedir.mockReturnValue("/home/neil");
+		process.env.CODEX_HOME = "/home/neil/./.codex//";
+		const fallback = path.join("/home/neil", "DevTools", "config", "codex", "multi-auth");
+
+		existsSync.mockImplementation((candidate: unknown) => {
+			if (typeof candidate !== "string") return false;
+			return candidate === path.join(fallback, "openai-codex-accounts.json");
+		});
+
+		const mod = await import("../lib/runtime-paths.js");
+		expect(mod.getCodexMultiAuthDir()).toBe(fallback);
+	});
+
 	it("prefers USERPROFILE over os.homedir on Windows when CODEX_HOME is unset", async () => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
 		try {

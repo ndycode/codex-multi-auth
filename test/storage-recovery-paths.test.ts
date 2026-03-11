@@ -185,14 +185,26 @@ describe("storage recovery paths", () => {
 			"utf-8",
 		);
 
-		const recovered = await loadAccounts();
-		expect(recovered?.accounts).toHaveLength(1);
-		expect(recovered?.accounts[0]?.accountId).toBe("from-discovered-backup");
+		const originalHome = process.env.HOME;
+		const originalUserProfile = process.env.USERPROFILE;
+		try {
+			process.env.HOME = workDir;
+			process.env.USERPROFILE = workDir;
 
-		const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
-			accounts?: Array<{ accountId?: string }>;
-		};
-		expect(persisted.accounts?.[0]?.accountId).toBe("from-discovered-backup");
+			const recovered = await loadAccounts();
+			expect(recovered?.accounts).toHaveLength(1);
+			expect(recovered?.accounts[0]?.accountId).toBe("from-discovered-backup");
+
+			const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+				accounts?: Array<{ accountId?: string }>;
+			};
+			expect(persisted.accounts?.[0]?.accountId).toBe("from-discovered-backup");
+		} finally {
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = originalUserProfile;
+		}
 	});
 
 	it("auto-promotes backup when primary storage matches synthetic fixture pattern", async () => {
@@ -540,6 +552,51 @@ describe("storage recovery paths", () => {
 		const reloaded = await loadAccounts();
 		expect(reloaded?.accounts).toHaveLength(0);
 		expect(getRestoreEligibility(reloaded).restoreReason).toBe("intentional-reset");
+	});
+
+	it("suppresses WAL recovery when a reset marker appears while the WAL is being read", async () => {
+		const walPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "racing-refresh",
+					accountId: "racing-account",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		const walContent = JSON.stringify(walPayload);
+		const walEntry = {
+			version: 1,
+			createdAt: Date.now(),
+			path: storagePath,
+			checksum: sha256(walContent),
+			content: walContent,
+		};
+
+		await fs.writeFile(`${storagePath}.wal`, JSON.stringify(walEntry), "utf-8");
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const originalWriteFile = fs.writeFile.bind(fs);
+		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			if (targetPath === `${storagePath}.wal`) {
+				await originalWriteFile(
+					`${storagePath}.reset-intent`,
+					JSON.stringify({ version: 1, createdAt: Date.now() }),
+					"utf-8",
+				);
+			}
+			return originalReadFile(...args);
+		});
+
+		const reloaded = await loadAccounts();
+		expect(reloaded?.accounts).toHaveLength(0);
+		expect(getRestoreEligibility(reloaded).restoreReason).toBe("intentional-reset");
+
+		readSpy.mockRestore();
 	});
 
 	it("excludes reset markers from discovered backup metadata", async () => {

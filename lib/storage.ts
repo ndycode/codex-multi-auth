@@ -1585,6 +1585,13 @@ async function loadAccountsInternal(
 
 	const recoveredFromWal = await loadAccountsFromJournal(path);
 	if (recoveredFromWal) {
+		if (hasIntentionalResetMarker()) {
+			return {
+				...createEmptyAccountStorage(),
+				restoreEligible: false,
+				restoreReason: "intentional-reset",
+			};
+		}
 		if (persistMigration) {
 			try {
 				await persistMigration(recoveredFromWal);

@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, normalize, win32 } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 
 function firstNonEmpty(values: Array<string | undefined>): string | null {
@@ -73,7 +73,7 @@ function deduplicatePaths(paths: string[]): string[] {
 }
 
 function pathsEqualNormalized(a: string, b: string): boolean {
-	const normalize = (value: string): string => {
+	const normalizePath = (value: string): string => {
 		const trimmed = value.trim();
 		if (process.platform === "win32") {
 			const normalized = win32.normalize(trimmed);
@@ -82,9 +82,10 @@ function pathsEqualNormalized(a: string, b: string): boolean {
 				normalized === root ? normalized : normalized.replace(/[\\/]+$/, "");
 			return withoutTrailing.toLowerCase();
 		}
-		return trimmed === "/" ? "/" : trimmed.replace(/\/+$/, "");
+		const normalized = normalize(trimmed);
+		return normalized === "/" ? "/" : normalized.replace(/\/+$/, "");
 	};
-	return normalize(a) === normalize(b);
+	return normalizePath(a) === normalizePath(b);
 }
 
 /**
