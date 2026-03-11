@@ -480,6 +480,67 @@ describe("storage", () => {
 			expect(exported.accounts[0]?.accountId).toBe("committed");
 		});
 
+		it("keeps the last committed snapshot when persist fails inside a transaction", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "committed",
+						refreshToken: "ref-committed",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let blockedStorageWrites = 0;
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (oldPath, newPath) => {
+					if (newPath === testStoragePath && blockedStorageWrites < 5) {
+						blockedStorageWrites += 1;
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalRename(oldPath, newPath);
+				});
+
+			try {
+				await withAccountStorageTransaction(async (current, persist) => {
+					await expect(
+						persist({
+							...(current ?? {
+								version: 3 as const,
+								activeIndex: 0,
+								accounts: [],
+							}),
+							accounts: [
+								{
+									accountId: "never-persisted",
+									refreshToken: "ref-never-persisted",
+									addedAt: 3,
+									lastUsed: 4,
+								},
+							],
+						}),
+					).rejects.toThrow();
+
+					await exportAccounts(exportPath);
+				});
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			expect(blockedStorageWrites).toBe(5);
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
+				accounts: Array<{ accountId?: string }>;
+			};
+			expect(exported.accounts[0]?.accountId).toBe("committed");
+		});
+
 		it("should enforce MAX_ACCOUNTS during import", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 

@@ -1341,8 +1341,8 @@ export async function withAccountStorageTransaction<T>(
 		const current = await loadAccountsUnlocked();
 		const context = { snapshot: current };
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			context.snapshot = storage;
 			await saveAccountsUnlocked(storage);
+			context.snapshot = storage;
 		};
 		return await transactionSnapshotContext.run(
 			context,
