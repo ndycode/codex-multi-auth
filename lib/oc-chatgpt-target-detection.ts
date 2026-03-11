@@ -309,11 +309,13 @@ export function detectOcChatgptMultiAuthTarget(options?: {
 	const normalizedExplicitRoot = explicitRoot
 		? normalizeCandidatePath(explicitRoot)
 		: "";
-	const orderedRoots = deduplicatePaths(
-		[normalizedExplicitRoot, canonicalRoot, projectStorageRoot].filter(
-			(entry): entry is string => Boolean(entry),
-		),
-	);
+	const orderedRoots = normalizedExplicitRoot
+		? [normalizedExplicitRoot]
+		: deduplicatePaths(
+				[canonicalRoot, projectStorageRoot].filter((entry): entry is string =>
+					Boolean(entry),
+				),
+			);
 
 	const candidates: OcChatgptTargetCandidate[] = orderedRoots.map((root) => {
 		const inferredScope = inferScopeFromRoot(root, canonicalRoot);

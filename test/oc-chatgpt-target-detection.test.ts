@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, win32 } from "node:path";
+import { join, relative, resolve, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	detectOcChatgptMultiAuthTarget,
@@ -163,7 +163,7 @@ describe("oc-chatgpt target detection", () => {
 		}
 	});
 
-	it("returns signal ambiguity with exact candidate shape when override and default roots both qualify", async () => {
+	it("treats the explicit override as authoritative when default roots also qualify", async () => {
 		const overrideRoot = join(workDir, "override-root");
 		const canonicalRoot = join(homeDir, ".opencode");
 		await fs.mkdir(join(overrideRoot, "backups"), { recursive: true });
@@ -171,29 +171,10 @@ describe("oc-chatgpt target detection", () => {
 		process.env.OC_CHATGPT_MULTI_AUTH_DIR = overrideRoot;
 
 		const result = detectOcChatgptMultiAuthTarget();
-		expect(result.kind).toBe("ambiguous");
-		if (result.kind === "ambiguous") {
-			expect(result.reason).toContain("storage signals");
-			expect(result.candidates).toEqual([
-				{
-					scope: "global",
-					source: "explicit",
-					root: overrideRoot,
-					accountPath: join(overrideRoot, "openai-codex-accounts.json"),
-					backupRoot: join(overrideRoot, "backups"),
-					hasAccountArtifacts: false,
-					hasSignals: true,
-				},
-				{
-					scope: "global",
-					source: "default-global",
-					root: canonicalRoot,
-					accountPath: join(canonicalRoot, "openai-codex-accounts.json"),
-					backupRoot: join(canonicalRoot, "backups"),
-					hasAccountArtifacts: false,
-					hasSignals: true,
-				},
-			]);
+		assertTarget(result, "global", overrideRoot);
+		if (result.kind === "target") {
+			expect(result.descriptor.source).toBe("explicit");
+			expect(result.descriptor.resolution).toBe("signals");
 		}
 	});
 
@@ -274,8 +255,8 @@ describe("oc-chatgpt target detection", () => {
 	});
 
 	it("resolves relative explicit roots before target detection", async () => {
-		const relativeRoot = join("relative-override", ".opencode");
-		const absoluteRoot = resolve(relativeRoot);
+		const absoluteRoot = join(workDir, "relative-override", ".opencode");
+		const relativeRoot = relative(process.cwd(), absoluteRoot);
 		await fs.mkdir(join(absoluteRoot, "backups"), { recursive: true });
 
 		const result = detectOcChatgptMultiAuthTarget({
