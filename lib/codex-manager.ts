@@ -50,6 +50,7 @@ import {
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
 import {
+	clearAccounts,
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
@@ -3650,12 +3651,7 @@ async function runDoctor(args: string[]): Promise<number> {
 }
 
 async function clearAccountsAndReset(): Promise<void> {
-	await saveAccounts({
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-	});
+	await clearAccounts();
 }
 
 async function handleManageAction(
@@ -3808,7 +3804,7 @@ async function runAuthLogin(): Promise<number> {
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
 					await runActionPanel("Reset Accounts", "Deleting all saved accounts", async () => {
 						await clearAccountsAndReset();
-						console.log("Deleted all accounts.");
+						console.log("Cleared saved accounts from active storage. Recovery snapshots remain available.");
 					}, displaySettings);
 					continue;
 				}

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { 
   deduplicateAccounts,
@@ -113,7 +114,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("should export accounts to a file", async () => {
@@ -635,13 +636,15 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
-    it("returns null when file does not exist", async () => {
-      const result = await loadAccounts();
-      expect(result).toBeNull();
-    });
+		it("returns restore-suppressed empty state when file does not exist", async () => {
+			const result = await loadAccounts();
+			expect(result?.accounts).toHaveLength(0);
+			expect(result?.restoreEligible).toBe(true);
+			expect(result?.restoreReason).toBe("missing-storage");
+		});
 
     it("returns null on parse error", async () => {
       await fs.writeFile(testStoragePath, "not valid json{{{", "utf-8");
@@ -710,7 +713,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("creates directory and saves file", async () => {
@@ -740,7 +743,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("deletes the file when it exists", async () => {
@@ -752,6 +755,51 @@ describe("storage", () => {
 
     it("does not throw when file does not exist", async () => {
       await expect(clearAccounts()).resolves.not.toThrow();
+    });
+
+    it("aborts reset when the reset marker cannot be written", async () => {
+      const walPath = `${testStoragePath}.wal`;
+      await fs.writeFile(testStoragePath, "{}", "utf-8");
+      await fs.writeFile(walPath, "{}", "utf-8");
+
+      const originalWriteFile = fs.writeFile.bind(fs);
+      const writeSpy = vi.spyOn(fs, "writeFile").mockImplementation(async (...args) => {
+        const [targetPath] = args;
+        if (typeof targetPath === "string" && targetPath.endsWith(".reset-intent")) {
+          const error = new Error("EPERM marker write") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        }
+        return originalWriteFile(...args);
+      });
+
+      await expect(clearAccounts()).rejects.toThrow("EPERM marker write");
+      expect(existsSync(testStoragePath)).toBe(true);
+      expect(existsSync(walPath)).toBe(true);
+
+      writeSpy.mockRestore();
+    });
+
+    it("aborts reset when the primary storage file cannot be deleted", async () => {
+      const walPath = `${testStoragePath}.wal`;
+      await fs.writeFile(testStoragePath, "{}", "utf-8");
+      await fs.writeFile(walPath, "{}", "utf-8");
+
+      const originalUnlink = fs.unlink.bind(fs);
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+        if (targetPath === testStoragePath) {
+          const error = new Error("EBUSY primary delete") as NodeJS.ErrnoException;
+          error.code = "EBUSY";
+          throw error;
+        }
+        return originalUnlink(targetPath);
+      });
+
+      await expect(clearAccounts()).rejects.toThrow("EBUSY primary delete");
+      expect(existsSync(testStoragePath)).toBe(true);
+      expect(existsSync(walPath)).toBe(true);
+
+      unlinkSpy.mockRestore();
     });
   });
 
@@ -810,7 +858,7 @@ describe("storage", () => {
         else process.env.HOME = originalHome;
         if (originalUserProfile === undefined) delete process.env.USERPROFILE;
         else process.env.USERPROFILE = originalUserProfile;
-        await fs.rm(testWorkDir, { recursive: true, force: true });
+        await removeWithRetry(testWorkDir, { recursive: true, force: true });
       }
     });
   });
@@ -829,6 +877,106 @@ describe("storage", () => {
       setStoragePathDirect(null);
       const path = getStoragePath();
       expect(path).toContain("openai-codex-accounts.json");
+    });
+  });
+
+  describe("fallback migration scoping", () => {
+    const testWorkDir = join(tmpdir(), "codex-fallback-scope-" + Math.random().toString(36).slice(2));
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+
+    beforeEach(async () => {
+      await fs.mkdir(testWorkDir, { recursive: true });
+      process.env.HOME = testWorkDir;
+      process.env.USERPROFILE = testWorkDir;
+    });
+
+    afterEach(async () => {
+      setStoragePathDirect(null);
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
+    });
+
+    it("does not migrate global fallback storage into project-scoped storage", async () => {
+      const projectDir = join(testWorkDir, "project-scope");
+      const globalFallbackPath = join(testWorkDir, ".codex", "openai-codex-accounts.json");
+      await fs.mkdir(projectDir, { recursive: true });
+      await fs.mkdir(join(projectDir, ".git"), { recursive: true });
+      await fs.mkdir(dirname(globalFallbackPath), { recursive: true });
+      await fs.writeFile(
+        globalFallbackPath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "global-refresh",
+              accountId: "global-account",
+              addedAt: 1,
+              lastUsed: 1,
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      setStoragePath(projectDir);
+      const result = await loadAccounts();
+
+      expect(result?.accounts).toHaveLength(0);
+      expect(existsSync(globalFallbackPath)).toBe(true);
+    });
+
+    it("migrates default-home fallback storage into an explicit non-default canonical root", async () => {
+      const fakeHome = join(testWorkDir, "custom-home");
+      const customCanonicalPath = join(
+        fakeHome,
+        ".codex-guided",
+        "multi-auth",
+        "openai-codex-accounts.json",
+      );
+      const globalFallbackPath = join(fakeHome, ".codex", "openai-codex-accounts.json");
+
+      await fs.mkdir(dirname(globalFallbackPath), { recursive: true });
+      await fs.writeFile(
+        globalFallbackPath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "fallback-refresh",
+              accountId: "fallback-account",
+              addedAt: 1,
+              lastUsed: 1,
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const originalHome = process.env.HOME;
+      const originalUserProfile = process.env.USERPROFILE;
+      try {
+        process.env.HOME = fakeHome;
+        process.env.USERPROFILE = fakeHome;
+        setStoragePathDirect(customCanonicalPath);
+
+        const result = await loadAccounts();
+
+        expect(result?.accounts).toHaveLength(1);
+        expect(result?.accounts[0]?.accountId).toBe("fallback-account");
+        expect(existsSync(customCanonicalPath)).toBe(true);
+        expect(existsSync(globalFallbackPath)).toBe(false);
+      } finally {
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
+        if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = originalUserProfile;
+      }
     });
   });
 
@@ -884,7 +1032,7 @@ describe("storage", () => {
 
     afterEach(async () => {
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("logs but does not throw on non-ENOENT errors", async () => {
@@ -938,7 +1086,7 @@ describe("storage", () => {
       else process.env.HOME = originalHome;
       if (originalUserProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = originalUserProfile;
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("writes .gitignore in project root when storage path is externalized", async () => {
@@ -1029,7 +1177,7 @@ describe("storage", () => {
       else process.env.HOME = originalHome;
       if (originalUserProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = originalUserProfile;
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("removes legacy project storage file after successful migration", async () => {
@@ -1060,6 +1208,37 @@ describe("storage", () => {
       expect(existsSync(legacyStoragePath)).toBe(false);
       expect(existsSync(getStoragePath())).toBe(true);
     });
+
+		it("migrates populated fallback root only after canonical write succeeds", async () => {
+			const fakeHome = join(testWorkDir, "home-fallback");
+			const canonicalPath = join(fakeHome, ".codex", "multi-auth", "openai-codex-accounts.json");
+			const fallbackPath = join(fakeHome, "DevTools", "config", "codex", "multi-auth", "openai-codex-accounts.json");
+
+			await fs.mkdir(dirname(fallbackPath), { recursive: true });
+			await fs.writeFile(
+				fallbackPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							refreshToken: "fallback-refresh",
+							accountId: "fallback-account",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			setStoragePathDirect(canonicalPath);
+			const loaded = await loadAccounts();
+
+			expect(loaded?.accounts?.[0]?.accountId).toBe("fallback-account");
+			expect(existsSync(canonicalPath)).toBe(true);
+			expect(existsSync(fallbackPath)).toBe(false);
+		});
   });
 
   describe("worktree-scoped storage migration", () => {
@@ -1150,7 +1329,7 @@ describe("storage", () => {
       else process.env.USERPROFILE = originalUserProfile;
       if (originalMultiAuthDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
       else process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
       vi.restoreAllMocks();
     });
 
@@ -1418,7 +1597,7 @@ describe("storage", () => {
     afterEach(async () => {
       vi.useRealTimers();
       setStoragePathDirect(null);
-      await fs.rm(testWorkDir, { recursive: true, force: true });
+      await removeWithRetry(testWorkDir, { recursive: true, force: true });
     });
 
     it("retries on EPERM and succeeds on second attempt", async () => {
@@ -1809,7 +1988,7 @@ describe("storage", () => {
   });
 
   describe("clearAccounts edge cases", () => {
-    it("removes primary, backup, and wal artifacts", async () => {
+    it("removes primary and wal artifacts while preserving backups", async () => {
       const now = Date.now();
       const storage = {
         version: 3 as const,
@@ -1830,21 +2009,21 @@ describe("storage", () => {
       expect(existsSync(`${storagePath}.bak.2`)).toBe(true);
       expect(existsSync(`${storagePath}.wal`)).toBe(true);
 
-      await clearAccounts();
+		await clearAccounts();
 
-      expect(existsSync(storagePath)).toBe(false);
-      expect(existsSync(`${storagePath}.bak`)).toBe(false);
-      expect(existsSync(`${storagePath}.bak.1`)).toBe(false);
-      expect(existsSync(`${storagePath}.bak.2`)).toBe(false);
-      expect(existsSync(`${storagePath}.wal`)).toBe(false);
-    });
+		expect(existsSync(storagePath)).toBe(false);
+		expect(existsSync(`${storagePath}.bak`)).toBe(true);
+		expect(existsSync(`${storagePath}.bak.1`)).toBe(true);
+		expect(existsSync(`${storagePath}.bak.2`)).toBe(true);
+		expect(existsSync(`${storagePath}.wal`)).toBe(false);
+	});
 
     it("logs error for non-ENOENT errors during clear", async () => {
       const unlinkSpy = vi.spyOn(fs, "unlink").mockRejectedValue(
         Object.assign(new Error("EACCES error"), { code: "EACCES" })
       );
 
-      await clearAccounts();
+      await expect(clearAccounts()).rejects.toThrow("EACCES error");
 
       expect(unlinkSpy).toHaveBeenCalled();
       unlinkSpy.mockRestore();

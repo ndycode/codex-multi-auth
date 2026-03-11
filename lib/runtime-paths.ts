@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, normalize, win32 } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 
 function firstNonEmpty(values: Array<string | undefined>): string | null {
@@ -70,6 +70,22 @@ function deduplicatePaths(paths: string[]): string[] {
 		result.push(trimmed);
 	}
 	return result;
+}
+
+function pathsEqualNormalized(a: string, b: string): boolean {
+	const normalizePath = (value: string): string => {
+		const trimmed = value.trim();
+		if (process.platform === "win32") {
+			const normalized = win32.normalize(trimmed);
+			const root = win32.parse(normalized).root;
+			const withoutTrailing =
+				normalized === root ? normalized : normalized.replace(/[\\/]+$/, "");
+			return withoutTrailing.toLowerCase();
+		}
+		const normalized = normalize(trimmed);
+		return normalized === "/" ? "/" : normalized.replace(/\/+$/, "");
+	};
+	return normalizePath(a) === normalizePath(b);
 }
 
 /**
@@ -169,12 +185,21 @@ export function getCodexMultiAuthDir(): string {
 		return fromEnv;
 	}
 
+	const codexHomeFromEnv = (process.env.CODEX_HOME ?? "").trim();
+	const defaultCodexHome = join(getResolvedUserHomeDir(), ".codex");
+	const isExplicitNonDefaultHome =
+		codexHomeFromEnv.length > 0 && !pathsEqualNormalized(codexHomeFromEnv, defaultCodexHome);
+
 	const primary = join(getCodexHomeDir(), "multi-auth");
 	const fallbackCandidates = deduplicatePaths([
 		...getFallbackCodexHomeDirs().map((dir) => join(dir, "multi-auth")),
 		getLegacyCodexDir(),
 	]);
 	const orderedCandidates = deduplicatePaths([primary, ...fallbackCandidates]);
+
+	if (isExplicitNonDefaultHome) {
+		return primary;
+	}
 
 	// Prefer candidates that actually contain account storage. This prevents
 	// accidentally switching to a fresh empty directory that only has settings files.

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   clearFlaggedAccounts,
+  getBackupMetadata,
   getFlaggedAccountsPath,
   getStoragePath,
   loadFlaggedAccounts,
@@ -160,14 +161,219 @@ describe("flagged account storage", () => {
         },
       ],
     });
+    await saveFlaggedAccounts({
+      version: 1,
+      accounts: [
+        {
+          refreshToken: "keep-backup",
+          flaggedAt: 2,
+          addedAt: 2,
+          lastUsed: 2,
+        },
+      ],
+    });
 
     expect(existsSync(getFlaggedAccountsPath())).toBe(true);
+    expect(existsSync(`${getFlaggedAccountsPath()}.bak`)).toBe(true);
 
     await clearFlaggedAccounts();
     await clearFlaggedAccounts();
 
-    expect(existsSync(getFlaggedAccountsPath())).toBe(false);
-  });
+		expect(existsSync(getFlaggedAccountsPath())).toBe(false);
+		expect(existsSync(`${getFlaggedAccountsPath()}.bak`)).toBe(false);
+	});
+
+	it("does not revive flagged accounts from backups after clear", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "revive-test",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "revive-test",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					refreshToken: "revive-test-2",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		await clearFlaggedAccounts();
+
+		const flagged = await loadFlaggedAccounts();
+		expect(flagged.accounts).toHaveLength(0);
+	});
+
+	it("does not recover flagged backups when the primary file exists but read fails", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "primary-flagged",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "backup-flagged",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		const flaggedPath = getFlaggedAccountsPath();
+		const originalReadFile = fs.readFile.bind(fs);
+		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			if (targetPath === flaggedPath) {
+				const error = new Error("EPERM flagged read") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			}
+			return originalReadFile(...args);
+		});
+
+		const flagged = await loadFlaggedAccounts();
+		expect(flagged.accounts).toHaveLength(0);
+		expect(existsSync(flaggedPath)).toBe(true);
+
+		readSpy.mockRestore();
+	});
+
+	it("clears discovered flagged backup artifacts so manual snapshots cannot revive after clear", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "manual-backup-revive-test",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		const manualBackupPath = `${getFlaggedAccountsPath()}.manual-checkpoint`;
+		await fs.copyFile(getFlaggedAccountsPath(), manualBackupPath);
+
+		await clearFlaggedAccounts();
+
+		const flagged = await loadFlaggedAccounts();
+		expect(existsSync(manualBackupPath)).toBe(false);
+		expect(flagged.accounts).toHaveLength(0);
+	});
+
+	it("suppresses flagged backup revival when clear only partially deletes backup artifacts", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "partial-delete-primary",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "partial-delete-secondary",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		const flaggedPath = getFlaggedAccountsPath();
+		const backupPath = `${flaggedPath}.bak`;
+		const originalUnlink = fs.unlink.bind(fs);
+		const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+			if (targetPath === backupPath) {
+				const error = new Error("EACCES backup delete") as NodeJS.ErrnoException;
+				error.code = "EACCES";
+				throw error;
+			}
+			return originalUnlink(targetPath);
+		});
+
+		await clearFlaggedAccounts();
+
+		const flagged = await loadFlaggedAccounts();
+		expect(existsSync(backupPath)).toBe(true);
+		expect(flagged.accounts).toHaveLength(0);
+
+		unlinkSpy.mockRestore();
+	});
+
+	it("emits snapshot metadata for flagged account backups", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "first-flagged",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "first-flagged",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					refreshToken: "second-flagged",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		const metadata = await getBackupMetadata();
+		const flagged = metadata.flaggedAccounts;
+		expect(flagged.snapshotCount).toBeGreaterThanOrEqual(2);
+		expect(flagged.latestValidPath).toBe(getFlaggedAccountsPath());
+		const primary = flagged.snapshots.find((snapshot) => snapshot.kind === "flagged-primary");
+		const backup = flagged.snapshots.find((snapshot) => snapshot.kind === "flagged-backup");
+		expect(primary?.flaggedCount).toBe(2);
+		expect(backup?.valid).toBe(true);
+		expect(backup?.flaggedCount).toBe(1);
+	});
 
   it("cleans temporary file when flagged save fails", async () => {
     const flaggedPath = getFlaggedAccountsPath();

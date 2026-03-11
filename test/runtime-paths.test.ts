@@ -86,6 +86,22 @@ describe("runtime-paths", () => {
 		expect(mod.getCodexMultiAuthDir()).toBe(fallback);
 	});
 
+	it("keeps canonical multi-auth root steady-state even when fallback still holds accounts", async () => {
+		process.env.CODEX_HOME = "/home/neil/.codex-canonical";
+		const primary = path.join("/home/neil/.codex-canonical", "multi-auth");
+		const fallback = path.join("/home/neil/DevTools/config/codex", "multi-auth");
+
+		existsSync.mockImplementation((candidate: unknown) => {
+			if (typeof candidate !== "string") return false;
+			if (candidate === path.join(primary, "settings.json")) return true;
+			if (candidate === path.join(fallback, "openai-codex-accounts.json")) return true;
+			return false;
+		});
+
+		const mod = await import("../lib/runtime-paths.js");
+		expect(mod.getCodexMultiAuthDir()).toBe(primary);
+	});
+
 	it("uses legacy root when it is the only directory containing account storage", async () => {
 		process.env.CODEX_HOME = "/home/neil/.codex";
 		const legacyRoot = path.join("/home/neil", ".codex");
@@ -117,6 +133,39 @@ describe("runtime-paths", () => {
 		} finally {
 			platformSpy.mockRestore();
 		}
+	});
+
+	it("treats default Windows CODEX_HOME with a trailing separator as the default root", async () => {
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		try {
+			homedir.mockReturnValue("C:\\Users\\Neil");
+			process.env.CODEX_HOME = "C:\\Users\\Neil\\.codex\\";
+			const fallback = "C:\\Users\\Neil\\DevTools\\config\\codex\\multi-auth";
+
+			existsSync.mockImplementation((candidate: unknown) => {
+				if (typeof candidate !== "string") return false;
+				return candidate === path.join(fallback, "openai-codex-accounts.json");
+			});
+
+			const mod = await import("../lib/runtime-paths.js");
+			expect(mod.getCodexMultiAuthDir()).toBe(fallback);
+		} finally {
+			platformSpy.mockRestore();
+		}
+	});
+
+	it("treats normalized POSIX CODEX_HOME variants of the default root as default", async () => {
+		homedir.mockReturnValue("/home/neil");
+		process.env.CODEX_HOME = "/home/neil/./.codex//";
+		const fallback = path.join("/home/neil", "DevTools", "config", "codex", "multi-auth");
+
+		existsSync.mockImplementation((candidate: unknown) => {
+			if (typeof candidate !== "string") return false;
+			return candidate === path.join(fallback, "openai-codex-accounts.json");
+		});
+
+		const mod = await import("../lib/runtime-paths.js");
+		expect(mod.getCodexMultiAuthDir()).toBe(fallback);
 	});
 
 	it("prefers USERPROFILE over os.homedir on Windows when CODEX_HOME is unset", async () => {

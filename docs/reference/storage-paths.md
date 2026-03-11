@@ -25,6 +25,7 @@ Override root:
 | Accounts backup | `~/.codex/multi-auth/openai-codex-accounts.json.bak` |
 | Accounts WAL | `~/.codex/multi-auth/openai-codex-accounts.json.wal` |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
+| Flagged accounts backup | `~/.codex/multi-auth/openai-codex-flagged-accounts.json.bak` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Cache | `~/.codex/multi-auth/cache/` |
@@ -35,6 +36,10 @@ Ownership note:
 
 - `~/.codex/multi-auth/*` is managed by this project.
 - `~/.codex/accounts.json` and `~/.codex/auth.json` are managed by official Codex CLI.
+
+Backup metadata:
+
+- `getBackupMetadata()` reports deterministic snapshot lists for the canonical account pool (primary, WAL, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups) and flagged-account state (primary, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups). Cache-like artifacts and `.reset-intent` markers are excluded from recovery candidates.
 
 ---
 
