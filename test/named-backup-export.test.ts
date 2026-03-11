@@ -10,6 +10,7 @@ import {
 import {
 	exportAccounts,
 	getStoragePath,
+	loadAccounts,
 	saveAccounts,
 	setStoragePathDirect,
 } from "../lib/storage.js";
@@ -262,26 +263,37 @@ describe("named backup export", () => {
 		});
 
 		const { withAccountStorageTransaction } = await import("../lib/storage.js");
-		const backupPath = await withAccountStorageTransaction(async (current) => {
-			const account = current?.accounts[0];
-			expect(account).toBeDefined();
-			if (account) {
-				account.accountId = "acct-transaction-updated";
-			}
-			return await exportNamedBackupFile(
-				"backup-2026-03-11",
-				{
-					getStoragePath,
-					exportAccounts,
-				},
-				{ force: true },
-			);
-		});
+		const backupPath = await withAccountStorageTransaction(
+			async (current, persist) => {
+				const account = current?.accounts[0];
+				expect(account).toBeDefined();
+				if (account) {
+					await persist({
+						...current,
+						accounts: current.accounts.map((entry, index) =>
+							index === 0
+								? { ...entry, accountId: "acct-transaction-updated" }
+								: entry,
+						),
+					});
+				}
+				return await exportNamedBackupFile(
+					"backup-2026-03-11",
+					{
+						getStoragePath,
+						exportAccounts,
+					},
+					{ force: true },
+				);
+			},
+		);
 
 		expect(existsSync(backupPath)).toBe(true);
 		const exported = JSON.parse(await fs.readFile(backupPath, "utf-8")) as {
 			accounts: Array<{ accountId?: string }>;
 		};
 		expect(exported.accounts[0]?.accountId).toBe("acct-transaction-updated");
+		const persisted = await loadAccounts();
+		expect(persisted?.accounts[0]?.accountId).toBe("acct-transaction-updated");
 	});
 });
