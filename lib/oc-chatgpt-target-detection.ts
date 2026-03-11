@@ -73,6 +73,12 @@ export type OcChatgptTargetDetectionResult =
 	| OcChatgptTargetAmbiguous
 	| OcChatgptTargetNone;
 
+/**
+ * Selects the first non-empty trimmed string from the provided array.
+ *
+ * @param values - An array of strings or undefined values to examine
+ * @returns The first value with surrounding whitespace removed, or `null` if no non-empty value is found
+ */
 function firstNonEmpty(values: Array<string | undefined>): string | null {
 	for (const value of values) {
 		const trimmed = (value ?? "").trim();
@@ -83,6 +89,15 @@ function firstNonEmpty(values: Array<string | undefined>): string | null {
 	return null;
 }
 
+/**
+ * Resolve the effective user home directory, preferring sensible platform-specific environment variables.
+ *
+ * @returns The resolved home directory path.
+ *
+ * @remarks
+ * - On Windows this prefers USERPROFILE, then HOME, then the combination of HOMEDRIVE+HOMEPATH, and finally os.homedir(). On non-Windows it prefers HOME then os.homedir().
+ * - The function is pure and safe for concurrent calls within a single process (it only reads environment and os state).
+ * - Environment-derived paths may contain sensitive tokens; callers should redact or treat returned paths as potentially sensitive before logging or emitting them.
 function getResolvedUserHomeDir(): string {
 	if (process.platform === "win32") {
 		const homeDrive = (process.env.HOMEDRIVE ?? "").trim();
@@ -103,10 +118,28 @@ function getResolvedUserHomeDir(): string {
 	return firstNonEmpty([process.env.HOME, homedir()]) ?? homedir();
 }
 
+/**
+ * Determines whether a path string represents a Windows drive root (e.g., `C:` or `C:\`).
+ *
+ * @param candidate - The path string to test; typically a normalized candidate path.
+ * @returns `true` if `candidate` is a Windows drive root like `C:` or `C:\`, `false` otherwise.
+ *
+ * Notes:
+ * - This is a pure, concurrency-safe predicate.
+ * - Windows-specific behavior: accepts both `X:` and `X:\` forms as drive roots.
+ * - No token or secret redaction is performed by this function; it only inspects the string.
+ */
 function isWindowsDriveRoot(candidate: string): boolean {
 	return /^[a-zA-Z]:\\?$/.test(candidate);
 }
 
+/**
+ * Normalize and canonicalize a filesystem candidate path for comparison and storage.
+ *
+ * @param candidate - Path string to normalize; leading and trailing whitespace are ignored.
+ * @returns The normalized, resolved path. On Windows drive roots a trailing backslash is preserved (e.g. `C:\`); for non-root paths trailing path separators are removed. Returns an empty string when `candidate` is empty or only whitespace.
+ *
+ * @remarks This function is pure and safe to call concurrently. It applies platform-aware normalization (Windows drive-root handling) and does not perform token redaction or other secret-masking IO. */
 function normalizeCandidatePath(candidate: string): string {
 	const trimmed = candidate.trim();
 	if (trimmed.length === 0) return "";
@@ -120,6 +153,17 @@ function normalizeCandidatePath(candidate: string): string {
 	return normalized;
 }
 
+/**
+ * Normalize and deduplicate a list of filesystem candidate paths while preserving first-seen ordering.
+ *
+ * This function normalizes each input path (via normalizeCandidatePath), drops empty results,
+ * and removes duplicates. On Windows the deduplication is case-insensitive; on other platforms it is case-sensitive.
+ * The function is synchronous and free of side effects, so it is safe to call concurrently from multiple callers.
+ * Note: this function does not redact or mask any sensitive tokens that may appear in path strings.
+ *
+ * @param paths - Array of candidate path strings to normalize and de-duplicate
+ * @returns An array of normalized, unique paths in their first-seen order
+ */
 function deduplicatePaths(paths: string[]): string[] {
 	const seen = new Set<string>();
 	const result: string[] = [];
@@ -135,6 +179,14 @@ function deduplicatePaths(paths: string[]): string[] {
 	return result;
 }
 
+/**
+ * Detects whether an account file or rotated account artifacts exist under the specified storage root.
+ *
+ * Scans for the canonical account file and its WAL variant, rotated/archived files matching the account filename pattern (excluding `.tmp`, `.wal`, and names containing `.rotate.`), and the backups directory. The probe is tolerant of unreadable directories (errors are ignored) and does not read file contents. Callers should be aware of concurrent filesystem changes — a `false` result does not guarantee no artifact will appear shortly after. On Windows, filesystem matching should be considered case-insensitive by callers. This check does not expose or parse any token contents.
+ *
+ * @param root - Filesystem path of the storage root to probe
+ * @returns `true` if any account file or rotated account artifact exists under `root` or its backups directory, `false` otherwise.
+ */
 function hasAccountArtifacts(root: string): boolean {
 	const accountPath = join(root, ACCOUNT_FILE_NAME);
 	if (existsSync(accountPath) || existsSync(`${accountPath}.wal`)) {
@@ -173,6 +225,18 @@ function hasAccountArtifacts(root: string): boolean {
 	return false;
 }
 
+/**
+ * Determines whether the given storage root contains on-disk storage signals (backups or projects).
+ *
+ * Checks for the presence of a "backups" or "projects" directory directly under `root`. The result
+ * reflects the filesystem state at the time of the call and may change concurrently; callers should
+ * treat this as a best-effort, race-prone probe. On Windows this uses the OS filesystem semantics
+ * for path existence checks. This function does not read or expose file contents and therefore does
+ * not reveal tokens or other secret material.
+ *
+ * @param root - Filesystem path to the candidate storage root
+ * @returns `true` if either a `backups` or `projects` directory exists under `root`, `false` otherwise
+ */
 function hasStorageSignals(root: string): boolean {
 	return (
 		existsSync(join(root, BACKUPS_DIR_NAME)) ||
@@ -180,6 +244,18 @@ function hasStorageSignals(root: string): boolean {
 	);
 }
 
+/**
+ * Determines whether a storage root is a per-project location or the global location.
+ *
+ * @param root - The candidate storage root path to classify.
+ * @param canonicalRoot - The canonical root path (typically the user-level `.opencode` directory).
+ * @returns The inferred scope: `"project"` if `root` is located under the `projects` subdirectory of `canonicalRoot`, `"global"` otherwise.
+ *
+ * Notes:
+ * - Uses Node's path.relative and the platform path separator; on Windows this comparison uses backslashes.
+ * - Pure and side-effect free; safe for concurrent use.
+ * - Only inspects path structure, not file contents, so no secrets or tokens are read or redacted here.
+ */
 function inferScopeFromRoot(
 	root: string,
 	canonicalRoot: string,
@@ -190,6 +266,25 @@ function inferScopeFromRoot(
 		: "global";
 }
 
+/**
+ * Detects the oc-chatgpt multi-auth storage target by evaluating explicit, canonical, and per-project candidate roots.
+ *
+ * Examines an explicit override (OC_CHATGPT_MULTI_AUTH_DIR or options.explicitRoot), the canonical user store (~/.opencode),
+ * and a per-project storage location (derived from options.projectRoot or the current working directory). For each candidate
+ * it checks for account artifacts and storage signals and returns a single resolved target, an ambiguity listing multiple
+ * matching candidates, or a "none" result with the attempted candidates. This function performs synchronous filesystem checks
+ * and tolerates unreadable directories; callers should treat it as a blocking operation. On Windows, path normalization and
+ * deduplication are case-insensitive and drive-root variants (e.g. `C:` vs `C:\`) are normalized consistently. Returned
+ * descriptors include normalized paths but do not contain authentication tokens or other secret material.
+ *
+ * @param options - Optional overrides:
+ *   - explicitRoot: absolute path to force as the candidate root (use `null` to explicitly disable); if omitted the
+ *     OC_CHATGPT_MULTI_AUTH_DIR environment variable is considered.
+ *   - projectRoot: explicit project root to derive per-project storage; if omitted the current working directory is used to
+ *     discover the project root.
+ * @returns An OcChatgptTargetDetectionResult describing either a resolved `target` (with `descriptor` and a `resolution`
+ *   of `"accounts"` or `"signals"`), an `ambiguous` outcome listing conflicting candidates, or `none` with the tried candidates.
+ */
 export function detectOcChatgptMultiAuthTarget(options?: {
 	explicitRoot?: string | null;
 	projectRoot?: string | null;
