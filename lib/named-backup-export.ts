@@ -79,11 +79,14 @@ function assertWithinDirectory(baseDir: string, targetPath: string): void {
 		if (baseStat.isSymbolicLink()) {
 			throw new Error("Named backup path escapes the backup root");
 		}
-		const canonicalBase = normalizePathForComparison(
-			realpathSync(resolvedBase),
-		);
-		const normalizedResolvedBase = normalizePathForComparison(resolvedBase);
-		if (canonicalBase !== normalizedResolvedBase) {
+		const canonicalBase = realpathSync(resolvedBase);
+		const comparableCanonicalBase =
+			process.platform === "win32"
+				? canonicalBase.toLowerCase()
+				: canonicalBase;
+		const comparableResolvedBase =
+			process.platform === "win32" ? resolvedBase.toLowerCase() : resolvedBase;
+		if (comparableCanonicalBase !== comparableResolvedBase) {
 			throw new Error("Named backup path escapes the backup root");
 		}
 	}

@@ -213,6 +213,39 @@ describe("named backup export", () => {
 		).rejects.toThrow(/escapes the backup root/);
 	});
 
+	it("rejects backup roots whose ancestor path resolves through a symlink", async () => {
+		const externalRoot = join(testRoot, "real-config-root");
+		const linkedRoot = join(testRoot, "linked-config-root");
+		await fs.mkdir(externalRoot, { recursive: true });
+		await fs.symlink(
+			externalRoot,
+			linkedRoot,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+
+		storagePath = join(linkedRoot, "openai-codex-accounts.json");
+		setStoragePathDirect(storagePath);
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acct-ancestor-symlink",
+					refreshToken: "refresh-ancestor-symlink",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await expect(
+			exportNamedBackupFile("backup-2026-03-12-ancestor", {
+				getStoragePath,
+				exportAccounts,
+			}),
+		).rejects.toThrow(/escapes the backup root/);
+	});
+
 	it("creates the backup directory before delegating export", async () => {
 		const calls: string[] = [];
 		await exportNamedBackupFile("backup-2026-03-12-create", {
