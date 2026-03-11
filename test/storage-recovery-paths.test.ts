@@ -592,11 +592,13 @@ describe("storage recovery paths", () => {
 			return originalReadFile(...args);
 		});
 
-		const reloaded = await loadAccounts();
-		expect(reloaded?.accounts).toHaveLength(0);
-		expect(getRestoreEligibility(reloaded).restoreReason).toBe("intentional-reset");
-
-		readSpy.mockRestore();
+		try {
+			const reloaded = await loadAccounts();
+			expect(reloaded?.accounts).toHaveLength(0);
+			expect(getRestoreEligibility(reloaded).restoreReason).toBe("intentional-reset");
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("excludes reset markers from discovered backup metadata", async () => {
