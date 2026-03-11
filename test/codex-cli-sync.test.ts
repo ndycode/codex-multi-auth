@@ -12,7 +12,7 @@ import {
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"]);
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EACCES", "ETIMEDOUT"]);
 
 async function removeWithRetry(
 	targetPath: string,
@@ -214,6 +214,27 @@ describe("codex-cli sync", () => {
 		} finally {
 			loadSpy.mockRestore();
 		}
+	});
+
+	it("clamps NaN activeIndex to 0 and reports changed", async () => {
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: Number.NaN,
+			activeIndexByFamily: {},
+		};
+
+		const result = await syncAccountStorageFromCodexCli(current);
+		expect(result.changed).toBe(true);
+		expect(result.storage?.activeIndex).toBe(0);
 	});
 
 	it("serializes concurrent active-selection writes to keep accounts/auth aligned", async () => {
