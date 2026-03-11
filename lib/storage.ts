@@ -1,5 +1,5 @@
 import { promises as fs, existsSync } from "node:fs";
-import { basename, dirname, join, normalize } from "node:path";
+import { basename, dirname, join, normalize, win32 } from "node:path";
 import { createHash } from "node:crypto";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
@@ -253,8 +253,16 @@ function getAccountsWalPath(path: string): string {
 }
 
 function normalizePathForDedup(pathValue: string): string {
-	const normalized = normalize(pathValue.trim());
-	return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+	const trimmed = pathValue.trim();
+	if (process.platform === "win32") {
+		const normalized = win32.normalize(trimmed);
+		const root = win32.parse(normalized).root;
+		const withoutTrailing =
+			normalized === root ? normalized : normalized.replace(/[\\/]+$/, "");
+		return withoutTrailing.toLowerCase();
+	}
+	const normalized = normalize(trimmed);
+	return normalized === "/" ? "/" : normalized.replace(/\/+$/, "");
 }
 
 function deduplicatePathList(paths: string[]): string[] {
