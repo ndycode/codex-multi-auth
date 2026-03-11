@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, win32 } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	detectOcChatgptMultiAuthTarget,
 	type OcChatgptTargetDetectionResult,
@@ -10,6 +10,32 @@ import {
 	getProjectStorageKey,
 	resolveProjectStorageIdentityRoot,
 } from "../lib/storage/paths.js";
+
+async function loadTargetDetectionWithWin32PathMocks(): Promise<{
+	detectOcChatgptMultiAuthTarget: typeof import("../lib/oc-chatgpt-target-detection.js").detectOcChatgptMultiAuthTarget;
+}> {
+	vi.resetModules();
+	vi.doMock("node:path", async () => {
+		const actual =
+			await vi.importActual<typeof import("node:path")>("node:path");
+		return {
+			...actual,
+			basename: actual.win32.basename,
+			dirname: actual.win32.dirname,
+			isAbsolute: actual.win32.isAbsolute,
+			join: actual.win32.join,
+			normalize: actual.win32.normalize,
+			relative: actual.win32.relative,
+			resolve: actual.win32.resolve,
+			sep: actual.win32.sep,
+		};
+	});
+	const targetDetection = await import("../lib/oc-chatgpt-target-detection.js");
+	return {
+		detectOcChatgptMultiAuthTarget:
+			targetDetection.detectOcChatgptMultiAuthTarget,
+	};
+}
 
 async function removeWithRetry(
 	targetPath: string,
@@ -50,6 +76,8 @@ describe("oc-chatgpt target detection", () => {
 	});
 
 	afterEach(async () => {
+		vi.doUnmock("node:path");
+		vi.resetModules();
 		if (originalHome === undefined) delete process.env.HOME;
 		else process.env.HOME = originalHome;
 		if (originalUserProfile === undefined) delete process.env.USERPROFILE;
@@ -216,6 +244,8 @@ describe("oc-chatgpt target detection", () => {
 			value: "win32",
 			configurable: true,
 		});
+		const { detectOcChatgptMultiAuthTarget } =
+			await loadTargetDetectionWithWin32PathMocks();
 		const explicitRoot = "C:\\";
 		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
 		expect(result.kind).toBe("none");
@@ -224,11 +254,13 @@ describe("oc-chatgpt target detection", () => {
 		}
 	});
 
-	it("normalizes mixed Windows separators in explicit roots", () => {
+	it("normalizes mixed Windows separators in explicit roots", async () => {
 		Object.defineProperty(process, "platform", {
 			value: "win32",
 			configurable: true,
 		});
+		const { detectOcChatgptMultiAuthTarget } =
+			await loadTargetDetectionWithWin32PathMocks();
 		const explicitRoot = "C:\\Users/profile\\.opencode\\";
 		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
 		expect(result.kind).toBe("none");
@@ -239,11 +271,13 @@ describe("oc-chatgpt target detection", () => {
 		}
 	});
 
-	it("preserves UNC explicit roots after normalization", () => {
+	it("preserves UNC explicit roots after normalization", async () => {
 		Object.defineProperty(process, "platform", {
 			value: "win32",
 			configurable: true,
 		});
+		const { detectOcChatgptMultiAuthTarget } =
+			await loadTargetDetectionWithWin32PathMocks();
 		const explicitRoot = "\\\\server\\share\\multi-auth\\";
 		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
 		expect(result.kind).toBe("none");
