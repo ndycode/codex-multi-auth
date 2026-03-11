@@ -6,7 +6,7 @@
   "types": "./dist/index.d.ts",
   "type": "module",
   "license": "MIT",
-  "author": "Numman Ali",
+  "author": "ndycode",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ndycode/codex-multi-auth.git"
