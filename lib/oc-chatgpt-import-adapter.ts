@@ -98,7 +98,7 @@ function sanitizeAccount(account: AccountMetadataV3): AccountMetadataV3 | null {
 
 function tokenLast4(token: string): string {
 	const trimmed = token.trim();
-	if (trimmed.length <= 4) return trimmed;
+	if (trimmed.length <= 4) return "*".repeat(trimmed.length);
 	return trimmed.slice(-4);
 }
 

@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	detectOcChatgptMultiAuthTarget,
@@ -226,6 +226,36 @@ describe("oc-chatgpt target detection", () => {
 		expect(result.kind).toBe("none");
 		if (result.kind === "none") {
 			expect(result.tried[0]?.root).toBe("C:\\");
+		}
+	});
+
+	it("normalizes mixed Windows separators in explicit roots", () => {
+		Object.defineProperty(process, "platform", {
+			value: "win32",
+			configurable: true,
+		});
+		const explicitRoot = "C:\\Users/profile\\.opencode\\";
+		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
+		expect(result.kind).toBe("none");
+		if (result.kind === "none") {
+			expect(result.tried[0]?.root).toBe(
+				win32.normalize("C:\\Users\\profile\\.opencode"),
+			);
+		}
+	});
+
+	it("preserves UNC explicit roots after normalization", () => {
+		Object.defineProperty(process, "platform", {
+			value: "win32",
+			configurable: true,
+		});
+		const explicitRoot = "\\\\server\\share\\multi-auth\\";
+		const result = detectOcChatgptMultiAuthTarget({ explicitRoot });
+		expect(result.kind).toBe("none");
+		if (result.kind === "none") {
+			expect(result.tried[0]?.root).toBe(
+				win32.normalize("\\\\server\\share\\multi-auth"),
+			);
 		}
 	});
 

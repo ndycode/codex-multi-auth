@@ -179,6 +179,36 @@ describe("named backup export", () => {
 		).toThrow();
 	});
 
+	it("rejects backup roots that escape through a symlinked backups directory", async () => {
+		const externalRoot = join(testRoot, "outside-backups");
+		const backupRoot = join(dirname(storagePath), "backups");
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acct-symlink",
+					refreshToken: "refresh-symlink",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await fs.mkdir(externalRoot, { recursive: true });
+		await fs.symlink(
+			externalRoot,
+			backupRoot,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+
+		await expect(
+			exportNamedBackupFile("backup-2026-03-12", {
+				getStoragePath,
+				exportAccounts,
+			}),
+		).rejects.toThrow(/escapes the backup root/);
+	});
+
 	it("exports the current storage JSON into the resolved named backup file", async () => {
 		await saveAccounts({
 			version: 3,

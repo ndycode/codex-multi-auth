@@ -397,4 +397,93 @@ describe("oc-chatgpt import adapter", () => {
 		expect(preview.unchangedDestinationOnly).toHaveLength(1);
 		expect(preview.activeSelectionBehavior).toBe("preserve-destination");
 	});
+
+	it("matches id-less accounts by case-folded email but not plus-address variants", () => {
+		const destination: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					email: "user@example.com",
+					refreshToken: "dest-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+
+		const source: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					email: "USER@EXAMPLE.COM",
+					refreshToken: "token-case-fold",
+					addedAt: 2,
+					lastUsed: 3,
+				},
+				{
+					email: "user+tag@example.com",
+					refreshToken: "token-plus",
+					addedAt: 4,
+					lastUsed: 5,
+				},
+			],
+		};
+
+		const preview = previewOcChatgptImportMerge({ source, destination });
+		const caseFolded = preview.toUpdate.find(
+			(entry) => entry.next.refreshTokenLast4 === "fold",
+		);
+		expect(caseFolded?.matchedBy).toBe("email");
+		expect(preview.toAdd).toContainEqual({
+			accountId: undefined,
+			email: "user+tag@example.com",
+			refreshTokenLast4: "plus",
+		});
+	});
+
+	it("remaps activeIndexByFamily when normalized source accounts collapse duplicates", () => {
+		const source: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 2,
+			activeIndexByFamily: { codex: 2, "gpt-5.1": 1 },
+			accounts: [
+				{
+					accountId: "acc-dup",
+					email: "first@example.com",
+					refreshToken: "token-old",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc-dup",
+					email: "first@example.com",
+					refreshToken: "token-new",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+				{
+					email: "second@example.com",
+					refreshToken: "token-second",
+					addedAt: 3,
+					lastUsed: 3,
+				},
+			],
+		};
+
+		const payload = buildOcChatgptImportPayload(source);
+		const preview = previewOcChatgptImportMerge({
+			source,
+			destination: { version: 3, activeIndex: 0, accounts: [] },
+		});
+
+		expect(payload.accounts).toHaveLength(2);
+		expect(payload.activeIndex).toBe(1);
+		expect(payload.activeIndexByFamily).toEqual({ codex: 1, "gpt-5.1": 0 });
+		expect(preview.payload.activeIndexByFamily).toEqual({
+			codex: 1,
+			"gpt-5.1": 0,
+		});
+	});
 });

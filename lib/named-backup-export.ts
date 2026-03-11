@@ -1,4 +1,12 @@
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
 import { resolvePath } from "./storage/paths.js";
 
 const BACKUP_EXPORT_DIR_NAME = "backups";
@@ -14,14 +22,32 @@ export interface NamedBackupExportDependencies {
 
 function normalizePathForComparison(pathValue: string): string {
 	const resolvedPath = resolve(pathValue);
-	return process.platform === "win32"
-		? resolvedPath.toLowerCase()
+	const canonicalPath = existsSync(resolvedPath)
+		? realpathSync(resolvedPath)
 		: resolvedPath;
+	return process.platform === "win32"
+		? canonicalPath.toLowerCase()
+		: canonicalPath;
 }
 
 function assertWithinDirectory(baseDir: string, targetPath: string): void {
+	const resolvedBase = resolve(baseDir);
+	if (existsSync(resolvedBase)) {
+		if (lstatSync(resolvedBase).isSymbolicLink()) {
+			throw new Error("Named backup path escapes the backup root");
+		}
+		const canonicalBase = normalizePathForComparison(
+			realpathSync(resolvedBase),
+		);
+		const normalizedResolvedBase = normalizePathForComparison(resolvedBase);
+		if (canonicalBase !== normalizedResolvedBase) {
+			throw new Error("Named backup path escapes the backup root");
+		}
+	}
 	const normalizedBase = normalizePathForComparison(baseDir);
-	const normalizedTarget = normalizePathForComparison(targetPath);
+	const targetParent = dirname(targetPath);
+	const normalizedTargetParent = normalizePathForComparison(targetParent);
+	const normalizedTarget = join(normalizedTargetParent, basename(targetPath));
 	const rel = relative(normalizedBase, normalizedTarget);
 	if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
 		return;
