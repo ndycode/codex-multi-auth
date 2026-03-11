@@ -209,6 +209,20 @@ describe("named backup export", () => {
 		).rejects.toThrow(/escapes the backup root/);
 	});
 
+	it("creates the backup directory before delegating export", async () => {
+		const calls: string[] = [];
+		await exportNamedBackupFile("backup-2026-03-12-create", {
+			getStoragePath,
+			exportAccounts: async (filePath) => {
+				calls.push(filePath);
+				expect(existsSync(dirname(filePath))).toBe(true);
+			},
+		});
+
+		expect(calls).toHaveLength(1);
+		expect(existsSync(join(dirname(storagePath), "backups"))).toBe(true);
+	});
+
 	it("exports the current storage JSON into the resolved named backup file", async () => {
 		await saveAccounts({
 			version: 3,

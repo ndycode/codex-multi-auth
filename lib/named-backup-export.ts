@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, promises as fs, lstatSync, realpathSync } from "node:fs";
 import {
 	basename,
 	dirname,
@@ -115,10 +115,11 @@ export async function exportNamedBackupFile(
 	dependencies: NamedBackupExportDependencies,
 	options?: { force?: boolean },
 ): Promise<string> {
-	const destination = resolveNamedBackupPath(
-		name,
-		dependencies.getStoragePath(),
-	);
+	const storagePath = dependencies.getStoragePath();
+	const destination = resolveNamedBackupPath(name, storagePath);
+	const backupRoot = getNamedBackupRoot(storagePath);
+	await fs.mkdir(backupRoot, { recursive: true });
+	assertWithinDirectory(backupRoot, destination);
 	await dependencies.exportAccounts(destination, options?.force === true);
 	return destination;
 }
