@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -44,6 +45,10 @@ async function removeWithRetry(
 			await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
 		}
 	}
+}
+
+function sha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
 }
 
 // Mocking the behavior we're about to implement for TDD
@@ -388,6 +393,117 @@ describe("storage", () => {
 			expect(loaded?.activeIndex).toBe(0);
 			expect(loaded?.activeIndexByFamily?.codex).toBe(0);
 			expect(loaded?.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
+		});
+
+		it("never reports a negative imported count when import dedup shrinks existing accounts", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "duplicate-id",
+						email: "first@example.com",
+						refreshToken: "ref-first",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "other-id",
+						email: "shared@example.com",
+						refreshToken: "ref-shared-old",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const toImport: AccountStorageV3 = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "duplicate-id",
+						email: "shared@example.com",
+						refreshToken: "ref-shared-new",
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
+			};
+			await fs.writeFile(exportPath, JSON.stringify(toImport), "utf-8");
+
+			const result = await importAccounts(exportPath);
+
+			expect(result.imported).toBe(0);
+			expect(result.skipped).toBe(1);
+			expect(result.total).toBe(1);
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toHaveLength(1);
+			expect(loaded?.accounts[0]?.refreshToken).toBe("ref-shared-new");
+		});
+
+		it("imports successfully when primary storage is corrupted but WAL recovery is available", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+
+			await fs.writeFile(testStoragePath, "{broken-primary", "utf-8");
+			const walPayload = {
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "from-wal",
+						refreshToken: "wal-refresh",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			};
+			const walContent = JSON.stringify(walPayload);
+			await fs.writeFile(
+				`${testStoragePath}.wal`,
+				JSON.stringify({
+					version: 1,
+					createdAt: Date.now(),
+					path: testStoragePath,
+					checksum: sha256(walContent),
+					content: walContent,
+				}),
+				"utf-8",
+			);
+
+			const toImport: AccountStorageV3 = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "imported",
+						refreshToken: "import-refresh",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			};
+			await fs.writeFile(exportPath, JSON.stringify(toImport), "utf-8");
+
+			const result = await importAccounts(exportPath);
+
+			expect(result.imported).toBe(1);
+			expect(result.skipped).toBe(0);
+			expect(result.total).toBe(2);
+
+			const persisted = JSON.parse(
+				await fs.readFile(testStoragePath, "utf-8"),
+			) as {
+				accounts?: Array<{ accountId?: string }>;
+				activeIndexByFamily?: unknown;
+			};
+			expect(persisted.accounts?.map((account) => account.accountId)).toEqual([
+				"from-wal",
+				"imported",
+			]);
+			expect(persisted.activeIndexByFamily).toBeUndefined();
 		});
 
 		it("preserves undefined activeIndexByFamily when importing into storage without family selections", async () => {

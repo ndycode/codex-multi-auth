@@ -985,17 +985,60 @@ function parseAndNormalizeStorage(data: unknown): {
 	return { normalized, storedVersion, schemaErrors };
 }
 
+function hasRawActiveIndexByFamily(data: unknown): boolean {
+	return isRecord(data) && "activeIndexByFamily" in data;
+}
+
+async function loadPersistedActiveIndexByFamilyFromJournal(
+	path: string,
+): Promise<boolean | null> {
+	const walPath = getAccountsWalPath(path);
+	try {
+		const raw = await fs.readFile(walPath, "utf-8");
+		const parsed = JSON.parse(raw) as unknown;
+		if (!isRecord(parsed)) return null;
+		const entry = parsed as Partial<AccountsJournalEntry>;
+		if (entry.version !== 1) return null;
+		if (
+			typeof entry.content !== "string" ||
+			typeof entry.checksum !== "string"
+		) {
+			return null;
+		}
+		const computed = computeSha256(entry.content);
+		if (computed !== entry.checksum) {
+			log.warn("Account journal checksum mismatch", { path: walPath });
+			return null;
+		}
+		const data = JSON.parse(entry.content) as unknown;
+		return hasRawActiveIndexByFamily(data);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to load account WAL journal", {
+				path: walPath,
+				error: String(error),
+			});
+		}
+		return null;
+	}
+}
+
 async function hasPersistedActiveIndexByFamily(path: string): Promise<boolean> {
 	try {
 		const content = await fs.readFile(path, "utf-8");
 		const data = JSON.parse(content) as unknown;
-		return isRecord(data) && "activeIndexByFamily" in data;
+		return hasRawActiveIndexByFamily(data);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
 			return false;
 		}
-		throw error;
+		const recovered = await loadPersistedActiveIndexByFamilyFromJournal(path);
+		if (recovered !== null) {
+			return recovered;
+		}
+		return false;
 	}
 }
 
@@ -1793,7 +1836,10 @@ export async function importAccounts(
 
 		await persist(newStorage);
 
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
+		const imported = Math.max(
+			0,
+			deduplicatedAccounts.length - existingAccounts.length,
+		);
 		const skipped = normalized.accounts.length - imported;
 		return { imported, total: deduplicatedAccounts.length, skipped };
 	});
