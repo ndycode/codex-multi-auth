@@ -87,7 +87,7 @@ function sanitizeAccount(account: AccountMetadataV3): AccountMetadataV3 | null {
 		...account,
 		accountId: accountId || undefined,
 		email: email || undefined,
-		accountLabel: accountLabel || account.accountLabel,
+		accountLabel: accountLabel || undefined,
 		refreshToken,
 		addedAt: Number.isFinite(account.addedAt) ? (account.addedAt as number) : 0,
 		lastUsed: Number.isFinite(account.lastUsed)

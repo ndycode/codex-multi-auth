@@ -486,4 +486,21 @@ describe("oc-chatgpt import adapter", () => {
 			"gpt-5.1": 0,
 		});
 	});
+
+	it("normalizes whitespace-only account labels to undefined", () => {
+		const payload = buildOcChatgptImportPayload({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "token-label",
+					accountLabel: "   ",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		expect(payload.accounts[0]?.accountLabel).toBeUndefined();
+	});
 });

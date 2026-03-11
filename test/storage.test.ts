@@ -390,6 +390,49 @@ describe("storage", () => {
 			expect(loaded?.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
 		});
 
+		it("preserves undefined activeIndexByFamily when importing into storage without family selections", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+
+			await fs.writeFile(
+				testStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "existing",
+							refreshToken: "ref-existing",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const toImport: AccountStorageV3 = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "new",
+						refreshToken: "ref-new",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			};
+			await fs.writeFile(exportPath, JSON.stringify(toImport));
+
+			await importAccounts(exportPath);
+
+			const rawPersisted = JSON.parse(
+				await fs.readFile(testStoragePath, "utf-8"),
+			) as Record<string, unknown>;
+			expect(rawPersisted.accounts).toBeDefined();
+			expect(rawPersisted.activeIndexByFamily).toBeUndefined();
+		});
+
 		it("should serialize concurrent transactional updates without losing accounts", async () => {
 			await saveAccounts({
 				version: 3,

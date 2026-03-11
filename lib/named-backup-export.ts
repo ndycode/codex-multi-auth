@@ -17,7 +17,11 @@ const BACKUP_PROHIBITED_SUBSTRINGS = [".rotate."];
 
 export interface NamedBackupExportDependencies {
 	getStoragePath: () => string;
-	exportAccounts: (filePath: string, force?: boolean) => Promise<void>;
+	exportAccounts: (
+		filePath: string,
+		force?: boolean,
+		beforeCommit?: (resolvedPath: string) => Promise<void> | void,
+	) => Promise<void>;
 }
 
 function normalizePathForComparison(pathValue: string): string {
@@ -119,7 +123,12 @@ export async function exportNamedBackupFile(
 	const destination = resolveNamedBackupPath(name, storagePath);
 	const backupRoot = getNamedBackupRoot(storagePath);
 	await fs.mkdir(backupRoot, { recursive: true });
-	assertWithinDirectory(backupRoot, destination);
-	await dependencies.exportAccounts(destination, options?.force === true);
+	await dependencies.exportAccounts(
+		destination,
+		options?.force === true,
+		(resolvedPath) => {
+			assertWithinDirectory(backupRoot, resolvedPath);
+		},
+	);
 	return destination;
 }

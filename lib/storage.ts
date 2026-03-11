@@ -985,6 +985,20 @@ function parseAndNormalizeStorage(data: unknown): {
 	return { normalized, storedVersion, schemaErrors };
 }
 
+async function hasPersistedActiveIndexByFamily(path: string): Promise<boolean> {
+	try {
+		const content = await fs.readFile(path, "utf-8");
+		const data = JSON.parse(content) as unknown;
+		return isRecord(data) && "activeIndexByFamily" in data;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+}
+
 async function loadAccountsFromPath(path: string): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
@@ -1249,29 +1263,13 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			throw emptyError;
 		}
 
-		// Retry rename with exponential backoff for Windows EPERM/EBUSY
-		let lastError: NodeJS.ErrnoException | null = null;
-		for (let attempt = 0; attempt < 5; attempt++) {
-			try {
-				await fs.rename(tempPath, path);
-				lastAccountsSaveTimestamp = Date.now();
-				try {
-					await fs.unlink(walPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				return;
-			} catch (renameError) {
-				const code = (renameError as NodeJS.ErrnoException).code;
-				if (code === "EPERM" || code === "EBUSY") {
-					lastError = renameError as NodeJS.ErrnoException;
-					await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
-					continue;
-				}
-				throw renameError;
-			}
+		await renameFileWithRetry(tempPath, path);
+		lastAccountsSaveTimestamp = Date.now();
+		try {
+			await fs.unlink(walPath);
+		} catch {
+			// Best effort cleanup.
 		}
-		if (lastError) throw lastError;
 	} catch (error) {
 		try {
 			await fs.unlink(tempPath);
@@ -1624,6 +1622,7 @@ export async function clearFlaggedAccounts(): Promise<void> {
 export async function exportAccounts(
 	filePath: string,
 	force = true,
+	beforeCommit?: (resolvedPath: string) => Promise<void> | void,
 ): Promise<void> {
 	const resolvedPath = resolvePath(filePath);
 
@@ -1647,6 +1646,7 @@ export async function exportAccounts(
 				encoding: "utf-8",
 				mode: 0o600,
 			});
+			await beforeCommit?.(resolvedPath);
 			await renameFileWithRetry(tempPath, resolvedPath);
 		} catch (error) {
 			try {
@@ -1688,6 +1688,7 @@ export async function importAccounts(
 	filePath: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
+	const existingStoragePath = getStoragePath();
 
 	// Check file exists with friendly error
 	if (!existsSync(resolvedPath)) {
@@ -1707,6 +1708,8 @@ export async function importAccounts(
 	if (!normalized) {
 		throw new Error("Invalid account storage format");
 	}
+	const preserveFamilySelections =
+		await hasPersistedActiveIndexByFamily(existingStoragePath);
 
 	const {
 		imported: importedCount,
@@ -1744,28 +1747,42 @@ export async function importAccounts(
 			}
 			return clampIndex(existingActiveIndex, deduplicatedAccounts.length);
 		})();
-		const rawFamilyIndices = existing?.activeIndexByFamily ?? {};
-		const remappedActiveIndexByFamily: Partial<Record<ModelFamily, number>> =
-			{};
-		for (const family of MODEL_FAMILIES) {
-			const rawIndexValue = rawFamilyIndices[family];
-			const rawIndex =
-				typeof rawIndexValue === "number" && Number.isFinite(rawIndexValue)
-					? rawIndexValue
-					: existingActiveIndex;
-			const clampedRawIndex = clampIndex(rawIndex, existingAccounts.length);
-			const familyKey = extractActiveKey(existingAccounts, clampedRawIndex);
-			let mappedIndex = clampIndex(rawIndex, deduplicatedAccounts.length);
-			if (familyKey && deduplicatedAccounts.length > 0) {
-				const idx = deduplicatedAccounts.findIndex(
-					(account) => toAccountKey(account) === familyKey,
-				);
-				if (idx >= 0) {
-					mappedIndex = idx;
-				}
-			}
-			remappedActiveIndexByFamily[family] = mappedIndex;
-		}
+		const remappedActiveIndexByFamily =
+			preserveFamilySelections && existing?.activeIndexByFamily
+				? (() => {
+						const remapped: Partial<Record<ModelFamily, number>> = {};
+						for (const family of MODEL_FAMILIES) {
+							const rawIndexValue = existing.activeIndexByFamily?.[family];
+							const rawIndex =
+								typeof rawIndexValue === "number" &&
+								Number.isFinite(rawIndexValue)
+									? rawIndexValue
+									: existingActiveIndex;
+							const clampedRawIndex = clampIndex(
+								rawIndex,
+								existingAccounts.length,
+							);
+							const familyKey = extractActiveKey(
+								existingAccounts,
+								clampedRawIndex,
+							);
+							let mappedIndex = clampIndex(
+								rawIndex,
+								deduplicatedAccounts.length,
+							);
+							if (familyKey && deduplicatedAccounts.length > 0) {
+								const idx = deduplicatedAccounts.findIndex(
+									(account) => toAccountKey(account) === familyKey,
+								);
+								if (idx >= 0) {
+									mappedIndex = idx;
+								}
+							}
+							remapped[family] = mappedIndex;
+						}
+						return remapped;
+					})()
+				: undefined;
 
 		const newStorage: AccountStorageV3 = {
 			version: 3,
