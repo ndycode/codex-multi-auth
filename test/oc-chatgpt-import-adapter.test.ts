@@ -302,6 +302,45 @@ describe("oc-chatgpt import adapter", () => {
 		expect(preview.merged.activeIndex).toBe(0);
 	});
 
+	it("preserves destination metadata when matched records tie on timestamps", () => {
+		const destination: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acc-tie",
+					email: "tie@example.com",
+					refreshToken: "dest-token",
+					accountLabel: "Destination label",
+					addedAt: 10,
+					lastUsed: 20,
+				},
+			],
+		};
+
+		const source: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acc-tie",
+					email: "tie@example.com",
+					refreshToken: "source-token",
+					accountLabel: "Source label",
+					addedAt: 10,
+					lastUsed: 20,
+				},
+			],
+		};
+
+		const preview = previewOcChatgptImportMerge({ source, destination });
+
+		expect(preview.toAdd).toHaveLength(0);
+		expect(preview.toUpdate).toHaveLength(0);
+		expect(preview.merged.accounts[0]?.refreshToken).toBe("dest-token");
+		expect(preview.merged.accounts[0]?.accountLabel).toBe("Destination label");
+	});
+
 	it("records exact matchedBy counts and skip reasons for additive merge", () => {
 		const destination: AccountStorageV3 = {
 			version: 3,

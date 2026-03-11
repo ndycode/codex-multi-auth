@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	detectOcChatgptMultiAuthTarget,
@@ -226,6 +226,20 @@ describe("oc-chatgpt target detection", () => {
 		expect(result.kind).toBe("none");
 		if (result.kind === "none") {
 			expect(result.tried[0]?.root).toBe("C:\\");
+		}
+	});
+
+	it("resolves relative explicit roots before target detection", async () => {
+		const relativeRoot = join("relative-override", ".opencode");
+		const absoluteRoot = resolve(relativeRoot);
+		await fs.mkdir(join(absoluteRoot, "backups"), { recursive: true });
+
+		const result = detectOcChatgptMultiAuthTarget({
+			explicitRoot: relativeRoot,
+		});
+		assertTarget(result, "global", absoluteRoot);
+		if (result.kind === "target") {
+			expect(result.descriptor.source).toBe("explicit");
 		}
 	});
 

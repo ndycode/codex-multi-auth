@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, normalize, relative, sep, win32 } from "node:path";
+import { join, normalize, relative, resolve, sep, win32 } from "node:path";
 import {
 	findProjectRoot,
 	getProjectStorageKey,
@@ -110,7 +110,7 @@ function isWindowsDriveRoot(candidate: string): boolean {
 function normalizeCandidatePath(candidate: string): string {
 	const trimmed = candidate.trim();
 	if (trimmed.length === 0) return "";
-	const normalized = normalize(trimmed);
+	const normalized = normalize(resolve(trimmed));
 	if (process.platform === "win32" && isWindowsDriveRoot(normalized)) {
 		return normalized.endsWith("\\") ? normalized : normalized + "\\";
 	}

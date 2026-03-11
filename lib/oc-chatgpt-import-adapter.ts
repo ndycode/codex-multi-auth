@@ -24,7 +24,7 @@ export type OcChatgptAccountRef = {
 
 export type OcChatgptMergePreview = {
 	payload: OcChatgptPreviewPayload;
-	merged: AccountStorageV3;
+	merged: AccountStorageV3; // WARNING: contains raw refreshToken values - do not log directly
 	toAdd: OcChatgptAccountRef[];
 	toUpdate: Array<{
 		previous: OcChatgptAccountRef;
@@ -66,7 +66,7 @@ function pickNewest<T extends { addedAt?: number; lastUsed?: number }>(
 	const candidateAdded = Number.isFinite(candidate.addedAt)
 		? (candidate.addedAt as number)
 		: 0;
-	return candidateAdded >= currentAdded ? candidate : current;
+	return candidateAdded > currentAdded ? candidate : current;
 }
 
 function sanitizeAccount(account: AccountMetadataV3): AccountMetadataV3 | null {
