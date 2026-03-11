@@ -54,7 +54,9 @@ function normalizePathForComparison(pathValue: string): string {
  *
  * Concurrency: callers must avoid concurrently mutating the filesystem (for example
  * creating/removing/moving symlinks or directories) between calling this function
- * and any subsequent operations that rely on its result.
+ * and any subsequent operations that rely on its result. `exportNamedBackupFile`
+ * performs a second containment check through the `beforeCommit` hook, but that
+ * revalidation narrows rather than eliminates time-of-check/time-of-use windows.
  *
  * @param baseDir - The directory to treat as the backup root; must remain stable during validation.
  * @param targetPath - The candidate target file path that must reside within `baseDir`.
@@ -200,6 +202,9 @@ export function resolveNamedBackupPath(
  * The provided `name` is validated and normalized (suffix, allowed characters, and prohibited substrings) and the
  * backup root directory is created if missing. The export operation will be asked to write to the resolved path; a
  * safety check ensures the final resolved path stays within the backups root.
+ * The delegated `beforeCommit` hook re-validates containment immediately before
+ * the storage layer commits the final rename, but callers should still serialize
+ * backup-root mutations rather than relying on path checks alone.
  *
  * Concurrency: callers should avoid concurrent exports that target the same `name` as behavior is unspecified.
  * Windows behavior: file-name/path comparisons are case-insensitive and names are normalized to lowercase.
