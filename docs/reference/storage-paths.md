@@ -39,7 +39,7 @@ Ownership note:
 
 Backup metadata:
 
-- `getBackupMetadata()` reports deterministic snapshot lists for the canonical account pool (primary, WAL, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups) and flagged-account state (primary, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups). Cache-like artifacts are excluded from recovery candidates.
+- `getBackupMetadata()` reports deterministic snapshot lists for the canonical account pool (primary, WAL, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups) and flagged-account state (primary, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups). Cache-like artifacts and `.reset-intent` markers are excluded from recovery candidates.
 
 ---
 
