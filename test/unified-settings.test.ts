@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("unified settings", () => {
 	let tempDir: string;
@@ -20,7 +21,7 @@ describe("unified settings", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("merges plugin and dashboard sections into one file", async () => {
@@ -33,7 +34,10 @@ describe("unified settings", () => {
 		} = await import("../lib/unified-settings.js");
 
 		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 90000 });
-		await saveUnifiedDashboardSettings({ menuShowLastUsed: false, uiThemePreset: "blue" });
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
 
 		const pluginConfig = loadUnifiedPluginConfigSync();
 		expect(pluginConfig).toEqual({
@@ -48,15 +52,17 @@ describe("unified settings", () => {
 		});
 
 		const fileContent = await fs.readFile(getUnifiedSettingsPath(), "utf8");
-		expect(fileContent).toContain("\"version\": 1");
-		expect(fileContent).toContain("\"pluginConfig\"");
-		expect(fileContent).toContain("\"dashboardDisplaySettings\"");
+		expect(fileContent).toContain('"version": 1');
+		expect(fileContent).toContain('"pluginConfig"');
+		expect(fileContent).toContain('"dashboardDisplaySettings"');
 	});
 
 	it("returns null sections for invalid JSON", async () => {
-		const { getUnifiedSettingsPath, loadUnifiedPluginConfigSync, loadUnifiedDashboardSettings } = await import(
-			"../lib/unified-settings.js"
-		);
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			loadUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
 
 		await fs.mkdir(tempDir, { recursive: true });
 		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
@@ -66,7 +72,9 @@ describe("unified settings", () => {
 	});
 
 	it("returns null when dashboard settings file is missing", async () => {
-		const { loadUnifiedDashboardSettings } = await import("../lib/unified-settings.js");
+		const { loadUnifiedDashboardSettings } = await import(
+			"../lib/unified-settings.js"
+		);
 		expect(await loadUnifiedDashboardSettings()).toBeNull();
 	});
 
@@ -79,32 +87,39 @@ describe("unified settings", () => {
 
 		saveUnifiedPluginConfigSync({ codexMode: true, retries: 4 });
 
-		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 4 });
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			retries: 4,
+		});
 		const fileContent = await fs.readFile(getUnifiedSettingsPath(), "utf8");
-		expect(fileContent).toContain("\"version\": 1");
+		expect(fileContent).toContain('"version": 1');
 	});
 
 	it("returns null for missing pluginConfig section", async () => {
-		const { getUnifiedSettingsPath, loadUnifiedPluginConfigSync } = await import(
-			"../lib/unified-settings.js"
+		const { getUnifiedSettingsPath, loadUnifiedPluginConfigSync } =
+			await import("../lib/unified-settings.js");
+		await fs.writeFile(
+			getUnifiedSettingsPath(),
+			JSON.stringify({ version: 1 }),
+			"utf8",
 		);
-		await fs.writeFile(getUnifiedSettingsPath(), JSON.stringify({ version: 1 }), "utf8");
 		expect(loadUnifiedPluginConfigSync()).toBeNull();
 	});
 
 	it("returns null sections when settings root is not an object", async () => {
-		const { getUnifiedSettingsPath, loadUnifiedPluginConfigSync, loadUnifiedDashboardSettings } = await import(
-			"../lib/unified-settings.js"
-		);
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			loadUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
 		await fs.writeFile(getUnifiedSettingsPath(), JSON.stringify([]), "utf8");
 		expect(loadUnifiedPluginConfigSync()).toBeNull();
 		expect(await loadUnifiedDashboardSettings()).toBeNull();
 	});
 
 	it("retries async rename on retryable fs errors", async () => {
-		const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
-			"../lib/unified-settings.js"
-		);
+		const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } =
+			await import("../lib/unified-settings.js");
 		const renameSpy = vi.spyOn(fs, "rename");
 		renameSpy.mockImplementationOnce(async () => {
 			const error = new Error("busy") as NodeJS.ErrnoException;
@@ -113,7 +128,11 @@ describe("unified settings", () => {
 		});
 		try {
 			await saveUnifiedPluginConfig({ codexMode: true, retries: 1 });
-			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 1 });
+			expect(renameSpy).toHaveBeenCalledTimes(2);
+			expect(loadUnifiedPluginConfigSync()).toEqual({
+				codexMode: true,
+				retries: 1,
+			});
 		} finally {
 			renameSpy.mockRestore();
 		}
@@ -130,22 +149,27 @@ describe("unified settings", () => {
 			throw error;
 		});
 		try {
-			await expect(saveUnifiedPluginConfig({ codexMode: true })).rejects.toThrow();
+			await expect(
+				saveUnifiedPluginConfig({ codexMode: true }),
+			).rejects.toThrow();
 		} finally {
 			renameSpy.mockRestore();
 		}
 
 		const dir = tempDir;
 		const entries = await fs.readdir(dir);
-		const leakedTemps = entries.filter((entry) => entry.includes("settings.json.") && entry.endsWith(".tmp"));
+		const leakedTemps = entries.filter(
+			(entry) => entry.includes("settings.json.") && entry.endsWith(".tmp"),
+		);
 		expect(leakedTemps).toEqual([]);
-		expect(await fs.readFile(getUnifiedSettingsPath(), "utf8").catch(() => "")).toBe("");
+		expect(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8").catch(() => ""),
+		).toBe("");
 	});
 
 	it("retries async rename on windows-style EPERM lock", async () => {
-		const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } = await import(
-			"../lib/unified-settings.js"
-		);
+		const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } =
+			await import("../lib/unified-settings.js");
 		const renameSpy = vi.spyOn(fs, "rename");
 		renameSpy.mockImplementationOnce(async () => {
 			const error = new Error("perm") as NodeJS.ErrnoException;
@@ -154,7 +178,11 @@ describe("unified settings", () => {
 		});
 		try {
 			await saveUnifiedPluginConfig({ codexMode: true, retries: 2 });
-			expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 2 });
+			expect(renameSpy).toHaveBeenCalledTimes(2);
+			expect(loadUnifiedPluginConfigSync()).toEqual({
+				codexMode: true,
+				retries: 2,
+			});
 		} finally {
 			renameSpy.mockRestore();
 		}
@@ -171,15 +199,21 @@ describe("unified settings", () => {
 			throw error;
 		});
 		try {
-			await expect(saveUnifiedPluginConfig({ codexMode: true })).rejects.toThrow();
+			await expect(
+				saveUnifiedPluginConfig({ codexMode: true }),
+			).rejects.toThrow();
 		} finally {
 			renameSpy.mockRestore();
 		}
 
 		const entries = await fs.readdir(tempDir);
-		const leakedTemps = entries.filter((entry) => entry.includes("settings.json.") && entry.endsWith(".tmp"));
+		const leakedTemps = entries.filter(
+			(entry) => entry.includes("settings.json.") && entry.endsWith(".tmp"),
+		);
 		expect(leakedTemps).toEqual([]);
-		expect(await fs.readFile(getUnifiedSettingsPath(), "utf8").catch(() => "")).toBe("");
+		expect(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8").catch(() => ""),
+		).toBe("");
 	});
 
 	it("serializes concurrent plugin config writes to avoid race corruption", async () => {
@@ -189,9 +223,14 @@ describe("unified settings", () => {
 			getUnifiedSettingsPath,
 		} = await import("../lib/unified-settings.js");
 
+		// Requires FIFO write queue semantics: the second enqueued write must commit last.
 		await Promise.all([
 			saveUnifiedPluginConfig({ codexMode: false, requestTimeoutMs: 30_000 }),
-			saveUnifiedPluginConfig({ codexMode: true, requestTimeoutMs: 90_000, retries: 2 }),
+			saveUnifiedPluginConfig({
+				codexMode: true,
+				requestTimeoutMs: 90_000,
+				retries: 2,
+			}),
 		]);
 
 		const pluginConfig = loadUnifiedPluginConfigSync();
@@ -215,13 +254,128 @@ describe("unified settings", () => {
 
 		await Promise.all([
 			saveUnifiedPluginConfig({ codexMode: true, retries: 3 }),
-			saveUnifiedDashboardSettings({ menuShowLastUsed: false, uiThemePreset: "green" }),
+			saveUnifiedDashboardSettings({
+				menuShowLastUsed: false,
+				uiThemePreset: "green",
+			}),
 		]);
 
-		expect(loadUnifiedPluginConfigSync()).toEqual({ codexMode: true, retries: 3 });
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			retries: 3,
+		});
 		expect(await loadUnifiedDashboardSettings()).toEqual({
 			menuShowLastUsed: false,
 			uiThemePreset: "green",
+		});
+	});
+
+	it("preserves unrelated top-level sections during partial section writes", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+			saveUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(
+			getUnifiedSettingsPath(),
+			JSON.stringify(
+				{
+					version: 1,
+					pluginConfig: { codexMode: false, retries: 9 },
+					dashboardDisplaySettings: {
+						menuShowLastUsed: true,
+						uiThemePreset: "green",
+					},
+					experimentalDraft: {
+						enabled: false,
+						panels: ["future"],
+					},
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+			experimentalDraft?: Record<string, unknown>;
+		};
+
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+		expect(parsed.experimentalDraft).toEqual({
+			enabled: false,
+			panels: ["future"],
+		});
+	});
+
+	it("preserves unrelated top-level sections during concurrent partial section writes", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+			saveUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(
+			getUnifiedSettingsPath(),
+			JSON.stringify(
+				{
+					version: 1,
+					experimentalDraft: {
+						enabled: false,
+						panels: ["future"],
+					},
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+
+		await Promise.all([
+			saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 }),
+			saveUnifiedDashboardSettings({
+				menuShowLastUsed: false,
+				uiThemePreset: "blue",
+			}),
+		]);
+
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+			experimentalDraft?: Record<string, unknown>;
+		};
+
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+		expect(parsed.experimentalDraft).toEqual({
+			enabled: false,
+			panels: ["future"],
 		});
 	});
 
@@ -233,7 +387,10 @@ describe("unified settings", () => {
 		} = await import("../lib/unified-settings.js");
 
 		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 70_000 });
-		await saveUnifiedDashboardSettings({ menuShowLastUsed: false, uiThemePreset: "blue" });
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
 
 		const readSpy = vi.spyOn(fs, "readFile");
 		readSpy.mockImplementationOnce(async () => {
@@ -242,17 +399,26 @@ describe("unified settings", () => {
 			throw error;
 		});
 
-		await expect(
-			saveUnifiedDashboardSettings({ menuShowLastUsed: true, uiThemePreset: "yellow" }),
-		).rejects.toThrow();
-		readSpy.mockRestore();
+		try {
+			await expect(
+				saveUnifiedDashboardSettings({
+					menuShowLastUsed: true,
+					uiThemePreset: "yellow",
+				}),
+			).rejects.toThrow();
+		} finally {
+			readSpy.mockRestore();
+		}
 
 		const raw = await fs.readFile(getUnifiedSettingsPath(), "utf8");
 		const parsed = JSON.parse(raw) as {
 			pluginConfig?: Record<string, unknown>;
 			dashboardDisplaySettings?: Record<string, unknown>;
 		};
-		expect(parsed.pluginConfig).toEqual({ codexMode: true, fetchTimeoutMs: 70_000 });
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 70_000,
+		});
 		expect(parsed.dashboardDisplaySettings).toEqual({
 			menuShowLastUsed: false,
 			uiThemePreset: "blue",
