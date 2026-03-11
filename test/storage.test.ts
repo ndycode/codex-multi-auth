@@ -239,6 +239,40 @@ describe("storage", () => {
 			expect(exported.accounts[0]?.accountId).toBe("overwrite");
 		});
 
+		it("retries transient unlink failures while clearing account artifacts", async () => {
+			await fs.writeFile(
+				testStoragePath,
+				JSON.stringify({ version: 3 }),
+				"utf-8",
+			);
+			const walPath = `${testStoragePath}.wal`;
+			await fs.writeFile(walPath, "wal", "utf-8");
+
+			const originalUnlink = fs.unlink.bind(fs);
+			let transientFailures = 0;
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (targetPath === testStoragePath && transientFailures === 0) {
+						transientFailures += 1;
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalUnlink(targetPath);
+				});
+
+			try {
+				await clearAccounts();
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+
+			expect(transientFailures).toBe(1);
+			expect(existsSync(testStoragePath)).toBe(false);
+			expect(existsSync(walPath)).toBe(false);
+		});
+
 		it("should fail export if file exists and force is false", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "exists");

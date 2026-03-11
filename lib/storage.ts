@@ -1304,6 +1304,33 @@ async function loadAccountsUnlocked(): Promise<AccountStorageV3 | null> {
 	return loadAccountsInternal(saveAccountsUnlocked);
 }
 
+async function unlinkFileWithRetry(targetPath: string): Promise<void> {
+	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.unlink(targetPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return;
+			}
+			const canRetry =
+				(code === "EPERM" || code === "EBUSY" || code === "EAGAIN") &&
+				attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+			if (!canRetry) {
+				throw error;
+			}
+			const jitterMs = Math.floor(Math.random() * BACKUP_COPY_BASE_DELAY_MS);
+			await new Promise((resolve) =>
+				setTimeout(
+					resolve,
+					BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt + jitterMs,
+				),
+			);
+		}
+	}
+}
+
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -1311,7 +1338,7 @@ export async function withAccountStorageTransaction<T>(
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
-		const current = await loadAccountsInternal(saveAccountsUnlocked);
+		const current = await loadAccountsUnlocked();
 		const context = { snapshot: current };
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
 			context.snapshot = storage;
@@ -1357,7 +1384,7 @@ export async function clearAccounts(): Promise<void> {
 		}
 		const clearPath = async (targetPath: string): Promise<void> => {
 			try {
-				await fs.unlink(targetPath);
+				await unlinkFileWithRetry(targetPath);
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "ENOENT") {
@@ -1646,7 +1673,7 @@ export async function exportAccounts(
 	}
 
 	await withStorageLock(async () => {
-		const storage = await loadAccountsInternal(saveAccountsUnlocked);
+		const storage = await loadAccountsUnlocked();
 		await writeExport(storage);
 	});
 }
