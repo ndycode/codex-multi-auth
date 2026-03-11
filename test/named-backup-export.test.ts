@@ -80,12 +80,12 @@ describe("named backup export", () => {
 	});
 
 	it.each([
-		"backup.rotate.snapshot",
-		"backup.tmp",
-		"backup.wal",
-		"backup.tmp.json",
-	])("rejects recovery-conflicting backup name %j", (input) => {
-		expect(() => normalizeNamedBackupFileName(input)).toThrow();
+		["backup.rotate.snapshot", /rotation-style/],
+		["backup.tmp", /temporary suffixes/],
+		["backup.wal", /temporary suffixes/],
+		["backup.tmp.json", /temporary suffixes/],
+	])("rejects recovery-conflicting backup name %j", (input, pattern) => {
+		expect(() => normalizeNamedBackupFileName(input)).toThrow(pattern);
 	});
 
 	it("fails on an existing backup file by default", async () => {

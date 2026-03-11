@@ -1603,7 +1603,7 @@ export async function saveFlaggedAccounts(
 export async function clearFlaggedAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		try {
-			await fs.unlink(getFlaggedAccountsPath());
+			await unlinkFileWithRetry(getFlaggedAccountsPath());
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code !== "ENOENT") {
