@@ -220,6 +220,29 @@ describe("flagged account storage", () => {
 		expect(flagged.accounts).toHaveLength(0);
 	});
 
+	it("clears discovered flagged backup artifacts so manual snapshots cannot revive after clear", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "manual-backup-revive-test",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		const manualBackupPath = `${getFlaggedAccountsPath()}.manual-checkpoint`;
+		await fs.copyFile(getFlaggedAccountsPath(), manualBackupPath);
+
+		await clearFlaggedAccounts();
+
+		const flagged = await loadFlaggedAccounts();
+		expect(existsSync(manualBackupPath)).toBe(false);
+		expect(flagged.accounts).toHaveLength(0);
+	});
+
 	it("emits snapshot metadata for flagged account backups", async () => {
 		await saveFlaggedAccounts({
 			version: 1,

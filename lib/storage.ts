@@ -1417,22 +1417,37 @@ async function loadAccountsInternal(
 ): Promise<AccountStorageWithMetadata | null> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	let hasIntentionalResetMarker = existsSync(resetMarkerPath);
+	const hasIntentionalResetMarker = (): boolean => existsSync(resetMarkerPath);
+	const shouldSuppressForIntentionalReset = (): boolean =>
+		hasIntentionalResetMarker() && !existsSync(path);
 	await cleanupStaleRotatingBackupArtifacts(path);
-	hasIntentionalResetMarker = existsSync(resetMarkerPath);
-	if (hasIntentionalResetMarker && !existsSync(path)) {
+	if (shouldSuppressForIntentionalReset()) {
 		return {
 			...createEmptyAccountStorage(),
 			restoreEligible: false,
 			restoreReason: "intentional-reset",
 		};
 	}
-	const migratedLegacyStorage = !hasIntentionalResetMarker && persistMigration
+	const migratedLegacyStorage = !hasIntentionalResetMarker() && persistMigration
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;
-	const migratedFallbackStorage = !hasIntentionalResetMarker && persistMigration
+	if (shouldSuppressForIntentionalReset()) {
+		return {
+			...createEmptyAccountStorage(),
+			restoreEligible: false,
+			restoreReason: "intentional-reset",
+		};
+	}
+	const migratedFallbackStorage = !hasIntentionalResetMarker() && persistMigration
 		? await migrateFallbackAccountStorageIfNeeded(path, persistMigration)
 		: null;
+	if (shouldSuppressForIntentionalReset()) {
+		return {
+			...createEmptyAccountStorage(),
+			restoreEligible: false,
+			restoreReason: "intentional-reset",
+		};
+	}
 
 	try {
 		const { normalized, storedVersion, schemaErrors } = await loadAccountsFromPath(path);
@@ -1495,9 +1510,11 @@ async function loadAccountsInternal(
 
 		const annotated: AccountStorageWithMetadata = { ...normalized };
 		if (annotated.accounts.length === 0) {
-			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
-			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
-		} else if (hasIntentionalResetMarker) {
+			annotated.restoreEligible = hasIntentionalResetMarker() ? false : true;
+			annotated.restoreReason = hasIntentionalResetMarker()
+				? "intentional-reset"
+				: "empty-storage";
+		} else if (hasIntentionalResetMarker()) {
 			annotated.restoreEligible = false;
 			annotated.restoreReason = "intentional-reset";
 		}
@@ -1505,7 +1522,7 @@ async function loadAccountsInternal(
 		return annotated;
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (hasIntentionalResetMarker) {
+		if (hasIntentionalResetMarker()) {
 			return {
 				...createEmptyAccountStorage(),
 				restoreEligible: false,
@@ -1535,8 +1552,10 @@ async function loadAccountsInternal(
 		}
 		const annotated: AccountStorageWithMetadata = { ...recoveredFromWal };
 		if (annotated.accounts.length === 0) {
-			annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
-			annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
+			annotated.restoreEligible = hasIntentionalResetMarker() ? false : true;
+			annotated.restoreReason = hasIntentionalResetMarker()
+				? "intentional-reset"
+				: "empty-storage";
 		}
 		return annotated;
 	}
@@ -1566,8 +1585,10 @@ async function loadAccountsInternal(
 					}
 					const annotated: AccountStorageWithMetadata = { ...backup.normalized };
 					if (annotated.accounts.length === 0) {
-						annotated.restoreEligible = hasIntentionalResetMarker ? false : true;
-						annotated.restoreReason = hasIntentionalResetMarker ? "intentional-reset" : "empty-storage";
+						annotated.restoreEligible = hasIntentionalResetMarker() ? false : true;
+						annotated.restoreReason = hasIntentionalResetMarker()
+							? "intentional-reset"
+							: "empty-storage";
 					}
 					return annotated;
 				}
@@ -1980,7 +2001,7 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 export async function clearFlaggedAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
-		const backupPaths = getAccountsBackupRecoveryCandidates(path);
+		const backupPaths = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
 		for (const candidate of [path, ...backupPaths]) {
 			try {
 				await fs.unlink(candidate);
