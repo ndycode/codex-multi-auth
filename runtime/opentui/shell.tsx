@@ -324,8 +324,7 @@ export function OpenTuiShellProof(props: OpenTuiShellProofProps = {}) {
 
 	const navRows = createMemo(() => {
 		const shell = metrics();
-		const labelWidth = Math.max(8, shell.navInnerWidth - 2);
-		return SHELL_SECTIONS.map((section, index) => {
+		const rendered = SHELL_SECTIONS.map((section, index) => {
 			const isSelected = index === sectionIndex();
 			const isLocked = index > unlockedSectionIndex();
 			const prefix = isLocked
@@ -334,8 +333,23 @@ export function OpenTuiShellProof(props: OpenTuiShellProofProps = {}) {
 					? (activeRegion() === "nav" ? "> " : "* ")
 					: "  ";
 			const label = shell.compact ? section.shortLabel : section.label;
+			const labelWidth = shell.compact
+				? Math.max(4, Math.floor((shell.navInnerWidth - 3) / 2))
+				: Math.max(8, shell.navInnerWidth - 2);
 			return truncateText(`${prefix}${label}`, labelWidth + 2);
-		}).slice(0, shell.navInnerHeight);
+		});
+
+		if (!shell.compact) {
+			return rendered.slice(0, shell.navInnerHeight);
+		}
+
+		const compactRows: string[] = [];
+		for (let index = 0; index < rendered.length; index += 2) {
+			const left = rendered[index] ?? "";
+			const right = rendered[index + 1] ?? "";
+			compactRows.push(`${left.padEnd(Math.max(8, Math.floor(shell.navInnerWidth / 2)))} ${right}`.trimEnd());
+		}
+		return compactRows.slice(0, shell.navInnerHeight);
 	});
 
 	const contentRows = createMemo(() => {

@@ -138,6 +138,8 @@ describe("OpenTUI frame harness", () => {
 		expect(frame).toContain("Add");
 		expect(frame).toContain("Auth");
 		expect(frame).toContain("Work");
+		expect(frame).toContain("Check");
+		expect(frame).toContain("Set");
 	});
 
 	test("keeps content focus when toggling regions with Tab", async () => {
