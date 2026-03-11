@@ -1971,6 +1971,7 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 
 export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	const path = getFlaggedAccountsPath();
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
 
 	try {
@@ -1981,6 +1982,10 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 			log.error("Failed to load flagged account storage", { path, error: String(error) });
 			return empty;
 		}
+	}
+
+	if (existsSync(resetMarkerPath) && !existsSync(path)) {
+		return empty;
 	}
 
 	const recovered = storageBackupEnabled ? await recoverFlaggedAccountsFromBackups(path) : null;
@@ -2042,6 +2047,7 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 			const content = JSON.stringify(normalizeFlaggedStorage(storage), null, 2);
 			await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 			await fs.rename(tempPath, path);
+			await removeIntentionalResetMarker(path);
 		} catch (error) {
 			try {
 				await fs.unlink(tempPath);
@@ -2057,6 +2063,18 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 export async function clearFlaggedAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
+		const markerPath = getIntentionalResetMarkerPath(path);
+		try {
+			await fs.mkdir(dirname(path), { recursive: true });
+			await writeIntentionalResetMarker(path);
+		} catch (error) {
+			log.error("Failed to write flagged reset marker", {
+				path,
+				markerPath,
+				error: String(error),
+			});
+			throw error;
+		}
 		const backupPaths = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
 		for (const candidate of [path, ...backupPaths]) {
 			try {

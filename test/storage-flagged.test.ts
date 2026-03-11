@@ -287,6 +287,52 @@ describe("flagged account storage", () => {
 		expect(flagged.accounts).toHaveLength(0);
 	});
 
+	it("suppresses flagged backup revival when clear only partially deletes backup artifacts", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "partial-delete-primary",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "partial-delete-secondary",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		const flaggedPath = getFlaggedAccountsPath();
+		const backupPath = `${flaggedPath}.bak`;
+		const originalUnlink = fs.unlink.bind(fs);
+		const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+			if (targetPath === backupPath) {
+				const error = new Error("EACCES backup delete") as NodeJS.ErrnoException;
+				error.code = "EACCES";
+				throw error;
+			}
+			return originalUnlink(targetPath);
+		});
+
+		await clearFlaggedAccounts();
+
+		const flagged = await loadFlaggedAccounts();
+		expect(existsSync(backupPath)).toBe(true);
+		expect(flagged.accounts).toHaveLength(0);
+
+		unlinkSpy.mockRestore();
+	});
+
 	it("emits snapshot metadata for flagged account backups", async () => {
 		await saveFlaggedAccounts({
 			version: 1,
