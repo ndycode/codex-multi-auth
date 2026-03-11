@@ -180,7 +180,44 @@ describe("flagged account storage", () => {
     await clearFlaggedAccounts();
 
 		expect(existsSync(getFlaggedAccountsPath())).toBe(false);
-		expect(existsSync(`${getFlaggedAccountsPath()}.bak`)).toBe(true);
+		expect(existsSync(`${getFlaggedAccountsPath()}.bak`)).toBe(false);
+	});
+
+	it("does not revive flagged accounts from backups after clear", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "revive-test",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "revive-test",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					refreshToken: "revive-test-2",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		await clearFlaggedAccounts();
+
+		const flagged = await loadFlaggedAccounts();
+		expect(flagged.accounts).toHaveLength(0);
 	});
 
 	it("emits snapshot metadata for flagged account backups", async () => {

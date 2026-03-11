@@ -1417,8 +1417,9 @@ async function loadAccountsInternal(
 ): Promise<AccountStorageWithMetadata | null> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const hasIntentionalResetMarker = existsSync(resetMarkerPath);
+	let hasIntentionalResetMarker = existsSync(resetMarkerPath);
 	await cleanupStaleRotatingBackupArtifacts(path);
+	hasIntentionalResetMarker = existsSync(resetMarkerPath);
 	if (hasIntentionalResetMarker && !existsSync(path)) {
 		return {
 			...createEmptyAccountStorage(),
@@ -1979,15 +1980,18 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 export async function clearFlaggedAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
-		try {
-			await fs.unlink(path);
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== "ENOENT") {
-				log.error("Failed to clear flagged account storage", {
-					path,
-					error: String(error),
-				});
+		const backupPaths = getAccountsBackupRecoveryCandidates(path);
+		for (const candidate of [path, ...backupPaths]) {
+			try {
+				await fs.unlink(candidate);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.error("Failed to clear flagged account storage", {
+						path: candidate,
+						error: String(error),
+					});
+				}
 			}
 		}
 	});

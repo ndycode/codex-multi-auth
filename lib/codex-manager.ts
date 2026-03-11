@@ -50,6 +50,7 @@ import {
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
 import {
+	clearAccounts,
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
@@ -3650,12 +3651,7 @@ async function runDoctor(args: string[]): Promise<number> {
 }
 
 async function clearAccountsAndReset(): Promise<void> {
-	await saveAccounts({
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-	});
+	await clearAccounts();
 }
 
 async function handleManageAction(
