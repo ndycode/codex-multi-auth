@@ -404,7 +404,13 @@ export function previewOcChatgptImportMerge(options: {
 
 	const toAdd: OcChatgptAccountRef[] = [];
 	const toUpdate: OcChatgptMergePreview["toUpdate"] = [];
-	const toSkip: OcChatgptMergePreview["toSkip"] = [...sourceNormalized.skipped];
+	const toSkip: OcChatgptMergePreview["toSkip"] = [
+		...sourceNormalized.skipped,
+		...destinationNormalized.skipped.map(({ source, reason }) => ({
+			source,
+			reason: `destination-${reason}`,
+		})),
+	];
 
 	for (const account of sourceNormalized.storage.accounts) {
 		const match = matchDestination(

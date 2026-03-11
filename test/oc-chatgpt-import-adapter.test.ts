@@ -398,6 +398,39 @@ describe("oc-chatgpt import adapter", () => {
 		expect(preview.activeSelectionBehavior).toBe("preserve-destination");
 	});
 
+	it("surfaces invalid destination accounts in toSkip", () => {
+		const destination: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					email: "broken@example.com",
+					refreshToken: "   ",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+
+		const source: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [],
+		};
+
+		const preview = previewOcChatgptImportMerge({ source, destination });
+		expect(preview.toSkip).toContainEqual({
+			source: {
+				accountId: undefined,
+				email: "broken@example.com",
+				refreshTokenLast4: "",
+			},
+			reason: "destination-invalid-refresh-token",
+		});
+		expect(preview.merged.accounts).toHaveLength(0);
+		expect(preview.unchangedDestinationOnly).toHaveLength(0);
+	});
+
 	it("matches id-less accounts by case-folded email but not plus-address variants", () => {
 		const destination: AccountStorageV3 = {
 			version: 3,
