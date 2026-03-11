@@ -254,11 +254,14 @@ describe("dashboard settings", () => {
 			.mockRejectedValueOnce(busy)
 			.mockImplementation(async (...args) => originalReadFile(...args));
 
-		const loaded = await loadDashboardDisplaySettings();
-		expect(loaded.showPerAccountRows).toBe(false);
-		expect(loaded.menuShowQuotaSummary).toBe(false);
-		expect(readSpy).toHaveBeenCalledTimes(2);
-		readSpy.mockRestore();
+		try {
+			const loaded = await loadDashboardDisplaySettings();
+			expect(loaded.showPerAccountRows).toBe(false);
+			expect(loaded.menuShowQuotaSummary).toBe(false);
+			expect(readSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("falls back to defaults when retryable legacy reads keep failing", async () => {
@@ -415,15 +418,17 @@ describe("dashboard settings", () => {
 			const readSpy = vi.spyOn(fs, "readFile");
 			readSpy.mockRejectedValueOnce("legacy-read-string-failure");
 
-			const loaded = await loadDashboardDisplaySettings();
-			expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
-			expect(
-				warnMock.mock.calls.some((args) =>
-					String(args[0]).includes("legacy-read-string-failure"),
-				),
-			).toBe(true);
-
-			readSpy.mockRestore();
+			try {
+				const loaded = await loadDashboardDisplaySettings();
+				expect(loaded).toEqual(DEFAULT_DASHBOARD_DISPLAY_SETTINGS);
+				expect(
+					warnMock.mock.calls.some((args) =>
+						String(args[0]).includes("legacy-read-string-failure"),
+					),
+				).toBe(true);
+			} finally {
+				readSpy.mockRestore();
+			}
 		} finally {
 			vi.doUnmock("../lib/logger.js");
 		}
