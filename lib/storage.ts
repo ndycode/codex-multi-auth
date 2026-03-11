@@ -763,6 +763,7 @@ function getLegacyFlaggedAccountsPath(): string {
  * - Concurrency: call while holding the storage lock to avoid write races with other storage operations.
  * - Filesystem: callers should be aware Windows/AV locking can affect removal/rename semantics; failures to delete legacy files are logged and do not fail the overall migration.
  * - Logging and privacy: any account fields that contain tokens or secrets should be treated as sensitive; logs produced by this routine avoid exposing raw tokens.
+ */
 async function migrateLegacyProjectStorageIfNeeded(
 	persist: (storage: AccountStorageV3) => Promise<void> = saveAccounts,
 ): Promise<AccountStorageV3 | null> {
