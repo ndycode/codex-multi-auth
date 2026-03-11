@@ -1730,12 +1730,48 @@ export async function importAccounts(
 		const deduplicatedAccounts = deduplicateAccountsByEmail(
 			deduplicateAccounts(merged),
 		);
+		const existingActiveKey = extractActiveKey(
+			existingAccounts,
+			existingActiveIndex,
+		);
+		const remappedActiveIndex = (() => {
+			if (deduplicatedAccounts.length === 0) return 0;
+			if (existingActiveKey) {
+				const mappedIndex = deduplicatedAccounts.findIndex(
+					(account) => toAccountKey(account) === existingActiveKey,
+				);
+				if (mappedIndex >= 0) return mappedIndex;
+			}
+			return clampIndex(existingActiveIndex, deduplicatedAccounts.length);
+		})();
+		const rawFamilyIndices = existing?.activeIndexByFamily ?? {};
+		const remappedActiveIndexByFamily: Partial<Record<ModelFamily, number>> =
+			{};
+		for (const family of MODEL_FAMILIES) {
+			const rawIndexValue = rawFamilyIndices[family];
+			const rawIndex =
+				typeof rawIndexValue === "number" && Number.isFinite(rawIndexValue)
+					? rawIndexValue
+					: existingActiveIndex;
+			const clampedRawIndex = clampIndex(rawIndex, existingAccounts.length);
+			const familyKey = extractActiveKey(existingAccounts, clampedRawIndex);
+			let mappedIndex = clampIndex(rawIndex, deduplicatedAccounts.length);
+			if (familyKey && deduplicatedAccounts.length > 0) {
+				const idx = deduplicatedAccounts.findIndex(
+					(account) => toAccountKey(account) === familyKey,
+				);
+				if (idx >= 0) {
+					mappedIndex = idx;
+				}
+			}
+			remappedActiveIndexByFamily[family] = mappedIndex;
+		}
 
 		const newStorage: AccountStorageV3 = {
 			version: 3,
 			accounts: deduplicatedAccounts,
-			activeIndex: existingActiveIndex,
-			activeIndexByFamily: existing?.activeIndexByFamily,
+			activeIndex: remappedActiveIndex,
+			activeIndexByFamily: remappedActiveIndexByFamily,
 		};
 
 		await persist(newStorage);

@@ -343,6 +343,53 @@ describe("storage", () => {
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
 		});
 
+		it("remaps active selections after import deduplicates existing accounts", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1, "gpt-5.1": 1 },
+				accounts: [
+					{
+						accountId: "duplicate",
+						refreshToken: "ref-old",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "active-account",
+						refreshToken: "ref-active",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const toImport: AccountStorageV3 = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "duplicate",
+						refreshToken: "ref-new",
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
+			};
+			await fs.writeFile(exportPath, JSON.stringify(toImport));
+
+			await importAccounts(exportPath);
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toHaveLength(2);
+			expect(loaded?.accounts[0]?.accountId).toBe("active-account");
+			expect(loaded?.activeIndex).toBe(0);
+			expect(loaded?.activeIndexByFamily?.codex).toBe(0);
+			expect(loaded?.activeIndexByFamily?.["gpt-5.1"]).toBe(0);
+		});
+
 		it("should serialize concurrent transactional updates without losing accounts", async () => {
 			await saveAccounts({
 				version: 3,
@@ -607,20 +654,6 @@ describe("storage", () => {
 					/No accounts to export/,
 				);
 			});
-		});
-	});
-
-	describe("filename migration (TDD)", () => {
-		it("should migrate from old filename to new filename", async () => {
-			// This test is tricky because it depends on the internal state of getStoragePath()
-			// which we are about to change.
-
-			const oldName = "openai-codex-accounts.json";
-			const newName = "codex-accounts.json";
-
-			// We'll need to mock/verify that loadAccounts checks for oldName if newName is missing
-			// Since we haven't implemented it yet, this is just a placeholder for the logic
-			expect(true).toBe(true);
 		});
 	});
 
