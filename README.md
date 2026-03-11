@@ -1,7 +1,8 @@
 # codex-multi-auth
 
 [![npm version](https://img.shields.io/npm/v/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
-[![CI](https://github.com/ndycode/codex-multi-auth/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ndycode/codex-multi-auth/actions/workflows/ci.yml?query=branch%3Amain)
+[![npm downloads](https://img.shields.io/npm/dw/codex-multi-auth.svg)](https://www.npmjs.com/package/codex-multi-auth)
+[![CI](https://img.shields.io/github/actions/workflow/status/ndycode/codex-multi-auth/ci.yml?branch=main&label=ci)](https://github.com/ndycode/codex-multi-auth/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Multi-account OAuth for the official `@openai/codex` CLI.
