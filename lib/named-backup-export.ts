@@ -36,8 +36,17 @@ function normalizePathForComparison(pathValue: string): string {
 
 function assertWithinDirectory(baseDir: string, targetPath: string): void {
 	const resolvedBase = resolve(baseDir);
-	if (existsSync(resolvedBase)) {
-		if (lstatSync(resolvedBase).isSymbolicLink()) {
+	let baseStat: ReturnType<typeof lstatSync> | null = null;
+	try {
+		baseStat = lstatSync(resolvedBase);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			throw error;
+		}
+	}
+	if (baseStat) {
+		if (baseStat.isSymbolicLink()) {
 			throw new Error("Named backup path escapes the backup root");
 		}
 		const canonicalBase = normalizePathForComparison(

@@ -380,6 +380,7 @@ function matchDestination(
 	return null;
 }
 
+// WARNING: return value contains raw refreshToken values - do not log directly
 export function buildOcChatgptImportPayload(
 	source: AccountStorageV3 | null,
 ): OcChatgptImportPayload {
