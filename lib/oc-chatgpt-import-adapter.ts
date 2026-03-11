@@ -178,7 +178,7 @@ function buildPreviewPayload(
  * Matching precedence:
  * 1. Trimmed `accountId` (if present on `target`).
  * 2. Normalized email (only against destination entries that have no `accountId`).
- * 3. Exact `refreshToken` match (only against destination entries that have no `accountId` and no normalized email).
+ * 3. Exact `refreshToken` match.
  *
  * @param accounts - The list of normalized destination accounts to search.
  * @param target - The account to match against `accounts`.
@@ -205,10 +205,7 @@ function findNormalizedAccountIndex(
 		if (idx >= 0) return idx;
 	}
 	const idx = accounts.findIndex(
-		(account) =>
-			!account.accountId &&
-			!normalizeEmailKey(account.email) &&
-			account.refreshToken === target.refreshToken,
+		(account) => account.refreshToken === target.refreshToken,
 	);
 	return idx >= 0 ? idx : null;
 }
