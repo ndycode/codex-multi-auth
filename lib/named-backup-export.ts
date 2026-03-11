@@ -227,6 +227,7 @@ export async function exportNamedBackupFile(
 	const storagePath = dependencies.getStoragePath();
 	const destination = resolveNamedBackupPath(name, storagePath);
 	const backupRoot = getNamedBackupRoot(storagePath);
+	assertWithinDirectory(dirname(backupRoot), backupRoot);
 	await fs.mkdir(backupRoot, { recursive: true });
 	await dependencies.exportAccounts(
 		destination,

@@ -244,6 +244,7 @@ describe("named backup export", () => {
 				exportAccounts,
 			}),
 		).rejects.toThrow(/escapes the backup root/);
+		expect(existsSync(join(externalRoot, "backups"))).toBe(false);
 	});
 
 	it("creates the backup directory before delegating export", async () => {
