@@ -302,7 +302,7 @@ describe("oc-chatgpt import adapter", () => {
 		expect(preview.merged.activeIndex).toBe(0);
 	});
 
-	it("matches exact refresh tokens even when the destination account has richer identity metadata", () => {
+	it("does not use refresh-token fallback for destination accounts with richer identity metadata", () => {
 		const destination: AccountStorageV3 = {
 			version: 3,
 			activeIndex: 0,
@@ -333,13 +333,15 @@ describe("oc-chatgpt import adapter", () => {
 
 		const preview = previewOcChatgptImportMerge({ source, destination });
 
-		expect(preview.toAdd).toHaveLength(0);
-		expect(preview.toUpdate).toHaveLength(1);
-		expect(preview.toUpdate[0]?.matchedBy).toBe("refreshToken");
-		expect(preview.merged.accounts).toHaveLength(1);
-		expect(preview.merged.accounts[0]?.refreshToken).toBe(
-			"shared-refresh-token",
-		);
+		expect(preview.toUpdate).toHaveLength(0);
+		expect(preview.toAdd).toHaveLength(1);
+		expect(preview.toAdd[0]?.refreshTokenLast4).toBe("oken");
+		expect(preview.merged.accounts).toHaveLength(2);
+		expect(preview.unchangedDestinationOnly).toContainEqual({
+			accountId: "acc-existing",
+			email: "existing@example.com",
+			refreshTokenLast4: "oken",
+		});
 	});
 
 	it("preserves destination metadata when matched records tie on timestamps", () => {
