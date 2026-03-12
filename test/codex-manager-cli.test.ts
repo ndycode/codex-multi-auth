@@ -18,6 +18,7 @@ const assessOpencodeAccountPoolMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const importAccountsMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
+const importAccountsMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
@@ -932,6 +933,173 @@ describe("codex manager cli commands", () => {
 		const [, options] = selectMock.mock.calls[0] ?? [];
 		expect(options?.message).toBe("First-Run Setup");
 		expect(String(options?.subtitle)).toContain("No saved accounts detected");
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
+	it("continues into OAuth when first-run wizard chooses login", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessOpencodeAccountPoolMock.mockResolvedValue(null);
+		selectMock.mockResolvedValueOnce({ type: "login" });
+		createAuthorizationFlowMock.mockResolvedValue({
+			codeVerifier: "verifier",
+			authorizationUrl: "https://example.test/auth",
+			state: "state",
+		});
+		startLocalOAuthServerMock.mockResolvedValue({
+			waitForCallback: vi
+				.fn()
+				.mockResolvedValue(
+					new URL(
+						"http://localhost:1455/auth/callback?code=test-code&state=state",
+					),
+				),
+			close: vi.fn().mockResolvedValue(undefined),
+		});
+		exchangeAuthorizationCodeMock.mockResolvedValue({
+			accessToken: "access",
+			refreshToken: "refresh",
+			expiresAt: Date.now() + 60_000,
+		});
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("loops back to first-run wizard after opening settings without creating accounts", async () => {
+		setInteractiveTTY(true);
+		const settingsHub = await import("../lib/codex-manager/settings-hub.js");
+		const configureUnifiedSettingsSpy = vi
+			.spyOn(settingsHub, "configureUnifiedSettings")
+			.mockResolvedValue(undefined);
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			return loadCount === 1 ? null : structuredClone(emptyStorage);
+		});
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessOpencodeAccountPoolMock.mockResolvedValue(null);
+		selectMock
+			.mockResolvedValueOnce({ type: "settings" })
+			.mockResolvedValueOnce({ type: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectMock).toHaveBeenCalledTimes(2);
+		expect(configureUnifiedSettingsSpy).toHaveBeenCalledTimes(1);
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
+	it("loops back to first-run wizard after running doctor without creating accounts", async () => {
+		setInteractiveTTY(true);
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			return loadCount === 1 ? null : structuredClone(emptyStorage);
+		});
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessOpencodeAccountPoolMock.mockResolvedValue(null);
+		selectMock
+			.mockResolvedValueOnce({ type: "doctor" })
+			.mockResolvedValueOnce({ type: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectMock).toHaveBeenCalledTimes(2);
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
+	it("imports OpenCode accounts from the first-run wizard", async () => {
+		setInteractiveTTY(true);
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		const restoredStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "imported@example.com",
+					refreshToken: "refresh-imported",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		};
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			if (loadCount === 1) return null;
+			return loadCount === 2
+				? structuredClone(emptyStorage)
+				: structuredClone(restoredStorage);
+		});
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessOpencodeAccountPoolMock.mockResolvedValue({
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "imported@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: true,
+			error: "",
+		});
+		importAccountsMock.mockResolvedValue({ imported: 1, skipped: 0, total: 1 });
+		confirmMock.mockResolvedValueOnce(true);
+		selectMock.mockResolvedValueOnce({ type: "import-opencode" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/.opencode/openai-codex-accounts.json",
+		);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
