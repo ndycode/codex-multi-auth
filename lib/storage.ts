@@ -494,8 +494,7 @@ type AccountsJournalEntry = {
 	content: string;
 };
 
-export interface NamedBackupMetadata {
-	name: string;
+interface BackupFileMetadata {
 	path: string;
 	createdAt: number | null;
 	updatedAt: number | null;
@@ -505,6 +504,15 @@ export interface NamedBackupMetadata {
 	schemaErrors: string[];
 	valid: boolean;
 	loadError?: string;
+}
+
+export interface NamedBackupMetadata extends BackupFileMetadata {
+	name: string;
+}
+
+export interface RotatingBackupMetadata extends BackupFileMetadata {
+	label: string;
+	slot: number;
 }
 
 export interface BackupRestoreAssessment {
@@ -1246,6 +1254,17 @@ async function buildNamedBackupMetadata(
 	path: string,
 	opts: { candidate?: Awaited<ReturnType<typeof loadBackupCandidate>> } = {},
 ): Promise<NamedBackupMetadata> {
+	const metadata = await buildBackupFileMetadata(path, opts);
+	return {
+		name,
+		...metadata,
+	};
+}
+
+async function buildBackupFileMetadata(
+	path: string,
+	opts: { candidate?: Awaited<ReturnType<typeof loadBackupCandidate>> } = {},
+): Promise<BackupFileMetadata> {
 	const candidate = opts.candidate ?? (await loadBackupCandidate(path));
 	let stats: {
 		size?: number;
@@ -1272,7 +1291,6 @@ async function buildNamedBackupMetadata(
 	const updatedAt = stats?.mtimeMs ?? null;
 
 	return {
-		name,
 		path,
 		createdAt,
 		updatedAt,
@@ -1283,6 +1301,34 @@ async function buildNamedBackupMetadata(
 		valid: !!candidate.normalized,
 		loadError: candidate.error,
 	};
+}
+
+function parseRotatingBackupSlot(
+	storagePath: string,
+	candidatePath: string,
+): number | null {
+	const latestBackupPath = getAccountsBackupPath(storagePath);
+	if (candidatePath === latestBackupPath) {
+		return 0;
+	}
+
+	const slotMatch = candidatePath.match(/\.bak\.(\d+)$/i);
+	if (!slotMatch) {
+		return null;
+	}
+
+	const parsed = Number.parseInt(slotMatch[1] ?? "", 10);
+	if (!Number.isFinite(parsed) || parsed < 1) {
+		return null;
+	}
+
+	return parsed;
+}
+
+function formatRotatingBackupLabel(slot: number): string {
+	return slot === 0
+		? "Latest rotating backup (.bak)"
+		: `Rotating backup ${slot} (.bak.${slot})`;
 }
 
 export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
@@ -1311,6 +1357,35 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 		}
 		return [];
 	}
+}
+
+export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
+	const storagePath = getStoragePath();
+	const candidates = getAccountsBackupRecoveryCandidates(storagePath);
+	const backups: RotatingBackupMetadata[] = [];
+
+	for (const candidatePath of candidates) {
+		if (!existsSync(candidatePath)) {
+			continue;
+		}
+
+		const slot = parseRotatingBackupSlot(storagePath, candidatePath);
+		if (slot === null) {
+			continue;
+		}
+
+		const candidate = await loadBackupCandidate(candidatePath);
+		const metadata = await buildBackupFileMetadata(candidatePath, {
+			candidate,
+		});
+		backups.push({
+			label: formatRotatingBackupLabel(slot),
+			slot,
+			...metadata,
+		});
+	}
+
+	return backups.sort((a, b) => a.slot - b.slot);
 }
 
 export function getNamedBackupsDirectoryPath(): string {

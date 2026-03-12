@@ -81,9 +81,9 @@ import {
 	getNamedBackupsDirectoryPath,
 	getStoragePath,
 	listNamedBackups,
+	listRotatingBackups,
 	loadAccounts,
 	loadFlaggedAccounts,
-	restoreNamedBackup,
 	saveAccounts,
 	saveFlaggedAccounts,
 	setStoragePath,
@@ -146,6 +146,28 @@ function formatRelativeDateShort(
 	if (days === 1) return "yesterday";
 	if (days < 7) return `${days}d ago`;
 	return new Date(timestamp).toLocaleDateString();
+}
+
+function formatDateTimeLong(timestamp: number | null | undefined): string {
+	if (!timestamp) return "unknown";
+	return new Date(timestamp).toLocaleString();
+}
+
+function formatFileSize(sizeBytes: number | null | undefined): string {
+	if (
+		typeof sizeBytes !== "number" ||
+		!Number.isFinite(sizeBytes) ||
+		sizeBytes < 0
+	) {
+		return "unknown";
+	}
+	if (sizeBytes < 1024) {
+		return `${sizeBytes} B`;
+	}
+	if (sizeBytes < 1024 * 1024) {
+		return `${(sizeBytes / 1024).toFixed(1)} KB`;
+	}
+	return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function extractErrorMessageFromPayload(payload: unknown): string | undefined {
@@ -4087,93 +4109,231 @@ async function handleManageAction(
 	}
 }
 
+type NamedBackupAssessment = Awaited<
+	ReturnType<typeof assessNamedBackupRestore>
+>;
+type NamedBackupEntry = Awaited<ReturnType<typeof listNamedBackups>>[number];
+type RotatingBackupEntry = Awaited<
+	ReturnType<typeof listRotatingBackups>
+>[number];
+
+type BackupBrowserEntry =
+	| {
+			kind: "named";
+			label: string;
+			backup: NamedBackupEntry;
+			assessment: NamedBackupAssessment;
+	  }
+	| {
+			kind: "rotating";
+			label: string;
+			backup: RotatingBackupEntry;
+	  };
+
 type BackupMenuAction =
 	| {
-			type: "restore";
-			assessment: Awaited<ReturnType<typeof assessNamedBackupRestore>>;
+			type: "inspect";
+			entry: BackupBrowserEntry;
 	  }
 	| { type: "back" };
 
-async function runBackupRestoreManager(
+function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
+	const backup = entry.backup;
+	const lastUpdated = formatRelativeDateShort(backup.updatedAt);
+	const backupType =
+		entry.kind === "named" ? "named" : `rotating slot ${entry.backup.slot}`;
+	const parts = [
+		backupType,
+		backup.valid ? "valid" : "invalid",
+		backup.accountCount !== null
+			? `${backup.accountCount} account${backup.accountCount === 1 ? "" : "s"}`
+			: undefined,
+		lastUpdated ? `updated ${lastUpdated}` : undefined,
+		entry.kind === "named" && entry.assessment.wouldExceedLimit
+			? `would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS}`
+			: undefined,
+		backup.loadError,
+	].filter(
+		(value): value is string =>
+			typeof value === "string" && value.trim().length > 0,
+	);
+	return parts.join(" | ");
+}
+
+function backupMenuColor(
+	entry: BackupBrowserEntry,
+): MenuItem<BackupMenuAction>["color"] {
+	return entry.backup.valid ? "green" : "red";
+}
+
+function buildBackupStatusSummary(entry: BackupBrowserEntry): string {
+	const backup = entry.backup;
+	if (!backup.valid) {
+		return stylePromptText("Invalid backup", "danger");
+	}
+	if (entry.kind === "named" && entry.assessment.wouldExceedLimit) {
+		return stylePromptText("Valid file, restore would exceed limit", "warning");
+	}
+	return stylePromptText("Valid backup", "success");
+}
+
+function showBackupBrowserDetails(entry: BackupBrowserEntry): Promise<void> {
+	const backup = entry.backup;
+	const typeLabel =
+		entry.kind === "named"
+			? "Named backup"
+			: `Rotating backup (.bak${entry.backup.slot === 0 ? "" : `.${entry.backup.slot}`})`;
+	const lines = [
+		stylePromptText(entry.label, "accent"),
+		buildBackupStatusSummary(entry),
+		stylePromptText(backup.path, "muted"),
+		"",
+		`${stylePromptText("Type:", "muted")} ${typeLabel}`,
+		`${stylePromptText("Accounts:", "muted")} ${backup.accountCount ?? "unknown"}`,
+		`${stylePromptText("Version:", "muted")} ${backup.version ?? "unknown"}`,
+		`${stylePromptText("Size:", "muted")} ${formatFileSize(backup.sizeBytes)}`,
+		`${stylePromptText("Created:", "muted")} ${formatDateTimeLong(backup.createdAt)}`,
+		`${stylePromptText("Updated:", "muted")} ${formatDateTimeLong(backup.updatedAt)}`,
+	];
+
+	if (entry.kind === "named") {
+		const assessment = entry.assessment;
+		lines.push(
+			"",
+			stylePromptText("Restore Assessment", "accent"),
+			`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
+			`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
+			`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
+			`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
+			`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.valid ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
+		);
+	}
+
+	if (backup.schemaErrors.length > 0 || backup.loadError) {
+		lines.push("", stylePromptText("Validation", "accent"));
+		for (const schemaError of backup.schemaErrors.slice(0, 3)) {
+			lines.push(`${stylePromptText("-", "muted")} ${schemaError}`);
+		}
+		if (backup.schemaErrors.length > 3) {
+			lines.push(
+				`${stylePromptText("-", "muted")} ${backup.schemaErrors.length - 3} more schema error${backup.schemaErrors.length - 3 === 1 ? "" : "s"}`,
+			);
+		}
+		if (backup.loadError) {
+			lines.push(`${stylePromptText("-", "muted")} ${backup.loadError}`);
+		}
+	}
+
+	if (output.isTTY) {
+		output.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
+	}
+	for (const line of lines) {
+		console.log(line);
+	}
+	console.log("");
+	return waitForMenuReturn();
+}
+
+async function runBackupBrowserManager(
 	displaySettings: DashboardDisplaySettings,
 ): Promise<void> {
 	const backupDir = getNamedBackupsDirectoryPath();
-	const backups = await listNamedBackups();
-	if (backups.length === 0) {
-		console.log(`No named backups found. Place backup files in ${backupDir}.`);
+	const [namedBackups, rotatingBackups] = await Promise.all([
+		listNamedBackups(),
+		listRotatingBackups(),
+	]);
+	if (namedBackups.length === 0 && rotatingBackups.length === 0) {
+		console.log(
+			`No backups found. Named backups live in ${backupDir}. Rotating backups live next to ${getStoragePath()}.`,
+		);
 		return;
 	}
 
 	const currentStorage = await loadAccounts();
 	const assessments = await Promise.all(
-		backups.map((backup) =>
+		namedBackups.map((backup) =>
 			assessNamedBackupRestore(backup.name, { currentStorage }),
 		),
 	);
-
-	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
-		const status =
-			assessment.valid && !assessment.wouldExceedLimit
-				? "ready"
-				: assessment.wouldExceedLimit
-					? "limit"
-					: "invalid";
-		const lastUpdated = formatRelativeDateShort(assessment.backup.updatedAt);
-		const parts = [
-			assessment.backup.accountCount !== null
-				? `${assessment.backup.accountCount} account${assessment.backup.accountCount === 1 ? "" : "s"}`
-				: undefined,
-			lastUpdated ? `updated ${lastUpdated}` : undefined,
-			assessment.wouldExceedLimit
-				? `would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS}`
-				: undefined,
-			assessment.error ?? assessment.backup.loadError,
-		].filter(
-			(value): value is string =>
-				typeof value === "string" && value.trim().length > 0,
-		);
-
-		return {
-			label: assessment.backup.name,
-			hint: parts.length > 0 ? parts.join(" | ") : undefined,
-			value: { type: "restore", assessment },
-			color:
-				status === "ready" ? "green" : status === "limit" ? "red" : "yellow",
-			disabled: !assessment.valid || assessment.wouldExceedLimit,
-		};
-	});
-
-	items.push({ label: "Back", value: { type: "back" } });
+	const namedEntries: BackupBrowserEntry[] = assessments.map((assessment) => ({
+		kind: "named",
+		label: assessment.backup.name,
+		backup: assessment.backup,
+		assessment,
+	}));
+	const rotatingEntries: BackupBrowserEntry[] = rotatingBackups.map(
+		(backup) => ({
+			kind: "rotating",
+			label: backup.label,
+			backup,
+		}),
+	);
 
 	const ui = getUiRuntimeOptions();
-	const selection = await select(items, {
-		message: "Restore From Backup",
-		subtitle: backupDir,
-		help: UI_COPY.mainMenu.helpCompact,
-		clearScreen: true,
-		selectedEmphasis: "minimal",
-		focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
-		theme: ui.theme,
-	});
 
-	if (!selection || selection.type === "back") {
-		return;
+	while (true) {
+		const items: MenuItem<BackupMenuAction>[] = [
+			{ label: "Named Backups", value: { type: "back" }, kind: "heading" },
+		];
+		if (namedEntries.length === 0) {
+			items.push({
+				label: "No named backups found",
+				value: { type: "back" },
+				disabled: true,
+			});
+		} else {
+			items.push(
+				...namedEntries.map((entry) => ({
+					label: entry.label,
+					hint: buildBackupBrowserHint(entry),
+					value: { type: "inspect" as const, entry },
+					color: backupMenuColor(entry),
+				})),
+			);
+		}
+
+		items.push({ label: "", value: { type: "back" }, separator: true });
+		items.push({
+			label: "Rotating Backups",
+			value: { type: "back" },
+			kind: "heading",
+		});
+		if (rotatingEntries.length === 0) {
+			items.push({
+				label: "No rotating backups found",
+				value: { type: "back" },
+				disabled: true,
+			});
+		} else {
+			items.push(
+				...rotatingEntries.map((entry) => ({
+					label: entry.label,
+					hint: buildBackupBrowserHint(entry),
+					value: { type: "inspect" as const, entry },
+					color: backupMenuColor(entry),
+				})),
+			);
+		}
+
+		items.push({ label: "", value: { type: "back" }, separator: true });
+		items.push({ label: "Back", value: { type: "back" } });
+
+		const selection = await select(items, {
+			message: "Backup Browser",
+			subtitle: `Named: ${backupDir} | Rotating: ${dirname(getStoragePath())}`,
+			help: "Enter Inspect | Q Back",
+			clearScreen: true,
+			selectedEmphasis: "minimal",
+			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
+			theme: ui.theme,
+		});
+
+		if (!selection || selection.type === "back") {
+			return;
+		}
+
+		await showBackupBrowserDetails(selection.entry);
 	}
-
-	const assessment = selection.assessment;
-	if (!assessment.valid || assessment.wouldExceedLimit) {
-		console.log(assessment.error ?? "Backup is not eligible for restore.");
-		return;
-	}
-
-	const confirmMessage = `Restore backup "${assessment.backup.name}"? This will merge ${assessment.backup.accountCount ?? 0} account(s) into ${assessment.currentAccountCount} current (${assessment.mergedAccountCount ?? assessment.currentAccountCount} after dedupe).`;
-	const confirmed = await confirm(confirmMessage);
-	if (!confirmed) return;
-
-	const result = await restoreNamedBackup(assessment.backup.name);
-	console.log(
-		`Restored backup "${assessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
-	);
 }
 
 async function runAuthLogin(): Promise<number> {
@@ -4302,7 +4462,7 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "restore-backup") {
-					await runBackupRestoreManager(displaySettings);
+					await runBackupBrowserManager(displaySettings);
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
@@ -4389,10 +4549,10 @@ async function runAuthLogin(): Promise<number> {
 				const restoreNow = await confirm(
 					`Found ${recoveryState.assessments.length} recoverable backup${
 						recoveryState.assessments.length === 1 ? "" : "s"
-					} (${backupLabel}) in ${backupDir}. Restore now?`,
+					} (${backupLabel}) in ${backupDir}. Open backup browser now?`,
 				);
 				if (restoreNow) {
-					await runBackupRestoreManager(displaySettings);
+					await runBackupBrowserManager(displaySettings);
 					continue;
 				}
 			}

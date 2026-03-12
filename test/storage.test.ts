@@ -15,6 +15,7 @@ import {
 	getStoragePath,
 	importAccounts,
 	listNamedBackups,
+	listRotatingBackups,
 	loadAccounts,
 	normalizeAccountStorage,
 	restoreNamedBackup,
@@ -380,7 +381,73 @@ describe("storage", () => {
 					},
 				],
 			});
-			await expect(createNamedBackup("   ")).rejects.toThrow(/Invalid backup name/);
+			await expect(createNamedBackup("   ")).rejects.toThrow(
+				/Invalid backup name/,
+			);
+		});
+
+		it("lists rotating backups and marks invalid snapshots distinctly", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("browser-good");
+			await fs.writeFile(
+				join(testWorkDir, "backups", "browser-bad.json"),
+				"{broken-json",
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(`${testStoragePath}.bak.1`, "{broken-bak", "utf-8");
+
+			const rotatingBackups = await listRotatingBackups();
+			const namedBackups = await listNamedBackups();
+
+			expect(namedBackups.map((backup) => backup.name)).toEqual(
+				expect.arrayContaining(["browser-good", "browser-bad"]),
+			);
+			expect(
+				namedBackups.find((backup) => backup.name === "browser-good")?.valid,
+			).toBe(true);
+			expect(
+				namedBackups.find((backup) => backup.name === "browser-bad")?.valid,
+			).toBe(false);
+			expect(rotatingBackups).toHaveLength(2);
+			expect(rotatingBackups[0]).toMatchObject({
+				slot: 0,
+				label: "Latest rotating backup (.bak)",
+				valid: true,
+				accountCount: 1,
+			});
+			expect(rotatingBackups[1]).toMatchObject({
+				slot: 1,
+				label: "Rotating backup 1 (.bak.1)",
+				valid: false,
+			});
+			expect(rotatingBackups[1]?.loadError).toBeTruthy();
 		});
 	});
 
