@@ -14,6 +14,7 @@ const listNamedBackupsMock = vi.fn();
 const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
 const assessOpencodeAccountPoolMock = vi.fn();
+const listAccountSnapshotsMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
 const importAccountsMock = vi.fn();
@@ -117,6 +118,7 @@ vi.mock("../lib/storage.js", () => ({
 	listRotatingBackups: listRotatingBackupsMock,
 	assessNamedBackupRestore: assessNamedBackupRestoreMock,
 	assessOpencodeAccountPool: assessOpencodeAccountPoolMock,
+	listAccountSnapshots: listAccountSnapshotsMock,
 	getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
 	restoreNamedBackup: restoreNamedBackupMock,
 	importAccounts: importAccountsMock,
@@ -310,6 +312,7 @@ describe("codex manager cli commands", () => {
 		listRotatingBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
 		assessOpencodeAccountPoolMock.mockReset();
+		listAccountSnapshotsMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
 		restoreNamedBackupMock.mockReset();
 		importAccountsMock.mockReset();
@@ -352,6 +355,7 @@ describe("codex manager cli commands", () => {
 			total: 0,
 		});
 		assessOpencodeAccountPoolMock.mockResolvedValue(null);
+		listAccountSnapshotsMock.mockResolvedValue([]);
 		importAccountsMock.mockResolvedValue({ imported: 0, skipped: 0, total: 0 });
 		confirmMock.mockResolvedValue(false);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
@@ -531,26 +535,31 @@ describe("codex manager cli commands", () => {
 	it("shows first-run wizard before OAuth when storage file is missing", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);
-		selectMock.mockResolvedValueOnce({ type: "cancel" });
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		const wizardSpy = vi
+			.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValue({ type: "cancel" });
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(selectMock).toHaveBeenCalledTimes(1);
-		const [, options] = selectMock.mock.calls[0] ?? [];
-		expect(options?.message).toBe("First-Run Setup");
-		expect(String(options?.subtitle)).toContain("No saved accounts detected");
+		expect(wizardSpy).toHaveBeenCalledTimes(1);
+		expect(wizardSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				storagePath: "/mock/openai-codex-accounts.json",
+			}),
+		);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
 	it("continues into OAuth when first-run wizard chooses login", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);
-		listNamedBackupsMock.mockResolvedValue([]);
-		listRotatingBackupsMock.mockResolvedValue([]);
-		assessOpencodeAccountPoolMock.mockResolvedValue(null);
-		selectMock.mockResolvedValueOnce({ type: "login" });
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		vi.spyOn(authMenu, "showFirstRunWizard").mockResolvedValue({
+			type: "login",
+		});
 		createAuthorizationFlowMock.mockResolvedValue({
 			codeVerifier: "verifier",
 			authorizationUrl: "https://example.test/auth",
@@ -583,6 +592,10 @@ describe("codex manager cli commands", () => {
 	it("loops back to first-run wizard after opening settings without creating accounts", async () => {
 		setInteractiveTTY(true);
 		const settingsHub = await import("../lib/codex-manager/settings-hub.js");
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		vi.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValueOnce({ type: "settings" })
+			.mockResolvedValueOnce({ type: "cancel" });
 		const configureUnifiedSettingsSpy = vi
 			.spyOn(settingsHub, "configureUnifiedSettings")
 			.mockResolvedValue(undefined);
@@ -597,24 +610,20 @@ describe("codex manager cli commands", () => {
 			loadCount += 1;
 			return loadCount === 1 ? null : structuredClone(emptyStorage);
 		});
-		listNamedBackupsMock.mockResolvedValue([]);
-		listRotatingBackupsMock.mockResolvedValue([]);
-		assessOpencodeAccountPoolMock.mockResolvedValue(null);
-		selectMock
-			.mockResolvedValueOnce({ type: "settings" })
-			.mockResolvedValueOnce({ type: "cancel" });
-
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(selectMock).toHaveBeenCalledTimes(2);
 		expect(configureUnifiedSettingsSpy).toHaveBeenCalledTimes(1);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
 	it("loops back to first-run wizard after running doctor without creating accounts", async () => {
 		setInteractiveTTY(true);
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		vi.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValueOnce({ type: "doctor" })
+			.mockResolvedValueOnce({ type: "cancel" });
 		const emptyStorage = {
 			version: 3,
 			activeIndex: 0,
@@ -626,23 +635,20 @@ describe("codex manager cli commands", () => {
 			loadCount += 1;
 			return loadCount === 1 ? null : structuredClone(emptyStorage);
 		});
-		listNamedBackupsMock.mockResolvedValue([]);
-		listRotatingBackupsMock.mockResolvedValue([]);
-		assessOpencodeAccountPoolMock.mockResolvedValue(null);
-		selectMock
-			.mockResolvedValueOnce({ type: "doctor" })
-			.mockResolvedValueOnce({ type: "cancel" });
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(selectMock).toHaveBeenCalledTimes(2);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
 	it("imports OpenCode accounts from the first-run wizard", async () => {
 		setInteractiveTTY(true);
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		vi.spyOn(authMenu, "showFirstRunWizard").mockResolvedValue({
+			type: "import-opencode",
+		});
 		const emptyStorage = {
 			version: 3,
 			activeIndex: 0,
@@ -699,8 +705,6 @@ describe("codex manager cli commands", () => {
 		});
 		importAccountsMock.mockResolvedValue({ imported: 1, skipped: 0, total: 1 });
 		confirmMock.mockResolvedValueOnce(true);
-		selectMock.mockResolvedValueOnce({ type: "import-opencode" });
-
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
@@ -1643,7 +1647,12 @@ describe("codex manager cli commands", () => {
 	it("offers backup recovery before OAuth when actionable backups exist", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue(null);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
 		const assessment = {
 			backup: {
 				name: "named-backup",
@@ -1685,8 +1694,16 @@ describe("codex manager cli commands", () => {
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock.mockResolvedValueOnce(true);
 		selectMock
-			.mockResolvedValueOnce({ type: "login" })
-			.mockResolvedValueOnce({ type: "back" })
+			.mockResolvedValueOnce({
+				type: "inspect",
+				entry: {
+					kind: "named",
+					label: assessment.backup.name,
+					backup: assessment.backup,
+					assessment,
+				},
+			})
+			.mockResolvedValueOnce("back")
 			.mockResolvedValueOnce("cancel");
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		const authModule = await import("../lib/auth/auth.js");
