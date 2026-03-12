@@ -95,6 +95,10 @@ import {
 } from "./storage.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
+import {
+	type FirstRunWizardOptions,
+	showFirstRunWizard,
+} from "./ui/auth-menu.js";
 import { confirm } from "./ui/confirm.js";
 import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
@@ -4763,14 +4767,96 @@ async function runBackupBrowserManager(
 	}
 }
 
+function shouldShowFirstRunWizard(storage: AccountStorageV3 | null): boolean {
+	return isInteractiveLoginMenuAvailable() && storage === null;
+}
+
+async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
+	let namedBackupCount = 0;
+	let rotatingBackupCount = 0;
+	try {
+		const namedBackups = await listNamedBackups();
+		namedBackupCount = namedBackups.length;
+	} catch (error) {
+		console.warn("Failed to list named backups", error);
+	}
+	try {
+		const rotatingBackups = await listRotatingBackups();
+		rotatingBackupCount = rotatingBackups.length;
+	} catch (error) {
+		console.warn("Failed to list rotating backups", error);
+	}
+
+	return {
+		storagePath: getStoragePath(),
+		namedBackupCount,
+		rotatingBackupCount,
+	};
+}
+
+async function runFirstRunWizard(): Promise<"continue" | "cancelled"> {
+	const displaySettings = await loadDashboardDisplaySettings();
+	applyUiThemeFromDashboardSettings(displaySettings);
+	while (true) {
+		const wizardOptions = await buildFirstRunWizardOptions();
+		const action = await showFirstRunWizard(wizardOptions);
+		switch (action.type) {
+			case "cancel":
+				return "cancelled";
+			case "login":
+			case "skip":
+				return "continue";
+			case "restore":
+				await runBackupBrowserManager(displaySettings);
+				break;
+			case "settings":
+				await configureUnifiedSettings(displaySettings);
+				break;
+			case "doctor":
+				await runActionPanel(
+					"Doctor",
+					"Checking storage and sync paths",
+					async () => {
+						await runDoctor([]);
+					},
+					displaySettings,
+				);
+				break;
+		}
+
+		const latestStorage = await loadAccounts();
+		if (latestStorage && latestStorage.accounts.length > 0) {
+			return "continue";
+		}
+	}
+}
+
 async function runAuthLogin(): Promise<number> {
 	setStoragePath(null);
 	let suppressRecoveryPrompt = false;
 	let recoveryPromptAttempted = false;
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
+	const initialStorage = await loadAccounts();
+	let cachedInitialStorage: AccountStorageV3 | null | undefined =
+		initialStorage;
+
+	if (shouldShowFirstRunWizard(initialStorage)) {
+		const wizardOutcome = await runFirstRunWizard();
+		if (wizardOutcome === "cancelled") {
+			console.log("Cancelled.");
+			return 0;
+		}
+		cachedInitialStorage = null;
+	}
 	loginFlow: while (true) {
-		let existingStorage = await loadAccounts();
+		let existingStorage: AccountStorageV3 | null;
+		if (cachedInitialStorage !== undefined) {
+			existingStorage = cachedInitialStorage;
+			cachedInitialStorage = undefined;
+		} else {
+			existingStorage = await loadAccounts();
+		}
 		if (existingStorage && existingStorage.accounts.length > 0) {
 			while (true) {
 				existingStorage = await loadAccounts();

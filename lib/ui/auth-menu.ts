@@ -81,6 +81,20 @@ export type AuthMenuAction =
 	| { type: "delete-all" }
 	| { type: "cancel" };
 
+export interface FirstRunWizardOptions {
+	storagePath: string;
+	namedBackupCount: number;
+	rotatingBackupCount: number;
+}
+
+export type FirstRunWizardAction =
+	| { type: "login" }
+	| { type: "restore" }
+	| { type: "settings" }
+	| { type: "doctor" }
+	| { type: "skip" }
+	| { type: "cancel" };
+
 export type AccountAction =
 	| "back"
 	| "delete"
@@ -503,6 +517,52 @@ async function promptSearchQuery(current: string): Promise<string> {
 	} finally {
 		rl.close();
 	}
+}
+
+export async function showFirstRunWizard(
+	options: FirstRunWizardOptions,
+): Promise<FirstRunWizardAction> {
+	const ui = getUiRuntimeOptions();
+	const items: MenuItem<FirstRunWizardAction>[] = [
+		{
+			label: UI_COPY.firstRun.restore,
+			hint: UI_COPY.firstRun.backupSummary(
+				options.namedBackupCount,
+				options.rotatingBackupCount,
+			),
+			value: { type: "restore" },
+			color: "yellow",
+		},
+		{
+			label: UI_COPY.firstRun.login,
+			value: { type: "login" },
+			color: "green",
+		},
+		{
+			label: UI_COPY.firstRun.settings,
+			value: { type: "settings" },
+			color: "green",
+		},
+		{
+			label: UI_COPY.firstRun.doctor,
+			value: { type: "doctor" },
+			color: "yellow",
+		},
+		{ label: UI_COPY.firstRun.skip, value: { type: "skip" } },
+		{ label: UI_COPY.firstRun.cancel, value: { type: "cancel" }, color: "red" },
+	];
+
+	const result = await select(items, {
+		message: UI_COPY.firstRun.title,
+		subtitle: UI_COPY.firstRun.subtitle(options.storagePath),
+		help: UI_COPY.firstRun.help,
+		clearScreen: true,
+		selectedEmphasis: "minimal",
+		focusStyle: "row-invert",
+		theme: ui.theme,
+	});
+
+	return result ?? { type: "cancel" };
 }
 
 function authMenuFocusKey(action: AuthMenuAction): string {

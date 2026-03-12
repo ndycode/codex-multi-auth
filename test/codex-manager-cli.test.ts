@@ -520,6 +520,22 @@ describe("codex manager cli commands", () => {
 		expect(logSpy.mock.calls[0]?.[0]).toContain("Codex Multi-Auth CLI");
 	});
 
+	it("shows first-run wizard before OAuth when storage file is missing", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		selectMock.mockResolvedValueOnce({ type: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectMock).toHaveBeenCalledTimes(1);
+		const [, options] = selectMock.mock.calls[0] ?? [];
+		expect(options?.message).toBe("First-Run Setup");
+		expect(String(options?.subtitle)).toContain("No saved accounts detected");
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
 	it("offers startup backup browser before OAuth when interactive login starts empty", async () => {
 		setInteractiveTTY(true);
 		const emptyStorage = {
@@ -1412,6 +1428,7 @@ describe("codex manager cli commands", () => {
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock.mockResolvedValueOnce(true);
 		selectMock
+			.mockResolvedValueOnce({ type: "login" })
 			.mockResolvedValueOnce({ type: "back" })
 			.mockResolvedValueOnce("cancel");
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
