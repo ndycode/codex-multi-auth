@@ -5,15 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import {
+	assessNamedBackupRestore,
 	clearAccounts,
+	createNamedBackup,
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
 	exportAccounts,
 	formatStorageErrorHint,
 	getStoragePath,
 	importAccounts,
+	listNamedBackups,
 	loadAccounts,
 	normalizeAccountStorage,
+	restoreNamedBackup,
 	StorageError,
 	saveAccounts,
 	setStoragePath,
@@ -291,6 +295,92 @@ describe("storage", () => {
 			await expect(importAccounts(exportPath)).rejects.toThrow(
 				/Invalid account storage format/,
 			);
+		});
+	});
+
+	describe("named backups", () => {
+		const testWorkDir = join(
+			tmpdir(),
+			"codex-backup-" + Math.random().toString(36).slice(2),
+		);
+		let testStoragePath = "";
+
+		beforeEach(async () => {
+			await fs.mkdir(testWorkDir, { recursive: true });
+			testStoragePath = join(testWorkDir, "openai-codex-accounts.json");
+			setStoragePathDirect(testStoragePath);
+		});
+
+		afterEach(async () => {
+			setStoragePathDirect(null);
+			await fs.rm(testWorkDir, { recursive: true, force: true });
+		});
+
+		it("creates and lists named backups with metadata", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-backup",
+						refreshToken: "ref-backup",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("My Backup 1");
+			expect(backup.name).toBe("My-Backup-1");
+			const backups = await listNamedBackups();
+			expect(backups.length).toBeGreaterThan(0);
+			expect(backups[0]?.accountCount).toBe(1);
+			const backupPath = join(testWorkDir, "backups", `${backup.name}.json`);
+			expect(existsSync(backupPath)).toBe(true);
+		});
+
+		it("assesses eligibility and restores a named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await createNamedBackup("restore-me");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("restore-me");
+			expect(assessment.valid).toBe(true);
+			expect(assessment.wouldExceedLimit).toBe(false);
+
+			const restoreResult = await restoreNamedBackup("restore-me");
+			expect(restoreResult.total).toBe(1);
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts[0]?.accountId).toBe("primary");
+		});
+
+		it("rejects invalid backup names", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await expect(createNamedBackup("   ")).rejects.toThrow(/Invalid backup name/);
 		});
 	});
 

@@ -65,6 +65,7 @@ export type AuthMenuAction =
 	| { type: "check" }
 	| { type: "deep-check" }
 	| { type: "verify-flagged" }
+	| { type: "restore-backup" }
 	| { type: "select-account"; account: AccountInfo }
 	| { type: "set-current-account"; account: AccountInfo }
 	| { type: "refresh-account"; account: AccountInfo }
@@ -515,6 +516,7 @@ function authMenuFocusKey(action: AuthMenuAction): string {
 		case "check":
 		case "deep-check":
 		case "verify-flagged":
+		case "restore-backup":
 		case "search":
 		case "delete-all":
 		case "cancel":
@@ -653,6 +655,17 @@ export async function showAuthMenu(
 			);
 		}
 
+		items.push({ label: "", value: { type: "cancel" }, separator: true });
+		items.push({
+			label: UI_COPY.mainMenu.recovery,
+			value: { type: "cancel" },
+			kind: "heading",
+		});
+		items.push({
+			label: UI_COPY.mainMenu.restoreBackup,
+			value: { type: "restore-backup" },
+			color: "yellow",
+		});
 		items.push({ label: "", value: { type: "cancel" }, separator: true });
 		items.push({
 			label: UI_COPY.mainMenu.dangerZone,

@@ -57,6 +57,7 @@ export type LoginMode =
 	| "check"
 	| "deep-check"
 	| "verify-flagged"
+	| "restore-backup"
 	| "cancel";
 
 export interface ExistingAccountInfo {
@@ -279,6 +280,8 @@ export async function promptLoginMode(
 				return { mode: "deep-check" };
 			case "verify-flagged":
 				return { mode: "verify-flagged" };
+			case "restore-backup":
+				return { mode: "restore-backup" };
 			case "select-account": {
 				const accountAction = await showAccountDetails(action.account);
 				if (accountAction === "delete") {

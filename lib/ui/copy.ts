@@ -14,6 +14,8 @@ export const UI_COPY = {
 		accounts: "Saved Accounts",
 		loadingLimits: "Fetching account limits...",
 		noSearchMatches: "No accounts match your search",
+		recovery: "Recovery",
+		restoreBackup: "Restore From Backup",
 		dangerZone: "Danger Zone",
 		removeAllAccounts: "Delete Saved Accounts",
 		resetLocalState: "Reset Local State",

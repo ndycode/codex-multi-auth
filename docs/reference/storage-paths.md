@@ -22,6 +22,7 @@ Override root:
 | --- | --- |
 | Unified settings | `~/.codex/multi-auth/settings.json` |
 | Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` |
+| Named backups | `~/.codex/multi-auth/backups/<name>.json` |
 | Accounts backup | `~/.codex/multi-auth/openai-codex-accounts.json.bak` |
 | Accounts WAL | `~/.codex/multi-auth/openai-codex-accounts.json.wal` |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
@@ -43,6 +44,7 @@ Ownership note:
 When project-scoped behavior is enabled:
 
 - `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`
+- `~/.codex/multi-auth/projects/<project-key>/backups/<name>.json`
 
 `<project-key>` is derived as:
 

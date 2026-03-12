@@ -73,17 +73,22 @@ import { queuedRefresh } from "./refresh-queue.js";
 import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
+	assessNamedBackupRestore,
 	type FlaggedAccountMetadataV1,
 	type FlaggedAccountStorageV1,
+	getNamedBackupsDirectoryPath,
 	getStoragePath,
+	listNamedBackups,
 	loadAccounts,
 	loadFlaggedAccounts,
+	restoreNamedBackup,
 	saveAccounts,
 	saveFlaggedAccounts,
 	setStoragePath,
 } from "./storage.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
+import { confirm } from "./ui/confirm.js";
 import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
@@ -128,6 +133,17 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 	if (!reason) return undefined;
 	const normalized = collapseWhitespace(reason.replace(/_/g, " "));
 	return normalized.length > 0 ? normalized : undefined;
+}
+
+function formatRelativeDateShort(
+	timestamp: number | null | undefined,
+): string | null {
+	if (!timestamp) return null;
+	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
+	if (days <= 0) return "today";
+	if (days === 1) return "yesterday";
+	if (days < 7) return `${days}d ago`;
+	return new Date(timestamp).toLocaleDateString();
 }
 
 function extractErrorMessageFromPayload(payload: unknown): string | undefined {
@@ -4069,6 +4085,95 @@ async function handleManageAction(
 	}
 }
 
+type BackupMenuAction =
+	| {
+			type: "restore";
+			assessment: Awaited<ReturnType<typeof assessNamedBackupRestore>>;
+	  }
+	| { type: "back" };
+
+async function runBackupRestoreManager(
+	displaySettings: DashboardDisplaySettings,
+): Promise<void> {
+	const backupDir = getNamedBackupsDirectoryPath();
+	const backups = await listNamedBackups();
+	if (backups.length === 0) {
+		console.log(`No named backups found. Place backup files in ${backupDir}.`);
+		return;
+	}
+
+	const currentStorage = await loadAccounts();
+	const assessments = await Promise.all(
+		backups.map((backup) =>
+			assessNamedBackupRestore(backup.name, { currentStorage }),
+		),
+	);
+
+	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
+		const status =
+			assessment.valid && !assessment.wouldExceedLimit
+				? "ready"
+				: assessment.wouldExceedLimit
+					? "limit"
+					: "invalid";
+		const lastUpdated = formatRelativeDateShort(assessment.backup.updatedAt);
+		const parts = [
+			assessment.backup.accountCount !== null
+				? `${assessment.backup.accountCount} account${assessment.backup.accountCount === 1 ? "" : "s"}`
+				: undefined,
+			lastUpdated ? `updated ${lastUpdated}` : undefined,
+			assessment.wouldExceedLimit
+				? `would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS}`
+				: undefined,
+			assessment.error ?? assessment.backup.loadError,
+		].filter(
+			(value): value is string =>
+				typeof value === "string" && value.trim().length > 0,
+		);
+
+		return {
+			label: assessment.backup.name,
+			hint: parts.length > 0 ? parts.join(" | ") : undefined,
+			value: { type: "restore", assessment },
+			color:
+				status === "ready" ? "green" : status === "limit" ? "red" : "yellow",
+			disabled: !assessment.valid || assessment.wouldExceedLimit,
+		};
+	});
+
+	items.push({ label: "Back", value: { type: "back" } });
+
+	const ui = getUiRuntimeOptions();
+	const selection = await select(items, {
+		message: "Restore From Backup",
+		subtitle: backupDir,
+		help: UI_COPY.mainMenu.helpCompact,
+		clearScreen: true,
+		selectedEmphasis: "minimal",
+		focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
+		theme: ui.theme,
+	});
+
+	if (!selection || selection.type === "back") {
+		return;
+	}
+
+	const assessment = selection.assessment;
+	if (!assessment.valid || assessment.wouldExceedLimit) {
+		console.log(assessment.error ?? "Backup is not eligible for restore.");
+		return;
+	}
+
+	const confirmMessage = `Restore backup "${assessment.backup.name}"? This will merge ${assessment.backup.accountCount ?? 0} account(s) into ${assessment.currentAccountCount} current (${assessment.mergedAccountCount ?? assessment.currentAccountCount} after dedupe).`;
+	const confirmed = await confirm(confirmMessage);
+	if (!confirmed) return;
+
+	const result = await restoreNamedBackup(assessment.backup.name);
+	console.log(
+		`Restored backup "${assessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
+	);
+}
+
 async function runAuthLogin(): Promise<number> {
 	setStoragePath(null);
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
@@ -4190,6 +4295,10 @@ async function runAuthLogin(): Promise<number> {
 						},
 						displaySettings,
 					);
+					continue;
+				}
+				if (menuResult.mode === "restore-backup") {
+					await runBackupRestoreManager(displaySettings);
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
