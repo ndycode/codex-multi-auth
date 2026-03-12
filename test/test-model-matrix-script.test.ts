@@ -103,7 +103,12 @@ describe("test-model-matrix script helpers", () => {
 			],
 		});
 
-		expect(mod.__buildModelCaseArgsForTests({ model: "gpt-5.2", variant: "high" }, 4)).toEqual({
+		expect(
+			mod.__buildModelCaseArgsForTests(
+				{ model: "gpt-5.2", variant: "high" },
+				4,
+			),
+		).toEqual({
 			token: "MODEL_MATRIX_OK_4",
 			args: [
 				"exec",
@@ -122,13 +127,72 @@ describe("test-model-matrix script helpers", () => {
 		vi.stubEnv("CODEX_MATRIX_TIMEOUT_MS", "abc");
 		const mod = await import("../scripts/test-model-matrix.js");
 		expect(mod.resolveMatrixTimeoutMs()).toBe(120000);
+		expect(mod.resolveMatrixTimeoutMs(true)).toBe(15000);
+	});
+
+	it("treats completed JSON turns as success even when the prompt token is absent", async () => {
+		const mod = await import("../scripts/test-model-matrix.js");
+		expect(
+			mod.__finalizeModelCaseResultForTests(
+				{ model: "gpt-5.1-codex-max", variant: "high" },
+				0,
+				'{"type":"thread.started"}\n{"type":"turn.completed"}',
+				"MODEL_MATRIX_OK_9",
+				true,
+			),
+		).toEqual(
+			expect.objectContaining({
+				ok: true,
+				hasToken: false,
+				completed: true,
+				skipped: false,
+			}),
+		);
+	});
+
+	it("downgrades unsupported smoke failures to skipped cases", async () => {
+		const mod = await import("../scripts/test-model-matrix.js");
+		expect(
+			mod.__finalizeModelCaseResultForTests(
+				{ model: "gpt-5-codex" },
+				1,
+				"{\"type\":\"turn.failed\",\"error\":{\"message\":\"Unsupported value: 'xhigh' is not supported with the 'gpt-5-codex' model. Supported values are: 'low', 'medium', and 'high'.\"}}",
+				"MODEL_MATRIX_OK_10",
+				true,
+			),
+		).toEqual(
+			expect.objectContaining({
+				ok: false,
+				skipped: true,
+				skipReason: "unsupported-reasoning",
+			}),
+		);
+
+		expect(
+			mod.__finalizeModelCaseResultForTests(
+				{ model: "gpt-5.2" },
+				124,
+				"Timed out after 15000ms",
+				"MODEL_MATRIX_OK_11",
+				true,
+			),
+		).toEqual(
+			expect.objectContaining({
+				ok: false,
+				skipped: true,
+				skipReason: "timed-out",
+			}),
+		);
 	});
 
 	it("filters non-path where output on Windows", async () => {
-		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		const platformSpy = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
 		try {
 			spawnSync.mockReturnValue({
-				stdout: "INFO: noise\r\nC:\\Users\\neil\\AppData\\Roaming\\npm\\Codex.exe\r\n",
+				stdout:
+					"INFO: noise\r\nC:\\Users\\neil\\AppData\\Roaming\\npm\\Codex.exe\r\n",
 				stderr: "INFO: Could not find files\r\n",
 				status: 0,
 			});
@@ -144,19 +208,30 @@ describe("test-model-matrix script helpers", () => {
 	});
 
 	it("returns fallback command when where has no executable candidates", async () => {
-		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		const platformSpy = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
 		try {
-			spawnSync.mockReturnValue({ stdout: "", stderr: "INFO: not found\n", status: 1 });
+			spawnSync.mockReturnValue({
+				stdout: "",
+				stderr: "INFO: not found\n",
+				status: 1,
+			});
 
 			const mod = await import("../scripts/test-model-matrix.js");
-			expect(mod.resolveCodexExecutable()).toEqual({ command: "codex", shell: false });
+			expect(mod.resolveCodexExecutable()).toEqual({
+				command: "codex",
+				shell: false,
+			});
 		} finally {
 			platformSpy.mockRestore();
 		}
 	});
 
 	it("serializes stopCodexServers calls and kills only tracked Windows PIDs", async () => {
-		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		const platformSpy = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
 		try {
 			spawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "" });
 
@@ -187,7 +262,9 @@ describe("test-model-matrix script helpers", () => {
 	});
 
 	it("serializes stopCodexServers calls and kills only tracked non-Windows PIDs", async () => {
-		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		const platformSpy = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("linux");
 		try {
 			spawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "" });
 
