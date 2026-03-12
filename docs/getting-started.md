@@ -49,6 +49,8 @@ Expected flow:
 4. Return to the terminal when the browser step completes.
 5. Confirm the account appears in the saved account list.
 
+If you have named backups in your `backups/` directory and no active accounts, the login flow will prompt you to restore before opening OAuth. Confirm to launch the existing restore manager; skip to proceed with a fresh login.
+
 Verify the new account:
 
 ```bash

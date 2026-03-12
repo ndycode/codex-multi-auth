@@ -1,14 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const createAuthorizationFlowMock = vi.fn();
+const exchangeAuthorizationCodeMock = vi.fn();
+const startLocalOAuthServerMock = vi.fn();
 const loadAccountsMock = vi.fn();
 const loadFlaggedAccountsMock = vi.fn();
 const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
 const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
+const getActionableNamedBackupRestoresMock = vi.fn();
+const listNamedBackupsMock = vi.fn();
+const assessNamedBackupRestoreMock = vi.fn();
+const getNamedBackupsDirectoryPathMock = vi.fn();
+const restoreNamedBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
+const isInteractiveLoginMenuAvailableMock = vi.fn(() => true);
 const promptLoginModeMock = vi.fn();
 const fetchCodexQuotaSnapshotMock = vi.fn();
 const loadDashboardDisplaySettingsMock = vi.fn();
@@ -29,6 +38,7 @@ const selectMock = vi.fn();
 const deleteSavedAccountsMock = vi.fn();
 const resetLocalStateMock = vi.fn();
 const deleteAccountAtIndexMock = vi.fn();
+const confirmMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -41,8 +51,8 @@ vi.mock("../lib/logger.js", () => ({
 }));
 
 vi.mock("../lib/auth/auth.js", () => ({
-	createAuthorizationFlow: vi.fn(),
-	exchangeAuthorizationCode: vi.fn(),
+	createAuthorizationFlow: createAuthorizationFlowMock,
+	exchangeAuthorizationCode: exchangeAuthorizationCodeMock,
 	parseAuthorizationInput: vi.fn(),
 	REDIRECT_URI: "http://localhost:1455/auth/callback",
 }));
@@ -53,10 +63,11 @@ vi.mock("../lib/auth/browser.js", () => ({
 }));
 
 vi.mock("../lib/auth/server.js", () => ({
-	startLocalOAuthServer: vi.fn(),
+	startLocalOAuthServer: startLocalOAuthServerMock,
 }));
 
 vi.mock("../lib/cli.js", () => ({
+	isInteractiveLoginMenuAvailable: isInteractiveLoginMenuAvailableMock,
 	promptAddAnotherAccount: promptAddAnotherAccountMock,
 	promptLoginMode: promptLoginModeMock,
 }));
@@ -96,6 +107,11 @@ vi.mock("../lib/storage.js", () => ({
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
 	setStoragePath: setStoragePathMock,
 	getStoragePath: getStoragePathMock,
+	getActionableNamedBackupRestores: getActionableNamedBackupRestoresMock,
+	listNamedBackups: listNamedBackupsMock,
+	assessNamedBackupRestore: assessNamedBackupRestoreMock,
+	getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
+	restoreNamedBackup: restoreNamedBackupMock,
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -185,6 +201,10 @@ vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
 }));
 
+vi.mock("../lib/ui/confirm.js", () => ({
+	confirm: confirmMock,
+}));
+
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(
 	process.stdin,
 	"isTTY",
@@ -247,8 +267,13 @@ describe("codex manager cli commands", () => {
 		saveAccountsMock.mockReset();
 		saveFlaggedAccountsMock.mockReset();
 		queuedRefreshMock.mockReset();
+		createAuthorizationFlowMock.mockReset();
+		exchangeAuthorizationCodeMock.mockReset();
+		startLocalOAuthServerMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
 		promptAddAnotherAccountMock.mockReset();
+		isInteractiveLoginMenuAvailableMock.mockReset();
+		isInteractiveLoginMenuAvailableMock.mockReturnValue(true);
 		promptLoginModeMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockReset();
 		loadDashboardDisplaySettingsMock.mockReset();
@@ -268,6 +293,45 @@ describe("codex manager cli commands", () => {
 		selectMock.mockReset();
 		deleteAccountAtIndexMock.mockReset();
 		deleteAccountAtIndexMock.mockResolvedValue(null);
+		getActionableNamedBackupRestoresMock.mockReset();
+		listNamedBackupsMock.mockReset();
+		assessNamedBackupRestoreMock.mockReset();
+		getNamedBackupsDirectoryPathMock.mockReset();
+		restoreNamedBackupMock.mockReset();
+		confirmMock.mockReset();
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [],
+			totalBackups: 0,
+		});
+		listNamedBackupsMock.mockResolvedValue([]);
+		assessNamedBackupRestoreMock.mockResolvedValue({
+			backup: {
+				name: "",
+				path: "",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: null,
+				accountCount: null,
+				schemaErrors: [],
+				valid: false,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: null,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: false,
+			valid: false,
+			error: "",
+		});
+		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
+		restoreNamedBackupMock.mockResolvedValue({
+			imported: 0,
+			skipped: 0,
+			total: 0,
+		});
+		confirmMock.mockResolvedValue(false);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -339,6 +403,21 @@ describe("codex manager cli commands", () => {
 			errorCount: 0,
 		});
 		selectMock.mockResolvedValue(undefined);
+		createAuthorizationFlowMock.mockResolvedValue({
+			pkce: { verifier: "test-verifier" },
+			state: "test-state",
+			url: "https://example.com/oauth",
+		});
+		exchangeAuthorizationCodeMock.mockResolvedValue({
+			type: "failed",
+			reason: "unknown",
+			message: "not configured",
+		});
+		startLocalOAuthServerMock.mockResolvedValue({
+			ready: false,
+			waitForCode: vi.fn(),
+			close: vi.fn(),
+		});
 		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
@@ -418,6 +497,144 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(errorSpy).not.toHaveBeenCalled();
 		expect(logSpy.mock.calls[0]?.[0]).toContain("Codex Multi-Auth CLI");
+	});
+
+	it("offers startup restore before OAuth when interactive login starts empty", async () => {
+		setInteractiveTTY(true);
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		const restoredStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "restored@example.com",
+					refreshToken: "restore-refresh",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		};
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			return loadCount <= 3
+				? structuredClone(emptyStorage)
+				: structuredClone(restoredStorage);
+		});
+		const assessment = {
+			backup: {
+				name: "startup-backup",
+				path: "/mock/backups/startup-backup.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: "",
+		};
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [assessment],
+			totalBackups: 1,
+		});
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("startup-backup");
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
+	it("skips startup restore prompt in fallback login mode", async () => {
+		setInteractiveTTY(true);
+		isInteractiveLoginMenuAvailableMock.mockReturnValue(false);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		selectMock.mockResolvedValueOnce("cancel");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).not.toHaveBeenCalled();
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ mode: "fresh", action: deleteSavedAccountsMock },
+		{ mode: "reset", action: resetLocalStateMock },
+	] as const)("suppresses startup restore prompt after deliberate $mode action in the same login session", async ({
+		mode,
+		action,
+	}) => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const populatedStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "existing-refresh",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			return loadCount <= 2
+				? structuredClone(populatedStorage)
+				: structuredClone(emptyStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce(
+			mode === "fresh" ? { mode: "fresh", deleteAll: true } : { mode: "reset" },
+		);
+		selectMock.mockResolvedValueOnce("cancel");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(action).toHaveBeenCalledTimes(1);
+		expect(getActionableNamedBackupRestoresMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
@@ -1137,6 +1354,89 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("offers backup recovery before OAuth when actionable backups exist", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState: {
+			version: number;
+			activeIndex: number;
+			activeIndexByFamily: { codex: number };
+			accounts: Array<{
+				email?: string;
+				refreshToken: string;
+				addedAt: number;
+				lastUsed: number;
+				enabled?: boolean;
+			}>;
+		} | null = null;
+		loadAccountsMock.mockImplementation(async () =>
+			storageState ? structuredClone(storageState) : null,
+		);
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: now - 1_000,
+				updatedAt: now - 1_000,
+				sizeBytes: 512,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: undefined,
+		};
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [assessment],
+			totalBackups: 2,
+		});
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		restoreNamedBackupMock.mockImplementation(async () => {
+			storageState = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "restored@example.com",
+						refreshToken: "refresh-restored",
+						addedAt: now,
+						lastUsed: now,
+						enabled: true,
+					},
+				],
+			};
+			return { imported: 1, skipped: 0, total: 1 };
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const authModule = await import("../lib/auth/auth.js");
+		const createAuthorizationFlowMock = vi.mocked(
+			authModule.createAuthorizationFlow,
+		);
+		createAuthorizationFlowMock.mockRejectedValue(
+			new Error("oauth flow should be skipped when restoring backup"),
+		);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalled();
+		expect(confirmMock).toHaveBeenCalledTimes(2);
+		expect(selectMock).toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
 	it("keeps login loop running when settings action is selected", async () => {
