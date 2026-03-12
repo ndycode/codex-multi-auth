@@ -1,5 +1,4 @@
 import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -7,6 +6,7 @@ import {
 	getLastLiveAccountSyncSnapshot,
 	LiveAccountSync,
 } from "../lib/live-account-sync.js";
+import * as syncHistory from "../lib/sync-history.js";
 
 describe("live-account-sync", () => {
 	let workDir = "";
@@ -17,9 +17,12 @@ describe("live-account-sync", () => {
 		vi.setSystemTime(new Date("2026-02-26T12:00:00.000Z"));
 		__resetLastLiveAccountSyncSnapshotForTests();
 		workDir = join(
-			tmpdir(),
+			process.cwd(),
+			"tmp-live-sync",
 			`codex-live-sync-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
+		syncHistory.configureSyncHistoryForTests(join(workDir, "logs"));
+		await syncHistory.__resetSyncHistoryForTests();
 		storagePath = join(workDir, "openai-codex-accounts.json");
 		await fs.mkdir(workDir, { recursive: true });
 		await fs.writeFile(
@@ -30,9 +33,14 @@ describe("live-account-sync", () => {
 	});
 
 	afterEach(async () => {
+		const keepWorkDir = process.env.DEBUG_SYNC_HISTORY === "1";
 		vi.useRealTimers();
 		__resetLastLiveAccountSyncSnapshotForTests();
-		await fs.rm(workDir, { recursive: true, force: true });
+		await syncHistory.__resetSyncHistoryForTests();
+		syncHistory.configureSyncHistoryForTests(null);
+		if (!keepWorkDir) {
+			await fs.rm(workDir, { recursive: true, force: true });
+		}
 	});
 
 	it("publishes watcher state for sync-center status surfaces", async () => {
@@ -93,6 +101,7 @@ describe("live-account-sync", () => {
 		const reload = vi.fn(async () => {
 			throw new Error("reload failed");
 		});
+		const appendSpy = vi.spyOn(syncHistory, "appendSyncHistoryEntry");
 		const sync = new LiveAccountSync(reload, {
 			pollIntervalMs: 500,
 			debounceMs: 50,
@@ -116,7 +125,29 @@ describe("live-account-sync", () => {
 		const snapshot = sync.getSnapshot();
 		expect(snapshot.errorCount).toBeGreaterThan(0);
 		expect(snapshot.reloadCount).toBe(0);
+		expect(appendSpy).toHaveBeenCalled();
+		expect(syncHistory.__getLastSyncHistoryErrorForTests()).toBeNull();
+		const paths = syncHistory.getSyncHistoryPaths();
+		expect(paths.directory).toBe(join(workDir, "logs"));
+		const lastAppendPaths = syncHistory.__getLastSyncHistoryPathsForTests();
+		expect(lastAppendPaths?.directory).toBe(paths.directory);
+		const dirExists = await fs
+			.stat(paths.directory)
+			.then(() => true)
+			.catch(() => false);
+		expect(dirExists).toBe(true);
+		const content = await fs
+			.readFile(paths.historyPath, "utf-8")
+			.catch(() => "");
+		expect(content.length).toBeGreaterThan(0);
+		const history = await syncHistory.readSyncHistory({
+			kind: "live-account-sync",
+		});
+		const last = history.at(-1);
+		expect(last?.outcome).toBe("error");
+		expect(["poll", "watch"]).toContain(last?.reason);
 		sync.stop();
+		appendSpy.mockRestore();
 	});
 
 	it("stops watching cleanly and prevents further reloads", async () => {
@@ -193,6 +224,10 @@ describe("live-account-sync", () => {
 		await Promise.all([first, second]);
 
 		expect(reload).toHaveBeenCalledTimes(1);
+		const history = await syncHistory.readSyncHistory({
+			kind: "live-account-sync",
+		});
+		expect(history[history.length - 1]?.outcome).toBe("success");
 		sync.stop();
 	});
 });

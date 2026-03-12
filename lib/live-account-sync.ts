@@ -1,6 +1,7 @@
 import { type FSWatcher, promises as fs, watch as fsWatch } from "node:fs";
 import { basename, dirname } from "node:path";
 import { createLogger } from "./logger.js";
+import { appendSyncHistoryEntry } from "./sync-history.js";
 
 const log = createLogger("live-account-sync");
 
@@ -99,7 +100,6 @@ export class LiveAccountSync {
 	private reloadCount = 0;
 	private errorCount = 0;
 	private reloadInFlight: Promise<void> | null = null;
-
 	constructor(
 		reload: () => Promise<void>,
 		options: LiveAccountSyncOptions = {},
@@ -194,6 +194,24 @@ export class LiveAccountSync {
 		lastLiveAccountSyncSnapshot = this.getSnapshot();
 	}
 
+	private async recordHistory(
+		reason: "watch" | "poll" | "manual",
+		outcome: "success" | "error",
+		message?: string,
+	): Promise<void> {
+		const snapshot = this.getSnapshot();
+		const entry = {
+			kind: "live-account-sync" as const,
+			recordedAt: Date.now(),
+			reason,
+			outcome,
+			path: this.currentPath,
+			message,
+			snapshot,
+		};
+		await appendSyncHistoryEntry(entry);
+	}
+
 	private scheduleReload(reason: "watch" | "poll"): void {
 		if (!this.running) return;
 		if (this.debounceTimer) {
@@ -240,6 +258,7 @@ export class LiveAccountSync {
 					reason,
 					path: summarizeWatchPath(targetPath),
 				});
+				await this.recordHistory(reason, "success");
 			} catch (error) {
 				this.errorCount += 1;
 				log.warn("Live account sync reload failed", {
@@ -247,6 +266,11 @@ export class LiveAccountSync {
 					path: summarizeWatchPath(targetPath),
 					error: error instanceof Error ? error.message : String(error),
 				});
+				await this.recordHistory(
+					reason,
+					"error",
+					error instanceof Error ? error.message : String(error),
+				);
 			}
 		})();
 
