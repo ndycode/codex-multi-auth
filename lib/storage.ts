@@ -1975,7 +1975,11 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
 
 	try {
-		return await loadFlaggedAccountsFromPath(path);
+		const loaded = await loadFlaggedAccountsFromPath(path);
+		if (existsSync(resetMarkerPath)) {
+			return empty;
+		}
+		return loaded;
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
@@ -2086,6 +2090,9 @@ export async function clearFlaggedAccounts(): Promise<void> {
 						path: candidate,
 						error: String(error),
 					});
+					if (candidate === path) {
+						throw error;
+					}
 				}
 			}
 		}

@@ -333,6 +333,39 @@ describe("flagged account storage", () => {
 		unlinkSpy.mockRestore();
 	});
 
+	it("suppresses flagged accounts when clear cannot delete the primary file after writing the reset marker", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "stale-primary",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		const flaggedPath = getFlaggedAccountsPath();
+		const originalUnlink = fs.unlink.bind(fs);
+		const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+			if (targetPath === flaggedPath) {
+				const error = new Error("EPERM primary delete") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			}
+			return originalUnlink(targetPath);
+		});
+
+		await expect(clearFlaggedAccounts()).rejects.toThrow("EPERM primary delete");
+
+		const flagged = await loadFlaggedAccounts();
+		expect(existsSync(flaggedPath)).toBe(true);
+		expect(flagged.accounts).toHaveLength(0);
+
+		unlinkSpy.mockRestore();
+	});
+
 	it("emits snapshot metadata for flagged account backups", async () => {
 		await saveFlaggedAccounts({
 			version: 1,
