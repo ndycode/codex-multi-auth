@@ -3555,7 +3555,9 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		selectMock
+			.mockResolvedValueOnce({ type: "login" })
+			.mockResolvedValueOnce({ type: "restore", assessment });
 		restoreNamedBackupMock.mockImplementation(async () => {
 			storageState = {
 				version: 3,
