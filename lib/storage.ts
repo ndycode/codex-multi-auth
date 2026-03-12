@@ -627,6 +627,21 @@ export interface ActionableNamedBackupRecoveries {
 	totalBackups: number;
 }
 
+type AccountSnapshotReason =
+	| "delete-saved-accounts"
+	| "reset-local-state"
+	| "import-accounts";
+
+export type AccountSnapshotFailurePolicy = "warn" | "error";
+
+export interface AccountSnapshotOptions {
+	reason: AccountSnapshotReason;
+	now?: number;
+	force?: boolean;
+	failurePolicy?: AccountSnapshotFailurePolicy;
+	createBackup?: typeof createNamedBackup;
+}
+
 export function getLastAccountsSaveTimestamp(): number {
 	return lastAccountsSaveTimestamp;
 }
@@ -1532,6 +1547,58 @@ export async function createNamedBackup(
 	return buildNamedBackupMetadata(normalizedName, backupPath, { candidate });
 }
 
+function formatTimestampForSnapshot(timestamp: number): string {
+	const date = new Date(timestamp);
+	const pad = (value: number): string => value.toString().padStart(2, "0");
+	const year = date.getUTCFullYear();
+	const month = pad(date.getUTCMonth() + 1);
+	const day = pad(date.getUTCDate());
+	const hours = pad(date.getUTCHours());
+	const minutes = pad(date.getUTCMinutes());
+	const seconds = pad(date.getUTCSeconds());
+	return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`;
+}
+
+function buildAccountSnapshotName(
+	reason: AccountSnapshotReason,
+	timestamp: number,
+): string {
+	return `accounts-${reason}-snapshot-${formatTimestampForSnapshot(timestamp)}`;
+}
+
+export async function snapshotAccountStorage(
+	options: AccountSnapshotOptions,
+): Promise<NamedBackupMetadata | null> {
+	const {
+		reason,
+		now = Date.now(),
+		force = true,
+		failurePolicy = "warn",
+		createBackup = createNamedBackup,
+	} = options;
+
+	const currentStorage = await loadAccounts();
+	if (!currentStorage || currentStorage.accounts.length === 0) {
+		return null;
+	}
+
+	const backupName = buildAccountSnapshotName(reason, now);
+
+	try {
+		return await createBackup(backupName, { force });
+	} catch (error) {
+		if (failurePolicy === "error") {
+			throw error;
+		}
+		log.warn("Failed to create account storage snapshot", {
+			reason,
+			backupName,
+			error: String(error),
+		});
+		return null;
+	}
+}
+
 export async function assessNamedBackupRestore(
 	name: string,
 	options: { currentStorage?: AccountStorageV3 | null } = {},
@@ -2284,6 +2351,8 @@ export async function importAccounts(
 	if (!normalized) {
 		throw new Error("Invalid account storage format");
 	}
+
+	await snapshotAccountStorage({ reason: "import-accounts" });
 
 	const {
 		imported: importedCount,

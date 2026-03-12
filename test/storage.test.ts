@@ -2,6 +2,10 @@ import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	deleteSavedAccounts,
+	resetLocalState,
+} from "../lib/destructive-actions.js";
 import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import {
@@ -12,6 +16,7 @@ import {
 	deduplicateAccountsByEmail,
 	exportAccounts,
 	formatStorageErrorHint,
+	getNamedBackupsDirectoryPath,
 	getStoragePath,
 	importAccounts,
 	listNamedBackups,
@@ -23,6 +28,7 @@ import {
 	saveAccounts,
 	setStoragePath,
 	setStoragePathDirect,
+	snapshotAccountStorage,
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
 
@@ -653,6 +659,221 @@ describe("storage", () => {
 				valid: false,
 			});
 			expect(rotatingBackups[1]?.loadError).toBeTruthy();
+		});
+	});
+
+	describe("account storage snapshots", () => {
+		const testWorkDir = join(
+			tmpdir(),
+			"codex-snapshot-" + Math.random().toString(36).slice(2),
+		);
+		let testStoragePath = "";
+
+		beforeEach(async () => {
+			await fs.mkdir(testWorkDir, { recursive: true });
+			testStoragePath = join(testWorkDir, "openai-codex-accounts.json");
+			setStoragePathDirect(testStoragePath);
+		});
+
+		afterEach(async () => {
+			setStoragePathDirect(null);
+			vi.restoreAllMocks();
+			await fs.rm(testWorkDir, { recursive: true, force: true });
+		});
+
+		it("creates deterministic named backup when accounts exist", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const fixedNow = Date.UTC(2024, 0, 2, 3, 4, 5);
+			const snapshot = await snapshotAccountStorage({
+				reason: "delete-saved-accounts",
+				now: fixedNow,
+			});
+
+			expect(snapshot?.name).toBe(
+				"accounts-delete-saved-accounts-snapshot-2024-01-02_03-04-05",
+			);
+			expect(snapshot?.path && existsSync(snapshot.path)).toBe(true);
+		});
+
+		it("skips snapshot when no accounts exist", async () => {
+			const snapshot = await snapshotAccountStorage({
+				reason: "delete-saved-accounts",
+			});
+			expect(snapshot).toBeNull();
+			expect(existsSync(getNamedBackupsDirectoryPath())).toBe(false);
+		});
+
+		it("warn failure policy returns null when snapshot creation fails", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const failingBackup = vi
+				.fn()
+				.mockRejectedValue(new Error("snapshot failed"));
+
+			await expect(
+				snapshotAccountStorage({
+					reason: "reset-local-state",
+					createBackup: failingBackup,
+				}),
+			).resolves.toBeNull();
+		});
+
+		it("propagates when failure policy is error", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const failingBackup = vi
+				.fn()
+				.mockRejectedValue(new Error("snapshot failed"));
+
+			await expect(
+				snapshotAccountStorage({
+					reason: "reset-local-state",
+					failurePolicy: "error",
+					createBackup: failingBackup,
+				}),
+			).rejects.toThrow(/snapshot failed/);
+		});
+
+		it("creates snapshot before deleteSavedAccounts and preserves named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await deleteSavedAccounts();
+
+			const backupsDir = getNamedBackupsDirectoryPath();
+			const entries = existsSync(backupsDir)
+				? await fs.readdir(backupsDir)
+				: [];
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-delete-saved-accounts-snapshot-"),
+				),
+			).toBe(true);
+			expect(await loadAccounts()).toBeNull();
+		});
+
+		it("creates snapshot before resetLocalState", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await resetLocalState();
+
+			const backupsDir = getNamedBackupsDirectoryPath();
+			const entries = existsSync(backupsDir)
+				? await fs.readdir(backupsDir)
+				: [];
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-reset-local-state-snapshot-"),
+				),
+			).toBe(true);
+			expect(await loadAccounts()).toBeNull();
+		});
+
+		it("captures snapshot before importAccounts when accounts already exist", async () => {
+			const importPath = join(testWorkDir, "import.json");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "imported",
+							refreshToken: "ref-import",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await importAccounts(importPath);
+
+			const backupsDir = getNamedBackupsDirectoryPath();
+			const entries = existsSync(backupsDir)
+				? await fs.readdir(backupsDir)
+				: [];
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-import-accounts-snapshot-"),
+				),
+			).toBe(true);
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toHaveLength(2);
+			expect(loaded?.accounts.map((account) => account.accountId)).toEqual(
+				expect.arrayContaining(["existing", "imported"]),
+			);
 		});
 	});
 
