@@ -82,6 +82,8 @@ Use the restore path when you already have named backup files and want to recove
 
 The restore manager shows each backup name, account count, freshness, and whether the restore would exceed the account limit before it lets you apply anything.
 
+If you already have an OpenCode pool on the same machine, choose `Import OpenCode Accounts` from the login dashboard recovery section to preview and import `~/.opencode/openai-codex-accounts.json` before creating new OAuth sessions.
+
 ---
 
 ## Sync And Settings

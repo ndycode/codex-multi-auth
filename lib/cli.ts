@@ -62,6 +62,7 @@ export type LoginMode =
 	| "check"
 	| "deep-check"
 	| "verify-flagged"
+	| "import-opencode"
 	| "restore-backup"
 	| "cancel";
 
@@ -287,6 +288,8 @@ export async function promptLoginMode(
 				return { mode: "deep-check" };
 			case "verify-flagged":
 				return { mode: "verify-flagged" };
+			case "import-opencode":
+				return { mode: "import-opencode" };
 			case "restore-backup":
 				return { mode: "restore-backup" };
 			case "select-account": {

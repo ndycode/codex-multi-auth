@@ -16,6 +16,7 @@ export const UI_COPY = {
 		loadingLimits: "Fetching account limits...",
 		noSearchMatches: "No accounts match your search",
 		recovery: "Recovery",
+		importOpencode: "Import OpenCode Accounts",
 		restoreBackup: "Restore From Backup",
 		dangerZone: "Danger Zone",
 		removeAllAccounts: "Delete Saved Accounts",

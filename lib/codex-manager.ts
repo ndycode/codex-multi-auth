@@ -79,15 +79,20 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	assessNamedBackupRestore,
+	assessOpencodeAccountPool,
+	type BackupRestoreAssessment,
 	type FlaggedAccountMetadataV1,
 	type FlaggedAccountStorageV1,
 	getActionableNamedBackupRestores,
 	getNamedBackupsDirectoryPath,
 	getStoragePath,
+	importAccounts,
 	listNamedBackups,
 	listRotatingBackups,
 	loadAccounts,
 	loadFlaggedAccounts,
+	type NamedBackupMetadata,
+	type RotatingBackupMetadata,
 	restoreNamedBackup,
 	saveAccounts,
 	saveFlaggedAccounts,
@@ -4370,13 +4375,9 @@ async function handleManageAction(
 	}
 }
 
-type NamedBackupAssessment = Awaited<
-	ReturnType<typeof assessNamedBackupRestore>
->;
-type NamedBackupEntry = Awaited<ReturnType<typeof listNamedBackups>>[number];
-type RotatingBackupEntry = Awaited<
-	ReturnType<typeof listRotatingBackups>
->[number];
+type NamedBackupAssessment = BackupRestoreAssessment;
+type NamedBackupEntry = NamedBackupMetadata;
+type RotatingBackupEntry = RotatingBackupMetadata;
 
 type BackupBrowserEntry =
 	| {
@@ -4892,6 +4893,39 @@ async function runAuthLogin(): Promise<number> {
 				}
 				if (menuResult.mode === "restore-backup") {
 					await runBackupBrowserManager(displaySettings);
+					continue;
+				}
+				if (menuResult.mode === "import-opencode") {
+					const assessment = await assessOpencodeAccountPool({
+						currentStorage,
+					});
+					if (!assessment) {
+						console.log("No OpenCode account pool was detected.");
+						continue;
+					}
+					if (!assessment.valid || assessment.wouldExceedLimit) {
+						console.log(
+							assessment.error ?? "OpenCode account pool is not importable.",
+						);
+						continue;
+					}
+					const confirmed = await confirm(
+						`Import OpenCode accounts from ${assessment.backup.path}?`,
+					);
+					if (!confirmed) {
+						continue;
+					}
+					await runActionPanel(
+						"Import OpenCode Accounts",
+						`Importing from ${assessment.backup.path}`,
+						async () => {
+							const imported = await importAccounts(assessment.backup.path);
+							console.log(
+								`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+							);
+						},
+						displaySettings,
+					);
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
