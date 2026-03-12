@@ -11,6 +11,7 @@ import {
 	getLastCodexCliSyncRun,
 	getLatestCodexCliSyncRollbackPlan,
 	previewCodexCliSync,
+	rollbackLastCodexCliSync,
 	rollbackLatestCodexCliSync,
 	syncAccountStorageFromCodexCli,
 } from "../lib/codex-cli/sync.js";
@@ -58,6 +59,7 @@ describe("codex-cli sync", () => {
 		process.env.CODEX_CLI_CONFIG_PATH = configPath;
 		process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
 		process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
+		process.env.CODEX_MULTI_AUTH_DIR = join(tempDir, "multi-auth");
 		clearCodexCliStateCache();
 		__resetLastCodexCliSyncRunForTests();
 	});
@@ -81,6 +83,9 @@ describe("codex-cli sync", () => {
 			process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE =
 				previousEnforceFileStore;
 		}
+		if (previousMultiAuthDir === undefined)
+			delete process.env.CODEX_MULTI_AUTH_DIR;
+		else process.env.CODEX_MULTI_AUTH_DIR = previousMultiAuthDir;
 		await __resetSyncHistoryForTests();
 		configureSyncHistoryForTests(null);
 		await rm(tempDir, { recursive: true, force: true });
@@ -1154,6 +1159,80 @@ describe("codex-cli sync", () => {
 		const plan = await getLatestCodexCliSyncRollbackPlan();
 		expect(plan.status).toBe("unavailable");
 		expect(plan.reason).toContain("missing");
+	});
+
+	it("rolls back the latest manual sync even when newer automatic runs exist", async () => {
+		await storage.saveAccounts({
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_old",
+					email: "old@example.com",
+					refreshToken: "refresh-old",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		});
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							email: "new@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-new",
+									refresh_token: "refresh-new",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const manualResult = await syncAccountStorageFromCodexCli(
+			await storage.loadAccounts(),
+			{ trigger: "manual" },
+		);
+		expect(manualResult.changed).toBe(true);
+		const manualStorage = manualResult.storage;
+		expect(manualStorage).not.toBeNull();
+		if (manualStorage) {
+			await storage.saveAccounts(manualStorage);
+		}
+
+		await syncAccountStorageFromCodexCli(await storage.loadAccounts());
+
+		const postSync = await storage.loadAccounts();
+		expect(
+			postSync?.accounts.some(
+				(account) => account.refreshToken === "refresh-new",
+			),
+		).toBe(true);
+
+		const rollbackResult = await rollbackLastCodexCliSync();
+		expect(rollbackResult.restore.imported).toBeGreaterThan(0);
+
+		const restored = await storage.loadAccounts();
+		expect(
+			restored?.accounts.some(
+				(account) => account.refreshToken === "refresh-old",
+			),
+		).toBe(true);
+		expect(
+			restored?.accounts.some(
+				(account) => account.refreshToken === "refresh-new",
+			),
+		).toBe(false);
 	});
 
 	it("returns current storage when state loading throws", async () => {
