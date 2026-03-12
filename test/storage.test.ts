@@ -878,7 +878,15 @@ describe("storage", () => {
 
 		it("returns null when file does not exist", async () => {
 			const result = await loadAccounts();
-			expect(result).toBeNull();
+			expect(result).toEqual(
+				expect.objectContaining({
+					version: 3,
+					accounts: [],
+					activeIndex: 0,
+					restoreEligible: true,
+					restoreReason: "missing-storage",
+				}),
+			);
 		});
 
 		it("returns null on parse error", async () => {

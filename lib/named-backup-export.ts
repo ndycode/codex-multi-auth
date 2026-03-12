@@ -16,6 +16,7 @@ const BACKUP_WINDOWS_RESERVED_NAME_REGEX =
 	/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const BACKUP_INVALID_SUFFIXES = [".tmp", ".wal"];
 const BACKUP_PROHIBITED_SUBSTRINGS = [".rotate."];
+const inFlightNamedBackupExports = new Set<string>();
 
 export interface NamedBackupExportDependencies {
 	getStoragePath: () => string;
@@ -227,14 +228,23 @@ export async function exportNamedBackupFile(
 	const storagePath = dependencies.getStoragePath();
 	const destination = resolveNamedBackupPath(name, storagePath);
 	const backupRoot = getNamedBackupRoot(storagePath);
+	const exportKey = normalizePathForComparison(destination);
+	if (!options?.force && inFlightNamedBackupExports.has(exportKey)) {
+		throw new Error(`File already exists: ${destination}`);
+	}
 	assertWithinDirectory(dirname(backupRoot), backupRoot);
 	await fs.mkdir(backupRoot, { recursive: true });
-	await dependencies.exportAccounts(
-		destination,
-		options?.force === true,
-		(resolvedPath) => {
-			assertWithinDirectory(backupRoot, resolvedPath);
-		},
-	);
-	return destination;
+	inFlightNamedBackupExports.add(exportKey);
+	try {
+		await dependencies.exportAccounts(
+			destination,
+			options?.force === true,
+			(resolvedPath) => {
+				assertWithinDirectory(backupRoot, resolvedPath);
+			},
+		);
+		return destination;
+	} finally {
+		inFlightNamedBackupExports.delete(exportKey);
+	}
 }

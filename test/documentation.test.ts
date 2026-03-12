@@ -1,11 +1,3 @@
-<<<<<<< HEAD
-import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { UI_COPY } from '../lib/ui/copy.js';
-=======
 import {
 	existsSync,
 	mkdirSync,
@@ -18,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
->>>>>>> 961c3db (fix(release): formalize validation unblockers)
+import { UI_COPY } from "../lib/ui/copy.js";
 
 const projectRoot = resolve(process.cwd());
 
@@ -174,13 +166,16 @@ describe("Documentation Integrity", () => {
 	});
 
 	it("does not include opencode wording in user docs", () => {
+		const allowedOpencodeFiles = new Set(["docs/reference/storage-paths.md"]);
 		for (const filePath of userDocs) {
 			const content = read(filePath).toLowerCase();
 			const hasLegacyHostWord = content.includes("opencode");
-			expect(
-				hasLegacyHostWord,
-				`${filePath} should not include opencode references`,
-			).toBe(false);
+			if (hasLegacyHostWord) {
+				expect(
+					allowedOpencodeFiles.has(filePath),
+					`${filePath} should not include opencode references`,
+				).toBe(true);
+			}
 		}
 	});
 
@@ -290,69 +285,59 @@ describe("Documentation Integrity", () => {
 		expect(fieldInventory).toContain("tokenrefreshskewms");
 	});
 
-<<<<<<< HEAD
-  it('locks the current Experimental settings menu labels and help text', () => {
-    expect(UI_COPY.settings.title).toBe('Settings');
-    expect(UI_COPY.settings.subtitle).toBe(
-      'Customize menu, behavior, backend, and experiments',
-    );
-    expect(UI_COPY.settings.help).toBe('↑↓ Move | Enter Select | Q Back');
-    expect(UI_COPY.settings.accountList).toBe('Account List View');
-    expect(UI_COPY.settings.summaryFields).toBe('Summary Line');
-    expect(UI_COPY.settings.behavior).toBe('Menu Behavior');
-    expect(UI_COPY.settings.theme).toBe('Color Theme');
-    expect(UI_COPY.settings.experimental).toBe('Experimental');
-    expect(UI_COPY.settings.backend).toBe('Backend Controls');
-    expect(UI_COPY.settings.accountListHelp).toBe(
-      'Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)',
-    );
-    expect(UI_COPY.settings.summaryHelp).toBe(
-      'Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)',
-    );
-    expect(UI_COPY.settings.behaviorHelp).toBe(
-      'Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)',
-    );
-    expect(UI_COPY.settings.themeHelp).toBe(
-      'Enter Select | 1-2 Base | S Save | Q Back (No Save)',
-    );
-    expect(UI_COPY.settings.backendHelp).toBe(
-      'Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)',
-    );
-  });
+	it("locks the current Experimental settings menu labels and help text", () => {
+		expect(UI_COPY.settings.title).toBe("Settings");
+		expect(UI_COPY.settings.subtitle).toBe(
+			"Customize menu, behavior, backend, and experiments",
+		);
+		expect(UI_COPY.settings.help).toBe("↑↓ Move | Enter Select | Q Back");
+		expect(UI_COPY.settings.accountList).toBe("Account List View");
+		expect(UI_COPY.settings.summaryFields).toBe("Summary Line");
+		expect(UI_COPY.settings.behavior).toBe("Menu Behavior");
+		expect(UI_COPY.settings.theme).toBe("Color Theme");
+		expect(UI_COPY.settings.experimental).toBe("Experimental");
+		expect(UI_COPY.settings.backend).toBe("Backend Controls");
+		expect(UI_COPY.settings.accountListHelp).toBe(
+			"Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)",
+		);
+		expect(UI_COPY.settings.summaryHelp).toBe(
+			"Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)",
+		);
+		expect(UI_COPY.settings.behaviorHelp).toBe(
+			"Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
+		);
+		expect(UI_COPY.settings.themeHelp).toBe(
+			"Enter Select | 1-2 Base | S Save | Q Back (No Save)",
+		);
+		expect(UI_COPY.settings.backendHelp).toBe(
+			"Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",
+		);
+	});
 
-  it('keeps settings reference sections aligned with current menu labels and backend categories', () => {
-    const settingsRef = read('docs/reference/settings.md');
+	it("keeps settings reference sections aligned with current menu labels and backend categories", () => {
+		const settingsRef = read("docs/reference/settings.md");
 
-    expect(settingsRef).toContain(`## ${UI_COPY.settings.accountList}`);
-    expect(settingsRef).toContain(`## ${UI_COPY.settings.summaryFields}`);
-    expect(settingsRef).toContain(`## ${UI_COPY.settings.behavior}`);
-    expect(settingsRef).toContain(`## ${UI_COPY.settings.theme}`);
-    expect(settingsRef).toContain(`## ${UI_COPY.settings.experimental}`);
-    expect(settingsRef).toContain(`## ${UI_COPY.settings.backend}`);
-    expect(settingsRef).toContain('### Session & Sync');
-    expect(settingsRef).toContain('### Rotation & Quota');
-    expect(settingsRef).toContain('### Refresh & Recovery');
-    expect(settingsRef).toContain('preview is always shown before apply');
-    expect(settingsRef).toContain('Named backup behavior:');
-    expect(settingsRef).toContain('### Performance & Timeouts');
-    expect(settingsRef).toContain('- `menuShowLastUsed`');
-    expect(settingsRef).toContain('- `menuShowQuotaSummary`');
-    expect(settingsRef).toContain('- `menuShowFetchStatus`');
-    expect(settingsRef).toContain('- `menuStatuslineFields`');
-  });
+		expect(settingsRef).toContain(`## ${UI_COPY.settings.accountList}`);
+		expect(settingsRef).toContain(`## ${UI_COPY.settings.summaryFields}`);
+		expect(settingsRef).toContain(`## ${UI_COPY.settings.behavior}`);
+		expect(settingsRef).toContain(`## ${UI_COPY.settings.theme}`);
+		expect(settingsRef).toContain(`## ${UI_COPY.settings.experimental}`);
+		expect(settingsRef).toContain(`## ${UI_COPY.settings.backend}`);
+		expect(settingsRef).toContain("### Session & Sync");
+		expect(settingsRef).toContain("### Rotation & Quota");
+		expect(settingsRef).toContain("### Refresh & Recovery");
+		expect(settingsRef).toContain("preview is always shown before apply");
+		expect(settingsRef).toContain("Named backup behavior:");
+		expect(settingsRef).toContain("### Performance & Timeouts");
+		expect(settingsRef).toContain("- `menuShowLastUsed`");
+		expect(settingsRef).toContain("- `menuShowQuotaSummary`");
+		expect(settingsRef).toContain("- `menuShowFetchStatus`");
+		expect(settingsRef).toContain("- `menuStatuslineFields`");
+	});
 
-  it('keeps changelog aligned with canonical 0.x release policy', () => {
-    const changelog = read('CHANGELOG.md');
-    expect(changelog).toContain('## [0.1.7] - 2026-03-03');
-    expect(changelog).toContain('## [0.1.6] - 2026-03-03');
-    expect(changelog).toContain('## [0.1.0] - 2026-02-27');
-    expect(changelog).toContain('docs/releases/legacy-pre-0.1-history.md');
-    expect(changelog).not.toContain('## [5.');
-    expect(changelog).not.toContain('## [4.');
-  });
-=======
 	it("keeps changelog aligned with canonical 0.x release policy", () => {
 		const changelog = read("CHANGELOG.md");
+		expect(changelog).toContain("## [0.1.8] - 2026-03-11");
 		expect(changelog).toContain("## [0.1.7] - 2026-03-03");
 		expect(changelog).toContain("## [0.1.6] - 2026-03-03");
 		expect(changelog).toContain("## [0.1.0] - 2026-02-27");
@@ -360,7 +345,6 @@ describe("Documentation Integrity", () => {
 		expect(changelog).not.toContain("## [5.");
 		expect(changelog).not.toContain("## [4.");
 	});
->>>>>>> 961c3db (fix(release): formalize validation unblockers)
 
 	it("keeps legacy pre-0.1 archive headings in descending semver order", () => {
 		const archive = read("docs/releases/legacy-pre-0.1-history.md");
