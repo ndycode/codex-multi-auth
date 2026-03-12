@@ -84,6 +84,7 @@ import {
 	getActionableNamedBackupRestores,
 	getNamedBackupsDirectoryPath,
 	getStoragePath,
+	listAccountSnapshots,
 	listNamedBackups,
 	listRotatingBackups,
 	loadAccounts,
@@ -3589,6 +3590,7 @@ async function runDoctor(args: string[]): Promise<number> {
 
 	setStoragePath(null);
 	const storagePath = getStoragePath();
+	const walPath = `${storagePath}.wal`;
 	const checks: DoctorCheck[] = [];
 	const addCheck = (check: DoctorCheck): void => {
 		checks.push(check);
@@ -3622,6 +3624,79 @@ async function runDoctor(args: string[]): Promise<number> {
 			});
 		}
 	}
+
+	addCheck({
+		key: "storage-journal",
+		severity: existsSync(walPath) ? "ok" : "warn",
+		message: existsSync(walPath)
+			? "Write-ahead journal found"
+			: "Write-ahead journal missing; recovery will rely on backups",
+		details: walPath,
+	});
+
+	const rotatingBackups = await listRotatingBackups();
+	const validRotatingBackups = rotatingBackups.filter((backup) => backup.valid);
+	const invalidRotatingBackups = rotatingBackups.filter(
+		(backup) => !backup.valid,
+	);
+	addCheck({
+		key: "rotating-backups",
+		severity:
+			validRotatingBackups.length > 0
+				? "ok"
+				: rotatingBackups.length > 0
+					? "error"
+					: "warn",
+		message:
+			validRotatingBackups.length > 0
+				? `${validRotatingBackups.length} rotating backup(s) available`
+				: rotatingBackups.length > 0
+					? "Rotating backups are unreadable"
+					: "No rotating backups found yet",
+		details:
+			invalidRotatingBackups.length > 0
+				? `${invalidRotatingBackups.length} invalid backup(s); recreate by saving accounts`
+				: dirname(storagePath),
+	});
+
+	const snapshotBackups = await listAccountSnapshots();
+	const validSnapshots = snapshotBackups.filter((snapshot) => snapshot.valid);
+	const invalidSnapshots = snapshotBackups.filter(
+		(snapshot) => !snapshot.valid,
+	);
+	addCheck({
+		key: "snapshot-backups",
+		severity:
+			validSnapshots.length > 0
+				? "ok"
+				: snapshotBackups.length > 0
+					? "error"
+					: "warn",
+		message:
+			validSnapshots.length > 0
+				? `${validSnapshots.length} recovery snapshot(s) available`
+				: snapshotBackups.length > 0
+					? "Snapshot backups are unreadable"
+					: "No recovery snapshots found",
+		details:
+			invalidSnapshots.length > 0
+				? `${invalidSnapshots.length} invalid snapshot(s); create a fresh snapshot before destructive actions`
+				: getNamedBackupsDirectoryPath(),
+	});
+
+	const hasAnyRecoveryArtifact =
+		existsSync(storagePath) ||
+		existsSync(walPath) ||
+		validRotatingBackups.length > 0 ||
+		validSnapshots.length > 0;
+	addCheck({
+		key: "recovery-chain",
+		severity: hasAnyRecoveryArtifact ? "ok" : "warn",
+		message: hasAnyRecoveryArtifact
+			? "Recovery artifacts present"
+			: "No recovery artifacts found; create a snapshot or backup before destructive actions",
+		details: `storage=${existsSync(storagePath)}, wal=${existsSync(walPath)}, rotating=${validRotatingBackups.length}, snapshots=${validSnapshots.length}`,
+	});
 
 	const codexAuthPath = getCodexCliAuthPath();
 	const codexConfigPath = getCodexCliConfigPath();
