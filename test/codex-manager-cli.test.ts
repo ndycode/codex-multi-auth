@@ -6,6 +6,10 @@ const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
 const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
+const listNamedBackupsMock = vi.fn();
+const assessNamedBackupRestoreMock = vi.fn();
+const getNamedBackupsDirectoryPathMock = vi.fn();
+const restoreNamedBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
@@ -88,6 +92,10 @@ vi.mock("../lib/storage.js", () => ({
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
 	setStoragePath: setStoragePathMock,
 	getStoragePath: getStoragePathMock,
+	listNamedBackups: listNamedBackupsMock,
+	assessNamedBackupRestore: assessNamedBackupRestoreMock,
+	getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
+	restoreNamedBackup: restoreNamedBackupMock,
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -248,6 +256,38 @@ describe("codex manager cli commands", () => {
 		loadFlaggedAccountsMock.mockResolvedValue({
 			version: 1,
 			accounts: [],
+		});
+		listNamedBackupsMock.mockReset();
+		assessNamedBackupRestoreMock.mockReset();
+		getNamedBackupsDirectoryPathMock.mockReset();
+		restoreNamedBackupMock.mockReset();
+		listNamedBackupsMock.mockResolvedValue([]);
+		assessNamedBackupRestoreMock.mockResolvedValue({
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: undefined,
+		});
+		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
+		restoreNamedBackupMock.mockResolvedValue({
+			imported: 1,
+			skipped: 0,
+			total: 1,
 		});
 		loadDashboardDisplaySettingsMock.mockResolvedValue({
 			showPerAccountRows: true,
@@ -1516,6 +1556,73 @@ describe("codex manager cli commands", () => {
 				preemptiveQuotaRemainingPercent5h: expect.any(Number),
 			}),
 		);
+	});
+
+	it("restores a named backup from the login recovery menu", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		const confirmMock = vi.fn().mockResolvedValue(true);
+		vi.doMock("../lib/ui/confirm.js", () => ({ confirm: confirmMock }));
+		vi.resetModules();
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({
+					accounts: expect.any(Array),
+				}),
+			}),
+		);
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
 	});
 
 	it.each([
