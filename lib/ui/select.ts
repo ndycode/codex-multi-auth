@@ -22,17 +22,16 @@ export interface SelectOptions<T = string> {
 	theme?: UiTheme;
 	selectedEmphasis?: "chip" | "minimal";
 	focusStyle?: "row-invert" | "chip";
+	showCursor?: boolean;
 	showHintsForUnselected?: boolean;
 	refreshIntervalMs?: number;
 	initialCursor?: number;
 	allowEscape?: boolean;
-	onCursorChange?: (
-		context: {
-			cursor: number;
-			items: MenuItem<T>[];
-			requestRerender: () => void;
-		},
-	) => void;
+	onCursorChange?: (context: {
+		cursor: number;
+		items: MenuItem<T>[];
+		requestRerender: () => void;
+	}) => void;
 	onInput?: (
 		input: string,
 		context: {
@@ -176,7 +175,10 @@ function decodeHotkeyInput(data: Buffer): string | null {
  *
  * @throws If not running on a TTY, if `items` is empty, or if all menu items are non-selectable.
  */
-export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>): Promise<T | null> {
+export async function select<T>(
+	items: MenuItem<T>[],
+	options: SelectOptions<T>,
+): Promise<T | null> {
 	if (!isTTY()) {
 		throw new Error("Interactive select requires a TTY terminal");
 	}
@@ -196,8 +198,14 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 
 	const { stdin, stdout } = process;
 	let cursor = items.findIndex(isSelectable);
-	if (typeof options.initialCursor === "number" && Number.isFinite(options.initialCursor)) {
-		const bounded = Math.max(0, Math.min(items.length - 1, Math.trunc(options.initialCursor)));
+	if (
+		typeof options.initialCursor === "number" &&
+		Number.isFinite(options.initialCursor)
+	) {
+		const bounded = Math.max(
+			0,
+			Math.min(items.length - 1, Math.trunc(options.initialCursor)),
+		);
 		cursor = bounded;
 	}
 	if (cursor < 0 || !isSelectable(items[cursor] as MenuItem<T>)) {
@@ -266,7 +274,9 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		const columns = stdout.columns ?? 80;
 		const rows = stdout.rows ?? 24;
 		const previousRenderedLines = renderedLines;
-		const subtitleText = options.dynamicSubtitle ? options.dynamicSubtitle() : options.subtitle;
+		const subtitleText = options.dynamicSubtitle
+			? options.dynamicSubtitle()
+			: options.subtitle;
 		const focusStyle = options.focusStyle ?? "row-invert";
 		let didFullClear = false;
 
@@ -285,13 +295,19 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 
 		const subtitleLines = subtitleText ? 2 : 0;
 		const fixedLines = 2 + subtitleLines + 2;
-		const maxVisibleItems = Math.max(1, Math.min(items.length, rows - fixedLines - 1));
+		const maxVisibleItems = Math.max(
+			1,
+			Math.min(items.length, rows - fixedLines - 1),
+		);
 
 		let windowStart = 0;
 		let windowEnd = items.length;
 		if (items.length > maxVisibleItems) {
 			windowStart = cursor - Math.floor(maxVisibleItems / 2);
-			windowStart = Math.max(0, Math.min(windowStart, items.length - maxVisibleItems));
+			windowStart = Math.max(
+				0,
+				Math.min(windowStart, items.length - maxVisibleItems),
+			);
 			windowEnd = windowStart + maxVisibleItems;
 		}
 
@@ -305,9 +321,13 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		const selectedGlyphColor = theme?.colors.success ?? ANSI.green;
 		const selectedChip = selectedLabelStart();
 
-		writeLine(`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`);
+		writeLine(
+			`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`,
+		);
 		if (subtitleText) {
-			writeLine(` ${muted}${truncateAnsi(subtitleText, Math.max(1, columns - 2))}${reset}`);
+			writeLine(
+				` ${muted}${truncateAnsi(subtitleText, Math.max(1, columns - 2))}${reset}`,
+			);
 		}
 		writeLine("");
 
@@ -371,7 +391,10 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 				if (item.hint && (options.showHintsForUnselected ?? true)) {
 					const detailLines = item.hint.split("\n").slice(0, 2);
 					for (const detailLine of detailLines) {
-						const detail = truncateAnsi(`${muted}${detailLine}${reset}`, Math.max(1, columns - 8));
+						const detail = truncateAnsi(
+							`${muted}${detailLine}${reset}`,
+							Math.max(1, columns - 8),
+						);
 						writeLine(`   ${detail}`);
 					}
 				}
@@ -379,10 +402,15 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		}
 
 		const windowHint =
-			items.length > visibleItems.length ? ` (${windowStart + 1}-${windowEnd}/${items.length})` : "";
+			items.length > visibleItems.length
+				? ` (${windowStart + 1}-${windowEnd}/${items.length})`
+				: "";
 		const backLabel = "Q Back";
-		const helpText = options.help ?? `↑↓ Move | Enter Select | ${backLabel}${windowHint}`;
-		writeLine(` ${muted}${truncateAnsi(helpText, Math.max(1, columns - 2))}${reset}`);
+		const helpText =
+			options.help ?? `↑↓ Move | Enter Select | ${backLabel}${windowHint}`;
+		writeLine(
+			` ${muted}${truncateAnsi(helpText, Math.max(1, columns - 2))}${reset}`,
+		);
 		writeLine(`${border}+${reset}`);
 
 		if (!didFullClear && previousRenderedLines > linesWritten) {
@@ -438,7 +466,11 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 			let next = from;
 			do {
 				next = (next + direction + items.length) % items.length;
-			} while (items[next]?.disabled || items[next]?.separator || items[next]?.kind === "heading");
+			} while (
+				items[next]?.disabled ||
+				items[next]?.separator ||
+				items[next]?.kind === "heading"
+			);
 			return next;
 		};
 
@@ -450,7 +482,11 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 
 			if (Date.now() < inputGuardUntil) {
 				const action = parseKey(data);
-				if (action === "enter" || action === "escape" || action === "escape-start") {
+				if (
+					action === "enter" ||
+					action === "escape" ||
+					action === "escape-start"
+				) {
 					return;
 				}
 			}
@@ -538,7 +574,10 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		notifyCursorChange();
 		render();
 		if (options.dynamicSubtitle && (options.refreshIntervalMs ?? 0) > 0) {
-			const intervalMs = Math.max(80, Math.round(options.refreshIntervalMs ?? 0));
+			const intervalMs = Math.max(
+				80,
+				Math.round(options.refreshIntervalMs ?? 0),
+			);
 			refreshTimer = setInterval(() => {
 				render();
 			}, intervalMs);

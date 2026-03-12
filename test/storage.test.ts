@@ -368,6 +368,211 @@ describe("storage", () => {
 			expect(restored?.accounts[0]?.accountId).toBe("primary");
 		});
 
+		it("returns detailed restore preview counts and active outcome", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						email: "keep@example.com",
+						accountId: "keep",
+						refreshToken: "keep-ref",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+					{
+						email: "replace@example.com",
+						accountId: "replace-existing",
+						refreshToken: "replace-ref",
+						addedAt: 3,
+						lastUsed: 4,
+					},
+				],
+			});
+
+			const backupsDir = join(testWorkDir, "backups");
+			await fs.mkdir(backupsDir, { recursive: true });
+			const backupName = "preview-details";
+			await fs.writeFile(
+				join(backupsDir, `${backupName}.json`),
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							email: "replace@example.com",
+							accountId: "replace-from-backup",
+							refreshToken: "replace-ref-backup",
+							addedAt: 10,
+							lastUsed: 10,
+						},
+						{
+							email: "new@example.com",
+							accountId: "new-account",
+							refreshToken: "new-ref",
+							addedAt: 5,
+							lastUsed: 5,
+						},
+						{
+							email: "dup@example.com",
+							accountId: "dup-a",
+							refreshToken: "dup-ref-a",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+						{
+							email: "dup@example.com",
+							accountId: "dup-b",
+							refreshToken: "dup-ref-b",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const assessment = await assessNamedBackupRestore(backupName);
+			expect(assessment.valid).toBe(true);
+			expect(assessment.wouldExceedLimit).toBe(false);
+			expect(assessment.backupAccountCount).toBe(4);
+			expect(assessment.dedupedBackupAccountCount).toBe(3);
+			expect(assessment.conflictsWithinBackup).toBe(1);
+			expect(assessment.conflictsWithExisting).toBe(0);
+			expect(assessment.overlappingAccountConflicts).toEqual([
+				{
+					backupIndex: 0,
+					backupEmail: "replace@example.com",
+					backupAccountId: "replace-from-backup",
+					currentIndex: 1,
+					currentEmail: "replace@example.com",
+					currentAccountId: "replace-existing",
+					reasons: ["email"],
+					resolution: "backup-kept",
+				},
+			]);
+			expect(assessment.keptBackupCount).toBe(3);
+			expect(assessment.keptExistingCount).toBe(1);
+			expect(assessment.replacedExistingCount).toBe(1);
+			expect(assessment.imported).toBe(2);
+			expect(assessment.skipped).toBe(2);
+			expect(assessment.mergedAccountCount).toBe(4);
+			expect(assessment.activeAccountOutcome).toBe("unchanged");
+			expect(assessment.activeAccountChanged).toBe(false);
+			expect(assessment.activeAccountPreview).toEqual({
+				current: {
+					index: 0,
+					email: "keep@example.com",
+					accountId: "keep",
+				},
+				next: {
+					index: 0,
+					email: "keep@example.com",
+					accountId: "keep",
+				},
+				outcome: "unchanged",
+				changed: false,
+			});
+			expect(assessment.namedBackupRestorePreview).toBeDefined();
+			expect(assessment.namedBackupRestorePreview?.activeAccount).toEqual(
+				assessment.activeAccountPreview,
+			);
+			const conflictPreview =
+				assessment.namedBackupRestorePreview?.conflicts?.[0];
+			expect(conflictPreview?.conflict).toEqual(
+				assessment.overlappingAccountConflicts?.[0],
+			);
+			expect(conflictPreview?.backup).toEqual({
+				index: 0,
+				email: "replace@example.com",
+				accountId: "replace-from-backup",
+			});
+			expect(conflictPreview?.current).toEqual({
+				index: 1,
+				email: "replace@example.com",
+				accountId: "replace-existing",
+			});
+			expect(assessment.currentActiveEmail).toBe("keep@example.com");
+			expect(assessment.nextActiveEmail).toBe("keep@example.com");
+		});
+
+		it("flags active account change when restore would shift the active slot", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 1,
+				accounts: [
+					{
+						email: "keep@example.com",
+						accountId: "keep",
+						refreshToken: "keep-ref",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						email: "active@example.com",
+						accountId: "active-old",
+						refreshToken: "active-ref-old",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+					{
+						email: "tail@example.com",
+						accountId: "tail",
+						refreshToken: "tail-ref",
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
+			});
+
+			const backupsDir = join(testWorkDir, "backups");
+			await fs.mkdir(backupsDir, { recursive: true });
+			const backupName = "change-active";
+			await fs.writeFile(
+				join(backupsDir, `${backupName}.json`),
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							email: "active@example.com",
+							accountId: "active-new",
+							refreshToken: "active-ref-new",
+							addedAt: 10,
+							lastUsed: 10,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const assessment = await assessNamedBackupRestore(backupName);
+			expect(assessment.valid).toBe(true);
+			expect(assessment.activeAccountOutcome).toBe("changed");
+			expect(assessment.activeAccountChanged).toBe(true);
+			expect(assessment.activeAccountPreview).toEqual({
+				current: {
+					index: 1,
+					email: "active@example.com",
+					accountId: "active-old",
+				},
+				next: {
+					index: 1,
+					email: "tail@example.com",
+					accountId: "tail",
+				},
+				outcome: "changed",
+				changed: true,
+			});
+			expect(assessment.currentActiveEmail).toBe("active@example.com");
+			expect(assessment.nextActiveEmail).toBe("tail@example.com");
+			expect(assessment.nextActiveIndex).toBe(1);
+			expect(assessment.replacedExistingCount).toBe(1);
+			expect(assessment.imported).toBe(0);
+			expect(assessment.keptExistingCount).toBe(2);
+			expect(assessment.keptBackupCount).toBe(1);
+		});
+
 		it("rejects invalid backup names", async () => {
 			await saveAccounts({
 				version: 3,

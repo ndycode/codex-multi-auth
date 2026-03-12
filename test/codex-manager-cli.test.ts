@@ -327,6 +327,10 @@ describe("codex manager cli commands", () => {
 			skipped: null,
 			wouldExceedLimit: false,
 			valid: false,
+			nextActiveIndex: null,
+			nextActiveEmail: undefined,
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
 			error: "",
 		});
 		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
@@ -533,6 +537,10 @@ describe("codex manager cli commands", () => {
 			skipped: 0,
 			wouldExceedLimit: false,
 			valid: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "new@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: true,
 			error: "",
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
@@ -1363,12 +1371,23 @@ describe("codex manager cli commands", () => {
 				valid: true,
 				loadError: undefined,
 			},
+			backupAccountCount: 1,
+			dedupedBackupAccountCount: 1,
+			conflictsWithinBackup: 0,
+			conflictsWithExisting: 0,
+			replacedExistingCount: 0,
+			keptExistingCount: 0,
+			keptBackupCount: 1,
 			currentAccountCount: 0,
 			mergedAccountCount: 1,
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
 			valid: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "new@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: true,
 			error: undefined,
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
@@ -1398,6 +1417,204 @@ describe("codex manager cli commands", () => {
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
+
+	it("previews and applies restore from backup browser", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		createAuthorizationFlowMock.mockResolvedValue({
+			url: "https://example.com/oauth",
+			codeVerifier: "verifier",
+			state: "state",
+		});
+		startLocalOAuthServerMock.mockResolvedValue({
+			code: "code",
+			state: "state",
+		});
+		exchangeAuthorizationCodeMock.mockResolvedValue({
+			access_token: "access",
+			refresh_token: "refresh",
+			expires_in: 3600,
+		});
+		const restoredStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "restored@example.com",
+					refreshToken: "restored-refresh",
+					accountId: "acc_restored",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: now - 1_000,
+				updatedAt: now - 1_000,
+				sizeBytes: 512,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "restored@example.com",
+			nextActiveAccountId: "acc_restored",
+			currentActiveIndex: 0,
+			currentActiveEmail: undefined,
+			currentActiveAccountId: undefined,
+			activeAccountOutcome: "changed",
+			activeAccountChanged: true,
+			error: undefined,
+		};
+		const entry = {
+			kind: "named" as const,
+			label: assessment.backup.name,
+			backup: assessment.backup,
+			assessment,
+		};
+		loadAccountsMock.mockResolvedValue(structuredClone(restoredStorage));
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [assessment],
+			totalBackups: 1,
+		});
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		confirmMock.mockResolvedValueOnce(true);
+		selectMock
+			.mockResolvedValueOnce({ type: "inspect", entry })
+			.mockResolvedValueOnce("preview-restore")
+			.mockResolvedValueOnce({ type: "back" })
+			.mockResolvedValueOnce({ type: "back" });
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		restoreNamedBackupMock.mockResolvedValue({
+			imported: 1,
+			skipped: 0,
+			total: 1,
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(restoreNamedBackupMock).toHaveBeenCalledTimes(1);
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({ assessment }),
+		);
+		expect(confirmMock).toHaveBeenCalledTimes(1);
+	}, 10_000);
+
+	it("refuses restore preview when backup is invalid", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		createAuthorizationFlowMock.mockResolvedValue({
+			url: "https://example.com/oauth",
+			codeVerifier: "verifier",
+			state: "state",
+		});
+		startLocalOAuthServerMock.mockResolvedValue({
+			code: "code",
+			state: "state",
+		});
+		exchangeAuthorizationCodeMock.mockResolvedValue({
+			access_token: "access",
+			refresh_token: "refresh",
+			expires_in: 3600,
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: now - 1_000,
+				updatedAt: now - 1_000,
+				sizeBytes: 512,
+				version: 3,
+				accountCount: 22,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			backupAccountCount: 22,
+			dedupedBackupAccountCount: 22,
+			conflictsWithinBackup: 0,
+			conflictsWithExisting: 0,
+			replacedExistingCount: 0,
+			keptExistingCount: 1,
+			keptBackupCount: 0,
+			currentAccountCount: 1,
+			mergedAccountCount: 22,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: true,
+			valid: false,
+			nextActiveIndex: null,
+			nextActiveEmail: undefined,
+			nextActiveAccountId: undefined,
+			currentActiveIndex: 0,
+			currentActiveEmail: "existing@example.com",
+			currentActiveAccountId: "acc_existing",
+			activeAccountOutcome: "unchanged",
+			activeAccountChanged: false,
+			error: "Restore would exceed maximum",
+		};
+		const entry = {
+			kind: "named" as const,
+			label: assessment.backup.name,
+			backup: assessment.backup,
+			assessment,
+		};
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "refresh-existing",
+					accountId: "acc_existing",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		});
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [assessment],
+			totalBackups: 1,
+		});
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		confirmMock.mockResolvedValueOnce(true);
+		selectMock
+			.mockResolvedValueOnce({ type: "inspect", entry })
+			.mockResolvedValueOnce({ type: "back" })
+			.mockResolvedValueOnce({ type: "back" });
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(confirmMock).toHaveBeenCalledTimes(0);
+	}, 10_000);
 
 	it("keeps login loop running when settings action is selected", async () => {
 		const now = Date.now();

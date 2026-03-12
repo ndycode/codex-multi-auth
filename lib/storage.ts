@@ -486,6 +486,49 @@ function deriveBackupNameFromFile(fileName: string): string {
 	return normalizeBackupName(fileName);
 }
 
+function clampActiveIndexForPreview(
+	currentIndex: number,
+	accounts: AccountLike[],
+): number {
+	if (accounts.length === 0) return 0;
+	if (!Number.isFinite(currentIndex)) return 0;
+	return Math.max(0, Math.min(currentIndex, accounts.length - 1));
+}
+
+function toBackupRestoreAccountPreview(
+	account: AccountLike | null | undefined,
+	index: number | null,
+): BackupRestoreAccountPreview | null {
+	if (!account || index === null) return null;
+	return {
+		index,
+		email: account.email,
+		accountId: account.accountId,
+	};
+}
+
+function getAccountConflictReasons(
+	left: AccountLike,
+	right: AccountLike,
+): BackupRestoreConflictDetail["reasons"] {
+	const reasons = new Set<BackupRestoreConflictDetail["reasons"][number]>();
+	if (left.accountId && right.accountId && left.accountId === right.accountId) {
+		reasons.add("accountId");
+	}
+	if (
+		left.refreshToken &&
+		right.refreshToken &&
+		left.refreshToken === right.refreshToken
+	) {
+		reasons.add("refreshToken");
+	}
+	const leftEmail = normalizeEmailKey(left.email);
+	if (leftEmail && leftEmail === normalizeEmailKey(right.email)) {
+		reasons.add("email");
+	}
+	return [...reasons];
+}
+
 type AccountsJournalEntry = {
 	version: 1;
 	createdAt: number;
@@ -515,14 +558,67 @@ export interface RotatingBackupMetadata extends BackupFileMetadata {
 	slot: number;
 }
 
+export interface BackupRestoreAccountPreview {
+	index: number;
+	email?: string;
+	accountId?: string;
+}
+
+export interface BackupRestoreConflictDetail {
+	backupIndex: number;
+	backupEmail?: string;
+	backupAccountId?: string;
+	currentIndex: number;
+	currentEmail?: string;
+	currentAccountId?: string;
+	reasons: Array<"accountId" | "refreshToken" | "email">;
+	resolution: "backup-kept" | "current-kept";
+}
+
+export interface BackupRestoreActiveAccountPreview {
+	current: BackupRestoreAccountPreview | null;
+	next: BackupRestoreAccountPreview | null;
+	outcome: "unchanged" | "changed" | "cleared" | "blocked";
+	changed: boolean;
+}
+
+export interface BackupRestoreConflictPreview {
+	conflict: BackupRestoreConflictDetail;
+	backup: BackupRestoreAccountPreview | null;
+	current: BackupRestoreAccountPreview | null;
+}
+
+export interface NamedBackupRestorePreview {
+	conflicts: BackupRestoreConflictPreview[];
+	activeAccount: BackupRestoreActiveAccountPreview;
+}
+
 export interface BackupRestoreAssessment {
 	backup: NamedBackupMetadata;
+	backupAccountCount: number | null;
+	dedupedBackupAccountCount?: number | null;
+	conflictsWithinBackup?: number | null;
+	conflictsWithExisting?: number | null;
+	overlappingAccountConflicts?: BackupRestoreConflictDetail[] | null;
+	replacedExistingCount?: number | null;
+	keptExistingCount?: number | null;
+	keptBackupCount?: number | null;
 	currentAccountCount: number;
 	mergedAccountCount: number | null;
 	imported: number | null;
 	skipped: number | null;
 	wouldExceedLimit: boolean;
 	valid: boolean;
+	nextActiveIndex: number | null;
+	nextActiveEmail?: string;
+	nextActiveAccountId?: string;
+	currentActiveIndex?: number | null;
+	currentActiveEmail?: string;
+	currentActiveAccountId?: string;
+	activeAccountOutcome?: "unchanged" | "changed" | "cleared";
+	activeAccountChanged?: boolean;
+	activeAccountPreview?: BackupRestoreActiveAccountPreview;
+	namedBackupRestorePreview?: NamedBackupRestorePreview | null;
 	error?: string;
 }
 
@@ -1448,6 +1544,35 @@ export async function assessNamedBackupRestore(
 	});
 	const currentStorage = options.currentStorage ?? (await loadAccounts());
 	const currentAccounts = currentStorage?.accounts ?? [];
+	let previewAccounts: AccountLike[] = [];
+	try {
+		const rawContent = await fs.readFile(backupPath, "utf-8");
+		const parsed = JSON.parse(rawContent) as unknown;
+		if (isRecord(parsed) && Array.isArray(parsed.accounts)) {
+			previewAccounts = (parsed.accounts as unknown[]).filter(
+				(account): account is AccountLike =>
+					isRecord(account) &&
+					typeof account.refreshToken === "string" &&
+					!!account.refreshToken.trim(),
+			);
+		}
+	} catch (error) {
+		if (!candidate.normalized) {
+			log.debug("Failed to parse backup for preview", {
+				path: backupPath,
+				error: String(error),
+			});
+		}
+	}
+	const currentActiveIndex = clampActiveIndexForPreview(
+		currentStorage?.activeIndex ?? 0,
+		currentAccounts,
+	);
+	const backupAccounts =
+		previewAccounts.length > 0
+			? previewAccounts
+			: (candidate.normalized?.accounts ?? []);
+	const backupAccountCount = backupAccounts.length;
 
 	if (
 		!candidate.normalized ||
@@ -1456,35 +1581,227 @@ export async function assessNamedBackupRestore(
 	) {
 		return {
 			backup,
+			backupAccountCount,
+			dedupedBackupAccountCount: null,
+			conflictsWithinBackup: null,
+			conflictsWithExisting: null,
+			overlappingAccountConflicts: null,
+			replacedExistingCount: null,
+			keptExistingCount: null,
+			keptBackupCount: null,
 			currentAccountCount: currentAccounts.length,
 			mergedAccountCount: null,
 			imported: null,
 			skipped: null,
 			wouldExceedLimit: false,
 			valid: false,
+			nextActiveIndex: null,
+			nextActiveEmail: undefined,
+			nextActiveAccountId: undefined,
+			currentActiveIndex,
+			currentActiveEmail: currentAccounts[currentActiveIndex]?.email,
+			currentActiveAccountId: currentAccounts[currentActiveIndex]?.accountId,
+			activeAccountOutcome: "unchanged",
+			activeAccountChanged: false,
+			activeAccountPreview: {
+				current: toBackupRestoreAccountPreview(
+					currentAccounts[currentActiveIndex],
+					currentAccounts.length > 0 ? currentActiveIndex : null,
+				),
+				next: null,
+				outcome: "blocked",
+				changed: false,
+			},
 			error: backup.loadError ?? "Backup is empty or invalid",
 		};
 	}
 
-	const mergedAccounts = deduplicateAccountsByEmail(
-		deduplicateAccounts([...currentAccounts, ...candidate.normalized.accounts]),
+	const dedupedBackupAccounts = deduplicateAccountsByEmail(
+		deduplicateAccounts(backupAccounts),
 	);
-	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
+	const dedupedBackupAccountCount = dedupedBackupAccounts.length;
+	const conflictsWithinBackup =
+		(backupAccountCount ?? backupAccounts.length) - dedupedBackupAccountCount;
+
+	type TaggedAccount = AccountLike & {
+		__source: "current" | "backup";
+		__index: number;
+	};
+	const taggedCurrent: TaggedAccount[] = currentAccounts.map(
+		(account, index) => ({
+			...account,
+			__source: "current",
+			__index: index,
+		}),
+	);
+	const taggedBackup: TaggedAccount[] = backupAccounts.map(
+		(account, index) => ({
+			...account,
+			__source: "backup",
+			__index: index,
+		}),
+	);
+	const mergedTagged = deduplicateAccountsByEmail(
+		deduplicateAccounts([...taggedCurrent, ...taggedBackup]),
+	);
+	const mergedAccounts = mergedTagged.map(
+		({ __source, __index, ...account }) => account,
+	);
+	const mergedAccountCount = mergedAccounts.length;
+	const keptBackupCount = mergedTagged.filter(
+		(account) => account.__source === "backup",
+	).length;
+	const keptExistingCount = mergedTagged.length - keptBackupCount;
+	const replacedExistingCount = Math.max(
+		0,
+		currentAccounts.length - keptExistingCount,
+	);
+	const conflictsWithExisting = Math.max(
+		0,
+		dedupedBackupAccountCount - keptBackupCount,
+	);
+	const wouldExceedLimit = mergedAccountCount > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
 		? null
-		: mergedAccounts.length - currentAccounts.length;
+		: Math.max(0, keptBackupCount - replacedExistingCount);
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
+		: Math.max(0, backupAccounts.length - (imported ?? 0));
+
+	const currentActiveAccount = currentAccounts[currentActiveIndex] ?? null;
+	const nextActiveIndex = wouldExceedLimit
+		? null
+		: mergedAccounts.length > 0
+			? clampActiveIndexForPreview(
+					currentStorage?.activeIndex ?? 0,
+					mergedAccounts,
+				)
+			: null;
+	const nextActiveAccount =
+		nextActiveIndex === null ? null : mergedAccounts[nextActiveIndex];
+
+	const currentActiveEmail = currentActiveAccount?.email;
+	const currentActiveAccountId = currentActiveAccount?.accountId;
+	const nextActiveEmail = nextActiveAccount?.email;
+	const nextActiveAccountId = nextActiveAccount?.accountId;
+	const keptBackupIndices = new Set(
+		mergedTagged
+			.filter((account) => account.__source === "backup")
+			.map((account) => account.__index),
+	);
+	const dedupedBackupIndexByAccount = new Map(
+		dedupedBackupAccounts.map((account) => [
+			account,
+			backupAccounts.indexOf(account),
+		]),
+	);
+	const overlappingAccountConflicts = dedupedBackupAccounts.flatMap(
+		(account) => {
+			const backupIndex = dedupedBackupIndexByAccount.get(account);
+			if (backupIndex === undefined || backupIndex < 0) return [];
+			const resolution: BackupRestoreConflictDetail["resolution"] =
+				keptBackupIndices.has(backupIndex) ? "backup-kept" : "current-kept";
+			return currentAccounts.flatMap((currentAccount, currentIndex) => {
+				const reasons = getAccountConflictReasons(account, currentAccount);
+				if (reasons.length === 0) return [];
+				return [
+					{
+						backupIndex,
+						backupEmail: account.email,
+						backupAccountId: account.accountId,
+						currentIndex,
+						currentEmail: currentAccount.email,
+						currentAccountId: currentAccount.accountId,
+						reasons,
+						resolution,
+					},
+				];
+			});
+		},
+	);
+	const conflictPreviews: BackupRestoreConflictPreview[] =
+		overlappingAccountConflicts.map((conflict) => ({
+			conflict,
+			backup: toBackupRestoreAccountPreview(
+				backupAccounts[conflict.backupIndex],
+				conflict.backupIndex,
+			),
+			current: toBackupRestoreAccountPreview(
+				currentAccounts[conflict.currentIndex],
+				conflict.currentIndex,
+			),
+		}));
+
+	let activeAccountOutcome: BackupRestoreAssessment["activeAccountOutcome"] =
+		"unchanged";
+	let activeAccountChanged = false;
+	let activeAccountPreview: BackupRestoreActiveAccountPreview = {
+		current: toBackupRestoreAccountPreview(
+			currentActiveAccount,
+			currentActiveIndex,
+		),
+		next: null,
+		outcome: "blocked",
+		changed: false,
+	};
+	if (wouldExceedLimit) {
+	} else if (!nextActiveAccount && currentActiveAccount) {
+		activeAccountOutcome = "cleared";
+		activeAccountChanged = true;
+	} else if (nextActiveAccount && !currentActiveAccount) {
+		activeAccountOutcome = "changed";
+		activeAccountChanged = true;
+	} else if (nextActiveAccount && currentActiveAccount) {
+		const sameAccount =
+			nextActiveAccount.refreshToken === currentActiveAccount.refreshToken ||
+			nextActiveAccount.accountId === currentActiveAccount.accountId ||
+			normalizeEmailKey(nextActiveAccount.email) ===
+				normalizeEmailKey(currentActiveAccount.email);
+		activeAccountOutcome = sameAccount ? "unchanged" : "changed";
+		activeAccountChanged = !sameAccount;
+	}
+	if (!wouldExceedLimit) {
+		activeAccountPreview = {
+			current: toBackupRestoreAccountPreview(
+				currentActiveAccount,
+				currentActiveIndex,
+			),
+			next: toBackupRestoreAccountPreview(nextActiveAccount, nextActiveIndex),
+			outcome: activeAccountOutcome,
+			changed: activeAccountChanged,
+		};
+	}
+	const namedBackupRestorePreview: NamedBackupRestorePreview = {
+		conflicts: conflictPreviews,
+		activeAccount: activeAccountPreview,
+	};
 
 	return {
 		backup,
+		backupAccountCount,
+		dedupedBackupAccountCount,
+		conflictsWithinBackup,
+		conflictsWithExisting,
+		overlappingAccountConflicts,
+		replacedExistingCount,
+		keptExistingCount,
+		keptBackupCount,
 		currentAccountCount: currentAccounts.length,
-		mergedAccountCount: mergedAccounts.length,
+		mergedAccountCount,
 		imported,
 		skipped,
 		wouldExceedLimit,
-		valid: !wouldExceedLimit,
+		valid: !wouldExceedLimit && !!candidate.normalized,
+		nextActiveIndex,
+		nextActiveEmail,
+		nextActiveAccountId,
+		currentActiveIndex,
+		currentActiveEmail,
+		currentActiveAccountId,
+		activeAccountOutcome,
+		activeAccountChanged,
+		activeAccountPreview,
+		namedBackupRestorePreview,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
 			: undefined,
@@ -1493,9 +1810,26 @@ export async function assessNamedBackupRestore(
 
 export async function restoreNamedBackup(
 	name: string,
+	options: {
+		assessment?: BackupRestoreAssessment;
+		currentStorage?: AccountStorageV3 | null;
+	} = {},
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const normalizedName = normalizeBackupName(name);
 	const backupPath = resolveNamedBackupPath(normalizedName);
+	const assessment =
+		options.assessment ??
+		(await assessNamedBackupRestore(normalizedName, {
+			currentStorage: options.currentStorage,
+		}));
+
+	if (!assessment.valid || assessment.wouldExceedLimit) {
+		throw new Error(assessment.error ?? "Backup is not valid for restore");
+	}
+	if ((assessment.imported ?? 0) <= 0) {
+		throw new Error("Backup would not import any accounts");
+	}
+
 	return importAccounts(backupPath);
 }
 

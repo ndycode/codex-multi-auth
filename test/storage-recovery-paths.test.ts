@@ -1,10 +1,13 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { promises as fs, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	assessNamedBackupRestore,
+	getNamedBackupsDirectoryPath,
 	loadAccounts,
+	restoreNamedBackup,
 	saveAccounts,
 	setStorageBackupEnabled,
 	setStoragePathDirect,
@@ -19,7 +22,10 @@ describe("storage recovery paths", () => {
 	let storagePath = "";
 
 	beforeEach(async () => {
-		workDir = join(tmpdir(), `codex-storage-recovery-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		workDir = join(
+			tmpdir(),
+			`codex-storage-recovery-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
 		storagePath = join(workDir, "openai-codex-accounts.json");
 		await fs.mkdir(workDir, { recursive: true });
 		setStoragePathDirect(storagePath);
@@ -82,7 +88,11 @@ describe("storage recovery paths", () => {
 				},
 			],
 		};
-		await fs.writeFile(`${storagePath}.bak`, JSON.stringify(backupPayload), "utf-8");
+		await fs.writeFile(
+			`${storagePath}.bak`,
+			JSON.stringify(backupPayload),
+			"utf-8",
+		);
 
 		const recovered = await loadAccounts();
 		expect(recovered?.accounts).toHaveLength(1);
@@ -110,7 +120,11 @@ describe("storage recovery paths", () => {
 				},
 			],
 		};
-		await fs.writeFile(`${storagePath}.bak.1`, JSON.stringify(historicalBackupPayload), "utf-8");
+		await fs.writeFile(
+			`${storagePath}.bak.1`,
+			JSON.stringify(historicalBackupPayload),
+			"utf-8",
+		);
 
 		const recovered = await loadAccounts();
 		expect(recovered?.accounts).toHaveLength(1);
@@ -139,7 +153,11 @@ describe("storage recovery paths", () => {
 				},
 			],
 		};
-		await fs.writeFile(`${storagePath}.bak.2`, JSON.stringify(oldestBackupPayload), "utf-8");
+		await fs.writeFile(
+			`${storagePath}.bak.2`,
+			JSON.stringify(oldestBackupPayload),
+			"utf-8",
+		);
 
 		const recovered = await loadAccounts();
 		expect(recovered?.accounts).toHaveLength(1);
@@ -326,13 +344,59 @@ describe("storage recovery paths", () => {
 		expect(persisted.accounts?.[0]?.email).toBe("realuser@gmail.com");
 	});
 
+	it("refuses restore when backup would exceed account limit", async () => {
+		const backupsDir = join(dirname(storagePath), "backups");
+		await fs.mkdir(backupsDir, { recursive: true });
+		const backupName = "too-many";
+		const backupPath = join(backupsDir, `${backupName}.json`);
+		const oversizedAccounts = Array.from({ length: 30 }, (_, i) => ({
+			refreshToken: `ref-${i}`,
+			accountId: `acc-${i}`,
+			addedAt: i,
+			lastUsed: i,
+		}));
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: oversizedAccounts,
+			}),
+			"utf-8",
+		);
+
+		const assessment = await assessNamedBackupRestore(backupName);
+		expect(assessment.wouldExceedLimit).toBe(true);
+		expect(assessment.imported).toBeNull();
+		expect(assessment.skipped).toBeNull();
+		expect(assessment.activeAccountPreview).toEqual({
+			current: null,
+			next: null,
+			outcome: "blocked",
+			changed: false,
+		});
+		expect(assessment.namedBackupRestorePreview?.activeAccount).toEqual(
+			assessment.activeAccountPreview,
+		);
+		expect(assessment.namedBackupRestorePreview?.conflicts).toEqual([]);
+
+		await expect(restoreNamedBackup(backupName)).rejects.toThrow(/exceed/i);
+	});
+
 	it("cleans up stale staged backup artifacts during load", async () => {
 		await fs.writeFile(
 			storagePath,
 			JSON.stringify({
 				version: 3,
 				activeIndex: 0,
-				accounts: [{ refreshToken: "primary-refresh", accountId: "primary", addedAt: 6, lastUsed: 6 }],
+				accounts: [
+					{
+						refreshToken: "primary-refresh",
+						accountId: "primary",
+						addedAt: 6,
+						lastUsed: 6,
+					},
+				],
 			}),
 			"utf-8",
 		);
@@ -368,7 +432,14 @@ describe("storage recovery paths", () => {
 			JSON.stringify({
 				version: 3,
 				activeIndex: 0,
-				accounts: [{ refreshToken: "backup-refresh", accountId: "disabled-backup", addedAt: 3, lastUsed: 3 }],
+				accounts: [
+					{
+						refreshToken: "backup-refresh",
+						accountId: "disabled-backup",
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
 			}),
 			"utf-8",
 		);
@@ -376,5 +447,150 @@ describe("storage recovery paths", () => {
 		const recovered = await loadAccounts();
 		expect(recovered).toBeNull();
 	});
-});
 
+	it("previews restore conflicts and active outcome before applying backup", async () => {
+		const currentStorage = {
+			version: 3,
+			activeIndex: 1,
+			activeIndexByFamily: {},
+			accounts: [
+				{
+					email: "keep@example.com",
+					refreshToken: "rt-keep",
+					accountId: "keep",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					email: "replace@example.com",
+					refreshToken: "rt-old",
+					accountId: "replace",
+					addedAt: 1,
+					lastUsed: 2,
+				},
+			],
+		};
+		await saveAccounts(currentStorage);
+
+		const backupDir = getNamedBackupsDirectoryPath();
+		await fs.mkdir(backupDir, { recursive: true });
+		const backupPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					email: "replace@example.com",
+					refreshToken: "rt-new",
+					accountId: "replace",
+					addedAt: 3,
+					lastUsed: 5,
+				},
+				{
+					email: "new@example.com",
+					refreshToken: "rt-new-1",
+					accountId: "new-1",
+					addedAt: 3,
+					lastUsed: 3,
+				},
+				{
+					email: "duplicate@example.com",
+					refreshToken: "dup-1",
+					accountId: "dup-1",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					email: "duplicate@example.com",
+					refreshToken: "dup-2",
+					accountId: "dup-2",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+				{
+					email: "keep@example.com",
+					refreshToken: "rt-keep-bak",
+					accountId: "keep-bak",
+					addedAt: 0,
+					lastUsed: 0,
+				},
+			],
+		};
+		await fs.writeFile(
+			join(backupDir, "preview.json"),
+			JSON.stringify(backupPayload),
+			"utf-8",
+		);
+
+		const assessment = await assessNamedBackupRestore("preview", {
+			currentStorage,
+		});
+
+		expect(assessment.valid).toBe(true);
+		expect(assessment.backupAccountCount).toBe(5);
+		expect(assessment.dedupedBackupAccountCount).toBe(4);
+		expect(assessment.imported).toBe(2);
+		expect(assessment.skipped).toBe(3);
+		expect(assessment.conflictsWithinBackup).toBe(1);
+		expect(assessment.conflictsWithExisting).toBe(1);
+		expect(assessment.overlappingAccountConflicts).toEqual([
+			{
+				backupIndex: 0,
+				backupEmail: "replace@example.com",
+				backupAccountId: "replace",
+				currentIndex: 1,
+				currentEmail: "replace@example.com",
+				currentAccountId: "replace",
+				reasons: ["accountId", "email"],
+				resolution: "backup-kept",
+			},
+			{
+				backupIndex: 4,
+				backupEmail: "keep@example.com",
+				backupAccountId: "keep-bak",
+				currentIndex: 0,
+				currentEmail: "keep@example.com",
+				currentAccountId: "keep",
+				reasons: ["email"],
+				resolution: "current-kept",
+			},
+		]);
+		expect(assessment.replacedExistingCount).toBe(1);
+		expect(assessment.keptBackupCount).toBe(3);
+		expect(assessment.activeAccountOutcome).toBe("unchanged");
+		expect(assessment.activeAccountPreview).toEqual({
+			current: {
+				index: 1,
+				email: "replace@example.com",
+				accountId: "replace",
+			},
+			next: {
+				index: 1,
+				email: "replace@example.com",
+				accountId: "replace",
+			},
+			outcome: "unchanged",
+			changed: false,
+		});
+		expect(assessment.namedBackupRestorePreview).toBeDefined();
+		expect(assessment.namedBackupRestorePreview?.activeAccount).toEqual(
+			assessment.activeAccountPreview,
+		);
+		const previewConflicts =
+			assessment.namedBackupRestorePreview?.conflicts ?? [];
+		expect(previewConflicts).toHaveLength(2);
+		expect(previewConflicts[0]?.backup).toEqual({
+			index: 0,
+			email: "replace@example.com",
+			accountId: "replace",
+		});
+		expect(previewConflicts[0]?.current).toEqual({
+			index: 1,
+			email: "replace@example.com",
+			accountId: "replace",
+		});
+		expect(previewConflicts[1]?.backup?.email).toBe("keep@example.com");
+		expect(previewConflicts[1]?.current?.email).toBe("keep@example.com");
+		expect(assessment.nextActiveEmail).toBe("replace@example.com");
+		expect(assessment.currentActiveEmail).toBe("replace@example.com");
+	});
+});

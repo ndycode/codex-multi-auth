@@ -84,6 +84,7 @@ import {
 	listRotatingBackups,
 	loadAccounts,
 	loadFlaggedAccounts,
+	restoreNamedBackup,
 	saveAccounts,
 	saveFlaggedAccounts,
 	setStoragePath,
@@ -4137,6 +4138,8 @@ type BackupMenuAction =
 	  }
 	| { type: "back" };
 
+type BackupDetailAction = "back" | "preview-restore";
+
 function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
 	const backup = entry.backup;
 	const lastUpdated = formatRelativeDateShort(backup.updatedAt);
@@ -4177,7 +4180,100 @@ function buildBackupStatusSummary(entry: BackupBrowserEntry): string {
 	return stylePromptText("Valid backup", "success");
 }
 
-function showBackupBrowserDetails(entry: BackupBrowserEntry): Promise<void> {
+function formatActiveAccountOutcome(assessment: NamedBackupAssessment): string {
+	if (!assessment.valid) {
+		return stylePromptText("Unavailable", "danger");
+	}
+	const activeIndex =
+		assessment.nextActiveIndex === null
+			? "?"
+			: `#${assessment.nextActiveIndex + 1}`;
+	const nextLabel =
+		assessment.nextActiveEmail?.trim() ||
+		assessment.nextActiveAccountId?.trim() ||
+		"unknown";
+	const currentLabel =
+		assessment.currentActiveEmail?.trim() ||
+		assessment.currentActiveAccountId?.trim() ||
+		"none";
+	const outcome = assessment.activeAccountOutcome ?? "unchanged";
+	if (outcome === "cleared") {
+		return `Would clear active account (currently ${currentLabel})`;
+	}
+	if (outcome === "changed") {
+		return `${nextLabel} ${activeIndex} (currently ${currentLabel})`;
+	}
+	const changeNote = assessment.activeAccountChanged ? " (would change)" : "";
+	return `${nextLabel} ${activeIndex}${changeNote}`;
+}
+
+function buildRestoreAssessmentLines(
+	assessment: NamedBackupAssessment,
+): string[] {
+	const backupAccountLabel = (() => {
+		if (
+			assessment.backupAccountCount === null ||
+			assessment.backupAccountCount === undefined
+		)
+			return "unknown";
+		if (
+			assessment.dedupedBackupAccountCount !== undefined &&
+			assessment.dedupedBackupAccountCount !== null &&
+			assessment.dedupedBackupAccountCount !== assessment.backupAccountCount
+		) {
+			return `${assessment.backupAccountCount} (deduped ${assessment.dedupedBackupAccountCount})`;
+		}
+		return `${assessment.backupAccountCount}`;
+	})();
+
+	const conflictSummary = (() => {
+		const replacements = assessment.replacedExistingCount ?? 0;
+		const withExisting = assessment.conflictsWithExisting ?? 0;
+		const withinBackup = assessment.conflictsWithinBackup ?? 0;
+		const parts: string[] = [];
+		if (replacements > 0) {
+			parts.push(`${replacements} replace current`);
+		}
+		if (withExisting > 0) {
+			parts.push(
+				`${withExisting} duplicate${withExisting === 1 ? "" : "s"} skipped`,
+			);
+		}
+		if (withinBackup > 0) {
+			parts.push(
+				`${withinBackup} duplicate${withinBackup === 1 ? "" : "s"} inside backup`,
+			);
+		}
+		return parts.length > 0 ? parts.join(" | ") : "No conflicts detected";
+	})();
+
+	const currentActiveLabel =
+		assessment.currentActiveEmail?.trim() ||
+		assessment.currentActiveAccountId?.trim() ||
+		"none";
+
+	return [
+		`${stylePromptText("Backup accounts:", "muted")} ${backupAccountLabel}`,
+		`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
+		`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
+		`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
+		`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
+		`${stylePromptText("Conflicts:", "muted")} ${conflictSummary}`,
+		`${stylePromptText("Current active:", "muted")} ${currentActiveLabel}`,
+		`${stylePromptText("Active after restore:", "muted")} ${formatActiveAccountOutcome(assessment)}`,
+		`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.valid ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
+	];
+}
+
+function canRestoreFromAssessment(assessment: NamedBackupAssessment): boolean {
+	if (!assessment.valid || assessment.wouldExceedLimit) return false;
+	if (assessment.imported === null || assessment.imported <= 0) return false;
+	return true;
+}
+
+async function showBackupBrowserDetails(
+	entry: BackupBrowserEntry,
+): Promise<BackupDetailAction> {
 	const backup = entry.backup;
 	const typeLabel =
 		entry.kind === "named"
@@ -4197,16 +4293,8 @@ function showBackupBrowserDetails(entry: BackupBrowserEntry): Promise<void> {
 	];
 
 	if (entry.kind === "named") {
-		const assessment = entry.assessment;
-		lines.push(
-			"",
-			stylePromptText("Restore Assessment", "accent"),
-			`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
-			`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
-			`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
-			`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
-			`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.valid ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
-		);
+		lines.push("", stylePromptText("Restore Assessment", "accent"));
+		lines.push(...buildRestoreAssessmentLines(entry.assessment));
 	}
 
 	if (backup.schemaErrors.length > 0 || backup.loadError) {
@@ -4231,7 +4319,83 @@ function showBackupBrowserDetails(entry: BackupBrowserEntry): Promise<void> {
 		console.log(line);
 	}
 	console.log("");
-	return waitForMenuReturn();
+
+	if (entry.kind !== "named") {
+		await waitForMenuReturn({ autoReturnMs: 500, pauseOnAnyKey: true });
+		return "back";
+	}
+
+	if (!canRestoreFromAssessment(entry.assessment)) {
+		await waitForMenuReturn({ autoReturnMs: 500, pauseOnAnyKey: true });
+		return "back";
+	}
+
+	const ui = getUiRuntimeOptions();
+	const action = await select<BackupDetailAction>(
+		[
+			{ label: "Back", value: "back" },
+			{ label: "Preview Restore", value: "preview-restore", color: "green" },
+		],
+		{
+			message: "Backup Actions",
+			help: "Enter Preview | Q Back",
+			clearScreen: false,
+			selectedEmphasis: "minimal",
+			focusStyle: ui.v2Enabled ? "chip" : "row-invert",
+			showCursor: true,
+			theme: ui.theme,
+		},
+	);
+	return action ?? "back";
+}
+
+async function runBackupRestorePreview(
+	entry: Extract<BackupBrowserEntry, { kind: "named" }>,
+	displaySettings: DashboardDisplaySettings,
+): Promise<void> {
+	const currentStorage = await loadAccounts();
+	const assessment = await assessNamedBackupRestore(entry.backup.name, {
+		currentStorage,
+	});
+
+	const lines = [
+		stylePromptText(`Restore Preview: ${entry.label}`, "accent"),
+		...buildRestoreAssessmentLines(assessment),
+	];
+
+	if (output.isTTY) {
+		output.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
+	}
+	for (const line of lines) {
+		console.log(line);
+	}
+	console.log("");
+
+	if (!canRestoreFromAssessment(assessment)) {
+		await waitForMenuReturn({ autoReturnMs: 500, pauseOnAnyKey: true });
+		return;
+	}
+
+	const confirmMessage =
+		`Restore ${entry.label}? This will import ${assessment.imported ?? 0} account${assessment.imported === 1 ? "" : "s"} for a total of ${assessment.mergedAccountCount ?? "?"}.` +
+		(assessment.activeAccountChanged ? " Active account would change." : "");
+	const confirmed = await confirm(confirmMessage);
+	if (!confirmed) return;
+
+	await runActionPanel(
+		"Restoring Backup",
+		`Applying ${entry.label}`,
+		async () => {
+			const result = await restoreNamedBackup(entry.backup.name, {
+				assessment,
+				currentStorage,
+			});
+			console.log(
+				`Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`,
+			);
+		},
+		displaySettings,
+	);
 }
 
 async function runBackupBrowserManager(
@@ -4332,7 +4496,10 @@ async function runBackupBrowserManager(
 			return;
 		}
 
-		await showBackupBrowserDetails(selection.entry);
+		const action = await showBackupBrowserDetails(selection.entry);
+		if (action === "preview-restore" && selection.entry.kind === "named") {
+			await runBackupRestorePreview(selection.entry, displaySettings);
+		}
 	}
 }
 
