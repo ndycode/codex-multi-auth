@@ -1474,6 +1474,13 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 	}
 }
 
+export async function listAccountSnapshots(): Promise<NamedBackupMetadata[]> {
+	const backups = await listNamedBackups();
+	return backups.filter((backup) =>
+		AUTO_SNAPSHOT_NAME_PATTERN.test(backup.name),
+	);
+}
+
 export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
 	const storagePath = getStoragePath();
 	const candidates = getAccountsBackupRecoveryCandidates(storagePath);
