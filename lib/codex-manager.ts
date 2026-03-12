@@ -79,11 +79,13 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	assessNamedBackupRestore,
+	assessOpencodeAccountPool,
 	type FlaggedAccountMetadataV1,
 	type FlaggedAccountStorageV1,
 	getActionableNamedBackupRestores,
 	getNamedBackupsDirectoryPath,
 	getStoragePath,
+	importAccounts,
 	listNamedBackups,
 	listRotatingBackups,
 	loadAccounts,
@@ -4774,6 +4776,7 @@ function shouldShowFirstRunWizard(storage: AccountStorageV3 | null): boolean {
 async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 	let namedBackupCount = 0;
 	let rotatingBackupCount = 0;
+	let hasOpencodeSource = false;
 	try {
 		const namedBackups = await listNamedBackups();
 		namedBackupCount = namedBackups.length;
@@ -4786,11 +4789,17 @@ async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 	} catch (error) {
 		console.warn("Failed to list rotating backups", error);
 	}
+	try {
+		hasOpencodeSource = (await assessOpencodeAccountPool()) !== null;
+	} catch (error) {
+		console.warn("Failed to detect OpenCode import source", error);
+	}
 
 	return {
 		storagePath: getStoragePath(),
 		namedBackupCount,
 		rotatingBackupCount,
+		hasOpencodeSource,
 	};
 }
 
@@ -4809,6 +4818,37 @@ async function runFirstRunWizard(): Promise<"continue" | "cancelled"> {
 			case "restore":
 				await runBackupBrowserManager(displaySettings);
 				break;
+			case "import-opencode": {
+				const assessment = await assessOpencodeAccountPool();
+				if (!assessment) {
+					console.log("No OpenCode account pool was detected.");
+					break;
+				}
+				if (!assessment.valid || assessment.wouldExceedLimit) {
+					console.log(
+						assessment.error ?? "OpenCode account pool is not importable.",
+					);
+					break;
+				}
+				const confirmed = await confirm(
+					`Import OpenCode accounts from ${assessment.backup.path}?`,
+				);
+				if (!confirmed) {
+					break;
+				}
+				await runActionPanel(
+					"Import OpenCode Accounts",
+					`Importing from ${assessment.backup.path}`,
+					async () => {
+						const imported = await importAccounts(assessment.backup.path);
+						console.log(
+							`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+						);
+					},
+					displaySettings,
+				);
+				break;
+			}
 			case "settings":
 				await configureUnifiedSettings(displaySettings);
 				break;

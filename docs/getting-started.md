@@ -49,7 +49,7 @@ Expected flow:
 4. Return to the terminal when the browser step completes.
 5. Confirm the account appears in the saved account list.
 
-On a brand-new install (no `openai-codex-accounts.json` yet), `codex auth login` opens a first-run setup screen before OAuth. Use it to restore from backups, run doctor/check paths, open settings and Codex CLI sync, or skip straight to login. All actions reuse the existing backup browser, doctor, and settings flows.
+On a brand-new install (no `openai-codex-accounts.json` yet), `codex auth login` opens a first-run setup screen before OAuth. Use it to restore from backups, import an OpenCode pool, run doctor/check paths, open settings and Codex CLI sync, or skip straight to login. All actions reuse the existing backup browser, import, doctor, and settings flows.
 
 If you have named backups in `~/.codex/multi-auth/backups/` and no active accounts, the login flow can prompt you to restore before opening OAuth. Confirm to open `Restore From Backup`, review the recoverable backup list, and restore the entries you want. Skip the prompt to continue with a fresh login.
 

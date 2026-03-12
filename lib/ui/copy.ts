@@ -158,6 +158,7 @@ export const UI_COPY = {
 			return `Rotating backups: ${rotating}`;
 		},
 		restore: "Open Backup Browser",
+		importOpencode: "Import OpenCode Accounts",
 		login: "Add or Log In",
 		settings: "Open Settings & Sync",
 		doctor: "Run Doctor / Check Paths",

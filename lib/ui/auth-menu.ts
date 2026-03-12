@@ -85,11 +85,13 @@ export interface FirstRunWizardOptions {
 	storagePath: string;
 	namedBackupCount: number;
 	rotatingBackupCount: number;
+	hasOpencodeSource: boolean;
 }
 
 export type FirstRunWizardAction =
 	| { type: "login" }
 	| { type: "restore" }
+	| { type: "import-opencode" }
 	| { type: "settings" }
 	| { type: "doctor" }
 	| { type: "skip" }
@@ -533,6 +535,15 @@ export async function showFirstRunWizard(
 			value: { type: "restore" },
 			color: "yellow",
 		},
+		...(options.hasOpencodeSource
+			? [
+					{
+						label: UI_COPY.firstRun.importOpencode,
+						value: { type: "import-opencode" as const },
+						color: "yellow" as const,
+					},
+				]
+			: []),
 		{
 			label: UI_COPY.firstRun.login,
 			value: { type: "login" },
