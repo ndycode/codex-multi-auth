@@ -32,7 +32,10 @@ import {
 	getCodexCliConfigPath,
 	loadCodexCliState,
 } from "./codex-cli/state.js";
-import { getLatestCodexCliSyncRollbackPlan } from "./codex-cli/sync.js";
+import {
+	getLastCodexCliSyncRun,
+	getLatestCodexCliSyncRollbackPlan,
+} from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import {
 	applyUiThemeFromDashboardSettings,
@@ -3439,6 +3442,17 @@ interface DoctorFixAction {
 	message: string;
 }
 
+interface DashboardHealthSummary {
+	label: string;
+	hint?: string;
+}
+
+interface DoctorReadOnlySummary {
+	severity: DoctorSeverity;
+	label: string;
+	hint: string;
+}
+
 function hasPlaceholderEmail(value: string | undefined): boolean {
 	if (!value) return false;
 	const email = value.trim().toLowerCase();
@@ -4119,6 +4133,179 @@ async function runDoctor(args: string[]): Promise<number> {
 	return summary.error > 0 ? 1 : 0;
 }
 
+function formatCountNoun(
+	count: number,
+	singular: string,
+	plural = `${singular}s`,
+): string {
+	return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function summarizeLatestCodexCliSyncState(): {
+	label: string;
+	hint: string;
+} {
+	const latestRun = getLastCodexCliSyncRun();
+	if (!latestRun) {
+		return {
+			label: "none",
+			hint: "No Codex CLI sync result recorded yet.",
+		};
+	}
+
+	const outcomeLabel =
+		latestRun.outcome === "changed"
+			? "changed"
+			: latestRun.outcome === "noop"
+				? "noop"
+				: latestRun.outcome === "disabled"
+					? "disabled"
+					: latestRun.outcome === "unavailable"
+						? "unavailable"
+						: "error";
+	const when = formatRelativeDateShort(latestRun.runAt);
+	const counts = [
+		latestRun.summary.addedAccountCount > 0
+			? `add ${latestRun.summary.addedAccountCount}`
+			: null,
+		latestRun.summary.updatedAccountCount > 0
+			? `update ${latestRun.summary.updatedAccountCount}`
+			: null,
+		latestRun.summary.destinationOnlyPreservedCount > 0
+			? `preserve ${latestRun.summary.destinationOnlyPreservedCount}`
+			: null,
+		latestRun.summary.selectionChanged ? "selection changed" : null,
+	].filter((value): value is string => value !== null);
+	const hintParts = [
+		`Latest sync ${outcomeLabel}${when ? ` ${when}` : ""}`,
+		counts.length > 0 ? counts.join(" | ") : "no account deltas recorded",
+		latestRun.message?.trim() || undefined,
+	].filter((value): value is string => Boolean(value));
+
+	return {
+		label: `${outcomeLabel}${when ? ` ${when}` : ""}`,
+		hint: hintParts.join(" | "),
+	};
+}
+
+function summarizeReadOnlyDoctorState(
+	storage: AccountStorageV3 | null,
+): DoctorReadOnlySummary {
+	if (!storage || storage.accounts.length === 0) {
+		return {
+			severity: "warn",
+			label: "setup pending",
+			hint: "No accounts are configured yet.",
+		};
+	}
+
+	const warnings: string[] = [];
+	const errors: string[] = [];
+	const activeIndex = resolveActiveIndex(storage, "codex");
+	const activeExists =
+		activeIndex >= 0 && activeIndex < storage.accounts.length;
+	if (!activeExists) {
+		errors.push("active index is out of range");
+	}
+
+	const disabledCount = storage.accounts.filter(
+		(account) => account.enabled === false,
+	).length;
+	if (disabledCount >= storage.accounts.length) {
+		errors.push("all accounts are disabled");
+	} else if (disabledCount > 0) {
+		warnings.push(`${disabledCount} disabled`);
+	}
+
+	const seenRefreshTokens = new Set<string>();
+	let duplicateTokenCount = 0;
+	let placeholderEmailCount = 0;
+	let likelyInvalidRefreshTokenCount = 0;
+	for (const account of storage.accounts) {
+		const token = account.refreshToken.trim();
+		if (seenRefreshTokens.has(token)) {
+			duplicateTokenCount += 1;
+		} else {
+			seenRefreshTokens.add(token);
+		}
+		if (hasPlaceholderEmail(account.email)) {
+			placeholderEmailCount += 1;
+		}
+		if (hasLikelyInvalidRefreshToken(account.refreshToken)) {
+			likelyInvalidRefreshTokenCount += 1;
+		}
+	}
+	if (duplicateTokenCount > 0) {
+		warnings.push(formatCountNoun(duplicateTokenCount, "duplicate token"));
+	}
+	if (placeholderEmailCount > 0) {
+		warnings.push(formatCountNoun(placeholderEmailCount, "placeholder email"));
+	}
+	if (likelyInvalidRefreshTokenCount > 0) {
+		warnings.push(
+			formatCountNoun(likelyInvalidRefreshTokenCount, "invalid refresh token"),
+		);
+	}
+
+	if (errors.length > 0) {
+		return {
+			severity: "error",
+			label: formatCountNoun(errors.length, "error"),
+			hint: errors.concat(warnings).join(" | "),
+		};
+	}
+	if (warnings.length > 0) {
+		return {
+			severity: "warn",
+			label: formatCountNoun(warnings.length, "warning"),
+			hint: warnings.join(" | "),
+		};
+	}
+	return {
+		severity: "ok",
+		label: "ok",
+		hint: "No read-only doctor issues detected.",
+	};
+}
+
+async function buildLoginMenuHealthSummary(
+	storage: AccountStorageV3,
+): Promise<DashboardHealthSummary> {
+	const enabledCount = storage.accounts.filter(
+		(account) => account.enabled !== false,
+	).length;
+	const disabledCount = storage.accounts.length - enabledCount;
+	const [actionableRestores, rollbackPlan] = await Promise.all([
+		getActionableNamedBackupRestores({ currentStorage: storage }),
+		getLatestCodexCliSyncRollbackPlan(),
+	]);
+	const syncSummary = summarizeLatestCodexCliSyncState();
+	const doctorSummary = summarizeReadOnlyDoctorState(storage);
+	const restoreLabel =
+		actionableRestores.totalBackups > 0
+			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
+			: "none";
+	const rollbackLabel = rollbackPlan.status === "ready" ? "ready" : "none";
+	const accountLabel =
+		disabledCount > 0
+			? `${enabledCount}/${storage.accounts.length} enabled`
+			: `${storage.accounts.length} active`;
+	const hintParts = [
+		`Accounts: ${enabledCount} enabled / ${disabledCount} disabled / ${storage.accounts.length} total`,
+		`Sync: ${syncSummary.hint}`,
+		`Restore backups: ${actionableRestores.assessments.length} actionable of ${actionableRestores.totalBackups} total`,
+		`Rollback: ${rollbackPlan.reason}`,
+		`Doctor: ${doctorSummary.hint}`,
+	];
+
+	return {
+		label:
+			`Pool ${accountLabel} | Sync ${syncSummary.label} | Restore ${restoreLabel} | ` +
+			`Rollback ${rollbackLabel} | Doctor ${doctorSummary.label}`,
+		hint: hintParts.join(" | "),
+	};
+}
+
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
@@ -4627,11 +4814,13 @@ async function runAuthLogin(): Promise<number> {
 					}
 				}
 				const flaggedStorage = await loadFlaggedAccounts();
+				const healthSummary = await buildLoginMenuHealthSummary(currentStorage);
 
 				const menuResult = await promptLoginMode(
 					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
 					{
 						flaggedCount: flaggedStorage.accounts.length,
+						healthSummary,
 						statusMessage: showFetchStatus
 							? () => menuQuotaRefreshStatus
 							: undefined,

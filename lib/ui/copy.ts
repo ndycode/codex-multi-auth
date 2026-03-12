@@ -9,6 +9,7 @@ export const UI_COPY = {
 		fixIssues: "Auto-Repair Issues",
 		settings: "Settings",
 		moreChecks: "Advanced Checks",
+		healthSummary: "Health Summary",
 		refreshChecks: "Refresh All Accounts",
 		checkFlagged: "Check Problem Accounts",
 		accounts: "Saved Accounts",

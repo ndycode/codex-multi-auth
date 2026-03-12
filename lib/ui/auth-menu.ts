@@ -50,8 +50,14 @@ export interface AccountInfo {
 	statuslineFields?: string[];
 }
 
+export interface AuthMenuReadOnlyRow {
+	label: string;
+	hint?: string;
+}
+
 export interface AuthMenuOptions {
 	flaggedCount?: number;
+	healthSummary?: AuthMenuReadOnlyRow;
 	statusMessage?: string | (() => string | undefined);
 }
 
@@ -601,12 +607,32 @@ export async function showAuthMenu(
 				color: flaggedCount > 0 ? "red" : "yellow",
 			},
 			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.mainMenu.accounts,
+		];
+
+		const healthSummaryLabel = sanitizeTerminalText(
+			options.healthSummary?.label,
+		);
+		const healthSummaryHint = sanitizeTerminalText(options.healthSummary?.hint);
+		if (healthSummaryLabel) {
+			items.push({
+				label: UI_COPY.mainMenu.healthSummary,
 				value: { type: "cancel" },
 				kind: "heading",
-			},
-		];
+			});
+			items.push({
+				label: healthSummaryLabel,
+				hint: healthSummaryHint,
+				value: { type: "cancel" },
+				disabled: true,
+			});
+			items.push({ label: "", value: { type: "cancel" }, separator: true });
+		}
+
+		items.push({
+			label: UI_COPY.mainMenu.accounts,
+			value: { type: "cancel" },
+			kind: "heading",
+		});
 
 		if (visibleAccounts.length === 0) {
 			items.push({

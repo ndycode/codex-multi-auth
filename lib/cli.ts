@@ -4,6 +4,7 @@ import { DESTRUCTIVE_ACTION_COPY } from "./destructive-actions.js";
 import type { AccountIdSource } from "./types.js";
 import {
 	type AccountStatus,
+	type AuthMenuReadOnlyRow,
 	isTTY,
 	showAccountDetails,
 	showAuthMenu,
@@ -94,6 +95,7 @@ export interface ExistingAccountInfo {
 
 export interface LoginMenuOptions {
 	flaggedCount?: number;
+	healthSummary?: AuthMenuReadOnlyRow;
 	statusMessage?: string | (() => string | undefined);
 }
 
@@ -254,6 +256,7 @@ export async function promptLoginMode(
 	while (true) {
 		const action = await showAuthMenu(existingAccounts, {
 			flaggedCount: options.flaggedCount ?? 0,
+			healthSummary: options.healthSummary,
 			statusMessage: options.statusMessage,
 		});
 
