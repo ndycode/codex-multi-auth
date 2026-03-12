@@ -15,6 +15,7 @@ const listNamedBackupsMock = vi.fn();
 const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
 const assessOpencodeAccountPoolMock = vi.fn();
+const listAccountSnapshotsMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const importAccountsMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
