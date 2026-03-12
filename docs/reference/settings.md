@@ -1,6 +1,6 @@
 # Settings Reference
 
-Reference for dashboard and backend settings available from `codex auth login` -> `Settings`.
+Reference for the settings surface available from `codex auth login` -> `Settings`.
 
 ---
 
@@ -19,9 +19,11 @@ When `CODEX_MULTI_AUTH_DIR` is set, this root moves accordingly.
 
 ---
 
-## Dashboard Display Settings
+## Everyday Settings
 
-### Account List View
+The top-level settings flow now separates everyday dashboard preferences from advanced operator controls.
+
+### List Appearance
 
 Controls account-row display and sorting behavior:
 
@@ -34,7 +36,7 @@ Controls account-row display and sorting behavior:
 - smart sort enable and mode
 - compact versus expanded layout mode
 
-### Summary Fields
+### Details Line
 
 Controls detail-line fields and order:
 
@@ -42,7 +44,7 @@ Controls detail-line fields and order:
 - `limits`
 - `status`
 
-### Behavior
+### Results and Refresh
 
 Controls result-screen and fetch behavior:
 
@@ -51,7 +53,7 @@ Controls result-screen and fetch behavior:
 - auto-fetch limits
 - fetch TTL
 
-### Theme
+### Colors
 
 Controls display style:
 
@@ -59,9 +61,13 @@ Controls display style:
 - accent color
 - focus style
 
-### Sync Center
+---
 
-The settings hub includes a preview-first sync center for Codex CLI account sync.
+## Advanced and Operator Controls
+
+### Codex CLI Sync
+
+The advanced section includes a preview-first sync center for Codex CLI account sync.
 
 Before applying sync, it shows:
 
@@ -73,6 +79,10 @@ Before applying sync, it shows:
 - backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`)
 
 ---
+
+### Advanced Backend Controls
+
+Expert backend controls stay available without changing the saved settings schema. They are grouped into categories so the default path can stay simpler for day-to-day use.
 
 ## Backend Categories
 

@@ -1593,6 +1593,84 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("separates everyday settings from advanced operator controls in the hub", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings-groups@example.com",
+					accountId: "acc_settings_groups",
+					refreshToken: "refresh-settings-groups",
+					accessToken: "access-settings-groups",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		let firstMenuItems: Array<{
+			label?: string;
+			hint?: string;
+			color?: string;
+		}> = [];
+		let firstMenuOptions:
+			| {
+					message?: string;
+					subtitle?: string;
+			  }
+			| undefined;
+		selectMock.mockImplementation(async (items, options) => {
+			if (firstMenuItems.length === 0) {
+				firstMenuItems = items as Array<{
+					label?: string;
+					hint?: string;
+					color?: string;
+				}>;
+				firstMenuOptions = options as {
+					message?: string;
+					subtitle?: string;
+				};
+				return { type: "back" };
+			}
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(firstMenuOptions?.message).toBe("Settings");
+		expect(firstMenuOptions?.subtitle).toContain("everyday dashboard settings");
+		const menuText = firstMenuItems
+			.map(
+				(item) =>
+					`${item.label ?? ""}\n${item.hint ?? ""}\n${item.color ?? ""}`,
+			)
+			.join("\n");
+		expect(menuText).toContain("Everyday Settings");
+		expect(menuText).toContain("List Appearance");
+		expect(menuText).toContain("Details Line");
+		expect(menuText).toContain("Results & Refresh");
+		expect(menuText).toContain("Colors");
+		expect(menuText).toContain("Advanced & Operator");
+		expect(menuText).toContain("Codex CLI Sync");
+		expect(menuText).toContain("Advanced Backend Controls");
+		expect(menuText).toContain("Show badges, sorting, and how much detail");
+		expect(menuText).toContain("Preview and apply one-way sync");
+		expect(menuText).toContain(
+			"Tune retry, quota, sync, recovery, and timeout internals.",
+		);
+	});
+
 	it("shows sync-center source/runtime context and keeps apply one-way", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
