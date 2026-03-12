@@ -28,6 +28,38 @@ import {
 	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
 } from "./accounts.js";
+<<<<<<< HEAD
+=======
+import {
+	createAuthorizationFlow,
+	exchangeAuthorizationCode,
+	parseAuthorizationInput,
+	REDIRECT_URI,
+} from "./auth/auth.js";
+import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
+import { startLocalOAuthServer } from "./auth/server.js";
+import {
+	type ExistingAccountInfo,
+	isInteractiveLoginMenuAvailable,
+	promptAddAnotherAccount,
+	promptLoginMode,
+} from "./cli.js";
+import {
+	getCodexCliAuthPath,
+	getCodexCliConfigPath,
+	loadCodexCliState,
+} from "./codex-cli/state.js";
+import {
+	getLastCodexCliSyncRun,
+	getLatestCodexCliSyncRollbackPlan,
+} from "./codex-cli/sync.js";
+import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import {
+	applyUiThemeFromDashboardSettings,
+	configureUnifiedSettings,
+	resolveMenuLayoutMode,
+} from "./codex-manager/settings-hub.js";
+>>>>>>> b09a947 (feat(ui): add health summary dashboard)
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
 	loadDashboardDisplaySettings,
@@ -3352,6 +3384,17 @@ interface DoctorFixAction {
 	message: string;
 }
 
+interface DashboardHealthSummary {
+	label: string;
+	hint?: string;
+}
+
+interface DoctorReadOnlySummary {
+	severity: DoctorSeverity;
+	label: string;
+	hint: string;
+}
+
 function hasPlaceholderEmail(value: string | undefined): boolean {
 	if (!value) return false;
 	const email = value.trim().toLowerCase();
@@ -4328,6 +4371,7 @@ async function runAuthLogin(): Promise<number> {
 							});
 					}
 				}
+<<<<<<< HEAD
 			const flaggedStorage = await loadFlaggedAccounts();
 
 			const menuResult = await promptLoginMode(
@@ -4337,6 +4381,21 @@ async function runAuthLogin(): Promise<number> {
 					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
 				},
 			);
+=======
+				const flaggedStorage = await loadFlaggedAccounts();
+				const healthSummary = await buildLoginMenuHealthSummary(currentStorage);
+
+				const menuResult = await promptLoginMode(
+					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
+					{
+						flaggedCount: flaggedStorage.accounts.length,
+						healthSummary,
+						statusMessage: showFetchStatus
+							? () => menuQuotaRefreshStatus
+							: undefined,
+					},
+				);
+>>>>>>> b09a947 (feat(ui): add health summary dashboard)
 
 			if (menuResult.mode === "cancel") {
 				console.log("Cancelled.");
