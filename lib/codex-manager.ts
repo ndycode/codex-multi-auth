@@ -96,13 +96,74 @@ import {
 	getLatestCodexCliSyncRollbackPlan,
 } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import {
+	applyUiThemeFromDashboardSettings,
+	configureUnifiedSettings,
+	resolveMenuLayoutMode,
+} from "./codex-manager/settings-hub.js";
+import { ACCOUNT_LIMITS } from "./constants.js";
+import {
+	type DashboardAccountSortMode,
+	type DashboardDisplaySettings,
+	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+	loadDashboardDisplaySettings,
+} from "./dashboard-settings.js";
+import {
+	DESTRUCTIVE_ACTION_COPY,
+	deleteAccountAtIndex,
+	deleteSavedAccounts,
+	resetLocalState,
+} from "./destructive-actions.js";
+import {
+	evaluateForecastAccounts,
+	type ForecastAccountResult,
+	isHardRefreshFailure,
+	recommendForecastAccount,
+	summarizeForecast,
+} from "./forecast.js";
+import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import {
+	loadQuotaCache,
+	type QuotaCacheData,
+	type QuotaCacheEntry,
+	saveQuotaCache,
+} from "./quota-cache.js";
+import {
+	type CodexQuotaSnapshot,
+	fetchCodexQuotaSnapshot,
+	formatQuotaSnapshotLine,
+} from "./quota-probe.js";
+import { queuedRefresh } from "./refresh-queue.js";
+import {
+	type AccountMetadataV3,
+	type AccountStorageV3,
+	assessNamedBackupRestore,
+	assessOpencodeAccountPool,
+	type BackupRestoreAssessment,
+	type FlaggedAccountMetadataV1,
+	type FlaggedAccountStorageV1,
+	getActionableNamedBackupRestores,
+	getNamedBackupsDirectoryPath,
+	getStoragePath,
+	importAccounts,
+	listNamedBackups,
+	listRotatingBackups,
+	loadAccounts,
+	loadFlaggedAccounts,
+	type NamedBackupMetadata,
+	type RotatingBackupMetadata,
+	restoreNamedBackup,
+	saveAccounts,
+	saveFlaggedAccounts,
+	setStoragePath,
+} from "./storage.js";
+import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
 import { confirm } from "./ui/confirm.js";
 import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { select, type MenuItem } from "./ui/select.js";
-import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, resolveMenuLayoutMode } from "./codex-manager/settings-hub.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 type TokenSuccessWithAccount = TokenSuccess & {
@@ -4419,6 +4480,39 @@ async function runAuthLogin(): Promise<number> {
 				}
 				continue;
 			}
+			if (menuResult.mode === "import-opencode") {
+				const assessment = await assessOpencodeAccountPool({
+					currentStorage,
+				});
+				if (!assessment) {
+					console.log("No OpenCode account pool was detected.");
+					continue;
+				}
+				if (!assessment.valid || assessment.wouldExceedLimit) {
+					console.log(
+						assessment.error ?? "OpenCode account pool is not importable.",
+					);
+					continue;
+				}
+				const confirmed = await confirm(
+					`Import OpenCode accounts from ${assessment.backup.path}?`,
+				);
+				if (!confirmed) {
+					continue;
+				}
+				await runActionPanel(
+					"Import OpenCode Accounts",
+					`Importing from ${assessment.backup.path}`,
+					async () => {
+						const imported = await importAccounts(assessment.backup.path);
+						console.log(
+							`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+						);
+					},
+					displaySettings,
+				);
+				continue;
+			}
 			if (menuResult.mode === "fresh" && menuResult.deleteAll) {
 				if (destructiveActionInFlight) {
 					console.log("Another destructive action is already running. Wait for it to finish.");
@@ -5052,13 +5146,9 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	});
 }
 
-type NamedBackupAssessment = Awaited<
-	ReturnType<typeof assessNamedBackupRestore>
->;
-type NamedBackupEntry = Awaited<ReturnType<typeof listNamedBackups>>[number];
-type RotatingBackupEntry = Awaited<
-	ReturnType<typeof listRotatingBackups>
->[number];
+type NamedBackupAssessment = BackupRestoreAssessment;
+type NamedBackupEntry = NamedBackupMetadata;
+type RotatingBackupEntry = RotatingBackupMetadata;
 
 type NamedBackupBrowserEntry =
 	| {
