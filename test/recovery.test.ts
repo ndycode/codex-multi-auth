@@ -136,6 +136,72 @@ describe("detectErrorType", () => {
 	});
 });
 
+describe("getActionableNamedBackupRestores (override)", () => {
+	it("accepts injected backups and assessor", async () => {
+		const storage = await import("../lib/storage.js");
+		const mockBackups = [
+			{
+				name: "invalid-backup",
+				path: "/mock/backups/invalid.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 0,
+				schemaErrors: [],
+				valid: false,
+				loadError: "invalid",
+			},
+			{
+				name: "valid-backup",
+				path: "/mock/backups/valid.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		];
+
+		const result = await storage.getActionableNamedBackupRestores({
+			backups: mockBackups,
+			assess: async (name: string) => {
+				if (name === "valid-backup") {
+					return {
+						backup: mockBackups[1],
+						currentAccountCount: 0,
+						mergedAccountCount: 1,
+						imported: 1,
+						skipped: 0,
+						wouldExceedLimit: false,
+						valid: true,
+						error: undefined,
+					};
+				}
+
+				return {
+					backup: mockBackups[0],
+					currentAccountCount: 0,
+					mergedAccountCount: null,
+					imported: null,
+					skipped: null,
+					wouldExceedLimit: false,
+					valid: false,
+					error: "invalid",
+				};
+			},
+		});
+
+		expect(result.totalBackups).toBe(mockBackups.length);
+		expect(result.assessments.map((item) => item.backup.name)).toEqual([
+			"valid-backup",
+		]);
+	});
+});
+
 describe("isRecoverableError", () => {
 	it("returns true for tool_result_missing", () => {
 		const error = "tool_use without tool_result";
