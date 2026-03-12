@@ -769,6 +769,88 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("imports OpenCode accounts from the recovery section", async () => {
+		setInteractiveTTY(true);
+		const currentStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "existing-refresh",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(currentStorage);
+		const assessment = {
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "existing@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "",
+		};
+		const assessOpencodeAccountPoolMock = vi.fn().mockResolvedValue(assessment);
+		vi.doMock("../lib/storage.js", async () => {
+			const actual = await vi.importActual("../lib/storage.js");
+			return {
+				...(actual as Record<string, unknown>),
+				loadAccounts: loadAccountsMock,
+				loadFlaggedAccounts: loadFlaggedAccountsMock,
+				saveAccounts: saveAccountsMock,
+				saveFlaggedAccounts: saveFlaggedAccountsMock,
+				setStoragePath: setStoragePathMock,
+				getStoragePath: getStoragePathMock,
+				getActionableNamedBackupRestores: getActionableNamedBackupRestoresMock,
+				listNamedBackups: listNamedBackupsMock,
+				listRotatingBackups: listRotatingBackupsMock,
+				assessNamedBackupRestore: assessNamedBackupRestoreMock,
+				getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
+				restoreNamedBackup: restoreNamedBackupMock,
+				assessOpencodeAccountPool: assessOpencodeAccountPoolMock,
+				importAccounts: vi.fn().mockResolvedValue({
+					imported: 1,
+					skipped: 0,
+					total: 2,
+				}),
+			};
+		});
+		confirmMock.mockResolvedValueOnce(true);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		vi.resetModules();
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).toHaveBeenCalledWith(
+			"Import OpenCode accounts from /mock/.opencode/openai-codex-accounts.json?",
+		);
+	});
+
 	it("skips startup restore prompt in fallback login mode", async () => {
 		setInteractiveTTY(true);
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(false);

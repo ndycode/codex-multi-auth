@@ -10,10 +10,12 @@ import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import {
 	assessNamedBackupRestore,
+	assessOpencodeAccountPool,
 	clearAccounts,
 	createNamedBackup,
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
+	detectOpencodeAccountPoolPath,
 	exportAccounts,
 	formatStorageErrorHint,
 	getNamedBackupsDirectoryPath,
@@ -2711,6 +2713,78 @@ describe("storage", () => {
 			expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-3");
 			expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
 			expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
+		});
+	});
+
+	describe("opencode account pool detection", () => {
+		const originalLocalAppData = process.env.LOCALAPPDATA;
+		const originalAppData = process.env.APPDATA;
+		const originalPoolPath = process.env.CODEX_OPENCODE_POOL_PATH;
+		let tempRoot = "";
+		let poolPath = "";
+
+		beforeEach(async () => {
+			tempRoot = join(
+				tmpdir(),
+				"opencode-pool-" + Math.random().toString(36).slice(2),
+			);
+			poolPath = join(tempRoot, "OpenCode", "openai-codex-accounts.json");
+			process.env.LOCALAPPDATA = tempRoot;
+			process.env.APPDATA = tempRoot;
+			delete process.env.CODEX_OPENCODE_POOL_PATH;
+			await fs.mkdir(dirname(poolPath), { recursive: true });
+			setStoragePathDirect(join(tempRoot, "current-storage.json"));
+		});
+
+		afterEach(async () => {
+			if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = originalLocalAppData;
+			if (originalAppData === undefined) delete process.env.APPDATA;
+			else process.env.APPDATA = originalAppData;
+			if (originalPoolPath === undefined)
+				delete process.env.CODEX_OPENCODE_POOL_PATH;
+			else process.env.CODEX_OPENCODE_POOL_PATH = originalPoolPath;
+			setStoragePathDirect(null);
+			await fs.rm(tempRoot, { recursive: true, force: true });
+		});
+
+		it("detects and assesses a valid opencode pool source", async () => {
+			const poolStorage = {
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "pool-account",
+						refreshToken: "ref-pool",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			};
+			await fs.writeFile(poolPath, JSON.stringify(poolStorage));
+
+			const detected = detectOpencodeAccountPoolPath();
+			expect(detected).toBe(poolPath);
+
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment).not.toBeNull();
+			expect(assessment?.backup.path).toBe(poolPath);
+			expect(assessment?.valid).toBe(true);
+			expect(assessment?.imported).toBe(1);
+		});
+
+		it("refuses malformed opencode source before any mutation", async () => {
+			await fs.writeFile(poolPath, "not valid json");
+
+			const detected = detectOpencodeAccountPoolPath();
+			expect(detected).toBe(poolPath);
+
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment).not.toBeNull();
+			expect(assessment?.valid).toBe(false);
+			expect(assessment?.imported).toBeNull();
+			const current = await loadAccounts();
+			expect(current).toBeNull();
 		});
 	});
 

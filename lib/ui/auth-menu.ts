@@ -71,6 +71,7 @@ export type AuthMenuAction =
 	| { type: "check" }
 	| { type: "deep-check" }
 	| { type: "verify-flagged" }
+	| { type: "import-opencode" }
 	| { type: "restore-backup" }
 	| { type: "select-account"; account: AccountInfo }
 	| { type: "set-current-account"; account: AccountInfo }
@@ -593,6 +594,7 @@ function authMenuFocusKey(action: AuthMenuAction): string {
 		case "check":
 		case "deep-check":
 		case "verify-flagged":
+		case "import-opencode":
 		case "restore-backup":
 		case "search":
 		case "delete-all":
@@ -757,6 +759,11 @@ export async function showAuthMenu(
 			label: UI_COPY.mainMenu.recovery,
 			value: { type: "cancel" },
 			kind: "heading",
+		});
+		items.push({
+			label: UI_COPY.mainMenu.importOpencode,
+			value: { type: "import-opencode" },
+			color: "yellow",
 		});
 		items.push({
 			label: UI_COPY.mainMenu.restoreBackup,
