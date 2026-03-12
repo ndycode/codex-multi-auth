@@ -630,7 +630,8 @@ export interface ActionableNamedBackupRecoveries {
 type AccountSnapshotReason =
 	| "delete-saved-accounts"
 	| "reset-local-state"
-	| "import-accounts";
+	| "import-accounts"
+	| "codex-cli-sync";
 
 export type AccountSnapshotFailurePolicy = "warn" | "error";
 

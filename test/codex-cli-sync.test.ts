@@ -1,21 +1,26 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as codexCliState from "../lib/codex-cli/state.js";
 import { clearCodexCliStateCache } from "../lib/codex-cli/state.js";
+import type { CodexCliSyncRun } from "../lib/codex-cli/sync.js";
 import {
 	__resetLastCodexCliSyncRunForTests,
 	getActiveSelectionForFamily,
 	getLastCodexCliSyncRun,
+	getLatestCodexCliSyncRollbackPlan,
 	previewCodexCliSync,
+	rollbackLatestCodexCliSync,
 	syncAccountStorageFromCodexCli,
 } from "../lib/codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
+import * as storage from "../lib/storage.js";
 import {
 	__resetSyncHistoryForTests,
+	appendSyncHistoryEntry,
 	configureSyncHistoryForTests,
 	readSyncHistory,
 } from "../lib/sync-history.js";
@@ -30,6 +35,7 @@ describe("codex-cli sync", () => {
 	let previousConfigPath: string | undefined;
 	let previousSync: string | undefined;
 	let previousEnforceFileStore: string | undefined;
+	let previousMultiAuthDir: string | undefined;
 
 	beforeEach(async () => {
 		previousPath = process.env.CODEX_CLI_ACCOUNTS_PATH;
@@ -38,6 +44,7 @@ describe("codex-cli sync", () => {
 		previousSync = process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
 		previousEnforceFileStore =
 			process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE;
+		previousMultiAuthDir = process.env.CODEX_MULTI_AUTH_DIR;
 		tempDir = await mkdtemp(join(tmpdir(), "codex-multi-auth-sync-"));
 		accountsPath = join(tempDir, "accounts.json");
 		authPath = join(tempDir, "auth.json");
@@ -849,6 +856,240 @@ describe("codex-cli sync", () => {
 		const persisted = getLastCodexCliSyncRun();
 		expect(persisted?.outcome).toBe("changed");
 		expect(persisted?.summary.addedAccountCount).toBe(1);
+	});
+
+	it("records rollback snapshot metadata when a snapshot exists", async () => {
+		const snapshotMetadata: storage.NamedBackupMetadata = {
+			name: "accounts-codex-cli-sync-snapshot-2026-03-12_01-02-03",
+			path: join(
+				tempDir,
+				"logs",
+				"accounts-codex-cli-sync-snapshot-2026-03-12_01-02-03.json",
+			),
+			createdAt: 1,
+			updatedAt: 1,
+			sizeBytes: 1,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: [],
+			valid: true,
+		};
+		const snapshotSpy = vi
+			.spyOn(storage, "snapshotAccountStorage")
+			.mockResolvedValue(snapshotMetadata);
+		try {
+			await writeFile(
+				accountsPath,
+				JSON.stringify(
+					{
+						activeAccountId: "acc_b",
+						accounts: [
+							{
+								accountId: "acc_b",
+								email: "b@example.com",
+								auth: {
+									tokens: {
+										access_token: "access-b",
+										refresh_token: "refresh-b",
+									},
+								},
+							},
+						],
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			const current: AccountStorageV3 = {
+				version: 3,
+				accounts: [
+					{
+						accountId: "acc_a",
+						email: "a@example.com",
+						refreshToken: "refresh-a",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			};
+
+			await syncAccountStorageFromCodexCli(current, { trigger: "manual" });
+
+			const expectedSnapshot = {
+				name: snapshotMetadata.name,
+				path: snapshotMetadata.path,
+			};
+			const lastRun = getLastCodexCliSyncRun();
+			expect(lastRun?.rollbackSnapshot).toEqual(expectedSnapshot);
+			const history = await readSyncHistory({ kind: "codex-cli-sync" });
+			expect(history.at(-1)?.run.rollbackSnapshot).toEqual(expectedSnapshot);
+		} finally {
+			snapshotSpy.mockRestore();
+		}
+	});
+
+	it("records null rollback snapshot metadata when no snapshot exists", async () => {
+		const snapshotSpy = vi
+			.spyOn(storage, "snapshotAccountStorage")
+			.mockResolvedValue(null);
+		try {
+			await writeFile(
+				accountsPath,
+				JSON.stringify(
+					{
+						activeAccountId: "acc_b",
+						accounts: [
+							{
+								accountId: "acc_b",
+								email: "b@example.com",
+								auth: {
+									tokens: {
+										access_token: "access-b",
+										refresh_token: "refresh-b",
+									},
+								},
+							},
+						],
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			await syncAccountStorageFromCodexCli(null, { trigger: "manual" });
+
+			const lastRun = getLastCodexCliSyncRun();
+			expect(lastRun?.rollbackSnapshot).toBeNull();
+			const history = await readSyncHistory({ kind: "codex-cli-sync" });
+			expect(history.at(-1)?.run.rollbackSnapshot).toBeNull();
+		} finally {
+			snapshotSpy.mockRestore();
+		}
+	});
+
+	it("restores the latest Codex CLI sync rollback checkpoint", async () => {
+		const storagePath = join(tempDir, "restore", "openai-codex-accounts.json");
+		const snapshotPath = join(tempDir, "logs", "rollback-snapshot.json");
+		await mkdir(join(tempDir, "restore"), { recursive: true });
+		await mkdir(join(tempDir, "logs"), { recursive: true });
+		storage.setStoragePathDirect(storagePath);
+
+		try {
+			const snapshotStorage: AccountStorageV3 = {
+				version: 3,
+				accounts: [
+					{
+						email: "pre-sync@example.com",
+						refreshToken: "refresh-pre",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			};
+			await writeFile(
+				snapshotPath,
+				JSON.stringify(snapshotStorage, null, 2),
+				"utf-8",
+			);
+
+			const postSyncStorage: AccountStorageV3 = {
+				version: 3,
+				accounts: [
+					{
+						email: "post-sync@example.com",
+						refreshToken: "refresh-post",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			};
+			await storage.saveAccounts(postSyncStorage);
+
+			const summary = {
+				sourceAccountCount: 0,
+				targetAccountCountBefore: 0,
+				targetAccountCountAfter: 0,
+				addedAccountCount: 0,
+				updatedAccountCount: 0,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			};
+			const recordedRun: CodexCliSyncRun = {
+				outcome: "changed",
+				runAt: Date.now(),
+				sourcePath: accountsPath,
+				targetPath: storagePath,
+				summary,
+				trigger: "manual",
+				rollbackSnapshot: {
+					name: "accounts-codex-cli-sync-snapshot-test",
+					path: snapshotPath,
+				},
+			};
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: recordedRun.runAt,
+				run: recordedRun,
+			});
+
+			const plan = await getLatestCodexCliSyncRollbackPlan();
+			const result = await rollbackLatestCodexCliSync(plan);
+			expect(plan.status).toBe("ready");
+			expect(result.status).toBe("restored");
+			const restored = await storage.loadAccounts();
+			expect(restored?.accounts[0]?.refreshToken).toBe("refresh-pre");
+			expect(restored?.activeIndex).toBe(0);
+		} finally {
+			storage.setStoragePathDirect(null);
+		}
+	});
+
+	it("refuses rollback when no checkpoint exists", async () => {
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("unavailable");
+		expect(plan.reason).toMatch(/no manual codex cli sync/i);
+	});
+
+	it("refuses rollback when checkpoint file is missing", async () => {
+		const missingPath = join(tempDir, "logs", "missing-snapshot.json");
+		const summary = {
+			sourceAccountCount: 0,
+			targetAccountCountBefore: 0,
+			targetAccountCountAfter: 0,
+			addedAccountCount: 0,
+			updatedAccountCount: 0,
+			unchangedAccountCount: 0,
+			destinationOnlyPreservedCount: 0,
+			selectionChanged: false,
+		};
+		const recordedRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: Date.now(),
+			sourcePath: accountsPath,
+			targetPath: accountsPath,
+			summary,
+			trigger: "manual",
+			rollbackSnapshot: { name: "missing", path: missingPath },
+		};
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: recordedRun.runAt,
+			run: recordedRun,
+		});
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("unavailable");
+		expect(plan.reason).toContain("missing");
 	});
 
 	it("returns current storage when state loading throws", async () => {

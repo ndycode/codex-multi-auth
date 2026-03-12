@@ -1,3 +1,4 @@
+import { existsSync, promises as fs } from "node:fs";
 import { createLogger } from "../logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import {
@@ -5,11 +6,17 @@ import {
 	type AccountStorageV3,
 	getLastAccountsSaveTimestamp,
 	getStoragePath,
+	type NamedBackupMetadata,
+	normalizeAccountStorage,
+	restoreNamedBackup,
+	saveAccounts,
+	snapshotAccountStorage,
 } from "../storage.js";
 import {
 	appendSyncHistoryEntry,
 	cloneSyncHistoryEntry,
 	readLatestSyncHistorySync,
+	readSyncHistory,
 } from "../sync-history.js";
 import {
 	incrementCodexCliMetric,
@@ -66,6 +73,37 @@ export interface CodexCliSyncSummary {
 	selectionChanged: boolean;
 }
 
+export type CodexCliSyncTrigger = "manual" | "automatic";
+
+export interface CodexCliSyncRollbackSnapshot {
+	name: string;
+	path: string;
+}
+
+export interface CodexCliSyncRollbackExecutionResult {
+	snapshot: CodexCliSyncRollbackSnapshot;
+	restore: {
+		imported: number;
+		total: number;
+		skipped: number;
+	};
+}
+
+export interface CodexCliSyncRollbackPlan {
+	status: "ready" | "unavailable";
+	reason: string;
+	snapshot: CodexCliSyncRollbackSnapshot | null;
+	accountCount?: number;
+	storage?: AccountStorageV3;
+}
+
+export interface CodexCliSyncRollbackPlanResult {
+	status: "restored" | "unavailable" | "error";
+	reason: string;
+	snapshot: CodexCliSyncRollbackSnapshot | null;
+	accountCount?: number;
+}
+
 export interface CodexCliSyncBackupContext {
 	enabled: boolean;
 	targetPath: string;
@@ -89,6 +127,8 @@ export interface CodexCliSyncRun {
 	targetPath: string;
 	summary: CodexCliSyncSummary;
 	message?: string;
+	trigger: CodexCliSyncTrigger;
+	rollbackSnapshot: CodexCliSyncRollbackSnapshot | null;
 }
 
 type UpsertAction = "skipped" | "added" | "updated" | "unchanged";
@@ -107,6 +147,33 @@ interface ReconcileResult {
 let lastCodexCliSyncRun: CodexCliSyncRun | null = null;
 let lastHistoryLoadAttempted = false;
 
+function normalizeCodexCliSyncRun(
+	run: CodexCliSyncRun | null,
+): CodexCliSyncRun | null {
+	if (!run) return null;
+	return {
+		...run,
+		trigger: run.trigger ?? "automatic",
+		summary: { ...run.summary },
+		rollbackSnapshot: run.rollbackSnapshot ? { ...run.rollbackSnapshot } : null,
+	};
+}
+
+function cloneCodexCliSyncRun(
+	run: CodexCliSyncRun | null,
+): CodexCliSyncRun | null {
+	const normalized = normalizeCodexCliSyncRun(run);
+	return normalized
+		? {
+				...normalized,
+				summary: { ...normalized.summary },
+				rollbackSnapshot: normalized.rollbackSnapshot
+					? { ...normalized.rollbackSnapshot }
+					: null,
+			}
+		: null;
+}
+
 function createEmptySyncSummary(): CodexCliSyncSummary {
 	return {
 		sourceAccountCount: 0,
@@ -120,8 +187,166 @@ function createEmptySyncSummary(): CodexCliSyncSummary {
 	};
 }
 
+async function captureRollbackSnapshot(): Promise<CodexCliSyncRollbackSnapshot | null> {
+	const snapshot: NamedBackupMetadata | null = await snapshotAccountStorage({
+		reason: "codex-cli-sync",
+		failurePolicy: "warn",
+	});
+	if (!snapshot) return null;
+	return { name: snapshot.name, path: snapshot.path };
+}
+
+async function findLatestManualCodexCliSyncRun(): Promise<CodexCliSyncRun | null> {
+	const history = await readSyncHistory({ kind: "codex-cli-sync" });
+	for (let i = history.length - 1; i >= 0; i -= 1) {
+		const entry = history[i];
+		if (!entry || entry.kind !== "codex-cli-sync") continue;
+		const normalized = normalizeCodexCliSyncRun(entry.run);
+		if (!normalized) continue;
+		if (normalized.trigger !== "manual") continue;
+		return normalized;
+	}
+	return null;
+}
+
+export async function rollbackLastCodexCliSync(): Promise<CodexCliSyncRollbackExecutionResult> {
+	const lastRun = await findLatestManualCodexCliSyncRun();
+	if (!lastRun) {
+		throw new Error(
+			"No manual Codex CLI sync run with a rollback snapshot is available to restore.",
+		);
+	}
+	const snapshot = lastRun.rollbackSnapshot;
+	if (!snapshot) {
+		throw new Error(
+			"Latest manual Codex CLI sync run did not record a rollback snapshot.",
+		);
+	}
+	if (!snapshot.name || snapshot.name.trim().length === 0) {
+		throw new Error(
+			"Rollback snapshot name is missing from the recorded manual sync run.",
+		);
+	}
+	if (!snapshot.path || snapshot.path.trim().length === 0) {
+		throw new Error(
+			"Rollback snapshot path is missing from the recorded manual sync run.",
+		);
+	}
+	if (!existsSync(snapshot.path)) {
+		throw new Error(`Rollback snapshot not found at ${snapshot.path}`);
+	}
+	const restoreResult = await restoreNamedBackup(snapshot.name);
+	return {
+		snapshot,
+		restore: restoreResult,
+	};
+}
+
+function formatRollbackPlanFromSnapshot(
+	snapshot: CodexCliSyncRollbackSnapshot | null,
+): CodexCliSyncRollbackPlan {
+	if (!snapshot) {
+		return {
+			status: "unavailable",
+			reason:
+				"Latest manual Codex CLI sync did not capture a rollback checkpoint to restore.",
+			snapshot: null,
+		};
+	}
+
+	return {
+		status: "ready",
+		reason: "Rollback checkpoint is ready.",
+		snapshot,
+	};
+}
+
+async function loadRollbackSnapshot(
+	snapshot: CodexCliSyncRollbackSnapshot | null,
+): Promise<CodexCliSyncRollbackPlan> {
+	if (!snapshot) return formatRollbackPlanFromSnapshot(snapshot);
+
+	try {
+		const raw = await fs.readFile(snapshot.path, "utf-8");
+		const parsed = JSON.parse(raw) as unknown;
+		const normalized = normalizeAccountStorage(parsed);
+		if (!normalized) {
+			return {
+				status: "unavailable",
+				reason: "Rollback checkpoint is invalid or empty.",
+				snapshot,
+			};
+		}
+		return {
+			status: "ready",
+			reason: `Rollback checkpoint ready (${normalized.accounts.length} account(s)).`,
+			snapshot,
+			accountCount: normalized.accounts.length,
+			storage: normalized,
+		};
+	} catch (error) {
+		const reason =
+			(error as NodeJS.ErrnoException).code === "ENOENT"
+				? `Rollback checkpoint is missing at ${snapshot.path}.`
+				: `Failed to read rollback checkpoint: ${
+						error instanceof Error ? error.message : String(error)
+					}`;
+		return {
+			status: "unavailable",
+			reason,
+			snapshot,
+		};
+	}
+}
+
+export async function getLatestCodexCliSyncRollbackPlan(): Promise<CodexCliSyncRollbackPlan> {
+	const lastManualRun = await findLatestManualCodexCliSyncRun();
+	if (!lastManualRun) {
+		return {
+			status: "unavailable",
+			reason:
+				"No manual Codex CLI sync with a rollback checkpoint is available.",
+			snapshot: null,
+		};
+	}
+	return loadRollbackSnapshot(lastManualRun.rollbackSnapshot);
+}
+
+export async function rollbackLatestCodexCliSync(
+	plan?: CodexCliSyncRollbackPlan,
+): Promise<CodexCliSyncRollbackPlanResult> {
+	const resolvedPlan =
+		plan && plan.status === "ready"
+			? plan
+			: await getLatestCodexCliSyncRollbackPlan();
+	if (resolvedPlan.status !== "ready" || !resolvedPlan.storage) {
+		return {
+			status: "unavailable",
+			reason: resolvedPlan.reason,
+			snapshot: resolvedPlan.snapshot,
+		};
+	}
+
+	try {
+		await saveAccounts(resolvedPlan.storage);
+		return {
+			status: "restored",
+			reason: resolvedPlan.reason,
+			snapshot: resolvedPlan.snapshot,
+			accountCount:
+				resolvedPlan.accountCount ?? resolvedPlan.storage.accounts.length,
+		};
+	} catch (error) {
+		return {
+			status: "error",
+			reason: error instanceof Error ? error.message : String(error),
+			snapshot: resolvedPlan.snapshot,
+		};
+	}
+}
+
 async function setLastCodexCliSyncRun(run: CodexCliSyncRun): Promise<void> {
-	lastCodexCliSyncRun = run;
+	lastCodexCliSyncRun = normalizeCodexCliSyncRun(run);
 	try {
 		await appendSyncHistoryEntry({
 			kind: "codex-cli-sync",
@@ -136,32 +361,27 @@ async function setLastCodexCliSyncRun(run: CodexCliSyncRun): Promise<void> {
 }
 
 export function getLastCodexCliSyncRun(): CodexCliSyncRun | null {
-	if (lastCodexCliSyncRun) {
-		return {
-			...lastCodexCliSyncRun,
-			summary: { ...lastCodexCliSyncRun.summary },
-		};
-	}
+	const cached = cloneCodexCliSyncRun(lastCodexCliSyncRun);
+	if (cached) return cached;
 
 	if (!lastHistoryLoadAttempted) {
 		lastHistoryLoadAttempted = true;
 		const latest = readLatestSyncHistorySync();
 		const cloned = cloneSyncHistoryEntry(latest);
 		if (cloned?.kind === "codex-cli-sync") {
-			lastCodexCliSyncRun = cloned.run;
-			return {
-				...cloned.run,
-				summary: { ...cloned.run.summary },
-			};
+			lastCodexCliSyncRun = normalizeCodexCliSyncRun(cloned.run);
+			return cloneCodexCliSyncRun(lastCodexCliSyncRun);
 		}
 	}
 
 	return null;
 }
 
-export function __resetLastCodexCliSyncRunForTests(): void {
-	lastCodexCliSyncRun = null;
-	lastHistoryLoadAttempted = false;
+export function __resetLastCodexCliSyncRunForTests(
+	run: CodexCliSyncRun | null = null,
+): void {
+	lastCodexCliSyncRun = normalizeCodexCliSyncRun(run);
+	lastHistoryLoadAttempted = run !== null;
 }
 
 function buildIndexByAccountId(
@@ -553,9 +773,12 @@ export async function previewCodexCliSync(
  */
 export async function syncAccountStorageFromCodexCli(
 	current: AccountStorageV3 | null,
+	options: { trigger?: CodexCliSyncTrigger } = {},
 ): Promise<{ storage: AccountStorageV3 | null; changed: boolean }> {
 	incrementCodexCliMetric("reconcileAttempts");
 	const targetPath = getStoragePath();
+	const trigger: CodexCliSyncTrigger = options.trigger ?? "automatic";
+	let rollbackSnapshot: CodexCliSyncRollbackSnapshot | null = null;
 	try {
 		const state = await loadCodexCliState();
 		if (!state) {
@@ -577,8 +800,14 @@ export async function syncAccountStorageFromCodexCli(
 					(process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI ?? "").trim() === "0"
 						? "Codex CLI sync disabled by environment override."
 						: "No Codex CLI sync source was available.",
+				trigger,
+				rollbackSnapshot,
 			});
 			return { storage: current, changed: false };
+		}
+
+		if (trigger === "manual") {
+			rollbackSnapshot = await captureRollbackSnapshot();
 		}
 
 		const reconciled = reconcileCodexCliState(current, state);
@@ -593,6 +822,8 @@ export async function syncAccountStorageFromCodexCli(
 				sourcePath: state.path,
 				targetPath,
 				summary: reconciled.summary,
+				trigger,
+				rollbackSnapshot,
 			});
 			log.debug("Codex CLI reconcile completed", {
 				operation: "reconcile-storage",
@@ -613,6 +844,8 @@ export async function syncAccountStorageFromCodexCli(
 			sourcePath: state.path,
 			targetPath,
 			summary: reconciled.summary,
+			trigger,
+			rollbackSnapshot,
 		});
 		log.debug("Codex CLI reconcile completed", {
 			operation: "reconcile-storage",
@@ -640,6 +873,8 @@ export async function syncAccountStorageFromCodexCli(
 				targetAccountCountAfter: current?.accounts.length ?? 0,
 			},
 			message: error instanceof Error ? error.message : String(error),
+			trigger,
+			rollbackSnapshot,
 		});
 		log.warn("Codex CLI reconcile failed", {
 			operation: "reconcile-storage",

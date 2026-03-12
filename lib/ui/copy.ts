@@ -112,11 +112,12 @@ export const UI_COPY = {
 		syncCenterTitle: "Codex CLI Sync",
 		syncCenterSubtitle:
 			"Inspect source files and preview one-way sync before applying it",
-		syncCenterHelp: "Enter Select | A Apply | R Refresh | Q Back",
+		syncCenterHelp: "Enter Select | A Apply | L Rollback | R Refresh | Q Back",
 		syncCenterOverviewHeading: "Sync Overview",
 		syncCenterActionsHeading: "Actions",
 		syncCenterRefresh: "Refresh Preview",
 		syncCenterApply: "Apply Preview To Target",
+		syncCenterRollback: "Rollback Last Apply",
 		syncCenterBack: "Back",
 		backendCategoriesHeading: "Categories",
 		backendCategoryTitle: "Backend Category",

@@ -11,7 +11,9 @@ import {
 	type CodexCliSyncPreview,
 	type CodexCliSyncRun,
 	type CodexCliSyncSummary,
+	getLatestCodexCliSyncRollbackPlan,
 	previewCodexCliSync,
+	rollbackLatestCodexCliSync,
 	syncAccountStorageFromCodexCli,
 } from "../codex-cli/sync.js";
 import {
@@ -286,6 +288,7 @@ type SettingsHubAction =
 type SyncCenterAction =
 	| { type: "refresh" }
 	| { type: "apply" }
+	| { type: "rollback" }
 	| { type: "back" };
 
 interface SyncCenterOverviewContext {
@@ -2626,6 +2629,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 	};
 
 	let { preview, context } = await buildPreview(true);
+	let rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
 	while (true) {
 		const overview = buildSyncCenterOverview(preview, context);
 		const items: MenuItem<SyncCenterAction>[] = [
@@ -2656,6 +2660,13 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				disabled: preview.status !== "ready",
 			},
 			{
+				label: UI_COPY.settings.syncCenterRollback,
+				hint: rollbackPlan.reason,
+				value: { type: "rollback" },
+				color: rollbackPlan.status === "ready" ? "green" : "yellow",
+				disabled: rollbackPlan.status !== "ready",
+			},
+			{
 				label: UI_COPY.settings.syncCenterRefresh,
 				hint: "Re-read the source files and rebuild the sync preview.",
 				value: { type: "refresh" },
@@ -2680,6 +2691,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				if (lower === "q") return { type: "back" };
 				if (lower === "r") return { type: "refresh" };
 				if (lower === "a") return { type: "apply" };
+				if (lower === "l") return { type: "rollback" };
 				return undefined;
 			},
 		});
@@ -2687,12 +2699,56 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		if (!result || result.type === "back") return;
 		if (result.type === "refresh") {
 			({ preview, context } = await buildPreview(true));
+			rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+			continue;
+		}
+		if (result.type === "rollback") {
+			try {
+				if (rollbackPlan.status !== "ready" || !rollbackPlan.storage) {
+					preview = {
+						...preview,
+						status: "error",
+						statusDetail: rollbackPlan.reason,
+					};
+					context = resolveSyncCenterContext(await loadCodexCliState());
+					rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+					continue;
+				}
+				const rollbackResult = await rollbackLatestCodexCliSync(rollbackPlan);
+				if (rollbackResult.status !== "restored") {
+					preview = {
+						...preview,
+						status: "error",
+						statusDetail: rollbackResult.reason,
+					};
+					context = resolveSyncCenterContext(await loadCodexCliState());
+					rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+					continue;
+				}
+				const restoredStorage = await loadAccounts();
+				const state = await loadCodexCliState({ forceRefresh: true });
+				preview = await previewCodexCliSync(restoredStorage, {
+					forceRefresh: true,
+					storageBackupEnabled: getStorageBackupEnabled(config),
+				});
+				context = resolveSyncCenterContext(state);
+			} catch (error) {
+				preview = {
+					...preview,
+					status: "error",
+					statusDetail: error instanceof Error ? error.message : String(error),
+				};
+				context = resolveSyncCenterContext(null);
+			}
+			rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
 			continue;
 		}
 
 		try {
 			const current = await loadAccounts();
-			const synced = await syncAccountStorageFromCodexCli(current);
+			const synced = await syncAccountStorageFromCodexCli(current, {
+				trigger: "manual",
+			});
 			if (synced.changed && synced.storage) {
 				await saveAccounts(synced.storage);
 			}
@@ -2702,6 +2758,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				storageBackupEnabled: getStorageBackupEnabled(config),
 			});
 			context = resolveSyncCenterContext(state);
+			rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
 		} catch (error) {
 			preview = {
 				...preview,
@@ -2709,6 +2766,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				statusDetail: error instanceof Error ? error.message : String(error),
 			};
 			context = resolveSyncCenterContext(null);
+			rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
 		}
 	}
 }
