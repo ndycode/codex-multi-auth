@@ -1321,6 +1321,59 @@ describe("AccountManager", () => {
       expect(accounts[1]?.refreshToken).toBe("new-refresh");
     });
 
+    it("adds fallback as a distinct account when duplicate business accounts share one accountId", () => {
+      const now = Date.now();
+      const payload = {
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "workspace-shared",
+        },
+        email: "gamma@example.com",
+      };
+      const accessToken = `header.${Buffer.from(JSON.stringify(payload)).toString("base64")}.signature`;
+
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            accountId: "workspace-shared",
+            email: "alpha@example.com",
+            refreshToken: "refresh-alpha",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            accountId: "workspace-shared",
+            email: "beta@example.com",
+            refreshToken: "refresh-beta",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        access: accessToken,
+        refresh: "refresh-gamma",
+        expires: now + 60_000,
+      };
+
+      const manager = new AccountManager(auth, stored);
+
+      expect(manager.getAccountCount()).toBe(3);
+      expect(manager.getAccountsSnapshot().map((account) => account.email)).toEqual([
+        "alpha@example.com",
+        "beta@example.com",
+        "gamma@example.com",
+      ]);
+      expect(manager.getAccountsSnapshot().map((account) => account.refreshToken)).toEqual([
+        "refresh-alpha",
+        "refresh-beta",
+        "refresh-gamma",
+      ]);
+    });
+
     it("sets accountIdSource to token when fallbackAccountId exists", () => {
       const now = Date.now();
       const payload = {

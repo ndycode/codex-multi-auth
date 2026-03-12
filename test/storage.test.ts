@@ -649,6 +649,45 @@ describe("storage", () => {
 			const deduped = deduplicateAccounts(accounts);
 			expect(deduped).toHaveLength(2);
 		});
+
+		it("preserves distinct emails when business accounts share the same accountId", () => {
+			const accounts = [
+				{
+					accountId: "workspace-1",
+					email: "alpha@example.com",
+					refreshToken: "token-alpha",
+					lastUsed: 100,
+				},
+				{
+					accountId: "workspace-1",
+					email: "beta@example.com",
+					refreshToken: "token-beta",
+					lastUsed: 200,
+				},
+				{
+					accountId: "workspace-1",
+					email: "alpha@example.com",
+					refreshToken: "token-alpha-newer",
+					lastUsed: 300,
+				},
+			];
+
+			const deduped = deduplicateAccounts(accounts);
+
+			expect(deduped).toHaveLength(2);
+			expect(deduped).toContainEqual(
+				expect.objectContaining({
+					email: "alpha@example.com",
+					refreshToken: "token-alpha-newer",
+				}),
+			);
+			expect(deduped).toContainEqual(
+				expect.objectContaining({
+					email: "beta@example.com",
+					refreshToken: "token-beta",
+				}),
+			);
+		});
 	});
 
 	describe("deduplicateAccountsByEmail edge cases", () => {
@@ -802,6 +841,41 @@ describe("storage", () => {
 			const result = normalizeAccountStorage(data);
 			expect(result?.accounts).toHaveLength(2);
 			expect(result?.activeIndex).toBe(1);
+		});
+
+		it("remaps activeIndex without collapsing same-workspace business accounts", () => {
+			const now = Date.now();
+			const data = {
+				version: 3,
+				activeIndex: 1,
+				accounts: [
+					{
+						refreshToken: "token-alpha-old",
+						accountId: "workspace-1",
+						email: "alpha@example.com",
+						lastUsed: now - 200,
+					},
+					{
+						refreshToken: "token-beta",
+						accountId: "workspace-1",
+						email: "beta@example.com",
+						lastUsed: now - 100,
+					},
+					{
+						refreshToken: "token-alpha-new",
+						accountId: "workspace-1",
+						email: "alpha@example.com",
+						lastUsed: now,
+					},
+				],
+			};
+
+			const result = normalizeAccountStorage(data);
+
+			expect(result?.accounts).toHaveLength(2);
+			expect(result?.activeIndex).toBe(0);
+			expect(result?.accounts[0]?.email).toBe("beta@example.com");
+			expect(result?.accounts[1]?.email).toBe("alpha@example.com");
 		});
 
 		it("handles v1 to v3 migration", () => {

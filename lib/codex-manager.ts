@@ -54,6 +54,7 @@ import {
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
+	normalizeEmailKey,
 	saveFlaggedAccounts,
 	saveAccounts,
 	setStoragePath,
@@ -1302,7 +1303,18 @@ async function persistAccountPool(
 				? indexByAccountId.get(accountId)
 				: undefined;
 		const existingByToken = indexByRefreshToken.get(result.refresh);
-		const existingIndex = existingById ?? existingByEmail ?? existingByToken;
+		const existingByIdAccount =
+			existingById !== undefined ? accounts[existingById] : undefined;
+		const existingByIdMatchesEmail =
+			!!accountEmail &&
+			normalizeEmailKey(existingByIdAccount?.email) === accountEmail;
+		const existingIndex =
+			existingByEmail ??
+			existingByToken ??
+			((existingById !== undefined &&
+				(!accountEmail || existingByIdMatchesEmail))
+				? existingById
+				: undefined);
 
 		if (existingIndex === undefined) {
 			const newIndex = accounts.length;

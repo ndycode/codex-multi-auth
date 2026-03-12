@@ -151,6 +151,15 @@ function summarizeAccount(account: AccountMetadataV3): OcChatgptAccountRef {
 	};
 }
 
+function getAccountIdentityKey(account: AccountMetadataV3): string {
+	const accountId = account.accountId?.trim();
+	const email = normalizeEmailKey(account.email);
+	if (accountId && email) return `account:${accountId}::email:${email}`;
+	if (accountId) return `account:${accountId}`;
+	if (email) return `email:${email}`;
+	return `refresh:${account.refreshToken}`;
+}
+
 /**
  * Build a preview payload summarizing storage for display in an import preview.
  *
@@ -190,13 +199,21 @@ function findNormalizedAccountIndex(
 ): number | null {
 	if (!target) return null;
 	const targetAccountId = target.accountId?.trim();
+	const targetEmail = normalizeEmailKey(target.email);
+	if (targetAccountId && targetEmail) {
+		const idx = accounts.findIndex(
+			(account) =>
+				account.accountId?.trim() === targetAccountId &&
+				normalizeEmailKey(account.email) === targetEmail,
+		);
+		if (idx >= 0) return idx;
+	}
 	if (targetAccountId) {
 		const idx = accounts.findIndex(
 			(account) => account.accountId?.trim() === targetAccountId,
 		);
 		if (idx >= 0) return idx;
 	}
-	const targetEmail = normalizeEmailKey(target.email);
 	if (targetEmail) {
 		const idx = accounts.findIndex(
 			(account) =>
@@ -313,19 +330,20 @@ function normalizeAccountsForTarget(accounts: AccountMetadataV3[]): {
 		valid.push(sanitized);
 	}
 
-	const byAccountId = new Map<string, AccountMetadataV3>();
+	const byAccountIdentity = new Map<string, AccountMetadataV3>();
 	const withoutAccountId: AccountMetadataV3[] = [];
 
 	for (const account of valid) {
 		if (account.accountId) {
-			const existing = byAccountId.get(account.accountId);
+			const identityKey = getAccountIdentityKey(account);
+			const existing = byAccountIdentity.get(identityKey);
 			if (!existing) {
-				byAccountId.set(account.accountId, account);
+				byAccountIdentity.set(identityKey, account);
 				continue;
 			}
 			const newest = pickNewest(existing, account);
 			if (newest === account) {
-				byAccountId.set(account.accountId, account);
+				byAccountIdentity.set(identityKey, account);
 				skipped.push({
 					source: summarizeAccount(existing),
 					reason: "duplicate-account-id",
@@ -395,7 +413,7 @@ function normalizeAccountsForTarget(accounts: AccountMetadataV3[]): {
 
 	return {
 		accounts: [
-			...byAccountId.values(),
+			...byAccountIdentity.values(),
 			...byEmail.values(),
 			...byRefreshToken.values(),
 		],
@@ -481,6 +499,17 @@ function matchDestination(
 	usedIndexes: Set<number>,
 ): { index: number; matchedBy: MatchStrategy } | null {
 	const sourceAccountId = source.accountId?.trim();
+	const sourceEmail = normalizeEmailKey(source.email);
+	if (sourceAccountId && sourceEmail) {
+		const idx = destination.findIndex(
+			(account, i) =>
+				!usedIndexes.has(i) &&
+				typeof account.accountId === "string" &&
+				account.accountId.trim() === sourceAccountId &&
+				normalizeEmailKey(account.email) === sourceEmail,
+		);
+		if (idx >= 0) return { index: idx, matchedBy: "accountId" };
+	}
 	if (sourceAccountId) {
 		const idx = destination.findIndex(
 			(account, i) =>
@@ -490,8 +519,6 @@ function matchDestination(
 		);
 		if (idx >= 0) return { index: idx, matchedBy: "accountId" };
 	}
-
-	const sourceEmail = normalizeEmailKey(source.email);
 	if (sourceEmail) {
 		const idx = destination.findIndex((account, i) => {
 			if (usedIndexes.has(i)) return false;

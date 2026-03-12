@@ -998,7 +998,7 @@ function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
 	for (let i = 0; i < accounts.length; i += 1) {
 		const account = accounts[i];
 		if (!account) continue;
-		const key = account.accountId || account.refreshToken;
+		const key = getAccountIdentityKey(account);
 		if (!key) continue;
 
 		const existingIndex = keyToIndex.get(key);
@@ -1028,7 +1028,8 @@ function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
 
 /**
  * Removes duplicate accounts, keeping the most recently used entry for each unique key.
- * Deduplication is based on accountId or refreshToken.
+ * Deduplication is based on accountId+email when both exist, otherwise accountId,
+ * then email, then refreshToken.
  * @param accounts - Array of accounts to deduplicate
  * @returns New array with duplicates removed
  */
@@ -1056,6 +1057,17 @@ export function normalizeEmailKey(
 	const trimmed = email.trim();
 	if (!trimmed) return undefined;
 	return trimmed.toLowerCase();
+}
+
+function getAccountIdentityKey(
+	account: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
+): string {
+	const accountId = account.accountId?.trim();
+	const email = normalizeEmailKey(account.email);
+	if (accountId && email) return `account:${accountId}::email:${email}`;
+	if (accountId) return `account:${accountId}`;
+	if (email) return `email:${email}`;
+	return `refresh:${account.refreshToken}`;
 }
 
 export function deduplicateAccountsByEmail<
@@ -1126,9 +1138,9 @@ function clampIndex(index: number, length: number): number {
 }
 
 function toAccountKey(
-	account: Pick<AccountMetadataV3, "accountId" | "refreshToken">,
+	account: Pick<AccountMetadataV3, "accountId" | "email" | "refreshToken">,
 ): string {
-	return account.accountId || account.refreshToken;
+	return getAccountIdentityKey(account);
 }
 
 function extractActiveKey(
@@ -1138,16 +1150,13 @@ function extractActiveKey(
 	const candidate = accounts[activeIndex];
 	if (!isRecord(candidate)) return undefined;
 
-	const accountId =
-		typeof candidate.accountId === "string" && candidate.accountId.trim()
-			? candidate.accountId
-			: undefined;
-	const refreshToken =
-		typeof candidate.refreshToken === "string" && candidate.refreshToken.trim()
-			? candidate.refreshToken
-			: undefined;
-
-	return accountId || refreshToken;
+	return getAccountIdentityKey({
+		accountId:
+			typeof candidate.accountId === "string" ? candidate.accountId : undefined,
+		email: typeof candidate.email === "string" ? candidate.email : undefined,
+		refreshToken:
+			typeof candidate.refreshToken === "string" ? candidate.refreshToken : "",
+	});
 }
 
 /**

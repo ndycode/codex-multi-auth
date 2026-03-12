@@ -197,6 +197,18 @@ export class AccountManager {
 		const fallbackAccountEmail = sanitizeEmail(extractAccountEmail(authFallback?.access));
 
 		if (stored && stored.accounts.length > 0) {
+			const duplicateCountByAccountId = new Map<string, number>();
+			for (const account of stored.accounts) {
+				const accountId = account.accountId?.trim();
+				if (!accountId) continue;
+				duplicateCountByAccountId.set(
+					accountId,
+					(duplicateCountByAccountId.get(accountId) ?? 0) + 1,
+				);
+			}
+			const fallbackAccountIdIsUnique = fallbackAccountId
+				? (duplicateCountByAccountId.get(fallbackAccountId) ?? 0) <= 1
+				: false;
 			const baseNow = nowMs();
 			this.accounts = stored.accounts
 				.map((account, index): ManagedAccount | null => {
@@ -206,10 +218,12 @@ export class AccountManager {
 
 					const matchesFallback =
 						!!authFallback &&
-						((fallbackAccountId && account.accountId === fallbackAccountId) ||
-							account.refreshToken === authFallback.refresh ||
+						(account.refreshToken === authFallback.refresh ||
 							(!!fallbackAccountEmail &&
-								sanitizeEmail(account.email) === fallbackAccountEmail));
+								sanitizeEmail(account.email) === fallbackAccountEmail) ||
+							(fallbackAccountIdIsUnique &&
+								fallbackAccountId &&
+								account.accountId === fallbackAccountId));
 
 					const refreshToken = matchesFallback && authFallback ? authFallback.refresh : account.refreshToken;
  
@@ -240,7 +254,6 @@ export class AccountManager {
 				this.accounts.some(
 					(account) =>
 						account.refreshToken === authFallback.refresh ||
-						(fallbackAccountId && account.accountId === fallbackAccountId) ||
 						(!!fallbackAccountEmail && account.email === fallbackAccountEmail),
 				);
 
@@ -825,4 +838,3 @@ export function formatCooldown(
 	const reason = account.cooldownReason ? ` (${account.cooldownReason})` : "";
 	return `${formatWaitTime(remaining)}${reason}`;
 }
-

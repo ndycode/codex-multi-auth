@@ -562,7 +562,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								? indexByAccountId.get(accountId)
 								: undefined;
 						const existingByToken = indexByRefreshToken.get(result.refresh);
-						const existingIndex = existingById ?? existingByEmail ?? existingByToken;
+						const existingByIdAccount =
+							existingById !== undefined ? accounts[existingById] : undefined;
+						const existingByIdMatchesEmail =
+							!!accountEmail &&
+							normalizeEmailKey(existingByIdAccount?.email) === accountEmail;
+						const existingIndex =
+							existingByEmail ??
+							existingByToken ??
+							((existingById !== undefined &&
+								(!accountEmail || existingByIdMatchesEmail))
+								? existingById
+								: undefined);
 
 						if (existingIndex === undefined) {
 							const newIndex = accounts.length;
@@ -4163,5 +4174,3 @@ while (attempted.size < Math.max(1, accountCount)) {
 export const OpenAIAuthPlugin = OpenAIOAuthPlugin;
 
 export default OpenAIOAuthPlugin;
-
-
