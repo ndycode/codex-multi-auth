@@ -45,6 +45,7 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
 
@@ -535,6 +536,10 @@ export async function exportNamedBackup(
 
 export function getFlaggedAccountsPath(): string {
 	return join(dirname(getStoragePath()), FLAGGED_ACCOUNTS_FILE_NAME);
+}
+
+function getIntentionalResetMarkerPath(path: string): string {
+	return `${path}${RESET_MARKER_SUFFIX}`;
 }
 
 function getLegacyFlaggedAccountsPath(): string {
@@ -1329,7 +1334,8 @@ export async function clearAccounts(): Promise<void> {
 	return withStorageLock(async () => {
 		const path = getStoragePath();
 		const walPath = getAccountsWalPath(path);
-		const backupPaths = await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+		const backupPaths =
+			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
 		const clearPath = async (targetPath: string): Promise<void> => {
 			try {
 				await fs.unlink(targetPath);
@@ -1470,12 +1476,17 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 
 export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	const path = getFlaggedAccountsPath();
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
 
 	try {
 		const content = await fs.readFile(path, "utf-8");
 		const data = JSON.parse(content) as unknown;
-		return normalizeFlaggedStorage(data);
+		const loaded = normalizeFlaggedStorage(data);
+		if (existsSync(resetMarkerPath)) {
+			return empty;
+		}
+		return loaded;
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
@@ -1550,14 +1561,37 @@ export async function saveFlaggedAccounts(
 
 export async function clearFlaggedAccounts(): Promise<void> {
 	return withStorageLock(async () => {
+		const path = getFlaggedAccountsPath();
+		const markerPath = getIntentionalResetMarkerPath(path);
 		try {
-			await fs.unlink(getFlaggedAccountsPath());
+			await fs.writeFile(markerPath, "reset", {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== "ENOENT") {
-				log.error("Failed to clear flagged account storage", {
-					error: String(error),
-				});
+			log.error("Failed to write flagged reset marker", {
+				path,
+				markerPath,
+				error: String(error),
+			});
+			throw error;
+		}
+		const backupPaths =
+			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+		for (const candidate of [path, ...backupPaths, markerPath]) {
+			try {
+				await fs.unlink(candidate);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.error("Failed to clear flagged account storage", {
+						path: candidate,
+						error: String(error),
+					});
+					if (candidate === path) {
+						throw error;
+					}
+				}
 			}
 		}
 	});
