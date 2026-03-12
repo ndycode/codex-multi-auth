@@ -9,6 +9,8 @@ User-facing capability map for `codex-multi-auth`.
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |
 | Multi-account dashboard login | Add and manage multiple OAuth identities from one terminal flow | `codex auth login` |
+| Startup recovery prompt | Offer restore before OAuth when recoverable named backups are found and no active accounts exist | `codex auth login` |
+| Backup restore manager | Review named backups, merge with dedupe, and skip invalid or over-limit restores | `codex auth login` -> `Restore From Backup` |
 | Account dedupe and identity normalization | Avoid duplicate saved account rows | login flow |
 | Explicit active-account switching | Pick the current account by index instead of relying on hidden state | `codex auth switch <index>` |
 | Fast and deep health checks | See whether the current pool is usable before a coding session | `codex auth check` |
@@ -32,6 +34,7 @@ User-facing capability map for `codex-multi-auth`.
 | --- | --- | --- |
 | Safe repair workflow | Detects and repairs known local storage inconsistencies | `codex auth fix` |
 | Diagnostics with optional repair | One command to inspect and optionally fix common failures | `codex auth doctor` |
+| JSON diagnostics pack | Machine-readable state for support, bug reports, and deeper inspection | `codex auth report --live --json` |
 | Backup and WAL recovery | Safer persistence when local writes are interrupted or partially applied | storage runtime |
 
 ---
@@ -53,6 +56,8 @@ User-facing capability map for `codex-multi-auth`.
 | --- | --- |
 | Quick switch and search hotkeys | Faster navigation in the dashboard |
 | Account action hotkeys | Per-account set, refresh, toggle, and delete shortcuts |
+| Productized settings split | Keeps `Everyday Settings` separate from `Advanced & Operator` controls |
+| Preview-first sync center | Shows one-way Codex CLI sync results and rollback context before apply |
 | In-dashboard settings hub | Runtime and display tuning without editing files directly |
 | Browser-first OAuth with manual fallback | Works in normal and constrained terminal environments |
 

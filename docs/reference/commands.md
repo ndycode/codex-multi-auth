@@ -20,7 +20,7 @@ Compatibility aliases are supported:
 
 | Command | Description |
 | --- | --- |
-| `codex auth login` | Open interactive auth dashboard |
+| `codex auth login` | Open interactive auth dashboard, including login, restore, settings, and diagnostics entry points |
 | `codex auth list` | List saved accounts and active account |
 | `codex auth status` | Print short runtime/account summary |
 | `codex auth switch <index>` | Set active account by index |
@@ -93,6 +93,16 @@ Compatibility aliases are supported:
 ---
 
 ## Workflow Packs
+
+Interactive dashboard workflows:
+
+- Backup restore: `codex auth login` -> `Restore From Backup`
+- Startup recovery prompt: `codex auth login`, then confirm restore when recoverable named backups are found before OAuth
+- Sync preview and apply: `codex auth login` -> `Settings` -> `Codex CLI Sync`
+- Stable settings path: `codex auth login` -> `Settings` -> `Everyday Settings`
+- Advanced settings path: `codex auth login` -> `Settings` -> `Advanced & Operator`
+
+---
 
 Health and planning:
 

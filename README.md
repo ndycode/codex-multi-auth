@@ -7,13 +7,13 @@
 
 Multi-account OAuth for the official `@openai/codex` CLI.
 
-`codex-multi-auth` adds a local account manager, `codex auth ...` workflow, and recovery tooling on top of the official Codex CLI. It keeps the normal `codex` command path intact, makes account switching explicit, and can optionally power a plugin runtime with account rotation and failover.
+`codex-multi-auth` adds a local account manager, `codex auth ...` workflow, backup and recovery tooling, and a productized settings surface on top of the official Codex CLI. It keeps the normal `codex` command path intact, makes account switching explicit, and can optionally power a plugin runtime with account rotation and failover.
 
 - Uses the official `@openai/codex` CLI instead of replacing it
 - Adds `codex auth login`, `list`, `switch`, `check`, `forecast`, `report`, `fix`, and `doctor`
 - Stores accounts locally, including project-scoped account pools for repo-specific workflows
-- Provides an interactive terminal dashboard for login, switching, and settings
-- Includes recovery and health tooling for stale tokens, bad sync state, and routing problems
+- Provides an interactive terminal dashboard for login, restore, switching, sync preview, and settings
+- Includes recovery and diagnostics tooling for stale tokens, backup restore, bad sync state, and routing problems
 
 ## Quick Example
 
@@ -52,8 +52,10 @@ This project wraps the official `codex` binary and intercepts the account-manage
 That gives you a stable workflow for:
 
 - signing into more than one ChatGPT-authenticated Codex account
+- restoring recoverable named backups before starting a fresh login
 - switching the active account by index instead of by hidden state
 - checking account health before a session
+- previewing Codex CLI account sync before applying one-way changes
 - repairing common local auth and storage problems
 - keeping separate project-level account pools when needed
 
@@ -64,10 +66,13 @@ The official Codex CLI is the right base tool, but a single opaque auth state is
 ## Features
 
 - Multi-account OAuth login through the official browser-based flow
+- Backup restore manager for recoverable named backups in `~/.codex/multi-auth/backups/`
 - Canonical `codex auth ...` command family for day-to-day account operations
-- Interactive dashboard with quick switch, search, and settings
+- Interactive dashboard with quick switch, search, restore, sync center, and settings
 - Project-scoped storage under `~/.codex/multi-auth/projects/<project-key>/...`
+- Startup recovery prompt that offers restore before OAuth when recoverable named backups are available
 - Health checks, flagged-account verification, live forecast, JSON reports, and safe repair commands
+- Settings split into stable everyday preferences and advanced operator controls
 - Optional plugin runtime for request transformation, token refresh, retry, failover, session affinity, and quota-aware account selection
 
 ## Example Usage
@@ -95,6 +100,11 @@ codex auth fix --live --model gpt-5-codex
 codex auth doctor --fix
 ```
 
+Open the interactive restore and sync workflows:
+
+- `codex auth login` -> `Restore From Backup`
+- `codex auth login` -> `Settings` -> `Codex CLI Sync`
+
 ## Architecture / How It Works
 
 1. `scripts/codex.js` becomes the `codex` wrapper entrypoint.
@@ -108,10 +118,12 @@ For a short public overview, see [docs/architecture.md](docs/architecture.md). F
 ## Common Workflows
 
 - First login: `codex auth login`
+- Restore recoverable named backups before a fresh login: `codex auth login`, then confirm the startup restore prompt or choose `Restore From Backup`
 - Review the saved account pool: `codex auth list`
 - Verify account health before coding: `codex auth check`
 - Choose the best account for the next run: `codex auth forecast --live`
 - Switch the active account explicitly: `codex auth switch <index>`
+- Preview one-way Codex CLI sync with rollback context: `codex auth login` -> `Settings` -> `Codex CLI Sync`
 - Gather machine-readable diagnostics: `codex auth report --live --json`
 - Repair local state safely: `codex auth fix --dry-run` or `codex auth doctor --fix`
 
@@ -180,6 +192,7 @@ Common first-run issues:
 - OAuth callback on port `1455` fails: free the port and retry `codex auth login`
 - The wrong account stays active after a switch: rerun `codex auth switch <index>` and restart the session
 - A worktree asks you to log in again: run `codex auth list` once in that worktree to trigger repo-shared storage migration
+- You expected a restore prompt but got OAuth instead: place named backup files in `~/.codex/multi-auth/backups/`, then rerun `codex auth login` in an interactive terminal
 
 Full recovery guidance lives in [docs/troubleshooting.md](docs/troubleshooting.md).
 

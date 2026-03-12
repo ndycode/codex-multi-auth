@@ -21,7 +21,7 @@ When `CODEX_MULTI_AUTH_DIR` is set, this root moves accordingly.
 
 ## Everyday Settings
 
-The top-level settings flow now separates everyday dashboard preferences from advanced operator controls.
+The shipped settings menu starts with `Everyday Settings` and keeps the stable dashboard path separate from advanced operator controls. This is the default path for most users.
 
 ### List Appearance
 
@@ -65,9 +65,11 @@ Controls display style:
 
 ## Advanced and Operator Controls
 
+The second top-level section is `Advanced & Operator`. It holds the sync workflow and backend tuning that are useful when you need to inspect or change lower-level behavior.
+
 ### Codex CLI Sync
 
-The advanced section includes a preview-first sync center for Codex CLI account sync.
+`Codex CLI Sync` is a preview-first sync center for Codex CLI account sync.
 
 Before applying sync, it shows:
 
@@ -78,11 +80,18 @@ Before applying sync, it shows:
 - destination-only preservation behavior
 - backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`)
 
+Workflow notes:
+
+- refresh recomputes the read-only preview from Codex CLI source files
+- apply writes the preview result into the target path
+- sync is one-way, it is not a bidirectional merge
+- target-only accounts are preserved rather than deleted
+
 ---
 
 ### Advanced Backend Controls
 
-Expert backend controls stay available without changing the saved settings schema. They are grouped into categories so the default path can stay simpler for day-to-day use.
+`Advanced Backend Controls` stay available without changing the saved settings schema. They are grouped into categories so the everyday path can stay simpler for day-to-day use.
 
 ## Backend Categories
 
@@ -175,6 +184,7 @@ For most environments:
 
 - smart sort enabled
 - auto-fetch limits enabled
+- storage backups enabled when you want rollback context for sync and recovery flows
 - live sync enabled
 - session affinity enabled
 - preemptive quota deferral enabled

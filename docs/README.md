@@ -17,13 +17,13 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [index.md](index.md) | Daily-use landing page for common `codex auth ...` workflows |
-| [getting-started.md](getting-started.md) | Install, first login, and first health check |
+| [index.md](index.md) | Daily-use landing page for login, restore, sync, and diagnostics workflows |
+| [getting-started.md](getting-started.md) | Install, first login, startup restore prompt, and first health check |
 | [faq.md](faq.md) | Short answers to common adoption questions |
 | [architecture.md](architecture.md) | Public system overview of the wrapper, storage, and optional plugin runtime |
-| [features.md](features.md) | User-facing capability map |
+| [features.md](features.md) | User-facing capability map, including backup restore, sync center, and settings split |
 | [configuration.md](configuration.md) | Stable defaults, precedence, and environment overrides |
-| [troubleshooting.md](troubleshooting.md) | Recovery playbooks for install, login, switching, and stale state |
+| [troubleshooting.md](troubleshooting.md) | Recovery playbooks for install, login, restore, sync, and stale state |
 | [privacy.md](privacy.md) | Data handling and local storage behavior |
 | [upgrade.md](upgrade.md) | Migration from legacy package and path history |
 | [releases/v0.1.7.md](releases/v0.1.7.md) | Stable release notes |
@@ -37,8 +37,8 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [reference/commands.md](reference/commands.md) | Commands, flags, and hotkeys |
-| [reference/settings.md](reference/settings.md) | Dashboard and runtime settings |
+| [reference/commands.md](reference/commands.md) | Commands, flags, hotkeys, and interactive entry points |
+| [reference/settings.md](reference/settings.md) | Everyday settings, sync center, and advanced operator controls |
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
 | [reference/public-api.md](reference/public-api.md) | Public API stability and semver contract |
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
