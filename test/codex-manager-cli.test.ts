@@ -30,9 +30,14 @@ const clearQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const previewCodexCliSyncMock = vi.fn();
+<<<<<<< HEAD
 const applyCodexCliSyncToStorageMock = vi.fn();
 const commitPendingCodexCliSyncRunMock = vi.fn();
 const commitCodexCliSyncRunFailureMock = vi.fn();
+=======
+const syncAccountStorageFromCodexCliMock = vi.fn();
+const getLastCodexCliSyncRunMock = vi.fn();
+>>>>>>> b09a947 (feat(ui): add health summary dashboard)
 const getLatestCodexCliSyncRollbackPlanMock = vi.fn();
 const rollbackLatestCodexCliSyncMock = vi.fn();
 const formatRollbackPathsMock = vi.fn((targetPath: string) => [
@@ -157,10 +162,16 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
 }));
 
 vi.mock("../lib/codex-cli/sync.js", () => ({
+<<<<<<< HEAD
 	applyCodexCliSyncToStorage: applyCodexCliSyncToStorageMock,
 	commitCodexCliSyncRunFailure: commitCodexCliSyncRunFailureMock,
 	commitPendingCodexCliSyncRun: commitPendingCodexCliSyncRunMock,
 	formatRollbackPaths: formatRollbackPathsMock,
+=======
+	previewCodexCliSync: previewCodexCliSyncMock,
+	syncAccountStorageFromCodexCli: syncAccountStorageFromCodexCliMock,
+	getLastCodexCliSyncRun: getLastCodexCliSyncRunMock,
+>>>>>>> b09a947 (feat(ui): add health summary dashboard)
 	getLatestCodexCliSyncRollbackPlan: getLatestCodexCliSyncRollbackPlanMock,
 	getLastCodexCliSyncRun: getLastCodexCliSyncRunMock,
 	previewCodexCliSync: previewCodexCliSyncMock,
@@ -575,9 +586,14 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		previewCodexCliSyncMock.mockReset();
+<<<<<<< HEAD
 		applyCodexCliSyncToStorageMock.mockReset();
 		commitPendingCodexCliSyncRunMock.mockReset();
 		commitCodexCliSyncRunFailureMock.mockReset();
+=======
+		syncAccountStorageFromCodexCliMock.mockReset();
+		getLastCodexCliSyncRunMock.mockReset();
+>>>>>>> b09a947 (feat(ui): add health summary dashboard)
 		getLatestCodexCliSyncRollbackPlanMock.mockReset();
 		rollbackLatestCodexCliSyncMock.mockReset();
 		formatRollbackPathsMock.mockReset();
@@ -776,6 +792,7 @@ describe("codex manager cli commands", () => {
 			reason: "No manual Codex CLI apply with a rollback checkpoint is available.",
 			snapshot: null,
 		});
+		getLastCodexCliSyncRunMock.mockReturnValue(null);
 		getCodexCliAccountsPathMock.mockReturnValue("/mock/codex/accounts.json");
 		getCodexCliAuthPathMock.mockReturnValue("/mock/codex/auth.json");
 		getCodexCliConfigPathMock.mockReturnValue("/mock/codex/config.toml");
@@ -1129,6 +1146,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
 
 		expect(exitCode).toBe(0);
+<<<<<<< HEAD
 		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
 		expect(selectMock).toHaveBeenCalledTimes(2);
 		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
@@ -1160,6 +1178,11 @@ describe("codex manager cli commands", () => {
 			"Restore named-backup? Import 0 new accounts for 1 total. Replacing 1 current account.",
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+=======
+		expect(action).toHaveBeenCalledTimes(1);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+>>>>>>> b09a947 (feat(ui): add health summary dashboard)
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
@@ -3106,6 +3129,169 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 		expect(exitCode).toBe(0);
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("passes a read-only health summary into the login menu", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "enabled@example.com",
+					accountId: "acc_enabled",
+					refreshToken: "refresh-enabled",
+					accessToken: "access-enabled",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "disabled@example.com",
+					accountId: "acc_disabled",
+					refreshToken: "refresh-disabled",
+					accessToken: "access-disabled",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+			],
+		});
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [{}],
+			totalBackups: 2,
+		});
+		getLastCodexCliSyncRunMock.mockReturnValue({
+			outcome: "changed",
+			runAt: now,
+			sourcePath: "/mock/codex/accounts.json",
+			targetPath: "/mock/openai-codex-accounts.json",
+			summary: {
+				sourceAccountCount: 2,
+				targetAccountCountBefore: 2,
+				targetAccountCountAfter: 2,
+				addedAccountCount: 1,
+				updatedAccountCount: 0,
+				unchangedAccountCount: 1,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: true,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "sync-snapshot",
+				path: "/mock/backups/sync-snapshot.json",
+			},
+		});
+		getLatestCodexCliSyncRollbackPlanMock.mockResolvedValue({
+			status: "ready",
+			reason: "Rollback checkpoint ready (2 accounts).",
+			snapshot: {
+				name: "sync-snapshot",
+				path: "/mock/backups/sync-snapshot.json",
+			},
+			accountCount: 2,
+			storage: {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [],
+			},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
+		expect(promptLoginModeMock).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({
+				healthSummary: expect.objectContaining({
+					label: expect.stringContaining("Pool 1/2 enabled"),
+					hint: expect.stringContaining("Rollback: Rollback checkpoint ready"),
+				}),
+			}),
+		);
+	});
+
+	it("falls back to a safe health summary when restore or rollback state reads fail", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		});
+		getActionableNamedBackupRestoresMock.mockRejectedValue(
+			new Error("EBUSY backups"),
+		);
+		getLastCodexCliSyncRunMock.mockReturnValue(null);
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({
+				healthSummary: expect.objectContaining({
+					label: expect.stringContaining("Pool 1 active"),
+				}),
+			}),
+		);
+	});
+
+	it("renders health summary as a disabled dashboard row", async () => {
+		selectMock.mockResolvedValueOnce({ type: "cancel" });
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+
+		await showAuthMenu(
+			[
+				{
+					index: 0,
+					email: "a@example.com",
+					isCurrentAccount: true,
+				},
+			],
+			{
+				healthSummary: {
+					label:
+						"Pool 1 active | Sync none | Restore none | Rollback none | Doctor ok",
+					hint: "Accounts: 1 enabled / 0 disabled / 1 total",
+				},
+			},
+		);
+
+		const items = selectMock.mock.calls[0]?.[0] as Array<{
+			label: string;
+			disabled?: boolean;
+			hint?: string;
+			kind?: string;
+		}>;
+		const headingIndex = items.findIndex(
+			(item) => item.label === "Health Summary" && item.kind === "heading",
+		);
+
+		expect(headingIndex).toBeGreaterThan(-1);
+		expect(items[headingIndex + 1]).toEqual(
+			expect.objectContaining({
+				label:
+					"Pool 1 active | Sync none | Restore none | Rollback none | Doctor ok",
+				disabled: true,
+				hint: "Accounts: 1 enabled / 0 disabled / 1 total",
+			}),
+		);
 	});
 
 	it("passes smart-sorted accounts to auth menu while preserving source index mapping", async () => {
