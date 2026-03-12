@@ -59,6 +59,19 @@ Controls display style:
 - accent color
 - focus style
 
+### Sync Center
+
+The settings hub includes a preview-first sync center for Codex CLI account sync.
+
+Before applying sync, it shows:
+
+- target path
+- current source path when available
+- last sync result for this session
+- preview summary (adds, updates, destination-only preserved accounts)
+- destination-only preservation behavior
+- backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`)
+
 ---
 
 ## Backend Categories

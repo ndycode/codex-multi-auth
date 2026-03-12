@@ -1,15 +1,16 @@
+import { createLogger } from "../logger.js";
+import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import {
-	getLastAccountsSaveTimestamp,
 	type AccountMetadataV3,
 	type AccountStorageV3,
+	getLastAccountsSaveTimestamp,
+	getStoragePath,
 } from "../storage.js";
-import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
-import { createLogger } from "../logger.js";
-import { loadCodexCliState, type CodexCliAccountSnapshot } from "./state.js";
 import {
 	incrementCodexCliMetric,
 	makeAccountFingerprint,
 } from "./observability.js";
+import { type CodexCliAccountSnapshot, loadCodexCliState } from "./state.js";
 import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
@@ -40,7 +41,99 @@ function cloneStorage(storage: AccountStorageV3): AccountStorageV3 {
 	};
 }
 
-function buildIndexByAccountId(accounts: AccountMetadataV3[]): Map<string, number> {
+function formatRollbackPaths(targetPath: string): string[] {
+	return [
+		`${targetPath}.bak`,
+		`${targetPath}.bak.1`,
+		`${targetPath}.bak.2`,
+		`${targetPath}.wal`,
+	];
+}
+
+export interface CodexCliSyncSummary {
+	sourceAccountCount: number;
+	targetAccountCountBefore: number;
+	targetAccountCountAfter: number;
+	addedAccountCount: number;
+	updatedAccountCount: number;
+	unchangedAccountCount: number;
+	destinationOnlyPreservedCount: number;
+	selectionChanged: boolean;
+}
+
+export interface CodexCliSyncBackupContext {
+	enabled: boolean;
+	targetPath: string;
+	rollbackPaths: string[];
+}
+
+export interface CodexCliSyncPreview {
+	status: "ready" | "noop" | "disabled" | "unavailable" | "error";
+	statusDetail: string;
+	sourcePath: string | null;
+	targetPath: string;
+	summary: CodexCliSyncSummary;
+	backup: CodexCliSyncBackupContext;
+	lastSync: CodexCliSyncRun | null;
+}
+
+export interface CodexCliSyncRun {
+	outcome: "changed" | "noop" | "disabled" | "unavailable" | "error";
+	runAt: number;
+	sourcePath: string | null;
+	targetPath: string;
+	summary: CodexCliSyncSummary;
+	message?: string;
+}
+
+type UpsertAction = "skipped" | "added" | "updated" | "unchanged";
+
+interface UpsertResult {
+	action: UpsertAction;
+	matchedIndex?: number;
+}
+
+interface ReconcileResult {
+	next: AccountStorageV3;
+	changed: boolean;
+	summary: CodexCliSyncSummary;
+}
+
+let lastCodexCliSyncRun: CodexCliSyncRun | null = null;
+
+function createEmptySyncSummary(): CodexCliSyncSummary {
+	return {
+		sourceAccountCount: 0,
+		targetAccountCountBefore: 0,
+		targetAccountCountAfter: 0,
+		addedAccountCount: 0,
+		updatedAccountCount: 0,
+		unchangedAccountCount: 0,
+		destinationOnlyPreservedCount: 0,
+		selectionChanged: false,
+	};
+}
+
+function setLastCodexCliSyncRun(run: CodexCliSyncRun): void {
+	lastCodexCliSyncRun = run;
+}
+
+export function getLastCodexCliSyncRun(): CodexCliSyncRun | null {
+	return lastCodexCliSyncRun
+		? {
+				...lastCodexCliSyncRun,
+				summary: { ...lastCodexCliSyncRun.summary },
+			}
+		: null;
+}
+
+export function __resetLastCodexCliSyncRunForTests(): void {
+	lastCodexCliSyncRun = null;
+}
+
+function buildIndexByAccountId(
+	accounts: AccountMetadataV3[],
+): Map<string, number> {
 	const map = new Map<string, number>();
 	for (let i = 0; i < accounts.length; i += 1) {
 		const account = accounts[i];
@@ -50,7 +143,9 @@ function buildIndexByAccountId(accounts: AccountMetadataV3[]): Map<string, numbe
 	return map;
 }
 
-function buildIndexByRefresh(accounts: AccountMetadataV3[]): Map<string, number> {
+function buildIndexByRefresh(
+	accounts: AccountMetadataV3[],
+): Map<string, number> {
 	const map = new Map<string, number>();
 	for (let i = 0; i < accounts.length; i += 1) {
 		const account = accounts[i];
@@ -70,7 +165,9 @@ function buildIndexByEmail(accounts: AccountMetadataV3[]): Map<string, number> {
 	return map;
 }
 
-function toStorageAccount(snapshot: CodexCliAccountSnapshot): AccountMetadataV3 | null {
+function toStorageAccount(
+	snapshot: CodexCliAccountSnapshot,
+): AccountMetadataV3 | null {
 	if (!snapshot.refreshToken) return null;
 	const now = Date.now();
 	return {
@@ -89,9 +186,9 @@ function toStorageAccount(snapshot: CodexCliAccountSnapshot): AccountMetadataV3 
 function upsertFromSnapshot(
 	accounts: AccountMetadataV3[],
 	snapshot: CodexCliAccountSnapshot,
-): boolean {
+): UpsertResult {
 	const nextAccount = toStorageAccount(snapshot);
-	if (!nextAccount) return false;
+	if (!nextAccount) return { action: "skipped" };
 
 	const byAccountId = buildIndexByAccountId(accounts);
 	const byRefresh = buildIndexByRefresh(accounts);
@@ -109,19 +206,18 @@ function upsertFromSnapshot(
 
 	if (targetIndex === undefined) {
 		accounts.push(nextAccount);
-		return true;
+		return { action: "added" };
 	}
 
 	const current = accounts[targetIndex];
-	if (!current) return false;
+	if (!current) return { action: "skipped" };
 
 	const merged: AccountMetadataV3 = {
 		...current,
 		accountId: snapshot.accountId ?? current.accountId,
-		accountIdSource:
-			snapshot.accountId
-				? current.accountIdSource ?? "token"
-				: current.accountIdSource,
+		accountIdSource: snapshot.accountId
+			? (current.accountIdSource ?? "token")
+			: current.accountIdSource,
 		email: snapshot.email ?? current.email,
 		refreshToken: snapshot.refreshToken ?? current.refreshToken,
 		accessToken: snapshot.accessToken ?? current.accessToken,
@@ -132,7 +228,10 @@ function upsertFromSnapshot(
 	if (changed) {
 		accounts[targetIndex] = merged;
 	}
-	return changed;
+	return {
+		action: changed ? "updated" : "unchanged",
+		matchedIndex: targetIndex,
+	};
 }
 
 function resolveActiveIndex(
@@ -143,7 +242,9 @@ function resolveActiveIndex(
 	if (accounts.length === 0) return 0;
 
 	if (activeAccountId) {
-		const byId = accounts.findIndex((account) => account.accountId === activeAccountId);
+		const byId = accounts.findIndex(
+			(account) => account.accountId === activeAccountId,
+		);
 		if (byId >= 0) return byId;
 	}
 
@@ -158,10 +259,7 @@ function resolveActiveIndex(
 	return 0;
 }
 
-function writeFamilyIndexes(
-	storage: AccountStorageV3,
-	index: number,
-): void {
+function writeFamilyIndexes(storage: AccountStorageV3, index: number): void {
 	storage.activeIndex = index;
 	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
 	for (const family of MODEL_FAMILIES) {
@@ -186,7 +284,8 @@ function writeFamilyIndexes(
  */
 function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 	const count = storage.accounts.length;
-	const clamped = count === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, count - 1));
+	const clamped =
+		count === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, count - 1));
 	if (storage.activeIndex !== clamped) {
 		storage.activeIndex = clamped;
 	}
@@ -194,7 +293,9 @@ function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
 	for (const family of MODEL_FAMILIES) {
 		const raw = storage.activeIndexByFamily[family];
 		const resolved =
-			typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
+			typeof raw === "number" && Number.isFinite(raw)
+				? raw
+				: storage.activeIndex;
 		storage.activeIndexByFamily[family] =
 			count === 0 ? 0 : Math.max(0, Math.min(resolved, count - 1));
 	}
@@ -210,9 +311,10 @@ function normalizeStoredFamilyIndexes(storage: AccountStorageV3): void {
  * Filesystem: behavior is independent of OS/filesystem semantics (including Windows).
  * Security: only `accountId` and `email` are returned; other sensitive snapshot fields (for example tokens) are not exposed or returned by this function.
  */
-function readActiveFromSnapshots(
-	snapshots: CodexCliAccountSnapshot[],
-): { accountId?: string; email?: string } {
+function readActiveFromSnapshots(snapshots: CodexCliAccountSnapshot[]): {
+	accountId?: string;
+	email?: string;
+} {
 	const active = snapshots.find((snapshot) => snapshot.isActive);
 	return {
 		accountId: active?.accountId,
@@ -231,13 +333,16 @@ function readActiveFromSnapshots(
  * @param state - Persisted Codex CLI state (may be undefined); the function reads `syncVersion` and `sourceUpdatedAtMs` when present
  * @returns `true` if the Codex CLI selection should be applied (i.e., Codex state is newer or timestamps are unknown), `false` otherwise
  */
-function shouldApplyCodexCliSelection(state: Awaited<ReturnType<typeof loadCodexCliState>>): boolean {
+function shouldApplyCodexCliSelection(
+	state: Awaited<ReturnType<typeof loadCodexCliState>>,
+): boolean {
 	if (!state) return false;
 	const hasSyncVersion =
 		typeof state.syncVersion === "number" && Number.isFinite(state.syncVersion);
 	const codexVersion = hasSyncVersion
 		? (state.syncVersion as number)
-		: typeof state.sourceUpdatedAtMs === "number" && Number.isFinite(state.sourceUpdatedAtMs)
+		: typeof state.sourceUpdatedAtMs === "number" &&
+				Number.isFinite(state.sourceUpdatedAtMs)
 			? state.sourceUpdatedAtMs
 			: 0;
 	const localVersion = Math.max(
@@ -248,6 +353,150 @@ function shouldApplyCodexCliSelection(state: Awaited<ReturnType<typeof loadCodex
 	// Keep local selection when plugin wrote more recently than Codex state.
 	const toleranceMs = hasSyncVersion ? 0 : 1_000;
 	return codexVersion >= localVersion - toleranceMs;
+}
+
+function reconcileCodexCliState(
+	current: AccountStorageV3 | null,
+	state: NonNullable<Awaited<ReturnType<typeof loadCodexCliState>>>,
+): ReconcileResult {
+	const next = current ? cloneStorage(current) : createEmptyStorage();
+	const targetAccountCountBefore = next.accounts.length;
+	const matchedExistingIndexes = new Set<number>();
+	const summary = createEmptySyncSummary();
+	summary.targetAccountCountBefore = targetAccountCountBefore;
+
+	let changed = false;
+	for (const snapshot of state.accounts) {
+		const result = upsertFromSnapshot(next.accounts, snapshot);
+		if (result.action === "skipped") continue;
+		summary.sourceAccountCount += 1;
+		if (
+			typeof result.matchedIndex === "number" &&
+			result.matchedIndex >= 0 &&
+			result.matchedIndex < targetAccountCountBefore
+		) {
+			matchedExistingIndexes.add(result.matchedIndex);
+		}
+		if (result.action === "added") {
+			summary.addedAccountCount += 1;
+			changed = true;
+			continue;
+		}
+		if (result.action === "updated") {
+			summary.updatedAccountCount += 1;
+			changed = true;
+			continue;
+		}
+		summary.unchangedAccountCount += 1;
+	}
+
+	summary.destinationOnlyPreservedCount = Math.max(
+		0,
+		targetAccountCountBefore - matchedExistingIndexes.size,
+	);
+
+	if (next.accounts.length > 0) {
+		const activeFromSnapshots = readActiveFromSnapshots(state.accounts);
+		const previousActive = next.activeIndex;
+		const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
+		const applyActiveFromCodex = shouldApplyCodexCliSelection(state);
+		if (applyActiveFromCodex) {
+			const desiredIndex = resolveActiveIndex(
+				next.accounts,
+				state.activeAccountId ?? activeFromSnapshots.accountId,
+				state.activeEmail ?? activeFromSnapshots.email,
+			);
+			writeFamilyIndexes(next, desiredIndex);
+		} else {
+			log.debug(
+				"Skipped Codex CLI active selection overwrite due to newer local state",
+				{
+					operation: "reconcile-storage",
+					outcome: "local-newer",
+				},
+			);
+		}
+		normalizeStoredFamilyIndexes(next);
+		const currentFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
+		if (
+			previousActive !== next.activeIndex ||
+			previousFamilies !== currentFamilies
+		) {
+			summary.selectionChanged = true;
+			changed = true;
+		}
+	}
+
+	summary.targetAccountCountAfter = next.accounts.length;
+	return { next, changed, summary };
+}
+
+export async function previewCodexCliSync(
+	current: AccountStorageV3 | null,
+	options: { forceRefresh?: boolean; storageBackupEnabled?: boolean } = {},
+): Promise<CodexCliSyncPreview> {
+	const targetPath = getStoragePath();
+	const backup = {
+		enabled: options.storageBackupEnabled ?? true,
+		targetPath,
+		rollbackPaths: formatRollbackPaths(targetPath),
+	};
+	const lastSync = getLastCodexCliSyncRun();
+	const emptySummary = createEmptySyncSummary();
+	emptySummary.targetAccountCountBefore = current?.accounts.length ?? 0;
+	emptySummary.targetAccountCountAfter = current?.accounts.length ?? 0;
+	try {
+		const state = await loadCodexCliState({
+			forceRefresh: options.forceRefresh,
+		});
+		if ((process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI ?? "").trim() === "0") {
+			return {
+				status: "disabled",
+				statusDetail: "Codex CLI sync is disabled by environment override.",
+				sourcePath: null,
+				targetPath,
+				summary: emptySummary,
+				backup,
+				lastSync,
+			};
+		}
+		if (!state) {
+			return {
+				status: "unavailable",
+				statusDetail: "No Codex CLI sync source was found.",
+				sourcePath: null,
+				targetPath,
+				summary: emptySummary,
+				backup,
+				lastSync,
+			};
+		}
+
+		const reconciled = reconcileCodexCliState(current, state);
+		const status = reconciled.changed ? "ready" : "noop";
+		const statusDetail = reconciled.changed
+			? `Preview ready: ${reconciled.summary.addedAccountCount} add, ${reconciled.summary.updatedAccountCount} update, ${reconciled.summary.destinationOnlyPreservedCount} destination-only preserved.`
+			: "Target already matches the current one-way sync result.";
+		return {
+			status,
+			statusDetail,
+			sourcePath: state.path,
+			targetPath,
+			summary: reconciled.summary,
+			backup,
+			lastSync,
+		};
+	} catch (error) {
+		return {
+			status: "error",
+			statusDetail: error instanceof Error ? error.message : String(error),
+			sourcePath: null,
+			targetPath,
+			summary: emptySummary,
+			backup,
+			lastSync,
+		};
+	}
 }
 
 /**
@@ -273,23 +522,45 @@ export async function syncAccountStorageFromCodexCli(
 	current: AccountStorageV3 | null,
 ): Promise<{ storage: AccountStorageV3 | null; changed: boolean }> {
 	incrementCodexCliMetric("reconcileAttempts");
+	const targetPath = getStoragePath();
 	try {
 		const state = await loadCodexCliState();
 		if (!state) {
 			incrementCodexCliMetric("reconcileNoops");
+			setLastCodexCliSyncRun({
+				outcome:
+					(process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI ?? "").trim() === "0"
+						? "disabled"
+						: "unavailable",
+				runAt: Date.now(),
+				sourcePath: null,
+				targetPath,
+				summary: {
+					...createEmptySyncSummary(),
+					targetAccountCountBefore: current?.accounts.length ?? 0,
+					targetAccountCountAfter: current?.accounts.length ?? 0,
+				},
+				message:
+					(process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI ?? "").trim() === "0"
+						? "Codex CLI sync disabled by environment override."
+						: "No Codex CLI sync source was available.",
+			});
 			return { storage: current, changed: false };
 		}
 
-		const next = current ? cloneStorage(current) : createEmptyStorage();
-		let changed = false;
-
-		for (const snapshot of state.accounts) {
-			const updated = upsertFromSnapshot(next.accounts, snapshot);
-			if (updated) changed = true;
-		}
+		const reconciled = reconcileCodexCliState(current, state);
+		const next = reconciled.next;
+		const changed = reconciled.changed;
 
 		if (next.accounts.length === 0) {
 			incrementCodexCliMetric(changed ? "reconcileChanges" : "reconcileNoops");
+			setLastCodexCliSyncRun({
+				outcome: changed ? "changed" : "noop",
+				runAt: Date.now(),
+				sourcePath: state.path,
+				targetPath,
+				summary: reconciled.summary,
+			});
 			log.debug("Codex CLI reconcile completed", {
 				operation: "reconcile-storage",
 				outcome: changed ? "changed" : "noop",
@@ -301,42 +572,15 @@ export async function syncAccountStorageFromCodexCli(
 			};
 		}
 
-		const activeFromSnapshots = readActiveFromSnapshots(state.accounts);
-		const applyActiveFromCodex = shouldApplyCodexCliSelection(state);
-		if (applyActiveFromCodex) {
-			const desiredIndex = resolveActiveIndex(
-				next.accounts,
-				state.activeAccountId ?? activeFromSnapshots.accountId,
-				state.activeEmail ?? activeFromSnapshots.email,
-			);
-
-			const previousActive = next.activeIndex;
-			const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
-			writeFamilyIndexes(next, desiredIndex);
-			normalizeStoredFamilyIndexes(next);
-			if (previousActive !== next.activeIndex) {
-				changed = true;
-			}
-			if (previousFamilies !== JSON.stringify(next.activeIndexByFamily ?? {})) {
-				changed = true;
-			}
-		} else {
-			const previousActive = next.activeIndex;
-			const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
-			normalizeStoredFamilyIndexes(next);
-			if (previousActive !== next.activeIndex) {
-				changed = true;
-			}
-			if (previousFamilies !== JSON.stringify(next.activeIndexByFamily ?? {})) {
-				changed = true;
-			}
-			log.debug("Skipped Codex CLI active selection overwrite due to newer local state", {
-				operation: "reconcile-storage",
-				outcome: "local-newer",
-			});
-		}
-
 		incrementCodexCliMetric(changed ? "reconcileChanges" : "reconcileNoops");
+		const activeFromSnapshots = readActiveFromSnapshots(state.accounts);
+		setLastCodexCliSyncRun({
+			outcome: changed ? "changed" : "noop",
+			runAt: Date.now(),
+			sourcePath: state.path,
+			targetPath,
+			summary: reconciled.summary,
+		});
 		log.debug("Codex CLI reconcile completed", {
 			operation: "reconcile-storage",
 			outcome: changed ? "changed" : "noop",
@@ -352,6 +596,18 @@ export async function syncAccountStorageFromCodexCli(
 		};
 	} catch (error) {
 		incrementCodexCliMetric("reconcileFailures");
+		setLastCodexCliSyncRun({
+			outcome: "error",
+			runAt: Date.now(),
+			sourcePath: null,
+			targetPath,
+			summary: {
+				...createEmptySyncSummary(),
+				targetAccountCountBefore: current?.accounts.length ?? 0,
+				targetAccountCountAfter: current?.accounts.length ?? 0,
+			},
+			message: error instanceof Error ? error.message : String(error),
+		});
 		log.warn("Codex CLI reconcile failed", {
 			operation: "reconcile-storage",
 			outcome: "error",
@@ -368,6 +624,7 @@ export function getActiveSelectionForFamily(
 	const count = storage.accounts.length;
 	if (count === 0) return 0;
 	const raw = storage.activeIndexByFamily?.[family];
-	const candidate = typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
+	const candidate =
+		typeof raw === "number" && Number.isFinite(raw) ? raw : storage.activeIndex;
 	return Math.max(0, Math.min(candidate, count - 1));
 }
