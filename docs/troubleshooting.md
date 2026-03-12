@@ -89,24 +89,44 @@ codex auth doctor --json
 
 ---
 
-## Soft Reset
+## Reset Options
 
-PowerShell:
+- Delete a single saved account: `codex auth login` → pick account → **Delete Account**
+- Delete saved accounts: `codex auth login` → Danger Zone → **Delete Saved Accounts**
+- Reset local state: `codex auth login` → Danger Zone → **Reset Local State**
+
+Exact effects:
+
+| Action | Saved accounts | Flagged/problem accounts | Settings | Codex CLI sync state | Quota cache |
+| --- | --- | --- | --- | --- | --- |
+| Delete Account | Delete the selected saved account | Delete the matching flagged/problem entry for that refresh token | Keep | Keep | Keep |
+| Delete Saved Accounts | Delete all saved accounts | Keep | Keep | Keep | Keep |
+| Reset Local State | Delete all saved accounts | Delete all flagged/problem accounts | Keep | Keep | Clear |
+
+To perform the same actions manually:
+
+Delete saved accounts only:
+
+```powershell
+Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue
+```
+
+```bash
+rm -f ~/.codex/multi-auth/openai-codex-accounts.json
+```
+
+Reset local state (also clears flagged/problem accounts and quota cache; preserves settings and Codex CLI sync state):
 
 ```powershell
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue
-Remove-Item "$HOME\.codex\multi-auth\settings.json" -Force -ErrorAction SilentlyContinue
-codex auth login
+Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
 ```
-
-Bash:
 
 ```bash
 rm -f ~/.codex/multi-auth/openai-codex-accounts.json
 rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
-rm -f ~/.codex/multi-auth/settings.json
-codex auth login
+rm -f ~/.codex/multi-auth/quota-cache.json
 ```
 
 ---

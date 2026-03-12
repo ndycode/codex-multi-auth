@@ -18,6 +18,9 @@ const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const selectMock = vi.fn();
+const deleteSavedAccountsMock = vi.fn();
+const resetLocalStateMock = vi.fn();
+const deleteAccountAtIndexMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -61,11 +64,16 @@ vi.mock("../lib/accounts.js", () => ({
 		account.email ? `${index + 1}. ${account.email}` : `Account ${index + 1}`,
 	),
 	formatCooldown: vi.fn(() => null),
-	formatWaitTime: vi.fn((ms: number) => `${Math.max(1, Math.round(ms / 1000))}s`),
+	formatWaitTime: vi.fn(
+		(ms: number) => `${Math.max(1, Math.round(ms / 1000))}s`,
+	),
 	getAccountIdCandidates: vi.fn(() => []),
 	resolveRequestAccountId: vi.fn(
-		(_override: string | undefined, _source: string | undefined, tokenId: string | undefined) =>
-			tokenId,
+		(
+			_override: string | undefined,
+			_source: string | undefined,
+			tokenId: string | undefined,
+		) => tokenId,
 	),
 	sanitizeEmail: vi.fn((email: string | undefined) =>
 		typeof email === "string" ? email.toLowerCase() : undefined,
@@ -127,12 +135,39 @@ vi.mock("../lib/quota-cache.js", () => ({
 	saveQuotaCache: saveQuotaCacheMock,
 }));
 
+vi.mock("../lib/destructive-actions.js", () => ({
+	DESTRUCTIVE_ACTION_COPY: {
+		deleteSavedAccounts: {
+			label: "Delete Saved Accounts",
+			stage: "Deleting saved accounts only",
+			completed:
+				"Deleted saved accounts. Saved accounts deleted; flagged/problem accounts, settings, and Codex CLI sync state kept.",
+		},
+		resetLocalState: {
+			label: "Reset Local State",
+			stage:
+				"Clearing saved accounts, flagged/problem accounts, and quota cache",
+			completed:
+				"Reset local state. Saved accounts, flagged/problem accounts, and quota cache cleared; settings and Codex CLI sync state kept.",
+		},
+	},
+	deleteSavedAccounts: deleteSavedAccountsMock,
+	resetLocalState: resetLocalStateMock,
+	deleteAccountAtIndex: deleteAccountAtIndexMock,
+}));
+
 vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
 }));
 
-const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
-const stdoutIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(
+	process.stdin,
+	"isTTY",
+);
+const stdoutIsTTYDescriptor = Object.getOwnPropertyDescriptor(
+	process.stdout,
+	"isTTY",
+);
 
 function setInteractiveTTY(enabled: boolean): void {
 	Object.defineProperty(process.stdin, "isTTY", {
@@ -198,6 +233,8 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		selectMock.mockReset();
+		deleteAccountAtIndexMock.mockReset();
+		deleteAccountAtIndexMock.mockResolvedValue(null);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -290,7 +327,9 @@ describe("codex manager cli commands", () => {
 		expect(logSpy.mock.calls[0]?.[0]).toBe("Implemented features (40)");
 		expect(
 			logSpy.mock.calls.some((call) =>
-				String(call[0]).includes("40. OAuth browser-first flow with manual callback fallback"),
+				String(call[0]).includes(
+					"40. OAuth browser-first flow with manual callback fallback",
+				),
 			),
 		).toBe(true);
 	});
@@ -330,7 +369,11 @@ describe("codex manager cli commands", () => {
 		});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		const exitCode = await runCodexMultiAuthCli(["auth", "verify-flagged", "--json"]);
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--json",
+		]);
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(saveFlaggedAccountsMock).toHaveBeenCalledTimes(1);
@@ -369,7 +412,11 @@ describe("codex manager cli commands", () => {
 		});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		const exitCode = await runCodexMultiAuthCli(["auth", "verify-flagged", "--json"]);
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--json",
+		]);
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(saveFlaggedAccountsMock).toHaveBeenCalledTimes(1);
@@ -409,7 +456,12 @@ describe("codex manager cli commands", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--dry-run", "--json"]);
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"fix",
+			"--dry-run",
+			"--json",
+		]);
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 
@@ -496,7 +548,11 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
-		expect(logSpy.mock.calls.some((call) => String(call[0]).includes("live session OK"))).toBe(true);
+		expect(
+			logSpy.mock.calls.some((call) =>
+				String(call[0]).includes("live session OK"),
+			),
+		).toBe(true);
 	});
 
 	it("runs fix apply mode and returns a switch recommendation", async () => {
@@ -688,7 +744,9 @@ describe("codex manager cli commands", () => {
 		});
 		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
 
-		const { autoSyncActiveAccountToCodex } = await import("../lib/codex-manager.js");
+		const { autoSyncActiveAccountToCodex } = await import(
+			"../lib/codex-manager.js"
+		);
 		const synced = await autoSyncActiveAccountToCodex();
 
 		expect(synced).toBe(true);
@@ -730,7 +788,9 @@ describe("codex manager cli commands", () => {
 		});
 		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
 
-		const { autoSyncActiveAccountToCodex } = await import("../lib/codex-manager.js");
+		const { autoSyncActiveAccountToCodex } = await import(
+			"../lib/codex-manager.js"
+		);
 		const synced = await autoSyncActiveAccountToCodex();
 
 		expect(synced).toBe(true);
@@ -826,7 +886,9 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		};
-		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
 		saveAccountsMock.mockImplementation(async (nextStorage) => {
 			storageState = structuredClone(nextStorage);
 		});
@@ -836,20 +898,29 @@ describe("codex manager cli commands", () => {
 		promptAddAnotherAccountMock.mockResolvedValue(false);
 
 		const authModule = await import("../lib/auth/auth.js");
-		const createAuthorizationFlowMock = vi.mocked(authModule.createAuthorizationFlow);
-		const exchangeAuthorizationCodeMock = vi.mocked(authModule.exchangeAuthorizationCode);
+		const createAuthorizationFlowMock = vi.mocked(
+			authModule.createAuthorizationFlow,
+		);
+		const exchangeAuthorizationCodeMock = vi.mocked(
+			authModule.exchangeAuthorizationCode,
+		);
 		const browserModule = await import("../lib/auth/browser.js");
 		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 		const serverModule = await import("../lib/auth/server.js");
-		const startLocalOAuthServerMock = vi.mocked(serverModule.startLocalOAuthServer);
+		const startLocalOAuthServerMock = vi.mocked(
+			serverModule.startLocalOAuthServer,
+		);
 
-		const flow: Awaited<ReturnType<typeof authModule.createAuthorizationFlow>> = {
-			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
-			state: "oauth-state",
-			url: "https://auth.openai.com/mock",
-		};
+		const flow: Awaited<ReturnType<typeof authModule.createAuthorizationFlow>> =
+			{
+				pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+				state: "oauth-state",
+				url: "https://auth.openai.com/mock",
+			};
 		createAuthorizationFlowMock.mockResolvedValue(flow);
-		const oauthResult: Awaited<ReturnType<typeof authModule.exchangeAuthorizationCode>> = {
+		const oauthResult: Awaited<
+			ReturnType<typeof authModule.exchangeAuthorizationCode>
+		> = {
 			type: "success",
 			access: "access-new",
 			refresh: "refresh-new",
@@ -859,7 +930,9 @@ describe("codex manager cli commands", () => {
 		};
 		exchangeAuthorizationCodeMock.mockResolvedValue(oauthResult);
 		openBrowserUrlMock.mockReturnValue(true);
-		const oauthServer: Awaited<ReturnType<typeof serverModule.startLocalOAuthServer>> = {
+		const oauthServer: Awaited<
+			ReturnType<typeof serverModule.startLocalOAuthServer>
+		> = {
 			ready: true,
 			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
 			close: vi.fn(),
@@ -912,7 +985,11 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
-		expect(logSpy.mock.calls.some((call) => String(call[0]).includes("full refresh test"))).toBe(true);
+		expect(
+			logSpy.mock.calls.some((call) =>
+				String(call[0]).includes("full refresh test"),
+			),
+		).toBe(true);
 	});
 
 	it("runs quick check from login menu with live probe", async () => {
@@ -1076,22 +1153,46 @@ describe("codex manager cli commands", () => {
 					updatedAt: now,
 					status: 200,
 					model: "gpt-5-codex",
-					primary: { usedPercent: 80, windowMinutes: 300, resetAtMs: now + 1_000 },
-					secondary: { usedPercent: 80, windowMinutes: 10080, resetAtMs: now + 2_000 },
+					primary: {
+						usedPercent: 80,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 80,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
 				},
 				"b@example.com": {
 					updatedAt: now,
 					status: 200,
 					model: "gpt-5-codex",
-					primary: { usedPercent: 0, windowMinutes: 300, resetAtMs: now + 1_000 },
-					secondary: { usedPercent: 0, windowMinutes: 10080, resetAtMs: now + 2_000 },
+					primary: {
+						usedPercent: 0,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 0,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
 				},
 				"c@example.com": {
 					updatedAt: now,
 					status: 200,
 					model: "gpt-5-codex",
-					primary: { usedPercent: 60, windowMinutes: 300, resetAtMs: now + 1_000 },
-					secondary: { usedPercent: 60, windowMinutes: 10080, resetAtMs: now + 2_000 },
+					primary: {
+						usedPercent: 60,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 60,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
 				},
 			},
 		});
@@ -1113,9 +1214,15 @@ describe("codex manager cli commands", () => {
 			"c@example.com",
 			"a@example.com",
 		]);
-		expect(firstCallAccounts.map((account) => account.index)).toEqual([0, 1, 2]);
-		expect(firstCallAccounts.map((account) => account.sourceIndex)).toEqual([1, 2, 0]);
-		expect(firstCallAccounts.map((account) => account.quickSwitchNumber)).toEqual([1, 2, 3]);
+		expect(firstCallAccounts.map((account) => account.index)).toEqual([
+			0, 1, 2,
+		]);
+		expect(firstCallAccounts.map((account) => account.sourceIndex)).toEqual([
+			1, 2, 0,
+		]);
+		expect(
+			firstCallAccounts.map((account) => account.quickSwitchNumber),
+		).toEqual([1, 2, 3]);
 		expect(firstCallAccounts[0]?.isCurrentAccount).toBe(false);
 		expect(firstCallAccounts[1]?.isCurrentAccount).toBe(true);
 	});
@@ -1168,15 +1275,31 @@ describe("codex manager cli commands", () => {
 					updatedAt: now,
 					status: 200,
 					model: "gpt-5-codex",
-					primary: { usedPercent: 80, windowMinutes: 300, resetAtMs: now + 1_000 },
-					secondary: { usedPercent: 80, windowMinutes: 10080, resetAtMs: now + 2_000 },
+					primary: {
+						usedPercent: 80,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 80,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
 				},
 				"b@example.com": {
 					updatedAt: now,
 					status: 200,
 					model: "gpt-5-codex",
-					primary: { usedPercent: 0, windowMinutes: 300, resetAtMs: now + 1_000 },
-					secondary: { usedPercent: 0, windowMinutes: 10080, resetAtMs: now + 2_000 },
+					primary: {
+						usedPercent: 0,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 0,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
 				},
 			},
 		});
@@ -1194,7 +1317,9 @@ describe("codex manager cli commands", () => {
 			"b@example.com",
 			"a@example.com",
 		]);
-		expect(firstCallAccounts.map((account) => account.quickSwitchNumber)).toEqual([2, 1]);
+		expect(
+			firstCallAccounts.map((account) => account.quickSwitchNumber),
+		).toEqual([2, 1]);
 	});
 
 	it("runs doctor command in json mode", async () => {
@@ -1226,7 +1351,9 @@ describe("codex manager cli commands", () => {
 		};
 		expect(payload.command).toBe("doctor");
 		expect(payload.summary.error).toBe(0);
-		expect(payload.checks.some((check) => check.key === "active-index")).toBe(true);
+		expect(payload.checks.some((check) => check.key === "active-index")).toBe(
+			true,
+		);
 	});
 
 	it("runs doctor --fix in dry-run mode", async () => {
@@ -1257,12 +1384,23 @@ describe("codex manager cli commands", () => {
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "doctor", "--fix", "--dry-run", "--json"]);
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"doctor",
+			"--fix",
+			"--dry-run",
+			"--json",
+		]);
 
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
-			fix: { enabled: boolean; dryRun: boolean; changed: boolean; actions: Array<{ key: string }> };
+			fix: {
+				enabled: boolean;
+				dryRun: boolean;
+				changed: boolean;
+				actions: Array<{ key: string }>;
+			};
 		};
 		expect(payload.fix.enabled).toBe(true);
 		expect(payload.fix.dryRun).toBe(true);
@@ -1362,7 +1500,9 @@ describe("codex manager cli commands", () => {
 			{ type: "save" },
 			{ type: "back" },
 		];
-		selectMock.mockImplementation(async () => selectResults.shift() ?? { type: "back" });
+		selectMock.mockImplementation(
+			async () => selectResults.shift() ?? { type: "back" },
+		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -1394,139 +1534,146 @@ describe("codex manager cli commands", () => {
 		{ panel: "behavior", mode: "token-refresh-race" },
 		{ panel: "theme", mode: "token-refresh-race" },
 		{ panel: "backend", mode: "token-refresh-race" },
-	] as const)(
-		"keeps no-save-on-cancel contract for panel=$panel mode=$mode",
-		async ({ panel, mode }) => {
-			setInteractiveTTY(true);
-			const now = Date.now();
-			let originalRuntimeTheme:
-				| {
-						v2Enabled: boolean;
-						colorProfile: string;
-						glyphMode: string;
-						palette: string;
-						accent: string;
-				  }
-				| null = null;
-			if (panel === "theme") {
-				const runtime = await import("../lib/ui/runtime.js");
-				runtime.resetUiRuntimeOptions();
-				const snapshot = runtime.getUiRuntimeOptions();
-				originalRuntimeTheme = {
-					v2Enabled: snapshot.v2Enabled,
-					colorProfile: snapshot.colorProfile,
-					glyphMode: snapshot.glyphMode,
-					palette: snapshot.palette,
-					accent: snapshot.accent,
-				};
-			}
-			loadAccountsMock.mockResolvedValue({
-				version: 3,
-				activeIndex: 0,
-				activeIndexByFamily: { codex: 0 },
-				accounts: [
-					{
-						email: "cancel-settings@example.com",
-						accountId: "acc_cancel_settings",
-						refreshToken: "refresh-cancel-settings",
-						accessToken: "access-cancel-settings",
-						expiresAt: now + 3_600_000,
-						addedAt: now - 1_000,
-						lastUsed: now - 1_000,
-						enabled: true,
-					},
-				],
+	] as const)("keeps no-save-on-cancel contract for panel=$panel mode=$mode", async ({
+		panel,
+		mode,
+	}) => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let originalRuntimeTheme: {
+			v2Enabled: boolean;
+			colorProfile: string;
+			glyphMode: string;
+			palette: string;
+			accent: string;
+		} | null = null;
+		if (panel === "theme") {
+			const runtime = await import("../lib/ui/runtime.js");
+			runtime.resetUiRuntimeOptions();
+			const snapshot = runtime.getUiRuntimeOptions();
+			originalRuntimeTheme = {
+				v2Enabled: snapshot.v2Enabled,
+				colorProfile: snapshot.colorProfile,
+				glyphMode: snapshot.glyphMode,
+				palette: snapshot.palette,
+				accent: snapshot.accent,
+			};
+		}
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "cancel-settings@example.com",
+					accountId: "acc_cancel_settings",
+					refreshToken: "refresh-cancel-settings",
+					accessToken: "access-cancel-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		if (mode === "windows-ebusy") {
+			const busy = makeErrnoError("busy", "EBUSY");
+			saveDashboardDisplaySettingsMock.mockRejectedValue(busy);
+			savePluginConfigMock.mockRejectedValue(busy);
+		}
+		if (mode === "concurrent-save-ordering") {
+			const dashboardDeferred = createDeferred<void>();
+			const pluginDeferred = createDeferred<void>();
+			saveDashboardDisplaySettingsMock.mockImplementation(
+				async () => dashboardDeferred.promise,
+			);
+			savePluginConfigMock.mockImplementation(
+				async () => pluginDeferred.promise,
+			);
+			queueMicrotask(() => {
+				dashboardDeferred.resolve(undefined);
+				pluginDeferred.resolve(undefined);
 			});
-			promptLoginModeMock
-				.mockResolvedValueOnce({ mode: "settings" })
-				.mockResolvedValueOnce({ mode: "cancel" });
-
-			if (mode === "windows-ebusy") {
-				const busy = makeErrnoError("busy", "EBUSY");
-				saveDashboardDisplaySettingsMock.mockRejectedValue(busy);
-				savePluginConfigMock.mockRejectedValue(busy);
-			}
-			if (mode === "concurrent-save-ordering") {
-				const dashboardDeferred = createDeferred<void>();
-				const pluginDeferred = createDeferred<void>();
-				saveDashboardDisplaySettingsMock.mockImplementation(async () => dashboardDeferred.promise);
-				savePluginConfigMock.mockImplementation(async () => pluginDeferred.promise);
-				queueMicrotask(() => {
-					dashboardDeferred.resolve(undefined);
-					pluginDeferred.resolve(undefined);
+		}
+		if (mode === "token-refresh-race") {
+			const refreshDeferred = createDeferred<{
+				type: "success";
+				access: string;
+				refresh: string;
+				expires: number;
+			}>();
+			queuedRefreshMock.mockImplementation(async () => refreshDeferred.promise);
+			queueMicrotask(() => {
+				refreshDeferred.resolve({
+					type: "success",
+					access: "race-access",
+					refresh: "race-refresh",
+					expires: now + 3_600_000,
 				});
-			}
-			if (mode === "token-refresh-race") {
-				const refreshDeferred = createDeferred<{
-					type: "success";
-					access: string;
-					refresh: string;
-					expires: number;
-				}>();
-				queuedRefreshMock.mockImplementation(async () => refreshDeferred.promise);
-				queueMicrotask(() => {
-					refreshDeferred.resolve({
-						type: "success",
-						access: "race-access",
-						refresh: "race-refresh",
-						expires: now + 3_600_000,
-					});
-				});
-			}
+			});
+		}
 
-			let selectCall = 0;
-			selectMock.mockImplementation(async (_items, options) => {
-				selectCall += 1;
-				const onInput = (options as { onInput?: (raw: string) => unknown } | undefined)?.onInput;
-				if (selectCall === 1) return { type: panel };
+		let selectCall = 0;
+		selectMock.mockImplementation(async (_items, options) => {
+			selectCall += 1;
+			const onInput = (
+				options as { onInput?: (raw: string) => unknown } | undefined
+			)?.onInput;
+			if (selectCall === 1) return { type: panel };
 
-				if (panel === "account-list") {
-					if (selectCall === 2) return { type: "toggle", key: "menuShowStatusBadge" };
-					if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
-					return { type: "back" };
-				}
-				if (panel === "summary-fields") {
-					if (selectCall === 2) return { type: "toggle", key: "status" };
-					if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
-					return { type: "back" };
-				}
-				if (panel === "behavior") {
-					if (selectCall === 2) return { type: "toggle-pause" };
-					if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
-					return { type: "back" };
-				}
-				if (panel === "theme") {
-					if (selectCall === 2) return { type: "set-palette", palette: "blue" };
-					if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
-					return { type: "back" };
-				}
-
-				if (selectCall === 2) return { type: "open-category", key: "rotation-quota" };
-				if (selectCall === 3) return { type: "toggle", key: "preemptiveQuotaEnabled" };
-				if (selectCall === 4) return { type: "back" };
-				if (selectCall === 5) return onInput?.("q") ?? { type: "cancel" };
+			if (panel === "account-list") {
+				if (selectCall === 2)
+					return { type: "toggle", key: "menuShowStatusBadge" };
+				if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
 				return { type: "back" };
-			});
-
-			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-			expect(exitCode).toBe(0);
-			expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
-			expect(savePluginConfigMock).not.toHaveBeenCalled();
-			if (panel === "theme") {
-				const runtime = await import("../lib/ui/runtime.js");
-				const restored = runtime.getUiRuntimeOptions();
-				expect({
-					v2Enabled: restored.v2Enabled,
-					colorProfile: restored.colorProfile,
-					glyphMode: restored.glyphMode,
-					palette: restored.palette,
-					accent: restored.accent,
-				}).toEqual(originalRuntimeTheme);
 			}
-		},
-	);
+			if (panel === "summary-fields") {
+				if (selectCall === 2) return { type: "toggle", key: "status" };
+				if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
+				return { type: "back" };
+			}
+			if (panel === "behavior") {
+				if (selectCall === 2) return { type: "toggle-pause" };
+				if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
+				return { type: "back" };
+			}
+			if (panel === "theme") {
+				if (selectCall === 2) return { type: "set-palette", palette: "blue" };
+				if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
+				return { type: "back" };
+			}
+
+			if (selectCall === 2)
+				return { type: "open-category", key: "rotation-quota" };
+			if (selectCall === 3)
+				return { type: "toggle", key: "preemptiveQuotaEnabled" };
+			if (selectCall === 4) return { type: "back" };
+			if (selectCall === 5) return onInput?.("q") ?? { type: "cancel" };
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
+		expect(savePluginConfigMock).not.toHaveBeenCalled();
+		if (panel === "theme") {
+			const runtime = await import("../lib/ui/runtime.js");
+			const restored = runtime.getUiRuntimeOptions();
+			expect({
+				v2Enabled: restored.v2Enabled,
+				colorProfile: restored.colorProfile,
+				glyphMode: restored.glyphMode,
+				palette: restored.palette,
+				accent: restored.accent,
+			}).toEqual(originalRuntimeTheme);
+		}
+	});
 
 	it("retries transient EBUSY dashboard save and keeps settings flow alive", async () => {
 		setInteractiveTTY(true);
@@ -1825,7 +1972,9 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--json"]);
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(true);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(
+			true,
+		);
 
 		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
 			reports: Array<{ outcome: string; message: string }>;
@@ -1873,14 +2022,27 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce({
 				status: 200,
 				model: "gpt-5-codex",
-				primary: { usedPercent: 20, windowMinutes: 300, resetAtMs: now + 1_000 },
-				secondary: { usedPercent: 10, windowMinutes: 10080, resetAtMs: now + 2_000 },
+				primary: {
+					usedPercent: 20,
+					windowMinutes: 300,
+					resetAtMs: now + 1_000,
+				},
+				secondary: {
+					usedPercent: 10,
+					windowMinutes: 10080,
+					resetAtMs: now + 2_000,
+				},
 			})
 			.mockRejectedValueOnce(new Error("live probe temporary failure"));
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live", "--json"]);
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"fix",
+			"--live",
+			"--json",
+		]);
 
 		expect(exitCode).toBe(0);
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
@@ -1932,14 +2094,38 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
 			.mockResolvedValueOnce({ mode: "cancel" });
+		deleteAccountAtIndexMock.mockResolvedValueOnce({
+			storage: {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "first@example.com",
+						refreshToken: "refresh-first",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+				],
+			},
+			flagged: { version: 1, accounts: [] },
+			removedAccount: {
+				refreshToken: "refresh-second",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+				accountIdSource: undefined,
+				enabled: true,
+			},
+			removedFlaggedCount: 0,
+		});
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe("first@example.com");
+		expect(deleteAccountAtIndexMock).toHaveBeenCalledTimes(1);
+		expect(deleteAccountAtIndexMock.mock.calls[0]?.[0]?.index).toBe(1);
 	});
 
 	it("toggles account enabled state from manage mode", async () => {
@@ -1967,7 +2153,98 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(false);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(
+			false,
+		);
+	});
+
+	it("skips destructive work when user cancels from menu", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "keep@example.com",
+					refreshToken: "keep-refresh",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(deleteSavedAccountsMock).not.toHaveBeenCalled();
+		expect(resetLocalStateMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+	});
+
+	it("deletes saved accounts only when requested", async () => {
+		const now = Date.now();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "fresh", deleteAll: true })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(deleteSavedAccountsMock).toHaveBeenCalledTimes(1);
+		expect(resetLocalStateMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			"Deleted saved accounts. Saved accounts deleted; flagged/problem accounts, settings, and Codex CLI sync state kept.",
+		);
+		logSpy.mockRestore();
+	});
+
+	it("resets local state when reset mode is chosen", async () => {
+		const now = Date.now();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "reset" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(resetLocalStateMock).toHaveBeenCalledTimes(1);
+		expect(deleteSavedAccountsMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			"Reset local state. Saved accounts, flagged/problem accounts, and quota cache cleared; settings and Codex CLI sync state kept.",
+		);
+		logSpy.mockRestore();
 	});
 
 	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {

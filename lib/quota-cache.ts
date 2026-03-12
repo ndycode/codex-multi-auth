@@ -46,7 +46,9 @@ function isRetryableFsError(error: unknown): boolean {
  * @returns The input as a finite number, or `undefined` if the value is not a finite number
  */
 function normalizeNumber(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
 }
 
 /**
@@ -104,7 +106,7 @@ function normalizeEntry(value: unknown): QuotaCacheEntry | null {
  *
  * @param value - Parsed JSON value (typically an object) containing raw entries keyed by identifier; non-objects, empty keys, or invalid entries are ignored.
  * @returns A record mapping valid string keys to normalized `QuotaCacheEntry` objects; malformed entries are omitted.
- * 
+ *
  * Note: This function is pure and performs no filesystem I/O. Callers are responsible for any filesystem concurrency or Windows-specific behavior when loading/saving the on-disk cache, and for redacting any sensitive tokens before logging or persisting.
  */
 function normalizeEntryMap(value: unknown): Record<string, QuotaCacheEntry> {
@@ -132,7 +134,9 @@ async function readCacheFileWithRetry(path: string): Promise<string> {
 			await sleep(10 * 2 ** attempt);
 		}
 	}
-	throw lastError instanceof Error ? lastError : new Error("quota cache read retry exhausted");
+	throw lastError instanceof Error
+		? lastError
+		: new Error("quota cache read retry exhausted");
 }
 
 /**
@@ -179,7 +183,9 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 			return { byAccountId: {}, byEmail: {} };
 		}
 		if (parsed.version !== 1) {
-			logWarn(`Quota cache rejected due to version mismatch: ${String(parsed.version)}`);
+			logWarn(
+				`Quota cache rejected due to version mismatch: ${String(parsed.version)}`,
+			);
 			return { byAccountId: {}, byEmail: {} };
 		}
 
@@ -257,5 +263,23 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
+	}
+}
+
+/**
+ * Deletes the on-disk quota cache file, ignoring missing files and logging non-ENOENT errors.
+ */
+export async function clearQuotaCache(): Promise<void> {
+	try {
+		await fs.unlink(QUOTA_CACHE_PATH);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code !== "ENOENT") {
+			logWarn(
+				`Failed to clear quota cache ${QUOTA_CACHE_LABEL}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
 	}
 }

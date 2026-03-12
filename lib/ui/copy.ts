@@ -15,9 +15,11 @@ export const UI_COPY = {
 		loadingLimits: "Fetching account limits...",
 		noSearchMatches: "No accounts match your search",
 		dangerZone: "Danger Zone",
-		removeAllAccounts: "Delete All Accounts",
+		removeAllAccounts: "Delete Saved Accounts",
+		resetLocalState: "Reset Local State",
 		helpCompact: "↑↓ Move | Enter Select | / Search | 1-9 Switch | Q Back",
-		helpDetailed: "Arrow keys move, Enter selects, / searches, 1-9 switches account, Q goes back",
+		helpDetailed:
+			"Arrow keys move, Enter selects, / searches, 1-9 switches account, Q goes back",
 	},
 	accountDetails: {
 		back: "Back",
@@ -49,7 +51,8 @@ export const UI_COPY = {
 	returnFlow: {
 		continuePrompt: "Press Enter to go back.",
 		actionFailedPrompt: "Action failed. Press Enter to go back.",
-		autoReturn: (seconds: number) => `Returning in ${seconds}s... Press any key to pause.`,
+		autoReturn: (seconds: number) =>
+			`Returning in ${seconds}s... Press any key to pause.`,
 		paused: "Paused. Press any key to continue.",
 		working: "Running...",
 		done: "Done.",
@@ -75,22 +78,27 @@ export const UI_COPY = {
 		backNoSave: "Back Without Saving",
 		accountListTitle: "Account List View",
 		accountListSubtitle: "Choose row details and optional smart sorting",
-		accountListHelp: "Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)",
+		accountListHelp:
+			"Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)",
 		summaryTitle: "Account Details Row",
 		summarySubtitle: "Choose and order detail fields",
-		summaryHelp: "Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)",
+		summaryHelp:
+			"Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)",
 		behaviorTitle: "Return Behavior",
 		behaviorSubtitle: "Control how result screens return",
-		behaviorHelp: "Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
+		behaviorHelp:
+			"Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
 		themeTitle: "Color Theme",
 		themeSubtitle: "Pick base color and accent",
 		themeHelp: "Enter Select | 1-2 Base | S Save | Q Back (No Save)",
 		backendTitle: "Backend Controls",
 		backendSubtitle: "Tune sync, retry, and limit behavior",
-		backendHelp: "Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",
+		backendHelp:
+			"Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",
 		backendCategoriesHeading: "Categories",
 		backendCategoryTitle: "Backend Category",
-		backendCategoryHelp: "Enter Toggle/Adjust | +/- or [ ] Number | 1-9 Toggle | R Reset | Q Back",
+		backendCategoryHelp:
+			"Enter Toggle/Adjust | +/- or [ ] Number | 1-9 Toggle | R Reset | Q Back",
 		backendToggleHeading: "Switches",
 		backendNumberHeading: "Numbers",
 		backendDecrease: "Decrease Focused Value",
@@ -104,11 +112,13 @@ export const UI_COPY = {
 		moveDown: "Move Focused Field Down",
 	},
 	fallback: {
-		addAnotherTip: "Tip: Use private mode or sign out before adding another account.",
-		addAnotherQuestion: (count: number) => `Add another account? (${count} added) (y/n): `,
+		addAnotherTip:
+			"Tip: Use private mode or sign out before adding another account.",
+		addAnotherQuestion: (count: number) =>
+			`Add another account? (${count} added) (y/n): `,
 		selectModePrompt:
-			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (q) back [a/c/b/x/s/d/g/f/q]: ",
-		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, f, q.",
+			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (r) reset, (q) back [a/c/b/x/s/d/g/f/r/q]: ",
+		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, f, r, q.",
 	},
 } as const;
 

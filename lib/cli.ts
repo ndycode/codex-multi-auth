@@ -1,11 +1,12 @@
-import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { createInterface } from "node:readline/promises";
+import { DESTRUCTIVE_ACTION_COPY } from "./destructive-actions.js";
 import type { AccountIdSource } from "./types.js";
 import {
-	showAuthMenu,
-	showAccountDetails,
-	isTTY,
 	type AccountStatus,
+	isTTY,
+	showAccountDetails,
+	showAuthMenu,
 } from "./ui/auth-menu.js";
 import { UI_COPY } from "./ui/copy.js";
 
@@ -19,12 +20,15 @@ export function isNonInteractiveMode(): boolean {
 	if (!input.isTTY || !output.isTTY) return true;
 	if (process.env.CODEX_TUI === "1") return true;
 	if (process.env.CODEX_DESKTOP === "1") return true;
-	if ((process.env.TERM_PROGRAM ?? "").trim().toLowerCase() === "codex") return true;
+	if ((process.env.TERM_PROGRAM ?? "").trim().toLowerCase() === "codex")
+		return true;
 	if (process.env.ELECTRON_RUN_AS_NODE === "1") return true;
 	return false;
 }
 
-export async function promptAddAnotherAccount(currentCount: number): Promise<boolean> {
+export async function promptAddAnotherAccount(
+	currentCount: number,
+): Promise<boolean> {
 	if (isNonInteractiveMode()) {
 		return false;
 	}
@@ -32,7 +36,9 @@ export async function promptAddAnotherAccount(currentCount: number): Promise<boo
 	const rl = createInterface({ input, output });
 	try {
 		console.log(`\n${UI_COPY.fallback.addAnotherTip}\n`);
-		const answer = await rl.question(UI_COPY.fallback.addAnotherQuestion(currentCount));
+		const answer = await rl.question(
+			UI_COPY.fallback.addAnotherQuestion(currentCount),
+		);
 		const normalized = answer.trim().toLowerCase();
 		return normalized === "y" || normalized === "yes";
 	} finally {
@@ -46,6 +52,7 @@ export type LoginMode =
 	| "fix"
 	| "settings"
 	| "fresh"
+	| "reset"
 	| "manage"
 	| "check"
 	| "deep-check"
@@ -94,17 +101,25 @@ export interface LoginMenuResult {
 	deleteAll?: boolean;
 }
 
-function formatAccountLabel(account: ExistingAccountInfo, index: number): string {
+function formatAccountLabel(
+	account: ExistingAccountInfo,
+	index: number,
+): string {
 	const num = index + 1;
 	const label = account.accountLabel?.trim();
 	if (account.email?.trim()) {
-		return label ? `${num}. ${label} (${account.email})` : `${num}. ${account.email}`;
+		return label
+			? `${num}. ${label} (${account.email})`
+			: `${num}. ${account.email}`;
 	}
 	if (label) {
 		return `${num}. ${label}`;
 	}
 	if (account.accountId?.trim()) {
-		const suffix = account.accountId.length > 6 ? account.accountId.slice(-6) : account.accountId;
+		const suffix =
+			account.accountId.length > 6
+				? account.accountId.slice(-6)
+				: account.accountId;
 		return `${num}. ${suffix}`;
 	}
 	return `${num}. Account`;
@@ -112,7 +127,8 @@ function formatAccountLabel(account: ExistingAccountInfo, index: number): string
 
 function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
 	const sourceIndex =
-		typeof account.sourceIndex === "number" && Number.isFinite(account.sourceIndex)
+		typeof account.sourceIndex === "number" &&
+		Number.isFinite(account.sourceIndex)
 			? Math.max(0, Math.floor(account.sourceIndex))
 			: undefined;
 	if (typeof sourceIndex === "number") return sourceIndex;
@@ -123,21 +139,40 @@ function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
 }
 
 function warnUnresolvableAccountSelection(account: ExistingAccountInfo): void {
-	const label = account.email?.trim() || account.accountId?.trim() || `index ${account.index + 1}`;
+	const label =
+		account.email?.trim() ||
+		account.accountId?.trim() ||
+		`index ${account.index + 1}`;
 	console.log(`Unable to resolve saved account for action: ${label}`);
 }
 
 async function promptDeleteAllTypedConfirm(): Promise<boolean> {
 	const rl = createInterface({ input, output });
 	try {
-		const answer = await rl.question("Type DELETE to remove all saved accounts: ");
+		const answer = await rl.question(
+			DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.typedConfirm,
+		);
 		return answer.trim() === "DELETE";
 	} finally {
 		rl.close();
 	}
 }
 
-async function promptLoginModeFallback(existingAccounts: ExistingAccountInfo[]): Promise<LoginMenuResult> {
+async function promptResetTypedConfirm(): Promise<boolean> {
+	const rl = createInterface({ input, output });
+	try {
+		const answer = await rl.question(
+			DESTRUCTIVE_ACTION_COPY.resetLocalState.typedConfirm,
+		);
+		return answer.trim() === "RESET";
+	} finally {
+		rl.close();
+	}
+}
+
+async function promptLoginModeFallback(
+	existingAccounts: ExistingAccountInfo[],
+): Promise<LoginMenuResult> {
 	const rl = createInterface({ input, output });
 	try {
 		if (existingAccounts.length > 0) {
@@ -152,17 +187,33 @@ async function promptLoginModeFallback(existingAccounts: ExistingAccountInfo[]):
 			const answer = await rl.question(UI_COPY.fallback.selectModePrompt);
 			const normalized = answer.trim().toLowerCase();
 			if (normalized === "a" || normalized === "add") return { mode: "add" };
-			if (normalized === "b" || normalized === "p" || normalized === "forecast") {
+			if (
+				normalized === "b" ||
+				normalized === "p" ||
+				normalized === "forecast"
+			) {
 				return { mode: "forecast" };
 			}
 			if (normalized === "x" || normalized === "fix") return { mode: "fix" };
-			if (normalized === "s" || normalized === "settings" || normalized === "configure") {
+			if (
+				normalized === "s" ||
+				normalized === "settings" ||
+				normalized === "configure"
+			) {
 				return { mode: "settings" };
 			}
-			if (normalized === "f" || normalized === "fresh" || normalized === "clear") {
+			if (
+				normalized === "f" ||
+				normalized === "fresh" ||
+				normalized === "clear"
+			) {
 				return { mode: "fresh", deleteAll: true };
 			}
-			if (normalized === "c" || normalized === "check") return { mode: "check" };
+			if (normalized === "r" || normalized === "reset") {
+				return { mode: "reset" };
+			}
+			if (normalized === "c" || normalized === "check")
+				return { mode: "check" };
 			if (normalized === "d" || normalized === "deep") {
 				return { mode: "deep-check" };
 			}
@@ -174,7 +225,8 @@ async function promptLoginModeFallback(existingAccounts: ExistingAccountInfo[]):
 			) {
 				return { mode: "verify-flagged" };
 			}
-			if (normalized === "q" || normalized === "quit") return { mode: "cancel" };
+			if (normalized === "q" || normalized === "quit")
+				return { mode: "cancel" };
 			console.log(UI_COPY.fallback.invalidModePrompt);
 		}
 	} finally {
@@ -215,6 +267,12 @@ export async function promptLoginMode(
 					continue;
 				}
 				return { mode: "fresh", deleteAll: true };
+			case "reset-all":
+				if (!(await promptResetTypedConfirm())) {
+					console.log("\nReset cancelled.\n");
+					continue;
+				}
+				return { mode: "reset" };
 			case "check":
 				return { mode: "check" };
 			case "deep-check":
@@ -306,7 +364,8 @@ export async function promptAccountSelection(
 ): Promise<AccountSelectionCandidate | null> {
 	if (candidates.length === 0) return null;
 	const defaultIndex =
-		typeof options.defaultIndex === "number" && Number.isFinite(options.defaultIndex)
+		typeof options.defaultIndex === "number" &&
+		Number.isFinite(options.defaultIndex)
 			? Math.max(0, Math.min(options.defaultIndex, candidates.length - 1))
 			: 0;
 
@@ -316,7 +375,9 @@ export async function promptAccountSelection(
 
 	const rl = createInterface({ input, output });
 	try {
-		console.log(`\n${options.title ?? "Multiple workspaces detected for this account:"}`);
+		console.log(
+			`\n${options.title ?? "Multiple workspaces detected for this account:"}`,
+		);
 		candidates.forEach((candidate, index) => {
 			const isDefault = candidate.isDefault ? " (default)" : "";
 			console.log(`  ${index + 1}. ${candidate.label}${isDefault}`);
@@ -324,7 +385,9 @@ export async function promptAccountSelection(
 		console.log("");
 
 		while (true) {
-			const answer = await rl.question(`Select workspace [${defaultIndex + 1}]: `);
+			const answer = await rl.question(
+				`Select workspace [${defaultIndex + 1}]: `,
+			);
 			const normalized = answer.trim().toLowerCase();
 			if (!normalized) {
 				return candidates[defaultIndex] ?? candidates[0] ?? null;

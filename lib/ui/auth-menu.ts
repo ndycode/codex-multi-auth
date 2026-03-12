@@ -1,11 +1,16 @@
-import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { createInterface } from "node:readline/promises";
+import { DESTRUCTIVE_ACTION_COPY } from "../destructive-actions.js";
 import { ANSI, isTTY } from "./ansi.js";
 import { confirm } from "./confirm.js";
+import { formatCheckFlaggedLabel, UI_COPY } from "./copy.js";
+import {
+	formatUiBadge,
+	paintUiText,
+	quotaToneFromLeftPercent,
+} from "./format.js";
 import { getUiRuntimeOptions } from "./runtime.js";
-import { select, type MenuItem } from "./select.js";
-import { paintUiText, formatUiBadge, quotaToneFromLeftPercent } from "./format.js";
-import { UI_COPY, formatCheckFlaggedLabel } from "./copy.js";
+import { type MenuItem, select } from "./select.js";
 
 export type AccountStatus =
 	| "active"
@@ -56,6 +61,7 @@ export type AuthMenuAction =
 	| { type: "fix" }
 	| { type: "settings" }
 	| { type: "fresh" }
+	| { type: "reset-all" }
 	| { type: "check" }
 	| { type: "deep-check" }
 	| { type: "verify-flagged" }
@@ -68,7 +74,13 @@ export type AuthMenuAction =
 	| { type: "delete-all" }
 	| { type: "cancel" };
 
-export type AccountAction = "back" | "delete" | "refresh" | "toggle" | "set-current" | "cancel";
+export type AccountAction =
+	| "back"
+	| "delete"
+	| "refresh"
+	| "toggle"
+	| "set-current"
+	| "cancel";
 
 function resolveCliVersionLabel(): string | null {
 	const raw = (process.env.CODEX_MULTI_AUTH_CLI_VERSION ?? "").trim();
@@ -85,7 +97,7 @@ function mainMenuTitleWithVersion(): string {
 function sanitizeTerminalText(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	return value
-		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
 		.replace(/[\u0000-\u001f\u007f]/g, "")
 		.trim();
 }
@@ -112,10 +124,14 @@ function statusBadge(status: AccountStatus | undefined): string {
 		tone: "accent" | "success" | "warning" | "danger" | "muted",
 	): string => {
 		if (ui.v2Enabled) return formatUiBadge(ui, label, tone);
-		if (tone === "accent") return `${ANSI.bgGreen}${ANSI.black}[${label}]${ANSI.reset}`;
-		if (tone === "success") return `${ANSI.bgGreen}${ANSI.black}[${label}]${ANSI.reset}`;
-		if (tone === "warning") return `${ANSI.bgYellow}${ANSI.black}[${label}]${ANSI.reset}`;
-		if (tone === "danger") return `${ANSI.bgRed}${ANSI.white}[${label}]${ANSI.reset}`;
+		if (tone === "accent")
+			return `${ANSI.bgGreen}${ANSI.black}[${label}]${ANSI.reset}`;
+		if (tone === "success")
+			return `${ANSI.bgGreen}${ANSI.black}[${label}]${ANSI.reset}`;
+		if (tone === "warning")
+			return `${ANSI.bgYellow}${ANSI.black}[${label}]${ANSI.reset}`;
+		if (tone === "danger")
+			return `${ANSI.bgRed}${ANSI.white}[${label}]${ANSI.reset}`;
 		return `${ANSI.inverse}[${label}]${ANSI.reset}`;
 	};
 
@@ -161,7 +177,7 @@ function statusBadge(status: AccountStatus | undefined): string {
 }
 
 function accountTitle(account: AccountInfo): string {
-	const accountNumber = account.quickSwitchNumber ?? (account.index + 1);
+	const accountNumber = account.quickSwitchNumber ?? account.index + 1;
 	const base =
 		sanitizeTerminalText(account.email) ||
 		sanitizeTerminalText(account.accountLabel) ||
@@ -175,15 +191,21 @@ function accountSearchText(account: AccountInfo): string {
 		sanitizeTerminalText(account.email),
 		sanitizeTerminalText(account.accountLabel),
 		sanitizeTerminalText(account.accountId),
-		String(account.quickSwitchNumber ?? (account.index + 1)),
+		String(account.quickSwitchNumber ?? account.index + 1),
 	]
-		.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+		.filter(
+			(value): value is string =>
+				typeof value === "string" && value.trim().length > 0,
+		)
 		.join(" ")
 		.toLowerCase();
 }
 
-function accountRowColor(account: AccountInfo): MenuItem<AuthMenuAction>["color"] {
-	if (account.isCurrentAccount && account.highlightCurrentRow !== false) return "green";
+function accountRowColor(
+	account: AccountInfo,
+): MenuItem<AuthMenuAction>["color"] {
+	if (account.isCurrentAccount && account.highlightCurrentRow !== false)
+		return "green";
 	switch (account.status) {
 		case "active":
 		case "ok":
@@ -200,7 +222,9 @@ function accountRowColor(account: AccountInfo): MenuItem<AuthMenuAction>["color"
 	}
 }
 
-function statusTone(status: AccountStatus | undefined): "success" | "warning" | "danger" | "muted" {
+function statusTone(
+	status: AccountStatus | undefined,
+): "success" | "warning" | "danger" | "muted" {
 	switch (status) {
 		case "active":
 		case "ok":
@@ -226,12 +250,16 @@ function normalizeQuotaPercent(value: number | undefined): number | null {
 	return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function parseLeftPercentFromSummary(summary: string, windowLabel: "5h" | "7d"): number | null {
+function parseLeftPercentFromSummary(
+	summary: string,
+	windowLabel: "5h" | "7d",
+): number | null {
 	const segments = summary.split("|");
 	for (const segment of segments) {
 		const trimmed = segment.trim().toLowerCase();
 		if (!trimmed.startsWith(`${windowLabel} `)) continue;
-		const percentToken = trimmed.slice(windowLabel.length).trim().split(/\s+/)[0] ?? "";
+		const percentToken =
+			trimmed.slice(windowLabel.length).trim().split(/\s+/)[0] ?? "";
 		const parsed = Number.parseInt(percentToken.replace("%", ""), 10);
 		if (!Number.isFinite(parsed)) continue;
 		return Math.max(0, Math.min(100, parsed));
@@ -274,15 +302,21 @@ function formatQuotaBar(
 	const filledText = "█".repeat(filled);
 	const emptyText = "▒".repeat(width - filled);
 	if (ui.v2Enabled) {
-		const tone = leftPercent === null ? "muted" : quotaToneFromLeftPercent(leftPercent);
-		const filledSegment = filledText.length > 0 ? paintUiText(ui, filledText, tone) : "";
-		const emptySegment = emptyText.length > 0 ? paintUiText(ui, emptyText, "muted") : "";
+		const tone =
+			leftPercent === null ? "muted" : quotaToneFromLeftPercent(leftPercent);
+		const filledSegment =
+			filledText.length > 0 ? paintUiText(ui, filledText, tone) : "";
+		const emptySegment =
+			emptyText.length > 0 ? paintUiText(ui, emptyText, "muted") : "";
 		return `${filledSegment}${emptySegment}`;
 	}
 	if (leftPercent === null) return `${ANSI.dim}${emptyText}${ANSI.reset}`;
-	const color = leftPercent <= 15 ? ANSI.red : leftPercent <= 35 ? ANSI.yellow : ANSI.green;
-	const filledSegment = filledText.length > 0 ? `${color}${filledText}${ANSI.reset}` : "";
-	const emptySegment = emptyText.length > 0 ? `${ANSI.dim}${emptyText}${ANSI.reset}` : "";
+	const color =
+		leftPercent <= 15 ? ANSI.red : leftPercent <= 35 ? ANSI.yellow : ANSI.green;
+	const filledSegment =
+		filledText.length > 0 ? `${color}${filledText}${ANSI.reset}` : "";
+	const emptySegment =
+		emptyText.length > 0 ? `${ANSI.dim}${emptyText}${ANSI.reset}` : "";
 	return `${filledSegment}${emptySegment}`;
 }
 
@@ -293,7 +327,12 @@ function formatQuotaPercent(
 	if (leftPercent === null) return null;
 	const percentText = `${leftPercent}%`;
 	if (!ui.v2Enabled) {
-		const color = leftPercent <= 15 ? ANSI.red : leftPercent <= 35 ? ANSI.yellow : ANSI.green;
+		const color =
+			leftPercent <= 15
+				? ANSI.red
+				: leftPercent <= 35
+					? ANSI.yellow
+					: ANSI.green;
 		return `${color}${percentText}${ANSI.reset}`;
 	}
 	const tone = quotaToneFromLeftPercent(leftPercent);
@@ -317,28 +356,60 @@ function formatQuotaWindow(
 	if (!cooldown) {
 		return percent ? `${labelText} ${bar} ${percent}` : `${labelText} ${bar}`;
 	}
-	const cooldownText = ui.v2Enabled ? paintUiText(ui, cooldown, "muted") : cooldown;
+	const cooldownText = ui.v2Enabled
+		? paintUiText(ui, cooldown, "muted")
+		: cooldown;
 	if (!percent) {
 		return `${labelText} ${bar} ${cooldownText}`;
 	}
 	return `${labelText} ${bar} ${percent} ${cooldownText}`;
 }
 
-function formatQuotaSummary(account: AccountInfo, ui: ReturnType<typeof getUiRuntimeOptions>): string {
+function formatQuotaSummary(
+	account: AccountInfo,
+	ui: ReturnType<typeof getUiRuntimeOptions>,
+): string {
 	const summary = account.quotaSummary ?? "";
 	const showCooldown = account.showQuotaCooldown !== false;
-	const left5h = normalizeQuotaPercent(account.quota5hLeftPercent) ?? parseLeftPercentFromSummary(summary, "5h");
-	const left7d = normalizeQuotaPercent(account.quota7dLeftPercent) ?? parseLeftPercentFromSummary(summary, "7d");
+	const left5h =
+		normalizeQuotaPercent(account.quota5hLeftPercent) ??
+		parseLeftPercentFromSummary(summary, "5h");
+	const left7d =
+		normalizeQuotaPercent(account.quota7dLeftPercent) ??
+		parseLeftPercentFromSummary(summary, "7d");
 	const segments: string[] = [];
 
 	if (left5h !== null || typeof account.quota5hResetAtMs === "number") {
-		segments.push(formatQuotaWindow("5h", left5h, account.quota5hResetAtMs, showCooldown, ui));
+		segments.push(
+			formatQuotaWindow(
+				"5h",
+				left5h,
+				account.quota5hResetAtMs,
+				showCooldown,
+				ui,
+			),
+		);
 	}
 	if (left7d !== null || typeof account.quota7dResetAtMs === "number") {
-		segments.push(formatQuotaWindow("7d", left7d, account.quota7dResetAtMs, showCooldown, ui));
+		segments.push(
+			formatQuotaWindow(
+				"7d",
+				left7d,
+				account.quota7dResetAtMs,
+				showCooldown,
+				ui,
+			),
+		);
 	}
-	if (account.quotaRateLimited || summary.toLowerCase().includes("rate-limited")) {
-		segments.push(ui.v2Enabled ? paintUiText(ui, "rate-limited", "danger") : `${ANSI.red}rate-limited${ANSI.reset}`);
+	if (
+		account.quotaRateLimited ||
+		summary.toLowerCase().includes("rate-limited")
+	) {
+		segments.push(
+			ui.v2Enabled
+				? paintUiText(ui, "rate-limited", "danger")
+				: `${ANSI.red}rate-limited${ANSI.reset}`,
+		);
 	}
 
 	if (segments.length === 0) {
@@ -350,7 +421,10 @@ function formatQuotaSummary(account: AccountInfo, ui: ReturnType<typeof getUiRun
 	return segments.join(separator);
 }
 
-function formatAccountHint(account: AccountInfo, ui: ReturnType<typeof getUiRuntimeOptions>): string {
+function formatAccountHint(
+	account: AccountInfo,
+	ui: ReturnType<typeof getUiRuntimeOptions>,
+): string {
 	const withKey = (
 		key: string,
 		value: string,
@@ -365,19 +439,30 @@ function formatAccountHint(account: AccountInfo, ui: ReturnType<typeof getUiRunt
 
 	const partsByKey = new Map<string, string>();
 	if (account.showStatusBadge === false) {
-		partsByKey.set("status", withKey("Status:", statusText(account.status), statusTone(account.status)));
+		partsByKey.set(
+			"status",
+			withKey(
+				"Status:",
+				statusText(account.status),
+				statusTone(account.status),
+			),
+		);
 	}
 	if (account.showLastUsed !== false) {
-		partsByKey.set("last-used", withKey("Last used:", formatRelativeTime(account.lastUsed), "heading"));
+		partsByKey.set(
+			"last-used",
+			withKey("Last used:", formatRelativeTime(account.lastUsed), "heading"),
+		);
 	}
 	const quotaSummaryText = formatQuotaSummary(account, ui);
 	if (quotaSummaryText) {
 		partsByKey.set("limits", withKey("Limits:", quotaSummaryText, "accent"));
 	}
 
-	const fields = account.statuslineFields && account.statuslineFields.length > 0
-		? account.statuslineFields
-		: ["last-used", "limits", "status"];
+	const fields =
+		account.statuslineFields && account.statuslineFields.length > 0
+			? account.statuslineFields
+			: ["last-used", "limits", "status"];
 	const orderedParts: string[] = [];
 	for (const field of fields) {
 		const part = partsByKey.get(field);
@@ -426,6 +511,7 @@ function authMenuFocusKey(action: AuthMenuAction): string {
 		case "fix":
 		case "settings":
 		case "fresh":
+		case "reset-all":
 		case "check":
 		case "deep-check":
 		case "verify-flagged":
@@ -448,13 +534,16 @@ export async function showAuthMenu(
 	let focusKey = "action:add";
 	while (true) {
 		const normalizedSearch = searchQuery.trim().toLowerCase();
-		const visibleAccounts = normalizedSearch.length > 0
-			? accounts.filter((account) => accountSearchText(account).includes(normalizedSearch))
-			: accounts;
+		const visibleAccounts =
+			normalizedSearch.length > 0
+				? accounts.filter((account) =>
+						accountSearchText(account).includes(normalizedSearch),
+					)
+				: accounts;
 		const visibleByNumber = new Map<number, AccountInfo>();
 		const duplicateQuickSwitchNumbers = new Set<number>();
 		for (const account of visibleAccounts) {
-			const quickSwitchNumber = account.quickSwitchNumber ?? (account.index + 1);
+			const quickSwitchNumber = account.quickSwitchNumber ?? account.index + 1;
 			if (visibleByNumber.has(quickSwitchNumber)) {
 				duplicateQuickSwitchNumbers.add(quickSwitchNumber);
 				continue;
@@ -463,18 +552,58 @@ export async function showAuthMenu(
 		}
 
 		const items: MenuItem<AuthMenuAction>[] = [
-			{ label: UI_COPY.mainMenu.quickStart, value: { type: "cancel" }, kind: "heading" },
-			{ label: UI_COPY.mainMenu.addAccount, value: { type: "add" }, color: "green" },
-			{ label: UI_COPY.mainMenu.checkAccounts, value: { type: "check" }, color: "green" },
-			{ label: UI_COPY.mainMenu.bestAccount, value: { type: "forecast" }, color: "green" },
-			{ label: UI_COPY.mainMenu.fixIssues, value: { type: "fix" }, color: "green" },
-			{ label: UI_COPY.mainMenu.settings, value: { type: "settings" }, color: "green" },
+			{
+				label: UI_COPY.mainMenu.quickStart,
+				value: { type: "cancel" },
+				kind: "heading",
+			},
+			{
+				label: UI_COPY.mainMenu.addAccount,
+				value: { type: "add" },
+				color: "green",
+			},
+			{
+				label: UI_COPY.mainMenu.checkAccounts,
+				value: { type: "check" },
+				color: "green",
+			},
+			{
+				label: UI_COPY.mainMenu.bestAccount,
+				value: { type: "forecast" },
+				color: "green",
+			},
+			{
+				label: UI_COPY.mainMenu.fixIssues,
+				value: { type: "fix" },
+				color: "green",
+			},
+			{
+				label: UI_COPY.mainMenu.settings,
+				value: { type: "settings" },
+				color: "green",
+			},
 			{ label: "", value: { type: "cancel" }, separator: true },
-			{ label: UI_COPY.mainMenu.moreChecks, value: { type: "cancel" }, kind: "heading" },
-			{ label: UI_COPY.mainMenu.refreshChecks, value: { type: "deep-check" }, color: "green" },
-			{ label: verifyLabel, value: { type: "verify-flagged" }, color: flaggedCount > 0 ? "red" : "yellow" },
+			{
+				label: UI_COPY.mainMenu.moreChecks,
+				value: { type: "cancel" },
+				kind: "heading",
+			},
+			{
+				label: UI_COPY.mainMenu.refreshChecks,
+				value: { type: "deep-check" },
+				color: "green",
+			},
+			{
+				label: verifyLabel,
+				value: { type: "verify-flagged" },
+				color: flaggedCount > 0 ? "red" : "yellow",
+			},
 			{ label: "", value: { type: "cancel" }, separator: true },
-			{ label: UI_COPY.mainMenu.accounts, value: { type: "cancel" }, kind: "heading" },
+			{
+				label: UI_COPY.mainMenu.accounts,
+				value: { type: "cancel" },
+				kind: "heading",
+			},
 		];
 
 		if (visibleAccounts.length === 0) {
@@ -486,20 +615,34 @@ export async function showAuthMenu(
 		} else {
 			items.push(
 				...visibleAccounts.map((account) => {
-					const currentBadge = account.isCurrentAccount && account.showCurrentBadge !== false
-						? (ui.v2Enabled ? ` ${formatUiBadge(ui, "current", "accent")}` : ` ${ANSI.cyan}[current]${ANSI.reset}`)
-						: "";
-					const badge = account.showStatusBadge === false ? "" : statusBadge(account.status);
+					const currentBadge =
+						account.isCurrentAccount && account.showCurrentBadge !== false
+							? ui.v2Enabled
+								? ` ${formatUiBadge(ui, "current", "accent")}`
+								: ` ${ANSI.cyan}[current]${ANSI.reset}`
+							: "";
+					const badge =
+						account.showStatusBadge === false
+							? ""
+							: statusBadge(account.status);
 					const statusSuffix = badge ? ` ${badge}` : "";
 					const title = ui.v2Enabled
-						? paintUiText(ui, accountTitle(account), account.isCurrentAccount ? "accent" : "heading")
+						? paintUiText(
+								ui,
+								accountTitle(account),
+								account.isCurrentAccount ? "accent" : "heading",
+							)
 						: accountTitle(account);
 					const label = `${title}${currentBadge}${statusSuffix}`;
 					const hint = formatAccountHint(account, ui);
 					const hasHint = hint.length > 0;
 					const hintText = ui.v2Enabled
-						? (hasHint ? hint : undefined)
-						: (hasHint ? hint : undefined);
+						? hasHint
+							? hint
+							: undefined
+						: hasHint
+							? hint
+							: undefined;
 					return {
 						label,
 						hint: hintText,
@@ -511,27 +654,45 @@ export async function showAuthMenu(
 		}
 
 		items.push({ label: "", value: { type: "cancel" }, separator: true });
-		items.push({ label: UI_COPY.mainMenu.dangerZone, value: { type: "cancel" }, kind: "heading" });
-		items.push({ label: UI_COPY.mainMenu.removeAllAccounts, value: { type: "delete-all" }, color: "red" });
+		items.push({
+			label: UI_COPY.mainMenu.dangerZone,
+			value: { type: "cancel" },
+			kind: "heading",
+		});
+		items.push({
+			label: UI_COPY.mainMenu.removeAllAccounts,
+			value: { type: "delete-all" },
+			color: "red",
+		});
+		items.push({
+			label: UI_COPY.mainMenu.resetLocalState,
+			value: { type: "reset-all" },
+			color: "red",
+		});
 
 		const compactHelp = UI_COPY.mainMenu.helpCompact;
 		const detailedHelp = UI_COPY.mainMenu.helpDetailed;
-		const showHintsForUnselectedRows = visibleAccounts[0]?.showHintsForUnselectedRows ??
+		const showHintsForUnselectedRows =
+			visibleAccounts[0]?.showHintsForUnselectedRows ??
 			accounts[0]?.showHintsForUnselectedRows ??
 			false;
-		const focusStyle = visibleAccounts[0]?.focusStyle ??
-			accounts[0]?.focusStyle ??
-			"row-invert";
+		const focusStyle =
+			visibleAccounts[0]?.focusStyle ?? accounts[0]?.focusStyle ?? "row-invert";
 		const resolveStatusMessage = (): string | undefined => {
-			const raw = typeof options.statusMessage === "function"
-				? options.statusMessage()
-				: options.statusMessage;
-			return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : undefined;
+			const raw =
+				typeof options.statusMessage === "function"
+					? options.statusMessage()
+					: options.statusMessage;
+			return typeof raw === "string" && raw.trim().length > 0
+				? raw.trim()
+				: undefined;
 		};
 		const buildSubtitle = (): string | undefined => {
 			const parts: string[] = [];
 			if (normalizedSearch.length > 0) {
-				parts.push(`${UI_COPY.mainMenu.searchSubtitlePrefix} ${normalizedSearch}`);
+				parts.push(
+					`${UI_COPY.mainMenu.searchSubtitlePrefix} ${normalizedSearch}`,
+				);
 			}
 			const statusText = resolveStatusMessage();
 			if (statusText) {
@@ -541,7 +702,8 @@ export async function showAuthMenu(
 			return parts.join(" | ");
 		};
 		const initialCursor = items.findIndex((item) => {
-			if (item.separator || item.disabled || item.kind === "heading") return false;
+			if (item.separator || item.disabled || item.kind === "heading")
+				return false;
 			return authMenuFocusKey(item.value) === focusKey;
 		});
 
@@ -582,7 +744,12 @@ export async function showAuthMenu(
 				}
 
 				const selected = context.items[context.cursor];
-				if (!selected || selected.separator || selected.disabled || selected.kind === "heading") {
+				if (
+					!selected ||
+					selected.separator ||
+					selected.disabled ||
+					selected.kind === "heading"
+				) {
 					return undefined;
 				}
 				if (selected.value.type !== "select-account") return undefined;
@@ -590,7 +757,13 @@ export async function showAuthMenu(
 			},
 			onCursorChange: ({ cursor }) => {
 				const selected = items[cursor];
-				if (!selected || selected.separator || selected.disabled || selected.kind === "heading") return;
+				if (
+					!selected ||
+					selected.separator ||
+					selected.disabled ||
+					selected.kind === "heading"
+				)
+					return;
 				focusKey = authMenuFocusKey(selected.value);
 			},
 		});
@@ -602,15 +775,27 @@ export async function showAuthMenu(
 			continue;
 		}
 		if (result.type === "delete-all") {
-			const confirmed = await confirm("Delete all accounts?");
+			const confirmed = await confirm(
+				DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.confirm,
+			);
+			if (!confirmed) continue;
+		}
+		if (result.type === "reset-all") {
+			const confirmed = await confirm(
+				DESTRUCTIVE_ACTION_COPY.resetLocalState.confirm,
+			);
 			if (!confirmed) continue;
 		}
 		if (result.type === "delete-account") {
-			const confirmed = await confirm(`Delete ${accountTitle(result.account)}?`);
+			const confirmed = await confirm(
+				`Delete ${accountTitle(result.account)}?`,
+			);
 			if (!confirmed) continue;
 		}
 		if (result.type === "refresh-account") {
-			const confirmed = await confirm(`Re-authenticate ${accountTitle(result.account)}?`);
+			const confirmed = await confirm(
+				`Re-authenticate ${accountTitle(result.account)}?`,
+			);
 			if (!confirmed) continue;
 		}
 		focusKey = authMenuFocusKey(result);
@@ -618,14 +803,16 @@ export async function showAuthMenu(
 	}
 }
 
-export async function showAccountDetails(account: AccountInfo): Promise<AccountAction> {
+export async function showAccountDetails(
+	account: AccountInfo,
+): Promise<AccountAction> {
 	const ui = getUiRuntimeOptions();
 	const header =
 		`${accountTitle(account)} ${statusBadge(account.status)}` +
 		(account.enabled === false
-			? (ui.v2Enabled
+			? ui.v2Enabled
 				? ` ${formatUiBadge(ui, "disabled", "danger")}`
-				: ` ${ANSI.red}[disabled]${ANSI.reset}`)
+				: ` ${ANSI.red}[disabled]${ANSI.reset}`
 			: "");
 	const statusLabel = account.status ?? "unknown";
 	const subtitle = `Added: ${formatDate(account.addedAt)} | Used: ${formatRelativeTime(account.lastUsed)} | Status: ${statusLabel}`;
@@ -635,7 +822,10 @@ export async function showAccountDetails(account: AccountInfo): Promise<AccountA
 		const items: MenuItem<AccountAction>[] = [
 			{ label: UI_COPY.accountDetails.back, value: "back" },
 			{
-				label: account.enabled === false ? UI_COPY.accountDetails.enable : UI_COPY.accountDetails.disable,
+				label:
+					account.enabled === false
+						? UI_COPY.accountDetails.enable
+						: UI_COPY.accountDetails.disable,
 				value: "toggle",
 				color: account.enabled === false ? "green" : "yellow",
 			},
@@ -644,7 +834,11 @@ export async function showAccountDetails(account: AccountInfo): Promise<AccountA
 				value: "set-current",
 				color: "green",
 			},
-			{ label: UI_COPY.accountDetails.refresh, value: "refresh", color: "green" },
+			{
+				label: UI_COPY.accountDetails.refresh,
+				value: "refresh",
+				color: "green",
+			},
 			{ label: UI_COPY.accountDetails.remove, value: "delete", color: "red" },
 		];
 		const initialCursor = items.findIndex((item) => item.value === focusAction);
@@ -668,7 +862,13 @@ export async function showAccountDetails(account: AccountInfo): Promise<AccountA
 			},
 			onCursorChange: ({ cursor }) => {
 				const selected = items[cursor];
-				if (!selected || selected.separator || selected.disabled || selected.kind === "heading") return;
+				if (
+					!selected ||
+					selected.separator ||
+					selected.disabled ||
+					selected.kind === "heading"
+				)
+					return;
 				focusAction = selected.value;
 			},
 		});
@@ -680,7 +880,9 @@ export async function showAccountDetails(account: AccountInfo): Promise<AccountA
 			if (!confirmed) continue;
 		}
 		if (action === "refresh") {
-			const confirmed = await confirm(`Re-authenticate ${accountTitle(account)}?`);
+			const confirmed = await confirm(
+				`Re-authenticate ${accountTitle(account)}?`,
+			);
 			if (!confirmed) continue;
 		}
 		return action;
