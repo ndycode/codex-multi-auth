@@ -66,6 +66,7 @@ export const UI_COPY = {
 		advancedTitle: "Advanced",
 		exitTitle: "Back",
 		accountList: "Account List View",
+		syncCenter: "Sync Center",
 		summaryFields: "Summary Line",
 		behavior: "Menu Behavior",
 		theme: "Color Theme",
@@ -95,6 +96,15 @@ export const UI_COPY = {
 		backendSubtitle: "Tune sync, retry, and limit behavior",
 		backendHelp:
 			"Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",
+		syncCenterTitle: "Sync Center",
+		syncCenterSubtitle:
+			"Inspect source paths, watcher status, and one-way preview semantics before applying sync",
+		syncCenterHelp: "Enter Select | A Apply | R Refresh | Q Back",
+		syncCenterOverviewHeading: "Sync Overview",
+		syncCenterActionsHeading: "Actions",
+		syncCenterRefresh: "Refresh Preview",
+		syncCenterApply: "Apply Preview To Target",
+		syncCenterBack: "Back",
 		backendCategoriesHeading: "Categories",
 		backendCategoryTitle: "Backend Category",
 		backendCategoryHelp:

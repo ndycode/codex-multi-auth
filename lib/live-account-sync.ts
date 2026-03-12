@@ -1,4 +1,4 @@
-import { promises as fs, watch as fsWatch, type FSWatcher } from "node:fs";
+import { type FSWatcher, promises as fs, watch as fsWatch } from "node:fs";
 import { basename, dirname } from "node:path";
 import { createLogger } from "./logger.js";
 
@@ -18,13 +18,36 @@ export interface LiveAccountSyncSnapshot {
 	errorCount: number;
 }
 
+const EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT: LiveAccountSyncSnapshot = {
+	path: null,
+	running: false,
+	lastKnownMtimeMs: null,
+	lastSyncAt: null,
+	reloadCount: 0,
+	errorCount: 0,
+};
+
+let lastLiveAccountSyncSnapshot: LiveAccountSyncSnapshot = {
+	...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT,
+};
+
+export function getLastLiveAccountSyncSnapshot(): LiveAccountSyncSnapshot {
+	return { ...lastLiveAccountSyncSnapshot };
+}
+
+export function __resetLastLiveAccountSyncSnapshotForTests(): void {
+	lastLiveAccountSyncSnapshot = { ...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT };
+}
+
 /**
  * Convert an fs.watch filename value to a UTF-8 string or null.
  *
  * @param filename - The value supplied by fs.watch listeners; may be a `string`, `Buffer`, or `null`. Buffers are decoded as UTF-8.
  * @returns `filename` as a UTF-8 string, or `null` when the input is `null`.
  */
-function normalizeFsWatchFilename(filename: string | Buffer | null): string | null {
+function normalizeFsWatchFilename(
+	filename: string | Buffer | null,
+): string | null {
 	if (filename === null) return null;
 	if (typeof filename === "string") return filename;
 	return filename.toString("utf-8");
@@ -77,10 +100,17 @@ export class LiveAccountSync {
 	private errorCount = 0;
 	private reloadInFlight: Promise<void> | null = null;
 
-	constructor(reload: () => Promise<void>, options: LiveAccountSyncOptions = {}) {
+	constructor(
+		reload: () => Promise<void>,
+		options: LiveAccountSyncOptions = {},
+	) {
 		this.reload = reload;
 		this.debounceMs = Math.max(50, Math.floor(options.debounceMs ?? 250));
-		this.pollIntervalMs = Math.max(500, Math.floor(options.pollIntervalMs ?? 2_000));
+		this.pollIntervalMs = Math.max(
+			500,
+			Math.floor(options.pollIntervalMs ?? 2_000),
+		);
+		this.publishSnapshot();
 	}
 
 	async syncToPath(path: string): Promise<void> {
@@ -94,17 +124,21 @@ export class LiveAccountSync {
 		const targetName = basename(path);
 
 		try {
-			this.watcher = fsWatch(targetDir, { persistent: false }, (_eventType, filename) => {
-				const name = normalizeFsWatchFilename(filename);
-				if (!name) {
-					this.scheduleReload("watch");
-					return;
-				}
+			this.watcher = fsWatch(
+				targetDir,
+				{ persistent: false },
+				(_eventType, filename) => {
+					const name = normalizeFsWatchFilename(filename);
+					if (!name) {
+						this.scheduleReload("watch");
+						return;
+					}
 
-				if (name === targetName || name.startsWith(`${targetName}.`)) {
-					this.scheduleReload("watch");
-				}
-			});
+					if (name === targetName || name.startsWith(`${targetName}.`)) {
+						this.scheduleReload("watch");
+					}
+				},
+			);
 		} catch (error) {
 			this.errorCount += 1;
 			log.warn("Failed to start fs.watch for account storage", {
@@ -116,11 +150,16 @@ export class LiveAccountSync {
 		this.pollTimer = setInterval(() => {
 			void this.pollOnce();
 		}, this.pollIntervalMs);
-		if (typeof this.pollTimer === "object" && "unref" in this.pollTimer && typeof this.pollTimer.unref === "function") {
+		if (
+			typeof this.pollTimer === "object" &&
+			"unref" in this.pollTimer &&
+			typeof this.pollTimer.unref === "function"
+		) {
 			this.pollTimer.unref();
 		}
 
 		this.running = true;
+		this.publishSnapshot();
 	}
 
 	stop(): void {
@@ -137,6 +176,7 @@ export class LiveAccountSync {
 			clearTimeout(this.debounceTimer);
 			this.debounceTimer = null;
 		}
+		this.publishSnapshot();
 	}
 
 	getSnapshot(): LiveAccountSyncSnapshot {
@@ -148,6 +188,10 @@ export class LiveAccountSync {
 			reloadCount: this.reloadCount,
 			errorCount: this.errorCount,
 		};
+	}
+
+	private publishSnapshot(): void {
+		lastLiveAccountSyncSnapshot = this.getSnapshot();
 	}
 
 	private scheduleReload(reason: "watch" | "poll"): void {
@@ -174,6 +218,7 @@ export class LiveAccountSync {
 				path: summarizeWatchPath(this.currentPath),
 				error: error instanceof Error ? error.message : String(error),
 			});
+			this.publishSnapshot();
 		}
 	}
 
@@ -209,6 +254,7 @@ export class LiveAccountSync {
 			await this.reloadInFlight;
 		} finally {
 			this.reloadInFlight = null;
+			this.publishSnapshot();
 		}
 	}
 }

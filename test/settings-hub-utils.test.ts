@@ -1,21 +1,67 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardDisplaySettings } from "../lib/dashboard-settings.js";
 import type { PluginConfig } from "../lib/types.js";
 
 type SettingsHubTestApi = {
+	buildSyncCenterOverview: (
+		preview: {
+			status: "ready" | "noop" | "disabled" | "unavailable" | "error";
+			statusDetail: string;
+			sourcePath: string | null;
+			targetPath: string;
+			summary: {
+				addedAccountCount: number;
+				updatedAccountCount: number;
+				destinationOnlyPreservedCount: number;
+				targetAccountCountAfter: number;
+				selectionChanged: boolean;
+			};
+			backup: {
+				enabled: boolean;
+				rollbackPaths: string[];
+			};
+			lastSync: {
+				outcome: "changed" | "noop" | "disabled" | "unavailable" | "error";
+				runAt: number;
+				message?: string;
+			} | null;
+		},
+		context?: {
+			accountsPath: string;
+			authPath: string;
+			configPath: string;
+			state: {
+				accounts: unknown[];
+			} | null;
+			liveSync: {
+				path: string | null;
+				running: boolean;
+				lastKnownMtimeMs: number | null;
+				lastSyncAt: number | null;
+				reloadCount: number;
+				errorCount: number;
+			};
+			syncEnabled: boolean;
+		},
+	) => Array<{ label: string; hint?: string }>;
 	clampBackendNumber: (settingKey: string, value: number) => number;
 	formatMenuLayoutMode: (mode: "compact-details" | "expanded-rows") => string;
-	cloneDashboardSettings: (settings: DashboardDisplaySettings) => DashboardDisplaySettings;
+	cloneDashboardSettings: (
+		settings: DashboardDisplaySettings,
+	) => DashboardDisplaySettings;
 	withQueuedRetry: <T>(pathKey: string, task: () => Promise<T>) => Promise<T>;
 	persistDashboardSettingsSelection: (
 		selected: DashboardDisplaySettings,
 		keys: ReadonlyArray<string>,
 		scope: string,
 	) => Promise<DashboardDisplaySettings>;
-	persistBackendConfigSelection: (selected: PluginConfig, scope: string) => Promise<PluginConfig>;
+	persistBackendConfigSelection: (
+		selected: PluginConfig,
+		scope: string,
+	) => Promise<PluginConfig>;
 };
 
 let tempRoot = "";
@@ -32,7 +78,10 @@ beforeEach(() => {
 	tempRoot = mkdtempSync(join(tmpdir(), "codex-settings-hub-test-"));
 	process.env.CODEX_HOME = tempRoot;
 	process.env.CODEX_MULTI_AUTH_DIR = tempRoot;
-	process.env.CODEX_MULTI_AUTH_CONFIG_PATH = join(tempRoot, "plugin-config.json");
+	process.env.CODEX_MULTI_AUTH_CONFIG_PATH = join(
+		tempRoot,
+		"plugin-config.json",
+	);
 	vi.resetModules();
 });
 
@@ -69,10 +118,71 @@ describe("settings-hub utility coverage", () => {
 		);
 	});
 
+	it("builds sync-center overview text with preservation and rollback details", async () => {
+		const api = await loadSettingsHubTestApi();
+		const overview = api.buildSyncCenterOverview(
+			{
+				status: "ready",
+				statusDetail: "Preview ready",
+				sourcePath: "/tmp/source/accounts.json",
+				targetPath: "/tmp/target/openai-codex-accounts.json",
+				summary: {
+					addedAccountCount: 1,
+					updatedAccountCount: 2,
+					destinationOnlyPreservedCount: 3,
+					targetAccountCountAfter: 6,
+					selectionChanged: true,
+				},
+				backup: {
+					enabled: true,
+					rollbackPaths: [
+						"/tmp/target/openai-codex-accounts.json.bak",
+						"/tmp/target/openai-codex-accounts.json.wal",
+					],
+				},
+				lastSync: {
+					outcome: "changed",
+					runAt: Date.parse("2026-03-01T00:00:00.000Z"),
+				},
+			},
+			{
+				accountsPath: "/tmp/source/accounts.json",
+				authPath: "/tmp/source/auth.json",
+				configPath: "/tmp/source/config.toml",
+				state: { accounts: [{}] },
+				liveSync: {
+					path: "/tmp/target/openai-codex-accounts.json",
+					running: true,
+					lastKnownMtimeMs: Date.parse("2026-03-01T00:01:00.000Z"),
+					lastSyncAt: Date.parse("2026-03-01T00:02:00.000Z"),
+					reloadCount: 2,
+					errorCount: 0,
+				},
+				syncEnabled: true,
+			},
+		);
+
+		expect(overview[0]?.label).toContain("Status: ready");
+		expect(overview[1]?.hint).toContain("/tmp/source/accounts.json");
+		expect(overview[2]?.hint).toContain("/tmp/source/auth.json");
+		expect(overview[2]?.hint).toContain("/tmp/source/config.toml");
+		expect(overview[3]?.label).toContain("Live watcher: running");
+		expect(overview[4]?.label).toContain("Preview mode: read-only until apply");
+		expect(overview[5]?.label).toContain(
+			"add 1 | update 2 | preserve 3 | after 6",
+		);
+		expect(overview[6]?.hint).toContain("activeAccountId first");
+		expect(overview[7]?.hint).toContain("never deletes");
+		expect(overview[8]?.hint).toContain(".bak");
+		expect(overview[8]?.hint).toContain(".wal");
+	});
+
 	it("formats layout mode labels", async () => {
 		const api = await loadSettingsHubTestApi();
 		expect(api.formatMenuLayoutMode("expanded-rows")).toBe("Expanded Rows");
-		expect(api.formatMenuLayoutMode("compact-details")).toBe("Compact + Details Pane");
+		expect(api.formatMenuLayoutMode("compact-details")).toBe(
+			"Compact + Details Pane",
+		);
 	});
 
 	it("clones dashboard settings and protects array references", async () => {
@@ -109,25 +219,31 @@ describe("settings-hub utility coverage", () => {
 	it("retries queued writes for EAGAIN filesystem errors", async () => {
 		const api = await loadSettingsHubTestApi();
 		let attempts = 0;
-		const result = await api.withQueuedRetry("settings-path-eagain", async () => {
-			attempts += 1;
-			if (attempts < 3) {
-				const error = new Error("busy") as NodeJS.ErrnoException;
-				error.code = "EAGAIN";
-				throw error;
-			}
-			return "ok";
-		});
+		const result = await api.withQueuedRetry(
+			"settings-path-eagain",
+			async () => {
+				attempts += 1;
+				if (attempts < 3) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EAGAIN";
+					throw error;
+				}
+				return "ok";
+			},
+		);
 		expect(result).toBe("ok");
 		expect(attempts).toBe(3);
 	});
 
-	it.each(["ENOTEMPTY", "EACCES"] as const)(
-		"retries queued writes for %s filesystem errors",
-		async (code) => {
-			const api = await loadSettingsHubTestApi();
-			let attempts = 0;
-			const result = await api.withQueuedRetry(`settings-path-${code.toLowerCase()}`, async () => {
+	it.each([
+		"ENOTEMPTY",
+		"EACCES",
+	] as const)("retries queued writes for %s filesystem errors", async (code) => {
+		const api = await loadSettingsHubTestApi();
+		let attempts = 0;
+		const result = await api.withQueuedRetry(
+			`settings-path-${code.toLowerCase()}`,
+			async () => {
 				attempts += 1;
 				if (attempts < 3) {
 					const error = new Error("busy") as NodeJS.ErrnoException;
@@ -135,11 +251,11 @@ describe("settings-hub utility coverage", () => {
 					throw error;
 				}
 				return "ok";
-			});
-			expect(result).toBe("ok");
-			expect(attempts).toBe(3);
-		},
-	);
+			},
+		);
+		expect(result).toBe("ok");
+		expect(attempts).toBe(3);
+	});
 
 	it("serializes concurrent writes for the same path key", async () => {
 		const api = await loadSettingsHubTestApi();
@@ -170,7 +286,12 @@ describe("settings-hub utility coverage", () => {
 
 		await expect(first).resolves.toBe("first-ok");
 		await expect(second).resolves.toBe("second-ok");
-		expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
+		expect(order).toEqual([
+			"first:start",
+			"first:end",
+			"second:start",
+			"second:end",
+		]);
 	});
 
 	it("allows concurrent writes for different path keys", async () => {
@@ -209,19 +330,22 @@ describe("settings-hub utility coverage", () => {
 		try {
 			let attempts = 0;
 			const retryAfterMs = 120;
-			const resultPromise = api.withQueuedRetry("settings-path-429", async () => {
-				attempts += 1;
-				if (attempts === 1) {
-					const error = new Error("rate limited") as Error & {
-						status: number;
-						retryAfterMs: number;
-					};
-					error.status = 429;
-					error.retryAfterMs = retryAfterMs;
-					throw error;
-				}
-				return "ok";
-			});
+			const resultPromise = api.withQueuedRetry(
+				"settings-path-429",
+				async () => {
+					attempts += 1;
+					if (attempts === 1) {
+						const error = new Error("rate limited") as Error & {
+							status: number;
+							retryAfterMs: number;
+						};
+						error.status = 429;
+						error.retryAfterMs = retryAfterMs;
+						throw error;
+					}
+					return "ok";
+				},
+			);
 
 			await Promise.resolve();
 			await Promise.resolve();
