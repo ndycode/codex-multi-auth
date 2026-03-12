@@ -29,6 +29,7 @@ const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const previewCodexCliSyncMock = vi.fn();
 const syncAccountStorageFromCodexCliMock = vi.fn();
+const getLatestCodexCliSyncRollbackPlanMock = vi.fn();
 const getCodexCliAccountsPathMock = vi.fn(() => "/mock/codex/accounts.json");
 const getCodexCliAuthPathMock = vi.fn(() => "/mock/codex/auth.json");
 const getCodexCliConfigPathMock = vi.fn(() => "/mock/codex/config.toml");
@@ -127,6 +128,7 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
 vi.mock("../lib/codex-cli/sync.js", () => ({
 	previewCodexCliSync: previewCodexCliSyncMock,
 	syncAccountStorageFromCodexCli: syncAccountStorageFromCodexCliMock,
+	getLatestCodexCliSyncRollbackPlan: getLatestCodexCliSyncRollbackPlanMock,
 }));
 
 vi.mock("../lib/codex-cli/state.js", () => ({
@@ -286,6 +288,7 @@ describe("codex manager cli commands", () => {
 		savePluginConfigMock.mockReset();
 		previewCodexCliSyncMock.mockReset();
 		syncAccountStorageFromCodexCliMock.mockReset();
+		getLatestCodexCliSyncRollbackPlanMock.mockReset();
 		getCodexCliAccountsPathMock.mockReset();
 		getCodexCliAuthPathMock.mockReset();
 		getCodexCliConfigPathMock.mockReset();
@@ -402,6 +405,12 @@ describe("codex manager cli commands", () => {
 		getCodexCliConfigPathMock.mockReturnValue("/mock/codex/config.toml");
 		isCodexCliSyncEnabledMock.mockReturnValue(true);
 		loadCodexCliStateMock.mockResolvedValue(null);
+		getLatestCodexCliSyncRollbackPlanMock.mockResolvedValue({
+			status: "unavailable",
+			reason:
+				"No manual Codex CLI sync with a rollback checkpoint is available.",
+			snapshot: null,
+		});
 		getLastLiveAccountSyncSnapshotMock.mockReturnValue({
 			path: null,
 			running: false,
@@ -1906,6 +1915,48 @@ describe("codex manager cli commands", () => {
 		expect(payload.checks.some((check) => check.key === "active-index")).toBe(
 			true,
 		);
+	});
+
+	it("reports rollback checkpoint check in doctor json output", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "checkpoint@example.net",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+			],
+		});
+		getLatestCodexCliSyncRollbackPlanMock.mockResolvedValueOnce({
+			status: "ready",
+			reason: "Rollback checkpoint ready (1 account).",
+			snapshot: {
+				name: "codex-checkpoint",
+				path: "/mock/backups/rollback.json",
+			},
+			accountCount: 1,
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "doctor", "--json"]);
+		expect(exitCode).toBe(0);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			checks: Array<{ key: string; severity: string; details?: string }>;
+		};
+		const checkpoint = payload.checks.find(
+			(check) => check.key === "rollback-checkpoint",
+		);
+		expect(checkpoint).toBeDefined();
+		expect(checkpoint?.severity).toBe("ok");
+		expect(checkpoint?.details).toBe("/mock/backups/rollback.json");
 	});
 
 	it("runs doctor --fix in dry-run mode", async () => {

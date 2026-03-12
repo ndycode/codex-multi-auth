@@ -22,6 +22,8 @@ import {
 	__resetSyncHistoryForTests,
 	appendSyncHistoryEntry,
 	configureSyncHistoryForTests,
+	pruneSyncHistory,
+	readLatestSyncHistorySync,
 	readSyncHistory,
 } from "../lib/sync-history.js";
 
@@ -970,6 +972,68 @@ describe("codex-cli sync", () => {
 		} finally {
 			snapshotSpy.mockRestore();
 		}
+	});
+
+	it("prunes sync history while keeping per-kind latest pointers aligned", async () => {
+		const summary = {
+			sourceAccountCount: 0,
+			targetAccountCountBefore: 0,
+			targetAccountCountAfter: 0,
+			addedAccountCount: 0,
+			updatedAccountCount: 0,
+			unchangedAccountCount: 0,
+			destinationOnlyPreservedCount: 0,
+			selectionChanged: false,
+		};
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: {
+				outcome: "changed",
+				runAt: 1,
+				sourcePath: accountsPath,
+				targetPath: accountsPath,
+				summary,
+				trigger: "manual",
+				rollbackSnapshot: null,
+			},
+		});
+		await appendSyncHistoryEntry({
+			kind: "live-account-sync",
+			recordedAt: 2,
+			reason: "watch",
+			outcome: "success",
+			path: accountsPath,
+			snapshot: {
+				path: accountsPath,
+				running: true,
+				lastKnownMtimeMs: 2,
+				lastSyncAt: 2,
+				reloadCount: 1,
+				errorCount: 0,
+			},
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 3,
+			run: {
+				outcome: "changed",
+				runAt: 3,
+				sourcePath: accountsPath,
+				targetPath: accountsPath,
+				summary,
+				trigger: "automatic",
+				rollbackSnapshot: null,
+			},
+		});
+
+		const result = await pruneSyncHistory({ maxEntries: 1 });
+		expect(result.kept).toBe(2);
+		const history = await readSyncHistory();
+		expect(history.map((entry) => entry.recordedAt)).toEqual([2, 3]);
+		const latest = readLatestSyncHistorySync();
+		expect(latest?.kind).toBe("codex-cli-sync");
+		expect(latest?.recordedAt).toBe(3);
 	});
 
 	it("restores the latest Codex CLI sync rollback checkpoint", async () => {

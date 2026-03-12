@@ -6,6 +6,7 @@ import { createLogger } from "./logger.js";
 import { getCodexLogDir } from "./runtime-paths.js";
 
 const log = createLogger("sync-history");
+const SYNC_HISTORY_MAX_ENTRIES = 200;
 
 type SyncHistoryKind = "codex-cli-sync" | "live-account-sync";
 
@@ -82,6 +83,67 @@ function serializeEntry(entry: SyncHistoryEntry): string {
 function cloneEntry<T extends SyncHistoryEntry | null>(entry: T): T {
 	if (!entry) return entry;
 	return JSON.parse(JSON.stringify(entry)) as T;
+}
+
+export interface PrunedSyncHistory {
+	entries: SyncHistoryEntry[];
+	removed: number;
+	latest: SyncHistoryEntry | null;
+}
+
+export function pruneSyncHistoryEntries(
+	entries: SyncHistoryEntry[],
+	maxEntries: number = SYNC_HISTORY_MAX_ENTRIES,
+): PrunedSyncHistory {
+	const boundedMaxEntries = Math.max(0, maxEntries);
+	if (entries.length === 0) {
+		return { entries: [], removed: 0, latest: null };
+	}
+
+	const latestByKind = new Map<SyncHistoryKind, SyncHistoryEntry>();
+	for (let i = entries.length - 1; i >= 0; i -= 1) {
+		const entry = entries[i];
+		if (!entry) continue;
+		if (!latestByKind.has(entry.kind)) {
+			latestByKind.set(entry.kind, entry);
+		}
+	}
+
+	const required = new Set(latestByKind.values());
+	const kept: SyncHistoryEntry[] = [];
+	const seen = new Set<SyncHistoryEntry>();
+	for (let i = entries.length - 1; i >= 0; i -= 1) {
+		const entry = entries[i];
+		if (!entry || seen.has(entry)) continue;
+		const keepEntry = kept.length < boundedMaxEntries || required.has(entry);
+		if (keepEntry) {
+			kept.push(entry);
+			seen.add(entry);
+		}
+	}
+
+	const chronological = kept.reverse();
+	const latest = chronological.at(-1) ?? null;
+	return {
+		entries: chronological,
+		removed: entries.length - chronological.length,
+		latest,
+	};
+}
+
+async function rewriteLatestEntry(
+	latest: SyncHistoryEntry | null,
+	paths: SyncHistoryPaths,
+): Promise<void> {
+	if (!latest) {
+		await fs.rm(paths.latestPath, { force: true });
+		return;
+	}
+	const latestContent = `${JSON.stringify(latest, null, 2)}\n`;
+	await fs.writeFile(paths.latestPath, latestContent, {
+		encoding: "utf8",
+		mode: 0o600,
+	});
 }
 
 export async function appendSyncHistoryEntry(
@@ -161,6 +223,44 @@ export function readLatestSyncHistorySync(): SyncHistoryEntry | null {
 		}
 		return null;
 	}
+}
+
+export async function pruneSyncHistory(
+	options: { maxEntries?: number } = {},
+): Promise<{ removed: number; kept: number; latest: SyncHistoryEntry | null }> {
+	const maxEntries = options.maxEntries ?? SYNC_HISTORY_MAX_ENTRIES;
+	await waitForPendingHistoryWrites();
+	return withHistoryLock(async () => {
+		const paths = getSyncHistoryPaths();
+		await ensureHistoryDir(paths.directory);
+		let entries: SyncHistoryEntry[] = [];
+		try {
+			entries = await readSyncHistory();
+		} catch {
+			entries = [];
+		}
+
+		const {
+			entries: prunedEntries,
+			removed,
+			latest,
+		} = pruneSyncHistoryEntries(entries, maxEntries);
+		if (prunedEntries.length === 0) {
+			await fs.rm(paths.historyPath, { force: true });
+		} else {
+			const serialized =
+				prunedEntries.map((entry) => serializeEntry(entry)).join("\n") +
+				(prunedEntries.length > 0 ? "\n" : "");
+			await fs.writeFile(paths.historyPath, serialized, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+		}
+		await rewriteLatestEntry(latest, paths);
+		lastAppendPaths = paths;
+		lastAppendError = null;
+		return { removed, kept: prunedEntries.length, latest };
+	});
 }
 
 export function configureSyncHistoryForTests(directory: string | null): void {

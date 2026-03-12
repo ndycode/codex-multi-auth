@@ -32,6 +32,7 @@ import {
 	getCodexCliConfigPath,
 	loadCodexCliState,
 } from "./codex-cli/state.js";
+import { getLatestCodexCliSyncRollbackPlan } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import {
 	applyUiThemeFromDashboardSettings,
@@ -3720,8 +3721,80 @@ async function runDoctor(args: string[]): Promise<number> {
 		details: codexCliState?.path,
 	});
 
+	const rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+	const rollbackReason = (rollbackPlan.reason ?? "").trim();
+	const rollbackSnapshotPath = rollbackPlan.snapshot?.path;
+	const rollbackSnapshotName = rollbackPlan.snapshot?.name;
+	const rollbackReasonLower = rollbackReason.toLowerCase();
+	if (rollbackPlan.status === "ready") {
+		const count =
+			rollbackPlan.accountCount ?? rollbackPlan.storage?.accounts.length;
+		addCheck({
+			key: "codex-cli-rollback-checkpoint",
+			severity: "ok",
+			message: `Latest manual Codex CLI rollback checkpoint ready (${count ?? "?"} account${count === 1 ? "" : "s"})`,
+			details: rollbackSnapshotPath,
+		});
+	} else if (rollbackPlan.snapshot) {
+		const isMissing =
+			rollbackReasonLower.includes("missing") ||
+			rollbackReasonLower.includes("not found") ||
+			rollbackReasonLower.includes("enoent");
+		const key = isMissing
+			? "codex-cli-rollback-checkpoint-missing"
+			: "codex-cli-rollback-checkpoint-invalid";
+		const recoveryAction = isMissing
+			? "Action: Recreate the rollback checkpoint by running a manual Codex CLI sync with storage backups enabled."
+			: "Action: Recreate the rollback checkpoint with a fresh manual Codex CLI sync before attempting rollback.";
+		const detailParts = [
+			rollbackSnapshotPath ?? rollbackSnapshotName,
+			rollbackReason || undefined,
+			recoveryAction,
+		].filter(Boolean);
+		addCheck({
+			key,
+			severity: "error",
+			message: isMissing
+				? "Latest manual Codex CLI rollback checkpoint is missing; rollback is blocked."
+				: "Latest manual Codex CLI rollback checkpoint cannot be restored.",
+			details: detailParts.join(" | ") || undefined,
+		});
+	} else {
+		addCheck({
+			key: "codex-cli-rollback-checkpoint",
+			severity: "warn",
+			message: "No manual Codex CLI rollback checkpoint has been recorded yet",
+			details:
+				"Action: Run a manual Codex CLI sync with backups enabled to capture a rollback checkpoint before applying changes.",
+		});
+	}
+
 	const storage = await loadAccounts();
 	let fixChanged = false;
+
+	const actionableNamedBackupRestores = await getActionableNamedBackupRestores({
+		currentStorage: storage,
+	});
+	const actionableCount = actionableNamedBackupRestores.assessments.length;
+	const backupRecoveryAction =
+		actionableCount > 0
+			? undefined
+			: `Action: Add or copy a named backup into ${getNamedBackupsDirectoryPath()} before attempting recovery.`;
+	addCheck({
+		key: "named-backup-restores",
+		severity: actionableCount > 0 ? "ok" : "warn",
+		message:
+			actionableCount > 0
+				? `Found ${actionableCount} actionable named backup restore${actionableCount === 1 ? "" : "s"}`
+				: "No actionable named backup restores available",
+		details: [
+			`total backups: ${actionableNamedBackupRestores.totalBackups}`,
+			backupRecoveryAction,
+		]
+			.filter(Boolean)
+			.join(" | "),
+	});
+
 	let fixActions: DoctorFixAction[] = [];
 	if (options.fix && storage && storage.accounts.length > 0) {
 		const fixed = applyDoctorFixes(storage);
