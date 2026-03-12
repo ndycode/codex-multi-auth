@@ -518,6 +518,11 @@ export interface BackupRestoreAssessment {
 	error?: string;
 }
 
+export interface ActionableNamedBackupRecoveries {
+	assessments: Awaited<ReturnType<typeof assessNamedBackupRestore>>[];
+	totalBackups: number;
+}
+
 export function getLastAccountsSaveTimestamp(): number {
 	return lastAccountsSaveTimestamp;
 }
@@ -1310,6 +1315,38 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 
 export function getNamedBackupsDirectoryPath(): string {
 	return getNamedBackupsDirectory();
+}
+
+export async function getActionableNamedBackupRestores(
+	options: {
+		currentStorage?: AccountStorageV3 | null;
+		backups?: NamedBackupMetadata[];
+		assess?: typeof assessNamedBackupRestore;
+	} = {},
+): Promise<ActionableNamedBackupRecoveries> {
+	const backups = options.backups ?? (await listNamedBackups());
+	if (backups.length === 0) {
+		return { assessments: [], totalBackups: 0 };
+	}
+
+	const currentStorage =
+		options.currentStorage === undefined
+			? await loadAccounts()
+			: options.currentStorage;
+	const assess = options.assess ?? assessNamedBackupRestore;
+	const assessments = await Promise.all(
+		backups.map((backup) => assess(backup.name, { currentStorage })),
+	);
+
+	const actionable = assessments.filter(
+		(assessment) =>
+			assessment.valid &&
+			!assessment.wouldExceedLimit &&
+			assessment.imported !== null &&
+			assessment.imported > 0,
+	);
+
+	return { assessments: actionable, totalBackups: backups.length };
 }
 
 export async function createNamedBackup(

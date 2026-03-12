@@ -23,6 +23,7 @@ import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
 import { startLocalOAuthServer } from "./auth/server.js";
 import {
 	type ExistingAccountInfo,
+	isInteractiveLoginMenuAvailable,
 	promptAddAnotherAccount,
 	promptLoginMode,
 } from "./cli.js";
@@ -76,6 +77,7 @@ import {
 	assessNamedBackupRestore,
 	type FlaggedAccountMetadataV1,
 	type FlaggedAccountStorageV1,
+	getActionableNamedBackupRestores,
 	getNamedBackupsDirectoryPath,
 	getStoragePath,
 	listNamedBackups,
@@ -4176,6 +4178,8 @@ async function runBackupRestoreManager(
 
 async function runAuthLogin(): Promise<number> {
 	setStoragePath(null);
+	let suppressRecoveryPrompt = false;
+	let recoveryPromptAttempted = false;
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
 	loginFlow: while (true) {
@@ -4302,6 +4306,7 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
+					suppressRecoveryPrompt = true;
 					await runActionPanel(
 						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
 						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
@@ -4316,6 +4321,7 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "reset") {
+					suppressRecoveryPrompt = true;
 					await runActionPanel(
 						DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
 						DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
@@ -4360,6 +4366,37 @@ async function runAuthLogin(): Promise<number> {
 
 		const refreshedStorage = await loadAccounts();
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
+		const canPromptForRecovery =
+			!suppressRecoveryPrompt &&
+			!recoveryPromptAttempted &&
+			existingCount === 0 &&
+			isInteractiveLoginMenuAvailable();
+		if (canPromptForRecovery) {
+			recoveryPromptAttempted = true;
+			const recoveryState = await getActionableNamedBackupRestores({
+				currentStorage: refreshedStorage,
+			});
+			if (recoveryState.assessments.length > 0) {
+				const displaySettings = await loadDashboardDisplaySettings();
+				applyUiThemeFromDashboardSettings(displaySettings);
+				const backupDir = getNamedBackupsDirectoryPath();
+				const sample = recoveryState.assessments[0];
+				const backupLabel =
+					sample?.backup.name ??
+					`${recoveryState.assessments.length} backup${
+						recoveryState.assessments.length === 1 ? "" : "s"
+					}`;
+				const restoreNow = await confirm(
+					`Found ${recoveryState.assessments.length} recoverable backup${
+						recoveryState.assessments.length === 1 ? "" : "s"
+					} (${backupLabel}) in ${backupDir}. Restore now?`,
+				);
+				if (restoreNow) {
+					await runBackupRestoreManager(displaySettings);
+					continue;
+				}
+			}
+		}
 		let forceNewLogin = existingCount > 0;
 		while (true) {
 			const tokenResult = await runOAuthFlow(forceNewLogin);

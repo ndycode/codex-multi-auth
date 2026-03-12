@@ -18,6 +18,8 @@ If the account pool is still not usable:
 codex auth login
 ```
 
+If `codex auth login` starts with no saved accounts and named backups are present, you will be prompted to restore before OAuth. This prompt only appears in interactive terminals and is skipped after intentional reset flows.
+
 ---
 
 ## Verify Install And Routing

@@ -26,6 +26,10 @@ export function isNonInteractiveMode(): boolean {
 	return false;
 }
 
+export function isInteractiveLoginMenuAvailable(): boolean {
+	return !isNonInteractiveMode() && isTTY();
+}
+
 export async function promptAddAnotherAccount(
 	currentCount: number,
 ): Promise<boolean> {
@@ -243,7 +247,7 @@ export async function promptLoginMode(
 		return { mode: "add" };
 	}
 
-	if (!isTTY()) {
+	if (!isInteractiveLoginMenuAvailable()) {
 		return promptLoginModeFallback(existingAccounts);
 	}
 
