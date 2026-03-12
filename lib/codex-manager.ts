@@ -4215,14 +4215,11 @@ export function resolveStartupRecoveryAction(
 		: "open-empty-storage-menu";
 }
 
-function shouldShowFirstRunWizard(storage: AccountStorageV3 | null): boolean {
-	return isInteractiveLoginMenuAvailable() && storage === null;
-}
-
 async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 	let namedBackupCount = 0;
 	let rotatingBackupCount = 0;
 	let hasOpencodeSource = false;
+
 	try {
 		const namedBackups = await listNamedBackups();
 		namedBackupCount = namedBackups.length;
@@ -4249,14 +4246,14 @@ async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 	};
 }
 
-async function runFirstRunWizard(): Promise<"continue" | "cancelled"> {
-	const displaySettings = await loadDashboardDisplaySettings();
-	applyUiThemeFromDashboardSettings(displaySettings);
+async function runFirstRunWizard(
+	displaySettings: DashboardDisplaySettings,
+): Promise<"continue" | "cancelled"> {
 	while (true) {
-		const wizardOptions = await buildFirstRunWizardOptions();
-		const action = await showFirstRunWizard(wizardOptions);
+		const action = await showFirstRunWizard(await buildFirstRunWizardOptions());
 		switch (action.type) {
 			case "cancel":
+				console.log("Cancelled.");
 				return "cancelled";
 			case "login":
 			case "skip":
@@ -4303,16 +4300,11 @@ async function runFirstRunWizard(): Promise<"continue" | "cancelled"> {
 					"Doctor",
 					"Checking storage and sync paths",
 					async () => {
-						await runDoctor([]);
+						await runDoctor(["--json"]);
 					},
 					displaySettings,
 				);
 				break;
-		}
-
-		const latestStorage = await loadAccounts();
-		if (latestStorage && latestStorage.accounts.length > 0) {
-			return "continue";
 		}
 	}
 }
@@ -4332,9 +4324,10 @@ async function runAuthLogin(): Promise<number> {
 		initialStorage;
 
 	if (shouldShowFirstRunWizard(initialStorage)) {
-		const wizardOutcome = await runFirstRunWizard();
+		const displaySettings = await loadDashboardDisplaySettings();
+		applyUiThemeFromDashboardSettings(displaySettings);
+		const wizardOutcome = await runFirstRunWizard(displaySettings);
 		if (wizardOutcome === "cancelled") {
-			console.log("Cancelled.");
 			return 0;
 		}
 		cachedInitialStorage = null;
@@ -4666,6 +4659,18 @@ async function runAuthLogin(): Promise<number> {
 						`Startup recovery prompt failed (${errorLabel}). Continuing with OAuth.`,
 					);
 				}
+			}
+		}
+		if (existingCount === 0 && isInteractiveLoginMenuAvailable()) {
+			const displaySettings = await loadDashboardDisplaySettings();
+			applyUiThemeFromDashboardSettings(displaySettings);
+			const firstRunResult = await runFirstRunWizard(displaySettings);
+			if (firstRunResult === "cancelled") {
+				return 0;
+			}
+			const refreshedAfterWizard = await loadAccounts();
+			if ((refreshedAfterWizard?.accounts.length ?? 0) > 0) {
+				continue;
 			}
 		}
 		let forceNewLogin = existingCount > 0;
