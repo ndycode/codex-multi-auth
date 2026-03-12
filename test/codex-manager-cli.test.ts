@@ -18,6 +18,7 @@ const assessOpencodeAccountPoolMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const importAccountsMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
+const importAccountsMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
