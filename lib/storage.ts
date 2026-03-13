@@ -1854,34 +1854,19 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			throw emptyError;
 		}
 
-		// Retry rename with exponential backoff for Windows EPERM/EBUSY
-		let lastError: NodeJS.ErrnoException | null = null;
-		for (let attempt = 0; attempt < 5; attempt++) {
-			try {
-				await fs.rename(tempPath, path);
-				try {
-					await fs.unlink(resetMarkerPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				lastAccountsSaveTimestamp = Date.now();
-				try {
-					await fs.unlink(walPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				return;
-			} catch (renameError) {
-				const code = (renameError as NodeJS.ErrnoException).code;
-				if (code === "EPERM" || code === "EBUSY") {
-					lastError = renameError as NodeJS.ErrnoException;
-					await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
-					continue;
-				}
-				throw renameError;
-			}
+		await renameFileWithRetry(tempPath, path);
+		try {
+			await fs.unlink(resetMarkerPath);
+		} catch {
+			// Best effort cleanup.
 		}
-		if (lastError) throw lastError;
+		lastAccountsSaveTimestamp = Date.now();
+		try {
+			await fs.unlink(walPath);
+		} catch {
+			// Best effort cleanup.
+		}
+		return;
 	} catch (error) {
 		try {
 			await fs.unlink(tempPath);

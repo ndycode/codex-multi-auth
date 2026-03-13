@@ -2799,6 +2799,37 @@ describe("storage", () => {
 			renameSpy.mockRestore();
 		});
 
+		it("retries on EAGAIN and cleans up the WAL after rename succeeds", async () => {
+			const now = Date.now();
+			const storage = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+			};
+			const walPath = `${testStoragePath}.wal`;
+
+			const originalRename = fs.rename.bind(fs);
+			let attemptCount = 0;
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (oldPath, newPath) => {
+					attemptCount++;
+					if (attemptCount === 1) {
+						const err = new Error("EAGAIN error") as NodeJS.ErrnoException;
+						err.code = "EAGAIN";
+						throw err;
+					}
+					return originalRename(oldPath as string, newPath as string);
+				});
+
+			await saveAccounts(storage);
+			expect(attemptCount).toBe(2);
+			expect(existsSync(testStoragePath)).toBe(true);
+			expect(existsSync(walPath)).toBe(false);
+
+			renameSpy.mockRestore();
+		});
+
 		it("throws after 5 failed EPERM retries", async () => {
 			const now = Date.now();
 			const storage = {
