@@ -523,6 +523,8 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(listNamedBackupsMock).not.toHaveBeenCalled();
+		expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("startup-backup");
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
@@ -602,7 +604,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(2);
 		expect(warnSpy).toHaveBeenCalledWith(
-			'Failed to assess backup "locked-backup" in restore manager: resource busy',
+			'Failed to assess backup "locked-backup" in restore manager (EBUSY).',
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("valid-backup");
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
@@ -852,7 +854,7 @@ describe("codex manager cli commands", () => {
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 		expect(warnSpy).toHaveBeenCalledWith(
-			"Startup recovery scan failed: resource busy. Continuing with OAuth.",
+			"Startup recovery scan failed (EBUSY). Continuing with OAuth.",
 		);
 		warnSpy.mockRestore();
 	});
@@ -1461,9 +1463,6 @@ describe("codex manager cli commands", () => {
 		promptAddAnotherAccountMock.mockResolvedValue(false);
 
 		const authModule = await import("../lib/auth/auth.js");
-		const createAuthorizationFlowMock = vi.mocked(
-			authModule.createAuthorizationFlow,
-		);
 		const exchangeAuthorizationCodeMock = vi.mocked(
 			authModule.exchangeAuthorizationCode,
 		);
@@ -1692,10 +1691,7 @@ describe("codex manager cli commands", () => {
 			return { imported: 1, skipped: 0, total: 1 };
 		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
-		const authModule = await import("../lib/auth/auth.js");
-		const createAuthorizationFlowMock = vi.mocked(
-			authModule.createAuthorizationFlow,
-		);
+		await import("../lib/auth/auth.js");
 		createAuthorizationFlowMock.mockRejectedValue(
 			new Error("oauth flow should be skipped when restoring backup"),
 		);
@@ -1771,7 +1767,7 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledTimes(3);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("startup-backup");
 		expect(warnSpy).toHaveBeenCalledWith(
-			'Failed to restore backup "startup-backup": resource busy',
+			'Failed to restore backup "startup-backup" (EBUSY).',
 		);
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 		warnSpy.mockRestore();

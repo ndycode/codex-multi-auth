@@ -4090,33 +4090,46 @@ async function handleManageAction(
 type BackupMenuAction =
 	| {
 			type: "restore";
-			assessment: Awaited<ReturnType<typeof assessNamedBackupRestore>>;
+			assessment: BackupRestoreAssessment;
 	  }
 	| { type: "back" };
 
+type BackupRestoreAssessment = Awaited<
+	ReturnType<typeof assessNamedBackupRestore>
+>;
+
 type BackupRestoreManagerResult = "restored" | "dismissed";
 
-async function runBackupRestoreManager(
-	displaySettings: DashboardDisplaySettings,
-): Promise<BackupRestoreManagerResult> {
-	const backupDir = getNamedBackupsDirectoryPath();
+function getRedactedFilesystemErrorLabel(error: unknown): string {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (typeof code === "string" && code.trim().length > 0) {
+		return code;
+	}
+	if (error instanceof Error && error.name && error.name !== "Error") {
+		return error.name;
+	}
+	return "UNKNOWN";
+}
+
+async function loadBackupRestoreManagerAssessments(): Promise<
+	BackupRestoreAssessment[]
+> {
 	const backups = await listNamedBackups();
 	if (backups.length === 0) {
-		console.log(`No named backups found. Place backup files in ${backupDir}.`);
-		return "dismissed";
+		return [];
 	}
 
 	const currentStorage = await loadAccounts();
-	const assessments: Awaited<ReturnType<typeof assessNamedBackupRestore>>[] = [];
+	const assessments: BackupRestoreAssessment[] = [];
 	for (const backup of backups) {
 		try {
 			assessments.push(
 				await assessNamedBackupRestore(backup.name, { currentStorage }),
 			);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
 			console.warn(
-				`Failed to assess backup "${backup.name}" in restore manager: ${message}`,
+				`Failed to assess backup "${backup.name}" in restore manager (${errorLabel}).`,
 			);
 			assessments.push({
 				backup,
@@ -4126,9 +4139,24 @@ async function runBackupRestoreManager(
 				skipped: null,
 				wouldExceedLimit: false,
 				valid: false,
-				error: message,
+				error: errorLabel,
 			});
 		}
+	}
+
+	return assessments;
+}
+
+async function runBackupRestoreManager(
+	displaySettings: DashboardDisplaySettings,
+	assessmentsOverride?: BackupRestoreAssessment[],
+): Promise<BackupRestoreManagerResult> {
+	const backupDir = getNamedBackupsDirectoryPath();
+	const assessments =
+		assessmentsOverride ?? (await loadBackupRestoreManagerAssessments());
+	if (assessments.length === 0) {
+		console.log(`No named backups found. Place backup files in ${backupDir}.`);
+		return "dismissed";
 	}
 
 	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
@@ -4197,9 +4225,9 @@ async function runBackupRestoreManager(
 		);
 		return "restored";
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
 		console.warn(
-			`Failed to restore backup "${assessment.backup.name}": ${message}`,
+			`Failed to restore backup "${assessment.backup.name}" (${errorLabel}).`,
 		);
 		return "dismissed";
 	}
@@ -4410,9 +4438,9 @@ async function runAuthLogin(): Promise<number> {
 					currentStorage: refreshedStorage,
 				});
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const errorLabel = getRedactedFilesystemErrorLabel(error);
 				console.warn(
-					`Startup recovery scan failed: ${message}. Continuing with OAuth.`,
+					`Startup recovery scan failed (${errorLabel}). Continuing with OAuth.`,
 				);
 				recoveryState = { assessments: [], totalBackups: 0 };
 			}
@@ -4433,8 +4461,10 @@ async function runAuthLogin(): Promise<number> {
 						} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Restore now?`,
 					);
 					if (restoreNow) {
-						const restoreResult =
-							await runBackupRestoreManager(displaySettings);
+						const restoreResult = await runBackupRestoreManager(
+							displaySettings,
+							recoveryState.assessments,
+						);
 						if (restoreResult !== "restored") {
 							recoveryPromptAttempted = false;
 						}
