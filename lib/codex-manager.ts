@@ -416,6 +416,27 @@ function normalizeQuotaEmail(email: string | undefined): string | null {
 	return normalized && normalized.length > 0 ? normalized : null;
 }
 
+function normalizeQuotaAccountId(accountId: string | undefined): string | null {
+	if (typeof accountId !== "string") return null;
+	const trimmed = accountId.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function hasUniqueQuotaAccountId(
+	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
+	account: Pick<AccountMetadataV3, "accountId">,
+): boolean {
+	const accountId = normalizeQuotaAccountId(account.accountId);
+	if (!accountId) return false;
+	let matchCount = 0;
+	for (const candidate of accounts) {
+		if (normalizeQuotaAccountId(candidate.accountId) !== accountId) continue;
+		matchCount += 1;
+		if (matchCount > 1) return false;
+	}
+	return matchCount === 1;
+}
+
 function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
 	return {
 		status: entry.status,
@@ -490,13 +511,19 @@ function formatAccountQuotaSummary(entry: QuotaCacheEntry): string {
 function getQuotaCacheEntryForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
+	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
 ): QuotaCacheEntry | null {
-	if (account.accountId && cache.byAccountId[account.accountId]) {
-		return cache.byAccountId[account.accountId] ?? null;
-	}
 	const email = normalizeQuotaEmail(account.email);
 	if (email && cache.byEmail[email]) {
 		return cache.byEmail[email] ?? null;
+	}
+	const accountId = normalizeQuotaAccountId(account.accountId);
+	if (
+		accountId &&
+		hasUniqueQuotaAccountId(accounts, account) &&
+		cache.byAccountId[accountId]
+	) {
+		return cache.byAccountId[accountId] ?? null;
 	}
 	return null;
 }
@@ -505,6 +532,7 @@ function updateQuotaCacheForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
 	snapshot: CodexQuotaSnapshot,
+	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
 ): boolean {
 	const nextEntry: QuotaCacheEntry = {
 		updatedAt: Date.now(),
@@ -524,13 +552,15 @@ function updateQuotaCacheForAccount(
 	};
 
 	let changed = false;
-	if (account.accountId) {
-		cache.byAccountId[account.accountId] = nextEntry;
-		changed = true;
-	}
 	const email = normalizeQuotaEmail(account.email);
 	if (email) {
 		cache.byEmail[email] = nextEntry;
+		changed = true;
+		return changed;
+	}
+	const accountId = normalizeQuotaAccountId(account.accountId);
+	if (accountId && hasUniqueQuotaAccountId(accounts, account)) {
+		cache.byAccountId[accountId] = nextEntry;
 		changed = true;
 	}
 	return changed;
@@ -550,11 +580,12 @@ function resolveMenuQuotaProbeInput(
 	cache: QuotaCacheData,
 	maxAgeMs: number,
 	now: number,
+	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
 ): { accountId: string; accessToken: string } | null {
 	if (account.enabled === false) return null;
 	if (!hasUsableAccessToken(account, now)) return null;
 
-	const existing = getQuotaCacheEntryForAccount(cache, account);
+	const existing = getQuotaCacheEntryForAccount(cache, account, accounts);
 	if (
 		existing &&
 		typeof existing.updatedAt === "number" &&
@@ -580,7 +611,13 @@ function collectMenuQuotaRefreshTargets(
 ): MenuQuotaProbeTarget[] {
 	const targets: MenuQuotaProbeTarget[] = [];
 	for (const account of storage.accounts) {
-		const probeInput = resolveMenuQuotaProbeInput(account, cache, maxAgeMs, now);
+		const probeInput = resolveMenuQuotaProbeInput(
+			account,
+			cache,
+			maxAgeMs,
+			now,
+			storage.accounts,
+		);
 		if (!probeInput) continue;
 		targets.push({
 			account,
@@ -599,7 +636,7 @@ function countMenuQuotaRefreshTargets(
 ): number {
 	let count = 0;
 	for (const account of storage.accounts) {
-		if (resolveMenuQuotaProbeInput(account, cache, maxAgeMs, now)) {
+		if (resolveMenuQuotaProbeInput(account, cache, maxAgeMs, now, storage.accounts)) {
 			count += 1;
 		}
 	}
@@ -632,7 +669,9 @@ async function refreshQuotaCacheForMenu(
 				accessToken: target.accessToken,
 				model: MENU_QUOTA_REFRESH_MODEL,
 			});
-			changed = updateQuotaCacheForAccount(cache, target.account, snapshot) || changed;
+			changed =
+				updateQuotaCacheForAccount(cache, target.account, snapshot, storage.accounts) ||
+				changed;
 		} catch {
 			// Keep existing cached values if probing fails.
 		}
@@ -783,7 +822,9 @@ function toExistingAccountInfo(
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	const layoutMode = resolveMenuLayoutMode(displaySettings);
 	const baseAccounts = storage.accounts.map((account, index) => {
-		const entry = quotaCache ? getQuotaCacheEntryForAccount(quotaCache, account) : null;
+		const entry = quotaCache
+			? getQuotaCacheEntryForAccount(quotaCache, account, storage.accounts)
+			: null;
 		return {
 			index,
 			sourceIndex: index,
@@ -1477,7 +1518,12 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						});
 						if (quotaCache) {
 							quotaCacheChanged =
-								updateQuotaCacheForAccount(quotaCache, account, snapshot) || quotaCacheChanged;
+								updateQuotaCacheForAccount(
+									quotaCache,
+									account,
+									snapshot,
+									storage.accounts,
+								) || quotaCacheChanged;
 						}
 						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
 					} catch (error) {
@@ -1550,7 +1596,12 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						});
 						if (quotaCache) {
 							quotaCacheChanged =
-								updateQuotaCacheForAccount(quotaCache, account, snapshot) || quotaCacheChanged;
+								updateQuotaCacheForAccount(
+									quotaCache,
+									account,
+									snapshot,
+									storage.accounts,
+								) || quotaCacheChanged;
 						}
 						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
 					} catch (error) {
@@ -2048,7 +2099,12 @@ async function runForecast(args: string[]): Promise<number> {
 				const account = storage.accounts[i];
 				if (account) {
 					quotaCacheChanged =
-						updateQuotaCacheForAccount(quotaCache, account, liveQuota) || quotaCacheChanged;
+						updateQuotaCacheForAccount(
+							quotaCache,
+							account,
+							liveQuota,
+							storage.accounts,
+						) || quotaCacheChanged;
 				}
 			}
 		} catch (error) {
@@ -2803,7 +2859,12 @@ async function runFix(args: string[]): Promise<number> {
 						});
 						if (quotaCache) {
 							quotaCacheChanged =
-								updateQuotaCacheForAccount(quotaCache, account, snapshot) || quotaCacheChanged;
+								updateQuotaCacheForAccount(
+									quotaCache,
+									account,
+									snapshot,
+									storage.accounts,
+								) || quotaCacheChanged;
 						}
 						reports.push({
 							index: i,
@@ -2881,7 +2942,12 @@ async function runFix(args: string[]): Promise<number> {
 						});
 						if (quotaCache) {
 							quotaCacheChanged =
-								updateQuotaCacheForAccount(quotaCache, account, snapshot) || quotaCacheChanged;
+								updateQuotaCacheForAccount(
+									quotaCache,
+									account,
+									snapshot,
+									storage.accounts,
+								) || quotaCacheChanged;
 						}
 						reports.push({
 							index: i,

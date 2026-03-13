@@ -1570,6 +1570,121 @@ describe("codex manager cli commands", () => {
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("writes shared workspace quota cache entries by email without reusing bare accountId keys", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "alpha@example.com",
+					accountId: "shared-workspace",
+					refreshToken: "refresh-alpha",
+					accessToken: "access-alpha",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "beta@example.com",
+					accountId: "shared-workspace",
+					refreshToken: "refresh-beta",
+					accessToken: "access-beta",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: true,
+			menuSortEnabled: false,
+			menuSortMode: "manual",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		fetchCodexQuotaSnapshotMock
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 20,
+					windowMinutes: 300,
+					resetAtMs: now + 1_000,
+				},
+				secondary: {
+					usedPercent: 10,
+					windowMinutes: 10080,
+					resetAtMs: now + 2_000,
+				},
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 70,
+					windowMinutes: 300,
+					resetAtMs: now + 3_000,
+				},
+				secondary: {
+					usedPercent: 40,
+					windowMinutes: 10080,
+					resetAtMs: now + 4_000,
+				},
+			});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
+			byAccountId: {},
+			byEmail: {
+				"alpha@example.com": {
+					updatedAt: expect.any(Number),
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 20,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 10,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+				"beta@example.com": {
+					updatedAt: expect.any(Number),
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 70,
+						windowMinutes: 300,
+						resetAtMs: now + 3_000,
+					},
+					secondary: {
+						usedPercent: 40,
+						windowMinutes: 10080,
+						resetAtMs: now + 4_000,
+					},
+				},
+			},
+		});
+	});
+
 	it("keeps login loop running when settings action is selected", async () => {
 		const now = Date.now();
 		const storage = {
@@ -1731,6 +1846,113 @@ describe("codex manager cli commands", () => {
 		).toEqual([1, 2, 3]);
 		expect(firstCallAccounts[0]?.isCurrentAccount).toBe(false);
 		expect(firstCallAccounts[1]?.isCurrentAccount).toBe(true);
+	});
+
+	it("prefers email-scoped quota cache entries for shared workspace accounts", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "alpha@example.com",
+					accountId: "shared-workspace",
+					refreshToken: "refresh-alpha",
+					accessToken: "access-alpha",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "beta@example.com",
+					accountId: "shared-workspace",
+					refreshToken: "refresh-beta",
+					accessToken: "access-beta",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: false,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: false,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		loadQuotaCacheMock.mockResolvedValue({
+			byAccountId: {
+				"shared-workspace": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 99,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 99,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+			byEmail: {
+				"alpha@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 80,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 80,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+				"beta@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 0,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 0,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+		}>;
+		expect(firstCallAccounts.map((account) => account.email)).toEqual([
+			"beta@example.com",
+			"alpha@example.com",
+		]);
 	});
 
 	it("uses source-number quick switch mapping when visible-row quick switch is disabled", async () => {
