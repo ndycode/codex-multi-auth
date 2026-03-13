@@ -1084,15 +1084,21 @@ async function loadBackupCandidate(path: string): Promise<{
 	storedVersion: unknown;
 	schemaErrors: string[];
 	error?: string;
+	errorCode?: string;
 }> {
 	try {
 		return await loadAccountsFromPath(path);
 	} catch (error) {
+		const errorCode =
+			typeof (error as NodeJS.ErrnoException).code === "string"
+				? (error as NodeJS.ErrnoException).code
+				: undefined;
 		return {
 			normalized: null,
 			storedVersion: undefined,
 			schemaErrors: [],
 			error: String(error),
+			errorCode,
 		};
 	}
 }
@@ -1403,7 +1409,7 @@ export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
 			}
 
 			const candidate = await loadBackupCandidate(candidatePath);
-			if (!candidate.normalized && candidate.error?.includes("ENOENT")) {
+			if (!candidate.normalized && candidate.errorCode === "ENOENT") {
 				continue;
 			}
 			const metadata = await buildBackupFileMetadata(candidatePath, {

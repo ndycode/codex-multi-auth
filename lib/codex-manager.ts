@@ -141,7 +141,7 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 function formatRelativeDateShort(
 	timestamp: number | null | undefined,
 ): string | null {
-	if (!timestamp) return null;
+	if (timestamp == null) return null;
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
 	if (days <= 0) return "today";
 	if (days === 1) return "yesterday";
@@ -150,7 +150,7 @@ function formatRelativeDateShort(
 }
 
 function formatDateTimeLong(timestamp: number | null | undefined): string {
-	if (!timestamp) return "unknown";
+	if (timestamp == null) return "unknown";
 	return new Date(timestamp).toLocaleString();
 }
 
@@ -4272,11 +4272,24 @@ async function loadBackupBrowserEntries(): Promise<{
 	const currentStorage = await loadAccounts();
 	const assessments = await Promise.all(
 		namedBackups.map((backup) =>
-			assessNamedBackupRestore(backup.name, { currentStorage }),
+			assessNamedBackupRestore(backup.name, { currentStorage }).catch(
+				(error) => {
+					console.warn(
+						`Failed to assess named backup ${backup.name}: ${String(error)}`,
+					);
+					return null;
+				},
+			),
 		),
 	);
+	const validAssessments = assessments.filter(
+		(
+			assessment,
+		): assessment is Awaited<ReturnType<typeof assessNamedBackupRestore>> =>
+			assessment !== null,
+	);
 	return {
-		namedEntries: assessments.map((assessment) => ({
+		namedEntries: validAssessments.map((assessment) => ({
 			kind: "named",
 			label: assessment.backup.name,
 			backup: assessment.backup,

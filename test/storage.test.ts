@@ -567,6 +567,96 @@ describe("storage", () => {
 				readFileSpy.mockRestore();
 			}
 		});
+
+		it("keeps rotating backups visible when a non-ENOENT error mentions an ENOENT path segment", async () => {
+			const storageDir = join(testWorkDir, "ENOENT-project");
+			await fs.mkdir(storageDir, { recursive: true });
+			testStoragePath = join(storageDir, "openai-codex-accounts.json");
+			setStoragePathDirect(testStoragePath);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.bak.1`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-locked",
+							refreshToken: "ref-rotating-locked",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const lockedBackupPath = `${testStoragePath}.bak.1`;
+			const originalReadFile = fs.readFile.bind(fs) as typeof fs.readFile;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation((async (
+					...args: Parameters<typeof fs.readFile>
+				) => {
+					const [filePath] = args;
+					if (String(filePath) === lockedBackupPath) {
+						throw Object.assign(
+							new Error(
+								`EPERM: operation not permitted, open '${lockedBackupPath}'`,
+							),
+							{ code: "EPERM" },
+						);
+					}
+					return originalReadFile(...args);
+				}) as typeof fs.readFile);
+
+			try {
+				const rotatingBackups = await listRotatingBackups();
+				expect(rotatingBackups).toHaveLength(2);
+				expect(rotatingBackups[0]).toMatchObject({
+					slot: 0,
+					label: "Latest rotating backup (.bak)",
+					valid: true,
+					accountCount: 1,
+				});
+				expect(rotatingBackups[1]).toMatchObject({
+					slot: 1,
+					label: "Rotating backup 1 (.bak.1)",
+					valid: false,
+				});
+				expect(rotatingBackups[1]?.loadError).toContain("EPERM");
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
 	});
 
 	describe("filename migration (TDD)", () => {

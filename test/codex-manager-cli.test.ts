@@ -1522,6 +1522,210 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
+	it("keeps auth login running when a named backup assessment fails inside the browser", async () => {
+		setInteractiveTTY(false);
+		const now = Date.now();
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		const populatedStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "refresh-existing",
+					accountId: "acc-existing",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+		const recoverableAssessment = {
+			backup: {
+				name: "recoverable-backup",
+				path: "/mock/backups/recoverable-backup.json",
+				createdAt: now - 1_000,
+				updatedAt: now - 1_000,
+				sizeBytes: 512,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: undefined,
+		};
+		const brokenBackup = {
+			name: "broken-backup",
+			path: "/mock/backups/broken-backup.json",
+			createdAt: now - 2_000,
+			updatedAt: now - 2_000,
+			sizeBytes: 256,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: [],
+			valid: true,
+			loadError: undefined,
+		};
+
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			return loadCount <= 3
+				? structuredClone(emptyStorage)
+				: structuredClone(populatedStorage);
+		});
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [recoverableAssessment],
+			totalBackups: 2,
+		});
+		listNamedBackupsMock.mockResolvedValue([
+			brokenBackup,
+			recoverableAssessment.backup,
+		]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessNamedBackupRestoreMock.mockImplementation(async (name: string) => {
+			if (name === "broken-backup") {
+				throw new Error("EPERM: stale symlink");
+			}
+			return recoverableAssessment;
+		});
+		confirmMock.mockResolvedValueOnce(true);
+		selectMock.mockResolvedValueOnce({ type: "back" });
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(2);
+			expect(selectMock).toHaveBeenCalledTimes(1);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
+			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"Failed to assess named backup broken-backup: Error: EPERM: stale symlink",
+				),
+			);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("shows epoch timestamps in backup browser details instead of unknown", async () => {
+		setInteractiveTTY(false);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const epochDisplay = new Date(0).toLocaleString();
+		const now = Date.now();
+		const rotatingBackup = {
+			label: "Latest rotating backup (.bak)",
+			slot: 0,
+			path: "/mock/openai-codex-accounts.json.bak",
+			createdAt: 0,
+			updatedAt: 0,
+			sizeBytes: 64,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: [],
+			valid: true,
+			loadError: undefined,
+		};
+
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		const populatedStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "refresh-existing",
+					accountId: "acc-existing",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			return loadCount <= 4
+				? structuredClone(emptyStorage)
+				: structuredClone(populatedStorage);
+		});
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [
+				{
+					backup: {
+						name: "recoverable-backup",
+						path: "/mock/backups/recoverable-backup.json",
+						createdAt: now - 1_000,
+						updatedAt: now - 1_000,
+						sizeBytes: 512,
+						version: 3,
+						accountCount: 1,
+						schemaErrors: [],
+						valid: true,
+						loadError: undefined,
+					},
+					currentAccountCount: 0,
+					mergedAccountCount: 1,
+					imported: 1,
+					skipped: 0,
+					wouldExceedLimit: false,
+					valid: true,
+					error: undefined,
+				},
+			],
+			totalBackups: 1,
+		});
+		confirmMock.mockResolvedValueOnce(true);
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([rotatingBackup]);
+		selectMock
+			.mockResolvedValueOnce({
+				type: "inspect",
+				entry: {
+					kind: "rotating",
+					label: rotatingBackup.label,
+					backup: rotatingBackup,
+				},
+			})
+			.mockResolvedValueOnce({ type: "back" });
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(logSpy).toHaveBeenCalledWith(`Created: ${epochDisplay}`);
+			expect(logSpy).toHaveBeenCalledWith(`Updated: ${epochDisplay}`);
+			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
 	it("keeps login loop running when settings action is selected", async () => {
 		const now = Date.now();
 		const storage = {
