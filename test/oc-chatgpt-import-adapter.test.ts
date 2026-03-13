@@ -256,6 +256,58 @@ describe("oc-chatgpt import adapter", () => {
 		expect(preserved?.refreshToken).toBe("token-dest");
 	});
 
+	it("does not match destination rows by an ambiguous bare shared accountId", () => {
+		const destination: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 1,
+			accounts: [
+				{
+					accountId: "shared-account",
+					email: "alpha@example.com",
+					refreshToken: "dest-alpha",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "shared-account",
+					email: "beta@example.com",
+					refreshToken: "dest-beta",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+
+		const source: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "shared-account",
+					refreshToken: "source-new",
+					addedAt: 3,
+					lastUsed: 3,
+				},
+			],
+		};
+
+		const preview = previewOcChatgptImportMerge({ source, destination });
+
+		expect(preview.toUpdate).toHaveLength(0);
+		expect(preview.toAdd).toEqual([
+			{
+				accountId: "shared-account",
+				email: undefined,
+				refreshTokenLast4: "-new",
+			},
+		]);
+		expect(preview.unchangedDestinationOnly).toHaveLength(2);
+		expect(preview.merged.accounts).toHaveLength(3);
+		expect(preview.merged.accounts.map((account) => account.refreshToken)).toEqual(
+			expect.arrayContaining(["dest-alpha", "dest-beta", "source-new"]),
+		);
+	});
+
 	it("keeps newer destination metadata when a refresh-token fallback match is older than destination", () => {
 		const destination: AccountStorageV3 = {
 			version: 3,

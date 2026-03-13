@@ -184,7 +184,7 @@ type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 type AccountLike = {
 	accountId?: string;
 	email?: string;
-	refreshToken: string;
+	refreshToken?: string;
 	addedAt?: number;
 	lastUsed?: number;
 };
@@ -991,64 +991,16 @@ function selectNewestAccount<T extends AccountLike>(
 	return candidateAddedAt >= currentAddedAt ? candidate : current;
 }
 
-function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
-	const keyToIndex = new Map<string, number>();
-	const indicesToKeep = new Set<number>();
-
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account) continue;
-		const key = getAccountIdentityKey(account);
-		if (!key) continue;
-
-		const existingIndex = keyToIndex.get(key);
-		if (existingIndex === undefined) {
-			keyToIndex.set(key, i);
-			continue;
-		}
-
-		const existing = accounts[existingIndex];
-		const newest = selectNewestAccount(existing, account);
-		keyToIndex.set(key, newest === account ? i : existingIndex);
-	}
-
-	for (const idx of keyToIndex.values()) {
-		indicesToKeep.add(idx);
-	}
-
-	const result: T[] = [];
-	for (let i = 0; i < accounts.length; i += 1) {
-		if (indicesToKeep.has(i)) {
-			const account = accounts[i];
-			if (account) result.push(account);
-		}
-	}
-	return result;
+function normalizeAccountIdKey(
+	accountId: string | undefined,
+): string | undefined {
+	if (!accountId) return undefined;
+	const trimmed = accountId.trim();
+	return trimmed || undefined;
 }
 
 /**
- * Removes duplicate accounts, keeping the most recently used entry for each unique key.
- * Deduplication is based on accountId+email when both exist, otherwise accountId,
- * then email, then refreshToken.
- * @param accounts - Array of accounts to deduplicate
- * @returns New array with duplicates removed
- */
-export function deduplicateAccounts<
-	T extends {
-		accountId?: string;
-		refreshToken: string;
-		lastUsed?: number;
-		addedAt?: number;
-	},
->(accounts: T[]): T[] {
-	return deduplicateAccountsByKey(accounts);
-}
-
-/**
- * Removes duplicate accounts by email, keeping the most recently used entry.
- * Accounts without email are always preserved.
- * @param accounts - Array of accounts to deduplicate
- * @returns New array with email duplicates removed
+ * Normalize email keys for case-insensitive account identity matching.
  */
 export function normalizeEmailKey(
 	email: string | undefined,
@@ -1059,73 +1011,251 @@ export function normalizeEmailKey(
 	return trimmed.toLowerCase();
 }
 
-function getAccountIdentityKey(
-	account: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
-): string {
-	const accountId = account.accountId?.trim();
-	const email = normalizeEmailKey(account.email);
-	if (accountId && email) return `account:${accountId}::email:${email}`;
-	if (accountId) return `account:${accountId}`;
-	if (email) return `email:${email}`;
-	return `refresh:${account.refreshToken}`;
+function normalizeRefreshTokenKey(
+	refreshToken: string | undefined,
+): string | undefined {
+	if (!refreshToken) return undefined;
+	const trimmed = refreshToken.trim();
+	return trimmed || undefined;
 }
 
-export function deduplicateAccountsByEmail<
-	T extends { email?: string; lastUsed?: number; addedAt?: number },
->(accounts: T[]): T[] {
-	const emailToNewestIndex = new Map<string, number>();
-	const indicesToKeep = new Set<number>();
+type AccountIdentityRef = {
+	accountId?: string;
+	emailKey?: string;
+	refreshToken?: string;
+};
+
+type AccountMatchOptions = {
+	allowUniqueAccountIdFallbackWithoutEmail?: boolean;
+};
+
+function toAccountIdentityRef(
+	account:
+		| Pick<AccountLike, "accountId" | "email" | "refreshToken">
+		| null
+		| undefined,
+): AccountIdentityRef {
+	return {
+		accountId: normalizeAccountIdKey(account?.accountId),
+		emailKey: normalizeEmailKey(account?.email),
+		refreshToken: normalizeRefreshTokenKey(account?.refreshToken),
+	};
+}
+
+function collectDistinctIdentityValues(
+	values: Array<string | undefined>,
+): Set<string> {
+	const distinct = new Set<string>();
+	for (const value of values) {
+		if (value) distinct.add(value);
+	}
+	return distinct;
+}
+
+export function getAccountIdentityKey(
+	account: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
+): string | undefined {
+	const ref = toAccountIdentityRef(account);
+	if (ref.accountId && ref.emailKey) {
+		return `account:${ref.accountId}::email:${ref.emailKey}`;
+	}
+	if (ref.accountId) return `account:${ref.accountId}`;
+	if (ref.emailKey) return `email:${ref.emailKey}`;
+	if (ref.refreshToken) return `refresh:${ref.refreshToken}`;
+	return undefined;
+}
+
+function findNewestMatchingIndex<T extends AccountLike>(
+	accounts: readonly T[],
+	predicate: (ref: AccountIdentityRef) => boolean,
+): number | undefined {
+	let matchIndex: number | undefined;
+	let match: T | undefined;
+	for (let i = 0; i < accounts.length; i += 1) {
+		const account = accounts[i];
+		if (!account) continue;
+		const ref = toAccountIdentityRef(account);
+		if (!predicate(ref)) continue;
+		if (matchIndex === undefined) {
+			matchIndex = i;
+			match = account;
+			continue;
+		}
+		const newest = selectNewestAccount(match, account);
+		if (newest === account) {
+			matchIndex = i;
+			match = account;
+		}
+	}
+	return matchIndex;
+}
+
+function findCompositeAccountMatchIndex<T extends AccountLike>(
+	accounts: readonly T[],
+	candidateRef: AccountIdentityRef,
+): number | undefined {
+	if (!candidateRef.accountId || !candidateRef.emailKey) return undefined;
+	return findNewestMatchingIndex(
+		accounts,
+		(ref) =>
+			ref.accountId === candidateRef.accountId &&
+			ref.emailKey === candidateRef.emailKey,
+	);
+}
+
+function findSafeEmailMatchIndex<T extends AccountLike>(
+	accounts: readonly T[],
+	candidateRef: AccountIdentityRef,
+): number | undefined {
+	if (!candidateRef.emailKey) return undefined;
+
+	const emailAccountIds: Array<string | undefined> = [candidateRef.accountId];
+	let foundAny = false;
+	for (let i = 0; i < accounts.length; i += 1) {
+		const account = accounts[i];
+		if (!account) continue;
+		const ref = toAccountIdentityRef(account);
+		if (ref.emailKey !== candidateRef.emailKey) continue;
+		foundAny = true;
+		emailAccountIds.push(ref.accountId);
+	}
+
+	if (!foundAny) return undefined;
+	if (collectDistinctIdentityValues(emailAccountIds).size > 1) {
+		return undefined;
+	}
+
+	return findNewestMatchingIndex(
+		accounts,
+		(ref) => ref.emailKey === candidateRef.emailKey,
+	);
+}
+
+function findUniqueAccountIdMatchIndex<T extends AccountLike>(
+	accounts: readonly T[],
+	candidateRef: AccountIdentityRef,
+	options: AccountMatchOptions,
+): number | undefined {
+	if (!candidateRef.accountId) return undefined;
+	if (
+		!candidateRef.emailKey &&
+		!options.allowUniqueAccountIdFallbackWithoutEmail
+	) {
+		return undefined;
+	}
+	let matchingIndex: number | undefined;
+	let matchingEmailKey: string | undefined;
 
 	for (let i = 0; i < accounts.length; i += 1) {
 		const account = accounts[i];
 		if (!account) continue;
-
-		const email = normalizeEmailKey(account.email);
-		if (!email) {
-			indicesToKeep.add(i);
-			continue;
+		const ref = toAccountIdentityRef(account);
+		if (ref.accountId !== candidateRef.accountId) continue;
+		if (matchingIndex !== undefined) {
+			return undefined;
 		}
+		matchingIndex = i;
+		matchingEmailKey = ref.emailKey;
+	}
 
-		const existingIndex = emailToNewestIndex.get(email);
+	if (
+		matchingIndex !== undefined &&
+		matchingEmailKey &&
+		candidateRef.emailKey &&
+		matchingEmailKey !== candidateRef.emailKey
+	) {
+		return undefined;
+	}
+
+	return matchingIndex;
+}
+
+export function findMatchingAccountIndex<
+	T extends Pick<AccountLike, "accountId" | "email" | "refreshToken">,
+>(
+	accounts: readonly T[],
+	candidate: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
+	options: AccountMatchOptions = {},
+): number | undefined {
+	const candidateRef = toAccountIdentityRef(candidate);
+
+	if (candidateRef.refreshToken) {
+		const byRefresh = findNewestMatchingIndex(
+			accounts,
+			(ref) => ref.refreshToken === candidateRef.refreshToken,
+		);
+		if (byRefresh !== undefined) return byRefresh;
+	}
+
+	const byComposite = findCompositeAccountMatchIndex(accounts, candidateRef);
+	if (byComposite !== undefined) return byComposite;
+
+	const byEmail = findSafeEmailMatchIndex(accounts, candidateRef);
+	if (byEmail !== undefined) return byEmail;
+
+	return findUniqueAccountIdMatchIndex(accounts, candidateRef, options);
+}
+
+export function resolveAccountSelectionIndex<
+	T extends Pick<AccountLike, "accountId" | "email" | "refreshToken">,
+>(
+	accounts: readonly T[],
+	candidate: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
+	fallbackIndex = 0,
+): number {
+	if (accounts.length === 0) return 0;
+	const matchedIndex = findMatchingAccountIndex(accounts, candidate, {
+		allowUniqueAccountIdFallbackWithoutEmail: true,
+	});
+	if (matchedIndex !== undefined) return matchedIndex;
+	return clampIndex(fallbackIndex, accounts.length);
+}
+
+function deduplicateAccountsByIdentity<T extends AccountLike>(
+	accounts: T[],
+): T[] {
+	const deduplicated: T[] = [];
+	for (const account of accounts) {
+		if (!account) continue;
+		const existingIndex = findMatchingAccountIndex(deduplicated, account);
 		if (existingIndex === undefined) {
-			emailToNewestIndex.set(email, i);
+			deduplicated.push(account);
 			continue;
 		}
-
-		const existing = accounts[existingIndex];
-		// istanbul ignore next -- defensive code: existingIndex always refers to valid account
-		if (!existing) {
-			emailToNewestIndex.set(email, i);
-			continue;
-		}
-
-		const existingLastUsed = existing.lastUsed || 0;
-		const candidateLastUsed = account.lastUsed || 0;
-		const existingAddedAt = existing.addedAt || 0;
-		const candidateAddedAt = account.addedAt || 0;
-
-		const isNewer =
-			candidateLastUsed > existingLastUsed ||
-			(candidateLastUsed === existingLastUsed &&
-				candidateAddedAt > existingAddedAt);
-
-		if (isNewer) {
-			emailToNewestIndex.set(email, i);
-		}
+		deduplicated[existingIndex] = selectNewestAccount(
+			deduplicated[existingIndex],
+			account,
+		);
 	}
+	return deduplicated;
+}
 
-	for (const idx of emailToNewestIndex.values()) {
-		indicesToKeep.add(idx);
-	}
+/**
+ * Removes duplicate accounts, keeping the most recently used entry for each
+ * safely matched identity.
+ */
+export function deduplicateAccounts<
+	T extends {
+		accountId?: string;
+		email?: string;
+		refreshToken?: string;
+		lastUsed?: number;
+		addedAt?: number;
+	},
+>(accounts: T[]): T[] {
+	return deduplicateAccountsByIdentity(accounts);
+}
 
-	const result: T[] = [];
-	for (let i = 0; i < accounts.length; i += 1) {
-		if (indicesToKeep.has(i)) {
-			const account = accounts[i];
-			if (account) result.push(account);
-		}
-	}
-	return result;
+export function deduplicateAccountsByEmail<
+	T extends {
+		accountId?: string;
+		email?: string;
+		refreshToken?: string;
+		lastUsed?: number;
+		addedAt?: number;
+	},
+>(accounts: T[]): T[] {
+	return deduplicateAccountsByIdentity(accounts);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1137,25 +1267,21 @@ function clampIndex(index: number, length: number): number {
 	return Math.max(0, Math.min(index, length - 1));
 }
 
-function toAccountKey(
-	account: Pick<AccountMetadataV3, "accountId" | "email" | "refreshToken">,
-): string {
-	return getAccountIdentityKey(account);
-}
-
-function extractActiveKey(
+function extractActiveAccountRef(
 	accounts: unknown[],
 	activeIndex: number,
-): string | undefined {
+): AccountIdentityRef {
 	const candidate = accounts[activeIndex];
-	if (!isRecord(candidate)) return undefined;
+	if (!isRecord(candidate)) return {};
 
-	return getAccountIdentityKey({
+	return toAccountIdentityRef({
 		accountId:
 			typeof candidate.accountId === "string" ? candidate.accountId : undefined,
 		email: typeof candidate.email === "string" ? candidate.email : undefined,
 		refreshToken:
-			typeof candidate.refreshToken === "string" ? candidate.refreshToken : "",
+			typeof candidate.refreshToken === "string"
+				? candidate.refreshToken
+				: undefined,
 	});
 }
 
@@ -1192,7 +1318,7 @@ export function normalizeAccountStorage(
 			: 0;
 
 	const rawActiveIndex = clampIndex(activeIndexValue, rawAccounts.length);
-	const activeKey = extractActiveKey(rawAccounts, rawActiveIndex);
+	const activeRef = extractActiveAccountRef(rawAccounts, rawActiveIndex);
 
 	const fromVersion = data.version as AnyAccountStorage["version"];
 	const baseStorage: AccountStorageV3 =
@@ -1207,21 +1333,19 @@ export function normalizeAccountStorage(
 			!!account.refreshToken.trim(),
 	);
 
-	const deduplicatedAccounts = deduplicateAccountsByEmail(
-		deduplicateAccountsByKey(validAccounts),
-	);
+	const deduplicatedAccounts = deduplicateAccounts(validAccounts);
 
 	const activeIndex = (() => {
 		if (deduplicatedAccounts.length === 0) return 0;
-
-		if (activeKey) {
-			const mappedIndex = deduplicatedAccounts.findIndex(
-				(account) => toAccountKey(account) === activeKey,
-			);
-			if (mappedIndex >= 0) return mappedIndex;
-		}
-
-		return clampIndex(rawActiveIndex, deduplicatedAccounts.length);
+		return resolveAccountSelectionIndex(
+			deduplicatedAccounts,
+			{
+				accountId: activeRef.accountId,
+				email: activeRef.emailKey,
+				refreshToken: activeRef.refreshToken,
+			},
+			rawActiveIndex,
+		);
 	})();
 
 	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
@@ -1237,19 +1361,16 @@ export function normalizeAccountStorage(
 				: rawActiveIndex;
 
 		const clampedRawIndex = clampIndex(rawIndex, rawAccounts.length);
-		const familyKey = extractActiveKey(rawAccounts, clampedRawIndex);
-
-		let mappedIndex = clampIndex(rawIndex, deduplicatedAccounts.length);
-		if (familyKey && deduplicatedAccounts.length > 0) {
-			const idx = deduplicatedAccounts.findIndex(
-				(account) => toAccountKey(account) === familyKey,
-			);
-			if (idx >= 0) {
-				mappedIndex = idx;
-			}
-		}
-
-		activeIndexByFamily[family] = mappedIndex;
+		const familyRef = extractActiveAccountRef(rawAccounts, clampedRawIndex);
+		activeIndexByFamily[family] = resolveAccountSelectionIndex(
+			deduplicatedAccounts,
+			{
+				accountId: familyRef.accountId,
+				email: familyRef.emailKey,
+				refreshToken: familyRef.refreshToken,
+			},
+			rawIndex,
+		);
 	}
 
 	return {
@@ -2104,7 +2225,7 @@ export async function exportAccounts(
 
 /**
  * Imports accounts from a JSON file, merging with existing accounts.
- * Deduplicates by accountId/email, preserving most recently used entries.
+ * Deduplicates by safe account identity, preserving most recently used entries.
  * @param filePath - Source file path
  * @throws Error if file is invalid or would exceed MAX_ACCOUNTS
  */
@@ -2143,7 +2264,7 @@ export async function importAccounts(
 		const merged = [...existingAccounts, ...normalized.accounts];
 
 		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccountsByEmail(deduplicateAccounts(merged));
+			const deduped = deduplicateAccounts(merged);
 			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				throw new Error(
 					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
@@ -2151,9 +2272,7 @@ export async function importAccounts(
 			}
 		}
 
-		const deduplicatedAccounts = deduplicateAccountsByEmail(
-			deduplicateAccounts(merged),
-		);
+		const deduplicatedAccounts = deduplicateAccounts(merged);
 
 		const newStorage: AccountStorageV3 = {
 			version: 3,

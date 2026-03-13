@@ -85,16 +85,20 @@ vi.mock("../lib/accounts.js", () => ({
 	selectBestAccountCandidate: vi.fn(() => null),
 }));
 
-vi.mock("../lib/storage.js", () => ({
-	loadAccounts: loadAccountsMock,
-	loadFlaggedAccounts: loadFlaggedAccountsMock,
-	saveAccounts: saveAccountsMock,
-	saveFlaggedAccounts: saveFlaggedAccountsMock,
-	setStoragePath: setStoragePathMock,
-	getStoragePath: getStoragePathMock,
-	exportNamedBackup: exportNamedBackupMock,
-	normalizeAccountStorage: normalizeAccountStorageMock,
-}));
+vi.mock("../lib/storage.js", async () => {
+	const actual = await vi.importActual("../lib/storage.js");
+	return {
+		...(actual as Record<string, unknown>),
+		loadAccounts: loadAccountsMock,
+		loadFlaggedAccounts: loadFlaggedAccountsMock,
+		saveAccounts: saveAccountsMock,
+		saveFlaggedAccounts: saveFlaggedAccountsMock,
+		setStoragePath: setStoragePathMock,
+		getStoragePath: getStoragePathMock,
+		exportNamedBackup: exportNamedBackupMock,
+		normalizeAccountStorage: normalizeAccountStorageMock,
+	};
+});
 
 vi.mock("../lib/refresh-queue.js", () => ({
 	queuedRefresh: queuedRefreshMock,
@@ -564,6 +568,67 @@ describe("codex manager cli commands", () => {
 			version: 1,
 			accounts: [],
 		});
+	});
+
+	it("preserves distinct shared-accountId accounts when flagged recovery has no email", async () => {
+		const now = Date.now();
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "flagged-refresh",
+					accountId: "shared-account",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					flaggedAt: now - 5_000,
+				},
+			],
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+			accounts: [
+				{
+					refreshToken: "refresh-alpha",
+					accountId: "shared-account",
+					email: "alpha@example.com",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+				},
+				{
+					refreshToken: "refresh-beta",
+					accountId: "shared-account",
+					email: "beta@example.com",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({ refreshToken: "refresh-alpha" }),
+					expect.objectContaining({ refreshToken: "refresh-beta" }),
+					expect.objectContaining({ refreshToken: "refresh-restored" }),
+				]),
+			}),
+		);
 	});
 
 	it("keeps flagged account when verification still fails", async () => {

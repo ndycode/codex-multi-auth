@@ -51,10 +51,10 @@ import {
 } from "./quota-cache.js";
 import {
 	clearAccounts,
+	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
-	normalizeEmailKey,
 	saveFlaggedAccounts,
 	saveAccounts,
 	setStoragePath,
@@ -1267,19 +1267,7 @@ async function persistAccountPool(
 		: await loadAccounts();
 	const now = Date.now();
 	const accounts = loadedStorage?.accounts ? [...loadedStorage.accounts] : [];
-
-	const indexByRefreshToken = new Map<string, number>();
-	const indexByAccountId = new Map<string, number>();
-	const indexByEmail = new Map<string, number>();
 	let selectedAccountIndex: number | null = null;
-
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account) continue;
-		if (account.refreshToken) indexByRefreshToken.set(account.refreshToken, i);
-		if (account.accountId) indexByAccountId.set(account.accountId, i);
-		if (account.email) indexByEmail.set(account.email, i);
-	}
 
 	for (const result of results) {
 		const tokenAccountId = extractAccountId(result.access);
@@ -1293,28 +1281,11 @@ async function persistAccountPool(
 			: undefined;
 		const accountLabel = result.accountLabel;
 		const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
-
-		const existingByEmail =
-			accountEmail && indexByEmail.has(accountEmail)
-				? indexByEmail.get(accountEmail)
-				: undefined;
-		const existingById =
-			accountId && indexByAccountId.has(accountId)
-				? indexByAccountId.get(accountId)
-				: undefined;
-		const existingByToken = indexByRefreshToken.get(result.refresh);
-		const existingByIdAccount =
-			existingById !== undefined ? accounts[existingById] : undefined;
-		const existingByIdMatchesEmail =
-			!!accountEmail &&
-			normalizeEmailKey(existingByIdAccount?.email) === accountEmail;
-		const existingIndex =
-			existingByEmail ??
-			existingByToken ??
-			((existingById !== undefined &&
-				(!accountEmail || existingByIdMatchesEmail))
-				? existingById
-				: undefined);
+		const existingIndex = findMatchingAccountIndex(accounts, {
+			accountId,
+			email: accountEmail,
+			refreshToken: result.refresh,
+		});
 
 		if (existingIndex === undefined) {
 			const newIndex = accounts.length;
@@ -1330,9 +1301,6 @@ async function persistAccountPool(
 				addedAt: now,
 				lastUsed: now,
 			});
-			indexByRefreshToken.set(result.refresh, newIndex);
-			if (accountId) indexByAccountId.set(accountId, newIndex);
-			if (accountEmail) indexByEmail.set(accountEmail, newIndex);
 			selectedAccountIndex = newIndex;
 			continue;
 		}
@@ -1340,8 +1308,6 @@ async function persistAccountPool(
 		const existing = accounts[existingIndex];
 		if (!existing) continue;
 
-		const oldToken = existing.refreshToken;
-		const oldEmail = existing.email;
 		const nextEmail = accountEmail ?? existing.email;
 		const nextAccountId = accountId ?? existing.accountId;
 		const nextAccountIdSource = accountId
@@ -1360,20 +1326,6 @@ async function persistAccountPool(
 			enabled: true,
 			lastUsed: now,
 		};
-
-		if (oldToken !== result.refresh) {
-			indexByRefreshToken.delete(oldToken);
-			indexByRefreshToken.set(result.refresh, existingIndex);
-		}
-		if (nextAccountId) {
-			indexByAccountId.set(nextAccountId, existingIndex);
-		}
-		if (oldEmail && oldEmail !== nextEmail) {
-			indexByEmail.delete(oldEmail);
-		}
-		if (nextEmail) {
-			indexByEmail.set(nextEmail, existingIndex);
-		}
 		selectedAccountIndex = existingIndex;
 	}
 
@@ -2421,27 +2373,21 @@ function findExistingAccountIndexForFlagged(
 	const flaggedEmail = sanitizeEmail(flagged.email);
 	const candidateAccountId = nextAccountId ?? flagged.accountId;
 	const candidateEmail = sanitizeEmail(nextEmail) ?? flaggedEmail;
-
-	for (let i = 0; i < storage.accounts.length; i += 1) {
-		const account = storage.accounts[i];
-		if (!account) continue;
-		if (account.refreshToken === flagged.refreshToken || account.refreshToken === nextRefreshToken) {
-			return i;
-		}
-		if (
-			candidateAccountId &&
-			typeof account.accountId === "string" &&
-			account.accountId === candidateAccountId
-		) {
-			return i;
-		}
-		const existingEmail = sanitizeEmail(account.email);
-		if (candidateEmail && existingEmail && existingEmail === candidateEmail) {
-			return i;
-		}
+	const nextMatchIndex = findMatchingAccountIndex(storage.accounts, {
+		accountId: candidateAccountId,
+		email: candidateEmail,
+		refreshToken: nextRefreshToken,
+	});
+	if (nextMatchIndex !== undefined) {
+		return nextMatchIndex;
 	}
 
-	return -1;
+	const flaggedMatchIndex = findMatchingAccountIndex(storage.accounts, {
+		accountId: candidateAccountId,
+		email: candidateEmail,
+		refreshToken: flagged.refreshToken,
+	});
+	return flaggedMatchIndex ?? -1;
 }
 
 function upsertRecoveredFlaggedAccount(

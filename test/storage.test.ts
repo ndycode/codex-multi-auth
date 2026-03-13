@@ -44,7 +44,7 @@ describe("storage", () => {
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
 	});
 	describe("deduplication", () => {
-		it("remaps activeIndexByFamily after deduplication using the active account key", () => {
+		it("preserves activeIndexByFamily when shared accountId entries remain distinct without email", () => {
 			const now = Date.now();
 
 			const raw = {
@@ -81,8 +81,8 @@ describe("storage", () => {
 
 			const normalized = normalizeAccountStorage(raw);
 			expect(normalized).not.toBeNull();
-			expect(normalized?.accounts).toHaveLength(2);
-			expect(normalized?.activeIndexByFamily?.codex).toBe(1);
+			expect(normalized?.accounts).toHaveLength(4);
+			expect(normalized?.activeIndexByFamily?.codex).toBe(3);
 		});
 
 		it("remaps activeIndex after deduplication using active account key", () => {
@@ -235,6 +235,156 @@ describe("storage", () => {
 			const loaded = await loadAccounts();
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
+		});
+
+		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			const existing = {
+				version: 3,
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+				accounts: [
+					{
+						accountId: "shared-account",
+						email: "alpha@example.com",
+						refreshToken: "refresh-alpha",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "shared-account",
+						email: "beta@example.com",
+						refreshToken: "refresh-beta",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			};
+			// @ts-expect-error
+			await saveAccounts(existing);
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "shared-account",
+							refreshToken: "refresh-gamma",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+			);
+
+			const imported = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(imported).toEqual({ imported: 1, total: 3, skipped: 0 });
+			expect(loaded?.accounts).toHaveLength(3);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual(
+				expect.arrayContaining([
+					"refresh-alpha",
+					"refresh-beta",
+					"refresh-gamma",
+				]),
+			);
+		});
+
+		it("should preserve distinct accountId plus email pairs during import", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						email: "alpha@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify(
+					{
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "shared-workspace",
+								email: "beta@example.com",
+								refreshToken: "refresh-imported",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					},
+					null,
+					2,
+				),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(loaded?.accounts).toHaveLength(2);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
+				"refresh-existing",
+				"refresh-imported",
+			]);
+		});
+
+		it("should preserve duplicate shared accountId entries when imported rows lack email", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify(
+					{
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "shared-workspace",
+								refreshToken: "refresh-imported",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					},
+					null,
+					2,
+				),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(loaded?.accounts).toHaveLength(2);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
+				"refresh-existing",
+				"refresh-imported",
+			]);
 		});
 
 		it("should serialize concurrent transactional updates without losing accounts", async () => {
@@ -688,6 +838,30 @@ describe("storage", () => {
 				}),
 			);
 		});
+
+		it("preserves shared accountId entries when email is missing and refresh tokens differ", () => {
+			const accounts = [
+				{
+					accountId: "shared-workspace",
+					refreshToken: "refresh-a",
+					lastUsed: 100,
+					addedAt: 10,
+				},
+				{
+					accountId: "shared-workspace",
+					refreshToken: "refresh-b",
+					lastUsed: 200,
+					addedAt: 20,
+				},
+			];
+
+			const deduped = deduplicateAccounts(accounts);
+			expect(deduped).toHaveLength(2);
+			expect(deduped.map((account) => account.refreshToken)).toEqual([
+				"refresh-a",
+				"refresh-b",
+			]);
+		});
 	});
 
 	describe("deduplicateAccountsByEmail edge cases", () => {
@@ -873,9 +1047,34 @@ describe("storage", () => {
 			const result = normalizeAccountStorage(data);
 
 			expect(result?.accounts).toHaveLength(2);
-			expect(result?.activeIndex).toBe(0);
-			expect(result?.accounts[0]?.email).toBe("beta@example.com");
-			expect(result?.accounts[1]?.email).toBe("alpha@example.com");
+			expect(result?.activeIndex).toBe(1);
+			expect(result?.accounts[0]?.email).toBe("alpha@example.com");
+			expect(result?.accounts[1]?.email).toBe("beta@example.com");
+		});
+
+		it("preserves activeIndex for duplicate shared accountId entries when email is missing", () => {
+			const data = {
+				version: 3,
+				activeIndex: 1,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-a",
+						lastUsed: 100,
+					},
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-b",
+						lastUsed: 200,
+					},
+				],
+			};
+
+			const result = normalizeAccountStorage(data);
+			expect(result).not.toBeNull();
+			expect(result?.accounts).toHaveLength(2);
+			expect(result?.activeIndex).toBe(1);
+			expect(result?.accounts[1]?.refreshToken).toBe("refresh-b");
 		});
 
 		it("handles v1 to v3 migration", () => {
