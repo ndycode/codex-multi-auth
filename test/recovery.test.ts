@@ -11,6 +11,10 @@ import {
 	isRecoverableError,
 } from "../lib/recovery";
 
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
 vi.mock("../lib/recovery/storage.js", () => ({
 	readParts: vi.fn(() => []),
 	findMessagesWithThinkingBlocks: vi.fn(() => []),

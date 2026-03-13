@@ -4190,11 +4190,19 @@ async function runBackupRestoreManager(
 	const confirmed = await confirm(confirmMessage);
 	if (!confirmed) return "dismissed";
 
-	const result = await restoreNamedBackup(assessment.backup.name);
-	console.log(
-		`Restored backup "${assessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
-	);
-	return "restored";
+	try {
+		const result = await restoreNamedBackup(assessment.backup.name);
+		console.log(
+			`Restored backup "${assessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
+		);
+		return "restored";
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(
+			`Failed to restore backup "${assessment.backup.name}": ${message}`,
+		);
+		return "dismissed";
+	}
 }
 
 async function runAuthLogin(): Promise<number> {
@@ -4409,27 +4417,34 @@ async function runAuthLogin(): Promise<number> {
 				recoveryState = { assessments: [], totalBackups: 0 };
 			}
 			if (recoveryState.assessments.length > 0) {
-				const displaySettings = await loadDashboardDisplaySettings();
-				applyUiThemeFromDashboardSettings(displaySettings);
-				const backupDir = getNamedBackupsDirectoryPath();
-				const sample = recoveryState.assessments[0];
-				const backupLabel =
-					sample?.backup.name ??
-					`${recoveryState.assessments.length} backup${
-						recoveryState.assessments.length === 1 ? "" : "s"
-					}`;
-				const restoreNow = await confirm(
-					`Found ${recoveryState.assessments.length} recoverable backup${
-						recoveryState.assessments.length === 1 ? "" : "s"
-					} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Restore now?`,
-				);
-				if (restoreNow) {
-					const restoreResult =
-						await runBackupRestoreManager(displaySettings);
-					if (restoreResult !== "restored") {
-						recoveryPromptAttempted = false;
+				try {
+					const displaySettings = await loadDashboardDisplaySettings();
+					applyUiThemeFromDashboardSettings(displaySettings);
+					const backupDir = getNamedBackupsDirectoryPath();
+					const sample = recoveryState.assessments[0];
+					const backupLabel =
+						sample?.backup.name ??
+						`${recoveryState.assessments.length} backup${
+							recoveryState.assessments.length === 1 ? "" : "s"
+						}`;
+					const restoreNow = await confirm(
+						`Found ${recoveryState.assessments.length} recoverable backup${
+							recoveryState.assessments.length === 1 ? "" : "s"
+						} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Restore now?`,
+					);
+					if (restoreNow) {
+						const restoreResult =
+							await runBackupRestoreManager(displaySettings);
+						if (restoreResult !== "restored") {
+							recoveryPromptAttempted = false;
+						}
+						continue;
 					}
-					continue;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.warn(
+						`Startup recovery prompt failed: ${message}. Continuing with OAuth.`,
+					);
 				}
 			}
 		}
