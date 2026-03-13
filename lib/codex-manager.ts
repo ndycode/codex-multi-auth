@@ -4180,6 +4180,7 @@ function buildBackupStatusSummary(entry: BackupBrowserEntry): string {
 
 async function showBackupBrowserDetails(
 	entry: BackupBrowserEntry,
+	displaySettings: DashboardDisplaySettings,
 ): Promise<"back" | "restore"> {
 	const backup = entry.backup;
 	const typeLabel =
@@ -4251,53 +4252,59 @@ async function showBackupBrowserDetails(
 			message: "Backup Browser",
 			subtitle: entry.label,
 			help: "Enter Select | Q Back",
-			clearScreen: true,
+			clearScreen: false,
 			selectedEmphasis: "minimal",
-			focusStyle: getUiRuntimeOptions().theme ? "row-invert" : "row-invert",
+			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
 			theme: getUiRuntimeOptions().theme,
 		},
 	);
 	return action === "restore" ? "restore" : "back";
 }
 
-async function runBackupBrowserManager(
-	displaySettings: DashboardDisplaySettings,
-): Promise<void> {
-	const backupDir = getNamedBackupsDirectoryPath();
+async function loadBackupBrowserEntries(): Promise<{
+	namedEntries: Extract<BackupBrowserEntry, { kind: "named" }>[];
+	rotatingEntries: Extract<BackupBrowserEntry, { kind: "rotating" }>[];
+}> {
 	const [namedBackups, rotatingBackups] = await Promise.all([
 		listNamedBackups(),
 		listRotatingBackups(),
 	]);
-	if (namedBackups.length === 0 && rotatingBackups.length === 0) {
-		console.log(
-			`No backups found. Named backups live in ${backupDir}. Rotating backups live next to ${getStoragePath()}.`,
-		);
-		return;
-	}
-
 	const currentStorage = await loadAccounts();
 	const assessments = await Promise.all(
 		namedBackups.map((backup) =>
 			assessNamedBackupRestore(backup.name, { currentStorage }),
 		),
 	);
-	const namedEntries: BackupBrowserEntry[] = assessments.map((assessment) => ({
-		kind: "named",
-		label: assessment.backup.name,
-		backup: assessment.backup,
-		assessment,
-	}));
-	const rotatingEntries: BackupBrowserEntry[] = rotatingBackups.map(
-		(backup) => ({
+	return {
+		namedEntries: assessments.map((assessment) => ({
+			kind: "named",
+			label: assessment.backup.name,
+			backup: assessment.backup,
+			assessment,
+		})),
+		rotatingEntries: rotatingBackups.map((backup) => ({
 			kind: "rotating",
 			label: backup.label,
 			backup,
-		}),
-	);
+		})),
+	};
+}
 
+async function runBackupBrowserManager(
+	displaySettings: DashboardDisplaySettings,
+): Promise<void> {
+	const backupDir = getNamedBackupsDirectoryPath();
 	const ui = getUiRuntimeOptions();
 
 	while (true) {
+		const { namedEntries, rotatingEntries } = await loadBackupBrowserEntries();
+		if (namedEntries.length === 0 && rotatingEntries.length === 0) {
+			console.log(
+				`No backups found. Named backups live in ${backupDir}. Rotating backups live next to ${getStoragePath()}.`,
+			);
+			return;
+		}
+
 		const items: MenuItem<BackupMenuAction>[] = [
 			{ label: "Named Backups", value: { type: "back" }, kind: "heading" },
 		];
@@ -4359,7 +4366,7 @@ async function runBackupBrowserManager(
 		}
 
 		const entry = selection.entry;
-		const action = await showBackupBrowserDetails(entry);
+		const action = await showBackupBrowserDetails(entry, displaySettings);
 		if (action === "restore") {
 			if (entry.kind !== "named") {
 				continue;
@@ -4373,18 +4380,22 @@ async function runBackupBrowserManager(
 			if (!confirmed) {
 				continue;
 			}
-			await runActionPanel(
-				"Restore Backup",
-				`Restoring ${backupName}`,
-				async () => {
-					const result = await restoreNamedBackup(backupName);
-					console.log(
-						`Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`,
-					);
-				},
-				displaySettings,
-			);
-			return;
+			try {
+				await runActionPanel(
+					"Restore Backup",
+					`Restoring ${backupName}`,
+					async () => {
+						const result = await restoreNamedBackup(backupName);
+						console.log(
+							`Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`,
+						);
+					},
+					displaySettings,
+				);
+				return;
+			} catch {
+				continue;
+			}
 		}
 	}
 }

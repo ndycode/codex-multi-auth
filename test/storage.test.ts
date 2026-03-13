@@ -31,6 +31,30 @@ import {
 // accept that this test won't even compile/run until we add them.
 // But Task 0 says: "Tests should fail initially (RED phase)"
 
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
+	const maxAttempts = 6;
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			if (!(error instanceof Error)) {
+				throw error;
+			}
+			const maybeCode = "code" in error ? (error as { code?: string }).code : undefined;
+			if (!maybeCode || !retryableCodes.has(maybeCode) || attempt === maxAttempts) {
+				throw error;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, attempt * 50));
+		}
+	}
+}
+
 describe("storage", () => {
 	const _origCODEX_HOME = process.env.CODEX_HOME;
 	const _origCODEX_MULTI_AUTH_DIR = process.env.CODEX_MULTI_AUTH_DIR;
@@ -128,7 +152,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("should export accounts to a file", async () => {
@@ -314,7 +338,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("creates and lists named backups with metadata", async () => {
@@ -386,6 +410,24 @@ describe("storage", () => {
 			);
 		});
 
+		it.each([
+			"../openai-codex-accounts",
+			"..\\openai-codex-accounts",
+			"nested/openai-codex-accounts",
+			"nested\\openai-codex-accounts",
+			"C:openai-codex-accounts",
+		])(
+			"rejects path-like lookup name %s when assessing or restoring named backups",
+			async (backupName) => {
+				await expect(assessNamedBackupRestore(backupName)).rejects.toThrow(
+					/Invalid backup name/,
+				);
+				await expect(restoreNamedBackup(backupName)).rejects.toThrow(
+					/Invalid backup name/,
+				);
+			},
+		);
+
 		it("lists rotating backups and marks invalid snapshots distinctly", async () => {
 			await saveAccounts({
 				version: 3,
@@ -448,6 +490,82 @@ describe("storage", () => {
 				valid: false,
 			});
 			expect(rotatingBackups[1]?.loadError).toBeTruthy();
+		});
+
+		it("skips rotating backups that disappear during load", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.bak.1`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-missing",
+							refreshToken: "ref-rotating-missing",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalReadFile = fs.readFile.bind(fs) as typeof fs.readFile;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation((async (
+					...args: Parameters<typeof fs.readFile>
+				) => {
+					const [filePath] = args;
+					if (String(filePath).endsWith(".bak.1")) {
+						throw Object.assign(
+							new Error("ENOENT: no such file or directory"),
+							{ code: "ENOENT" },
+						);
+					}
+					return originalReadFile(...args);
+				}) as typeof fs.readFile);
+
+			try {
+				await expect(listRotatingBackups()).resolves.toMatchObject([
+					{
+						slot: 0,
+						label: "Latest rotating backup (.bak)",
+						valid: true,
+						accountCount: 1,
+					},
+				]);
+			} finally {
+				readFileSpy.mockRestore();
+			}
 		});
 	});
 

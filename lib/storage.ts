@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -461,6 +461,26 @@ function normalizeBackupName(rawName: string): string {
 	return sanitized;
 }
 
+function normalizeBackupLookupName(rawName: string): string {
+	const trimmed = rawName.trim().replace(/\.(json|bak)$/i, "");
+	const hasPathSeparator = /[\\/]/.test(trimmed);
+	const hasDrivePrefix = /^[a-zA-Z]:/.test(trimmed);
+	const segments = trimmed.split(/[\\/]+/).filter(Boolean);
+	if (
+		hasPathSeparator ||
+		hasDrivePrefix ||
+		segments.some((segment) => segment === "." || segment === "..")
+	) {
+		throw new StorageError(
+			`Invalid backup name: ${rawName}`,
+			"EINVALID",
+			getNamedBackupsDirectory(),
+			"Named backup restore operations only accept backup names from the backups directory.",
+		);
+	}
+	return normalizeBackupName(trimmed);
+}
+
 function getNamedBackupsDirectory(): string {
 	return join(dirname(getStoragePath()), NAMED_BACKUP_DIRECTORY);
 }
@@ -473,10 +493,21 @@ async function ensureNamedBackupsDirectory(): Promise<string> {
 
 function resolveNamedBackupPath(name: string): string {
 	const normalizedName = normalizeBackupName(name);
-	return join(
-		getNamedBackupsDirectory(),
+	const backupDir = resolve(getNamedBackupsDirectory());
+	const backupPath = resolve(
+		backupDir,
 		`${normalizedName}${NAMED_BACKUP_EXTENSION}`,
 	);
+	const relativePath = relative(backupDir, backupPath);
+	if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+		throw new StorageError(
+			`Invalid backup name: ${name}`,
+			"EINVALID",
+			backupPath,
+			`Named backups must stay inside ${backupDir}.`,
+		);
+	}
+	return backupPath;
 }
 
 function deriveBackupNameFromFile(fileName: string): string {
@@ -1361,31 +1392,38 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 
 export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
 	const storagePath = getStoragePath();
-	const candidates = getAccountsBackupRecoveryCandidates(storagePath);
-	const backups: RotatingBackupMetadata[] = [];
+	try {
+		const candidates = getAccountsBackupRecoveryCandidates(storagePath);
+		const backups: RotatingBackupMetadata[] = [];
 
-	for (const candidatePath of candidates) {
-		if (!existsSync(candidatePath)) {
-			continue;
+		for (const candidatePath of candidates) {
+			const slot = parseRotatingBackupSlot(storagePath, candidatePath);
+			if (slot === null) {
+				continue;
+			}
+
+			const candidate = await loadBackupCandidate(candidatePath);
+			if (!candidate.normalized && candidate.error?.includes("ENOENT")) {
+				continue;
+			}
+			const metadata = await buildBackupFileMetadata(candidatePath, {
+				candidate,
+			});
+			backups.push({
+				label: formatRotatingBackupLabel(slot),
+				slot,
+				...metadata,
+			});
 		}
 
-		const slot = parseRotatingBackupSlot(storagePath, candidatePath);
-		if (slot === null) {
-			continue;
-		}
-
-		const candidate = await loadBackupCandidate(candidatePath);
-		const metadata = await buildBackupFileMetadata(candidatePath, {
-			candidate,
+		return backups.sort((a, b) => a.slot - b.slot);
+	} catch (error) {
+		log.warn("Failed to list rotating backups", {
+			path: storagePath,
+			error: String(error),
 		});
-		backups.push({
-			label: formatRotatingBackupLabel(slot),
-			slot,
-			...metadata,
-		});
+		return [];
 	}
-
-	return backups.sort((a, b) => a.slot - b.slot);
 }
 
 export function getNamedBackupsDirectoryPath(): string {
@@ -1440,7 +1478,7 @@ export async function assessNamedBackupRestore(
 	name: string,
 	options: { currentStorage?: AccountStorageV3 | null } = {},
 ): Promise<BackupRestoreAssessment> {
-	const normalizedName = normalizeBackupName(name);
+	const normalizedName = normalizeBackupLookupName(name);
 	const backupPath = resolveNamedBackupPath(normalizedName);
 	const candidate = await loadBackupCandidate(backupPath);
 	const backup = await buildNamedBackupMetadata(normalizedName, backupPath, {
@@ -1494,7 +1532,7 @@ export async function assessNamedBackupRestore(
 export async function restoreNamedBackup(
 	name: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
-	const normalizedName = normalizeBackupName(name);
+	const normalizedName = normalizeBackupLookupName(name);
 	const backupPath = resolveNamedBackupPath(normalizedName);
 	return importAccounts(backupPath);
 }
