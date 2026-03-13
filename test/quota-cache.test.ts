@@ -79,6 +79,31 @@ describe("quota cache", () => {
     expect(loaded).toEqual({ byAccountId: {}, byEmail: {} });
   });
 
+  it("resolves the quota cache path from the current CODEX_MULTI_AUTH_DIR on each call", async () => {
+    const { clearQuotaCache, getQuotaCachePath, saveQuotaCache } =
+      await import("../lib/quota-cache.js");
+    const firstPath = getQuotaCachePath();
+    const nextTempDir = await fs.mkdtemp(
+      join(tmpdir(), "codex-multi-auth-quota-next-"),
+    );
+
+    try {
+      process.env.CODEX_MULTI_AUTH_DIR = nextTempDir;
+      const nextPath = getQuotaCachePath();
+
+      expect(nextPath).not.toBe(firstPath);
+      expect(nextPath).toBe(join(nextTempDir, "quota-cache.json"));
+
+      await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+      await expect(fs.access(nextPath)).resolves.toBeUndefined();
+
+      await clearQuotaCache();
+      await expect(fs.access(nextPath)).rejects.toThrow();
+    } finally {
+      await fs.rm(nextTempDir, { recursive: true, force: true });
+    }
+  });
+
   it("retries transient EBUSY while loading cache", async () => {
     const { loadQuotaCache, getQuotaCachePath } =
       await import("../lib/quota-cache.js");

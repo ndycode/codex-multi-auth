@@ -6,10 +6,12 @@ import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import {
 	clearAccounts,
+	clearFlaggedAccounts,
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
 	exportAccounts,
 	formatStorageErrorHint,
+	getFlaggedAccountsPath,
 	getStoragePath,
 	importAccounts,
 	loadAccounts,
@@ -872,6 +874,130 @@ describe("storage", () => {
 		it("does not throw when file does not exist", async () => {
 			await expect(clearAccounts()).resolves.not.toThrow();
 		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"retries transient %s when clearing saved account artifacts",
+			async (code) => {
+				await fs.writeFile(testStoragePath, "{}");
+				const walPath = `${testStoragePath}.wal`;
+				await fs.writeFile(walPath, "{}");
+
+				const realUnlink = fs.unlink.bind(fs);
+				let failedOnce = false;
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === testStoragePath && !failedOnce) {
+							failedOnce = true;
+							const error = new Error("locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return realUnlink(targetPath);
+					});
+
+				try {
+					await expect(clearAccounts()).resolves.toBe(true);
+					expect(existsSync(testStoragePath)).toBe(false);
+					expect(existsSync(walPath)).toBe(false);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === testStoragePath,
+						),
+					).toHaveLength(2);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+	});
+
+	describe("clearFlaggedAccounts", () => {
+		const testWorkDir = join(
+			tmpdir(),
+			"codex-clear-flagged-test-" + Math.random().toString(36).slice(2),
+		);
+		let testStoragePath: string;
+
+		beforeEach(async () => {
+			await fs.mkdir(testWorkDir, { recursive: true });
+			testStoragePath = join(testWorkDir, "accounts.json");
+			setStoragePathDirect(testStoragePath);
+		});
+
+		afterEach(async () => {
+			setStoragePathDirect(null);
+			await fs.rm(testWorkDir, { recursive: true, force: true });
+		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"retries transient %s when clearing flagged account storage",
+			async (code) => {
+				const flaggedPath = getFlaggedAccountsPath();
+				await fs.mkdir(dirname(flaggedPath), { recursive: true });
+				await fs.writeFile(flaggedPath, "{}");
+
+				const realUnlink = fs.unlink.bind(fs);
+				let failedOnce = false;
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === flaggedPath && !failedOnce) {
+							failedOnce = true;
+							const error = new Error("locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return realUnlink(targetPath);
+					});
+
+				try {
+					await expect(clearFlaggedAccounts()).resolves.toBe(true);
+					expect(existsSync(flaggedPath)).toBe(false);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === flaggedPath,
+						),
+					).toHaveLength(2);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when clearing flagged account storage exhausts retryable %s failures",
+			async (code) => {
+				const flaggedPath = getFlaggedAccountsPath();
+				await fs.mkdir(dirname(flaggedPath), { recursive: true });
+				await fs.writeFile(flaggedPath, "{}");
+
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === flaggedPath) {
+							const error = new Error("still locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						const error = new Error("missing") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					});
+
+				try {
+					await expect(clearFlaggedAccounts()).resolves.toBe(false);
+					expect(existsSync(flaggedPath)).toBe(true);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === flaggedPath,
+						),
+					).toHaveLength(5);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 
 	describe("setStoragePath", () => {
@@ -1033,6 +1159,37 @@ describe("storage", () => {
 
 			await expect(clearAccounts()).resolves.not.toThrow();
 		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when clearing saved accounts exhausts retryable %s failures",
+			async (code) => {
+				await fs.writeFile(testStoragePath, "{}");
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === testStoragePath) {
+							const error = new Error("still locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						const error = new Error("missing") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					});
+
+				try {
+					await expect(clearAccounts()).resolves.toBe(false);
+					expect(existsSync(testStoragePath)).toBe(true);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === testStoragePath,
+						),
+					).toHaveLength(5);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 
 	describe("StorageError with cause", () => {
