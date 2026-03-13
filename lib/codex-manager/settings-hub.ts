@@ -1,4 +1,6 @@
+import { promises as fs } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
+import { createInterface } from "node:readline/promises";
 import {
 	type CodexCliState,
 	getCodexCliAccountsPath,
@@ -8,6 +10,7 @@ import {
 	loadCodexCliState,
 } from "../codex-cli/state.js";
 import {
+	applyCodexCliSyncToStorage,
 	commitCodexCliSyncRunFailure,
 	commitPendingCodexCliSyncRun,
 	type CodexCliSyncPreview,
@@ -15,7 +18,6 @@ import {
 	type CodexCliSyncSummary,
 	getLastCodexCliSyncRun,
 	previewCodexCliSync,
-	syncAccountStorageFromCodexCli,
 } from "../codex-cli/sync.js";
 import {
 	getDefaultPluginConfig,
@@ -39,8 +41,15 @@ import {
 	type LiveAccountSyncSnapshot,
 } from "../live-account-sync.js";
 import {
+	applyOcChatgptSync,
+	planOcChatgptSync,
+	runNamedBackupExport,
+} from "../oc-chatgpt-orchestrator.js";
+import { detectOcChatgptMultiAuthTarget } from "../oc-chatgpt-target-detection.js";
+import {
 	isStorageBackupEnabled,
 	loadAccounts,
+	normalizeAccountStorage,
 	saveAccounts,
 	setStorageBackupEnabled,
 } from "../storage.js";
@@ -288,6 +297,7 @@ type SettingsHubAction =
 	| { type: "summary-fields" }
 	| { type: "behavior" }
 	| { type: "theme" }
+	| { type: "experimental" }
 	| { type: "backend" }
 	| { type: "back" };
 
@@ -305,6 +315,15 @@ interface SyncCenterOverviewContext {
 	syncEnabled: boolean;
 }
 
+type ExperimentalSettingsAction =
+	| { type: "sync" }
+	| { type: "backup" }
+	| { type: "toggle-refresh-guardian" }
+	| { type: "decrease-refresh-interval" }
+	| { type: "increase-refresh-interval" }
+	| { type: "apply" }
+	| { type: "save" }
+	| { type: "back" };
 const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
 	{
 		key: "liveAccountSync",
@@ -553,12 +572,8 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 		key: "refresh-recovery",
 		label: "Refresh & Recovery",
 		description: "Token refresh and recovery safety.",
-		toggleKeys: ["proactiveRefreshGuardian", "storageBackupEnabled"],
-		numberKeys: [
-			"proactiveRefreshIntervalMs",
-			"proactiveRefreshBufferMs",
-			"tokenRefreshSkewMs",
-		],
+		toggleKeys: ["storageBackupEnabled"],
+		numberKeys: ["proactiveRefreshBufferMs", "tokenRefreshSkewMs"],
 	},
 	{
 		key: "performance-timeouts",
@@ -790,6 +805,26 @@ async function persistDashboardSettingsSelection(
 	}
 }
 
+async function readFileWithRetry(path: string): Promise<string> {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			return await fs.readFile(path, "utf-8");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				throw error;
+			}
+			if (
+				!code ||
+				!RETRYABLE_SETTINGS_WRITE_CODES.has(code) ||
+				attempt >= SETTINGS_WRITE_MAX_ATTEMPTS - 1
+			) {
+				throw error;
+			}
+			await sleep(25 * 2 ** attempt);
+		}
+	}
+}
 async function persistBackendConfigSelection(
 	selected: PluginConfig,
 	scope: string,
@@ -1427,8 +1462,19 @@ const __testOnly = {
 	cloneDashboardSettings,
 	buildSyncCenterOverview,
 	withQueuedRetry: withQueuedRetryForTests,
+	loadExperimentalSyncTarget,
+	promptExperimentalSettings,
 	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
 	persistBackendConfigSelection: persistBackendConfigSelectionForTests,
+	buildAccountListPreview,
+	buildSummaryPreviewText,
+	normalizeStatuslineFields,
+	reorderField,
+	promptDashboardDisplaySettings,
+	promptStatuslineSettings,
+	promptBehaviorSettings,
+	promptThemeSettings,
+	promptBackendSettings,
 };
 
 /* c8 ignore start - interactive prompt flows are covered by integration tests */
@@ -2702,7 +2748,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 
 		try {
 			const current = await loadAccounts();
-			const synced = await syncAccountStorageFromCodexCli(current);
+			const synced = await applyCodexCliSyncToStorage(current);
 			const storageBackupEnabled = getStorageBackupEnabled(config);
 			const nextStorage = synced.storage ?? current;
 			if (synced.changed && synced.storage) {
@@ -2742,6 +2788,381 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				}`,
 			};
 		}
+	}
+}
+
+async function loadExperimentalSyncTarget(): Promise<
+	| {
+			kind: "blocked-ambiguous";
+			detection: ReturnType<typeof detectOcChatgptMultiAuthTarget>;
+	  }
+	| {
+			kind: "blocked-none";
+			detection: ReturnType<typeof detectOcChatgptMultiAuthTarget>;
+	  }
+	| { kind: "error"; message: string }
+	| {
+			kind: "target";
+			detection: ReturnType<typeof detectOcChatgptMultiAuthTarget>;
+			destination: import("../storage.js").AccountStorageV3 | null;
+	  }
+> {
+	const detection = detectOcChatgptMultiAuthTarget();
+	if (detection.kind === "ambiguous") {
+		return { kind: "blocked-ambiguous", detection };
+	}
+	if (detection.kind === "none") {
+		return { kind: "blocked-none", detection };
+	}
+	try {
+		const raw = JSON.parse(
+			await readFileWithRetry(detection.descriptor.accountPath),
+		);
+		const normalized = normalizeAccountStorage(raw);
+		if (!normalized) {
+			return {
+				kind: "error",
+				message: "Invalid target account storage format",
+			};
+		}
+		return { kind: "target", detection, destination: normalized };
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return { kind: "target", detection, destination: null };
+		}
+		return {
+			kind: "error",
+			message: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+async function promptExperimentalSettings(
+	initialConfig: PluginConfig,
+): Promise<PluginConfig | null> {
+	if (!input.isTTY || !output.isTTY) return null;
+	const ui = getUiRuntimeOptions();
+	let draft = cloneBackendPluginConfig(initialConfig);
+	while (true) {
+		const action = await select<ExperimentalSettingsAction>(
+			[
+				{
+					label: UI_COPY.settings.experimentalSync,
+					value: { type: "sync" },
+					color: "yellow",
+				},
+				{
+					label: UI_COPY.settings.experimentalBackup,
+					value: { type: "backup" },
+					color: "green",
+				},
+				{
+					label: `${formatDashboardSettingState(draft.proactiveRefreshGuardian ?? false)} ${UI_COPY.settings.experimentalRefreshGuard}`,
+					value: { type: "toggle-refresh-guardian" },
+					color: "yellow",
+				},
+				{
+					label: `${UI_COPY.settings.experimentalRefreshInterval}: ${Math.round((draft.proactiveRefreshIntervalMs ?? 60000) / 60000)} min`,
+					value: { type: "back" },
+					disabled: true,
+					hideUnavailableSuffix: true,
+					color: "green",
+				},
+				{
+					label: UI_COPY.settings.experimentalDecreaseInterval,
+					value: { type: "decrease-refresh-interval" },
+					color: "yellow",
+				},
+				{
+					label: UI_COPY.settings.experimentalIncreaseInterval,
+					value: { type: "increase-refresh-interval" },
+					color: "green",
+				},
+				{
+					label: UI_COPY.settings.saveAndBack,
+					value: { type: "save" },
+					color: "green",
+				},
+				{
+					label: UI_COPY.settings.backNoSave,
+					value: { type: "back" },
+					color: "red",
+				},
+			],
+			{
+				message: UI_COPY.settings.experimentalTitle,
+				subtitle: UI_COPY.settings.experimentalSubtitle,
+				help: UI_COPY.settings.experimentalHelpMenu,
+				clearScreen: true,
+				theme: ui.theme,
+				selectedEmphasis: "minimal",
+				onInput: (raw) =>
+					raw.toLowerCase() === "q" ? { type: "back" } : undefined,
+			},
+		);
+		if (!action || action.type === "back") return null;
+		if (action.type === "save") return draft;
+		if (action.type === "toggle-refresh-guardian") {
+			draft = {
+				...draft,
+				proactiveRefreshGuardian: !(draft.proactiveRefreshGuardian ?? false),
+			};
+			continue;
+		}
+		if (action.type === "decrease-refresh-interval") {
+			draft = {
+				...draft,
+				proactiveRefreshIntervalMs: Math.max(
+					60_000,
+					(draft.proactiveRefreshIntervalMs ?? 60000) - 60000,
+				),
+			};
+			continue;
+		}
+		if (action.type === "increase-refresh-interval") {
+			draft = {
+				...draft,
+				proactiveRefreshIntervalMs: Math.min(
+					600000,
+					(draft.proactiveRefreshIntervalMs ?? 60000) + 60000,
+				),
+			};
+			continue;
+		}
+		if (action.type === "backup") {
+			const prompt = createInterface({ input, output });
+			try {
+				const backupName = (
+					await prompt.question(UI_COPY.settings.experimentalBackupPrompt)
+				).trim();
+				if (!backupName || backupName.toLowerCase() === "q") {
+					continue;
+				}
+				try {
+					const backupResult = await runNamedBackupExport({ name: backupName });
+					const backupLabel =
+						backupResult.kind === "exported"
+							? `Saved backup to ${backupResult.path}`
+							: backupResult.kind === "collision"
+								? `Backup already exists: ${backupResult.path}`
+								: backupResult.error instanceof Error
+									? backupResult.error.message
+									: String(backupResult.error);
+					await select<ExperimentalSettingsAction>(
+						[
+							{
+								label: backupLabel,
+								value: { type: "back" },
+								disabled: true,
+								hideUnavailableSuffix: true,
+								color: backupResult.kind === "exported" ? "green" : "yellow",
+							},
+							{
+								label: UI_COPY.settings.back,
+								value: { type: "back" },
+								color: "red",
+							},
+						],
+						{
+							message: UI_COPY.settings.experimentalTitle,
+							subtitle: UI_COPY.settings.experimentalSubtitle,
+							help: UI_COPY.settings.experimentalHelpStatus,
+							clearScreen: true,
+							theme: ui.theme,
+							selectedEmphasis: "minimal",
+						},
+					);
+				} catch (error) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					await select<ExperimentalSettingsAction>(
+						[
+							{
+								label: message,
+								value: { type: "back" },
+								disabled: true,
+								hideUnavailableSuffix: true,
+								color: "yellow",
+							},
+							{
+								label: UI_COPY.settings.back,
+								value: { type: "back" },
+								color: "red",
+							},
+						],
+						{
+							message: UI_COPY.settings.experimentalTitle,
+							subtitle: UI_COPY.settings.experimentalSubtitle,
+							help: UI_COPY.settings.experimentalHelpStatus,
+							clearScreen: true,
+							theme: ui.theme,
+							selectedEmphasis: "minimal",
+						},
+					);
+				}
+			} finally {
+				prompt.close();
+			}
+			continue;
+		}
+
+		const source = await loadAccounts();
+		const targetState = await loadExperimentalSyncTarget();
+		if (targetState.kind === "error") {
+			await select<ExperimentalSettingsAction>(
+				[
+					{
+						label: targetState.message,
+						value: { type: "back" },
+						disabled: true,
+						hideUnavailableSuffix: true,
+						color: "yellow",
+					},
+					{
+						label: UI_COPY.settings.back,
+						value: { type: "back" },
+						color: "red",
+					},
+				],
+				{
+					message: UI_COPY.settings.experimentalTitle,
+					subtitle: UI_COPY.settings.experimentalSubtitle,
+					help: UI_COPY.settings.experimentalHelpStatus,
+					clearScreen: true,
+					theme: ui.theme,
+					selectedEmphasis: "minimal",
+				},
+			);
+			continue;
+		}
+		const plan = await planOcChatgptSync({
+			source,
+			destination:
+				targetState.kind === "target" ? targetState.destination : null,
+			dependencies:
+				targetState.kind === "target"
+					? { detectTarget: () => targetState.detection }
+					: undefined,
+		});
+		if (plan.kind !== "ready") {
+			await select<ExperimentalSettingsAction>(
+				[
+					{
+						label:
+							plan.kind === "blocked-ambiguous"
+								? `Sync blocked: ${plan.detection.reason}`
+								: `Sync unavailable: ${plan.detection.reason}`,
+						value: { type: "back" },
+						disabled: true,
+						hideUnavailableSuffix: true,
+						color: "yellow",
+					},
+					{
+						label: UI_COPY.settings.back,
+						value: { type: "back" },
+						color: "red",
+					},
+				],
+				{
+					message: UI_COPY.settings.experimentalTitle,
+					subtitle: UI_COPY.settings.experimentalSubtitle,
+					help: UI_COPY.settings.experimentalHelpStatus,
+					clearScreen: true,
+					theme: ui.theme,
+					selectedEmphasis: "minimal",
+				},
+			);
+			continue;
+		}
+
+		const review = await select<ExperimentalSettingsAction>(
+			[
+				{
+					label: `Preview: add ${plan.preview.toAdd.length} | update ${plan.preview.toUpdate.length} | skip ${plan.preview.toSkip.length}`,
+					value: { type: "back" },
+					disabled: true,
+					hideUnavailableSuffix: true,
+					color: "green",
+				},
+				{
+					label: `Preserve destination-only: ${plan.preview.unchangedDestinationOnly.length}`,
+					value: { type: "back" },
+					disabled: true,
+					hideUnavailableSuffix: true,
+					color: "green",
+				},
+				{
+					label: `Active selection: ${plan.preview.activeSelectionBehavior}`,
+					value: { type: "back" },
+					disabled: true,
+					hideUnavailableSuffix: true,
+					color: "green",
+				},
+				{
+					label: UI_COPY.settings.experimentalApplySync,
+					value: { type: "apply" },
+					color: "green",
+				},
+				{
+					label: UI_COPY.settings.backNoSave,
+					value: { type: "back" },
+					color: "red",
+				},
+			],
+			{
+				message: UI_COPY.settings.experimentalTitle,
+				subtitle: UI_COPY.settings.experimentalSubtitle,
+				help: UI_COPY.settings.experimentalHelpStatus,
+				clearScreen: true,
+				theme: ui.theme,
+				selectedEmphasis: "minimal",
+				onInput: (raw) => {
+					const lower = raw.toLowerCase();
+					if (lower === "q") return { type: "back" };
+					if (lower === "a") return { type: "apply" };
+					return undefined;
+				},
+			},
+		);
+		if (!review || review.type === "back") continue;
+
+		const applied = await applyOcChatgptSync({
+			source,
+			destination:
+				targetState.kind === "target" ? targetState.destination : undefined,
+			dependencies:
+				targetState.kind === "target"
+					? { detectTarget: () => targetState.detection }
+					: undefined,
+		});
+		await select<ExperimentalSettingsAction>(
+			[
+				{
+					label:
+						applied.kind === "applied"
+							? `Applied sync to ${applied.target.accountPath}`
+							: applied.kind === "error"
+								? applied.error instanceof Error
+									? applied.error.message
+									: String(applied.error)
+								: "Sync did not apply",
+					value: { type: "back" },
+					disabled: true,
+					hideUnavailableSuffix: true,
+					color: applied.kind === "applied" ? "green" : "yellow",
+				},
+				{ label: UI_COPY.settings.back, value: { type: "back" }, color: "red" },
+			],
+			{
+				message: UI_COPY.settings.experimentalTitle,
+				subtitle: UI_COPY.settings.experimentalSubtitle,
+				help: UI_COPY.settings.experimentalHelpStatus,
+				clearScreen: true,
+				theme: ui.theme,
+				selectedEmphasis: "minimal",
+			},
+		);
 	}
 }
 
@@ -2798,6 +3219,11 @@ async function promptSettingsHub(
 			label: UI_COPY.settings.advancedTitle,
 			value: { type: "back" },
 			kind: "heading",
+		},
+		{
+			label: UI_COPY.settings.experimental,
+			value: { type: "experimental" },
+			color: "yellow",
 		},
 		{
 			label: UI_COPY.settings.backend,
@@ -2882,6 +3308,18 @@ async function configureUnifiedSettings(
 					"theme",
 				);
 				applyUiThemeFromDashboardSettings(current);
+			}
+			continue;
+		}
+		if (action.type === "experimental") {
+			const selected = await promptExperimentalSettings(backendConfig);
+			if (selected && !backendSettingsEqual(backendConfig, selected)) {
+				backendConfig = await persistBackendConfigSelection(
+					selected,
+					"experimental",
+				);
+			} else if (selected) {
+				backendConfig = selected;
 			}
 			continue;
 		}

@@ -2,8 +2,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DashboardDisplaySettings } from "../lib/dashboard-settings.js";
+import {
+	type DashboardDisplaySettings,
+	type DashboardStatuslineField,
+	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+} from "../lib/dashboard-settings.js";
 import type { PluginConfig } from "../lib/types.js";
+import {
+	getUiRuntimeOptions,
+	resetUiRuntimeOptions,
+	setUiRuntimeOptions,
+} from "../lib/ui/runtime.js";
+import type { MenuItem } from "../lib/ui/select.js";
 
 type SettingsHubTestApi = {
 	buildSyncCenterOverview: (
@@ -53,6 +63,12 @@ type SettingsHubTestApi = {
 		settings: DashboardDisplaySettings,
 	) => DashboardDisplaySettings;
 	withQueuedRetry: <T>(pathKey: string, task: () => Promise<T>) => Promise<T>;
+	loadExperimentalSyncTarget: () => Promise<
+		| { kind: "blocked-ambiguous"; detection: unknown }
+		| { kind: "blocked-none"; detection: unknown }
+		| { kind: "error"; message: string }
+		| { kind: "target"; detection: unknown; destination: unknown }
+	>;
 	persistDashboardSettingsSelection: (
 		selected: DashboardDisplaySettings,
 		keys: ReadonlyArray<string>,
@@ -62,7 +78,97 @@ type SettingsHubTestApi = {
 		selected: PluginConfig,
 		scope: string,
 	) => Promise<PluginConfig>;
+	buildAccountListPreview: (
+		settings: DashboardDisplaySettings,
+		ui: UiRuntimeOptions,
+		focus?: DashboardStatuslineField | string | null,
+	) => { label: string; hint: string };
+	buildSummaryPreviewText: (
+		settings: DashboardDisplaySettings,
+		ui: UiRuntimeOptions,
+		focus?: DashboardStatuslineField | string | null,
+	) => string;
+	normalizeStatuslineFields: (value: unknown) => DashboardStatuslineField[];
+	reorderField: (
+		fields: DashboardStatuslineField[],
+		key: DashboardStatuslineField,
+		direction: -1 | 1,
+	) => DashboardStatuslineField[];
+	promptDashboardDisplaySettings: (
+		initial: DashboardDisplaySettings,
+	) => Promise<DashboardDisplaySettings | null>;
+	promptStatuslineSettings: (
+		initial: DashboardDisplaySettings,
+	) => Promise<DashboardDisplaySettings | null>;
+	promptBehaviorSettings: (
+		initial: DashboardDisplaySettings,
+	) => Promise<DashboardDisplaySettings | null>;
+	promptThemeSettings: (
+		initial: DashboardDisplaySettings,
+	) => Promise<DashboardDisplaySettings | null>;
+	promptBackendSettings: (
+		initial: PluginConfig,
+	) => Promise<PluginConfig | null>;
+	promptExperimentalSettings: (
+		initial: PluginConfig,
+	) => Promise<PluginConfig | null>;
 };
+
+type UiRuntimeOptions = ReturnType<typeof getUiRuntimeOptions>;
+
+let selectQueue: unknown[] = [];
+let selectHandler: (
+	items: MenuItem<unknown>[],
+	options: unknown,
+) => Promise<unknown> = async () => {
+	throw new Error("Select handler not configured");
+};
+
+const originalStdinDescriptor = Object.getOwnPropertyDescriptor(
+	process.stdin,
+	"isTTY",
+);
+const originalStdoutDescriptor = Object.getOwnPropertyDescriptor(
+	process.stdout,
+	"isTTY",
+);
+
+function setStreamIsTTY(
+	stream: NodeJS.ReadStream | NodeJS.WriteStream,
+	value: boolean | undefined,
+): void {
+	Object.defineProperty(stream, "isTTY", {
+		configurable: true,
+		value,
+	});
+}
+
+function restoreStreamIsTTY(
+	stream: NodeJS.ReadStream | NodeJS.WriteStream,
+	descriptor: PropertyDescriptor | undefined,
+): void {
+	if (descriptor) {
+		Object.defineProperty(stream, "isTTY", descriptor);
+		return;
+	}
+
+	delete (stream as any).isTTY;
+}
+
+function queueSelectResults(...results: unknown[]): void {
+	selectQueue.push(...results);
+}
+
+vi.mock("../lib/ui/select.js", async () => {
+	const actual = await vi.importActual<typeof import("../lib/ui/select.js")>(
+		"../lib/ui/select.js",
+	);
+	return {
+		...actual,
+		select: (items: MenuItem<unknown>[], options: unknown) =>
+			selectHandler(items, options),
+	};
+});
 
 let tempRoot = "";
 const originalCodeHome = process.env.CODEX_HOME;
@@ -83,6 +189,17 @@ beforeEach(() => {
 		"plugin-config.json",
 	);
 	vi.resetModules();
+	selectQueue = [];
+	selectHandler = async () => {
+		const next = selectQueue.shift();
+		if (next === undefined) {
+			throw new Error("No select result queued");
+		}
+		return next;
+	};
+	setStreamIsTTY(process.stdin, true);
+	setStreamIsTTY(process.stdout, true);
+	resetUiRuntimeOptions();
 });
 
 afterEach(() => {
@@ -106,11 +223,22 @@ afterEach(() => {
 	} else {
 		process.env.CODEX_MULTI_AUTH_CONFIG_PATH = originalConfigPath;
 	}
+	restoreStreamIsTTY(process.stdin, originalStdinDescriptor);
+	restoreStreamIsTTY(process.stdout, originalStdoutDescriptor);
 });
 
 describe("settings-hub utility coverage", () => {
 	it("clamps backend numeric settings by option bounds", async () => {
 		const api = await loadSettingsHubTestApi();
+		expect(api.clampBackendNumber("liveAccountSyncDebounceMs", 1)).toBe(50);
+		expect(api.clampBackendNumber("sessionAffinityMaxEntries", 9_999)).toBe(
+			4_096,
+		);
+		expect(
+			api.clampBackendNumber("preemptiveQuotaRemainingPercent5h", -5),
+		).toBe(0);
+		expect(api.clampBackendNumber("tokenRefreshSkewMs", 999_999)).toBe(600_000);
+		expect(api.clampBackendNumber("parallelProbingMaxConcurrency", 0)).toBe(1);
 		expect(api.clampBackendNumber("fetchTimeoutMs", 250)).toBe(1_000);
 		expect(api.clampBackendNumber("fetchTimeoutMs", 999_999)).toBe(600_000);
 		expect(() => api.clampBackendNumber("unknown-setting", 5)).toThrow(
@@ -257,6 +385,20 @@ describe("settings-hub utility coverage", () => {
 		expect(attempts).toBe(3);
 	});
 
+	it("propagates non-retryable filesystem errors immediately", async () => {
+		const api = await loadSettingsHubTestApi();
+		let attempts = 0;
+		await expect(
+			api.withQueuedRetry("settings-path-enoent", async () => {
+				attempts += 1;
+				const error = new Error("not found") as NodeJS.ErrnoException;
+				error.code = "ENOENT";
+				throw error;
+			}),
+		).rejects.toThrow("not found");
+		expect(attempts).toBe(1);
+	});
+
 	it("serializes concurrent writes for the same path key", async () => {
 		const api = await loadSettingsHubTestApi();
 		const order: string[] = [];
@@ -397,5 +539,253 @@ describe("settings-hub utility coverage", () => {
 		const reloaded = freshConfigModule.loadPluginConfig();
 		expect(reloaded.fetchTimeoutMs).toBe(12_345);
 		expect(reloaded.streamStallTimeoutMs).toBe(23_456);
+	});
+
+	it("applies representative backend prompt edits across all current categories", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+
+		queueSelectResults(
+			{ type: "open-category", key: "session-sync" },
+			{ type: "toggle", key: "liveAccountSync" },
+			{ type: "bump", key: "liveAccountSyncDebounceMs", direction: 1 },
+			{ type: "back" },
+			{ type: "open-category", key: "rotation-quota" },
+			{ type: "toggle", key: "preemptiveQuotaEnabled" },
+			{
+				type: "bump",
+				key: "preemptiveQuotaRemainingPercent5h",
+				direction: 1,
+			},
+			{ type: "back" },
+			{ type: "open-category", key: "performance-timeouts" },
+			{ type: "toggle", key: "parallelProbing" },
+			{ type: "bump", key: "fetchTimeoutMs", direction: 1 },
+			{ type: "back" },
+			{ type: "save" },
+		);
+
+		const selected = await api.promptBackendSettings(defaults);
+		expect(selected).toEqual(
+			expect.objectContaining({
+				liveAccountSync: !(defaults.liveAccountSync ?? false),
+				liveAccountSyncDebounceMs: api.clampBackendNumber(
+					"liveAccountSyncDebounceMs",
+					(defaults.liveAccountSyncDebounceMs ?? 50) + 50,
+				),
+				preemptiveQuotaEnabled: !(defaults.preemptiveQuotaEnabled ?? false),
+				preemptiveQuotaRemainingPercent5h: api.clampBackendNumber(
+					"preemptiveQuotaRemainingPercent5h",
+					(defaults.preemptiveQuotaRemainingPercent5h ?? 0) + 1,
+				),
+				parallelProbing: !(defaults.parallelProbing ?? false),
+				fetchTimeoutMs: api.clampBackendNumber(
+					"fetchTimeoutMs",
+					(defaults.fetchTimeoutMs ?? 60_000) + 5_000,
+				),
+			}),
+		);
+	});
+
+	it("resets each backend category to defaults after category-specific drift", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+		const initial: PluginConfig = {
+			...defaults,
+			liveAccountSync: !(defaults.liveAccountSync ?? false),
+			liveAccountSyncDebounceMs: 0,
+			preemptiveQuotaEnabled: !(defaults.preemptiveQuotaEnabled ?? false),
+			preemptiveQuotaRemainingPercent5h: 999,
+			storageBackupEnabled: !(defaults.storageBackupEnabled ?? false),
+			tokenRefreshSkewMs: 0,
+			parallelProbing: !(defaults.parallelProbing ?? false),
+			fetchTimeoutMs: 999_999,
+		};
+
+		queueSelectResults(
+			{ type: "open-category", key: "session-sync" },
+			{ type: "reset-category" },
+			{ type: "back" },
+			{ type: "open-category", key: "rotation-quota" },
+			{ type: "reset-category" },
+			{ type: "back" },
+			{ type: "open-category", key: "refresh-recovery" },
+			{ type: "reset-category" },
+			{ type: "back" },
+			{ type: "open-category", key: "performance-timeouts" },
+			{ type: "reset-category" },
+			{ type: "back" },
+			{ type: "save" },
+		);
+
+		const selected = await api.promptBackendSettings(initial);
+		expect(selected).toEqual(
+			expect.objectContaining({
+				liveAccountSync: defaults.liveAccountSync,
+				liveAccountSyncDebounceMs: defaults.liveAccountSyncDebounceMs,
+				preemptiveQuotaEnabled: defaults.preemptiveQuotaEnabled,
+				preemptiveQuotaRemainingPercent5h:
+					defaults.preemptiveQuotaRemainingPercent5h,
+				storageBackupEnabled: defaults.storageBackupEnabled,
+				tokenRefreshSkewMs: defaults.tokenRefreshSkewMs,
+				parallelProbing: defaults.parallelProbing,
+				fetchTimeoutMs: defaults.fetchTimeoutMs,
+			}),
+		);
+	});
+	it("returns null for promptBackendSettings cancel without mutating runtime state", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		queueSelectResults({ type: "cancel" });
+		const selected = await api.promptBackendSettings({
+			...configModule.getDefaultPluginConfig(),
+			fetchTimeoutMs: 12_345,
+		});
+		expect(selected).toBeNull();
+	});
+
+	describe("settings-hub preview helpers", () => {
+		it("builds account preview hint with details info", async () => {
+			const api = await loadSettingsHubTestApi();
+			const ui = getUiRuntimeOptions();
+			const settings: DashboardDisplaySettings = {
+				...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+				menuLayoutMode: "expanded-rows",
+				menuShowQuotaSummary: false,
+			};
+			const preview = api.buildAccountListPreview(settings, ui, "menuSortMode");
+			expect(preview.label).toContain("demo@example.com");
+			expect(preview.hint).toContain("details shown on all rows");
+		});
+
+		it("renders summary text with a highlighted status note", async () => {
+			const api = await loadSettingsHubTestApi();
+			const ui = getUiRuntimeOptions();
+			const summary = api.buildSummaryPreviewText(
+				{
+					...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+					menuShowStatusBadge: false,
+					menuStatuslineFields: ["status"],
+				},
+				ui,
+				"status",
+			);
+			expect(summary).toContain("status:");
+		});
+
+		it("normalizes and reorders statusline fields", async () => {
+			const api = await loadSettingsHubTestApi();
+			const normalized = api.normalizeStatuslineFields([
+				"limits",
+				"status",
+				"status",
+			] as DashboardStatuslineField[]);
+			expect(normalized).toEqual(["limits", "status"]);
+			const reordered = api.reorderField(normalized, "status", -1);
+			expect(reordered).toEqual(["status", "limits"]);
+		});
+	});
+
+	describe("settings-hub prompt helpers for non-backend panels", () => {
+		it("toggles account list option before saving", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "toggle", key: "menuShowStatusBadge" },
+				{ type: "save" },
+			);
+			const selected = await api.promptDashboardDisplaySettings({
+				...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+			});
+			expect(selected?.menuShowStatusBadge).toBe(false);
+		});
+
+		it("reorders summary fields in the prompt", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults({ type: "move-up", key: "status" }, { type: "save" });
+			const selected = await api.promptStatuslineSettings({
+				...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+				menuStatuslineFields: ["last-used", "limits", "status"],
+			});
+			expect(selected?.menuStatuslineFields).toEqual([
+				"last-used",
+				"status",
+				"limits",
+			]);
+		});
+
+		it("toggles behavior settings before returning the draft", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults({ type: "toggle-pause" }, { type: "save" });
+			const selected = await api.promptBehaviorSettings({
+				...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+			});
+			expect(selected?.actionPauseOnKey).toBe(false);
+		});
+
+		it("restores theme baseline when the prompt is cancelled", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults({ type: "cancel" });
+			setUiRuntimeOptions({ palette: "cyan", accent: "green" });
+			const runtimeModule = await import("../lib/ui/runtime.js");
+			const setSpy = vi.spyOn(runtimeModule, "setUiRuntimeOptions");
+			await expect(
+				api.promptThemeSettings({
+					...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+					uiThemePreset: "blue",
+					uiAccentColor: "yellow",
+				}),
+			).resolves.toBeNull();
+			expect(setSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					palette: "blue",
+					accent: "yellow",
+				}),
+			);
+			setSpy.mockRestore();
+		});
+
+		it("retries experimental target reads for retryable filesystem errors", async () => {
+			vi.doMock("../lib/oc-chatgpt-target-detection.js", () => ({
+				detectOcChatgptMultiAuthTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: tempRoot,
+						accountPath: join(tempRoot, "openai-codex-accounts.json"),
+						backupRoot: join(tempRoot, "backups"),
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+			}));
+			const nodeFs = await import("node:fs");
+			const busyError = new Error("busy") as NodeJS.ErrnoException;
+			busyError.code = "EBUSY";
+			const readSpy = vi
+				.spyOn(nodeFs.promises, "readFile")
+				.mockRejectedValueOnce(busyError)
+				.mockResolvedValueOnce(
+					JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+				);
+			const api = await loadSettingsHubTestApi();
+			const result = await api.loadExperimentalSyncTarget();
+			expect(result.kind).toBe("target");
+			expect(readSpy).toHaveBeenCalledTimes(2);
+			readSpy.mockRestore();
+		});
+
+		it("decreases experimental refresh interval down to the configured minimum", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "decrease-refresh-interval" },
+				{ type: "save" },
+			);
+			const selected = await api.promptExperimentalSettings({
+				proactiveRefreshIntervalMs: 30_000,
+			});
+			expect(selected?.proactiveRefreshIntervalMs).toBe(60_000);
+		});
 	});
 });

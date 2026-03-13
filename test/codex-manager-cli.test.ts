@@ -18,7 +18,7 @@ const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const previewCodexCliSyncMock = vi.fn();
-const syncAccountStorageFromCodexCliMock = vi.fn();
+const applyCodexCliSyncToStorageMock = vi.fn();
 const commitPendingCodexCliSyncRunMock = vi.fn();
 const commitCodexCliSyncRunFailureMock = vi.fn();
 const getLastCodexCliSyncRunMock = vi.fn();
@@ -29,9 +29,13 @@ const isCodexCliSyncEnabledMock = vi.fn(() => true);
 const loadCodexCliStateMock = vi.fn();
 const getLastLiveAccountSyncSnapshotMock = vi.fn();
 const selectMock = vi.fn();
-const deleteSavedAccountsMock = vi.fn();
-const resetLocalStateMock = vi.fn();
-const deleteAccountAtIndexMock = vi.fn();
+const planOcChatgptSyncMock = vi.fn();
+const applyOcChatgptSyncMock = vi.fn();
+const runNamedBackupExportMock = vi.fn();
+const exportNamedBackupMock = vi.fn();
+const promptQuestionMock = vi.fn();
+const detectOcChatgptMultiAuthTargetMock = vi.fn();
+const normalizeAccountStorageMock = vi.fn((value) => value);
 let storageBackupEnabledState = true;
 const setStorageBackupEnabledMock = vi.fn((enabled: boolean) => {
 	storageBackupEnabledState = enabled;
@@ -106,6 +110,8 @@ vi.mock("../lib/storage.js", () => ({
 	setStoragePath: setStoragePathMock,
 	setStorageBackupEnabled: setStorageBackupEnabledMock,
 	getStoragePath: getStoragePathMock,
+	exportNamedBackup: exportNamedBackupMock,
+	normalizeAccountStorage: normalizeAccountStorageMock,
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -117,11 +123,11 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
 }));
 
 vi.mock("../lib/codex-cli/sync.js", () => ({
+	applyCodexCliSyncToStorage: applyCodexCliSyncToStorageMock,
 	commitCodexCliSyncRunFailure: commitCodexCliSyncRunFailureMock,
 	commitPendingCodexCliSyncRun: commitPendingCodexCliSyncRunMock,
 	getLastCodexCliSyncRun: getLastCodexCliSyncRunMock,
 	previewCodexCliSync: previewCodexCliSyncMock,
-	syncAccountStorageFromCodexCli: syncAccountStorageFromCodexCliMock,
 }));
 
 vi.mock("../lib/codex-cli/state.js", () => ({
@@ -173,29 +179,25 @@ vi.mock("../lib/quota-cache.js", () => ({
 	saveQuotaCache: saveQuotaCacheMock,
 }));
 
-vi.mock("../lib/destructive-actions.js", () => ({
-	DESTRUCTIVE_ACTION_COPY: {
-		deleteSavedAccounts: {
-			label: "Delete Saved Accounts",
-			stage: "Deleting saved accounts only",
-			completed:
-				"Deleted saved accounts. Saved accounts deleted; flagged/problem accounts, settings, and Codex CLI sync state kept.",
-		},
-		resetLocalState: {
-			label: "Reset Local State",
-			stage:
-				"Clearing saved accounts, flagged/problem accounts, and quota cache",
-			completed:
-				"Reset local state. Saved accounts, flagged/problem accounts, and quota cache cleared; settings and Codex CLI sync state kept.",
-		},
-	},
-	deleteSavedAccounts: deleteSavedAccountsMock,
-	resetLocalState: resetLocalStateMock,
-	deleteAccountAtIndex: deleteAccountAtIndexMock,
-}));
-
 vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
+}));
+
+vi.mock("../lib/oc-chatgpt-orchestrator.js", () => ({
+	planOcChatgptSync: planOcChatgptSyncMock,
+	applyOcChatgptSync: applyOcChatgptSyncMock,
+	runNamedBackupExport: runNamedBackupExportMock,
+}));
+
+vi.mock("../lib/oc-chatgpt-target-detection.js", () => ({
+	detectOcChatgptMultiAuthTarget: detectOcChatgptMultiAuthTargetMock,
+}));
+
+vi.mock("node:readline/promises", () => ({
+	createInterface: vi.fn(() => ({
+		question: promptQuestionMock,
+		close: vi.fn(),
+	})),
 }));
 
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(
@@ -251,6 +253,190 @@ function makeErrnoError(message: string, code: string): NodeJS.ErrnoException {
 	return error;
 }
 
+type SettingsTestAccount = {
+	email: string;
+	accountId: string;
+	refreshToken: string;
+	accessToken: string;
+	expiresAt: number;
+	addedAt: number;
+	lastUsed: number;
+	enabled: boolean;
+};
+
+type SettingsTestStorage = {
+	version: 3;
+	activeIndex: number;
+	activeIndexByFamily: { codex: number };
+	accounts: SettingsTestAccount[];
+};
+
+type SettingsSelectOptions = {
+	onInput?: (raw: string, state?: SettingsSelectInputState) => unknown;
+};
+
+type SettingsSelectInputState = {
+	cursor: number;
+	items: unknown[];
+	requestRerender: () => void;
+};
+
+type SettingsSelectSequenceStep =
+	| Record<string, unknown>
+	| ((options?: SettingsSelectOptions) => unknown);
+
+type SettingsHubMenuItem = {
+	value: { type: string };
+	separator?: boolean;
+	disabled?: boolean;
+	kind?: string;
+};
+
+const SETTINGS_HUB_MENU_ORDER = [
+	"account-list",
+	"sync-center",
+	"summary-fields",
+	"behavior",
+	"theme",
+	"experimental",
+	"backend",
+] as const;
+
+const BASELINE_SETTINGS_HUB_PANELS = [
+	"account-list",
+	"summary-fields",
+	"behavior",
+	"theme",
+	"backend",
+] as const;
+
+const SETTINGS_CANCEL_MODES = [
+	"windows-ebusy",
+	"concurrent-save-ordering",
+	"token-refresh-race",
+] as const;
+
+const SETTINGS_CANCEL_MATRIX = SETTINGS_CANCEL_MODES.flatMap((mode) =>
+	BASELINE_SETTINGS_HUB_PANELS.map((panel) => ({ panel, mode }) as const),
+);
+
+type SettingsPanel = (typeof BASELINE_SETTINGS_HUB_PANELS)[number];
+
+function createSettingsStorage(
+	now: number,
+	overrides: Partial<SettingsTestAccount> = {},
+): SettingsTestStorage {
+	return {
+		version: 3,
+		activeIndex: 0,
+		activeIndexByFamily: { codex: 0 },
+		accounts: [
+			{
+				email: "settings@example.com",
+				accountId: "acc_settings",
+				refreshToken: "refresh-settings",
+				accessToken: "access-settings",
+				expiresAt: now + 3_600_000,
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+				enabled: true,
+				...overrides,
+			},
+		],
+	};
+}
+
+function setupInteractiveSettingsLogin(storage: SettingsTestStorage): void {
+	setInteractiveTTY(true);
+	loadAccountsMock.mockImplementation(async () => structuredClone(storage));
+	promptLoginModeMock
+		.mockResolvedValueOnce({ mode: "settings" })
+		.mockResolvedValueOnce({ mode: "cancel" });
+}
+
+function queueSettingsSelectSequence(
+	steps: readonly SettingsSelectSequenceStep[],
+): { remaining: () => number } {
+	const queue = [...steps];
+	selectMock.mockImplementation(async (_items, options) => {
+		const next = queue.shift();
+		if (!next) return { type: "back" };
+		if (typeof next === "function") {
+			return next(options as SettingsSelectOptions | undefined);
+		}
+		return structuredClone(next);
+	});
+	return { remaining: () => queue.length };
+}
+
+function triggerSettingsHotkey(
+	raw: string,
+	fallback: Record<string, unknown> = { type: "cancel" },
+	inputState: Partial<SettingsSelectInputState> = {},
+): SettingsSelectSequenceStep {
+	return (options) =>
+		options?.onInput?.(raw, {
+			cursor: inputState.cursor ?? 0,
+			items: inputState.items ?? [],
+			requestRerender: inputState.requestRerender ?? (() => undefined),
+		}) ?? fallback;
+}
+
+function createSettingsCancelSequence(
+	panel: SettingsPanel,
+): readonly SettingsSelectSequenceStep[] {
+	if (panel === "account-list") {
+		return [
+			{ type: panel },
+			{ type: "toggle", key: "menuShowStatusBadge" },
+			triggerSettingsHotkey("q"),
+			{ type: "back" },
+		];
+	}
+	if (panel === "summary-fields") {
+		return [
+			{ type: panel },
+			{ type: "toggle", key: "status" },
+			triggerSettingsHotkey("q"),
+			{ type: "back" },
+		];
+	}
+	if (panel === "behavior") {
+		return [
+			{ type: panel },
+			{ type: "toggle-pause" },
+			triggerSettingsHotkey("q"),
+			{ type: "back" },
+		];
+	}
+	if (panel === "theme") {
+		return [
+			{ type: panel },
+			{ type: "set-palette", palette: "blue" },
+			triggerSettingsHotkey("q"),
+			{ type: "back" },
+		];
+	}
+	return [
+		{ type: panel },
+		{ type: "open-category", key: "rotation-quota" },
+		{ type: "toggle", key: "preemptiveQuotaEnabled" },
+		{ type: "back" },
+		triggerSettingsHotkey("q"),
+		{ type: "back" },
+	];
+}
+
+function readSettingsHubPanelContract(): string[] {
+	const items = (selectMock.mock.calls[0]?.[0] ?? []) as SettingsHubMenuItem[];
+	return items
+		.filter(
+			(item) => !item.separator && !item.disabled && item.kind !== "heading",
+		)
+		.map((item) => item.value.type)
+		.filter((type) => type !== "back");
+}
+
 describe("codex manager cli commands", () => {
 	beforeEach(() => {
 		vi.resetModules();
@@ -271,7 +457,7 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		previewCodexCliSyncMock.mockReset();
-		syncAccountStorageFromCodexCliMock.mockReset();
+		applyCodexCliSyncToStorageMock.mockReset();
 		commitPendingCodexCliSyncRunMock.mockReset();
 		commitCodexCliSyncRunFailureMock.mockReset();
 		getLastCodexCliSyncRunMock.mockReset();
@@ -282,11 +468,17 @@ describe("codex manager cli commands", () => {
 		loadCodexCliStateMock.mockReset();
 		getLastLiveAccountSyncSnapshotMock.mockReset();
 		selectMock.mockReset();
+		planOcChatgptSyncMock.mockReset();
+		applyOcChatgptSyncMock.mockReset();
+		runNamedBackupExportMock.mockReset();
+		exportNamedBackupMock.mockReset();
+		promptQuestionMock.mockReset();
+		detectOcChatgptMultiAuthTargetMock.mockReset();
+		normalizeAccountStorageMock.mockReset();
+		normalizeAccountStorageMock.mockImplementation((value) => value);
 		setStorageBackupEnabledMock.mockClear();
 		isStorageBackupEnabledMock.mockClear();
 		storageBackupEnabledState = true;
-		deleteAccountAtIndexMock.mockReset();
-		deleteAccountAtIndexMock.mockResolvedValue(null);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -341,7 +533,7 @@ describe("codex manager cli commands", () => {
 			},
 			lastSync: null,
 		});
-		syncAccountStorageFromCodexCliMock.mockResolvedValue({
+		applyCodexCliSyncToStorageMock.mockResolvedValue({
 			changed: false,
 			storage: null,
 			pendingRun: null,
@@ -360,6 +552,23 @@ describe("codex manager cli commands", () => {
 			errorCount: 0,
 		});
 		selectMock.mockResolvedValue(undefined);
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "blocked-none",
+			detection: { kind: "none", reason: "No oc-chatgpt target found." },
+		});
+		applyOcChatgptSyncMock.mockResolvedValue({
+			kind: "blocked-none",
+			detection: { kind: "none", reason: "No oc-chatgpt target found." },
+		});
+		runNamedBackupExportMock.mockResolvedValue({
+			kind: "exported",
+			path: "/mock/backups/demo.json",
+		});
+		promptQuestionMock.mockResolvedValue("demo");
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({
+			kind: "none",
+			reason: "No oc-chatgpt target found.",
+		});
 		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
@@ -1544,31 +1753,10 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("drives interactive settings hub across sections and persists dashboard/backend changes", async () => {
-		setInteractiveTTY(true);
 		const now = Date.now();
-		const storage = {
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "settings@example.com",
-					accountId: "acc_settings",
-					refreshToken: "refresh-settings",
-					accessToken: "access-settings",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		};
-		loadAccountsMock.mockImplementation(async () => structuredClone(storage));
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
 
-		const selectResults: Array<Record<string, unknown>> = [
+		const selectSequence = queueSettingsSelectSequence([
 			{ type: "account-list" },
 			{ type: "toggle", key: "menuShowStatusBadge" },
 			{ type: "cycle-sort-mode" },
@@ -1595,15 +1783,15 @@ describe("codex manager cli commands", () => {
 			{ type: "back" },
 			{ type: "save" },
 			{ type: "back" },
-		];
-		selectMock.mockImplementation(
-			async () => selectResults.shift() ?? { type: "back" },
-		);
+		]);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 		expect(exitCode).toBe(0);
-		expect(selectResults).toHaveLength(0);
+		expect(readSettingsHubPanelContract()).toEqual(
+			SETTINGS_HUB_MENU_ORDER,
+		);
+		expect(selectSequence.remaining()).toBe(0);
 		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalled();
 		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
@@ -1614,193 +1802,195 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("shows sync-center source/runtime context and keeps apply one-way", async () => {
-		setInteractiveTTY(true);
+	it("shows experimental settings in the settings hub", async () => {
 		const now = Date.now();
-		const storage = {
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "sync@example.com",
-					accountId: "acc_sync",
-					refreshToken: "refresh-sync",
-					accessToken: "access-sync",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		};
-		loadAccountsMock.mockResolvedValue(storage);
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
-		loadCodexCliStateMock
-			.mockResolvedValueOnce({
-				path: "/mock/codex/accounts.json",
-				accounts: [
-					{
-						accountId: "acc_sync",
-						email: "sync@example.com",
-						accessToken: "access-sync",
-						refreshToken: "refresh-sync",
-					},
-				],
-				activeAccountId: "acc_sync",
-			})
-			.mockResolvedValueOnce({
-				path: "/mock/codex/accounts.json",
-				accounts: [
-					{
-						accountId: "acc_sync",
-						email: "sync@example.com",
-						accessToken: "access-sync",
-						refreshToken: "refresh-sync",
-					},
-				],
-				activeAccountId: "acc_sync",
-			});
-		getLastLiveAccountSyncSnapshotMock.mockReturnValue({
-			path: "/mock/openai-codex-accounts.json",
-			running: true,
-			lastKnownMtimeMs: now,
-			lastSyncAt: now,
-			reloadCount: 2,
-			errorCount: 0,
-		});
-		previewCodexCliSyncMock
-			.mockResolvedValueOnce({
-				status: "ready",
-				statusDetail:
-					"Preview ready: 1 add, 0 update, 1 destination-only preserved.",
-				sourcePath: "/mock/codex/accounts.json",
-				targetPath: "/mock/openai-codex-accounts.json",
-				summary: {
-					sourceAccountCount: 1,
-					targetAccountCountBefore: 1,
-					targetAccountCountAfter: 2,
-					addedAccountCount: 1,
-					updatedAccountCount: 0,
-					unchangedAccountCount: 0,
-					destinationOnlyPreservedCount: 1,
-					selectionChanged: true,
-				},
-				backup: {
-					enabled: true,
-					targetPath: "/mock/openai-codex-accounts.json",
-					rollbackPaths: [
-						"/mock/openai-codex-accounts.json.bak",
-						"/mock/openai-codex-accounts.json.wal",
-					],
-				},
-				lastSync: {
-					outcome: "changed",
-					runAt: now - 60_000,
-				},
-			})
-			.mockResolvedValueOnce({
-				status: "noop",
-				statusDetail: "Target already matches the current one-way sync result.",
-				sourcePath: "/mock/codex/accounts.json",
-				targetPath: "/mock/openai-codex-accounts.json",
-				summary: {
-					sourceAccountCount: 1,
-					targetAccountCountBefore: 2,
-					targetAccountCountAfter: 2,
-					addedAccountCount: 0,
-					updatedAccountCount: 0,
-					unchangedAccountCount: 1,
-					destinationOnlyPreservedCount: 1,
-					selectionChanged: false,
-				},
-				backup: {
-					enabled: true,
-					targetPath: "/mock/openai-codex-accounts.json",
-					rollbackPaths: [
-						"/mock/openai-codex-accounts.json.bak",
-						"/mock/openai-codex-accounts.json.wal",
-					],
-				},
-				lastSync: {
-					outcome: "noop",
-					runAt: now,
-				},
-			});
-		syncAccountStorageFromCodexCliMock.mockResolvedValueOnce({
-			changed: true,
-			storage: {
-				...storage,
-				accounts: [
-					...storage.accounts,
-					{
-						email: "codex@example.com",
-						accountId: "acc_codex",
-						refreshToken: "refresh-codex",
-						addedAt: now,
-						lastUsed: now,
-					},
-				],
-			},
-			pendingRun: {
-				revision: 1,
-				run: {
-					outcome: "changed",
-					runAt: now,
-					sourcePath: "/mock/codex/accounts.json",
-					targetPath: "/mock/openai-codex-accounts.json",
-					summary: {
-						sourceAccountCount: 1,
-						targetAccountCountBefore: 1,
-						targetAccountCountAfter: 2,
-						addedAccountCount: 1,
-						updatedAccountCount: 0,
-						unchangedAccountCount: 0,
-						destinationOnlyPreservedCount: 1,
-						selectionChanged: true,
-					},
-				},
-			},
-		});
-
-		let selectCall = 0;
-		selectMock.mockImplementation(async (items) => {
-			selectCall += 1;
-			if (selectCall === 1) return { type: "sync-center" };
-			if (selectCall === 2) {
-				const text = items
-					.map(
-						(item: { label?: string; hint?: string }) =>
-							`${item.label ?? ""}\n${item.hint ?? ""}`,
-					)
-					.join("\n");
-				expect(text).toContain("Target path: /mock/openai-codex-accounts.json");
-				expect(text).toContain("/mock/codex/accounts.json");
-				expect(text).toContain("/mock/codex/auth.json");
-				expect(text).toContain("/mock/codex/config.toml");
-				expect(text).toContain("Preview mode: read-only until apply");
-				expect(text).toContain(
-					"Selection precedence: accountId -> email -> preserve newer local choice",
-				);
-				expect(text).toContain("One-way sync never deletes accounts");
-				expect(text).toContain("Live watcher: running");
-				return { type: "apply" };
-			}
-			if (selectCall === 3) return { type: "back" };
-			return { type: "back" };
-		});
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		queueSettingsSelectSequence([{ type: "back" }]);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(syncAccountStorageFromCodexCliMock).toHaveBeenCalledTimes(1);
-		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledTimes(1);
-		expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
-		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(2);
+		expect(readSettingsHubPanelContract()).toEqual(SETTINGS_HUB_MENU_ORDER);
+	});
+
+	it("runs experimental oc sync with mandatory preview before apply", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({ kind: "target", descriptor: { scope: "global", root: "C:/target", accountPath: "C:/target/openai-codex-accounts.json", backupRoot: "C:/target/backups", source: "default-global", resolution: "accounts" } });
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "ready",
+			target: {
+				scope: "global",
+				root: "C:/target",
+				accountPath: "C:/target/openai-codex-accounts.json",
+				backupRoot: "C:/target/backups",
+				source: "default-global",
+				resolution: "accounts",
+			},
+			preview: {
+				payload: { version: 3, accounts: [], activeIndex: 0 },
+				merged: { version: 3, accounts: [], activeIndex: 0 },
+				toAdd: [{ refreshTokenLast4: "1234" }],
+				toUpdate: [],
+				toSkip: [],
+				unchangedDestinationOnly: [],
+				activeSelectionBehavior: "preserve-destination",
+			},
+			payload: { version: 3, accounts: [], activeIndex: 0 },
+			destination: null,
+		});
+		applyOcChatgptSyncMock.mockResolvedValue({
+			kind: "applied",
+			target: {
+				scope: "global",
+				root: "C:/target",
+				accountPath: "C:/target/openai-codex-accounts.json",
+				backupRoot: "C:/target/backups",
+				source: "default-global",
+				resolution: "accounts",
+			},
+			preview: { merged: { version: 3, accounts: [], activeIndex: 0 } },
+			merged: { version: 3, accounts: [], activeIndex: 0 },
+			destination: null,
+			persistedPath: "C:/target/openai-codex-accounts.json",
+		});
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "sync" },
+			{ type: "apply" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(applyOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(selectMock).toHaveBeenCalledWith(
+			expect.arrayContaining([
+				expect.objectContaining({ label: expect.stringContaining("Active selection: preserve-destination") }),
+			]),
+			expect.any(Object),
+		);
+	});
+
+	it("shows guidance when experimental oc sync target is ambiguous or unreadable", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({ kind: "target", descriptor: { scope: "global", root: "C:/target", accountPath: "C:/target/openai-codex-accounts.json", backupRoot: "C:/target/backups", source: "default-global", resolution: "accounts" } });
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "blocked-ambiguous",
+			detection: { kind: "ambiguous", reason: "multiple targets", candidates: [] },
+		});
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "sync" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(applyOcChatgptSyncMock).not.toHaveBeenCalled();
+	});
+
+
+	it("exports named pool backup from experimental settings", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		promptQuestionMock.mockResolvedValueOnce("backup-2026-03-10");
+		runNamedBackupExportMock.mockResolvedValueOnce({ kind: "exported", path: "/mock/backups/backup-2026-03-10.json" });
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "backup" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(promptQuestionMock).toHaveBeenCalledOnce();
+		expect(runNamedBackupExportMock).toHaveBeenCalledWith({ name: "backup-2026-03-10" });
+	});
+
+	it("rejects invalid or colliding experimental backup filenames", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		promptQuestionMock.mockResolvedValueOnce("../bad-name");
+		runNamedBackupExportMock.mockResolvedValueOnce({ kind: "collision", path: "/mock/backups/bad-name.json" });
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "backup" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(promptQuestionMock).toHaveBeenCalledOnce();
+		expect(runNamedBackupExportMock).toHaveBeenCalledWith({ name: "../bad-name" });
+	});
+
+	it("backs out of experimental sync preview without applying", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		detectOcChatgptMultiAuthTargetMock.mockReturnValue({ kind: "target", descriptor: { scope: "global", root: "C:/target", accountPath: "C:/target/openai-codex-accounts.json", backupRoot: "C:/target/backups", source: "default-global", resolution: "accounts" } });
+		normalizeAccountStorageMock.mockReturnValue({ version: 3, accounts: [], activeIndex: 0 });
+		planOcChatgptSyncMock.mockResolvedValue({
+			kind: "ready",
+			target: { scope: "global", root: "C:/target", accountPath: "C:/target/openai-codex-accounts.json", backupRoot: "C:/target/backups", source: "default-global", resolution: "accounts" },
+			preview: { payload: { version: 3, accounts: [], activeIndex: 0 }, merged: { version: 3, accounts: [], activeIndex: 0 }, toAdd: [], toUpdate: [], toSkip: [], unchangedDestinationOnly: [], activeSelectionBehavior: "preserve-destination" },
+			payload: { version: 3, accounts: [], activeIndex: 0 },
+			destination: { version: 3, accounts: [], activeIndex: 0 },
+		});
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "sync" },
+			{ type: "back" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(planOcChatgptSyncMock).toHaveBeenCalledOnce();
+		expect(applyOcChatgptSyncMock).not.toHaveBeenCalled();
+	});
+
+	it("cancels experimental backup prompt on blank or q input", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		promptQuestionMock.mockResolvedValueOnce("q");
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "backup" },
+			{ type: "back" },
+			{ type: "back" },
+		]);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(runNamedBackupExportMock).not.toHaveBeenCalled();
 	});
 
 	it("honors the disabled sync-center apply hotkey", async () => {
@@ -1845,7 +2035,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(syncAccountStorageFromCodexCliMock).not.toHaveBeenCalled();
+		expect(applyCodexCliSyncToStorageMock).not.toHaveBeenCalled();
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 	});
 
@@ -1919,7 +2109,7 @@ describe("codex manager cli commands", () => {
 				},
 				lastSync: null,
 			});
-		syncAccountStorageFromCodexCliMock.mockResolvedValueOnce({
+		applyCodexCliSyncToStorageMock.mockResolvedValueOnce({
 			changed: true,
 			storage: {
 				...storage,
@@ -1975,6 +2165,7 @@ describe("codex manager cli commands", () => {
 		expect(setStorageBackupEnabledMock).toHaveBeenNthCalledWith(2, true);
 		expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledTimes(1);
 		expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
+		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("surfaces sync-center save failures distinctly from reconcile failures", async () => {
@@ -2023,7 +2214,7 @@ describe("codex manager cli commands", () => {
 			},
 			lastSync: null,
 		});
-		syncAccountStorageFromCodexCliMock.mockResolvedValueOnce({
+		applyCodexCliSyncToStorageMock.mockResolvedValueOnce({
 			changed: true,
 			storage: {
 				...storage,
@@ -2083,11 +2274,8 @@ describe("codex manager cli commands", () => {
 			if (selectCall === 1) return { type: "sync-center" };
 			if (selectCall === 2) return { type: "apply" };
 			if (selectCall === 3) {
-				const text = items
-					.map(
-						(item: { label?: string; hint?: string }) =>
-							`${item.label ?? ""}\n${item.hint ?? ""}`,
-					)
+				const text = (items as Array<{ label?: string; hint?: string }>)
+					.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
 					.join("\n");
 				expect(text).toContain("Failed to save synced storage: busy");
 				return { type: "back" };
@@ -2105,192 +2293,374 @@ describe("codex manager cli commands", () => {
 		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(1);
 	});
 
-	it.each([
-		{ panel: "account-list", mode: "windows-ebusy" },
-		{ panel: "summary-fields", mode: "windows-ebusy" },
-		{ panel: "behavior", mode: "windows-ebusy" },
-		{ panel: "theme", mode: "windows-ebusy" },
-		{ panel: "backend", mode: "windows-ebusy" },
-		{ panel: "account-list", mode: "concurrent-save-ordering" },
-		{ panel: "summary-fields", mode: "concurrent-save-ordering" },
-		{ panel: "behavior", mode: "concurrent-save-ordering" },
-		{ panel: "theme", mode: "concurrent-save-ordering" },
-		{ panel: "backend", mode: "concurrent-save-ordering" },
-		{ panel: "account-list", mode: "token-refresh-race" },
-		{ panel: "summary-fields", mode: "token-refresh-race" },
-		{ panel: "behavior", mode: "token-refresh-race" },
-		{ panel: "theme", mode: "token-refresh-race" },
-		{ panel: "backend", mode: "token-refresh-race" },
-	] as const)("keeps no-save-on-cancel contract for panel=$panel mode=$mode", async ({
-		panel,
-		mode,
-	}) => {
-		setInteractiveTTY(true);
+	it("drives current settings panels through representative hotkeys and persists each section", async () => {
 		const now = Date.now();
-		let originalRuntimeTheme: {
-			v2Enabled: boolean;
-			colorProfile: string;
-			glyphMode: string;
-			palette: string;
-			accent: string;
-		} | null = null;
-		if (panel === "theme") {
-			const runtime = await import("../lib/ui/runtime.js");
-			runtime.resetUiRuntimeOptions();
-			const snapshot = runtime.getUiRuntimeOptions();
-			originalRuntimeTheme = {
-				v2Enabled: snapshot.v2Enabled,
-				colorProfile: snapshot.colorProfile,
-				glyphMode: snapshot.glyphMode,
-				palette: snapshot.palette,
-				accent: snapshot.accent,
-			};
-		}
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "cancel-settings@example.com",
-					accountId: "acc_cancel_settings",
-					refreshToken: "refresh-cancel-settings",
-					accessToken: "access-cancel-settings",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
+		setupInteractiveSettingsLogin(
+			createSettingsStorage(now, {
+				email: "hotkey-settings@example.com",
+				accountId: "acc_hotkey_settings",
+				refreshToken: "refresh-hotkey-settings",
+				accessToken: "access-hotkey-settings",
+			}),
+		);
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			actionAutoReturnMs: 2_000,
+			actionPauseOnKey: true,
+			menuAutoFetchLimits: true,
+			menuQuotaTtlMs: 300_000,
+			menuShowStatusBadge: true,
+			menuShowCurrentBadge: true,
+			menuShowLastUsed: true,
+			menuShowQuotaSummary: true,
+			menuShowQuotaCooldown: true,
+			menuShowFetchStatus: true,
+			menuHighlightCurrentRow: true,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+			menuStatuslineFields: ["last-used", "limits", "status"],
+			uiThemePreset: "green",
+			uiAccentColor: "green",
 		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
-
-		if (mode === "windows-ebusy") {
-			const busy = makeErrnoError("busy", "EBUSY");
-			saveDashboardDisplaySettingsMock.mockRejectedValue(busy);
-			savePluginConfigMock.mockRejectedValue(busy);
-		}
-		if (mode === "concurrent-save-ordering") {
-			const dashboardDeferred = createDeferred<void>();
-			const pluginDeferred = createDeferred<void>();
-			saveDashboardDisplaySettingsMock.mockImplementation(
-				async () => dashboardDeferred.promise,
-			);
-			savePluginConfigMock.mockImplementation(
-				async () => pluginDeferred.promise,
-			);
-			queueMicrotask(() => {
-				dashboardDeferred.resolve(undefined);
-				pluginDeferred.resolve(undefined);
-			});
-		}
-		if (mode === "token-refresh-race") {
-			const refreshDeferred = createDeferred<{
-				type: "success";
-				access: string;
-				refresh: string;
-				expires: number;
-			}>();
-			queuedRefreshMock.mockImplementation(async () => refreshDeferred.promise);
-			queueMicrotask(() => {
-				refreshDeferred.resolve({
-					type: "success",
-					access: "race-access",
-					refresh: "race-refresh",
-					expires: now + 3_600_000,
-				});
-			});
-		}
-
-		let selectCall = 0;
-		selectMock.mockImplementation(async (_items, options) => {
-			selectCall += 1;
-			const onInput = (
-				options as { onInput?: (raw: string) => unknown } | undefined
-			)?.onInput;
-			if (selectCall === 1) return { type: panel };
-
-			if (panel === "account-list") {
-				if (selectCall === 2)
-					return { type: "toggle", key: "menuShowStatusBadge" };
-				if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
-				return { type: "back" };
-			}
-			if (panel === "summary-fields") {
-				if (selectCall === 2) return { type: "toggle", key: "status" };
-				if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
-				return { type: "back" };
-			}
-			if (panel === "behavior") {
-				if (selectCall === 2) return { type: "toggle-pause" };
-				if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
-				return { type: "back" };
-			}
-			if (panel === "theme") {
-				if (selectCall === 2) return { type: "set-palette", palette: "blue" };
-				if (selectCall === 3) return onInput?.("q") ?? { type: "cancel" };
-				return { type: "back" };
-			}
-
-			if (selectCall === 2)
-				return { type: "open-category", key: "rotation-quota" };
-			if (selectCall === 3)
-				return { type: "toggle", key: "preemptiveQuotaEnabled" };
-			if (selectCall === 4) return { type: "back" };
-			if (selectCall === 5) return onInput?.("q") ?? { type: "cancel" };
-			return { type: "back" };
+		loadPluginConfigMock.mockReturnValue({
+			preemptiveQuotaEnabled: false,
+			preemptiveQuotaRemainingPercent5h: 40,
 		});
+
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "account-list" },
+			triggerSettingsHotkey("1"),
+			triggerSettingsHotkey("m"),
+			triggerSettingsHotkey("s"),
+			{ type: "summary-fields" },
+			triggerSettingsHotkey("]"),
+			triggerSettingsHotkey("s"),
+			{ type: "behavior" },
+			triggerSettingsHotkey("p"),
+			triggerSettingsHotkey("l"),
+			triggerSettingsHotkey("1"),
+			triggerSettingsHotkey("t"),
+			triggerSettingsHotkey("s"),
+			{ type: "theme" },
+			triggerSettingsHotkey("2"),
+			{ type: "set-accent", accent: "cyan" },
+			triggerSettingsHotkey("s"),
+			{ type: "backend" },
+			triggerSettingsHotkey("2"),
+			triggerSettingsHotkey("1"),
+			triggerSettingsHotkey("]"),
+			triggerSettingsHotkey("q", { type: "back" }),
+			triggerSettingsHotkey("s"),
+			{ type: "back" },
+		]);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
-		expect(savePluginConfigMock).not.toHaveBeenCalled();
-		if (panel === "theme") {
-			const runtime = await import("../lib/ui/runtime.js");
-			const restored = runtime.getUiRuntimeOptions();
-			expect({
-				v2Enabled: restored.v2Enabled,
-				colorProfile: restored.colorProfile,
-				glyphMode: restored.glyphMode,
-				palette: restored.palette,
-				accent: restored.accent,
-			}).toEqual(originalRuntimeTheme);
-		}
+		expect(readSettingsHubPanelContract()).toEqual(
+			SETTINGS_HUB_MENU_ORDER,
+		);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledTimes(4);
+		expect(saveDashboardDisplaySettingsMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				menuShowStatusBadge: false,
+				menuSortMode: "manual",
+			}),
+		);
+		expect(saveDashboardDisplaySettingsMock.mock.calls[1]?.[0]).toEqual(
+			expect.objectContaining({
+				menuStatuslineFields: ["limits", "last-used", "status"],
+			}),
+		);
+		expect(saveDashboardDisplaySettingsMock.mock.calls[2]?.[0]).toEqual(
+			expect.objectContaining({
+				actionPauseOnKey: false,
+				menuAutoFetchLimits: false,
+				actionAutoReturnMs: 1_000,
+				menuQuotaTtlMs: 600_000,
+			}),
+		);
+		expect(saveDashboardDisplaySettingsMock.mock.calls[3]?.[0]).toEqual(
+			expect.objectContaining({
+				uiThemePreset: "blue",
+				uiAccentColor: "cyan",
+			}),
+		);
+		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
+		expect(savePluginConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				preemptiveQuotaEnabled: true,
+				preemptiveQuotaRemainingPercent5h: 41,
+			}),
+		);
 	});
 
-	it("retries transient EBUSY dashboard save and keeps settings flow alive", async () => {
-		setInteractiveTTY(true);
-		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "retry-dashboard@example.com",
-					accountId: "acc_retry_dashboard",
-					refreshToken: "refresh-retry-dashboard",
-					accessToken: "access-retry-dashboard",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
 
-		selectMock
-			.mockResolvedValueOnce({ type: "behavior" })
-			.mockResolvedValueOnce({ type: "toggle-pause" })
-			.mockResolvedValueOnce({ type: "save" })
-			.mockResolvedValueOnce({ type: "back" });
+	it("moves guardian controls into experimental settings", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(createSettingsStorage(now));
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+		loadPluginConfigMock.mockReturnValue(structuredClone(defaults));
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "experimental" },
+			{ type: "toggle-refresh-guardian" },
+			{ type: "increase-refresh-interval" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(savePluginConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
+				proactiveRefreshIntervalMs: (defaults.proactiveRefreshIntervalMs ?? 60000) + 60000,
+			}),
+		);
+	});
+
+	it("persists representative backend edits across all current backend categories", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(
+			createSettingsStorage(now, {
+				email: "backend-groups@example.com",
+				accountId: "acc_backend_groups",
+				refreshToken: "refresh-backend-groups",
+				accessToken: "access-backend-groups",
+			}),
+		);
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+		loadPluginConfigMock.mockReturnValue(structuredClone(defaults));
+
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "backend" },
+			{ type: "open-category", key: "session-sync" },
+			{ type: "toggle", key: "liveAccountSync" },
+			{ type: "bump", key: "liveAccountSyncDebounceMs", direction: 1 },
+			{ type: "back" },
+			{ type: "open-category", key: "rotation-quota" },
+			{ type: "toggle", key: "preemptiveQuotaEnabled" },
+			{
+				type: "bump",
+				key: "preemptiveQuotaRemainingPercent5h",
+				direction: 1,
+			},
+			{ type: "back" },
+			{ type: "open-category", key: "refresh-recovery" },
+			{ type: "toggle", key: "storageBackupEnabled" },
+			{ type: "bump", key: "tokenRefreshSkewMs", direction: 1 },
+			{ type: "back" },
+			{ type: "open-category", key: "performance-timeouts" },
+			{ type: "toggle", key: "parallelProbing" },
+			{ type: "bump", key: "fetchTimeoutMs", direction: 1 },
+			{ type: "back" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
+		expect(savePluginConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				liveAccountSync: !(defaults.liveAccountSync ?? false),
+				liveAccountSyncDebounceMs:
+					(defaults.liveAccountSyncDebounceMs ?? 50) + 50,
+				preemptiveQuotaEnabled: !(defaults.preemptiveQuotaEnabled ?? false),
+				preemptiveQuotaRemainingPercent5h:
+					(defaults.preemptiveQuotaRemainingPercent5h ?? 0) + 1,
+				storageBackupEnabled: !(defaults.storageBackupEnabled ?? false),
+				tokenRefreshSkewMs:
+					(defaults.tokenRefreshSkewMs ?? 60_000) + 10_000,
+				parallelProbing: !(defaults.parallelProbing ?? false),
+				fetchTimeoutMs: (defaults.fetchTimeoutMs ?? 60_000) + 5_000,
+			}),
+		);
+	});
+
+	it("clamps out-of-range backend numbers across all current categories before save", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(
+			createSettingsStorage(now, {
+				email: "backend-clamp@example.com",
+				accountId: "acc_backend_clamp",
+				refreshToken: "refresh-backend-clamp",
+				accessToken: "access-backend-clamp",
+			}),
+		);
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+		loadPluginConfigMock.mockReturnValue({
+			...structuredClone(defaults),
+			liveAccountSyncDebounceMs: 0,
+			preemptiveQuotaRemainingPercent5h: 999,
+			proactiveRefreshBufferMs: 0,
+			fetchTimeoutMs: 999_999,
+		});
+
+		const selectSequence = queueSettingsSelectSequence([
+			{ type: "backend" },
+			{ type: "open-category", key: "session-sync" },
+			{ type: "bump", key: "liveAccountSyncDebounceMs", direction: -1 },
+			{ type: "back" },
+			{ type: "open-category", key: "rotation-quota" },
+			{
+				type: "bump",
+				key: "preemptiveQuotaRemainingPercent5h",
+				direction: 1,
+			},
+			{ type: "back" },
+			{ type: "open-category", key: "refresh-recovery" },
+			{ type: "bump", key: "proactiveRefreshBufferMs", direction: -1 },
+			{ type: "back" },
+			{ type: "open-category", key: "performance-timeouts" },
+			{ type: "bump", key: "fetchTimeoutMs", direction: 1 },
+			{ type: "back" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(selectSequence.remaining()).toBe(0);
+		expect(savePluginConfigMock).toHaveBeenCalledTimes(1);
+		expect(savePluginConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				liveAccountSyncDebounceMs: 50,
+				preemptiveQuotaRemainingPercent5h: 100,
+				proactiveRefreshBufferMs: 30_000,
+				fetchTimeoutMs: 600_000,
+			}),
+		);
+	});
+
+	for (const { panel, mode } of SETTINGS_CANCEL_MATRIX) {
+		it(`keeps no-save-on-cancel contract for panel=${panel} mode=${mode}`, async () => {
+			const now = Date.now();
+			let originalRuntimeTheme: {
+				v2Enabled: boolean;
+				colorProfile: string;
+				glyphMode: string;
+				palette: string;
+				accent: string;
+			} | null = null;
+			if (panel === "theme") {
+				const runtime = await import("../lib/ui/runtime.js");
+				runtime.resetUiRuntimeOptions();
+				const snapshot = runtime.getUiRuntimeOptions();
+				originalRuntimeTheme = {
+					v2Enabled: snapshot.v2Enabled,
+					colorProfile: snapshot.colorProfile,
+					glyphMode: snapshot.glyphMode,
+					palette: snapshot.palette,
+					accent: snapshot.accent,
+				};
+			}
+			setupInteractiveSettingsLogin(
+				createSettingsStorage(now, {
+					email: "cancel-settings@example.com",
+					accountId: "acc_cancel_settings",
+					refreshToken: "refresh-cancel-settings",
+					accessToken: "access-cancel-settings",
+				}),
+			);
+
+			if (mode === "windows-ebusy") {
+				const busy = makeErrnoError("busy", "EBUSY");
+				saveDashboardDisplaySettingsMock.mockRejectedValue(busy);
+				savePluginConfigMock.mockRejectedValue(busy);
+			}
+			if (mode === "concurrent-save-ordering") {
+				const dashboardDeferred = createDeferred<void>();
+				const pluginDeferred = createDeferred<void>();
+				saveDashboardDisplaySettingsMock.mockImplementation(
+					async () => dashboardDeferred.promise,
+				);
+				savePluginConfigMock.mockImplementation(
+					async () => pluginDeferred.promise,
+				);
+				queueMicrotask(() => {
+					dashboardDeferred.resolve(undefined);
+					pluginDeferred.resolve(undefined);
+				});
+			}
+			if (mode === "token-refresh-race") {
+				const refreshDeferred = createDeferred<{
+					type: "success";
+					access: string;
+					refresh: string;
+					expires: number;
+				}>();
+				queuedRefreshMock.mockImplementation(
+					async () => refreshDeferred.promise,
+				);
+				queueMicrotask(() => {
+					refreshDeferred.resolve({
+						type: "success",
+						access: "race-access",
+						refresh: "race-refresh",
+						expires: now + 3_600_000,
+					});
+				});
+			}
+
+			queueSettingsSelectSequence(createSettingsCancelSequence(panel));
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
+			expect(savePluginConfigMock).not.toHaveBeenCalled();
+			if (panel === "theme") {
+				const runtime = await import("../lib/ui/runtime.js");
+				const restored = runtime.getUiRuntimeOptions();
+				expect({
+					v2Enabled: restored.v2Enabled,
+					colorProfile: restored.colorProfile,
+					glyphMode: restored.glyphMode,
+					palette: restored.palette,
+					accent: restored.accent,
+				}).toEqual(originalRuntimeTheme);
+			}
+		});
+	}
+
+	it("retries transient EBUSY dashboard save and keeps settings flow alive", async () => {
+		const now = Date.now();
+		setupInteractiveSettingsLogin(
+			createSettingsStorage(now, {
+				email: "retry-dashboard@example.com",
+				accountId: "acc_retry_dashboard",
+				refreshToken: "refresh-retry-dashboard",
+				accessToken: "access-retry-dashboard",
+			}),
+		);
+
+		queueSettingsSelectSequence([
+			{ type: "behavior" },
+			{ type: "toggle-pause" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
 
 		saveDashboardDisplaySettingsMock
 			.mockRejectedValueOnce(makeErrnoError("dashboard busy", "EBUSY"))
@@ -2305,36 +2675,24 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("retries transient 429-like backend save and keeps settings flow alive", async () => {
-		setInteractiveTTY(true);
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "retry-backend@example.com",
-					accountId: "acc_retry_backend",
-					refreshToken: "refresh-retry-backend",
-					accessToken: "access-retry-backend",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
+		setupInteractiveSettingsLogin(
+			createSettingsStorage(now, {
+				email: "retry-backend@example.com",
+				accountId: "acc_retry_backend",
+				refreshToken: "refresh-retry-backend",
+				accessToken: "access-retry-backend",
+			}),
+		);
 
-		selectMock
-			.mockResolvedValueOnce({ type: "backend" })
-			.mockResolvedValueOnce({ type: "open-category", key: "rotation-quota" })
-			.mockResolvedValueOnce({ type: "toggle", key: "preemptiveQuotaEnabled" })
-			.mockResolvedValueOnce({ type: "back" })
-			.mockResolvedValueOnce({ type: "save" })
-			.mockResolvedValueOnce({ type: "back" });
+		queueSettingsSelectSequence([
+			{ type: "backend" },
+			{ type: "open-category", key: "rotation-quota" },
+			{ type: "toggle", key: "preemptiveQuotaEnabled" },
+			{ type: "back" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
 
 		const rateLimitError = Object.assign(new Error("rate limited"), {
 			status: 429,
@@ -2352,34 +2710,22 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("does not abort settings flow when dashboard saves keep failing after retries", async () => {
-		setInteractiveTTY(true);
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "retry-exhausted@example.com",
-					accountId: "acc_retry_exhausted",
-					refreshToken: "refresh-retry-exhausted",
-					accessToken: "access-retry-exhausted",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
+		setupInteractiveSettingsLogin(
+			createSettingsStorage(now, {
+				email: "retry-exhausted@example.com",
+				accountId: "acc_retry_exhausted",
+				refreshToken: "refresh-retry-exhausted",
+				accessToken: "access-retry-exhausted",
+			}),
+		);
 
-		selectMock
-			.mockResolvedValueOnce({ type: "theme" })
-			.mockResolvedValueOnce({ type: "set-palette", palette: "blue" })
-			.mockResolvedValueOnce({ type: "save" })
-			.mockResolvedValueOnce({ type: "back" });
+		queueSettingsSelectSequence([
+			{ type: "theme" },
+			{ type: "set-palette", palette: "blue" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
 
 		const rateLimitError = Object.assign(new Error("slow down"), {
 			statusCode: 429,
@@ -2397,28 +2743,15 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("merges behavior edits with latest disk settings to avoid stale overwrite", async () => {
-		setInteractiveTTY(true);
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "merge-settings@example.com",
-					accountId: "acc_merge_settings",
-					refreshToken: "refresh-merge-settings",
-					accessToken: "access-merge-settings",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
+		setupInteractiveSettingsLogin(
+			createSettingsStorage(now, {
+				email: "merge-settings@example.com",
+				accountId: "acc_merge_settings",
+				refreshToken: "refresh-merge-settings",
+				accessToken: "access-merge-settings",
+			}),
+		);
 		const initialSettings = {
 			showPerAccountRows: true,
 			showQuotaDetails: true,
@@ -2448,11 +2781,12 @@ describe("codex manager cli commands", () => {
 			return initialSettings;
 		});
 
-		selectMock
-			.mockResolvedValueOnce({ type: "behavior" })
-			.mockResolvedValueOnce({ type: "toggle-pause" })
-			.mockResolvedValueOnce({ type: "save" })
-			.mockResolvedValueOnce({ type: "back" });
+		queueSettingsSelectSequence([
+			{ type: "behavior" },
+			{ type: "toggle-pause" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
 
 		saveDashboardDisplaySettingsMock.mockResolvedValue(undefined);
 
@@ -2470,28 +2804,15 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("resets only focused panel fields and preserves unrelated draft settings", async () => {
-		setInteractiveTTY(true);
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "panel-reset@example.com",
-					accountId: "acc_panel_reset",
-					refreshToken: "refresh-panel-reset",
-					accessToken: "access-panel-reset",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "settings" })
-			.mockResolvedValueOnce({ mode: "cancel" });
+		setupInteractiveSettingsLogin(
+			createSettingsStorage(now, {
+				email: "panel-reset@example.com",
+				accountId: "acc_panel_reset",
+				refreshToken: "refresh-panel-reset",
+				accessToken: "access-panel-reset",
+			}),
+		);
 
 		loadDashboardDisplaySettingsMock.mockResolvedValue({
 			showPerAccountRows: true,
@@ -2511,11 +2832,12 @@ describe("codex manager cli commands", () => {
 			uiAccentColor: "cyan",
 		});
 
-		selectMock
-			.mockResolvedValueOnce({ type: "account-list" })
-			.mockResolvedValueOnce({ type: "reset" })
-			.mockResolvedValueOnce({ type: "save" })
-			.mockResolvedValueOnce({ type: "back" });
+		queueSettingsSelectSequence([
+			{ type: "account-list" },
+			{ type: "reset" },
+			{ type: "save" },
+			{ type: "back" },
+		]);
 
 		saveDashboardDisplaySettingsMock.mockResolvedValue(undefined);
 
@@ -2681,38 +3003,16 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		deleteAccountAtIndexMock.mockResolvedValueOnce({
-			storage: {
-				version: 3,
-				activeIndex: 0,
-				activeIndexByFamily: { codex: 0 },
-				accounts: [
-					{
-						email: "first@example.com",
-						refreshToken: "refresh-first",
-						addedAt: now - 2_000,
-						lastUsed: now - 2_000,
-						enabled: true,
-					},
-				],
-			},
-			flagged: { version: 1, accounts: [] },
-			removedAccount: {
-				refreshToken: "refresh-second",
-				addedAt: now - 1_000,
-				lastUsed: now - 1_000,
-				accountIdSource: undefined,
-				enabled: true,
-			},
-			removedFlaggedCount: 0,
-		});
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(deleteAccountAtIndexMock).toHaveBeenCalledTimes(1);
-		expect(deleteAccountAtIndexMock.mock.calls[0]?.[0]?.index).toBe(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe(
+			"first@example.com",
+		);
 	});
 
 	it("toggles account enabled state from manage mode", async () => {
@@ -2745,114 +3045,16 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("skips destructive work when user cancels from menu", async () => {
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "keep@example.com",
-					refreshToken: "keep-refresh",
-					addedAt: Date.now(),
-					lastUsed: Date.now(),
-				},
-			],
-		});
-		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(deleteSavedAccountsMock).not.toHaveBeenCalled();
-		expect(resetLocalStateMock).not.toHaveBeenCalled();
-		expect(saveAccountsMock).not.toHaveBeenCalled();
-	});
-
-	it("deletes saved accounts only when requested", async () => {
-		const now = Date.now();
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "first@example.com",
-					refreshToken: "refresh-first",
-					addedAt: now,
-					lastUsed: now,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "fresh", deleteAll: true })
-			.mockResolvedValueOnce({ mode: "cancel" });
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(deleteSavedAccountsMock).toHaveBeenCalledTimes(1);
-		expect(resetLocalStateMock).not.toHaveBeenCalled();
-		expect(logSpy).toHaveBeenCalledWith(
-			"Deleted saved accounts. Saved accounts deleted; flagged/problem accounts, settings, and Codex CLI sync state kept.",
-		);
-		logSpy.mockRestore();
-	});
-
-	it("resets local state when reset mode is chosen", async () => {
-		const now = Date.now();
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "first@example.com",
-					refreshToken: "refresh-first",
-					addedAt: now,
-					lastUsed: now,
-				},
-			],
-		});
-		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "reset" })
-			.mockResolvedValueOnce({ mode: "cancel" });
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(resetLocalStateMock).toHaveBeenCalledTimes(1);
-		expect(deleteSavedAccountsMock).not.toHaveBeenCalled();
-		expect(logSpy).toHaveBeenCalledWith(
-			"Reset local state. Saved accounts, flagged/problem accounts, and quota cache cleared; settings and Codex CLI sync state kept.",
-		);
-		logSpy.mockRestore();
-	});
-
 	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "non-tty@example.com",
-					accountId: "acc_non_tty",
-					refreshToken: "refresh-non-tty",
-					accessToken: "access-non-tty",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
+		loadAccountsMock.mockResolvedValue(
+			createSettingsStorage(now, {
+				email: "non-tty@example.com",
+				accountId: "acc_non_tty",
+				refreshToken: "refresh-non-tty",
+				accessToken: "access-non-tty",
+			}),
+		);
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });

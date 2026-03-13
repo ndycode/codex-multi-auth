@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import {
+	buildNamedBackupPath,
 	clearAccounts,
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
 	exportAccounts,
+	exportNamedBackup,
 	formatStorageErrorHint,
 	getStoragePath,
 	importAccounts,
@@ -43,6 +45,47 @@ describe("storage", () => {
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
 	});
 	describe("deduplication", () => {
+		it("remaps activeIndexByFamily after deduplication using the active account key", () => {
+			const now = Date.now();
+
+			const raw = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 3 },
+				accounts: [
+					{
+						accountId: "acctA",
+						refreshToken: "tokenA-old",
+						addedAt: now - 3_000,
+						lastUsed: now - 3_000,
+					},
+					{
+						accountId: "acctA",
+						refreshToken: "tokenA-new",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+					{
+						accountId: "acctB",
+						refreshToken: "tokenB-old",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+					{
+						accountId: "acctB",
+						refreshToken: "tokenB-new",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+
+			const normalized = normalizeAccountStorage(raw);
+			expect(normalized).not.toBeNull();
+			expect(normalized?.accounts).toHaveLength(2);
+			expect(normalized?.activeIndexByFamily?.codex).toBe(1);
+		});
+
 		it("remaps activeIndex after deduplication using active account key", () => {
 			const now = Date.now();
 
@@ -291,6 +334,130 @@ describe("storage", () => {
 			await expect(importAccounts(exportPath)).rejects.toThrow(
 				/Invalid account storage format/,
 			);
+		});
+
+		describe("named backup helpers", () => {
+			it("resolves a safe backup path within the plugin backup root", () => {
+				const backupName = "backup-2026-03-09";
+				const expected = join(
+					dirname(testStoragePath),
+					"backups",
+					"backup-2026-03-09.json",
+				);
+				expect(buildNamedBackupPath(backupName)).toBe(expected);
+			});
+
+			it("normalizes explicit .json names without duplicating the extension", () => {
+				const backupName = "backup-2026-03-09.json";
+				const expected = join(
+					dirname(testStoragePath),
+					"backups",
+					"backup-2026-03-09.json",
+				);
+				expect(buildNamedBackupPath(backupName)).toBe(expected);
+			});
+
+			const unsafeNames = [
+				"",
+				"   ",
+				"../evil",
+				"backup/escape",
+				String.raw`backup\escape`,
+				"rot.rotate.",
+				"backup.tmp",
+				"archive.wal",
+				"space name",
+				"weird!name",
+			];
+
+			it.each(unsafeNames)("rejects unsafe backup name '%s'", (input) => {
+				expect(() => buildNamedBackupPath(input)).toThrow();
+			});
+
+			it("refuses to overwrite an existing backup without force", async () => {
+				const backupName = "backup-2026-03-09";
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{ accountId: "test", refreshToken: "ref", addedAt: 1, lastUsed: 2 },
+					],
+				});
+				const destination = buildNamedBackupPath(backupName);
+				await fs.mkdir(dirname(destination), { recursive: true });
+				await fs.writeFile(destination, "exists", "utf-8");
+				await expect(exportNamedBackup(backupName)).rejects.toThrow(
+					/already exists/,
+				);
+			});
+
+			it("writes the named backup using the safe path", async () => {
+				const backupName = "backup-2026-03-09";
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{ accountId: "test", refreshToken: "ref", addedAt: 1, lastUsed: 2 },
+					],
+				});
+				const backupPath = await exportNamedBackup(backupName);
+				expect(existsSync(backupPath)).toBe(true);
+				expect(backupPath).toBe(buildNamedBackupPath(backupName));
+			});
+
+			it("overwrites an existing named backup when force is true", async () => {
+				const backupName = "backup-2026-03-10";
+				await saveAccounts({
+					version: 3,
+					activeIndex: 1,
+					accounts: [
+						{
+							accountId: "first",
+							refreshToken: "ref-1",
+							addedAt: 1,
+							lastUsed: 2,
+						},
+						{
+							accountId: "second",
+							refreshToken: "ref-2",
+							addedAt: 3,
+							lastUsed: 4,
+						},
+					],
+				});
+
+				const initialPath = await exportNamedBackup(backupName);
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "replacement",
+							refreshToken: "ref-3",
+							addedAt: 5,
+							lastUsed: 6,
+						},
+					],
+				});
+
+				const overwrittenPath = await exportNamedBackup(backupName, {
+					force: true,
+				});
+				const exported = JSON.parse(
+					await fs.readFile(overwrittenPath, "utf-8"),
+				);
+
+				expect(overwrittenPath).toBe(initialPath);
+				expect(exported.activeIndex).toBe(0);
+				expect(exported.accounts).toHaveLength(1);
+				expect(exported.accounts[0].accountId).toBe("replacement");
+			});
+
+			it("propagates export errors when no accounts exist for a named backup", async () => {
+				await expect(exportNamedBackup("backup-2026-03-11")).rejects.toThrow(
+					/No accounts to export/,
+				);
+			});
 		});
 	});
 
@@ -712,7 +879,15 @@ describe("storage", () => {
 
 		it("returns null when file does not exist", async () => {
 			const result = await loadAccounts();
-			expect(result).toBeNull();
+			expect(result).toEqual(
+				expect.objectContaining({
+					version: 3,
+					accounts: [],
+					activeIndex: 0,
+					restoreEligible: true,
+					restoreReason: "missing-storage",
+				}),
+			);
 		});
 
 		it("returns null on parse error", async () => {
@@ -2191,44 +2366,76 @@ describe("storage", () => {
 			unlinkSpy.mockRestore();
 		});
 	});
+});
 
-	describe("clearQuotaCache", () => {
-		const tmpRoot = join(
-			tmpdir(),
-			`quota-cache-test-${Math.random().toString(36).slice(2)}`,
-		);
-		let originalDir: string | undefined;
+it("clearAccounts removes discovered backup artifacts as well as fixed slots", async () => {
+	const storagePath = getStoragePath();
+	const discoveredBackup = join(
+		dirname(storagePath),
+		"openai-codex-accounts.json.20260310-010101.json",
+	);
+	const storage = {
+		version: 3,
+		activeIndex: 0,
+		activeIndexByFamily: { codex: 0 },
+		accounts: [
+			{
+				email: "clear@example.com",
+				refreshToken: "refresh-clear",
+				accessToken: "access-clear",
+				expiresAt: Date.now() + 3_600_000,
+				addedAt: Date.now(),
+				lastUsed: Date.now(),
+				accountId: "acc-clear",
+				enabled: true,
+			},
+		],
+	};
+	await fs.writeFile(storagePath, JSON.stringify(storage), "utf-8");
+	await fs.writeFile(discoveredBackup, JSON.stringify(storage), "utf-8");
 
-		beforeEach(async () => {
-			originalDir = process.env.CODEX_MULTI_AUTH_DIR;
-			process.env.CODEX_MULTI_AUTH_DIR = tmpRoot;
-			await fs.mkdir(tmpRoot, { recursive: true });
-		});
+	await clearAccounts();
 
-		afterEach(async () => {
-			if (originalDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
-			else process.env.CODEX_MULTI_AUTH_DIR = originalDir;
-			await fs.rm(tmpRoot, { recursive: true, force: true });
-		});
+	expect(existsSync(storagePath)).toBe(false);
+	expect(existsSync(discoveredBackup)).toBe(false);
+});
 
-		it("removes only the quota cache file", async () => {
-			const quotaPath = getQuotaCachePath();
-			const accountsPath = join(tmpRoot, "openai-codex-accounts.json");
-			await fs.mkdir(dirname(quotaPath), { recursive: true });
-			await fs.writeFile(quotaPath, "{}", "utf-8");
-			await fs.writeFile(accountsPath, "{}", "utf-8");
+describe("clearQuotaCache", () => {
+	const tmpRoot = join(
+		tmpdir(),
+		`quota-cache-test-${Math.random().toString(36).slice(2)}`,
+	);
+	let originalDir: string | undefined;
 
-			expect(existsSync(quotaPath)).toBe(true);
-			expect(existsSync(accountsPath)).toBe(true);
+	beforeEach(async () => {
+		originalDir = process.env.CODEX_MULTI_AUTH_DIR;
+		process.env.CODEX_MULTI_AUTH_DIR = tmpRoot;
+		await fs.mkdir(tmpRoot, { recursive: true });
+	});
 
-			await clearQuotaCache();
+	afterEach(async () => {
+		if (originalDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
+		else process.env.CODEX_MULTI_AUTH_DIR = originalDir;
+		await fs.rm(tmpRoot, { recursive: true, force: true });
+	});
 
-			expect(existsSync(quotaPath)).toBe(false);
-			expect(existsSync(accountsPath)).toBe(true);
-		});
+	it("removes only the quota cache file", async () => {
+		const quotaPath = getQuotaCachePath();
+		const accountsPath = join(tmpRoot, "openai-codex-accounts.json");
+		await fs.mkdir(dirname(quotaPath), { recursive: true });
+		await fs.writeFile(quotaPath, "{}", "utf-8");
+		await fs.writeFile(accountsPath, "{}", "utf-8");
 
-		it("ignores missing quota cache file", async () => {
-			await expect(clearQuotaCache()).resolves.not.toThrow();
-		});
+		expect(existsSync(quotaPath)).toBe(true);
+		expect(existsSync(accountsPath)).toBe(true);
+
+		await clearQuotaCache();
+
+		expect(existsSync(quotaPath)).toBe(false);
+		expect(existsSync(accountsPath)).toBe(true);
+	});
+
+	it("ignores missing quota cache file", async () => {
+		await expect(clearQuotaCache()).resolves.not.toThrow();
 	});
 });

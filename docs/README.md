@@ -26,9 +26,10 @@ Public documentation for `codex-multi-auth`.
 | [troubleshooting.md](troubleshooting.md) | Recovery playbooks for install, login, switching, and stale state |
 | [privacy.md](privacy.md) | Data handling and local storage behavior |
 | [upgrade.md](upgrade.md) | Migration from legacy package and path history |
-| [releases/v0.1.7.md](releases/v0.1.7.md) | Stable release notes |
-| [releases/v0.1.6.md](releases/v0.1.6.md) | Previous stable release notes |
-| [releases/v0.1.5.md](releases/v0.1.5.md) | Earlier stable release notes |
+| [releases/v0.1.8.md](releases/v0.1.8.md) | Stable release notes |
+| [releases/v0.1.7.md](releases/v0.1.7.md) | Previous stable release notes |
+| [releases/v0.1.6.md](releases/v0.1.6.md) | Earlier stable release notes |
+| [releases/v0.1.5.md](releases/v0.1.5.md) | Archived stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease notes |
 
 ---
@@ -42,7 +43,7 @@ Public documentation for `codex-multi-auth`.
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
 | [reference/public-api.md](reference/public-api.md) | Public API stability and semver contract |
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
-| [releases/v0.1.7.md](releases/v0.1.7.md) | Current stable release notes |
+| [releases/v0.1.8.md](releases/v0.1.8.md) | Current stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
 | [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |
 | [releases/legacy-pre-0.1-history.md](releases/legacy-pre-0.1-history.md) | Archived pre-0.1 changelog history |
