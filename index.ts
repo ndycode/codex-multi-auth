@@ -3112,10 +3112,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											});
 											if (deleted) {
 												invalidateAccountManagerCache();
-												const label = formatAccountLabel(
-													deleted.removedAccount,
-													menuResult.deleteAccountIndex,
-												);
+												const label = `Account ${menuResult.deleteAccountIndex + 1}`;
 												const flaggedNote =
 													deleted.removedFlaggedCount > 0
 														? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`

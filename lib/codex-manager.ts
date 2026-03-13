@@ -3758,7 +3758,7 @@ async function handleManageAction(
 				flaggedStorage,
 			});
 			if (deleted) {
-				const label = formatAccountLabel(deleted.removedAccount, idx);
+				const label = `Account ${idx + 1}`;
 				const flaggedNote =
 					deleted.removedFlaggedCount > 0
 						? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`

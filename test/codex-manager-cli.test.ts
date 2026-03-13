@@ -459,8 +459,8 @@ describe("codex manager cli commands", () => {
 		deleteAccountAtIndexMock.mockResolvedValue(null);
 		deleteSavedAccountsMock.mockResolvedValue({
 			accountsCleared: true,
-			flaggedCleared: true,
-			quotaCacheCleared: true,
+			flaggedCleared: false,
+			quotaCacheCleared: false,
 		});
 		resetLocalStateMock.mockResolvedValue({
 			accountsCleared: true,

@@ -68,6 +68,23 @@ export function clampActiveIndices(storage: AccountStorageV3): void {
 	storage.activeIndexByFamily = activeIndexByFamily;
 }
 
+function rebaseActiveIndicesAfterDelete(
+	storage: AccountStorageV3,
+	removedIndex: number,
+): void {
+	if (storage.activeIndex > removedIndex) {
+		storage.activeIndex -= 1;
+	}
+	const activeIndexByFamily = storage.activeIndexByFamily ?? {};
+	for (const family of MODEL_FAMILIES) {
+		const rawIndex = activeIndexByFamily[family];
+		if (typeof rawIndex === "number" && Number.isFinite(rawIndex) && rawIndex > removedIndex) {
+			activeIndexByFamily[family] = rawIndex - 1;
+		}
+	}
+	storage.activeIndexByFamily = activeIndexByFamily;
+}
+
 export interface DeleteAccountResult {
 	storage: AccountStorageV3;
 	flagged: FlaggedAccountStorageV1;
@@ -107,6 +124,7 @@ export async function deleteAccountAtIndex(options: {
 	};
 
 	nextStorage.accounts.splice(options.index, 1);
+	rebaseActiveIndicesAfterDelete(nextStorage, options.index);
 	clampActiveIndices(nextStorage);
 	await saveAccounts(nextStorage);
 

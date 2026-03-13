@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("quota cache", () => {
   let tempDir: string;
@@ -20,7 +21,7 @@ describe("quota cache", () => {
     } else {
       process.env.CODEX_MULTI_AUTH_DIR = originalDir;
     }
-    await fs.rm(tempDir, { recursive: true, force: true });
+    await removeWithRetry(tempDir, { recursive: true, force: true });
   });
 
   it("returns empty cache by default", async () => {
@@ -100,9 +101,87 @@ describe("quota cache", () => {
       await clearQuotaCache();
       await expect(fs.access(nextPath)).rejects.toThrow();
     } finally {
-      await fs.rm(nextTempDir, { recursive: true, force: true });
+      await removeWithRetry(nextTempDir, { recursive: true, force: true });
     }
   });
+
+  it.each(["EBUSY", "EPERM"] as const)(
+    "retries transient %s while clearing cache",
+    async (code) => {
+      const { clearQuotaCache, getQuotaCachePath, saveQuotaCache } =
+        await import("../lib/quota-cache.js");
+      await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+      const quotaCachePath = getQuotaCachePath();
+      const realUnlink = fs.unlink.bind(fs);
+      let attempts = 0;
+      const unlinkSpy = vi.spyOn(fs, "unlink");
+      unlinkSpy.mockImplementation(async (...args) => {
+        if (String(args[0]) === quotaCachePath) {
+          attempts += 1;
+          if (attempts < 3) {
+            const error = new Error(
+              `unlink failed: ${code}`,
+            ) as NodeJS.ErrnoException;
+            error.code = code;
+            throw error;
+          }
+        }
+        return realUnlink(...args);
+      });
+
+      try {
+        await expect(clearQuotaCache()).resolves.toBe(true);
+        await expect(fs.access(quotaCachePath)).rejects.toThrow();
+        expect(attempts).toBe(3);
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(["EBUSY", "EPERM"] as const)(
+    "returns false when clearQuotaCache exhausts %s retries",
+    async (code) => {
+      vi.resetModules();
+      const warnMock = vi.fn();
+      vi.doMock("../lib/logger.js", () => ({
+        logWarn: warnMock,
+      }));
+
+      try {
+        const { clearQuotaCache, getQuotaCachePath, saveQuotaCache } =
+          await import("../lib/quota-cache.js");
+        await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+        const quotaCachePath = getQuotaCachePath();
+        let attempts = 0;
+        const unlinkSpy = vi.spyOn(fs, "unlink");
+        unlinkSpy.mockImplementation(async (...args) => {
+          if (String(args[0]) === quotaCachePath) {
+            attempts += 1;
+            const error = new Error(`locked: ${code}`) as NodeJS.ErrnoException;
+            error.code = code;
+            throw error;
+          }
+          return Promise.resolve();
+        });
+
+        try {
+          await expect(clearQuotaCache()).resolves.toBe(false);
+          expect(attempts).toBe(5);
+          await expect(fs.access(quotaCachePath)).resolves.toBeUndefined();
+          expect(warnMock).toHaveBeenCalledWith(
+            expect.stringContaining(
+              `Failed to clear quota cache quota-cache.json: locked: ${code}`,
+            ),
+          );
+        } finally {
+          unlinkSpy.mockRestore();
+        }
+      } finally {
+        vi.doUnmock("../lib/logger.js");
+      }
+    },
+  );
 
   it("retries transient EBUSY while loading cache", async () => {
     const { loadQuotaCache, getQuotaCachePath } =

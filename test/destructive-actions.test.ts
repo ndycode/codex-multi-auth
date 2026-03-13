@@ -56,6 +56,87 @@ describe("destructive actions", () => {
 		expect(clearCodexCliStateCacheMock).not.toHaveBeenCalled();
 	});
 
+	it("returns reset results and clears Codex CLI state", async () => {
+		clearAccountsMock.mockResolvedValueOnce(true);
+		clearFlaggedAccountsMock.mockResolvedValueOnce(false);
+		clearQuotaCacheMock.mockResolvedValueOnce(true);
+
+		const { resetLocalState } = await import("../lib/destructive-actions.js");
+
+		await expect(resetLocalState()).resolves.toEqual({
+			accountsCleared: true,
+			flaggedCleared: false,
+			quotaCacheCleared: true,
+		});
+		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+		expect(clearFlaggedAccountsMock).toHaveBeenCalledTimes(1);
+		expect(clearQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(clearCodexCliStateCacheMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not clear Codex CLI state when resetLocalState aborts on an exception", async () => {
+		const resetError = Object.assign(new Error("flagged clear failed"), {
+			code: "EPERM",
+		});
+		clearFlaggedAccountsMock.mockRejectedValueOnce(resetError);
+
+		const { resetLocalState } = await import("../lib/destructive-actions.js");
+
+		await expect(resetLocalState()).rejects.toBe(resetError);
+		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+		expect(clearFlaggedAccountsMock).toHaveBeenCalledTimes(1);
+		expect(clearQuotaCacheMock).not.toHaveBeenCalled();
+		expect(clearCodexCliStateCacheMock).not.toHaveBeenCalled();
+	});
+
+	it("re-bases active indices before clamping when deleting an earlier account", async () => {
+		const { deleteAccountAtIndex } = await import(
+			"../lib/destructive-actions.js"
+		);
+
+		const storage = {
+			version: 3,
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 2, "gpt-5.x": 1 },
+			accounts: [
+				{
+					refreshToken: "refresh-remove",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					refreshToken: "refresh-active",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+				{
+					refreshToken: "refresh-other",
+					addedAt: 3,
+					lastUsed: 3,
+				},
+			],
+		};
+
+		const deleted = await deleteAccountAtIndex({ storage, index: 0 });
+
+		expect(deleted).not.toBeNull();
+		expect(deleted?.storage.accounts.map((account) => account.refreshToken)).toEqual([
+			"refresh-active",
+			"refresh-other",
+		]);
+		expect(deleted?.storage.activeIndex).toBe(0);
+		expect(deleted?.storage.activeIndexByFamily).toEqual({
+			codex: 1,
+			"gpt-5.x": 0,
+		});
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 1, "gpt-5.x": 0 },
+			}),
+		);
+	});
+
 	it("rethrows the original flagged-save failure after a successful rollback", async () => {
 		const flaggedSaveError = Object.assign(new Error("flagged save failed"), {
 			code: "EPERM",
