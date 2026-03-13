@@ -1449,6 +1449,7 @@ describe("codex manager cli commands", () => {
 
 	it("keeps auth login running when backup restore fails inside the browser", async () => {
 		setInteractiveTTY(false);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const now = Date.now();
 		const currentStorage = {
 			version: 3,
@@ -1515,15 +1516,28 @@ describe("codex manager cli commands", () => {
 		const createAuthorizationFlowMock = vi.mocked(
 			authModule.createAuthorizationFlow,
 		);
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
-		expect(listNamedBackupsMock).toHaveBeenCalledTimes(2);
-		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
-		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+			expect(exitCode).toBe(0);
+			expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+			expect(listNamedBackupsMock).toHaveBeenCalledTimes(2);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(loggerWarnMock).toHaveBeenCalledWith(
+				"Failed to restore named backup from backup browser",
+				expect.objectContaining({
+					name: "named-backup",
+					error: "backup removed during restore",
+				}),
+			);
+			expect(logSpy).toHaveBeenCalledWith(
+				"Restore failed: backup removed during restore",
+			);
+			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		} finally {
+			logSpy.mockRestore();
+		}
 	});
 
 	it("shows limit-exceeded named backups as red in the backup browser list", async () => {
@@ -1826,6 +1840,7 @@ describe("codex manager cli commands", () => {
 			expect(exitCode).toBe(0);
 			expect(logSpy).toHaveBeenCalledWith(`Created: ${epochDisplay}`);
 			expect(logSpy).toHaveBeenCalledWith(`Updated: ${epochDisplay}`);
+			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 		} finally {
 			logSpy.mockRestore();

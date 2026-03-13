@@ -4166,6 +4166,13 @@ function normalizeBackupAssessmentError(error: unknown): string {
 		: "Unable to assess restore eligibility";
 }
 
+function normalizeBackupRestoreError(error: unknown): string {
+	const detail = collapseWhitespace(
+		error instanceof Error ? error.message : String(error),
+	);
+	return detail.length > 0 ? detail : "Unable to restore backup";
+}
+
 function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
 	const backup = entry.backup;
 	const lastUpdated = formatRelativeDateShort(backup.updatedAt);
@@ -4315,11 +4322,11 @@ async function loadBackupBrowserEntries(): Promise<{
 	namedEntries: NamedBackupBrowserEntry[];
 	rotatingEntries: Extract<BackupBrowserEntry, { kind: "rotating" }>[];
 }> {
-	const [namedBackups, rotatingBackups] = await Promise.all([
+	const [namedBackups, rotatingBackups, currentStorage] = await Promise.all([
 		listNamedBackups(),
 		listRotatingBackups(),
+		loadAccounts(),
 	]);
-	const currentStorage = await loadAccounts();
 	const namedEntries: NamedBackupBrowserEntry[] = await Promise.all(
 		namedBackups.map(async (backup) => {
 			try {
@@ -4461,7 +4468,14 @@ async function runBackupBrowserManager(
 					displaySettings,
 				);
 				return;
-			} catch {
+			} catch (restoreError) {
+				const restoreErrorMessage =
+					normalizeBackupRestoreError(restoreError);
+				log.warn("Failed to restore named backup from backup browser", {
+					name: backupName,
+					error: restoreErrorMessage,
+				});
+				console.log(`Restore failed: ${restoreErrorMessage}`);
 				continue;
 			}
 		}
