@@ -200,6 +200,105 @@ describe("getActionableNamedBackupRestores (override)", () => {
 			"valid-backup",
 		]);
 	});
+	it("passes explicit null currentStorage through without reloading accounts", async () => {
+		const storage = await import("../lib/storage.js");
+		const loadAccountsSpy = vi.spyOn(storage, "loadAccounts");
+		const mockBackups = [
+			{
+				name: "valid-backup",
+				path: "/mock/backups/valid.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		];
+		const assess = vi.fn(async (_name: string, options?: { currentStorage?: unknown }) => ({
+			backup: mockBackups[0],
+			currentAccountCount: options?.currentStorage === null ? 0 : 99,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: undefined,
+		}));
+
+		const result = await storage.getActionableNamedBackupRestores({
+			backups: mockBackups,
+			assess,
+			currentStorage: null,
+		});
+
+		expect(result.assessments).toHaveLength(1);
+		expect(assess).toHaveBeenCalledWith("valid-backup", {
+			currentStorage: null,
+		});
+		expect(loadAccountsSpy).not.toHaveBeenCalled();
+		loadAccountsSpy.mockRestore();
+	});
+
+	it("keeps actionable backups when another assessment throws", async () => {
+		const storage = await import("../lib/storage.js");
+		const mockBackups = [
+			{
+				name: "broken-backup",
+				path: "/mock/backups/broken.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			{
+				name: "valid-backup",
+				path: "/mock/backups/valid.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		];
+		const assess = vi.fn(async (name: string) => {
+			if (name === "broken-backup") {
+				throw new Error("backup locked");
+			}
+
+			return {
+				backup: mockBackups[1],
+				currentAccountCount: 0,
+				mergedAccountCount: 1,
+				imported: 1,
+				skipped: 0,
+				wouldExceedLimit: false,
+				valid: true,
+				error: undefined,
+			};
+		});
+
+		const result = await storage.getActionableNamedBackupRestores({
+			backups: mockBackups,
+			assess,
+			currentStorage: null,
+		});
+
+		expect(result.totalBackups).toBe(mockBackups.length);
+		expect(result.assessments.map((item) => item.backup.name)).toEqual([
+			"valid-backup",
+		]);
+		expect(assess).toHaveBeenCalledTimes(2);
+	});
 });
 
 describe("isRecoverableError", () => {
@@ -1284,74 +1383,5 @@ describe("handleSessionRecovery", () => {
 			expect(result).toBe(false);
 			mockedFindMessagesWithThinkingBlocks.mockReturnValue([]);
 		});
-	});
-});
-
-describe.skip("getActionableNamedBackupRestores", () => {
-	it("filters to actionable restores only", async () => {
-		const mockBackups = [
-			{
-				name: "invalid-backup",
-				path: "/mock/backups/invalid.json",
-				createdAt: null,
-				updatedAt: null,
-				sizeBytes: null,
-				version: 3,
-				accountCount: 0,
-				schemaErrors: [],
-				valid: false,
-				loadError: "invalid",
-			},
-			{
-				name: "valid-backup",
-				path: "/mock/backups/valid.json",
-				createdAt: null,
-				updatedAt: null,
-				sizeBytes: null,
-				version: 3,
-				accountCount: 1,
-				schemaErrors: [],
-				valid: true,
-				loadError: undefined,
-			},
-		];
-
-		const storage = await import("../lib/storage.js");
-		const assess = vi.fn().mockImplementation(async (name: string) => {
-			if (name === "valid-backup") {
-				return {
-					backup: mockBackups[1],
-					currentAccountCount: 0,
-					mergedAccountCount: 1,
-					imported: 1,
-					skipped: 0,
-					wouldExceedLimit: false,
-					valid: true,
-					error: undefined,
-				};
-			}
-
-			return {
-				backup: mockBackups[0],
-				currentAccountCount: 0,
-				mergedAccountCount: null,
-				imported: null,
-				skipped: null,
-				wouldExceedLimit: false,
-				valid: false,
-				error: "invalid",
-			};
-		});
-		const result = await storage.getActionableNamedBackupRestores({
-			backups: mockBackups,
-			assess,
-			currentStorage: null,
-		});
-
-		expect(result.totalBackups).toBe(mockBackups.length);
-		expect(result.assessments.map((item) => item.backup.name)).toEqual([
-			"valid-backup",
-		]);
-		expect(assess).toHaveBeenCalledTimes(2);
 	});
 });

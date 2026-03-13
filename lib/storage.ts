@@ -523,6 +523,18 @@ export interface ActionableNamedBackupRecoveries {
 	totalBackups: number;
 }
 
+interface LoadedBackupCandidate {
+	normalized: AccountStorageV3 | null;
+	storedVersion: unknown;
+	schemaErrors: string[];
+	error?: string;
+}
+
+interface NamedBackupScanEntry {
+	backup: NamedBackupMetadata;
+	candidate: LoadedBackupCandidate;
+}
+
 export function getLastAccountsSaveTimestamp(): number {
 	return lastAccountsSaveTimestamp;
 }
@@ -1040,12 +1052,7 @@ async function loadAccountsFromPath(path: string): Promise<{
 	return parseAndNormalizeStorage(data);
 }
 
-async function loadBackupCandidate(path: string): Promise<{
-	normalized: AccountStorageV3 | null;
-	storedVersion: unknown;
-	schemaErrors: string[];
-	error?: string;
-}> {
+async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate> {
 	try {
 		return await loadAccountsFromPath(path);
 	} catch (error) {
@@ -1244,7 +1251,7 @@ async function loadAccountsInternal(
 async function buildNamedBackupMetadata(
 	name: string,
 	path: string,
-	opts: { candidate?: Awaited<ReturnType<typeof loadBackupCandidate>> } = {},
+	opts: { candidate?: LoadedBackupCandidate } = {},
 ): Promise<NamedBackupMetadata> {
 	const candidate = opts.candidate ?? (await loadBackupCandidate(path));
 	let stats: {
@@ -1285,11 +1292,11 @@ async function buildNamedBackupMetadata(
 	};
 }
 
-export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
+async function scanNamedBackups(): Promise<NamedBackupScanEntry[]> {
 	const backupDir = getNamedBackupsDirectory();
 	try {
 		const entries = await fs.readdir(backupDir, { withFileTypes: true });
-		const backups: NamedBackupMetadata[] = [];
+		const backups: NamedBackupScanEntry[] = [];
 		for (const entry of entries) {
 			if (!entry.isFile()) continue;
 			if (!entry.name.endsWith(NAMED_BACKUP_EXTENSION)) continue;
@@ -1297,10 +1304,13 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 			const name = deriveBackupNameFromFile(entry.name);
 			const path = join(backupDir, entry.name);
 			const candidate = await loadBackupCandidate(path);
-			backups.push(await buildNamedBackupMetadata(name, path, { candidate }));
+			const backup = await buildNamedBackupMetadata(name, path, { candidate });
+			backups.push({ backup, candidate });
 		}
 
-		return backups.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+		return backups.sort(
+			(a, b) => (b.backup.updatedAt ?? 0) - (a.backup.updatedAt ?? 0),
+		);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
@@ -1311,6 +1321,11 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 		}
 		return [];
 	}
+}
+
+export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
+	const backups = await scanNamedBackups();
+	return backups.map((entry) => entry.backup);
 }
 
 export function getNamedBackupsDirectoryPath(): string {
@@ -1324,7 +1339,9 @@ export async function getActionableNamedBackupRestores(
 		assess?: typeof assessNamedBackupRestore;
 	} = {},
 ): Promise<ActionableNamedBackupRecoveries> {
-	const backups = options.backups ?? (await listNamedBackups());
+	const scannedBackups =
+		options.backups === undefined ? await scanNamedBackups() : [];
+	const backups = options.backups ?? scannedBackups.map((entry) => entry.backup);
 	if (backups.length === 0) {
 		return { assessments: [], totalBackups: 0 };
 	}
@@ -1333,18 +1350,51 @@ export async function getActionableNamedBackupRestores(
 		options.currentStorage === undefined
 			? await loadAccounts()
 			: options.currentStorage;
-	const assess = options.assess ?? assessNamedBackupRestore;
-	const assessments = await Promise.all(
-		backups.map((backup) => assess(backup.name, { currentStorage })),
-	);
-
-	const actionable = assessments.filter(
-		(assessment) =>
+	const actionable: BackupRestoreAssessment[] = [];
+	const maybePushActionable = (assessment: BackupRestoreAssessment): void => {
+		if (
 			assessment.valid &&
 			!assessment.wouldExceedLimit &&
 			assessment.imported !== null &&
-			assessment.imported > 0,
-	);
+			assessment.imported > 0
+		) {
+			actionable.push(assessment);
+		}
+	};
+
+	if (options.backups === undefined && !options.assess) {
+		for (const entry of scannedBackups) {
+			try {
+				const assessment = assessNamedBackupRestoreCandidate(
+					entry.backup,
+					entry.candidate,
+					currentStorage,
+				);
+				maybePushActionable(assessment);
+			} catch (error) {
+				log.warn("Failed to assess named backup restore candidate", {
+					name: entry.backup.name,
+					path: entry.backup.path,
+					error: String(error),
+				});
+			}
+		}
+		return { assessments: actionable, totalBackups: backups.length };
+	}
+
+	const assess = options.assess ?? assessNamedBackupRestore;
+	for (const backup of backups) {
+		try {
+			const assessment = await assess(backup.name, { currentStorage });
+			maybePushActionable(assessment);
+		} catch (error) {
+			log.warn("Failed to assess named backup restore candidate", {
+				name: backup.name,
+				path: backup.path,
+				error: String(error),
+			});
+		}
+	}
 
 	return { assessments: actionable, totalBackups: backups.length };
 }
@@ -1371,7 +1421,18 @@ export async function assessNamedBackupRestore(
 	const backup = await buildNamedBackupMetadata(normalizedName, backupPath, {
 		candidate,
 	});
-	const currentStorage = options.currentStorage ?? (await loadAccounts());
+	const currentStorage =
+		options.currentStorage === undefined
+			? await loadAccounts()
+			: options.currentStorage;
+	return assessNamedBackupRestoreCandidate(backup, candidate, currentStorage);
+}
+
+function assessNamedBackupRestoreCandidate(
+	backup: NamedBackupMetadata,
+	candidate: LoadedBackupCandidate,
+	currentStorage: AccountStorageV3 | null,
+): BackupRestoreAssessment {
 	const currentAccounts = currentStorage?.accounts ?? [];
 
 	if (

@@ -4094,22 +4094,25 @@ type BackupMenuAction =
 	  }
 	| { type: "back" };
 
+type BackupRestoreManagerResult = "restored" | "dismissed";
+
 async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
-): Promise<void> {
+): Promise<BackupRestoreManagerResult> {
 	const backupDir = getNamedBackupsDirectoryPath();
 	const backups = await listNamedBackups();
 	if (backups.length === 0) {
 		console.log(`No named backups found. Place backup files in ${backupDir}.`);
-		return;
+		return "dismissed";
 	}
 
 	const currentStorage = await loadAccounts();
-	const assessments = await Promise.all(
-		backups.map((backup) =>
-			assessNamedBackupRestore(backup.name, { currentStorage }),
-		),
-	);
+	const assessments: Awaited<ReturnType<typeof assessNamedBackupRestore>>[] = [];
+	for (const backup of backups) {
+		assessments.push(
+			await assessNamedBackupRestore(backup.name, { currentStorage }),
+		);
+	}
 
 	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
 		const status =
@@ -4157,23 +4160,24 @@ async function runBackupRestoreManager(
 	});
 
 	if (!selection || selection.type === "back") {
-		return;
+		return "dismissed";
 	}
 
 	const assessment = selection.assessment;
 	if (!assessment.valid || assessment.wouldExceedLimit) {
 		console.log(assessment.error ?? "Backup is not eligible for restore.");
-		return;
+		return "dismissed";
 	}
 
 	const confirmMessage = `Restore backup "${assessment.backup.name}"? This will merge ${assessment.backup.accountCount ?? 0} account(s) into ${assessment.currentAccountCount} current (${assessment.mergedAccountCount ?? assessment.currentAccountCount} after dedupe).`;
 	const confirmed = await confirm(confirmMessage);
-	if (!confirmed) return;
+	if (!confirmed) return "dismissed";
 
 	const result = await restoreNamedBackup(assessment.backup.name);
 	console.log(
 		`Restored backup "${assessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
 	);
+	return "restored";
 }
 
 async function runAuthLogin(): Promise<number> {
@@ -4373,9 +4377,16 @@ async function runAuthLogin(): Promise<number> {
 			isInteractiveLoginMenuAvailable();
 		if (canPromptForRecovery) {
 			recoveryPromptAttempted = true;
-			const recoveryState = await getActionableNamedBackupRestores({
-				currentStorage: refreshedStorage,
-			});
+			let recoveryState: Awaited<
+				ReturnType<typeof getActionableNamedBackupRestores>
+			>;
+			try {
+				recoveryState = await getActionableNamedBackupRestores({
+					currentStorage: refreshedStorage,
+				});
+			} catch {
+				recoveryState = { assessments: [], totalBackups: 0 };
+			}
 			if (recoveryState.assessments.length > 0) {
 				const displaySettings = await loadDashboardDisplaySettings();
 				applyUiThemeFromDashboardSettings(displaySettings);
@@ -4389,10 +4400,14 @@ async function runAuthLogin(): Promise<number> {
 				const restoreNow = await confirm(
 					`Found ${recoveryState.assessments.length} recoverable backup${
 						recoveryState.assessments.length === 1 ? "" : "s"
-					} (${backupLabel}) in ${backupDir}. Restore now?`,
+					} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Restore now?`,
 				);
 				if (restoreNow) {
-					await runBackupRestoreManager(displaySettings);
+					const restoreResult =
+						await runBackupRestoreManager(displaySettings);
+					if (restoreResult !== "restored") {
+						recoveryPromptAttempted = false;
+					}
 					continue;
 				}
 			}

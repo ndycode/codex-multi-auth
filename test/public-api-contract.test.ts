@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+vi.mock("../lib/prompts/host-codex-prompt.js", () => ({
+	getHostCodexPrompt: vi.fn(async () => "cached host prompt"),
+	prewarmHostCodexPrompt: vi.fn(),
+}));
 import {
 	HealthScoreTracker,
 	TokenBucketTracker,

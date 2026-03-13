@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+vi.mock('../lib/prompts/host-codex-prompt.js', () => ({
+	getHostCodexPrompt: vi.fn(async () => 'cached host prompt'),
+	prewarmHostCodexPrompt: vi.fn(),
+}));
 import {
     normalizeModel,
     getModelConfig,

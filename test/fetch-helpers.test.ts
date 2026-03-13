@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+vi.mock('../lib/prompts/host-codex-prompt.js', () => ({
+	getHostCodexPrompt: vi.fn(async () => 'cached host prompt'),
+	prewarmHostCodexPrompt: vi.fn(),
+}));
 import * as refreshQueueModule from '../lib/refresh-queue.js';
 import {
     shouldRefreshToken,
