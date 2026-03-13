@@ -452,6 +452,84 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		}
 	});
 
+	it("keeps actionable backups when fast-path metadata stat hits EBUSY", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "locked@example.com",
+					refreshToken: "locked-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("locked-backup");
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "valid@example.com",
+					refreshToken: "valid-token",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+		await storage.createNamedBackup("valid-backup");
+		await storage.saveAccounts(emptyStorage);
+
+		const backupDir = storage.getNamedBackupsDirectoryPath();
+		const lockedBackupPath = join(backupDir, "locked-backup.json");
+		const validBackupPath = join(backupDir, "valid-backup.json");
+		const originalStat = fs.stat.bind(fs);
+		const statSpy = vi.spyOn(fs, "stat").mockImplementation(
+			(async (...args: Parameters<typeof fs.stat>) => {
+				const [path] = args;
+				const normalizedPath =
+					typeof path === "string" ? path.replaceAll("\\", "/") : String(path);
+				if (
+					path === lockedBackupPath ||
+					normalizedPath.endsWith("/locked-backup.json")
+				) {
+					const error = new Error("resource busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalStat(...args);
+			}) as typeof fs.stat,
+		);
+
+		try {
+			const result = await storage.getActionableNamedBackupRestores({
+				currentStorage: emptyStorage,
+			});
+
+			expect(result.totalBackups).toBe(2);
+			expect(result.assessments.map((item) => item.backup.name)).toEqual([
+				"valid-backup",
+				"locked-backup",
+			]);
+			expect(result.assessments.map((item) => item.imported)).toEqual([1, 1]);
+			expect(statSpy.mock.calls.map(([path]) => path)).toEqual(
+				expect.arrayContaining([lockedBackupPath, validBackupPath]),
+			);
+		} finally {
+			statSpy.mockRestore();
+		}
+	});
+
 	it("does not pre-read backups when a custom assessor is injected", async () => {
 		const storage = await import("../lib/storage.js");
 		const emptyStorage = {

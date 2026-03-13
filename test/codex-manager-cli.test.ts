@@ -3250,8 +3250,7 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		try {
 			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -3259,16 +3258,14 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
-			const restoreFailureCalls = [
-				...errorSpy.mock.calls,
-				...logSpy.mock.calls,
-			].flat();
-			expect(restoreFailureCalls).toContainEqual(
-				expect.stringContaining("Restore failed: Import file not found"),
+			expect(warnSpy).toHaveBeenCalledWith(
+				'Failed to restore backup "named-backup" (UNKNOWN).',
+			);
+			expect(warnSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining("/mock/backups/named-backup.json"),
 			);
 		} finally {
-			errorSpy.mockRestore();
-			logSpy.mockRestore();
+			warnSpy.mockRestore();
 		}
 	});
 

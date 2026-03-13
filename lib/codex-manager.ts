@@ -4435,17 +4435,10 @@ async function runBackupRestoreManager(
 		);
 		return "restored";
 	} catch (error) {
-		const errorCode = (error as NodeJS.ErrnoException).code;
-		if (typeof errorCode === "string" && errorCode.trim().length > 0) {
-			console.warn(
-				`Failed to restore backup "${assessment.backup.name}" (${errorCode}).`,
-			);
-		} else {
-			const message = error instanceof Error ? error.message : String(error);
-			console.error(
-				`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
-			);
-		}
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to restore backup "${assessment.backup.name}" (${errorLabel}).`,
+		);
 		return "dismissed";
 	}
 }
