@@ -1221,7 +1221,7 @@ describe("handleSessionRecovery", () => {
 	});
 });
 
-describe.skip("getActionableNamedBackupRestores", () => {
+describe("getActionableNamedBackupRestores", () => {
 	it("filters to actionable restores only", async () => {
 		const mockBackups = [
 			{
