@@ -1141,6 +1141,36 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
 	});
 
+	it("uses the refreshed token email when checking entitlement blocks", async () => {
+		mockStorage.accounts = [
+			{
+				accountId: "acc-1",
+				email: "stale@example.com",
+				refreshToken: "refresh-1",
+			},
+		];
+		extractAccountEmailMock.mockReturnValueOnce("fresh@example.com");
+		const entitlementModule = await import("../lib/entitlement-cache.js");
+		const isBlockedSpy = vi
+			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
+			.mockReturnValue({ blocked: false, waitMs: 0 });
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(isBlockedSpy).toHaveBeenCalledWith(
+			"account:acc-1::email:fresh@example.com",
+			"gpt-5.1",
+		);
+	});
+
 	it("handles network errors and rotates to next account", async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error("Network timeout"));
 

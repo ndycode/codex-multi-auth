@@ -1515,7 +1515,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 												extractAccountEmail(accountAuth.access) ?? account.email;
 											const entitlementAccountKey = resolveEntitlementAccountKey({
 												accountId: account.accountId ?? accountId,
-												email: account.email ?? resolvedEmail,
+												email: resolvedEmail,
 												refreshToken: account.refreshToken,
 												index: account.index,
 											});
