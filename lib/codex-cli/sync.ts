@@ -1,10 +1,13 @@
+import { promises as fs } from "node:fs";
 import { createLogger } from "../logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
+	findMatchingAccountIndex,
 	getLastAccountsSaveTimestamp,
 	getStoragePath,
+	normalizeEmailKey,
 } from "../storage.js";
 import {
 	incrementCodexCliMetric,
@@ -19,12 +22,6 @@ import {
 import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
-
-function normalizeEmail(value: string | undefined): string | undefined {
-	if (!value) return undefined;
-	const trimmed = value.trim().toLowerCase();
-	return trimmed.length > 0 ? trimmed : undefined;
-}
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -218,38 +215,24 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	nextCodexCliSyncRunRevision = 0;
 }
 
-function buildIndexByAccountId(
+function hasConflictingIdentity(
 	accounts: AccountMetadataV3[],
-): Map<string, number> {
-	const map = new Map<string, number>();
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account?.accountId) continue;
-		map.set(account.accountId, i);
+	snapshot: CodexCliAccountSnapshot,
+): boolean {
+	const normalizedEmail = normalizeEmailKey(snapshot.email);
+	for (const account of accounts) {
+		if (!account) continue;
+		if (snapshot.accountId && account.accountId === snapshot.accountId) {
+			return true;
+		}
+		if (snapshot.refreshToken && account.refreshToken === snapshot.refreshToken) {
+			return true;
+		}
+		if (normalizedEmail && normalizeEmailKey(account.email) === normalizedEmail) {
+			return true;
+		}
 	}
-	return map;
-}
-
-function buildIndexByRefresh(
-	accounts: AccountMetadataV3[],
-): Map<string, number> {
-	const map = new Map<string, number>();
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account?.refreshToken) continue;
-		map.set(account.refreshToken, i);
-	}
-	return map;
-}
-
-function buildIndexByEmail(accounts: AccountMetadataV3[]): Map<string, number> {
-	const map = new Map<string, number>();
-	for (let i = 0; i < accounts.length; i += 1) {
-		const email = normalizeEmail(accounts[i]?.email);
-		if (!email) continue;
-		map.set(email, i);
-	}
-	return map;
+	return false;
 }
 
 function toStorageAccount(
@@ -277,21 +260,14 @@ function upsertFromSnapshot(
 	const nextAccount = toStorageAccount(snapshot);
 	if (!nextAccount) return { action: "skipped" };
 
-	const byAccountId = buildIndexByAccountId(accounts);
-	const byRefresh = buildIndexByRefresh(accounts);
-	const byEmail = buildIndexByEmail(accounts);
-	const normalizedEmail = normalizeEmail(snapshot.email);
-
-	let targetIndex: number | undefined;
-	if (snapshot.accountId && byAccountId.has(snapshot.accountId)) {
-		targetIndex = byAccountId.get(snapshot.accountId);
-	} else if (snapshot.refreshToken && byRefresh.has(snapshot.refreshToken)) {
-		targetIndex = byRefresh.get(snapshot.refreshToken);
-	} else if (normalizedEmail && byEmail.has(normalizedEmail)) {
-		targetIndex = byEmail.get(normalizedEmail);
-	}
+	const targetIndex = findMatchingAccountIndex(accounts, snapshot, {
+		allowUniqueAccountIdFallbackWithoutEmail: true,
+	});
 
 	if (targetIndex === undefined) {
+		if (hasConflictingIdentity(accounts, snapshot)) {
+			return { action: "skipped" };
+		}
 		accounts.push(nextAccount);
 		return { action: "added" };
 	}
@@ -325,25 +301,20 @@ function resolveActiveIndex(
 	accounts: AccountMetadataV3[],
 	activeAccountId: string | undefined,
 	activeEmail: string | undefined,
-): number {
-	if (accounts.length === 0) return 0;
-
-	if (activeAccountId) {
-		const byId = accounts.findIndex(
-			(account) => account.accountId === activeAccountId,
-		);
-		if (byId >= 0) return byId;
-	}
-
-	const normalizedEmail = normalizeEmail(activeEmail);
-	if (normalizedEmail) {
-		const byEmail = accounts.findIndex(
-			(account) => normalizeEmail(account.email) === normalizedEmail,
-		);
-		if (byEmail >= 0) return byEmail;
-	}
-
-	return 0;
+): number | undefined {
+	if (accounts.length === 0) return undefined;
+	if (!activeAccountId && !normalizeEmailKey(activeEmail)) return undefined;
+	return findMatchingAccountIndex(
+		accounts,
+		{
+			accountId: activeAccountId,
+			email: activeEmail,
+			refreshToken: undefined,
+		},
+		{
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		},
+	);
 }
 
 function writeFamilyIndexes(storage: AccountStorageV3, index: number): void {
@@ -351,6 +322,15 @@ function writeFamilyIndexes(storage: AccountStorageV3, index: number): void {
 	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
 	for (const family of MODEL_FAMILIES) {
 		storage.activeIndexByFamily[family] = index;
+	}
+}
+
+async function getPersistedLocalSelectionTimestamp(): Promise<number> {
+	try {
+		const stats = await fs.stat(getStoragePath());
+		return Number.isFinite(stats.mtimeMs) ? stats.mtimeMs : 0;
+	} catch {
+		return 0;
 	}
 }
 
@@ -431,6 +411,7 @@ function readActiveFromSnapshots(snapshots: CodexCliAccountSnapshot[]): {
  */
 function shouldApplyCodexCliSelection(
 	state: Awaited<ReturnType<typeof loadCodexCliState>>,
+	persistedLocalTimestamp = 0,
 ): boolean {
 	if (!state) return false;
 	const hasSyncVersion =
@@ -444,6 +425,7 @@ function shouldApplyCodexCliSelection(
 	const localVersion = Math.max(
 		getLastAccountsSaveTimestamp(),
 		getLastCodexCliSelectionWriteTimestamp(),
+		persistedLocalTimestamp,
 	);
 	if (codexVersion <= 0 || localVersion <= 0) return true;
 	// Keep local selection when plugin wrote more recently than Codex state.
@@ -454,6 +436,7 @@ function shouldApplyCodexCliSelection(
 function reconcileCodexCliState(
 	current: AccountStorageV3 | null,
 	state: NonNullable<Awaited<ReturnType<typeof loadCodexCliState>>>,
+	options: { persistedLocalTimestamp?: number } = {},
 ): ReconcileResult {
 	const next = current ? cloneStorage(current) : createEmptyStorage();
 	const targetAccountCountBefore = next.accounts.length;
@@ -495,14 +478,32 @@ function reconcileCodexCliState(
 		const activeFromSnapshots = readActiveFromSnapshots(state.accounts);
 		const previousActive = next.activeIndex;
 		const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
-		const applyActiveFromCodex = shouldApplyCodexCliSelection(state);
+		const applyActiveFromCodex = shouldApplyCodexCliSelection(
+			state,
+			options.persistedLocalTimestamp ?? 0,
+		);
 		if (applyActiveFromCodex) {
 			const desiredIndex = resolveActiveIndex(
 				next.accounts,
 				state.activeAccountId ?? activeFromSnapshots.accountId,
 				state.activeEmail ?? activeFromSnapshots.email,
 			);
-			writeFamilyIndexes(next, desiredIndex);
+			if (typeof desiredIndex === "number") {
+				writeFamilyIndexes(next, desiredIndex);
+			} else if (
+				state.activeAccountId ||
+				state.activeEmail ||
+				activeFromSnapshots.accountId ||
+				activeFromSnapshots.email
+			) {
+				log.debug(
+					"Skipped Codex CLI active selection overwrite due to ambiguous source selection",
+					{
+						operation: "reconcile-storage",
+						outcome: "selection-ambiguous",
+					},
+				);
+			}
 		} else {
 			log.debug(
 				"Skipped Codex CLI active selection overwrite due to newer local state",
@@ -571,7 +572,9 @@ export async function previewCodexCliSync(
 			};
 		}
 
-		const reconciled = reconcileCodexCliState(current, state);
+		const reconciled = reconcileCodexCliState(current, state, {
+			persistedLocalTimestamp: await getPersistedLocalSelectionTimestamp(),
+		});
 		const status = reconciled.changed ? "ready" : "noop";
 		const statusDetail = reconciled.changed
 			? `Preview ready: ${reconciled.summary.addedAccountCount} add, ${reconciled.summary.updatedAccountCount} update, ${reconciled.summary.destinationOnlyPreservedCount} destination-only preserved.`
@@ -672,7 +675,9 @@ export async function applyCodexCliSyncToStorage(
 			return { storage: current, changed: false, pendingRun: null };
 		}
 
-		const reconciled = reconcileCodexCliState(current, state);
+		const reconciled = reconcileCodexCliState(current, state, {
+			persistedLocalTimestamp: await getPersistedLocalSelectionTimestamp(),
+		});
 		const next = reconciled.next;
 		const changed = reconciled.changed;
 		const storage =

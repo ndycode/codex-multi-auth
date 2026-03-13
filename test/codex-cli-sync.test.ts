@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountStorageV3 } from "../lib/storage.js";
+import * as storageModule from "../lib/storage.js";
 import * as codexCliState from "../lib/codex-cli/state.js";
 import { clearCodexCliStateCache } from "../lib/codex-cli/state.js";
 import {
@@ -15,6 +16,7 @@ import {
 	previewCodexCliSync,
 	syncAccountStorageFromCodexCli,
 } from "../lib/codex-cli/sync.js";
+import * as writerModule from "../lib/codex-cli/writer.js";
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 
@@ -46,6 +48,7 @@ describe("codex-cli sync", () => {
 	let accountsPath: string;
 	let authPath: string;
 	let configPath: string;
+	let targetStoragePath: string;
 	let previousPath: string | undefined;
 	let previousAuthPath: string | undefined;
 	let previousConfigPath: string | undefined;
@@ -63,16 +66,19 @@ describe("codex-cli sync", () => {
 		accountsPath = join(tempDir, "accounts.json");
 		authPath = join(tempDir, "auth.json");
 		configPath = join(tempDir, "config.toml");
+		targetStoragePath = join(tempDir, "openai-codex-accounts.json");
 		process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
 		process.env.CODEX_CLI_AUTH_PATH = authPath;
 		process.env.CODEX_CLI_CONFIG_PATH = configPath;
 		process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
 		process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
+		vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
 		clearCodexCliStateCache();
 		__resetLastCodexCliSyncRunForTests();
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		clearCodexCliStateCache();
 		__resetLastCodexCliSyncRunForTests();
 		if (previousPath === undefined) delete process.env.CODEX_CLI_ACCOUNTS_PATH;
@@ -318,6 +324,256 @@ describe("codex-cli sync", () => {
 		expect(preview.backup.rollbackPaths).toContain(`${preview.targetPath}.bak`);
 		expect(preview.backup.rollbackPaths).toContain(`${preview.targetPath}.wal`);
 		expect(current.accounts).toHaveLength(2);
+	});
+
+	it("skips ambiguous duplicate-email source matches instead of overwriting a local account", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							email: "dup@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-new",
+									refresh_token: "refresh-new",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "dup@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					email: "dup@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			forceRefresh: true,
+		});
+
+		expect(result.changed).toBe(false);
+		expect(result.pendingRun).toBeNull();
+		expect(result.storage?.accounts).toEqual(current.accounts);
+	});
+
+	it("skips ambiguous duplicate-accountId source matches instead of overwriting a local account", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							accountId: "shared-id",
+							auth: {
+								tokens: {
+									access_token: "access-new",
+									refresh_token: "refresh-new",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "shared-id",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "shared-id",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			forceRefresh: true,
+		});
+
+		expect(result.changed).toBe(false);
+		expect(result.pendingRun).toBeNull();
+		expect(result.storage?.accounts).toEqual(current.accounts);
+	});
+
+	it("preserves the current selection when Codex CLI source has no active marker", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+		});
+
+		expect(preview.status).toBe("noop");
+		expect(preview.summary.selectionChanged).toBe(false);
+	});
+
+	it("preserves a newer persisted local selection after restart", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const sourceTime = new Date("2026-03-13T00:00:00.000Z");
+		const targetTime = new Date("2026-03-13T00:00:05.000Z");
+		await utimes(accountsPath, sourceTime, sourceTime);
+		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
+		await utimes(targetStoragePath, targetTime, targetTime);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+		});
+
+		expect(preview.status).toBe("noop");
+		expect(preview.summary.selectionChanged).toBe(false);
 	});
 
 	it("records a changed manual sync only after the caller commits persistence", async () => {
