@@ -15,7 +15,6 @@ import {
 } from "./observability.js";
 import {
 	type CodexCliAccountSnapshot,
-	type CodexCliState,
 	isCodexCliSyncEnabled,
 	loadCodexCliState,
 } from "./state.js";
@@ -73,7 +72,7 @@ export interface CodexCliSyncPreview {
 	status: "ready" | "noop" | "disabled" | "unavailable" | "error";
 	statusDetail: string;
 	sourcePath: string | null;
-	sourceState: CodexCliState | null;
+	sourceAccountCount: number | null;
 	targetPath: string;
 	summary: CodexCliSyncSummary;
 	backup: CodexCliSyncBackupContext;
@@ -317,11 +316,21 @@ function resolveActiveIndex(
 	);
 }
 
-function writeFamilyIndexes(storage: AccountStorageV3, index: number): void {
+function applyCodexCliSelection(
+	storage: AccountStorageV3,
+	index: number,
+): void {
+	const previousActiveIndex = normalizeIndexCandidate(storage.activeIndex, 0);
 	storage.activeIndex = index;
 	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
 	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = index;
+		const raw = storage.activeIndexByFamily[family];
+		if (
+			typeof raw === "number" &&
+			normalizeIndexCandidate(raw, previousActiveIndex) === previousActiveIndex
+		) {
+			storage.activeIndexByFamily[family] = index;
+		}
 	}
 }
 
@@ -499,7 +508,7 @@ function reconcileCodexCliState(
 				state.activeEmail ?? activeFromSnapshots.email,
 			);
 			if (typeof desiredIndex === "number") {
-				writeFamilyIndexes(next, desiredIndex);
+				applyCodexCliSelection(next, desiredIndex);
 			} else if (
 				state.activeAccountId ||
 				state.activeEmail ||
@@ -559,7 +568,7 @@ export async function previewCodexCliSync(
 				status: "disabled",
 				statusDetail: "Codex CLI sync is disabled by environment override.",
 				sourcePath: null,
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath,
 				summary: emptySummary,
 				backup,
@@ -574,7 +583,7 @@ export async function previewCodexCliSync(
 				status: "unavailable",
 				statusDetail: "No Codex CLI sync source was found.",
 				sourcePath: null,
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath,
 				summary: emptySummary,
 				backup,
@@ -604,7 +613,7 @@ export async function previewCodexCliSync(
 			status,
 			statusDetail,
 			sourcePath: state.path,
-			sourceState: state,
+			sourceAccountCount: state.accounts.length,
 			targetPath,
 			summary: reconciled.summary,
 			backup,
@@ -615,7 +624,7 @@ export async function previewCodexCliSync(
 			status: "error",
 			statusDetail: error instanceof Error ? error.message : String(error),
 			sourcePath: null,
-			sourceState: null,
+			sourceAccountCount: null,
 			targetPath,
 			summary: emptySummary,
 			backup,

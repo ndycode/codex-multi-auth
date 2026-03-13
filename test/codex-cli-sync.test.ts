@@ -705,6 +705,101 @@ describe("codex-cli sync", () => {
 		expect(preview.summary.selectionChanged).toBe(false);
 	});
 
+	it.each(["EBUSY", "EPERM"] as const)(
+		"preserves the local selection when reading the persisted target timestamp fails with %s",
+		async (code) => {
+			await writeFile(
+				accountsPath,
+				JSON.stringify(
+					{
+						activeAccountId: "acc_a",
+						accounts: [
+							{
+								accountId: "acc_a",
+								email: "a@example.com",
+								auth: {
+									tokens: {
+										access_token: "access-a",
+										refresh_token: "refresh-a",
+									},
+								},
+							},
+							{
+								accountId: "acc_b",
+								email: "b@example.com",
+								auth: {
+									tokens: {
+										access_token: "access-b",
+										refresh_token: "refresh-b",
+									},
+								},
+							},
+						],
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+			vi.spyOn(
+				writerModule,
+				"getLastCodexCliSelectionWriteTimestamp",
+			).mockReturnValue(0);
+			vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
+			const statError = new Error(`${code.toLowerCase()} target`) as NodeJS.ErrnoException;
+			statError.code = code;
+			const nodeFs = await import("node:fs");
+			const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+			const statSpy = vi
+				.spyOn(nodeFs.promises, "stat")
+				.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+					if (args[0] === targetStoragePath) {
+						throw statError;
+					}
+					return originalStat(...args);
+				});
+
+			const current: AccountStorageV3 = {
+				version: 3,
+				accounts: [
+					{
+						accountId: "acc_a",
+						accountIdSource: "token",
+						email: "a@example.com",
+						refreshToken: "refresh-a",
+						accessToken: "access-a",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "acc_b",
+						accountIdSource: "token",
+						email: "b@example.com",
+						refreshToken: "refresh-b",
+						accessToken: "access-b",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+			};
+
+			try {
+				const preview = await previewCodexCliSync(current, {
+					forceRefresh: true,
+				});
+
+				expect(preview.status).toBe("noop");
+				expect(preview.summary.selectionChanged).toBe(false);
+			} finally {
+				statSpy.mockRestore();
+			}
+		},
+	);
+
 	it("records a changed manual sync only after the caller commits persistence", async () => {
 		await writeFile(
 			accountsPath,
@@ -854,6 +949,99 @@ describe("codex-cli sync", () => {
 		} finally {
 			loadSpy.mockRestore();
 		}
+	});
+
+	it("preserves explicit per-family selections when Codex CLI updates the global selection", async () => {
+		const alternateFamily = MODEL_FAMILIES.find((family) => family !== "codex");
+		expect(alternateFamily).toBeDefined();
+		if (!alternateFamily) {
+			return;
+		}
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+						{
+							accountId: "acc_c",
+							email: "c@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-c",
+									refresh_token: "refresh-c",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_c",
+					email: "c@example.com",
+					refreshToken: "refresh-c",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: {
+				codex: 0,
+				[alternateFamily]: 2,
+			},
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			forceRefresh: true,
+		});
+
+		expect(result.changed).toBe(true);
+		expect(result.storage?.activeIndex).toBe(1);
+		expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
+		expect(result.storage?.activeIndexByFamily?.[alternateFamily]).toBe(2);
 	});
 
 	it("forces a fresh Codex CLI state read on apply when forceRefresh is omitted", async () => {

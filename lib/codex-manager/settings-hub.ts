@@ -2,7 +2,6 @@ import { promises as fs } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
-	type CodexCliState,
 	getCodexCliAccountsPath,
 	getCodexCliAuthPath,
 	getCodexCliConfigPath,
@@ -309,7 +308,7 @@ interface SyncCenterOverviewContext {
 	accountsPath: string;
 	authPath: string;
 	configPath: string;
-	state: CodexCliState | null;
+	sourceAccountCount: number | null;
 	liveSync: LiveAccountSyncSnapshot;
 	syncEnabled: boolean;
 }
@@ -1324,13 +1323,13 @@ function formatSyncMtime(mtimeMs: number | null): string {
 }
 
 function resolveSyncCenterContext(
-	state: CodexCliState | null,
+	sourceAccountCount: number | null,
 ): SyncCenterOverviewContext {
 	return {
 		accountsPath: getCodexCliAccountsPath(),
 		authPath: getCodexCliAuthPath(),
 		configPath: getCodexCliConfigPath(),
-		state,
+		sourceAccountCount,
 		liveSync: getLastLiveAccountSyncSnapshot(),
 		syncEnabled: isCodexCliSyncEnabled(),
 	};
@@ -1381,8 +1380,8 @@ function buildSyncCenterOverview(
 		`Accounts path: ${context.accountsPath}`,
 		`Auth path: ${context.authPath}`,
 		`Config path: ${context.configPath}`,
-		context.state
-			? `Visible source accounts: ${context.state.accounts.length}.`
+		context.sourceAccountCount !== null
+			? `Visible source accounts: ${context.sourceAccountCount}.`
 			: "No readable Codex CLI source is visible right now.",
 	].join("\n");
 	const selectionHint = preview.summary.selectionChanged
@@ -2689,7 +2688,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		});
 		return {
 			preview,
-			context: resolveSyncCenterContext(preview.sourceState),
+			context: resolveSyncCenterContext(preview.sourceAccountCount),
 		};
 	};
 	const buildErrorState = (
@@ -2707,7 +2706,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 					status: "error",
 					statusDetail: message,
 				},
-				context: resolveSyncCenterContext(previousPreview.sourceState),
+				context: resolveSyncCenterContext(previousPreview.sourceAccountCount),
 			};
 		}
 
@@ -2727,7 +2726,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				status: "error",
 				statusDetail: message,
 				sourcePath: null,
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath,
 				summary: emptySummary,
 				backup: {
@@ -2836,7 +2835,6 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				forceRefresh: true,
 			});
 			const storageBackupEnabled = getStorageBackupEnabled(config);
-			const nextStorage = synced.storage ?? current;
 			if (synced.changed && synced.storage) {
 				const syncedStorage = synced.storage;
 				try {
@@ -2859,11 +2857,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 					continue;
 				}
 			}
-			preview = await previewCodexCliSync(nextStorage, {
-				forceRefresh: true,
-				storageBackupEnabled,
-			});
-			context = resolveSyncCenterContext(preview.sourceState);
+			({ preview, context } = await buildPreviewSafely(true, preview));
 		} catch (error) {
 			preview = {
 				...preview,

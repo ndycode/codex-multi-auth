@@ -615,7 +615,7 @@ describe("codex manager cli commands", () => {
 			status: "unavailable",
 			statusDetail: "No Codex CLI sync source was found.",
 			sourcePath: null,
-			sourceState: null,
+			sourceAccountCount: null,
 			targetPath: "/mock/openai-codex-accounts.json",
 			summary: {
 				sourceAccountCount: 0,
@@ -2720,7 +2720,7 @@ describe("codex manager cli commands", () => {
 				status: "ready",
 				statusDetail: "Preview ready.",
 				sourcePath: "/mock/codex/accounts.json",
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -2794,7 +2794,7 @@ describe("codex manager cli commands", () => {
 				status: "ready",
 				statusDetail: "Preview ready.",
 				sourcePath: "/mock/codex/accounts.json",
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -2817,7 +2817,7 @@ describe("codex manager cli commands", () => {
 				status: "noop",
 				statusDetail: "Target already matches the current one-way sync result.",
 				sourcePath: "/mock/codex/accounts.json",
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -2897,6 +2897,128 @@ describe("codex manager cli commands", () => {
 		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(2);
 	});
 
+	it("rebuilds the sync-center preview from reloaded disk storage after apply", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const storage = createSettingsStorage(now);
+		const syncedStorage = {
+			...storage,
+			accounts: [
+				...storage.accounts,
+				{
+					email: "codex@example.com",
+					accountId: "acc_codex",
+					refreshToken: "refresh-codex",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+		const persistedStorage = {
+			...syncedStorage,
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		loadAccountsMock.mockImplementation(async () =>
+			saveAccountsMock.mock.calls.length > 0 ? persistedStorage : storage,
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		previewCodexCliSyncMock
+			.mockResolvedValueOnce({
+				status: "ready",
+				statusDetail: "Preview ready.",
+				sourcePath: "/mock/codex/accounts.json",
+				sourceAccountCount: 1,
+				targetPath: "/mock/openai-codex-accounts.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 1,
+					targetAccountCountAfter: 2,
+					addedAccountCount: 1,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 1,
+					selectionChanged: true,
+				},
+				backup: {
+					enabled: true,
+					targetPath: "/mock/openai-codex-accounts.json",
+					rollbackPaths: ["/mock/openai-codex-accounts.json.bak"],
+				},
+				lastSync: null,
+			})
+			.mockResolvedValueOnce({
+				status: "noop",
+				statusDetail: "Target already matches the current one-way sync result.",
+				sourcePath: "/mock/codex/accounts.json",
+				sourceAccountCount: 1,
+				targetPath: "/mock/openai-codex-accounts.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 2,
+					targetAccountCountAfter: 2,
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 1,
+					destinationOnlyPreservedCount: 1,
+					selectionChanged: false,
+				},
+				backup: {
+					enabled: true,
+					targetPath: "/mock/openai-codex-accounts.json",
+					rollbackPaths: ["/mock/openai-codex-accounts.json.bak"],
+				},
+				lastSync: null,
+			});
+		applyCodexCliSyncToStorageMock.mockResolvedValueOnce({
+			changed: true,
+			storage: syncedStorage,
+			pendingRun: {
+				revision: 6,
+				run: {
+					outcome: "changed",
+					runAt: now,
+					sourcePath: "/mock/codex/accounts.json",
+					targetPath: "/mock/openai-codex-accounts.json",
+					summary: {
+						sourceAccountCount: 1,
+						targetAccountCountBefore: 1,
+						targetAccountCountAfter: 2,
+						addedAccountCount: 1,
+						updatedAccountCount: 0,
+						unchangedAccountCount: 0,
+						destinationOnlyPreservedCount: 1,
+						selectionChanged: true,
+					},
+				},
+			},
+		});
+
+		let selectCall = 0;
+		selectMock.mockImplementation(async () => {
+			selectCall += 1;
+			if (selectCall === 1) return { type: "sync-center" };
+			if (selectCall === 2) return { type: "apply" };
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(loadAccountsMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			syncedStorage,
+			expect.objectContaining({ backupEnabled: true }),
+		);
+		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(2);
+		expect(previewCodexCliSyncMock.mock.calls[1]?.[0]).toBe(persistedStorage);
+		expect(previewCodexCliSyncMock.mock.calls[1]?.[0]).not.toBe(syncedStorage);
+	});
+
 	it("retries transient sync-center save failures before committing the sync run", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
@@ -2910,7 +3032,7 @@ describe("codex manager cli commands", () => {
 				status: "ready",
 				statusDetail: "Preview ready.",
 				sourcePath: "/mock/codex/accounts.json",
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -2933,7 +3055,7 @@ describe("codex manager cli commands", () => {
 				status: "noop",
 				statusDetail: "Target already matches the current one-way sync result.",
 				sourcePath: "/mock/codex/accounts.json",
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -3029,7 +3151,7 @@ describe("codex manager cli commands", () => {
 				status: "ready",
 				statusDetail: "Preview ready.",
 				sourcePath: "/mock/codex/accounts.json",
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -3052,7 +3174,7 @@ describe("codex manager cli commands", () => {
 				status: "noop",
 				statusDetail: "Target already matches the current one-way sync result.",
 				sourcePath: "/mock/codex/accounts.json",
-				sourceState: null,
+				sourceAccountCount: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -3161,7 +3283,7 @@ describe("codex manager cli commands", () => {
 			status: "ready",
 			statusDetail: "Preview ready.",
 			sourcePath: "/mock/codex/accounts.json",
-			sourceState: null,
+			sourceAccountCount: null,
 			targetPath: "/mock/openai-codex-accounts.json",
 			summary: {
 				sourceAccountCount: 1,

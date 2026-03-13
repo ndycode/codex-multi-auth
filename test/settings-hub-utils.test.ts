@@ -277,7 +277,7 @@ describe("settings-hub utility coverage", () => {
 				accountsPath: "/tmp/source/accounts.json",
 				authPath: "/tmp/source/auth.json",
 				configPath: "/tmp/source/config.toml",
-				state: { accounts: [{}] },
+				sourceAccountCount: 1,
 				liveSync: {
 					path: "/tmp/target/openai-codex-accounts.json",
 					running: true,
@@ -332,7 +332,7 @@ describe("settings-hub utility coverage", () => {
 				accountsPath: "c:/users/neil/.codex/accounts.json",
 				authPath: "c:/users/neil/.codex/auth.json",
 				configPath: "c:/users/neil/.codex/config.toml",
-				state: { accounts: [{}] },
+				sourceAccountCount: 1,
 				liveSync: {
 					path: null,
 					running: false,
