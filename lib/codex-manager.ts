@@ -84,6 +84,7 @@ import {
 	listRotatingBackups,
 	loadAccounts,
 	loadFlaggedAccounts,
+	restoreNamedBackup,
 	saveAccounts,
 	saveFlaggedAccounts,
 	setStoragePath,
@@ -4177,7 +4178,9 @@ function buildBackupStatusSummary(entry: BackupBrowserEntry): string {
 	return stylePromptText("Valid backup", "success");
 }
 
-function showBackupBrowserDetails(entry: BackupBrowserEntry): Promise<void> {
+async function showBackupBrowserDetails(
+	entry: BackupBrowserEntry,
+): Promise<"back" | "restore"> {
 	const backup = entry.backup;
 	const typeLabel =
 		entry.kind === "named"
@@ -4231,7 +4234,30 @@ function showBackupBrowserDetails(entry: BackupBrowserEntry): Promise<void> {
 		console.log(line);
 	}
 	console.log("");
-	return waitForMenuReturn();
+	if (
+		entry.kind !== "named" ||
+		!entry.assessment.valid ||
+		entry.assessment.wouldExceedLimit
+	) {
+		await waitForMenuReturn();
+		return "back";
+	}
+	const action = await select<"restore" | "back">(
+		[
+			{ label: "Restore This Backup", value: "restore", color: "green" },
+			{ label: "Back", value: "back" },
+		],
+		{
+			message: "Backup Browser",
+			subtitle: entry.label,
+			help: "Enter Select | Q Back",
+			clearScreen: true,
+			selectedEmphasis: "minimal",
+			focusStyle: getUiRuntimeOptions().theme ? "row-invert" : "row-invert",
+			theme: getUiRuntimeOptions().theme,
+		},
+	);
+	return action === "restore" ? "restore" : "back";
 }
 
 async function runBackupBrowserManager(
@@ -4332,7 +4358,34 @@ async function runBackupBrowserManager(
 			return;
 		}
 
-		await showBackupBrowserDetails(selection.entry);
+		const entry = selection.entry;
+		const action = await showBackupBrowserDetails(entry);
+		if (action === "restore") {
+			if (entry.kind !== "named") {
+				continue;
+			}
+			const namedEntry = entry as Extract<
+				BackupBrowserEntry,
+				{ kind: "named" }
+			>;
+			const backupName = namedEntry.backup.name;
+			const confirmed = await confirm(`Restore backup ${backupName}?`);
+			if (!confirmed) {
+				continue;
+			}
+			await runActionPanel(
+				"Restore Backup",
+				`Restoring ${backupName}`,
+				async () => {
+					const result = await restoreNamedBackup(backupName);
+					console.log(
+						`Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`,
+					);
+				},
+				displaySettings,
+			);
+			return;
+		}
 	}
 }
 
