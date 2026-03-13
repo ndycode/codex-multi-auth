@@ -375,7 +375,7 @@ describe("codex-cli sync", () => {
 		expect(lastRun?.summary.destinationOnlyPreservedCount).toBe(1);
 	});
 
-	it("forces a fresh Codex CLI read when apply is requested with forceRefresh", async () => {
+	it("re-reads Codex CLI state on apply when forceRefresh is requested", async () => {
 		await writeFile(
 			accountsPath,
 			JSON.stringify(
@@ -415,12 +415,57 @@ describe("codex-cli sync", () => {
 			activeIndexByFamily: { codex: 0 },
 		};
 
+		await previewCodexCliSync(current, { forceRefresh: true });
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_c",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+						{
+							accountId: "acc_c",
+							email: "c@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-c",
+									refresh_token: "refresh-c",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
 		const loadSpy = vi.spyOn(codexCliState, "loadCodexCliState");
 		try {
-			await applyCodexCliSyncToStorage(current, { forceRefresh: true });
+			const result = await applyCodexCliSyncToStorage(current, {
+				forceRefresh: true,
+			});
 			expect(loadSpy).toHaveBeenCalledWith(
 				expect.objectContaining({ forceRefresh: true }),
 			);
+			expect(result.changed).toBe(true);
+			expect(result.storage?.accounts.map((account) => account.accountId)).toEqual([
+				"acc_a",
+				"acc_b",
+				"acc_c",
+			]);
+			expect(result.storage?.activeIndex).toBe(2);
 		} finally {
 			loadSpy.mockRestore();
 		}
