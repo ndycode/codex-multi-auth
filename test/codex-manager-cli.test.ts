@@ -25,6 +25,7 @@ const exportNamedBackupMock = vi.fn();
 const promptQuestionMock = vi.fn();
 const detectOcChatgptMultiAuthTargetMock = vi.fn();
 const normalizeAccountStorageMock = vi.fn((value) => value);
+const withAccountStorageTransactionMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -93,6 +94,7 @@ vi.mock("../lib/storage.js", async () => {
 		loadFlaggedAccounts: loadFlaggedAccountsMock,
 		saveAccounts: saveAccountsMock,
 		saveFlaggedAccounts: saveFlaggedAccountsMock,
+		withAccountStorageTransaction: withAccountStorageTransactionMock,
 		setStoragePath: setStoragePathMock,
 		getStoragePath: getStoragePathMock,
 		exportNamedBackup: exportNamedBackupMock,
@@ -410,6 +412,7 @@ describe("codex manager cli commands", () => {
 		loadFlaggedAccountsMock.mockReset();
 		saveAccountsMock.mockReset();
 		saveFlaggedAccountsMock.mockReset();
+		withAccountStorageTransactionMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
 		promptAddAnotherAccountMock.mockReset();
@@ -436,6 +439,13 @@ describe("codex manager cli commands", () => {
 			version: 1,
 			accounts: [],
 		});
+		withAccountStorageTransactionMock.mockImplementation(
+			async (handler) =>
+				handler(
+					await loadAccountsMock(),
+					async (storage: unknown) => saveAccountsMock(storage),
+				),
+		);
 		loadDashboardDisplaySettingsMock.mockResolvedValue({
 			showPerAccountRows: true,
 			showQuotaDetails: true,
@@ -1191,6 +1201,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(storageState.accounts).toHaveLength(2);
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);

@@ -58,6 +58,7 @@ import {
 	saveFlaggedAccounts,
 	saveAccounts,
 	setStoragePath,
+	withAccountStorageTransaction,
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
@@ -1262,91 +1263,96 @@ async function persistAccountPool(
 ): Promise<void> {
 	if (results.length === 0) return;
 
-	const loadedStorage = replaceAll
-		? null
-		: await loadAccounts();
-	const now = Date.now();
-	const accounts = loadedStorage?.accounts ? [...loadedStorage.accounts] : [];
-	let selectedAccountIndex: number | null = null;
+	await withAccountStorageTransaction(async (loadedStorage, persist) => {
+		const stored = replaceAll ? null : loadedStorage;
+		const now = Date.now();
+		const accounts = stored?.accounts ? [...stored.accounts] : [];
+		let selectedAccountIndex: number | null = null;
 
-	for (const result of results) {
-		const tokenAccountId = extractAccountId(result.access);
-		const accountId = resolveRequestAccountId(
-			result.accountIdOverride,
-			result.accountIdSource,
-			tokenAccountId,
-		);
-		const accountIdSource = accountId
-			? (result.accountIdSource ?? (result.accountIdOverride ? "manual" : "token"))
-			: undefined;
-		const accountLabel = result.accountLabel;
-		const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
-		const existingIndex = findMatchingAccountIndex(accounts, {
-			accountId,
-			email: accountEmail,
-			refreshToken: result.refresh,
-		});
-
-		if (existingIndex === undefined) {
-			const newIndex = accounts.length;
-			accounts.push({
+		for (const result of results) {
+			const tokenAccountId = extractAccountId(result.access);
+			const accountId = resolveRequestAccountId(
+				result.accountIdOverride,
+				result.accountIdSource,
+				tokenAccountId,
+			);
+			const accountIdSource = accountId
+				? (result.accountIdSource ?? (result.accountIdOverride ? "manual" : "token"))
+				: undefined;
+			const accountLabel = result.accountLabel;
+			const accountEmail = sanitizeEmail(
+				extractAccountEmail(result.access, result.idToken),
+			);
+			const existingIndex = findMatchingAccountIndex(accounts, {
 				accountId,
-				accountIdSource,
-				accountLabel,
 				email: accountEmail,
+				refreshToken: result.refresh,
+			});
+
+			if (existingIndex === undefined) {
+				const newIndex = accounts.length;
+				accounts.push({
+					accountId,
+					accountIdSource,
+					accountLabel,
+					email: accountEmail,
+					refreshToken: result.refresh,
+					accessToken: result.access,
+					expiresAt: result.expires,
+					enabled: true,
+					addedAt: now,
+					lastUsed: now,
+				});
+				selectedAccountIndex = newIndex;
+				continue;
+			}
+
+			const existing = accounts[existingIndex];
+			if (!existing) continue;
+
+			const nextEmail = accountEmail ?? existing.email;
+			const nextAccountId = accountId ?? existing.accountId;
+			const nextAccountIdSource = accountId
+				? (accountIdSource ?? existing.accountIdSource)
+				: existing.accountIdSource;
+
+			accounts[existingIndex] = {
+				...existing,
+				accountId: nextAccountId,
+				accountIdSource: nextAccountIdSource,
+				accountLabel: accountLabel ?? existing.accountLabel,
+				email: nextEmail,
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
 				enabled: true,
-				addedAt: now,
 				lastUsed: now,
-			});
-			selectedAccountIndex = newIndex;
-			continue;
+			};
+			selectedAccountIndex = existingIndex;
 		}
 
-		const existing = accounts[existingIndex];
-		if (!existing) continue;
+		const fallbackActiveIndex = accounts.length === 0
+			? 0
+			: Math.max(
+				0,
+				Math.min(stored?.activeIndex ?? 0, accounts.length - 1),
+			);
+		const nextActiveIndex = accounts.length === 0
+			? 0
+			: selectedAccountIndex === null
+				? fallbackActiveIndex
+				: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
+		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+		for (const family of MODEL_FAMILIES) {
+			activeIndexByFamily[family] = nextActiveIndex;
+		}
 
-		const nextEmail = accountEmail ?? existing.email;
-		const nextAccountId = accountId ?? existing.accountId;
-		const nextAccountIdSource = accountId
-			? (accountIdSource ?? existing.accountIdSource)
-			: existing.accountIdSource;
-
-		accounts[existingIndex] = {
-			...existing,
-			accountId: nextAccountId,
-			accountIdSource: nextAccountIdSource,
-			accountLabel: accountLabel ?? existing.accountLabel,
-			email: nextEmail,
-			refreshToken: result.refresh,
-			accessToken: result.access,
-			expiresAt: result.expires,
-			enabled: true,
-			lastUsed: now,
-		};
-		selectedAccountIndex = existingIndex;
-	}
-
-	const fallbackActiveIndex = accounts.length === 0
-		? 0
-		: Math.max(0, Math.min(loadedStorage?.activeIndex ?? 0, accounts.length - 1));
-	const nextActiveIndex = accounts.length === 0
-		? 0
-		: selectedAccountIndex === null
-			? fallbackActiveIndex
-			: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = nextActiveIndex;
-	}
-
-	await saveAccounts({
-		version: 3,
-		accounts,
-		activeIndex: nextActiveIndex,
-		activeIndexByFamily,
+		await persist({
+			version: 3,
+			accounts,
+			activeIndex: nextActiveIndex,
+			activeIndexByFamily,
+		});
 	});
 }
 

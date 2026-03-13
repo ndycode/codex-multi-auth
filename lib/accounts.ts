@@ -199,6 +199,12 @@ export class AccountManager {
 		if (stored && stored.accounts.length > 0) {
 			const duplicateCountByAccountId = new Map<string, number>();
 			for (const account of stored.accounts) {
+				if (
+					typeof account.refreshToken !== "string" ||
+					!account.refreshToken
+				) {
+					continue;
+				}
 				const accountId = account.accountId?.trim();
 				if (!accountId) continue;
 				duplicateCountByAccountId.set(

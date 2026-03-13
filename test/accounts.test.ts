@@ -1229,6 +1229,48 @@ describe("AccountManager", () => {
       expect(account?.access).toBe(accessToken);
     });
 
+    it("ignores malformed stored rows when checking shared accountId uniqueness for fallback matching", () => {
+      const now = Date.now();
+      const payload = {
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "matching-account-id",
+        },
+      };
+      const accessToken = `header.${Buffer.from(JSON.stringify(payload)).toString("base64")}.signature`;
+
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "stored-token",
+            accountId: "matching-account-id",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "",
+            accountId: "matching-account-id",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        access: accessToken,
+        refresh: "new-refresh-token",
+        expires: now + 60_000,
+      };
+
+      const manager = new AccountManager(auth, stored);
+      expect(manager.getAccountCount()).toBe(1);
+      const account = manager.getCurrentAccount();
+      expect(account?.refreshToken).toBe("new-refresh-token");
+      expect(account?.accountId).toBe("matching-account-id");
+    });
+
     it("merges fallback auth when matching by email", () => {
       const now = Date.now();
       const payload = {
