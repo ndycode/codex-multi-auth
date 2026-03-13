@@ -270,16 +270,24 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
  * Deletes the on-disk quota cache file, ignoring missing files and logging non-ENOENT errors.
  */
 export async function clearQuotaCache(): Promise<void> {
-	try {
-		await fs.unlink(QUOTA_CACHE_PATH);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code !== "ENOENT") {
-			logWarn(
-				`Failed to clear quota cache ${QUOTA_CACHE_LABEL}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.unlink(QUOTA_CACHE_PATH);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (!isRetryableFsError(error) || attempt >= 4) {
+				logWarn(
+					`Failed to clear quota cache ${QUOTA_CACHE_LABEL}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+				return;
+			}
+			await sleep(10 * 2 ** attempt);
 		}
 	}
 }

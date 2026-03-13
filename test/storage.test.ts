@@ -2230,5 +2230,29 @@ describe("storage", () => {
 		it("ignores missing quota cache file", async () => {
 			await expect(clearQuotaCache()).resolves.not.toThrow();
 		});
+
+		it("retries transient EPERM when clearing the quota cache", async () => {
+			const quotaPath = getQuotaCachePath();
+			await fs.mkdir(dirname(quotaPath), { recursive: true });
+			await fs.writeFile(quotaPath, "{}", "utf-8");
+
+			const realUnlink = fs.unlink.bind(fs);
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (target) => {
+					if (target === quotaPath && unlinkSpy.mock.calls.length === 1) {
+						const err = new Error("locked") as NodeJS.ErrnoException;
+						err.code = "EPERM";
+						throw err;
+					}
+					return realUnlink(target);
+				});
+
+			await clearQuotaCache();
+
+			expect(existsSync(quotaPath)).toBe(false);
+			expect(unlinkSpy).toHaveBeenCalledTimes(2);
+			unlinkSpy.mockRestore();
+		});
 	});
 });
