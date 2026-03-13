@@ -8,6 +8,35 @@ import {
 	LiveAccountSync,
 } from "../lib/live-account-sync.js";
 
+const RETRYABLE_REMOVE_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"ENOTEMPTY",
+	"EACCES",
+	"ETIMEDOUT",
+]);
+
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
+
 describe("live-account-sync", () => {
 	let workDir = "";
 	let storagePath = "";
@@ -32,7 +61,7 @@ describe("live-account-sync", () => {
 	afterEach(async () => {
 		vi.useRealTimers();
 		__resetLastLiveAccountSyncSnapshotForTests();
-		await fs.rm(workDir, { recursive: true, force: true });
+		await removeWithRetry(workDir, { recursive: true, force: true });
 	});
 
 	it("publishes watcher state for sync-center status surfaces", async () => {
@@ -55,6 +84,55 @@ describe("live-account-sync", () => {
 		expect(getLastLiveAccountSyncSnapshot()).toEqual(
 			expect.objectContaining({
 				path: storagePath,
+				running: false,
+			}),
+		);
+	});
+
+	it("keeps the newest watcher snapshot published when older instances stop later", async () => {
+		const secondStoragePath = join(workDir, "openai-codex-accounts-secondary.json");
+		await fs.writeFile(
+			secondStoragePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+		const first = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+		const second = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+
+		await first.syncToPath(storagePath);
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: storagePath,
+				running: true,
+			}),
+		);
+
+		await second.syncToPath(secondStoragePath);
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: secondStoragePath,
+				running: true,
+			}),
+		);
+
+		first.stop();
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: secondStoragePath,
+				running: true,
+			}),
+		);
+
+		second.stop();
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: secondStoragePath,
 				running: false,
 			}),
 		);

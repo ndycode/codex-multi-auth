@@ -46,6 +46,7 @@ import {
 } from "../oc-chatgpt-orchestrator.js";
 import { detectOcChatgptMultiAuthTarget } from "../oc-chatgpt-target-detection.js";
 import {
+	getStoragePath,
 	loadAccounts,
 	normalizeAccountStorage,
 	saveAccounts,
@@ -1338,13 +1339,29 @@ function formatSyncSourceLabel(
 	preview: CodexCliSyncPreview,
 	context: SyncCenterOverviewContext,
 ): string {
+	const normalizedSourcePath = normalizePathForComparison(preview.sourcePath);
+	const normalizedAccountsPath = normalizePathForComparison(context.accountsPath);
+	const normalizedAuthPath = normalizePathForComparison(context.authPath);
 	if (!context.syncEnabled) return "disabled by environment override";
-	if (!preview.sourcePath) return "not available";
-	if (preview.sourcePath === context.accountsPath)
+	if (!normalizedSourcePath) return "not available";
+	if (normalizedSourcePath === normalizedAccountsPath)
 		return "accounts.json active";
-	if (preview.sourcePath === context.authPath)
+	if (normalizedSourcePath === normalizedAuthPath)
 		return "auth.json fallback active";
 	return "custom source path active";
+}
+
+function normalizePathForComparison(
+	path: string | null | undefined,
+): string | null {
+	if (typeof path !== "string" || path.length === 0) {
+		return null;
+	}
+	const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+	const trimmed =
+		normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+	const isWindowsPath = path.includes("\\") || /^[a-z]:\//i.test(trimmed);
+	return isWindowsPath ? trimmed.toLowerCase() : trimmed;
 }
 
 function buildSyncCenterOverview(
@@ -2674,8 +2691,81 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 			context: resolveSyncCenterContext(preview.sourceState),
 		};
 	};
+	const buildErrorState = (
+		message: string,
+		previousPreview?: CodexCliSyncPreview,
+	): {
+		preview: CodexCliSyncPreview;
+		context: SyncCenterOverviewContext;
+	} => {
+		if (previousPreview) {
+			return {
+				preview: {
+					...previousPreview,
+					lastSync: getLastCodexCliSyncRun(),
+					status: "error",
+					statusDetail: message,
+				},
+				context: resolveSyncCenterContext(previousPreview.sourceState),
+			};
+		}
 
-	let { preview, context } = await buildPreview(true);
+		const targetPath = getStoragePath();
+		const emptySummary: CodexCliSyncSummary = {
+			sourceAccountCount: 0,
+			targetAccountCountBefore: 0,
+			targetAccountCountAfter: 0,
+			addedAccountCount: 0,
+			updatedAccountCount: 0,
+			unchangedAccountCount: 0,
+			destinationOnlyPreservedCount: 0,
+			selectionChanged: false,
+		};
+		return {
+			preview: {
+				status: "error",
+				statusDetail: message,
+				sourcePath: null,
+				sourceState: null,
+				targetPath,
+				summary: emptySummary,
+				backup: {
+					enabled: getStorageBackupEnabled(config),
+					targetPath,
+					rollbackPaths: [
+						`${targetPath}.bak`,
+						`${targetPath}.bak.1`,
+						`${targetPath}.bak.2`,
+						`${targetPath}.wal`,
+					],
+				},
+				lastSync: getLastCodexCliSyncRun(),
+			},
+			context: resolveSyncCenterContext(null),
+		};
+	};
+	const buildPreviewSafely = async (
+		forceRefresh = false,
+		previousPreview?: CodexCliSyncPreview,
+	): Promise<{
+		preview: CodexCliSyncPreview;
+		context: SyncCenterOverviewContext;
+	}> => {
+		try {
+			return await withQueuedRetry(getStoragePath(), async () =>
+				buildPreview(forceRefresh),
+			);
+		} catch (error) {
+			return buildErrorState(
+				`Failed to refresh sync center: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+				previousPreview,
+			);
+		}
+	};
+
+	let { preview, context } = await buildPreviewSafely(true);
 	while (true) {
 		const overview = buildSyncCenterOverview(preview, context);
 		const items: MenuItem<SyncCenterAction>[] = [
@@ -2738,7 +2828,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 
 		if (!result || result.type === "back") return;
 		if (result.type === "refresh") {
-			({ preview, context } = await buildPreview(true));
+			({ preview, context } = await buildPreviewSafely(true, preview));
 			continue;
 		}
 
@@ -2750,10 +2840,13 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 			const storageBackupEnabled = getStorageBackupEnabled(config);
 			const nextStorage = synced.storage ?? current;
 			if (synced.changed && synced.storage) {
+				const syncedStorage = synced.storage;
 				try {
-					await saveAccounts(synced.storage, {
-						backupEnabled: storageBackupEnabled,
-					});
+					await withQueuedRetry(preview.targetPath, async () =>
+						saveAccounts(syncedStorage, {
+							backupEnabled: storageBackupEnabled,
+						}),
+					);
 					commitPendingCodexCliSyncRun(synced.pendingRun);
 				} catch (error) {
 					commitCodexCliSyncRunFailure(synced.pendingRun, error);

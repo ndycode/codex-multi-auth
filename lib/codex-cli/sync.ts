@@ -325,12 +325,16 @@ function writeFamilyIndexes(storage: AccountStorageV3, index: number): void {
 	}
 }
 
-async function getPersistedLocalSelectionTimestamp(): Promise<number> {
+async function getPersistedLocalSelectionTimestamp(): Promise<number | null> {
 	try {
 		const stats = await fs.stat(getStoragePath());
 		return Number.isFinite(stats.mtimeMs) ? stats.mtimeMs : 0;
-	} catch {
-		return 0;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return 0;
+		}
+		return null;
 	}
 }
 
@@ -411,7 +415,7 @@ function readActiveFromSnapshots(snapshots: CodexCliAccountSnapshot[]): {
  */
 function shouldApplyCodexCliSelection(
 	state: Awaited<ReturnType<typeof loadCodexCliState>>,
-	persistedLocalTimestamp = 0,
+	persistedLocalTimestamp: number | null = 0,
 ): boolean {
 	if (!state) return false;
 	const hasSyncVersion =
@@ -422,12 +426,18 @@ function shouldApplyCodexCliSelection(
 				Number.isFinite(state.sourceUpdatedAtMs)
 			? state.sourceUpdatedAtMs
 			: 0;
-	const localVersion = Math.max(
+	const inProcessLocalVersion = Math.max(
 		getLastAccountsSaveTimestamp(),
 		getLastCodexCliSelectionWriteTimestamp(),
-		persistedLocalTimestamp,
 	);
-	if (codexVersion <= 0 || localVersion <= 0) return true;
+	const localVersion = Math.max(
+		inProcessLocalVersion,
+		persistedLocalTimestamp ?? 0,
+	);
+	if (codexVersion <= 0) return true;
+	if (localVersion <= 0) {
+		return persistedLocalTimestamp !== null;
+	}
 	// Keep local selection when plugin wrote more recently than Codex state.
 	const toleranceMs = hasSyncVersion ? 0 : 1_000;
 	return codexVersion >= localVersion - toleranceMs;
@@ -436,19 +446,19 @@ function shouldApplyCodexCliSelection(
 function reconcileCodexCliState(
 	current: AccountStorageV3 | null,
 	state: NonNullable<Awaited<ReturnType<typeof loadCodexCliState>>>,
-	options: { persistedLocalTimestamp?: number } = {},
+	options: { persistedLocalTimestamp?: number | null } = {},
 ): ReconcileResult {
 	const next = current ? cloneStorage(current) : createEmptyStorage();
 	const targetAccountCountBefore = next.accounts.length;
 	const matchedExistingIndexes = new Set<number>();
 	const summary = createEmptySyncSummary();
+	summary.sourceAccountCount = state.accounts.length;
 	summary.targetAccountCountBefore = targetAccountCountBefore;
 
 	let changed = false;
 	for (const snapshot of state.accounts) {
 		const result = upsertFromSnapshot(next.accounts, snapshot);
 		if (result.action === "skipped") continue;
-		summary.sourceAccountCount += 1;
 		if (
 			typeof result.matchedIndex === "number" &&
 			result.matchedIndex >= 0 &&
@@ -480,7 +490,7 @@ function reconcileCodexCliState(
 		const previousFamilies = JSON.stringify(next.activeIndexByFamily ?? {});
 		const applyActiveFromCodex = shouldApplyCodexCliSelection(
 			state,
-			options.persistedLocalTimestamp ?? 0,
+			options.persistedLocalTimestamp,
 		);
 		if (applyActiveFromCodex) {
 			const desiredIndex = resolveActiveIndex(
@@ -576,9 +586,20 @@ export async function previewCodexCliSync(
 			persistedLocalTimestamp: await getPersistedLocalSelectionTimestamp(),
 		});
 		const status = reconciled.changed ? "ready" : "noop";
+		const skippedAccountCount = Math.max(
+			0,
+			reconciled.summary.sourceAccountCount -
+				reconciled.summary.addedAccountCount -
+				reconciled.summary.updatedAccountCount -
+				reconciled.summary.unchangedAccountCount,
+		);
 		const statusDetail = reconciled.changed
-			? `Preview ready: ${reconciled.summary.addedAccountCount} add, ${reconciled.summary.updatedAccountCount} update, ${reconciled.summary.destinationOnlyPreservedCount} destination-only preserved.`
-			: "Target already matches the current one-way sync result.";
+			? `Preview ready: ${reconciled.summary.addedAccountCount} add, ${reconciled.summary.updatedAccountCount} update, ${reconciled.summary.destinationOnlyPreservedCount} destination-only preserved${
+					skippedAccountCount > 0 ? `, ${skippedAccountCount} skipped` : ""
+				}.`
+			: skippedAccountCount > 0
+				? `Target already matches the current one-way sync result. ${skippedAccountCount} source account skipped due to conflicting or incomplete identity.`
+				: "Target already matches the current one-way sync result.";
 		return {
 			status,
 			statusDetail,

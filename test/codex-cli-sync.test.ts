@@ -438,6 +438,60 @@ describe("codex-cli sync", () => {
 		expect(result.storage?.accounts).toEqual(current.accounts);
 	});
 
+	it("reports skipped ambiguous source snapshots in the preview summary", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							accountId: "shared-id",
+							auth: {
+								tokens: {
+									access_token: "access-new",
+									refresh_token: "refresh-new",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "shared-id",
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "shared-id",
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+		});
+
+		expect(preview.status).toBe("noop");
+		expect(preview.summary.sourceAccountCount).toBe(1);
+		expect(preview.statusDetail).toContain("1 source account skipped");
+	});
+
 	it("preserves the current selection when Codex CLI source has no active marker", async () => {
 		await writeFile(
 			accountsPath,
@@ -541,6 +595,81 @@ describe("codex-cli sync", () => {
 		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
 			0,
 		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+		});
+
+		expect(preview.status).toBe("noop");
+		expect(preview.summary.selectionChanged).toBe(false);
+	});
+
+	it("preserves the local selection when the persisted target timestamp is temporarily unreadable", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+		vi.spyOn(storageModule, "getStoragePath").mockReturnValue("\0busy-target");
 
 		const current: AccountStorageV3 = {
 			version: 3,

@@ -305,6 +305,49 @@ describe("settings-hub utility coverage", () => {
 		expect(overview[8]?.hint).toContain(".wal");
 	});
 
+	it("matches windows-style source paths when labeling the active sync source", async () => {
+		const api = await loadSettingsHubTestApi();
+		const overview = api.buildSyncCenterOverview(
+			{
+				status: "ready",
+				statusDetail: "Preview ready",
+				sourcePath: "C:\\Users\\Neil\\.codex\\Accounts.json",
+				targetPath: "C:\\Users\\Neil\\.codex\\openai-codex-accounts.json",
+				summary: {
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					destinationOnlyPreservedCount: 1,
+					targetAccountCountAfter: 1,
+					selectionChanged: false,
+				},
+				backup: {
+					enabled: true,
+					rollbackPaths: [
+						"C:\\Users\\Neil\\.codex\\openai-codex-accounts.json.bak",
+					],
+				},
+				lastSync: null,
+			},
+			{
+				accountsPath: "c:/users/neil/.codex/accounts.json",
+				authPath: "c:/users/neil/.codex/auth.json",
+				configPath: "c:/users/neil/.codex/config.toml",
+				state: { accounts: [{}] },
+				liveSync: {
+					path: null,
+					running: false,
+					lastKnownMtimeMs: null,
+					lastSyncAt: null,
+					reloadCount: 0,
+					errorCount: 0,
+				},
+				syncEnabled: true,
+			},
+		);
+
+		expect(overview[2]?.label).toContain("accounts.json active");
+	});
+
 	it("formats layout mode labels", async () => {
 		const api = await loadSettingsHubTestApi();
 		expect(api.formatMenuLayoutMode("expanded-rows")).toBe("Expanded Rows");

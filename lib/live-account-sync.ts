@@ -30,6 +30,8 @@ const EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT: LiveAccountSyncSnapshot = {
 let lastLiveAccountSyncSnapshot: LiveAccountSyncSnapshot = {
 	...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT,
 };
+let lastLiveAccountSyncSnapshotInstanceId = 0;
+let nextLiveAccountSyncInstanceId = 0;
 
 export function getLastLiveAccountSyncSnapshot(): LiveAccountSyncSnapshot {
 	return { ...lastLiveAccountSyncSnapshot };
@@ -37,6 +39,8 @@ export function getLastLiveAccountSyncSnapshot(): LiveAccountSyncSnapshot {
 
 export function __resetLastLiveAccountSyncSnapshotForTests(): void {
 	lastLiveAccountSyncSnapshot = { ...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT };
+	lastLiveAccountSyncSnapshotInstanceId = 0;
+	nextLiveAccountSyncInstanceId = 0;
 }
 
 /**
@@ -86,6 +90,7 @@ function summarizeWatchPath(path: string | null): string {
  * changes. Uses fs.watch + polling fallback for Windows reliability.
  */
 export class LiveAccountSync {
+	private readonly instanceId: number;
 	private readonly reload: () => Promise<void>;
 	private readonly debounceMs: number;
 	private readonly pollIntervalMs: number;
@@ -104,13 +109,13 @@ export class LiveAccountSync {
 		reload: () => Promise<void>,
 		options: LiveAccountSyncOptions = {},
 	) {
+		this.instanceId = ++nextLiveAccountSyncInstanceId;
 		this.reload = reload;
 		this.debounceMs = Math.max(50, Math.floor(options.debounceMs ?? 250));
 		this.pollIntervalMs = Math.max(
 			500,
 			Math.floor(options.pollIntervalMs ?? 2_000),
 		);
-		this.publishSnapshot();
 	}
 
 	async syncToPath(path: string): Promise<void> {
@@ -191,6 +196,10 @@ export class LiveAccountSync {
 	}
 
 	private publishSnapshot(): void {
+		if (this.instanceId < lastLiveAccountSyncSnapshotInstanceId) {
+			return;
+		}
+		lastLiveAccountSyncSnapshotInstanceId = this.instanceId;
 		lastLiveAccountSyncSnapshot = this.getSnapshot();
 	}
 
