@@ -4284,10 +4284,17 @@ async function runBackupRestoreManager(
 	const confirmed = await confirm(confirmMessage);
 	if (!confirmed) return;
 
-	const result = await restoreNamedBackup(assessment.backup.name);
-	console.log(
-		`Restored backup "${assessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
-	);
+	try {
+		const result = await restoreNamedBackup(assessment.backup.name);
+		console.log(
+			`Restored backup "${assessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(
+			`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
+		);
+	}
 }
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {

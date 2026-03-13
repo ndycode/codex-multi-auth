@@ -2,6 +2,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
@@ -1279,6 +1280,110 @@ describe("storage", () => {
 				await expect(restoreNamedBackup(input)).rejects.toThrow();
 			},
 		);
+
+		it("throws when a named backup is deleted after assessment", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "deleted-backup",
+						refreshToken: "ref-deleted-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("deleted-backup");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("deleted-backup");
+			expect(assessment.valid).toBe(true);
+
+			await fs.rm(buildNamedBackupPath("deleted-backup"), { force: true });
+
+			await expect(restoreNamedBackup("deleted-backup")).rejects.toThrow(
+				/Import file not found/,
+			);
+		});
+
+		it("throws when a named backup becomes invalid JSON before restore", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "corrupt-backup",
+						refreshToken: "ref-corrupt-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("corrupt-backup");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("corrupt-backup");
+			expect(assessment.valid).toBe(true);
+
+			await fs.writeFile(buildNamedBackupPath("corrupt-backup"), "{", "utf-8");
+
+			await expect(restoreNamedBackup("corrupt-backup")).rejects.toThrow(
+				/Invalid JSON in import file/,
+			);
+		});
+
+		it("throws when current accounts exceed the limit after assessment", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "limit-backup",
+						refreshToken: "ref-limit-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("limit-backup");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
+					(_, index) => ({
+						accountId: `current-${index}`,
+						refreshToken: `ref-current-${index}`,
+						addedAt: index + 1,
+						lastUsed: index + 1,
+					}),
+				),
+			});
+
+			const assessment = await assessNamedBackupRestore("limit-backup");
+			expect(assessment.valid).toBe(true);
+			expect(assessment.wouldExceedLimit).toBe(false);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS },
+					(_, index) => ({
+						accountId: `grown-${index}`,
+						refreshToken: `ref-grown-${index}`,
+						addedAt: index + 1,
+						lastUsed: index + 1,
+					}),
+				),
+			});
+
+			await expect(restoreNamedBackup("limit-backup")).rejects.toThrow(
+				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+			);
+		});
 	});
 
 	describe("filename migration (TDD)", () => {
