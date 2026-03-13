@@ -1131,6 +1131,51 @@ function findSafeEmailMatchIndex<T extends AccountLike>(
 	);
 }
 
+function findCompatibleRefreshTokenMatchIndex<T extends AccountLike>(
+	accounts: readonly T[],
+	candidateRef: AccountIdentityRef,
+): number | undefined {
+	if (!candidateRef.refreshToken) return undefined;
+	let matchingIndex: number | undefined;
+	let matchingAccount: T | null = null;
+
+	for (let i = 0; i < accounts.length; i += 1) {
+		const account = accounts[i];
+		if (!account) continue;
+		const ref = toAccountIdentityRef(account);
+		if (ref.refreshToken !== candidateRef.refreshToken) continue;
+		if (
+			(candidateRef.accountId &&
+				ref.accountId &&
+				ref.accountId !== candidateRef.accountId) ||
+			(candidateRef.emailKey &&
+				ref.emailKey &&
+				ref.emailKey !== candidateRef.emailKey)
+		) {
+			return undefined;
+		}
+		if (
+			matchingIndex !== undefined &&
+			!candidateRef.accountId &&
+			!candidateRef.emailKey
+		) {
+			return undefined;
+		}
+		if (matchingIndex === undefined || matchingAccount === null) {
+			matchingIndex = i;
+			matchingAccount = account;
+			continue;
+		}
+		const newest = selectNewestAccount(matchingAccount, account);
+		if (newest === account) {
+			matchingIndex = i;
+			matchingAccount = account;
+		}
+	}
+
+	return matchingIndex;
+}
+
 function findUniqueAccountIdMatchIndex<T extends AccountLike>(
 	accounts: readonly T[],
 	candidateRef: AccountIdentityRef,
@@ -1179,19 +1224,19 @@ export function findMatchingAccountIndex<
 ): number | undefined {
 	const candidateRef = toAccountIdentityRef(candidate);
 
-	if (candidateRef.refreshToken) {
-		const byRefresh = findNewestMatchingIndex(
-			accounts,
-			(ref) => ref.refreshToken === candidateRef.refreshToken,
-		);
-		if (byRefresh !== undefined) return byRefresh;
-	}
-
 	const byComposite = findCompositeAccountMatchIndex(accounts, candidateRef);
 	if (byComposite !== undefined) return byComposite;
 
 	const byEmail = findSafeEmailMatchIndex(accounts, candidateRef);
 	if (byEmail !== undefined) return byEmail;
+
+	if (candidateRef.refreshToken) {
+		const byRefresh = findCompatibleRefreshTokenMatchIndex(
+			accounts,
+			candidateRef,
+		);
+		if (byRefresh !== undefined) return byRefresh;
+	}
 
 	return findUniqueAccountIdMatchIndex(accounts, candidateRef, options);
 }

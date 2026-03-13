@@ -50,31 +50,27 @@ function normalizeEntitlementEmail(email: string | undefined): string | undefine
 /**
  * Derives a stable cache key for an entitlement account reference.
  *
- * Produces one of six deterministic keys:
+ * Produces one of five deterministic keys:
  * - `account:<trimmed accountId>::email:<lowercased trimmed email>` when both are present,
  * - `email:<lowercased trimmed email>` when only `email` is present,
  * - `account:<trimmed accountId>::idx:<non-negative integer>` when `accountId` is present without email,
  * - `account:<trimmed accountId>` when only `accountId` is present and no index is available,
- * - `refresh:<trimmed refreshToken>` when no accountId/email exists but a refresh token is available,
  * - `idx:<non-negative integer>` otherwise (index defaults to 0).
  *
- * This function is pure and concurrency-safe; it performs no I/O and is not affected by Windows filesystem semantics. It does not redact secrets or tokens — values are only trimmed and, for emails, lowercased.
+ * This function is pure and concurrency-safe; it performs no I/O and is not affected by Windows filesystem semantics. It never serializes refresh tokens or other secrets into the returned key.
  *
  * @param ref - Reference identifying an account (may include `accountId`, `email`, or `index`)
- * @returns A deterministic string key prefixed with `account:`, `email:`, `refresh:`, or `idx:` as described above
+ * @returns A deterministic string key prefixed with `account:`, `email:`, or `idx:` as described above
  */
 export function resolveEntitlementAccountKey(ref: EntitlementAccountRef): string {
 	const accountId = typeof ref.accountId === "string" ? ref.accountId.trim() : "";
 	const hasIndex = Number.isFinite(ref.index);
 	const index = hasIndex ? Math.max(0, Math.floor(ref.index ?? 0)) : 0;
 	const email = normalizeEntitlementEmail(ref.email);
-	const refreshToken =
-		typeof ref.refreshToken === "string" ? ref.refreshToken.trim() : "";
 	if (accountId && email) return `account:${accountId}::email:${email}`;
 	if (email) return `email:${email}`;
 	if (accountId && hasIndex) return `account:${accountId}::idx:${index}`;
 	if (accountId) return `account:${accountId}`;
-	if (refreshToken) return `refresh:${refreshToken}`;
 	return `idx:${index}`;
 }
 
