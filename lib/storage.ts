@@ -543,11 +543,13 @@ interface NamedBackupScanEntry {
 	candidate: LoadedBackupCandidate;
 }
 
-const UNLOADED_BACKUP_CANDIDATE: LoadedBackupCandidate = {
-	normalized: null,
-	storedVersion: null,
-	schemaErrors: [],
-};
+function createUnloadedBackupCandidate(): LoadedBackupCandidate {
+	return {
+		normalized: null,
+		storedVersion: null,
+		schemaErrors: [],
+	};
+}
 
 export function getLastAccountsSaveTimestamp(): number {
 	return lastAccountsSaveTimestamp;
@@ -1351,7 +1353,7 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadata[]> 
 			try {
 				backups.push(
 					await buildNamedBackupMetadata(name, path, {
-						candidate: UNLOADED_BACKUP_CANDIDATE,
+						candidate: createUnloadedBackupCandidate(),
 					}),
 				);
 			} catch (error) {

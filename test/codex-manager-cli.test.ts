@@ -606,6 +606,7 @@ describe("codex manager cli commands", () => {
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("valid-backup");
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
 	});
 
 	it("continues into OAuth when startup recovery is declined", async () => {
@@ -853,6 +854,7 @@ describe("codex manager cli commands", () => {
 		expect(warnSpy).toHaveBeenCalledWith(
 			"Startup recovery scan failed: resource busy. Continuing with OAuth.",
 		);
+		warnSpy.mockRestore();
 	});
 
 	it.each([
@@ -1198,6 +1200,7 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Switched to account 1"),
 		);
+		warnSpy.mockRestore();
 	});
 
 	it("refreshes token pair during switch when cached access token is missing", async () => {
@@ -1280,6 +1283,7 @@ describe("codex manager cli commands", () => {
 		expect(warnSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Codex auth sync did not complete"),
 		);
+		warnSpy.mockRestore();
 	});
 
 	it("autoSyncActiveAccountToCodex syncs active account without refresh when access is valid", async () => {
@@ -1770,6 +1774,7 @@ describe("codex manager cli commands", () => {
 			'Failed to restore backup "startup-backup": resource busy',
 		);
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+		warnSpy.mockRestore();
 	});
 
 	it("falls back to OAuth when the startup recovery prompt throws", async () => {
@@ -1826,6 +1831,7 @@ describe("codex manager cli commands", () => {
 			"Startup recovery prompt failed: tty lost. Continuing with OAuth.",
 		);
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+		warnSpy.mockRestore();
 	});
 
 	it("keeps login loop running when settings action is selected", async () => {
@@ -2636,6 +2642,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledTimes(4);
 		expect(warnSpy).toHaveBeenCalled();
+		warnSpy.mockRestore();
 	});
 
 	it("merges behavior edits with latest disk settings to avoid stale overwrite", async () => {
