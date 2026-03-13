@@ -1176,6 +1176,102 @@ describe("storage", () => {
 			expect(restoreResult.total).toBe(1);
 		});
 
+		it("throws when a named backup is deleted after assessment", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "deleted-backup",
+						refreshToken: "ref-deleted-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("deleted-after-assessment");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("deleted-after-assessment");
+			expect(assessment.valid).toBe(true);
+
+			await fs.unlink(backup.path);
+
+			await expect(
+				restoreNamedBackup("deleted-after-assessment"),
+			).rejects.toThrow(/Import file not found/);
+		});
+
+		it("throws when a named backup becomes invalid JSON after assessment", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "invalid-backup",
+						refreshToken: "ref-invalid-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("invalid-after-assessment");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("invalid-after-assessment");
+			expect(assessment.valid).toBe(true);
+
+			await fs.writeFile(backup.path, "not valid json {[", "utf-8");
+
+			await expect(
+				restoreNamedBackup("invalid-after-assessment"),
+			).rejects.toThrow(/Invalid JSON in import file/);
+		});
+
+		it("throws when restoring would exceed the account limit after assessment", async () => {
+			const { ACCOUNT_LIMITS } = await import("../lib/constants.js");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "limit-backup",
+						refreshToken: "ref-limit-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await createNamedBackup("limit-after-assessment");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("limit-after-assessment");
+			expect(assessment.valid).toBe(true);
+			expect(assessment.wouldExceedLimit).toBe(false);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS },
+					(_, index) => ({
+						accountId: `current-${index}`,
+						refreshToken: `ref-current-${index}`,
+						addedAt: index + 1,
+						lastUsed: index + 1,
+					}),
+				),
+			});
+
+			await expect(
+				restoreNamedBackup("limit-after-assessment"),
+			).rejects.toThrow(/Import would exceed maximum of/);
+		});
+
 		it.each(["../openai-codex-accounts", String.raw`..\openai-codex-accounts`])(
 			"rejects backup names that escape the backups directory: %s",
 			async (input) => {

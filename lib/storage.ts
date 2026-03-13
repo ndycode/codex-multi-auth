@@ -1581,21 +1581,20 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
 		const entries = await fs.readdir(backupRoot, { withFileTypes: true });
-		const backups: NamedBackupMetadata[] = [];
-		for (const entry of entries) {
-			if (!entry.isFile() || entry.isSymbolicLink()) continue;
-			if (!entry.name.toLowerCase().endsWith(".json")) continue;
-
-			const path = resolvePath(join(backupRoot, entry.name));
-			const candidate = await loadBackupCandidate(path);
-			backups.push(
-				await buildNamedBackupMetadata(
-					entry.name.slice(0, -".json".length),
-					path,
-					{ candidate },
-				),
-			);
-		}
+		const backups = await Promise.all(
+			entries
+				.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
+				.filter((entry) => entry.name.toLowerCase().endsWith(".json"))
+				.map(async (entry) => {
+					const path = resolvePath(join(backupRoot, entry.name));
+					const candidate = await loadBackupCandidate(path);
+					return buildNamedBackupMetadata(
+						entry.name.slice(0, -".json".length),
+						path,
+						{ candidate },
+					);
+				}),
+		);
 		return backups.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
