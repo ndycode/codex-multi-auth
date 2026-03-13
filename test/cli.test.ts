@@ -1,274 +1,296 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createInterface } from "node:readline/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:readline/promises", () => ({
-  createInterface: vi.fn(),
+	createInterface: vi.fn(),
 }));
 
 const mockRl = {
-  question: vi.fn(),
-  close: vi.fn(),
+	question: vi.fn(),
+	close: vi.fn(),
 };
 
 describe("CLI Module", () => {
-  beforeEach(() => {
-    vi.resetModules();
-    process.env.FORCE_INTERACTIVE_MODE = "1";
-    mockRl.question.mockReset();
-    mockRl.close.mockReset();
-    vi.mocked(createInterface).mockReturnValue(mockRl as any);
-    vi.spyOn(console, "log").mockImplementation(() => {});
-  });
+	beforeEach(() => {
+		vi.resetModules();
+		process.env.FORCE_INTERACTIVE_MODE = "1";
+		mockRl.question.mockReset();
+		mockRl.close.mockReset();
+		vi.mocked(createInterface).mockReturnValue(mockRl as any);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+	});
 
-  afterEach(() => {
-    delete process.env.FORCE_INTERACTIVE_MODE;
-    vi.restoreAllMocks();
-  });
+	afterEach(() => {
+		delete process.env.FORCE_INTERACTIVE_MODE;
+		vi.restoreAllMocks();
+	});
 
-  describe("promptAddAnotherAccount", () => {
-    it("returns true for 'y' input", async () => {
-      mockRl.question.mockResolvedValueOnce("y");
-      
-      const { promptAddAnotherAccount } = await import("../lib/cli.js");
-      const result = await promptAddAnotherAccount(1);
-      
-      expect(result).toBe(true);
-      expect(mockRl.close).toHaveBeenCalled();
-    });
+	describe("promptAddAnotherAccount", () => {
+		it("returns true for 'y' input", async () => {
+			mockRl.question.mockResolvedValueOnce("y");
 
-    it("returns true for 'yes' input", async () => {
-      mockRl.question.mockResolvedValueOnce("yes");
-      
-      const { promptAddAnotherAccount } = await import("../lib/cli.js");
-      const result = await promptAddAnotherAccount(2);
-      
-      expect(result).toBe(true);
-    });
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
+			const result = await promptAddAnotherAccount(1);
 
-    it("returns true for 'Y' input (case insensitive)", async () => {
-      mockRl.question.mockResolvedValueOnce("Y");
-      
-      const { promptAddAnotherAccount } = await import("../lib/cli.js");
-      const result = await promptAddAnotherAccount(1);
-      
-      expect(result).toBe(true);
-    });
+			expect(result).toBe(true);
+			expect(mockRl.close).toHaveBeenCalled();
+		});
 
-    it("returns false for 'n' input", async () => {
-      mockRl.question.mockResolvedValueOnce("n");
-      
-      const { promptAddAnotherAccount } = await import("../lib/cli.js");
-      const result = await promptAddAnotherAccount(1);
-      
-      expect(result).toBe(false);
-    });
+		it("returns true for 'yes' input", async () => {
+			mockRl.question.mockResolvedValueOnce("yes");
 
-    it("returns false for empty input", async () => {
-      mockRl.question.mockResolvedValueOnce("");
-      
-      const { promptAddAnotherAccount } = await import("../lib/cli.js");
-      const result = await promptAddAnotherAccount(1);
-      
-      expect(result).toBe(false);
-    });
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
+			const result = await promptAddAnotherAccount(2);
 
-    it("returns false for random input", async () => {
-      mockRl.question.mockResolvedValueOnce("maybe");
-      
-      const { promptAddAnotherAccount } = await import("../lib/cli.js");
-      const result = await promptAddAnotherAccount(1);
-      
-      expect(result).toBe(false);
-    });
+			expect(result).toBe(true);
+		});
 
-    it("includes current count in prompt", async () => {
-      mockRl.question.mockResolvedValueOnce("n");
-      
-      const { promptAddAnotherAccount } = await import("../lib/cli.js");
-      await promptAddAnotherAccount(5);
-      
-      expect(mockRl.question).toHaveBeenCalledWith(
-        expect.stringContaining("5 added")
-      );
-    });
+		it("returns true for 'Y' input (case insensitive)", async () => {
+			mockRl.question.mockResolvedValueOnce("Y");
 
-    it("always closes readline interface", async () => {
-      mockRl.question.mockRejectedValueOnce(new Error("test error"));
-      
-      const { promptAddAnotherAccount } = await import("../lib/cli.js");
-      
-      await expect(promptAddAnotherAccount(1)).rejects.toThrow("test error");
-      expect(mockRl.close).toHaveBeenCalled();
-    });
-  });
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
+			const result = await promptAddAnotherAccount(1);
 
-  describe("promptLoginMode", () => {
-    it("returns 'add' for 'a' input", async () => {
-      mockRl.question.mockResolvedValueOnce("a");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([
-        { index: 0, email: "test@example.com" },
-      ]);
-      
-      expect(result).toEqual({ mode: "add" });
-      expect(mockRl.close).toHaveBeenCalled();
-    });
+			expect(result).toBe(true);
+		});
 
-    it("returns 'add' for 'add' input", async () => {
-      mockRl.question.mockResolvedValueOnce("add");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
-      
-      expect(result).toEqual({ mode: "add" });
-    });
+		it("returns false for 'n' input", async () => {
+			mockRl.question.mockResolvedValueOnce("n");
 
-    it("returns 'forecast' for 'p' input", async () => {
-      mockRl.question.mockResolvedValueOnce("p");
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
+			const result = await promptAddAnotherAccount(1);
 
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
+			expect(result).toBe(false);
+		});
 
-      expect(result).toEqual({ mode: "forecast" });
-    });
+		it("returns false for empty input", async () => {
+			mockRl.question.mockResolvedValueOnce("");
 
-    it("returns 'fix' for 'x' input", async () => {
-      mockRl.question.mockResolvedValueOnce("x");
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
+			const result = await promptAddAnotherAccount(1);
 
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
+			expect(result).toBe(false);
+		});
 
-      expect(result).toEqual({ mode: "fix" });
-    });
+		it("returns false for random input", async () => {
+			mockRl.question.mockResolvedValueOnce("maybe");
 
-    it("returns 'settings' for 's' input", async () => {
-      mockRl.question.mockResolvedValueOnce("s");
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
+			const result = await promptAddAnotherAccount(1);
 
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
+			expect(result).toBe(false);
+		});
 
-      expect(result).toEqual({ mode: "settings" });
-    });
+		it("includes current count in prompt", async () => {
+			mockRl.question.mockResolvedValueOnce("n");
 
-    it("returns 'fresh' for 'f' input", async () => {
-      mockRl.question.mockResolvedValueOnce("f");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
-      
-      expect(result).toEqual({ mode: "fresh", deleteAll: true });
-    });
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
+			await promptAddAnotherAccount(5);
 
-    it("returns 'fresh' for 'fresh' input", async () => {
-      mockRl.question.mockResolvedValueOnce("fresh");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
-      
-      expect(result).toEqual({ mode: "fresh", deleteAll: true });
-    });
+			expect(mockRl.question).toHaveBeenCalledWith(
+				expect.stringContaining("5 added"),
+			);
+		});
 
-    it("returns 'verify-flagged' for 'g' input", async () => {
-      mockRl.question.mockResolvedValueOnce("g");
+		it("always closes readline interface", async () => {
+			mockRl.question.mockRejectedValueOnce(new Error("test error"));
 
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
 
-      expect(result).toEqual({ mode: "verify-flagged" });
-    });
+			await expect(promptAddAnotherAccount(1)).rejects.toThrow("test error");
+			expect(mockRl.close).toHaveBeenCalled();
+		});
+	});
 
-    it("accepts uppercase quick shortcuts for advanced actions", async () => {
-      const { promptLoginMode } = await import("../lib/cli.js");
+	describe("promptLoginMode", () => {
+		it("returns 'add' for 'a' input", async () => {
+			mockRl.question.mockResolvedValueOnce("a");
 
-      mockRl.question.mockResolvedValueOnce("P");
-      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "forecast" });
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([
+				{ index: 0, email: "test@example.com" },
+			]);
 
-      mockRl.question.mockResolvedValueOnce("X");
-      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "fix" });
+			expect(result).toEqual({ mode: "add" });
+			expect(mockRl.close).toHaveBeenCalled();
+		});
 
-      mockRl.question.mockResolvedValueOnce("S");
-      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "settings" });
+		it("returns 'add' for 'add' input", async () => {
+			mockRl.question.mockResolvedValueOnce("add");
 
-      mockRl.question.mockResolvedValueOnce("G");
-      await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "verify-flagged" });
-    });
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
 
-    it("is case insensitive", async () => {
-      mockRl.question.mockResolvedValueOnce("A");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
-      
-      expect(result).toEqual({ mode: "add" });
-    });
+			expect(result).toEqual({ mode: "add" });
+		});
 
-    it("re-prompts on invalid input then accepts valid", async () => {
-      mockRl.question
-        .mockResolvedValueOnce("invalid")
-        .mockResolvedValueOnce("zzz")
-        .mockResolvedValueOnce("a");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      const result = await promptLoginMode([{ index: 0 }]);
-      
-      expect(result).toEqual({ mode: "add" });
-      expect(mockRl.question).toHaveBeenCalledTimes(3);
-    });
+		it("returns 'forecast' for 'p' input", async () => {
+			mockRl.question.mockResolvedValueOnce("p");
 
-    it("displays account list with email", async () => {
-      mockRl.question.mockResolvedValueOnce("a");
-      const consoleSpy = vi.spyOn(console, "log");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      await promptLoginMode([
-        { index: 0, email: "user1@example.com" },
-        { index: 1, email: "user2@example.com" },
-      ]);
-      
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("2 account(s)"));
-    });
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
 
-    it("displays account with accountId suffix when no email", async () => {
-      mockRl.question.mockResolvedValueOnce("f");
-      const consoleSpy = vi.spyOn(console, "log");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      await promptLoginMode([
-        { index: 0, accountId: "acc_1234567890" },
-      ]);
-      
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringMatching(/1\.\s*567890/));
-    });
+			expect(result).toEqual({ mode: "forecast" });
+		});
+
+		it("returns 'fix' for 'x' input", async () => {
+			mockRl.question.mockResolvedValueOnce("x");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "fix" });
+		});
+
+		it("returns 'settings' for 's' input", async () => {
+			mockRl.question.mockResolvedValueOnce("s");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "settings" });
+		});
+
+		it("returns 'fresh' for 'f' input", async () => {
+			mockRl.question
+				.mockResolvedValueOnce("f")
+				.mockResolvedValueOnce("DELETE");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "fresh", deleteAll: true });
+		});
+
+		it("returns 'fresh' for 'fresh' input", async () => {
+			mockRl.question
+				.mockResolvedValueOnce("fresh")
+				.mockResolvedValueOnce("DELETE");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "fresh", deleteAll: true });
+		});
+
+		it("returns 'verify-flagged' for 'g' input", async () => {
+			mockRl.question.mockResolvedValueOnce("g");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "verify-flagged" });
+		});
+
+		it("accepts uppercase quick shortcuts for advanced actions", async () => {
+			const { promptLoginMode } = await import("../lib/cli.js");
+
+			mockRl.question.mockResolvedValueOnce("P");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "forecast",
+			});
+
+			mockRl.question.mockResolvedValueOnce("X");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "fix",
+			});
+
+			mockRl.question.mockResolvedValueOnce("S");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "settings",
+			});
+
+			mockRl.question.mockResolvedValueOnce("G");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "verify-flagged",
+			});
+		});
+
+		it("is case insensitive", async () => {
+			mockRl.question.mockResolvedValueOnce("A");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "add" });
+		});
+
+		it("re-prompts on invalid input then accepts valid", async () => {
+			mockRl.question
+				.mockResolvedValueOnce("invalid")
+				.mockResolvedValueOnce("zzz")
+				.mockResolvedValueOnce("a");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "add" });
+			expect(mockRl.question).toHaveBeenCalledTimes(3);
+		});
+
+		it("displays account list with email", async () => {
+			mockRl.question.mockResolvedValueOnce("a");
+			const consoleSpy = vi.spyOn(console, "log");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			await promptLoginMode([
+				{ index: 0, email: "user1@example.com" },
+				{ index: 1, email: "user2@example.com" },
+			]);
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringContaining("2 account(s)"),
+			);
+		});
+
+		it("displays account with accountId suffix when no email", async () => {
+			mockRl.question.mockResolvedValueOnce("a");
+			const consoleSpy = vi.spyOn(console, "log");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			await promptLoginMode([{ index: 0, accountId: "acc_1234567890" }]);
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringMatching(/1\.\s*567890/),
+			);
+		});
 
 		it("displays plain Account N when no email or accountId", async () => {
-			mockRl.question.mockResolvedValueOnce("f");
+			mockRl.question.mockResolvedValueOnce("a");
 			const consoleSpy = vi.spyOn(console, "log");
-			
+
 			const { promptLoginMode } = await import("../lib/cli.js");
 			await promptLoginMode([{ index: 0 }]);
-			
-			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("1. Account"));
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringContaining("1. Account"),
+			);
 		});
 
 		it("displays label with email when both present", async () => {
 			mockRl.question.mockResolvedValueOnce("a");
 			const consoleSpy = vi.spyOn(console, "log");
-			
+
 			const { promptLoginMode } = await import("../lib/cli.js");
-			await promptLoginMode([{ index: 0, accountLabel: "Work", email: "work@example.com" }]);
-			
-			expect(consoleSpy).toHaveBeenCalledWith(expect.stringMatching(/Work.*work@example\.com/));
+			await promptLoginMode([
+				{ index: 0, accountLabel: "Work", email: "work@example.com" },
+			]);
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringMatching(/Work.*work@example\.com/),
+			);
 		});
 
 		it("displays only label when no email", async () => {
 			mockRl.question.mockResolvedValueOnce("a");
 			const consoleSpy = vi.spyOn(console, "log");
-			
+
 			const { promptLoginMode } = await import("../lib/cli.js");
 			await promptLoginMode([{ index: 0, accountLabel: "Personal" }]);
-			
-			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("1. Personal"));
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringContaining("1. Personal"),
+			);
 		});
 	});
 
@@ -321,16 +343,32 @@ describe("CLI Module", () => {
 			const { stdin, stdout } = await import("node:process");
 			const origInputTTY = stdin.isTTY;
 			const origOutputTTY = stdout.isTTY;
-			
-			Object.defineProperty(stdin, "isTTY", { value: true, writable: true, configurable: true });
-			Object.defineProperty(stdout, "isTTY", { value: true, writable: true, configurable: true });
-			
+
+			Object.defineProperty(stdin, "isTTY", {
+				value: true,
+				writable: true,
+				configurable: true,
+			});
+			Object.defineProperty(stdout, "isTTY", {
+				value: true,
+				writable: true,
+				configurable: true,
+			});
+
 			try {
 				const { isNonInteractiveMode } = await import("../lib/cli.js");
 				expect(isNonInteractiveMode()).toBe(false);
 			} finally {
-				Object.defineProperty(stdin, "isTTY", { value: origInputTTY, writable: true, configurable: true });
-				Object.defineProperty(stdout, "isTTY", { value: origOutputTTY, writable: true, configurable: true });
+				Object.defineProperty(stdin, "isTTY", {
+					value: origInputTTY,
+					writable: true,
+					configurable: true,
+				});
+				Object.defineProperty(stdout, "isTTY", {
+					value: origOutputTTY,
+					writable: true,
+					configurable: true,
+				});
 			}
 		});
 	});
@@ -344,63 +382,63 @@ describe("CLI Module", () => {
 
 		it("returns first candidate by selection", async () => {
 			mockRl.question.mockResolvedValueOnce("1");
-			
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			const candidates = [
 				{ accountId: "acc1", label: "Account 1" },
 				{ accountId: "acc2", label: "Account 2" },
 			];
 			const result = await promptAccountSelection(candidates);
-			
+
 			expect(result).toEqual(candidates[0]);
 			expect(mockRl.close).toHaveBeenCalled();
 		});
 
 		it("returns second candidate by selection", async () => {
 			mockRl.question.mockResolvedValueOnce("2");
-			
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			const candidates = [
 				{ accountId: "acc1", label: "Account 1" },
 				{ accountId: "acc2", label: "Account 2" },
 			];
 			const result = await promptAccountSelection(candidates);
-			
+
 			expect(result).toEqual(candidates[1]);
 		});
 
 		it("returns default on empty input", async () => {
 			mockRl.question.mockResolvedValueOnce("");
-			
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			const candidates = [
 				{ accountId: "acc1", label: "Account 1" },
 				{ accountId: "acc2", label: "Account 2" },
 			];
-			const result = await promptAccountSelection(candidates, { defaultIndex: 1 });
-			
+			const result = await promptAccountSelection(candidates, {
+				defaultIndex: 1,
+			});
+
 			expect(result).toEqual(candidates[1]);
 		});
 
 		it("returns default on quit input", async () => {
 			mockRl.question.mockResolvedValueOnce("q");
-			
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			const candidates = [{ accountId: "acc1", label: "Account 1" }];
 			const result = await promptAccountSelection(candidates);
-			
+
 			expect(result).toEqual(candidates[0]);
 		});
 
 		it("re-prompts on invalid selection", async () => {
-			mockRl.question
-				.mockResolvedValueOnce("99")
-				.mockResolvedValueOnce("1");
-			
+			mockRl.question.mockResolvedValueOnce("99").mockResolvedValueOnce("1");
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			const candidates = [{ accountId: "acc1", label: "Account 1" }];
 			const result = await promptAccountSelection(candidates);
-			
+
 			expect(result).toEqual(candidates[0]);
 			expect(mockRl.question).toHaveBeenCalledTimes(2);
 		});
@@ -408,51 +446,59 @@ describe("CLI Module", () => {
 		it("displays custom title", async () => {
 			mockRl.question.mockResolvedValueOnce("1");
 			const consoleSpy = vi.spyOn(console, "log");
-			
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			await promptAccountSelection(
 				[{ accountId: "acc1", label: "Account 1" }],
-				{ title: "Custom Title" }
+				{ title: "Custom Title" },
 			);
-			
-			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Custom Title"));
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Custom Title"),
+			);
 		});
 
 		it("shows default marker for default candidates", async () => {
 			mockRl.question.mockResolvedValueOnce("1");
 			const consoleSpy = vi.spyOn(console, "log");
-			
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			await promptAccountSelection([
 				{ accountId: "acc1", label: "Account 1", isDefault: true },
 			]);
-			
-			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("(default)"));
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringContaining("(default)"),
+			);
 		});
 
 		it("clamps defaultIndex to valid range", async () => {
 			mockRl.question.mockResolvedValueOnce("");
-			
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			const candidates = [
 				{ accountId: "acc1", label: "Account 1" },
 				{ accountId: "acc2", label: "Account 2" },
 			];
-			const result = await promptAccountSelection(candidates, { defaultIndex: 999 });
-			
+			const result = await promptAccountSelection(candidates, {
+				defaultIndex: 999,
+			});
+
 			expect(result).toEqual(candidates[1]);
 		});
 
 		it("handles negative defaultIndex", async () => {
 			mockRl.question.mockResolvedValueOnce("");
-			
+
 			const { promptAccountSelection } = await import("../lib/cli.js");
 			const candidates = [
 				{ accountId: "acc1", label: "Account 1" },
 				{ accountId: "acc2", label: "Account 2" },
 			];
-			const result = await promptAccountSelection(candidates, { defaultIndex: -5 });
-			
+			const result = await promptAccountSelection(candidates, {
+				defaultIndex: -5,
+			});
+
 			expect(result).toEqual(candidates[0]);
 		});
 	});
@@ -485,7 +531,9 @@ describe("CLI Module", () => {
 				{ accountId: "acc1", label: "Account 1" },
 				{ accountId: "acc2", label: "Account 2" },
 			];
-			const result = await promptAccountSelection(candidates, { defaultIndex: 1 });
+			const result = await promptAccountSelection(candidates, {
+				defaultIndex: 1,
+			});
 			expect(result).toEqual(candidates[1]);
 		});
 	});
@@ -494,13 +542,19 @@ describe("CLI Module", () => {
 			const { promptLoginMode } = await import("../lib/cli.js");
 
 			mockRl.question.mockResolvedValueOnce("check");
-			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "check" });
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "check",
+			});
 
 			mockRl.question.mockResolvedValueOnce("deep");
-			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "deep-check" });
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "deep-check",
+			});
 
 			mockRl.question.mockResolvedValueOnce("quit");
-			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({ mode: "cancel" });
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "cancel",
+			});
 		});
 
 		it("evaluates CODEX_TUI/CODEX_DESKTOP/TERM_PROGRAM/ELECTRON branches when TTY is true", async () => {
@@ -508,8 +562,16 @@ describe("CLI Module", () => {
 			const { stdin, stdout } = await import("node:process");
 			const origInputTTY = stdin.isTTY;
 			const origOutputTTY = stdout.isTTY;
-			Object.defineProperty(stdin, "isTTY", { value: true, writable: true, configurable: true });
-			Object.defineProperty(stdout, "isTTY", { value: true, writable: true, configurable: true });
+			Object.defineProperty(stdin, "isTTY", {
+				value: true,
+				writable: true,
+				configurable: true,
+			});
+			Object.defineProperty(stdout, "isTTY", {
+				value: true,
+				writable: true,
+				configurable: true,
+			});
 
 			try {
 				process.env.CODEX_TUI = "1";
@@ -536,9 +598,42 @@ describe("CLI Module", () => {
 				delete process.env.CODEX_DESKTOP;
 				delete process.env.TERM_PROGRAM;
 				delete process.env.ELECTRON_RUN_AS_NODE;
-				Object.defineProperty(stdin, "isTTY", { value: origInputTTY, writable: true, configurable: true });
-				Object.defineProperty(stdout, "isTTY", { value: origOutputTTY, writable: true, configurable: true });
+				Object.defineProperty(stdin, "isTTY", {
+					value: origInputTTY,
+					writable: true,
+					configurable: true,
+				});
+				Object.defineProperty(stdout, "isTTY", {
+					value: origOutputTTY,
+					writable: true,
+					configurable: true,
+				});
 			}
 		});
 	});
+});
+it("cancels fallback delete-all when typed confirmation does not match", async () => {
+	vi.mocked(createInterface).mockReturnValue(mockRl as any);
+	mockRl.question
+		.mockResolvedValueOnce("fresh")
+		.mockResolvedValueOnce("nope")
+		.mockResolvedValueOnce("a");
+
+	const { promptLoginMode } = await import("../lib/cli.js");
+	const result = await promptLoginMode([{ index: 0 }]);
+
+	expect(result).toEqual({ mode: "add" });
+});
+
+it("cancels fallback reset when typed confirmation does not match", async () => {
+	vi.mocked(createInterface).mockReturnValue(mockRl as any);
+	mockRl.question
+		.mockResolvedValueOnce("reset")
+		.mockResolvedValueOnce("nope")
+		.mockResolvedValueOnce("a");
+
+	const { promptLoginMode } = await import("../lib/cli.js");
+	const result = await promptLoginMode([{ index: 0 }]);
+
+	expect(result).toEqual({ mode: "add" });
 });
