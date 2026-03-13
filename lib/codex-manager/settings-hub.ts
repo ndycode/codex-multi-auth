@@ -15,6 +15,7 @@ import {
 	type CodexCliSyncPreview,
 	type CodexCliSyncRun,
 	type CodexCliSyncSummary,
+	formatRollbackPaths,
 	getLastCodexCliSyncRun,
 	previewCodexCliSync,
 } from "../codex-cli/sync.js";
@@ -2732,12 +2733,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				backup: {
 					enabled: getStorageBackupEnabled(config),
 					targetPath,
-					rollbackPaths: [
-						`${targetPath}.bak`,
-						`${targetPath}.bak.1`,
-						`${targetPath}.bak.2`,
-						`${targetPath}.wal`,
-					],
+					rollbackPaths: formatRollbackPaths(targetPath),
 				},
 				lastSync: getLastCodexCliSyncRun(),
 			},
@@ -2833,7 +2829,9 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		}
 
 		try {
-			const current = await loadAccounts();
+			const current = await withQueuedRetry(preview.targetPath, async () =>
+				loadAccounts(),
+			);
 			const synced = await applyCodexCliSyncToStorage(current, {
 				forceRefresh: true,
 			});

@@ -43,7 +43,7 @@ function cloneStorage(storage: AccountStorageV3): AccountStorageV3 {
 	};
 }
 
-function formatRollbackPaths(targetPath: string): string[] {
+export function formatRollbackPaths(targetPath: string): string[] {
 	return [
 		`${targetPath}.bak`,
 		`${targetPath}.bak.1`,
