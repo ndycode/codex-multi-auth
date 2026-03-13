@@ -39,7 +39,23 @@ describe("live-account-sync", () => {
 		await syncHistory.__resetSyncHistoryForTests();
 		syncHistory.configureSyncHistoryForTests(null);
 		if (!keepWorkDir) {
-			await fs.rm(workDir, { recursive: true, force: true });
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rm(workDir, { recursive: true, force: true });
+					break;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (
+						(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
+						attempt === 4
+					) {
+						throw error;
+					}
+					await new Promise((resolve) =>
+						setTimeout(resolve, 25 * 2 ** attempt),
+					);
+				}
+			}
 		}
 	});
 
