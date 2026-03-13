@@ -10,7 +10,11 @@ import {
 	incrementCodexCliMetric,
 	makeAccountFingerprint,
 } from "./observability.js";
-import { type CodexCliAccountSnapshot, loadCodexCliState } from "./state.js";
+import {
+	type CodexCliAccountSnapshot,
+	isCodexCliSyncEnabled,
+	loadCodexCliState,
+} from "./state.js";
 import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
@@ -86,6 +90,11 @@ export interface CodexCliSyncRun {
 	message?: string;
 }
 
+export interface PendingCodexCliSyncRun {
+	revision: number;
+	run: CodexCliSyncRun;
+}
+
 type UpsertAction = "skipped" | "added" | "updated" | "unchanged";
 
 interface UpsertResult {
@@ -100,6 +109,8 @@ interface ReconcileResult {
 }
 
 let lastCodexCliSyncRun: CodexCliSyncRun | null = null;
+let lastCodexCliSyncRunRevision = 0;
+let nextCodexCliSyncRunRevision = 0;
 
 function createEmptySyncSummary(): CodexCliSyncSummary {
 	return {
@@ -114,21 +125,88 @@ function createEmptySyncSummary(): CodexCliSyncSummary {
 	};
 }
 
-function setLastCodexCliSyncRun(run: CodexCliSyncRun): void {
-	lastCodexCliSyncRun = run;
+function cloneCodexCliSyncRun(run: CodexCliSyncRun): CodexCliSyncRun {
+	return {
+		...run,
+		summary: { ...run.summary },
+	};
+}
+
+function allocateCodexCliSyncRunRevision(): number {
+	nextCodexCliSyncRunRevision += 1;
+	return nextCodexCliSyncRunRevision;
+}
+
+function publishCodexCliSyncRun(
+	run: CodexCliSyncRun,
+	revision: number,
+): boolean {
+	if (revision < lastCodexCliSyncRunRevision) {
+		return false;
+	}
+	lastCodexCliSyncRunRevision = revision;
+	lastCodexCliSyncRun = cloneCodexCliSyncRun(run);
+	return true;
+}
+
+function buildSyncRunError(
+	run: CodexCliSyncRun,
+	error: unknown,
+): CodexCliSyncRun {
+	return {
+		...run,
+		outcome: "error",
+		message: error instanceof Error ? error.message : String(error),
+	};
+}
+
+function createSyncRun(
+	run: Omit<CodexCliSyncRun, "runAt">,
+): CodexCliSyncRun {
+	return {
+		...run,
+		runAt: Date.now(),
+	};
 }
 
 export function getLastCodexCliSyncRun(): CodexCliSyncRun | null {
-	return lastCodexCliSyncRun
-		? {
-				...lastCodexCliSyncRun,
-				summary: { ...lastCodexCliSyncRun.summary },
-			}
-		: null;
+	return lastCodexCliSyncRun ? cloneCodexCliSyncRun(lastCodexCliSyncRun) : null;
+}
+
+export function commitPendingCodexCliSyncRun(
+	pendingRun: PendingCodexCliSyncRun | null | undefined,
+): void {
+	if (!pendingRun) return;
+	publishCodexCliSyncRun(
+		{
+			...pendingRun.run,
+			runAt: Date.now(),
+		},
+		pendingRun.revision,
+	);
+}
+
+export function commitCodexCliSyncRunFailure(
+	pendingRun: PendingCodexCliSyncRun | null | undefined,
+	error: unknown,
+): void {
+	if (!pendingRun) return;
+	publishCodexCliSyncRun(
+		buildSyncRunError(
+			{
+				...pendingRun.run,
+				runAt: Date.now(),
+			},
+			error,
+		),
+		pendingRun.revision,
+	);
 }
 
 export function __resetLastCodexCliSyncRunForTests(): void {
 	lastCodexCliSyncRun = null;
+	lastCodexCliSyncRunRevision = 0;
+	nextCodexCliSyncRunRevision = 0;
 }
 
 function buildIndexByAccountId(
@@ -436,6 +514,7 @@ export async function previewCodexCliSync(
 	options: { forceRefresh?: boolean; storageBackupEnabled?: boolean } = {},
 ): Promise<CodexCliSyncPreview> {
 	const targetPath = getStoragePath();
+	const syncEnabled = isCodexCliSyncEnabled();
 	const backup = {
 		enabled: options.storageBackupEnabled ?? true,
 		targetPath,
@@ -446,10 +525,7 @@ export async function previewCodexCliSync(
 	emptySummary.targetAccountCountBefore = current?.accounts.length ?? 0;
 	emptySummary.targetAccountCountAfter = current?.accounts.length ?? 0;
 	try {
-		const state = await loadCodexCliState({
-			forceRefresh: options.forceRefresh,
-		});
-		if ((process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI ?? "").trim() === "0") {
+		if (!syncEnabled) {
 			return {
 				status: "disabled",
 				statusDetail: "Codex CLI sync is disabled by environment override.",
@@ -460,6 +536,9 @@ export async function previewCodexCliSync(
 				lastSync,
 			};
 		}
+		const state = await loadCodexCliState({
+			forceRefresh: options.forceRefresh,
+		});
 		if (!state) {
 			return {
 				status: "unavailable",
@@ -520,67 +599,74 @@ export async function previewCodexCliSync(
  */
 export async function syncAccountStorageFromCodexCli(
 	current: AccountStorageV3 | null,
-): Promise<{ storage: AccountStorageV3 | null; changed: boolean }> {
+): Promise<{
+	storage: AccountStorageV3 | null;
+	changed: boolean;
+	pendingRun: PendingCodexCliSyncRun | null;
+}> {
 	incrementCodexCliMetric("reconcileAttempts");
 	const targetPath = getStoragePath();
+	const revision = allocateCodexCliSyncRunRevision();
 	try {
+		if (!isCodexCliSyncEnabled()) {
+			incrementCodexCliMetric("reconcileNoops");
+			publishCodexCliSyncRun(
+				createSyncRun({
+					outcome: "disabled",
+					sourcePath: null,
+					targetPath,
+					summary: {
+						...createEmptySyncSummary(),
+						targetAccountCountBefore: current?.accounts.length ?? 0,
+						targetAccountCountAfter: current?.accounts.length ?? 0,
+					},
+					message: "Codex CLI sync disabled by environment override.",
+				}),
+				revision,
+			);
+			return { storage: current, changed: false, pendingRun: null };
+		}
+
 		const state = await loadCodexCliState();
 		if (!state) {
 			incrementCodexCliMetric("reconcileNoops");
-			setLastCodexCliSyncRun({
-				outcome:
-					(process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI ?? "").trim() === "0"
-						? "disabled"
-						: "unavailable",
-				runAt: Date.now(),
-				sourcePath: null,
-				targetPath,
-				summary: {
-					...createEmptySyncSummary(),
-					targetAccountCountBefore: current?.accounts.length ?? 0,
-					targetAccountCountAfter: current?.accounts.length ?? 0,
-				},
-				message:
-					(process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI ?? "").trim() === "0"
-						? "Codex CLI sync disabled by environment override."
-						: "No Codex CLI sync source was available.",
-			});
-			return { storage: current, changed: false };
+			publishCodexCliSyncRun(
+				createSyncRun({
+					outcome: "unavailable",
+					sourcePath: null,
+					targetPath,
+					summary: {
+						...createEmptySyncSummary(),
+						targetAccountCountBefore: current?.accounts.length ?? 0,
+						targetAccountCountAfter: current?.accounts.length ?? 0,
+					},
+					message: "No Codex CLI sync source was available.",
+				}),
+				revision,
+			);
+			return { storage: current, changed: false, pendingRun: null };
 		}
 
 		const reconciled = reconcileCodexCliState(current, state);
 		const next = reconciled.next;
 		const changed = reconciled.changed;
-
-		if (next.accounts.length === 0) {
-			incrementCodexCliMetric(changed ? "reconcileChanges" : "reconcileNoops");
-			setLastCodexCliSyncRun({
-				outcome: changed ? "changed" : "noop",
-				runAt: Date.now(),
-				sourcePath: state.path,
-				targetPath,
-				summary: reconciled.summary,
-			});
-			log.debug("Codex CLI reconcile completed", {
-				operation: "reconcile-storage",
-				outcome: changed ? "changed" : "noop",
-				accountCount: next.accounts.length,
-			});
-			return {
-				storage: current ?? next,
-				changed,
-			};
-		}
-
-		incrementCodexCliMetric(changed ? "reconcileChanges" : "reconcileNoops");
-		const activeFromSnapshots = readActiveFromSnapshots(state.accounts);
-		setLastCodexCliSyncRun({
+		const storage =
+			next.accounts.length === 0 ? (current ?? next) : next;
+		const syncRun = createSyncRun({
 			outcome: changed ? "changed" : "noop",
-			runAt: Date.now(),
 			sourcePath: state.path,
 			targetPath,
 			summary: reconciled.summary,
 		});
+
+		if (!changed) {
+			incrementCodexCliMetric("reconcileNoops");
+			publishCodexCliSyncRun(syncRun, revision);
+		} else {
+			incrementCodexCliMetric("reconcileChanges");
+		}
+
+		const activeFromSnapshots = readActiveFromSnapshots(state.accounts);
 		log.debug("Codex CLI reconcile completed", {
 			operation: "reconcile-storage",
 			outcome: changed ? "changed" : "noop",
@@ -591,29 +677,32 @@ export async function syncAccountStorageFromCodexCli(
 			}),
 		});
 		return {
-			storage: next,
+			storage,
 			changed,
+			pendingRun: changed ? { revision, run: syncRun } : null,
 		};
 	} catch (error) {
 		incrementCodexCliMetric("reconcileFailures");
-		setLastCodexCliSyncRun({
-			outcome: "error",
-			runAt: Date.now(),
-			sourcePath: null,
-			targetPath,
-			summary: {
-				...createEmptySyncSummary(),
-				targetAccountCountBefore: current?.accounts.length ?? 0,
-				targetAccountCountAfter: current?.accounts.length ?? 0,
-			},
-			message: error instanceof Error ? error.message : String(error),
-		});
+		publishCodexCliSyncRun(
+			createSyncRun({
+				outcome: "error",
+				sourcePath: null,
+				targetPath,
+				summary: {
+					...createEmptySyncSummary(),
+					targetAccountCountBefore: current?.accounts.length ?? 0,
+					targetAccountCountAfter: current?.accounts.length ?? 0,
+				},
+				message: error instanceof Error ? error.message : String(error),
+			}),
+			revision,
+		);
 		log.warn("Codex CLI reconcile failed", {
 			operation: "reconcile-storage",
 			outcome: "error",
 			error: String(error),
 		});
-		return { storage: current, changed: false };
+		return { storage: current, changed: false, pendingRun: null };
 	}
 }
 

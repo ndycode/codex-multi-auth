@@ -8,9 +8,12 @@ import {
 	loadCodexCliState,
 } from "../codex-cli/state.js";
 import {
+	commitCodexCliSyncRunFailure,
+	commitPendingCodexCliSyncRun,
 	type CodexCliSyncPreview,
 	type CodexCliSyncRun,
 	type CodexCliSyncSummary,
+	getLastCodexCliSyncRun,
 	previewCodexCliSync,
 	syncAccountStorageFromCodexCli,
 } from "../codex-cli/sync.js";
@@ -35,7 +38,12 @@ import {
 	getLastLiveAccountSyncSnapshot,
 	type LiveAccountSyncSnapshot,
 } from "../live-account-sync.js";
-import { loadAccounts, saveAccounts } from "../storage.js";
+import {
+	isStorageBackupEnabled,
+	loadAccounts,
+	saveAccounts,
+	setStorageBackupEnabled,
+} from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
@@ -2679,7 +2687,9 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				const lower = raw.toLowerCase();
 				if (lower === "q") return { type: "back" };
 				if (lower === "r") return { type: "refresh" };
-				if (lower === "a") return { type: "apply" };
+				if (lower === "a" && preview.status === "ready") {
+					return { type: "apply" };
+				}
 				return undefined;
 			},
 		});
@@ -2693,22 +2703,44 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		try {
 			const current = await loadAccounts();
 			const synced = await syncAccountStorageFromCodexCli(current);
+			const storageBackupEnabled = getStorageBackupEnabled(config);
+			const nextStorage = synced.storage ?? current;
 			if (synced.changed && synced.storage) {
-				await saveAccounts(synced.storage);
+				const previousStorageBackupEnabled = isStorageBackupEnabled();
+				setStorageBackupEnabled(storageBackupEnabled);
+				try {
+					await saveAccounts(synced.storage);
+					commitPendingCodexCliSyncRun(synced.pendingRun);
+				} catch (error) {
+					commitCodexCliSyncRunFailure(synced.pendingRun, error);
+					preview = {
+						...preview,
+						lastSync: getLastCodexCliSyncRun(),
+						status: "error",
+						statusDetail: `Failed to save synced storage: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					};
+					continue;
+				} finally {
+					setStorageBackupEnabled(previousStorageBackupEnabled);
+				}
 			}
 			const state = await loadCodexCliState({ forceRefresh: true });
-			preview = await previewCodexCliSync(synced.storage ?? current, {
+			preview = await previewCodexCliSync(nextStorage, {
 				forceRefresh: true,
-				storageBackupEnabled: getStorageBackupEnabled(config),
+				storageBackupEnabled,
 			});
 			context = resolveSyncCenterContext(state);
 		} catch (error) {
 			preview = {
 				...preview,
 				status: "error",
-				statusDetail: error instanceof Error ? error.message : String(error),
+				lastSync: getLastCodexCliSyncRun(),
+				statusDetail: `Failed to refresh sync center: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
 			};
-			context = resolveSyncCenterContext(null);
 		}
 	}
 }

@@ -6,6 +6,8 @@ import * as codexCliState from "../lib/codex-cli/state.js";
 import { clearCodexCliStateCache } from "../lib/codex-cli/state.js";
 import {
 	__resetLastCodexCliSyncRunForTests,
+	commitCodexCliSyncRunFailure,
+	commitPendingCodexCliSyncRun,
 	getActiveSelectionForFamily,
 	getLastCodexCliSyncRun,
 	previewCodexCliSync,
@@ -14,6 +16,20 @@ import {
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
+
+function createDeferred<T>(): {
+	promise: Promise<T>;
+	resolve: (value: T | PromiseLike<T>) => void;
+	reject: (reason?: unknown) => void;
+} {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
 
 describe("codex-cli sync", () => {
 	let tempDir: string;
@@ -317,6 +333,25 @@ describe("codex-cli sync", () => {
 		const result = await syncAccountStorageFromCodexCli(current);
 		expect(result.changed).toBe(false);
 		expect(result.storage).toBe(current);
+		expect(result.pendingRun).toBeNull();
+	});
+
+	it("returns a disabled preview without reading Codex state when sync is disabled", async () => {
+		process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "0";
+		clearCodexCliStateCache();
+
+		const loadSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockRejectedValue(new Error("forced load failure"));
+
+		try {
+			const preview = await previewCodexCliSync(null, { forceRefresh: true });
+			expect(preview.status).toBe("disabled");
+			expect(preview.statusDetail).toContain("disabled by environment override");
+			expect(loadSpy).not.toHaveBeenCalled();
+		} finally {
+			loadSpy.mockRestore();
+		}
 	});
 
 	it("keeps local active selection when local write is newer than codex snapshot", async () => {
@@ -784,7 +819,7 @@ describe("codex-cli sync", () => {
 		expect(result.storage).toEqual(current);
 	});
 
-	it("records the last sync run summary after a reconcile", async () => {
+	it("only records a changed last sync run after the caller commits persistence", async () => {
 		await writeFile(
 			accountsPath,
 			JSON.stringify(
@@ -824,7 +859,12 @@ describe("codex-cli sync", () => {
 			activeIndexByFamily: { codex: 0 },
 		};
 
-		await syncAccountStorageFromCodexCli(current);
+		const result = await syncAccountStorageFromCodexCli(current);
+		expect(result.changed).toBe(true);
+		expect(result.pendingRun).not.toBeNull();
+		expect(getLastCodexCliSyncRun()).toBeNull();
+
+		commitPendingCodexCliSyncRun(result.pendingRun);
 
 		const lastRun = getLastCodexCliSyncRun();
 		expect(lastRun?.outcome).toBe("changed");
@@ -832,6 +872,126 @@ describe("codex-cli sync", () => {
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
 		expect(lastRun?.summary.destinationOnlyPreservedCount).toBe(1);
 		expect(lastRun?.summary.selectionChanged).toBe(true);
+	});
+
+	it("records a save failure over a pending changed sync run", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await syncAccountStorageFromCodexCli(current);
+		expect(result.pendingRun).not.toBeNull();
+
+		commitCodexCliSyncRunFailure(result.pendingRun, new Error("save busy"));
+
+		const lastRun = getLastCodexCliSyncRun();
+		expect(lastRun?.outcome).toBe("error");
+		expect(lastRun?.message).toBe("save busy");
+		expect(lastRun?.summary.addedAccountCount).toBe(1);
+	});
+
+	it("ignores stale changed sync commits when a newer sync run already published", async () => {
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+		const firstDeferred = createDeferred<
+			NonNullable<Awaited<ReturnType<typeof codexCliState.loadCodexCliState>>>
+		>();
+		const secondDeferred = createDeferred<
+			NonNullable<Awaited<ReturnType<typeof codexCliState.loadCodexCliState>>>
+		>();
+		const loadSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockImplementationOnce(async () => firstDeferred.promise)
+			.mockImplementationOnce(async () => secondDeferred.promise);
+
+		try {
+			const firstPromise = syncAccountStorageFromCodexCli(current);
+			const secondPromise = syncAccountStorageFromCodexCli(current);
+
+			secondDeferred.resolve({
+				path: "second",
+				accounts: [
+					{
+						accountId: "acc_b",
+						email: "b@example.com",
+						accessToken: "access-b",
+						refreshToken: "refresh-b",
+					},
+				],
+				activeAccountId: "acc_b",
+			});
+			const second = await secondPromise;
+			commitPendingCodexCliSyncRun(second.pendingRun);
+			expect(getLastCodexCliSyncRun()?.sourcePath).toBe("second");
+
+			firstDeferred.resolve({
+				path: "first",
+				accounts: [
+					{
+						accountId: "acc_c",
+						email: "c@example.com",
+						accessToken: "access-c",
+						refreshToken: "refresh-c",
+					},
+				],
+				activeAccountId: "acc_c",
+			});
+			const first = await firstPromise;
+			commitPendingCodexCliSyncRun(first.pendingRun);
+
+			const lastRun = getLastCodexCliSyncRun();
+			expect(lastRun?.sourcePath).toBe("second");
+			expect(lastRun?.summary.addedAccountCount).toBe(1);
+		} finally {
+			loadSpy.mockRestore();
+		}
 	});
 
 	it("returns current storage when state loading throws", async () => {

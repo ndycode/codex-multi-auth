@@ -1,4 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+const {
+  loadAccountsMock,
+  syncAccountStorageFromCodexCliMock,
+  commitPendingCodexCliSyncRunMock,
+  commitCodexCliSyncRunFailureMock,
+  loadCodexCliStateMock,
+} = vi.hoisted(() => ({
+  loadAccountsMock: vi.fn(),
+  syncAccountStorageFromCodexCliMock: vi.fn(),
+  commitPendingCodexCliSyncRunMock: vi.fn(),
+  commitCodexCliSyncRunFailureMock: vi.fn(),
+  loadCodexCliStateMock: vi.fn(),
+}));
 import {
   AccountManager,
   extractAccountEmail,
@@ -17,8 +30,45 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
   return {
     ...actual,
+    loadAccounts: loadAccountsMock,
     saveAccounts: vi.fn().mockResolvedValue(undefined),
   };
+});
+
+vi.mock("../lib/codex-cli/sync.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/codex-cli/sync.js")>();
+  return {
+    ...actual,
+    commitCodexCliSyncRunFailure: commitCodexCliSyncRunFailureMock,
+    commitPendingCodexCliSyncRun: commitPendingCodexCliSyncRunMock,
+    syncAccountStorageFromCodexCli: syncAccountStorageFromCodexCliMock,
+  };
+});
+
+vi.mock("../lib/codex-cli/state.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/codex-cli/state.js")>();
+  return {
+    ...actual,
+    loadCodexCliState: loadCodexCliStateMock,
+  };
+});
+
+beforeEach(async () => {
+  const { saveAccounts } = await import("../lib/storage.js");
+  loadAccountsMock.mockReset();
+  syncAccountStorageFromCodexCliMock.mockReset();
+  commitPendingCodexCliSyncRunMock.mockReset();
+  commitCodexCliSyncRunFailureMock.mockReset();
+  loadCodexCliStateMock.mockReset();
+  vi.mocked(saveAccounts).mockReset();
+  vi.mocked(saveAccounts).mockResolvedValue(undefined);
+  loadAccountsMock.mockResolvedValue(null);
+  syncAccountStorageFromCodexCliMock.mockResolvedValue({
+    storage: null,
+    changed: false,
+    pendingRun: null,
+  });
+  loadCodexCliStateMock.mockResolvedValue(null);
 });
 
 describe("parseRateLimitReason", () => {
@@ -190,6 +240,114 @@ describe("getAccountIdCandidates", () => {
 });
 
 describe("AccountManager", () => {
+  it("commits a pending Codex CLI sync run only after loadFromDisk persists storage", async () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        { refreshToken: "token-1", addedAt: now, lastUsed: now },
+      ],
+    };
+    const syncedStorage = {
+      ...stored,
+      accounts: [
+        ...stored.accounts,
+        { refreshToken: "token-2", addedAt: now + 1, lastUsed: now + 1 },
+      ],
+    };
+    const pendingRun = {
+      revision: 1,
+      run: {
+        outcome: "changed" as const,
+        runAt: now,
+        sourcePath: "/mock/codex/accounts.json",
+        targetPath: "/mock/openai-codex-accounts.json",
+        summary: {
+          sourceAccountCount: 1,
+          targetAccountCountBefore: 1,
+          targetAccountCountAfter: 2,
+          addedAccountCount: 1,
+          updatedAccountCount: 0,
+          unchangedAccountCount: 0,
+          destinationOnlyPreservedCount: 1,
+          selectionChanged: false,
+        },
+      },
+    };
+    loadAccountsMock.mockResolvedValue(stored);
+    syncAccountStorageFromCodexCliMock.mockResolvedValue({
+      storage: syncedStorage,
+      changed: true,
+      pendingRun,
+    });
+
+    const { saveAccounts } = await import("../lib/storage.js");
+    const mockSaveAccounts = vi.mocked(saveAccounts);
+
+    await AccountManager.loadFromDisk();
+
+    expect(mockSaveAccounts).toHaveBeenCalledWith(syncedStorage);
+    expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledWith(pendingRun);
+    expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
+  });
+
+  it("records loadFromDisk save failures as sync-run failures instead of successes", async () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        { refreshToken: "token-1", addedAt: now, lastUsed: now },
+      ],
+    };
+    const syncedStorage = {
+      ...stored,
+      accounts: [
+        ...stored.accounts,
+        { refreshToken: "token-2", addedAt: now + 1, lastUsed: now + 1 },
+      ],
+    };
+    const pendingRun = {
+      revision: 2,
+      run: {
+        outcome: "changed" as const,
+        runAt: now,
+        sourcePath: "/mock/codex/accounts.json",
+        targetPath: "/mock/openai-codex-accounts.json",
+        summary: {
+          sourceAccountCount: 1,
+          targetAccountCountBefore: 1,
+          targetAccountCountAfter: 2,
+          addedAccountCount: 1,
+          updatedAccountCount: 0,
+          unchangedAccountCount: 0,
+          destinationOnlyPreservedCount: 1,
+          selectionChanged: false,
+        },
+      },
+    };
+    const saveError = new Error("save busy");
+    loadAccountsMock.mockResolvedValue(stored);
+    syncAccountStorageFromCodexCliMock.mockResolvedValue({
+      storage: syncedStorage,
+      changed: true,
+      pendingRun,
+    });
+
+    const { saveAccounts } = await import("../lib/storage.js");
+    const mockSaveAccounts = vi.mocked(saveAccounts);
+    mockSaveAccounts.mockRejectedValueOnce(saveError);
+
+    await AccountManager.loadFromDisk();
+
+    expect(commitPendingCodexCliSyncRunMock).not.toHaveBeenCalled();
+    expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledWith(
+      pendingRun,
+      saveError,
+    );
+  });
+
   it("seeds from fallback auth when no storage exists", () => {
     const auth: OAuthAuthDetails = {
       type: "oauth",

@@ -19,6 +19,9 @@ const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const previewCodexCliSyncMock = vi.fn();
 const syncAccountStorageFromCodexCliMock = vi.fn();
+const commitPendingCodexCliSyncRunMock = vi.fn();
+const commitCodexCliSyncRunFailureMock = vi.fn();
+const getLastCodexCliSyncRunMock = vi.fn();
 const getCodexCliAccountsPathMock = vi.fn(() => "/mock/codex/accounts.json");
 const getCodexCliAuthPathMock = vi.fn(() => "/mock/codex/auth.json");
 const getCodexCliConfigPathMock = vi.fn(() => "/mock/codex/config.toml");
@@ -29,6 +32,11 @@ const selectMock = vi.fn();
 const deleteSavedAccountsMock = vi.fn();
 const resetLocalStateMock = vi.fn();
 const deleteAccountAtIndexMock = vi.fn();
+let storageBackupEnabledState = true;
+const setStorageBackupEnabledMock = vi.fn((enabled: boolean) => {
+	storageBackupEnabledState = enabled;
+});
+const isStorageBackupEnabledMock = vi.fn(() => storageBackupEnabledState);
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -90,11 +98,13 @@ vi.mock("../lib/accounts.js", () => ({
 }));
 
 vi.mock("../lib/storage.js", () => ({
+	isStorageBackupEnabled: isStorageBackupEnabledMock,
 	loadAccounts: loadAccountsMock,
 	loadFlaggedAccounts: loadFlaggedAccountsMock,
 	saveAccounts: saveAccountsMock,
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
 	setStoragePath: setStoragePathMock,
+	setStorageBackupEnabled: setStorageBackupEnabledMock,
 	getStoragePath: getStoragePathMock,
 }));
 
@@ -107,6 +117,9 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
 }));
 
 vi.mock("../lib/codex-cli/sync.js", () => ({
+	commitCodexCliSyncRunFailure: commitCodexCliSyncRunFailureMock,
+	commitPendingCodexCliSyncRun: commitPendingCodexCliSyncRunMock,
+	getLastCodexCliSyncRun: getLastCodexCliSyncRunMock,
 	previewCodexCliSync: previewCodexCliSyncMock,
 	syncAccountStorageFromCodexCli: syncAccountStorageFromCodexCliMock,
 }));
@@ -259,6 +272,9 @@ describe("codex manager cli commands", () => {
 		savePluginConfigMock.mockReset();
 		previewCodexCliSyncMock.mockReset();
 		syncAccountStorageFromCodexCliMock.mockReset();
+		commitPendingCodexCliSyncRunMock.mockReset();
+		commitCodexCliSyncRunFailureMock.mockReset();
+		getLastCodexCliSyncRunMock.mockReset();
 		getCodexCliAccountsPathMock.mockReset();
 		getCodexCliAuthPathMock.mockReset();
 		getCodexCliConfigPathMock.mockReset();
@@ -266,6 +282,9 @@ describe("codex manager cli commands", () => {
 		loadCodexCliStateMock.mockReset();
 		getLastLiveAccountSyncSnapshotMock.mockReset();
 		selectMock.mockReset();
+		setStorageBackupEnabledMock.mockClear();
+		isStorageBackupEnabledMock.mockClear();
+		storageBackupEnabledState = true;
 		deleteAccountAtIndexMock.mockReset();
 		deleteAccountAtIndexMock.mockResolvedValue(null);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
@@ -296,6 +315,7 @@ describe("codex manager cli commands", () => {
 		});
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
+		getLastCodexCliSyncRunMock.mockReturnValue(null);
 		previewCodexCliSyncMock.mockResolvedValue({
 			status: "unavailable",
 			statusDetail: "No Codex CLI sync source was found.",
@@ -324,6 +344,7 @@ describe("codex manager cli commands", () => {
 		syncAccountStorageFromCodexCliMock.mockResolvedValue({
 			changed: false,
 			storage: null,
+			pendingRun: null,
 		});
 		getCodexCliAccountsPathMock.mockReturnValue("/mock/codex/accounts.json");
 		getCodexCliAuthPathMock.mockReturnValue("/mock/codex/auth.json");
@@ -1723,6 +1744,25 @@ describe("codex manager cli commands", () => {
 					},
 				],
 			},
+			pendingRun: {
+				revision: 1,
+				run: {
+					outcome: "changed",
+					runAt: now,
+					sourcePath: "/mock/codex/accounts.json",
+					targetPath: "/mock/openai-codex-accounts.json",
+					summary: {
+						sourceAccountCount: 1,
+						targetAccountCountBefore: 1,
+						targetAccountCountAfter: 2,
+						addedAccountCount: 1,
+						updatedAccountCount: 0,
+						unchangedAccountCount: 0,
+						destinationOnlyPreservedCount: 1,
+						selectionChanged: true,
+					},
+				},
+			},
 		});
 
 		let selectCall = 0;
@@ -1758,7 +1798,311 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(syncAccountStorageFromCodexCliMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledTimes(1);
+		expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
 		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("honors the disabled sync-center apply hotkey", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "sync@example.com",
+					accountId: "acc_sync",
+					refreshToken: "refresh-sync",
+					accessToken: "access-sync",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		let selectCall = 0;
+		selectMock.mockImplementation(async (_items, options) => {
+			selectCall += 1;
+			if (selectCall === 1) return { type: "sync-center" };
+			if (selectCall === 2) {
+				const onInput = (
+					options as { onInput?: (raw: string) => unknown } | undefined
+				)?.onInput;
+				expect(onInput?.("a")).toBeUndefined();
+				return { type: "back" };
+			}
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(syncAccountStorageFromCodexCliMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+	});
+
+	it("applies sync-center writes with storage backups disabled when configured", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "sync@example.com",
+					accountId: "acc_sync",
+					refreshToken: "refresh-sync",
+					accessToken: "access-sync",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(storage);
+		loadPluginConfigMock.mockReturnValue({ storageBackupEnabled: false });
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		previewCodexCliSyncMock
+			.mockResolvedValueOnce({
+				status: "ready",
+				statusDetail: "Preview ready.",
+				sourcePath: "/mock/codex/accounts.json",
+				targetPath: "/mock/openai-codex-accounts.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 1,
+					targetAccountCountAfter: 2,
+					addedAccountCount: 1,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 1,
+					selectionChanged: false,
+				},
+				backup: {
+					enabled: false,
+					targetPath: "/mock/openai-codex-accounts.json",
+					rollbackPaths: ["/mock/openai-codex-accounts.json.bak"],
+				},
+				lastSync: null,
+			})
+			.mockResolvedValueOnce({
+				status: "noop",
+				statusDetail: "Target already matches the current one-way sync result.",
+				sourcePath: "/mock/codex/accounts.json",
+				targetPath: "/mock/openai-codex-accounts.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 2,
+					targetAccountCountAfter: 2,
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 1,
+					destinationOnlyPreservedCount: 1,
+					selectionChanged: false,
+				},
+				backup: {
+					enabled: false,
+					targetPath: "/mock/openai-codex-accounts.json",
+					rollbackPaths: ["/mock/openai-codex-accounts.json.bak"],
+				},
+				lastSync: null,
+			});
+		syncAccountStorageFromCodexCliMock.mockResolvedValueOnce({
+			changed: true,
+			storage: {
+				...storage,
+				accounts: [
+					...storage.accounts,
+					{
+						email: "codex@example.com",
+						accountId: "acc_codex",
+						refreshToken: "refresh-codex",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			},
+			pendingRun: {
+				revision: 2,
+				run: {
+					outcome: "changed",
+					runAt: now,
+					sourcePath: "/mock/codex/accounts.json",
+					targetPath: "/mock/openai-codex-accounts.json",
+					summary: {
+						sourceAccountCount: 1,
+						targetAccountCountBefore: 1,
+						targetAccountCountAfter: 2,
+						addedAccountCount: 1,
+						updatedAccountCount: 0,
+						unchangedAccountCount: 0,
+						destinationOnlyPreservedCount: 1,
+						selectionChanged: false,
+					},
+				},
+			},
+		});
+		saveAccountsMock.mockImplementation(async () => {
+			expect(storageBackupEnabledState).toBe(false);
+		});
+
+		let selectCall = 0;
+		selectMock.mockImplementation(async () => {
+			selectCall += 1;
+			if (selectCall === 1) return { type: "sync-center" };
+			if (selectCall === 2) return { type: "apply" };
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(setStorageBackupEnabledMock).toHaveBeenNthCalledWith(1, false);
+		expect(setStorageBackupEnabledMock).toHaveBeenNthCalledWith(2, true);
+		expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledTimes(1);
+		expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
+	});
+
+	it("surfaces sync-center save failures distinctly from reconcile failures", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "sync@example.com",
+					accountId: "acc_sync",
+					refreshToken: "refresh-sync",
+					accessToken: "access-sync",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(storage);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		previewCodexCliSyncMock.mockResolvedValueOnce({
+			status: "ready",
+			statusDetail: "Preview ready.",
+			sourcePath: "/mock/codex/accounts.json",
+			targetPath: "/mock/openai-codex-accounts.json",
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 2,
+				addedAccountCount: 1,
+				updatedAccountCount: 0,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 1,
+				selectionChanged: false,
+			},
+			backup: {
+				enabled: true,
+				targetPath: "/mock/openai-codex-accounts.json",
+				rollbackPaths: ["/mock/openai-codex-accounts.json.bak"],
+			},
+			lastSync: null,
+		});
+		syncAccountStorageFromCodexCliMock.mockResolvedValueOnce({
+			changed: true,
+			storage: {
+				...storage,
+				accounts: [
+					...storage.accounts,
+					{
+						email: "codex@example.com",
+						accountId: "acc_codex",
+						refreshToken: "refresh-codex",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			},
+			pendingRun: {
+				revision: 3,
+				run: {
+					outcome: "changed",
+					runAt: now,
+					sourcePath: "/mock/codex/accounts.json",
+					targetPath: "/mock/openai-codex-accounts.json",
+					summary: {
+						sourceAccountCount: 1,
+						targetAccountCountBefore: 1,
+						targetAccountCountAfter: 2,
+						addedAccountCount: 1,
+						updatedAccountCount: 0,
+						unchangedAccountCount: 0,
+						destinationOnlyPreservedCount: 1,
+						selectionChanged: false,
+					},
+				},
+			},
+		});
+		getLastCodexCliSyncRunMock.mockReturnValue({
+			outcome: "error",
+			runAt: now,
+			sourcePath: "/mock/codex/accounts.json",
+			targetPath: "/mock/openai-codex-accounts.json",
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 2,
+				addedAccountCount: 1,
+				updatedAccountCount: 0,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 1,
+				selectionChanged: false,
+			},
+			message: "busy",
+		});
+		saveAccountsMock.mockRejectedValue(makeErrnoError("busy", "EBUSY"));
+
+		let selectCall = 0;
+		selectMock.mockImplementation(async (items) => {
+			selectCall += 1;
+			if (selectCall === 1) return { type: "sync-center" };
+			if (selectCall === 2) return { type: "apply" };
+			if (selectCall === 3) {
+				const text = items
+					.map(
+						(item: { label?: string; hint?: string }) =>
+							`${item.label ?? ""}\n${item.hint ?? ""}`,
+					)
+					.join("\n");
+				expect(text).toContain("Failed to save synced storage: busy");
+				return { type: "back" };
+			}
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(commitPendingCodexCliSyncRunMock).not.toHaveBeenCalled();
+		expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledTimes(1);
+		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(1);
 	});
 
 	it.each([

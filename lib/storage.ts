@@ -178,6 +178,10 @@ export function setStorageBackupEnabled(enabled: boolean): void {
 	storageBackupEnabled = enabled;
 }
 
+export function isStorageBackupEnabled(): boolean {
+	return storageBackupEnabled;
+}
+
 function getAccountsBackupPath(path: string): string {
 	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
 }
