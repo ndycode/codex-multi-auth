@@ -1894,7 +1894,6 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
-			active: true,
 		};
 		const current = state.snapshot;
 		const persist = async (
@@ -1912,6 +1911,10 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 					await saveAccountsUnlocked(previousAccounts);
 					state.snapshot = previousAccounts;
 				} catch (rollbackError) {
+					const combinedError = new AggregateError(
+						[error, rollbackError],
+						"Flagged save failed and account storage rollback also failed",
+					);
 					log.error(
 						"Failed to rollback account storage after flagged save failure",
 						{
@@ -1919,6 +1922,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 							rollbackError: String(rollbackError),
 						},
 					);
+					throw combinedError;
 				}
 				throw error;
 			}

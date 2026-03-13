@@ -12,6 +12,7 @@ import {
 	exportNamedBackup,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getFlaggedAccountsPath,
 	getStoragePath,
 	importAccounts,
 	loadAccounts,
@@ -638,6 +639,150 @@ describe("storage", () => {
 					refreshToken: "refresh-flagged",
 				}),
 			);
+		});
+
+		it("surfaces rollback failure when flagged persistence and account rollback both fail", async () => {
+			const now = Date.now();
+			const storagePath = getStoragePath();
+			expect(storagePath).toBeTruthy();
+			const flaggedStoragePath = getFlaggedAccountsPath();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const actualFs = await vi.importActual<typeof import("node:fs")>(
+				"node:fs",
+			);
+			let accountRenameAttempts = 0;
+			let flaggedRenameAttempts = 0;
+			vi.resetModules();
+			vi.doMock("node:fs", () => ({
+				...actualFs,
+				promises: {
+					...actualFs.promises,
+					rename: async (
+						from: Parameters<typeof actualFs.promises.rename>[0],
+						to: Parameters<typeof actualFs.promises.rename>[1],
+					) => {
+						const targetPath = String(to);
+						if (targetPath === flaggedStoragePath) {
+							flaggedRenameAttempts += 1;
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+						if (targetPath === storagePath) {
+							accountRenameAttempts += 1;
+							if (accountRenameAttempts > 1) {
+								const error = Object.assign(
+									new Error("rollback account storage busy"),
+									{ code: "EBUSY" },
+								);
+								throw error;
+							}
+						}
+						return actualFs.promises.rename(from, to);
+					},
+				},
+			}));
+			const isolatedStorageModule = await import("../lib/storage.js");
+			isolatedStorageModule.setStoragePathDirect(storagePath);
+			try {
+				let thrown: unknown;
+				try {
+					await isolatedStorageModule.withAccountAndFlaggedStorageTransaction(
+						async (current, persist) => {
+							if (!current) {
+								throw new Error("expected existing account storage");
+							}
+							await persist(
+								{
+									...current,
+									accounts: [
+										...current.accounts,
+										{
+											accountId: "acct-restored",
+											email: "restored@example.com",
+											refreshToken: "refresh-restored",
+											addedAt: now,
+											lastUsed: now,
+										},
+									],
+								},
+								{
+									version: 1,
+									accounts: [],
+								},
+							);
+						},
+					);
+				} catch (error) {
+					thrown = error;
+				}
+
+				expect(flaggedRenameAttempts).toBe(5);
+				expect(accountRenameAttempts).toBe(6);
+				expect(thrown).toBeInstanceOf(AggregateError);
+				expect((thrown as AggregateError).message).toBe(
+					"Flagged save failed and account storage rollback also failed",
+				);
+				const thrownErrors = (thrown as AggregateError).errors.map(String);
+				expect(
+					thrownErrors.some((message) =>
+						message.includes("flagged storage busy"),
+					),
+				).toBe(true);
+				expect(
+					thrownErrors.some((message) =>
+						message.includes("rollback account storage busy"),
+					),
+				).toBe(true);
+
+				const loadedAccounts = await isolatedStorageModule.loadAccounts();
+				expect(loadedAccounts?.accounts).toHaveLength(2);
+				expect(
+					loadedAccounts?.accounts.map((account) => account.refreshToken),
+				).toEqual(["refresh-existing", "refresh-restored"]);
+
+				const loadedFlagged = await isolatedStorageModule.loadFlaggedAccounts();
+				expect(loadedFlagged.accounts).toHaveLength(1);
+				expect(loadedFlagged.accounts[0]).toEqual(
+					expect.objectContaining({
+						accountId: "acct-flagged",
+						refreshToken: "refresh-flagged",
+					}),
+				);
+			} finally {
+				isolatedStorageModule.setStoragePathDirect(null);
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+			}
 		});
 
 		it("retries transient flagged storage rename and succeeds", async () => {
