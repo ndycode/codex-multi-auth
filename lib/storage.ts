@@ -1776,7 +1776,29 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	if (existingPath) {
 		return existingPath;
 	}
-	return buildNamedBackupPath(name);
+	const requested = (name ?? "").trim();
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
+		? requested
+		: `${requested}.json`;
+	try {
+		return buildNamedBackupPath(name);
+	} catch (error) {
+		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
+			? requestedWithExtension.slice(0, -".json".length)
+			: requestedWithExtension;
+		if (
+			requested.length > 0 &&
+			basename(requestedWithExtension) === requestedWithExtension &&
+			!requestedWithExtension.includes("..") &&
+			!/^[A-Za-z0-9_-]+$/.test(baseName)
+		) {
+			throw new Error(
+				`Import file not found: ${resolvePath(join(backupRoot, requestedWithExtension))}`,
+			);
+		}
+		throw error;
+	}
 }
 
 async function loadAccountsFromJournal(
@@ -2594,13 +2616,15 @@ export async function exportAccounts(
 
 	const transactionState = transactionSnapshotContext.getStore();
 	const currentStoragePath = getStoragePath();
-	const storage =
-		transactionState?.active &&
-		transactionState.storagePath === currentStoragePath
-		? transactionState.snapshot
-		: await withAccountStorageTransaction((current) =>
-				Promise.resolve(current),
-			);
+	const storage = transactionState?.active
+		? transactionState.storagePath === currentStoragePath
+			? transactionState.snapshot
+			: (() => {
+					throw new Error(
+						"exportAccounts called inside an active transaction for a different storage path",
+					);
+				})()
+		: await withAccountStorageTransaction((current) => Promise.resolve(current));
 	if (!storage || storage.accounts.length === 0) {
 		throw new Error("No accounts to export");
 	}

@@ -369,6 +369,34 @@ describe("storage", () => {
 			);
 		});
 
+		it("throws when exporting inside an active transaction for a different storage path", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "transactional-export",
+						refreshToken: "ref-transactional-export",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const alternateStoragePath = join(testWorkDir, "alternate-accounts.json");
+
+			await expect(
+				withAccountStorageTransaction(async () => {
+					setStoragePathDirect(alternateStoragePath);
+					try {
+						await exportAccounts(exportPath);
+					} finally {
+						setStoragePathDirect(testStoragePath);
+					}
+				}),
+			).rejects.toThrow(/different storage path/);
+		});
+
 		it("should import accounts from a file and merge", async () => {
 			// @ts-expect-error
 			const { importAccounts } = await import("../lib/storage.js");
@@ -1231,48 +1259,6 @@ describe("storage", () => {
 			).rejects.toThrow(/Invalid JSON in import file/);
 		});
 
-		it("throws when restoring would exceed the account limit after assessment", async () => {
-			const { ACCOUNT_LIMITS } = await import("../lib/constants.js");
-
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: [
-					{
-						accountId: "limit-backup",
-						refreshToken: "ref-limit-backup",
-						addedAt: 1,
-						lastUsed: 1,
-					},
-				],
-			});
-
-			await createNamedBackup("limit-after-assessment");
-			await clearAccounts();
-
-			const assessment = await assessNamedBackupRestore("limit-after-assessment");
-			expect(assessment.valid).toBe(true);
-			expect(assessment.wouldExceedLimit).toBe(false);
-
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: Array.from(
-					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS },
-					(_, index) => ({
-						accountId: `current-${index}`,
-						refreshToken: `ref-current-${index}`,
-						addedAt: index + 1,
-						lastUsed: index + 1,
-					}),
-				),
-			});
-
-			await expect(
-				restoreNamedBackup("limit-after-assessment"),
-			).rejects.toThrow(/Import would exceed maximum of/);
-		});
-
 		it.each(["../openai-codex-accounts", String.raw`..\openai-codex-accounts`])(
 			"rejects backup names that escape the backups directory: %s",
 			async (input) => {
@@ -1303,6 +1289,41 @@ describe("storage", () => {
 			await fs.rm(buildNamedBackupPath("deleted-backup"), { force: true });
 
 			await expect(restoreNamedBackup("deleted-backup")).rejects.toThrow(
+				/Import file not found/,
+			);
+		});
+
+		it("throws file-not-found when a manually named backup disappears after assessment", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Manual Backup.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "manual-missing",
+							refreshToken: "ref-manual-missing",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("Manual Backup");
+			expect(assessment.valid).toBe(true);
+
+			await fs.rm(backupPath, { force: true });
+
+			await expect(restoreNamedBackup("Manual Backup")).rejects.toThrow(
 				/Import file not found/,
 			);
 		});
@@ -1383,6 +1404,77 @@ describe("storage", () => {
 			await expect(restoreNamedBackup("limit-backup")).rejects.toThrow(
 				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
 			);
+		});
+
+		it("serializes concurrent restores so only one succeeds when the limit is tight", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-a-account",
+						refreshToken: "ref-backup-a-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("backup-a");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-b-account",
+						refreshToken: "ref-backup-b-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("backup-b");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
+					(_, index) => ({
+						accountId: `current-${index}`,
+						refreshToken: `ref-current-${index}`,
+						addedAt: index + 1,
+						lastUsed: index + 1,
+					}),
+				),
+			});
+
+			const assessmentA = await assessNamedBackupRestore("backup-a");
+			const assessmentB = await assessNamedBackupRestore("backup-b");
+			expect(assessmentA.valid).toBe(true);
+			expect(assessmentB.valid).toBe(true);
+
+			const results = await Promise.allSettled([
+				restoreNamedBackup("backup-a"),
+				restoreNamedBackup("backup-b"),
+			]);
+			const succeeded = results.filter(
+				(result): result is PromiseFulfilledResult<{
+					imported: number;
+					skipped: number;
+					total: number;
+				}> => result.status === "fulfilled",
+			);
+			const failed = results.filter(
+				(result): result is PromiseRejectedResult => result.status === "rejected",
+			);
+
+			expect(succeeded).toHaveLength(1);
+			expect(failed).toHaveLength(1);
+			expect(String(failed[0]?.reason)).toContain("Import would exceed maximum");
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts).toHaveLength(ACCOUNT_LIMITS.MAX_ACCOUNTS);
 		});
 	});
 
