@@ -463,6 +463,14 @@ function normalizeBackupName(rawName: string): string {
 
 function normalizeBackupLookupName(rawName: string): string {
 	const trimmed = rawName.trim().replace(/\.(json|bak)$/i, "");
+	if (!trimmed) {
+		throw new StorageError(
+			`Invalid backup name: ${rawName}`,
+			"EINVALID",
+			getNamedBackupsDirectory(),
+			"Named backup restore operations only accept backup names from the backups directory.",
+		);
+	}
 	const hasPathSeparator = /[\\/]/.test(trimmed);
 	const hasDrivePrefix = /^[a-zA-Z]:/.test(trimmed);
 	const segments = trimmed.split(/[\\/]+/).filter(Boolean);
@@ -478,7 +486,7 @@ function normalizeBackupLookupName(rawName: string): string {
 			"Named backup restore operations only accept backup names from the backups directory.",
 		);
 	}
-	return normalizeBackupName(trimmed);
+	return trimmed;
 }
 
 function getNamedBackupsDirectory(): string {
@@ -492,12 +500,8 @@ async function ensureNamedBackupsDirectory(): Promise<string> {
 }
 
 function resolveNamedBackupPath(name: string): string {
-	const normalizedName = normalizeBackupName(name);
 	const backupDir = resolve(getNamedBackupsDirectory());
-	const backupPath = resolve(
-		backupDir,
-		`${normalizedName}${NAMED_BACKUP_EXTENSION}`,
-	);
+	const backupPath = resolve(backupDir, `${name}${NAMED_BACKUP_EXTENSION}`);
 	const relativePath = relative(backupDir, backupPath);
 	if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
 		throw new StorageError(

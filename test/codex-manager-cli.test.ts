@@ -1435,7 +1435,7 @@ describe("codex manager cli commands", () => {
 		);
 		expect(confirmMock).toHaveBeenNthCalledWith(
 			2,
-			"Restore backup named-backup?",
+			'Restore backup "named-backup"?',
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
 		expect(
@@ -1445,7 +1445,7 @@ describe("codex manager cli commands", () => {
 			),
 		).toBe(true);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
-	}, 20_000);
+	});
 
 	it("keeps auth login running when backup restore fails inside the browser", async () => {
 		setInteractiveTTY(false);
@@ -1847,7 +1847,10 @@ describe("codex manager cli commands", () => {
 	it("shows epoch timestamps in backup browser details instead of unknown", async () => {
 		setInteractiveTTY(false);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const epochDisplay = new Date(0).toLocaleString();
+		const epochDisplay = "epoch-display";
+		const toLocaleStringSpy = vi
+			.spyOn(Date.prototype, "toLocaleString")
+			.mockReturnValue(epochDisplay);
 		const now = Date.now();
 		const rotatingBackup = {
 			label: "Latest rotating backup (.bak)",
@@ -1938,9 +1941,15 @@ describe("codex manager cli commands", () => {
 			expect(exitCode).toBe(0);
 			expect(logSpy).toHaveBeenCalledWith(`Created: ${epochDisplay}`);
 			expect(logSpy).toHaveBeenCalledWith(`Updated: ${epochDisplay}`);
+			expect(
+				selectMock.mock.calls
+					.flatMap(([items]) => items as Array<{ value: unknown }>)
+					.some((item) => item.value === "restore"),
+			).toBe(false);
 			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 		} finally {
+			toLocaleStringSpy.mockRestore();
 			logSpy.mockRestore();
 		}
 	});

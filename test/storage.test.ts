@@ -428,6 +428,54 @@ describe("storage", () => {
 			},
 		);
 
+		it("assesses and restores the exact named-backup basename from disk", async () => {
+			const backupDir = join(testWorkDir, "backups");
+			await fs.mkdir(backupDir, { recursive: true });
+			await fs.writeFile(
+				join(backupDir, "my backup.json"),
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "spaced-backup",
+							refreshToken: "ref-spaced",
+							addedAt: 10,
+							lastUsed: 10,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				join(backupDir, "my-backup.json"),
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "normalized-backup",
+							refreshToken: "ref-normalized",
+							addedAt: 20,
+							lastUsed: 20,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("my backup");
+			expect(assessment.backup.name).toBe("my backup");
+			expect(assessment.backup.path).toBe(join(backupDir, "my backup.json"));
+
+			const restoreResult = await restoreNamedBackup("my backup");
+			expect(restoreResult.total).toBe(1);
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts[0]?.accountId).toBe("spaced-backup");
+		});
+
 		it("lists rotating backups and marks invalid snapshots distinctly", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1072,7 +1120,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("returns null when file does not exist", async () => {
@@ -1174,7 +1222,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("creates directory and saves file", async () => {
@@ -1224,7 +1272,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("deletes the file when it exists", async () => {
@@ -1309,7 +1357,7 @@ describe("storage", () => {
 				else process.env.HOME = originalHome;
 				if (originalUserProfile === undefined) delete process.env.USERPROFILE;
 				else process.env.USERPROFILE = originalUserProfile;
-				await fs.rm(testWorkDir, { recursive: true, force: true });
+				await removeWithRetry(testWorkDir, { recursive: true, force: true });
 			}
 		});
 	});
@@ -1386,7 +1434,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("logs but does not throw on non-ENOENT errors", async () => {
@@ -1447,7 +1495,7 @@ describe("storage", () => {
 			else process.env.HOME = originalHome;
 			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
 			else process.env.USERPROFILE = originalUserProfile;
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("writes .gitignore in project root when storage path is externalized", async () => {
@@ -1564,7 +1612,7 @@ describe("storage", () => {
 			else process.env.HOME = originalHome;
 			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
 			else process.env.USERPROFILE = originalUserProfile;
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("removes legacy project storage file after successful migration", async () => {
@@ -1723,7 +1771,7 @@ describe("storage", () => {
 			if (originalMultiAuthDir === undefined)
 				delete process.env.CODEX_MULTI_AUTH_DIR;
 			else process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 			vi.restoreAllMocks();
 		});
 
@@ -2036,7 +2084,7 @@ describe("storage", () => {
 		afterEach(async () => {
 			vi.useRealTimers();
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("retries on EPERM and succeeds on second attempt", async () => {
@@ -2573,7 +2621,7 @@ describe("storage", () => {
 		afterEach(async () => {
 			if (originalDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
 			else process.env.CODEX_MULTI_AUTH_DIR = originalDir;
-			await fs.rm(tmpRoot, { recursive: true, force: true });
+			await removeWithRetry(tmpRoot, { recursive: true, force: true });
 		});
 
 		it("removes only the quota cache file", async () => {

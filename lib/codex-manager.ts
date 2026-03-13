@@ -4449,16 +4449,10 @@ async function runBackupBrowserManager(
 
 		const entry = selection.entry;
 		const action = await showBackupBrowserDetails(entry, displaySettings);
-		if (action === "restore") {
-			if (entry.kind !== "named") {
-				continue;
-			}
-			const namedEntry = entry as Extract<
-				BackupBrowserEntry,
-				{ kind: "named" }
-			>;
+		if (action === "restore" && entry.kind === "named") {
+			const namedEntry = entry;
 			const backupName = namedEntry.backup.name;
-			const confirmed = await confirm(`Restore backup ${backupName}?`);
+			const confirmed = await confirm(`Restore backup "${backupName}"?`);
 			if (!confirmed) {
 				continue;
 			}
