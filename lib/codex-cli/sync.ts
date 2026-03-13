@@ -147,7 +147,7 @@ function publishCodexCliSyncRun(
 	run: CodexCliSyncRun,
 	revision: number,
 ): boolean {
-	if (revision < lastCodexCliSyncRunRevision) {
+	if (revision <= lastCodexCliSyncRunRevision) {
 		return false;
 	}
 	lastCodexCliSyncRunRevision = revision;
@@ -675,7 +675,7 @@ export async function applyCodexCliSyncToStorage(
 		}
 
 		const state = await loadCodexCliState({
-			forceRefresh: options.forceRefresh,
+			forceRefresh: options.forceRefresh ?? true,
 		});
 		if (!state) {
 			incrementCodexCliMetric("reconcileNoops");

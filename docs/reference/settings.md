@@ -67,6 +67,7 @@ Controls display style:
 ## Sync Center
 
 The settings hub includes a preview-first sync center for Codex CLI account sync.
+See [upgrade notes](../upgrade.md) for sync workflow changes.
 
 Before applying sync, it shows:
 
@@ -76,6 +77,12 @@ Before applying sync, it shows:
 - preview summary (adds, updates, destination-only preserved accounts)
 - destination-only preservation behavior
 - backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`)
+
+Validation:
+
+- `npm run typecheck`
+- `npm run build`
+- `npm test`
 
 ---
 

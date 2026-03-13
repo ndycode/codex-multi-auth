@@ -856,6 +856,161 @@ describe("codex-cli sync", () => {
 		}
 	});
 
+	it("forces a fresh Codex CLI state read on apply when forceRefresh is omitted", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		await previewCodexCliSync(current, { forceRefresh: true });
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_c",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+						{
+							accountId: "acc_c",
+							email: "c@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-c",
+									refresh_token: "refresh-c",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const loadSpy = vi.spyOn(codexCliState, "loadCodexCliState");
+		try {
+			const result = await applyCodexCliSyncToStorage(current);
+			expect(loadSpy).toHaveBeenCalledWith(
+				expect.objectContaining({ forceRefresh: true }),
+			);
+			expect(result.changed).toBe(true);
+			expect(result.storage?.accounts.map((account) => account.accountId)).toEqual([
+				"acc_a",
+				"acc_b",
+				"acc_c",
+			]);
+			expect(result.storage?.activeIndex).toBe(2);
+		} finally {
+			loadSpy.mockRestore();
+		}
+	});
+
+	it("returns isolated pending runs for concurrent apply attempts", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const [first, second] = await Promise.all([
+			applyCodexCliSyncToStorage(current),
+			applyCodexCliSyncToStorage(current),
+		]);
+
+		expect(first.changed).toBe(true);
+		expect(second.changed).toBe(true);
+		expect(first.pendingRun).not.toBeNull();
+		expect(second.pendingRun).not.toBeNull();
+		expect(first.pendingRun?.revision).not.toBe(second.pendingRun?.revision);
+		expect(first.storage?.accounts.map((account) => account.accountId)).toEqual([
+			"acc_a",
+			"acc_b",
+		]);
+		expect(second.storage?.accounts.map((account) => account.accountId)).toEqual([
+			"acc_a",
+			"acc_b",
+		]);
+		expect(getLastCodexCliSyncRun()).toBeNull();
+	});
+
 	it("records a manual sync save failure over a pending changed run", async () => {
 		await writeFile(
 			accountsPath,
@@ -905,6 +1060,61 @@ describe("codex-cli sync", () => {
 		expect(lastRun?.outcome).toBe("error");
 		expect(lastRun?.message).toBe("save busy");
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
+	});
+
+	it("ignores a duplicate sync-run publish for the same revision", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current);
+		expect(result.pendingRun).not.toBeNull();
+
+		commitPendingCodexCliSyncRun(result.pendingRun);
+		const committedRun = getLastCodexCliSyncRun();
+
+		commitCodexCliSyncRunFailure(
+			result.pendingRun,
+			new Error("should not overwrite committed run"),
+		);
+
+		expect(getLastCodexCliSyncRun()).toEqual(committedRun);
+		expect(getLastCodexCliSyncRun()?.outcome).toBe("changed");
 	});
 
 	it("serializes concurrent active-selection writes to keep accounts/auth aligned", async () => {

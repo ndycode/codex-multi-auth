@@ -47,6 +47,7 @@ describe("AccountManager loadFromDisk", () => {
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: false,
       storage: null,
+      pendingRun: null,
     });
     vi.mocked(loadCodexCliState).mockResolvedValue(null);
     vi.mocked(setCodexCliActiveSelection).mockResolvedValue(undefined);
@@ -72,6 +73,7 @@ describe("AccountManager loadFromDisk", () => {
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: true,
       storage: synced,
+      pendingRun: null,
     });
 
     const manager = await AccountManager.loadFromDisk();
@@ -92,6 +94,7 @@ describe("AccountManager loadFromDisk", () => {
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: true,
       storage: synced,
+      pendingRun: null,
     });
     vi.mocked(saveAccounts).mockRejectedValueOnce(new Error("forced persist failure"));
 
