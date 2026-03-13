@@ -4322,11 +4322,18 @@ async function loadBackupBrowserEntries(): Promise<{
 	namedEntries: NamedBackupBrowserEntry[];
 	rotatingEntries: Extract<BackupBrowserEntry, { kind: "rotating" }>[];
 }> {
-	const [namedBackups, rotatingBackups, currentStorage] = await Promise.all([
+	const [namedBackups, rotatingBackups] = await Promise.all([
 		listNamedBackups(),
 		listRotatingBackups(),
-		loadAccounts(),
 	]);
+	let currentStorage: Awaited<ReturnType<typeof loadAccounts>> = null;
+	try {
+		currentStorage = await loadAccounts();
+	} catch (error) {
+		log.warn("Failed to load current storage for backup browser", {
+			error: normalizeBackupAssessmentError(error),
+		});
+	}
 	const namedEntries: NamedBackupBrowserEntry[] = await Promise.all(
 		namedBackups.map(async (backup) => {
 			try {

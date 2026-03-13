@@ -1746,6 +1746,104 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("keeps auth login running when backup browser storage load fails", async () => {
+		setInteractiveTTY(false);
+		const now = Date.now();
+		const consoleWarnSpy = vi
+			.spyOn(console, "warn")
+			.mockImplementation(() => {});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: now - 1_000,
+				updatedAt: now - 1_000,
+				sizeBytes: 512,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: undefined,
+		};
+		const populatedStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "refresh-existing",
+					accountId: "acc-existing",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			if (loadCount <= 2) {
+				return null;
+			}
+			if (loadCount === 3) {
+				throw new Error("EPERM: accounts file locked");
+			}
+			return structuredClone(populatedStorage);
+		});
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [assessment],
+			totalBackups: 1,
+		});
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		confirmMock.mockResolvedValueOnce(true);
+		selectMock.mockResolvedValueOnce({ type: "back" });
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const authModule = await import("../lib/auth/auth.js");
+		const createAuthorizationFlowMock = vi.mocked(
+			authModule.createAuthorizationFlow,
+		);
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(confirmMock).toHaveBeenCalledWith(
+				"Found 1 recoverable backup (named-backup) in /mock/backups. Open backup browser now?",
+			);
+			expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: null,
+				}),
+			);
+			expect(selectMock).toHaveBeenCalledTimes(1);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
+			expect(loggerWarnMock).toHaveBeenCalledWith(
+				"Failed to load current storage for backup browser",
+				expect.objectContaining({
+					error: "EPERM: accounts file locked",
+				}),
+			);
+			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+			expect(consoleWarnSpy).not.toHaveBeenCalled();
+		} finally {
+			consoleWarnSpy.mockRestore();
+		}
+	});
+
 	it("shows epoch timestamps in backup browser details instead of unknown", async () => {
 		setInteractiveTTY(false);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
