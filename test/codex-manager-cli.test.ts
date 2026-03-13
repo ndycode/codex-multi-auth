@@ -1425,26 +1425,30 @@ describe("codex manager cli commands", () => {
 			authModule.createAuthorizationFlow,
 		);
 
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
-		expect(exitCode).toBe(0);
-		expect(confirmMock).toHaveBeenNthCalledWith(
-			1,
-			"Found 1 recoverable backup (named-backup) in /mock/backups. Open backup browser now?",
-		);
-		expect(confirmMock).toHaveBeenNthCalledWith(
-			2,
-			'Restore backup "named-backup"?',
-		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
-		expect(
-			logSpy.mock.calls.some(
-				(call) =>
-					call[0] === "Imported 1 account. Skipped 0. Total accounts: 1.",
-			),
-		).toBe(true);
-		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+			expect(exitCode).toBe(0);
+			expect(confirmMock).toHaveBeenNthCalledWith(
+				1,
+				"Found 1 recoverable backup (named-backup) in /mock/backups. Open backup browser now?",
+			);
+			expect(confirmMock).toHaveBeenNthCalledWith(
+				2,
+				'Restore backup "named-backup"?',
+			);
+			expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+			expect(
+				logSpy.mock.calls.some(
+					(call) =>
+						call[0] === "Imported 1 account. Skipped 0. Total accounts: 1.",
+				),
+			).toBe(true);
+			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		} finally {
+			logSpy.mockRestore();
+		}
 	});
 
 	it("keeps auth login running when backup restore fails inside the browser", async () => {

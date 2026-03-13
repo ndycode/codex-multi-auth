@@ -1401,8 +1401,9 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 }
 
 export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
-	const storagePath = getStoragePath();
+	let storagePath: string | null = null;
 	try {
+		storagePath = getStoragePath();
 		const candidates = getAccountsBackupRecoveryCandidates(storagePath);
 		const backups: RotatingBackupMetadata[] = [];
 
@@ -1429,7 +1430,7 @@ export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
 		return backups.sort((a, b) => a.slot - b.slot);
 	} catch (error) {
 		log.warn("Failed to list rotating backups", {
-			path: storagePath,
+			path: storagePath ?? "<unresolved>",
 			error: String(error),
 		});
 		return [];
