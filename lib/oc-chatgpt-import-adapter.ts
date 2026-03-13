@@ -481,6 +481,7 @@ function matchDestination(
 	}
 	if (sourceAccountId) {
 		let idx: number | null = null;
+		let matchedEmail: string | undefined;
 		for (let i = 0; i < destination.length; i += 1) {
 			if (usedIndexes.has(i)) continue;
 			const account = destination[i];
@@ -491,8 +492,14 @@ function matchDestination(
 				break;
 			}
 			idx = i;
+			matchedEmail = normalizeEmailKey(account.email);
 		}
-		if (idx !== null) return { index: idx, matchedBy: "accountId" };
+		if (
+			idx !== null &&
+			(!sourceEmail || !matchedEmail || matchedEmail === sourceEmail)
+		) {
+			return { index: idx, matchedBy: "accountId" };
+		}
 	}
 	if (sourceEmail) {
 		const idx = destination.findIndex((account, i) => {

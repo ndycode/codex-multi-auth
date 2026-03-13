@@ -905,6 +905,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		delete process.env.CODEX_AUTH_ACCOUNT_ID;
 	});
 
 	it("handles event handler errors gracefully", async () => {
@@ -1858,6 +1859,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		delete process.env.CODEX_AUTH_ACCOUNT_ID;
 	});
 
 	it("handles existing account update by refreshToken", async () => {
@@ -2017,6 +2019,66 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(
 			mockStorage.accounts.map((account) => account.refreshToken),
 		).toEqual(["refresh-a", "refresh-b", "refresh-c"]);
+	});
+
+	it("updates a unique shared accountId entry when a login has no email claim", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: {
+				verifier: "persist-unique-verifier",
+				challenge: "persist-unique-challenge",
+			},
+			state: "persist-unique-state",
+			url: "https://auth.openai.com/test?state=persist-unique-state",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(undefined);
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
+			"shared-workspace",
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-unique-state",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "shared-workspace",
+				refreshToken: "refresh-updated",
+			}),
+		);
 	});
 });
 

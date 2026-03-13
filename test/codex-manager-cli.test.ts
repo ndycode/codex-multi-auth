@@ -621,6 +621,9 @@ describe("codex manager cli commands", () => {
 			refresh: "refresh-restored",
 			expires: now + 3_600_000,
 		});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation(() => "shared-account");
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli([
@@ -639,6 +642,66 @@ describe("codex manager cli commands", () => {
 				]),
 			}),
 		);
+	});
+
+	it("updates a unique shared-accountId account during flagged recovery when email is missing", async () => {
+		const now = Date.now();
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "flagged-refresh",
+					accountId: "shared-account",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					flaggedAt: now - 5_000,
+				},
+			],
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-existing",
+					accountId: "shared-account",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation(() => "shared-account");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0];
+		expect(savedStorage).toEqual(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({
+						accountId: "shared-account",
+						refreshToken: "refresh-restored",
+					}),
+				],
+			}),
+		);
+		expect(savedStorage?.accounts).toHaveLength(1);
+		extractAccountIdMock.mockImplementation(() => "acc_test");
 	});
 
 	it("keeps flagged account when verification still fails", async () => {
@@ -1206,6 +1269,83 @@ describe("codex manager cli commands", () => {
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("updates a unique shared-accountId login when the email claim is missing", async () => {
+		const now = Date.now();
+		let storageState: {
+			version: 3;
+			activeIndex: number;
+			activeIndexByFamily: Record<string, number>;
+			accounts: Array<Record<string, unknown>>;
+		} = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_test",
+					refreshToken: "refresh-old",
+					accessToken: "access-old",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "add" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		const browserModule = await import("../lib/auth/browser.js");
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(accountsModule.extractAccountId).mockImplementation(
+			() => "acc_test",
+		);
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValue({
+			type: "success",
+			access: "access-new",
+			refresh: "refresh-new",
+			expires: now + 7_200_000,
+			idToken: undefined,
+			multiAccount: true,
+		});
+		vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+			ready: true,
+			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			close: vi.fn(),
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageState.accounts).toHaveLength(1);
+		expect(storageState.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "acc_test",
+				refreshToken: "refresh-new",
+			}),
+		);
+		expect(storageState.activeIndex).toBe(0);
+		expect(storageState.activeIndexByFamily.codex).toBe(0);
 	});
 
 	it("runs full refresh test from login menu deep-check mode", async () => {

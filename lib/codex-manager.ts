@@ -1287,6 +1287,8 @@ async function persistAccountPool(
 				accountId,
 				email: accountEmail,
 				refreshToken: result.refresh,
+			}, {
+				allowUniqueAccountIdFallbackWithoutEmail: true,
 			});
 
 			if (existingIndex === undefined) {
@@ -2383,6 +2385,8 @@ function findExistingAccountIndexForFlagged(
 		accountId: candidateAccountId,
 		email: candidateEmail,
 		refreshToken: nextRefreshToken,
+	}, {
+		allowUniqueAccountIdFallbackWithoutEmail: true,
 	});
 	if (nextMatchIndex !== undefined) {
 		return nextMatchIndex;
@@ -2392,6 +2396,8 @@ function findExistingAccountIndexForFlagged(
 		accountId: candidateAccountId,
 		email: candidateEmail,
 		refreshToken: flagged.refreshToken,
+	}, {
+		allowUniqueAccountIdFallbackWithoutEmail: true,
 	});
 	return flaggedMatchIndex ?? -1;
 }

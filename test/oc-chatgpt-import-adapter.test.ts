@@ -308,6 +308,51 @@ describe("oc-chatgpt import adapter", () => {
 		);
 	});
 
+	it("does not match a unique bare accountId when the source and destination emails conflict", () => {
+		const destination: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "shared-account",
+					email: "beta@example.com",
+					refreshToken: "dest-beta",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+
+		const source: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "shared-account",
+					email: "alpha@example.com",
+					refreshToken: "source-new",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+
+		const preview = previewOcChatgptImportMerge({ source, destination });
+
+		expect(preview.toUpdate).toHaveLength(0);
+		expect(preview.toAdd).toEqual([
+			{
+				accountId: "shared-account",
+				email: "alpha@example.com",
+				refreshTokenLast4: "-new",
+			},
+		]);
+		expect(preview.merged.accounts).toHaveLength(2);
+		expect(preview.merged.accounts.map((account) => account.refreshToken)).toEqual(
+			expect.arrayContaining(["dest-beta", "source-new"]),
+		);
+	});
+
 	it("keeps newer destination metadata when a refresh-token fallback match is older than destination", () => {
 		const destination: AccountStorageV3 = {
 			version: 3,

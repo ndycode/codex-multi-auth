@@ -539,6 +539,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							accountId,
 							email: accountEmail,
 							refreshToken: result.refresh,
+						}, {
+							allowUniqueAccountIdFallbackWithoutEmail: true,
 						});
 
 						if (existingIndex === undefined) {
