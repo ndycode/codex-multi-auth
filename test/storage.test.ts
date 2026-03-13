@@ -151,7 +151,7 @@ describe("storage", () => {
 			expect(deduped[0]?.lastUsed).toBe(now);
 		});
 
-		it("prefers refresh token matches over composite and email matches", () => {
+		it("prefers composite and email matches over refresh token matches", () => {
 			const accounts = [
 				{
 					accountId: "workspace-a",
@@ -176,7 +176,54 @@ describe("storage", () => {
 				refreshToken: "token-refresh",
 			});
 
+			expect(matchIndex).toBe(1);
+		});
+
+		it("uses a unique refresh token match when no safer identifier exists", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "token-refresh",
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				refreshToken: "token-refresh",
+			});
+
 			expect(matchIndex).toBe(0);
+		});
+
+		it("falls back to composite matching when refresh tokens are ambiguous", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "shared-refresh",
+					lastUsed: 100,
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "shared-refresh",
+					lastUsed: 200,
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-b",
+				email: "match@example.com",
+				refreshToken: "shared-refresh",
+			});
+
+			expect(matchIndex).toBe(1);
+			expect(deduplicateAccounts(accounts)).toHaveLength(2);
 		});
 
 		it("prefers composite accountId plus email matches over safe-email fallbacks", () => {

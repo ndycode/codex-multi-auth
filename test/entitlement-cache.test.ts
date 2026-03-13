@@ -148,10 +148,19 @@ describe("entitlement cache", () => {
     expect(
       resolveEntitlementAccountKey({ email: "  Person@Example.com  " }),
     ).toBe("email:person@example.com");
+    expect(resolveEntitlementAccountKey({ index: Number.NaN })).toBe("idx:0");
+  });
+
+  it("never serializes refresh tokens into entitlement keys", () => {
+    expect(
+      resolveEntitlementAccountKey({
+        refreshToken: "  refresh-token  ",
+        index: 4,
+      }),
+    ).toBe("idx:4");
     expect(
       resolveEntitlementAccountKey({ refreshToken: "  refresh-token  " }),
-    ).toBe("refresh:refresh-token");
-    expect(resolveEntitlementAccountKey({ index: Number.NaN })).toBe("idx:0");
+    ).toBe("idx:0");
   });
 
   it("ignores invalid mark/clear/isBlocked inputs", () => {
