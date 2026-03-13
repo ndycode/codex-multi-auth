@@ -294,6 +294,34 @@ describe("CLI auth menu shortcuts", () => {
 		consoleSpy.mockRestore();
 	});
 
+	it("returns reset mode when reset-all is confirmed", async () => {
+		mockRl.question.mockResolvedValueOnce("RESET");
+		showAuthMenu.mockResolvedValueOnce({ type: "reset-all" });
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0 }]);
+
+		expect(result).toEqual({ mode: "reset" });
+		expect(mockRl.close).toHaveBeenCalled();
+	});
+
+	it("cancels reset-all when typed confirmation is not RESET", async () => {
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		mockRl.question.mockResolvedValueOnce("nope");
+		showAuthMenu
+			.mockResolvedValueOnce({ type: "reset-all" })
+			.mockResolvedValueOnce({ type: "cancel" });
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0 }]);
+
+		expect(result).toEqual({ mode: "cancel" });
+		expect(consoleSpy).toHaveBeenCalledWith(
+			"\nReset local state cancelled.\n",
+		);
+		consoleSpy.mockRestore();
+	});
+
 	it("cancels fresh action when typed confirmation is not DELETE", async () => {
 		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		mockRl.question.mockResolvedValueOnce("abort");

@@ -197,4 +197,67 @@ describe("auth-menu hotkeys", () => {
 		const options = selectMock.mock.calls[0]?.[1] as { message?: string };
 		expect(options?.message).toBe("Accounts Dashboard (v0.1.6)");
 	});
+
+	it("returns delete-all without an extra confirm prompt", async () => {
+		selectMock.mockResolvedValueOnce({ type: "delete-all" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		const result = await showAuthMenu(createAccounts());
+
+		expect(result).toEqual({ type: "delete-all" });
+		expect(confirmMock).not.toHaveBeenCalled();
+	});
+
+	it("returns reset-all without an extra confirm prompt", async () => {
+		selectMock.mockResolvedValueOnce({ type: "reset-all" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		const result = await showAuthMenu(createAccounts());
+
+		expect(result).toEqual({ type: "reset-all" });
+		expect(confirmMock).not.toHaveBeenCalled();
+	});
+
+	it("sanitizes ANSI and control characters in rendered account labels", async () => {
+		const baseTime = 1_700_000_000_000;
+		selectMock.mockResolvedValueOnce({ type: "cancel" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		await showAuthMenu([
+			{
+				index: 0,
+				email: "\u001b[31mfirst@example.com\u0000",
+				status: "ok",
+				lastUsed: baseTime,
+			},
+			{
+				index: 1,
+				accountLabel: "\u001b[32mFriendly \r\nLabel\u007f",
+				status: "ok",
+				lastUsed: baseTime,
+			},
+			{
+				index: 2,
+				email: "",
+				accountLabel: " \r\n ",
+				accountId: "\u001b[33macc-id-42\u0007",
+				status: "ok",
+				lastUsed: baseTime,
+			},
+		]);
+
+		const items = (selectMock.mock.calls[0]?.[0] as Array<{
+			label: string;
+			value: { type: string };
+		}>).filter((item) => item.value.type === "select-account");
+		const labels = items.map((item) => item.label);
+		const strippedLabels = labels.map((label) =>
+			label.replace(new RegExp("\\u001b\\[[0-?]*[ -/]*[@-~]", "g"), ""),
+		);
+
+		expect(strippedLabels[0]).toContain("1. first@example.com");
+		expect(strippedLabels[1]).toContain("2. Friendly Label");
+		expect(strippedLabels[2]).toContain("3. acc-id-42");
+		expect(strippedLabels.join("")).not.toMatch(/[\u0000\u0007\u007f]/);
+	});
 });
