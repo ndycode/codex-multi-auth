@@ -173,6 +173,153 @@ describe("CLI Module", () => {
 			expect(result).toEqual({ mode: "fresh", deleteAll: true });
 		});
 
+		it("returns 'reset' for fallback reset confirmation", async () => {
+			mockRl.question
+				.mockResolvedValueOnce("reset")
+				.mockResolvedValueOnce("RESET");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "reset" });
+		});
+
+		it("cancels fallback delete-all when typed confirmation does not match", async () => {
+			mockRl.question
+				.mockResolvedValueOnce("fresh")
+				.mockResolvedValueOnce("nope")
+				.mockResolvedValueOnce("a");
+			const consoleSpy = vi.spyOn(console, "log");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "add" });
+			expect(consoleSpy).toHaveBeenCalledWith(
+				"\nDelete saved accounts cancelled.\n",
+			);
+		});
+
+		it("cancels fallback reset when typed confirmation does not match", async () => {
+			mockRl.question
+				.mockResolvedValueOnce("reset")
+				.mockResolvedValueOnce("nope")
+				.mockResolvedValueOnce("a");
+			const consoleSpy = vi.spyOn(console, "log");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+
+			expect(result).toEqual({ mode: "add" });
+			expect(consoleSpy).toHaveBeenCalledWith(
+				"\nReset local state cancelled.\n",
+			);
+		});
+
+		it("returns reset for TTY reset-all confirmation", async () => {
+			const { stdin, stdout } = await import("node:process");
+			const origInputTTY = stdin.isTTY;
+			const origOutputTTY = stdout.isTTY;
+			const showAuthMenuMock = vi.fn().mockResolvedValue({ type: "reset-all" });
+
+			Object.defineProperty(stdin, "isTTY", {
+				value: true,
+				writable: true,
+				configurable: true,
+			});
+			Object.defineProperty(stdout, "isTTY", {
+				value: true,
+				writable: true,
+				configurable: true,
+			});
+
+			try {
+				vi.resetModules();
+				vi.doMock("../lib/ui/auth-menu.js", async () => {
+					const actual = await vi.importActual("../lib/ui/auth-menu.js");
+					return {
+						...(actual as Record<string, unknown>),
+						isTTY: vi.fn(() => true),
+						showAuthMenu: showAuthMenuMock,
+					};
+				});
+				mockRl.question.mockResolvedValueOnce("RESET");
+
+				const { promptLoginMode } = await import("../lib/cli.js");
+				const result = await promptLoginMode([{ index: 0 }]);
+
+				expect(result).toEqual({ mode: "reset" });
+				expect(showAuthMenuMock).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.doUnmock("../lib/ui/auth-menu.js");
+				Object.defineProperty(stdin, "isTTY", {
+					value: origInputTTY,
+					writable: true,
+					configurable: true,
+				});
+				Object.defineProperty(stdout, "isTTY", {
+					value: origOutputTTY,
+					writable: true,
+					configurable: true,
+				});
+			}
+		});
+
+		it("uses reset local state cancellation copy in TTY reset-all flow", async () => {
+			const { stdin, stdout } = await import("node:process");
+			const origInputTTY = stdin.isTTY;
+			const origOutputTTY = stdout.isTTY;
+			const showAuthMenuMock = vi
+				.fn()
+				.mockResolvedValueOnce({ type: "reset-all" })
+				.mockResolvedValueOnce({ type: "add" });
+			const consoleSpy = vi.spyOn(console, "log");
+
+			Object.defineProperty(stdin, "isTTY", {
+				value: true,
+				writable: true,
+				configurable: true,
+			});
+			Object.defineProperty(stdout, "isTTY", {
+				value: true,
+				writable: true,
+				configurable: true,
+			});
+
+			try {
+				vi.resetModules();
+				vi.doMock("../lib/ui/auth-menu.js", async () => {
+					const actual = await vi.importActual("../lib/ui/auth-menu.js");
+					return {
+						...(actual as Record<string, unknown>),
+						isTTY: vi.fn(() => true),
+						showAuthMenu: showAuthMenuMock,
+					};
+				});
+				mockRl.question.mockResolvedValueOnce("nope");
+
+				const { promptLoginMode } = await import("../lib/cli.js");
+				const result = await promptLoginMode([{ index: 0 }]);
+
+				expect(result).toEqual({ mode: "add" });
+				expect(consoleSpy).toHaveBeenCalledWith(
+					"\nReset local state cancelled.\n",
+				);
+			} finally {
+				vi.doUnmock("../lib/ui/auth-menu.js");
+				Object.defineProperty(stdin, "isTTY", {
+					value: origInputTTY,
+					writable: true,
+					configurable: true,
+				});
+				Object.defineProperty(stdout, "isTTY", {
+					value: origOutputTTY,
+					writable: true,
+					configurable: true,
+				});
+			}
+		});
+
 		it("returns 'verify-flagged' for 'g' input", async () => {
 			mockRl.question.mockResolvedValueOnce("g");
 
@@ -611,29 +758,4 @@ describe("CLI Module", () => {
 			}
 		});
 	});
-});
-it("cancels fallback delete-all when typed confirmation does not match", async () => {
-	vi.mocked(createInterface).mockReturnValue(mockRl as any);
-	mockRl.question
-		.mockResolvedValueOnce("fresh")
-		.mockResolvedValueOnce("nope")
-		.mockResolvedValueOnce("a");
-
-	const { promptLoginMode } = await import("../lib/cli.js");
-	const result = await promptLoginMode([{ index: 0 }]);
-
-	expect(result).toEqual({ mode: "add" });
-});
-
-it("cancels fallback reset when typed confirmation does not match", async () => {
-	vi.mocked(createInterface).mockReturnValue(mockRl as any);
-	mockRl.question
-		.mockResolvedValueOnce("reset")
-		.mockResolvedValueOnce("nope")
-		.mockResolvedValueOnce("a");
-
-	const { promptLoginMode } = await import("../lib/cli.js");
-	const result = await promptLoginMode([{ index: 0 }]);
-
-	expect(result).toEqual({ mode: "add" });
 });

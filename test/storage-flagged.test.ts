@@ -169,6 +169,85 @@ describe("flagged account storage", () => {
     expect(existsSync(getFlaggedAccountsPath())).toBe(false);
   });
 
+  it.each(["EPERM", "EBUSY"] as const)(
+    "retries transient %s when clearing flagged storage",
+    async (code) => {
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [
+          {
+            refreshToken: "retry-me",
+            flaggedAt: 1,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+
+      const flaggedPath = getFlaggedAccountsPath();
+      const realUnlink = fs.unlink.bind(fs);
+      let failedOnce = false;
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+        if (targetPath === flaggedPath && !failedOnce) {
+          failedOnce = true;
+          const error = new Error("locked") as NodeJS.ErrnoException;
+          error.code = code;
+          throw error;
+        }
+        return realUnlink(targetPath);
+      });
+
+      try {
+        await expect(clearFlaggedAccounts()).resolves.toBe(true);
+        expect(existsSync(flaggedPath)).toBe(false);
+        expect(
+          unlinkSpy.mock.calls.filter(([targetPath]) => targetPath === flaggedPath),
+        ).toHaveLength(2);
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(["EPERM", "EBUSY"] as const)(
+    "returns false when clearing flagged storage exhausts retryable %s failures",
+    async (code) => {
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [
+          {
+            refreshToken: "stuck-flagged",
+            flaggedAt: 1,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+
+      const flaggedPath = getFlaggedAccountsPath();
+      const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+        if (targetPath === flaggedPath) {
+          const error = new Error("still locked") as NodeJS.ErrnoException;
+          error.code = code;
+          throw error;
+        }
+        const error = new Error("missing") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      });
+
+      try {
+        await expect(clearFlaggedAccounts()).resolves.toBe(false);
+        expect(existsSync(flaggedPath)).toBe(true);
+        expect(
+          unlinkSpy.mock.calls.filter(([targetPath]) => targetPath === flaggedPath),
+        ).toHaveLength(5);
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+    },
+  );
+
   it("cleans temporary file when flagged save fails", async () => {
     const flaggedPath = getFlaggedAccountsPath();
     const originalRename = fs.rename.bind(fs);

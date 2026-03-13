@@ -81,6 +81,12 @@ export interface DestructiveActionResult {
 	quotaCacheCleared: boolean;
 }
 
+function asError(error: unknown, fallbackMessage: string): Error {
+	return error instanceof Error
+		? error
+		: new Error(`${fallbackMessage}: ${String(error)}`);
+}
+
 export async function deleteAccountAtIndex(options: {
 	storage: AccountStorageV3;
 	index: number;
@@ -114,8 +120,25 @@ export async function deleteAccountAtIndex(options: {
 		try {
 			await saveFlaggedAccounts(updatedFlagged);
 		} catch (error) {
-			await saveAccounts(previousStorage);
-			throw error;
+			const originalError = asError(
+				error,
+				"Failed to save flagged account storage after deleting an account",
+			);
+			try {
+				await saveAccounts(previousStorage);
+			} catch (rollbackError) {
+				throw new AggregateError(
+					[
+						originalError,
+						asError(
+							rollbackError,
+							"Failed to roll back account storage after flagged save failure",
+						),
+					],
+					"Deleting the account partially failed and rollback also failed.",
+				);
+			}
+			throw originalError;
 		}
 	}
 
@@ -134,8 +157,8 @@ export async function deleteAccountAtIndex(options: {
 export async function deleteSavedAccounts(): Promise<DestructiveActionResult> {
 	return {
 		accountsCleared: await clearAccounts(),
-		flaggedCleared: true,
-		quotaCacheCleared: true,
+		flaggedCleared: false,
+		quotaCacheCleared: false,
 	};
 }
 

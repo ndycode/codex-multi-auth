@@ -277,7 +277,7 @@ export async function promptLoginMode(
 				return { mode: "fresh", deleteAll: true };
 			case "reset-all":
 				if (!(await promptResetTypedConfirm())) {
-					console.log("\nReset cancelled.\n");
+					console.log("\nReset local state cancelled.\n");
 					continue;
 				}
 				return { mode: "reset" };

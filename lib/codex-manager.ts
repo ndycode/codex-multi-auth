@@ -4213,6 +4213,10 @@ async function runAuthLogin(): Promise<number> {
 						DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
 						DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
 						async () => {
+							const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+							if (pendingQuotaRefresh) {
+								await pendingQuotaRefresh;
+							}
 							const result = await resetLocalState();
 							console.log(
 								result.accountsCleared &&

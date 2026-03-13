@@ -117,6 +117,31 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	return previousMutex.then(fn).finally(() => releaseLock());
 }
 
+async function unlinkWithRetry(path: string): Promise<void> {
+	let lastError: NodeJS.ErrnoException | null = null;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.unlink(path);
+			return;
+		} catch (error) {
+			const unlinkError = error as NodeJS.ErrnoException;
+			const code = unlinkError.code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if ((code === "EPERM" || code === "EBUSY") && attempt < 4) {
+				lastError = unlinkError;
+				await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+				continue;
+			}
+			throw unlinkError;
+		}
+	}
+	if (lastError) {
+		throw lastError;
+	}
+}
+
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 
 type AccountLike = {
@@ -1312,7 +1337,7 @@ export async function clearAccounts(): Promise<boolean> {
 		let hadError = false;
 		const clearPath = async (targetPath: string): Promise<void> => {
 			try {
-				await fs.unlink(targetPath);
+				await unlinkWithRetry(targetPath);
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "ENOENT") {
@@ -1534,7 +1559,7 @@ export async function saveFlaggedAccounts(
 export async function clearFlaggedAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
 		try {
-			await fs.unlink(getFlaggedAccountsPath());
+			await unlinkWithRetry(getFlaggedAccountsPath());
 			return true;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
