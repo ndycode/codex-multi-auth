@@ -543,6 +543,12 @@ interface NamedBackupScanEntry {
 	candidate: LoadedBackupCandidate;
 }
 
+const UNLOADED_BACKUP_CANDIDATE: LoadedBackupCandidate = {
+	normalized: null,
+	storedVersion: null,
+	schemaErrors: [],
+};
+
 export function getLastAccountsSaveTimestamp(): number {
 	return lastAccountsSaveTimestamp;
 }
@@ -1331,6 +1337,37 @@ async function scanNamedBackups(): Promise<NamedBackupScanEntry[]> {
 	}
 }
 
+async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadata[]> {
+	const backupDir = getNamedBackupsDirectory();
+	try {
+		const entries = await fs.readdir(backupDir, { withFileTypes: true });
+		const backups: NamedBackupMetadata[] = [];
+		for (const entry of entries) {
+			if (!entry.isFile()) continue;
+			if (!entry.name.endsWith(NAMED_BACKUP_EXTENSION)) continue;
+
+			const name = deriveBackupNameFromFile(entry.name);
+			const path = join(backupDir, entry.name);
+			backups.push(
+				await buildNamedBackupMetadata(name, path, {
+					candidate: UNLOADED_BACKUP_CANDIDATE,
+				}),
+			);
+		}
+
+		return backups.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to list named backups", {
+				path: backupDir,
+				error: String(error),
+			});
+		}
+		return [];
+	}
+}
+
 export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 	const backups = await scanNamedBackups();
 	return backups.map((entry) => entry.backup);
@@ -1347,9 +1384,14 @@ export async function getActionableNamedBackupRestores(
 		assess?: typeof assessNamedBackupRestore;
 	} = {},
 ): Promise<ActionableNamedBackupRecoveries> {
-	const scannedBackups =
-		options.backups === undefined ? await scanNamedBackups() : [];
-	const backups = options.backups ?? scannedBackups.map((entry) => entry.backup);
+	const usesFastPath =
+		options.backups === undefined && options.assess === undefined;
+	const scannedBackups = usesFastPath ? await scanNamedBackups() : [];
+	const backups =
+		options.backups ??
+		(usesFastPath
+			? scannedBackups.map((entry) => entry.backup)
+			: await listNamedBackupsWithoutLoading());
 	if (backups.length === 0) {
 		return { assessments: [], totalBackups: 0 };
 	}
@@ -1370,7 +1412,7 @@ export async function getActionableNamedBackupRestores(
 		}
 	};
 
-	if (options.backups === undefined && !options.assess) {
+	if (usesFastPath) {
 		for (const entry of scannedBackups) {
 			try {
 				const assessment = assessNamedBackupRestoreCandidate(
