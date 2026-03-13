@@ -3707,10 +3707,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								if (menuResult.mode === "fresh") {
 									startFresh = true;
 									if (menuResult.deleteAll) {
-										await deleteSavedAccounts();
+										const result = await deleteSavedAccounts();
 										invalidateAccountManagerCache();
 										console.log(
-											`\n${DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed}\n`,
+											`\n${
+												result.accountsCleared
+													? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts
+															.completed
+													: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs."
+											}\n`,
 										);
 									}
 									break;
@@ -3718,10 +3723,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								if (menuResult.mode === "reset") {
 									startFresh = true;
-									await resetLocalState();
+									const result = await resetLocalState();
 									invalidateAccountManagerCache();
 									console.log(
-										`\n${DESTRUCTIVE_ACTION_COPY.resetLocalState.completed}\n`,
+										`\n${
+											result.accountsCleared &&
+											result.flaggedCleared &&
+											result.quotaCacheCleared
+												? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
+												: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs."
+										}\n`,
 									);
 									break;
 								}

@@ -4197,9 +4197,11 @@ async function runAuthLogin(): Promise<number> {
 						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
 						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
 						async () => {
-							await deleteSavedAccounts();
+							const result = await deleteSavedAccounts();
 							console.log(
-								DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed,
+								result.accountsCleared
+									? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed
+									: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs.",
 							);
 						},
 						displaySettings,
@@ -4211,8 +4213,14 @@ async function runAuthLogin(): Promise<number> {
 						DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
 						DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
 						async () => {
-							await resetLocalState();
-							console.log(DESTRUCTIVE_ACTION_COPY.resetLocalState.completed);
+							const result = await resetLocalState();
+							console.log(
+								result.accountsCleared &&
+									result.flaggedCleared &&
+									result.quotaCacheCleared
+									? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
+									: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs.",
+							);
 						},
 						displaySettings,
 					);

@@ -219,6 +219,8 @@ describe("codex manager cli commands", () => {
 		vi.clearAllMocks();
 		loadAccountsMock.mockReset();
 		loadFlaggedAccountsMock.mockReset();
+		deleteSavedAccountsMock.mockReset();
+		resetLocalStateMock.mockReset();
 		saveAccountsMock.mockReset();
 		saveFlaggedAccountsMock.mockReset();
 		queuedRefreshMock.mockReset();
@@ -235,6 +237,16 @@ describe("codex manager cli commands", () => {
 		selectMock.mockReset();
 		deleteAccountAtIndexMock.mockReset();
 		deleteAccountAtIndexMock.mockResolvedValue(null);
+		deleteSavedAccountsMock.mockResolvedValue({
+			accountsCleared: true,
+			flaggedCleared: true,
+			quotaCacheCleared: true,
+		});
+		resetLocalStateMock.mockResolvedValue({
+			accountsCleared: true,
+			flaggedCleared: true,
+			quotaCacheCleared: true,
+		});
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
