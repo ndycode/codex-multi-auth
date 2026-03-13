@@ -4470,9 +4470,9 @@ async function runAuthLogin(): Promise<number> {
 						continue;
 					}
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
 					console.warn(
-						`Startup recovery prompt failed: ${message}. Continuing with OAuth.`,
+						`Startup recovery prompt failed (${errorLabel}). Continuing with OAuth.`,
 					);
 				}
 			}

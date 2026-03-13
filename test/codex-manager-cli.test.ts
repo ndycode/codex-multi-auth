@@ -1822,7 +1822,12 @@ describe("codex manager cli commands", () => {
 			assessments: [assessment],
 			totalBackups: 2,
 		});
-		confirmMock.mockRejectedValueOnce(new Error("tty lost"));
+		confirmMock.mockRejectedValueOnce(
+			makeErrnoError(
+				"no such file or directory, open '/mock/settings.json'",
+				"ENOENT",
+			),
+		);
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		await configureSuccessfulOAuthFlow(now);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1835,7 +1840,7 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledTimes(1);
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(warnSpy).toHaveBeenCalledWith(
-			"Startup recovery prompt failed: tty lost. Continuing with OAuth.",
+			"Startup recovery prompt failed (ENOENT). Continuing with OAuth.",
 		);
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 		warnSpy.mockRestore();
