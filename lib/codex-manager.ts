@@ -51,12 +51,15 @@ import {
 } from "./quota-cache.js";
 import {
 	clearAccounts,
+	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
 	saveFlaggedAccounts,
 	saveAccounts,
 	setStoragePath,
+	withAccountAndFlaggedStorageTransaction,
+	withAccountStorageTransaction,
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
@@ -413,6 +416,27 @@ function normalizeQuotaEmail(email: string | undefined): string | null {
 	return normalized && normalized.length > 0 ? normalized : null;
 }
 
+function normalizeQuotaAccountId(accountId: string | undefined): string | null {
+	if (typeof accountId !== "string") return null;
+	const trimmed = accountId.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function hasUniqueQuotaAccountId(
+	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
+	account: Pick<AccountMetadataV3, "accountId">,
+): boolean {
+	const accountId = normalizeQuotaAccountId(account.accountId);
+	if (!accountId) return false;
+	let matchCount = 0;
+	for (const candidate of accounts) {
+		if (normalizeQuotaAccountId(candidate.accountId) !== accountId) continue;
+		matchCount += 1;
+		if (matchCount > 1) return false;
+	}
+	return matchCount === 1;
+}
+
 function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
 	return {
 		status: entry.status,
@@ -487,13 +511,19 @@ function formatAccountQuotaSummary(entry: QuotaCacheEntry): string {
 function getQuotaCacheEntryForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
+	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
 ): QuotaCacheEntry | null {
-	if (account.accountId && cache.byAccountId[account.accountId]) {
-		return cache.byAccountId[account.accountId] ?? null;
-	}
 	const email = normalizeQuotaEmail(account.email);
 	if (email && cache.byEmail[email]) {
 		return cache.byEmail[email] ?? null;
+	}
+	const accountId = normalizeQuotaAccountId(account.accountId);
+	if (
+		accountId &&
+		hasUniqueQuotaAccountId(accounts, account) &&
+		cache.byAccountId[accountId]
+	) {
+		return cache.byAccountId[accountId] ?? null;
 	}
 	return null;
 }
@@ -502,6 +532,7 @@ function updateQuotaCacheForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
 	snapshot: CodexQuotaSnapshot,
+	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
 ): boolean {
 	const nextEntry: QuotaCacheEntry = {
 		updatedAt: Date.now(),
@@ -521,13 +552,15 @@ function updateQuotaCacheForAccount(
 	};
 
 	let changed = false;
-	if (account.accountId) {
-		cache.byAccountId[account.accountId] = nextEntry;
-		changed = true;
-	}
 	const email = normalizeQuotaEmail(account.email);
 	if (email) {
 		cache.byEmail[email] = nextEntry;
+		changed = true;
+		return changed;
+	}
+	const accountId = normalizeQuotaAccountId(account.accountId);
+	if (accountId && hasUniqueQuotaAccountId(accounts, account)) {
+		cache.byAccountId[accountId] = nextEntry;
 		changed = true;
 	}
 	return changed;
@@ -547,11 +580,12 @@ function resolveMenuQuotaProbeInput(
 	cache: QuotaCacheData,
 	maxAgeMs: number,
 	now: number,
+	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
 ): { accountId: string; accessToken: string } | null {
 	if (account.enabled === false) return null;
 	if (!hasUsableAccessToken(account, now)) return null;
 
-	const existing = getQuotaCacheEntryForAccount(cache, account);
+	const existing = getQuotaCacheEntryForAccount(cache, account, accounts);
 	if (
 		existing &&
 		typeof existing.updatedAt === "number" &&
@@ -577,7 +611,13 @@ function collectMenuQuotaRefreshTargets(
 ): MenuQuotaProbeTarget[] {
 	const targets: MenuQuotaProbeTarget[] = [];
 	for (const account of storage.accounts) {
-		const probeInput = resolveMenuQuotaProbeInput(account, cache, maxAgeMs, now);
+		const probeInput = resolveMenuQuotaProbeInput(
+			account,
+			cache,
+			maxAgeMs,
+			now,
+			storage.accounts,
+		);
 		if (!probeInput) continue;
 		targets.push({
 			account,
@@ -596,7 +636,7 @@ function countMenuQuotaRefreshTargets(
 ): number {
 	let count = 0;
 	for (const account of storage.accounts) {
-		if (resolveMenuQuotaProbeInput(account, cache, maxAgeMs, now)) {
+		if (resolveMenuQuotaProbeInput(account, cache, maxAgeMs, now, storage.accounts)) {
 			count += 1;
 		}
 	}
@@ -629,7 +669,9 @@ async function refreshQuotaCacheForMenu(
 				accessToken: target.accessToken,
 				model: MENU_QUOTA_REFRESH_MODEL,
 			});
-			changed = updateQuotaCacheForAccount(cache, target.account, snapshot) || changed;
+			changed =
+				updateQuotaCacheForAccount(cache, target.account, snapshot, storage.accounts) ||
+				changed;
 		} catch {
 			// Keep existing cached values if probing fails.
 		}
@@ -780,7 +822,9 @@ function toExistingAccountInfo(
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	const layoutMode = resolveMenuLayoutMode(displaySettings);
 	const baseAccounts = storage.accounts.map((account, index) => {
-		const entry = quotaCache ? getQuotaCacheEntryForAccount(quotaCache, account) : null;
+		const entry = quotaCache
+			? getQuotaCacheEntryForAccount(quotaCache, account, storage.accounts)
+			: null;
 		return {
 			index,
 			sourceIndex: index,
@@ -1261,128 +1305,98 @@ async function persistAccountPool(
 ): Promise<void> {
 	if (results.length === 0) return;
 
-	const loadedStorage = replaceAll
-		? null
-		: await loadAccounts();
-	const now = Date.now();
-	const accounts = loadedStorage?.accounts ? [...loadedStorage.accounts] : [];
+	await withAccountStorageTransaction(async (loadedStorage, persist) => {
+		const stored = replaceAll ? null : loadedStorage;
+		const now = Date.now();
+		const accounts = stored?.accounts ? [...stored.accounts] : [];
+		let selectedAccountIndex: number | null = null;
 
-	const indexByRefreshToken = new Map<string, number>();
-	const indexByAccountId = new Map<string, number>();
-	const indexByEmail = new Map<string, number>();
-	let selectedAccountIndex: number | null = null;
-
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account) continue;
-		if (account.refreshToken) indexByRefreshToken.set(account.refreshToken, i);
-		if (account.accountId) indexByAccountId.set(account.accountId, i);
-		if (account.email) indexByEmail.set(account.email, i);
-	}
-
-	for (const result of results) {
-		const tokenAccountId = extractAccountId(result.access);
-		const accountId = resolveRequestAccountId(
-			result.accountIdOverride,
-			result.accountIdSource,
-			tokenAccountId,
-		);
-		const accountIdSource = accountId
-			? (result.accountIdSource ?? (result.accountIdOverride ? "manual" : "token"))
-			: undefined;
-		const accountLabel = result.accountLabel;
-		const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
-
-		const existingByEmail =
-			accountEmail && indexByEmail.has(accountEmail)
-				? indexByEmail.get(accountEmail)
+		for (const result of results) {
+			const tokenAccountId = extractAccountId(result.access);
+			const accountId = resolveRequestAccountId(
+				result.accountIdOverride,
+				result.accountIdSource,
+				tokenAccountId,
+			);
+			const accountIdSource = accountId
+				? (result.accountIdSource ?? (result.accountIdOverride ? "manual" : "token"))
 				: undefined;
-		const existingById =
-			accountId && indexByAccountId.has(accountId)
-				? indexByAccountId.get(accountId)
-				: undefined;
-		const existingByToken = indexByRefreshToken.get(result.refresh);
-		const existingIndex = existingById ?? existingByEmail ?? existingByToken;
-
-		if (existingIndex === undefined) {
-			const newIndex = accounts.length;
-			accounts.push({
+			const accountLabel = result.accountLabel;
+			const accountEmail = sanitizeEmail(
+				extractAccountEmail(result.access, result.idToken),
+			);
+			const existingIndex = findMatchingAccountIndex(accounts, {
 				accountId,
-				accountIdSource,
-				accountLabel,
 				email: accountEmail,
+				refreshToken: result.refresh,
+			}, {
+				allowUniqueAccountIdFallbackWithoutEmail: true,
+			});
+
+			if (existingIndex === undefined) {
+				const newIndex = accounts.length;
+				accounts.push({
+					accountId,
+					accountIdSource,
+					accountLabel,
+					email: accountEmail,
+					refreshToken: result.refresh,
+					accessToken: result.access,
+					expiresAt: result.expires,
+					enabled: true,
+					addedAt: now,
+					lastUsed: now,
+				});
+				selectedAccountIndex = newIndex;
+				continue;
+			}
+
+			const existing = accounts[existingIndex];
+			if (!existing) continue;
+
+			const nextEmail = accountEmail ?? existing.email;
+			const nextAccountId = accountId ?? existing.accountId;
+			const nextAccountIdSource = accountId
+				? (accountIdSource ?? existing.accountIdSource)
+				: existing.accountIdSource;
+
+			accounts[existingIndex] = {
+				...existing,
+				accountId: nextAccountId,
+				accountIdSource: nextAccountIdSource,
+				accountLabel: accountLabel ?? existing.accountLabel,
+				email: nextEmail,
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
 				enabled: true,
-				addedAt: now,
 				lastUsed: now,
-			});
-			indexByRefreshToken.set(result.refresh, newIndex);
-			if (accountId) indexByAccountId.set(accountId, newIndex);
-			if (accountEmail) indexByEmail.set(accountEmail, newIndex);
-			selectedAccountIndex = newIndex;
-			continue;
+			};
+			selectedAccountIndex = existingIndex;
 		}
 
-		const existing = accounts[existingIndex];
-		if (!existing) continue;
-
-		const oldToken = existing.refreshToken;
-		const oldEmail = existing.email;
-		const nextEmail = accountEmail ?? existing.email;
-		const nextAccountId = accountId ?? existing.accountId;
-		const nextAccountIdSource = accountId
-			? (accountIdSource ?? existing.accountIdSource)
-			: existing.accountIdSource;
-
-		accounts[existingIndex] = {
-			...existing,
-			accountId: nextAccountId,
-			accountIdSource: nextAccountIdSource,
-			accountLabel: accountLabel ?? existing.accountLabel,
-			email: nextEmail,
-			refreshToken: result.refresh,
-			accessToken: result.access,
-			expiresAt: result.expires,
-			enabled: true,
-			lastUsed: now,
-		};
-
-		if (oldToken !== result.refresh) {
-			indexByRefreshToken.delete(oldToken);
-			indexByRefreshToken.set(result.refresh, existingIndex);
+		const fallbackActiveIndex = accounts.length === 0
+			? 0
+			: Math.max(
+				0,
+				Math.min(stored?.activeIndex ?? 0, accounts.length - 1),
+			);
+		const nextActiveIndex = accounts.length === 0
+			? 0
+			: selectedAccountIndex === null
+				? fallbackActiveIndex
+				: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
+		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+		for (const family of MODEL_FAMILIES) {
+			activeIndexByFamily[family] = nextActiveIndex;
 		}
-		if (nextAccountId) {
-			indexByAccountId.set(nextAccountId, existingIndex);
-		}
-		if (oldEmail && oldEmail !== nextEmail) {
-			indexByEmail.delete(oldEmail);
-		}
-		if (nextEmail) {
-			indexByEmail.set(nextEmail, existingIndex);
-		}
-		selectedAccountIndex = existingIndex;
-	}
 
-	const fallbackActiveIndex = accounts.length === 0
-		? 0
-		: Math.max(0, Math.min(loadedStorage?.activeIndex ?? 0, accounts.length - 1));
-	const nextActiveIndex = accounts.length === 0
-		? 0
-		: selectedAccountIndex === null
-			? fallbackActiveIndex
-			: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = nextActiveIndex;
-	}
-
-	await saveAccounts({
-		version: 3,
-		accounts,
-		activeIndex: nextActiveIndex,
-		activeIndexByFamily,
+		await persist({
+			version: 3,
+			accounts,
+			activeIndex: nextActiveIndex,
+			activeIndexByFamily,
+		});
 	});
 }
 
@@ -1504,7 +1518,12 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						});
 						if (quotaCache) {
 							quotaCacheChanged =
-								updateQuotaCacheForAccount(quotaCache, account, snapshot) || quotaCacheChanged;
+								updateQuotaCacheForAccount(
+									quotaCache,
+									account,
+									snapshot,
+									storage.accounts,
+								) || quotaCacheChanged;
 						}
 						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
 					} catch (error) {
@@ -1577,7 +1596,12 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						});
 						if (quotaCache) {
 							quotaCacheChanged =
-								updateQuotaCacheForAccount(quotaCache, account, snapshot) || quotaCacheChanged;
+								updateQuotaCacheForAccount(
+									quotaCache,
+									account,
+									snapshot,
+									storage.accounts,
+								) || quotaCacheChanged;
 						}
 						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
 					} catch (error) {
@@ -2075,7 +2099,12 @@ async function runForecast(args: string[]): Promise<number> {
 				const account = storage.accounts[i];
 				if (account) {
 					quotaCacheChanged =
-						updateQuotaCacheForAccount(quotaCache, account, liveQuota) || quotaCacheChanged;
+						updateQuotaCacheForAccount(
+							quotaCache,
+							account,
+							liveQuota,
+							storage.accounts,
+						) || quotaCacheChanged;
 				}
 			}
 		} catch (error) {
@@ -2409,27 +2438,25 @@ function findExistingAccountIndexForFlagged(
 	const flaggedEmail = sanitizeEmail(flagged.email);
 	const candidateAccountId = nextAccountId ?? flagged.accountId;
 	const candidateEmail = sanitizeEmail(nextEmail) ?? flaggedEmail;
-
-	for (let i = 0; i < storage.accounts.length; i += 1) {
-		const account = storage.accounts[i];
-		if (!account) continue;
-		if (account.refreshToken === flagged.refreshToken || account.refreshToken === nextRefreshToken) {
-			return i;
-		}
-		if (
-			candidateAccountId &&
-			typeof account.accountId === "string" &&
-			account.accountId === candidateAccountId
-		) {
-			return i;
-		}
-		const existingEmail = sanitizeEmail(account.email);
-		if (candidateEmail && existingEmail && existingEmail === candidateEmail) {
-			return i;
-		}
+	const nextMatchIndex = findMatchingAccountIndex(storage.accounts, {
+		accountId: candidateAccountId,
+		email: candidateEmail,
+		refreshToken: nextRefreshToken,
+	}, {
+		allowUniqueAccountIdFallbackWithoutEmail: true,
+	});
+	if (nextMatchIndex !== undefined) {
+		return nextMatchIndex;
 	}
 
-	return -1;
+	const flaggedMatchIndex = findMatchingAccountIndex(storage.accounts, {
+		accountId: candidateAccountId,
+		email: candidateEmail,
+		refreshToken: flagged.refreshToken,
+	}, {
+		allowUniqueAccountIdFallbackWithoutEmail: true,
+	});
+	return flaggedMatchIndex ?? -1;
 }
 
 function upsertRecoveredFlaggedAccount(
@@ -2559,25 +2586,75 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 		return 0;
 	}
 
-	let storage = await loadAccounts();
-	if (!storage) {
-		storage = createEmptyAccountStorage();
-	}
 	let storageChanged = false;
 	let flaggedChanged = false;
 	const reports: VerifyFlaggedReport[] = [];
 	const nextFlaggedAccounts: FlaggedAccountMetadataV1[] = [];
 	const now = Date.now();
+	const refreshChecks: Array<{
+		index: number;
+		flagged: FlaggedAccountMetadataV1;
+		label: string;
+		result: Awaited<ReturnType<typeof queuedRefresh>>;
+	}> = [];
 
 	for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
 		const flagged = flaggedStorage.accounts[i];
 		if (!flagged) continue;
 		const label = formatAccountLabel(flagged, i);
-		const result = await queuedRefresh(flagged.refreshToken);
+		refreshChecks.push({
+			index: i,
+			flagged,
+			label,
+			result: await queuedRefresh(flagged.refreshToken),
+		});
+	}
 
-		if (result.type === "success") {
-			if (!options.restore) {
-				const nextFlagged: FlaggedAccountMetadataV1 = {
+	const applyRefreshChecks = (
+		storage: AccountStorageV3,
+	): void => {
+		for (const check of refreshChecks) {
+			const { index: i, flagged, label, result } = check;
+			if (result.type === "success") {
+				if (!options.restore) {
+					const nextFlagged: FlaggedAccountMetadataV1 = {
+						...flagged,
+						refreshToken: result.refresh,
+						accessToken: result.access,
+						expiresAt: result.expires,
+						accountId: extractAccountId(result.access) ?? flagged.accountId,
+						accountIdSource: extractAccountId(result.access) ? "token" : flagged.accountIdSource,
+						email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
+						lastUsed: now,
+						lastError: undefined,
+					};
+					nextFlaggedAccounts.push(nextFlagged);
+					if (JSON.stringify(nextFlagged) !== JSON.stringify(flagged)) {
+						flaggedChanged = true;
+					}
+					reports.push({
+						index: i,
+						label,
+						outcome: "healthy-flagged",
+						message: "session is healthy (left in flagged list due to --no-restore)",
+					});
+					continue;
+				}
+
+				const upsertResult = upsertRecoveredFlaggedAccount(storage, flagged, result, now);
+				if (upsertResult.restored) {
+					storageChanged = storageChanged || upsertResult.changed;
+					flaggedChanged = true;
+					reports.push({
+						index: i,
+						label,
+						outcome: "restored",
+						message: upsertResult.message,
+					});
+					continue;
+				}
+
+				const updatedFlagged: FlaggedAccountMetadataV1 = {
 					...flagged,
 					refreshToken: result.refresh,
 					accessToken: result.access,
@@ -2586,73 +2663,64 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 					accountIdSource: extractAccountId(result.access) ? "token" : flagged.accountIdSource,
 					email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
 					lastUsed: now,
-					lastError: undefined,
+					lastError: upsertResult.message,
 				};
-				nextFlaggedAccounts.push(nextFlagged);
-				if (JSON.stringify(nextFlagged) !== JSON.stringify(flagged)) {
+				nextFlaggedAccounts.push(updatedFlagged);
+				if (JSON.stringify(updatedFlagged) !== JSON.stringify(flagged)) {
 					flaggedChanged = true;
 				}
 				reports.push({
 					index: i,
 					label,
-					outcome: "healthy-flagged",
-					message: "session is healthy (left in flagged list due to --no-restore)",
-				});
-				continue;
-			}
-
-			const upsertResult = upsertRecoveredFlaggedAccount(storage, flagged, result, now);
-			if (upsertResult.restored) {
-				storageChanged = storageChanged || upsertResult.changed;
-				flaggedChanged = true;
-				reports.push({
-					index: i,
-					label,
-					outcome: "restored",
+					outcome: "restore-skipped",
 					message: upsertResult.message,
 				});
 				continue;
 			}
 
-			const updatedFlagged: FlaggedAccountMetadataV1 = {
+			const detail = normalizeFailureDetail(result.message, result.reason);
+			const failedFlagged: FlaggedAccountMetadataV1 = {
 				...flagged,
-				refreshToken: result.refresh,
-				accessToken: result.access,
-				expiresAt: result.expires,
-				accountId: extractAccountId(result.access) ?? flagged.accountId,
-				accountIdSource: extractAccountId(result.access) ? "token" : flagged.accountIdSource,
-				email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
-				lastUsed: now,
-				lastError: upsertResult.message,
+				lastError: detail,
 			};
-			nextFlaggedAccounts.push(updatedFlagged);
-			if (JSON.stringify(updatedFlagged) !== JSON.stringify(flagged)) {
+			nextFlaggedAccounts.push(failedFlagged);
+			if ((flagged.lastError ?? "") !== detail) {
 				flaggedChanged = true;
 			}
 			reports.push({
 				index: i,
 				label,
-				outcome: "restore-skipped",
-				message: upsertResult.message,
+				outcome: "still-flagged",
+				message: detail,
 			});
-			continue;
 		}
+	};
 
-		const detail = normalizeFailureDetail(result.message, result.reason);
-		const failedFlagged: FlaggedAccountMetadataV1 = {
-			...flagged,
-			lastError: detail,
-		};
-		nextFlaggedAccounts.push(failedFlagged);
-		if ((flagged.lastError ?? "") !== detail) {
-			flaggedChanged = true;
+	if (options.restore) {
+		if (options.dryRun) {
+			applyRefreshChecks(
+				(await loadAccounts()) ?? createEmptyAccountStorage(),
+			);
+		} else {
+			await withAccountAndFlaggedStorageTransaction(
+				async (loadedStorage, persist) => {
+					const nextStorage = loadedStorage
+						? structuredClone(loadedStorage)
+						: createEmptyAccountStorage();
+					applyRefreshChecks(nextStorage);
+					if (!storageChanged) {
+						return;
+					}
+					normalizeDoctorIndexes(nextStorage);
+					await persist(nextStorage, {
+						version: 1,
+						accounts: nextFlaggedAccounts,
+					});
+				},
+			);
 		}
-		reports.push({
-			index: i,
-			label,
-			outcome: "still-flagged",
-			message: detail,
-		});
+	} else {
+		applyRefreshChecks(createEmptyAccountStorage());
 	}
 
 	const remainingFlagged = nextFlaggedAccounts.length;
@@ -2661,17 +2729,11 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 	const stillFlagged = reports.filter((report) => report.outcome === "still-flagged").length;
 	const changed = storageChanged || flaggedChanged;
 
-	if (!options.dryRun) {
-		if (storageChanged) {
-			normalizeDoctorIndexes(storage);
-			await saveAccounts(storage);
-		}
-		if (flaggedChanged) {
-			await saveFlaggedAccounts({
-				version: 1,
-				accounts: nextFlaggedAccounts,
-			});
-		}
+	if (!options.dryRun && flaggedChanged && (!options.restore || !storageChanged)) {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: nextFlaggedAccounts,
+		});
 	}
 
 	if (options.json) {
@@ -2797,7 +2859,12 @@ async function runFix(args: string[]): Promise<number> {
 						});
 						if (quotaCache) {
 							quotaCacheChanged =
-								updateQuotaCacheForAccount(quotaCache, account, snapshot) || quotaCacheChanged;
+								updateQuotaCacheForAccount(
+									quotaCache,
+									account,
+									snapshot,
+									storage.accounts,
+								) || quotaCacheChanged;
 						}
 						reports.push({
 							index: i,
@@ -2875,7 +2942,12 @@ async function runFix(args: string[]): Promise<number> {
 						});
 						if (quotaCache) {
 							quotaCacheChanged =
-								updateQuotaCacheForAccount(quotaCache, account, snapshot) || quotaCacheChanged;
+								updateQuotaCacheForAccount(
+									quotaCache,
+									account,
+									snapshot,
+									storage.accounts,
+								) || quotaCacheChanged;
 						}
 						reports.push({
 							index: i,
@@ -3116,6 +3188,14 @@ function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
 	return changed;
 }
 
+function getDoctorRefreshTokenKey(
+	refreshToken: unknown,
+): string | undefined {
+	if (typeof refreshToken !== "string") return undefined;
+	const trimmed = refreshToken.trim();
+	return trimmed || undefined;
+}
+
 function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {
 	let changed = false;
 	const actions: DoctorFixAction[] = [];
@@ -3133,7 +3213,8 @@ function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; action
 		const account = storage.accounts[i];
 		if (!account) continue;
 
-		const refreshToken = account.refreshToken.trim();
+		const refreshToken = getDoctorRefreshTokenKey(account.refreshToken);
+		if (!refreshToken) continue;
 		const existingTokenIndex = seenRefreshTokens.get(refreshToken);
 		if (typeof existingTokenIndex === "number") {
 			if (account.enabled !== false) {
@@ -3402,7 +3483,8 @@ async function runDoctor(args: string[]): Promise<number> {
 		const seenRefreshTokens = new Set<string>();
 		let duplicateTokenCount = 0;
 		for (const account of storage.accounts) {
-			const token = account.refreshToken.trim();
+			const token = getDoctorRefreshTokenKey(account.refreshToken);
+			if (!token) continue;
 			if (seenRefreshTokens.has(token)) {
 				duplicateTokenCount += 1;
 			} else {

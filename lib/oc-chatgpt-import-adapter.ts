@@ -2,6 +2,8 @@ import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
+	findMatchingAccountIndex,
+	getAccountIdentityKey,
 	normalizeEmailKey,
 } from "./storage.js";
 
@@ -176,9 +178,9 @@ function buildPreviewPayload(
  * Finds the index of an account in `accounts` that corresponds to `target` using normalized matching rules.
  *
  * Matching precedence:
- * 1. Trimmed `accountId` (if present on `target`).
- * 2. Normalized email (only against destination entries that have no `accountId`).
- * 3. Exact `refreshToken` match (only against destination entries that have no `accountId` and no normalized email).
+ * 1. Exact `accountId + email` match when both are present.
+ * 2. Safe shared matcher fallback, which only uses bare `accountId` when it is unique.
+ * 3. Caller fallback to the original position when no safe match exists.
  *
  * @param accounts - The list of normalized destination accounts to search.
  * @param target - The account to match against `accounts`.
@@ -189,28 +191,7 @@ function findNormalizedAccountIndex(
 	target: AccountMetadataV3 | null | undefined,
 ): number | null {
 	if (!target) return null;
-	const targetAccountId = target.accountId?.trim();
-	if (targetAccountId) {
-		const idx = accounts.findIndex(
-			(account) => account.accountId?.trim() === targetAccountId,
-		);
-		if (idx >= 0) return idx;
-	}
-	const targetEmail = normalizeEmailKey(target.email);
-	if (targetEmail) {
-		const idx = accounts.findIndex(
-			(account) =>
-				!account.accountId && normalizeEmailKey(account.email) === targetEmail,
-		);
-		if (idx >= 0) return idx;
-	}
-	const idx = accounts.findIndex(
-		(account) =>
-			!account.accountId &&
-			!normalizeEmailKey(account.email) &&
-			account.refreshToken === target.refreshToken,
-	);
-	return idx >= 0 ? idx : null;
+	return findMatchingAccountIndex(accounts, target) ?? null;
 }
 
 /**
@@ -276,7 +257,9 @@ function normalizeActiveIndexByFamily(
  * Normalize and de-duplicate a list of account metadata for import into a target store.
  *
  * Processes input accounts by sanitizing entries, removing invalid refresh tokens, and
- * de-duplicating with the following precedence: accountId, normalized email, then refreshToken.
+ * de-duplicating with the following precedence: `accountId + email`, normalized email,
+ * then refreshToken. Bare `accountId` rows without an email stay on the refresh-token
+ * path so distinct business accounts are not collapsed by a shared workspace id.
  * When duplicates are found the most recently used/added account is kept and the other is recorded
  * in `skipped` with a reason code.
  *
@@ -287,7 +270,8 @@ function normalizeActiveIndexByFamily(
  *
  * @param accounts - Array of AccountMetadataV3 to normalize (may contain untrimmed or invalid fields)
  * @returns An object with:
- *   - `accounts`: sanitized, de-duplicated AccountMetadataV3 in order of precedence (by accountId, by email, by refreshToken)
+ *   - `accounts`: sanitized, de-duplicated AccountMetadataV3 in order of precedence
+ *     (by `accountId + email`, unique bare `accountId`, by email, by refreshToken)
  *   - `skipped`: array of sources summarized as OcChatgptAccountRef with a `reason` string; possible reasons include
  *       "invalid-refresh-token", "duplicate-account-id", "duplicate-email", and "duplicate-refresh-token"
  */
@@ -313,19 +297,24 @@ function normalizeAccountsForTarget(accounts: AccountMetadataV3[]): {
 		valid.push(sanitized);
 	}
 
-	const byAccountId = new Map<string, AccountMetadataV3>();
+	const byAccountIdentity = new Map<string, AccountMetadataV3>();
 	const withoutAccountId: AccountMetadataV3[] = [];
 
 	for (const account of valid) {
-		if (account.accountId) {
-			const existing = byAccountId.get(account.accountId);
+		if (account.accountId && normalizeEmailKey(account.email)) {
+			const identityKey = getAccountIdentityKey(account);
+			if (!identityKey) {
+				withoutAccountId.push(account);
+				continue;
+			}
+			const existing = byAccountIdentity.get(identityKey);
 			if (!existing) {
-				byAccountId.set(account.accountId, account);
+				byAccountIdentity.set(identityKey, account);
 				continue;
 			}
 			const newest = pickNewest(existing, account);
 			if (newest === account) {
-				byAccountId.set(account.accountId, account);
+				byAccountIdentity.set(identityKey, account);
 				skipped.push({
 					source: summarizeAccount(existing),
 					reason: "duplicate-account-id",
@@ -395,7 +384,7 @@ function normalizeAccountsForTarget(accounts: AccountMetadataV3[]): {
 
 	return {
 		accounts: [
-			...byAccountId.values(),
+			...byAccountIdentity.values(),
 			...byEmail.values(),
 			...byRefreshToken.values(),
 		],
@@ -462,7 +451,7 @@ function cloneStorage(storage: AccountStorageV3): AccountStorageV3 {
 
 /**
  * Finds a destination account that corresponds to the given source account by matching
- * in the order: trimmed `accountId`, normalized `email` (only against destination entries
+ * in the order: exact `accountId + email`, unique bare `accountId`, normalized `email` (only against destination entries
  * without an `accountId`), then exact `refreshToken` equality across any remaining destination entry.
  *
  * Concurrency: caller must manage concurrent access to the destination array and `usedIndexes`.
@@ -481,17 +470,38 @@ function matchDestination(
 	usedIndexes: Set<number>,
 ): { index: number; matchedBy: MatchStrategy } | null {
 	const sourceAccountId = source.accountId?.trim();
-	if (sourceAccountId) {
+	const sourceEmail = normalizeEmailKey(source.email);
+	if (sourceAccountId && sourceEmail) {
+		const sourceIdentityKey = getAccountIdentityKey(source);
 		const idx = destination.findIndex(
 			(account, i) =>
 				!usedIndexes.has(i) &&
-				typeof account.accountId === "string" &&
-				account.accountId.trim() === sourceAccountId,
+				getAccountIdentityKey(account) === sourceIdentityKey,
 		);
 		if (idx >= 0) return { index: idx, matchedBy: "accountId" };
 	}
-
-	const sourceEmail = normalizeEmailKey(source.email);
+	if (sourceAccountId) {
+		let idx: number | null = null;
+		let matchedEmail: string | undefined;
+		for (let i = 0; i < destination.length; i += 1) {
+			if (usedIndexes.has(i)) continue;
+			const account = destination[i];
+			if (!account) continue;
+			if (account.accountId?.trim() !== sourceAccountId) continue;
+			if (idx !== null) {
+				idx = null;
+				break;
+			}
+			idx = i;
+			matchedEmail = normalizeEmailKey(account.email);
+		}
+		if (
+			idx !== null &&
+			(!sourceEmail || !matchedEmail || matchedEmail === sourceEmail)
+		) {
+			return { index: idx, matchedBy: "accountId" };
+		}
+	}
 	if (sourceEmail) {
 		const idx = destination.findIndex((account, i) => {
 			if (usedIndexes.has(i)) return false;

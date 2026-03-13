@@ -211,15 +211,18 @@ describe("Storage Module - Async Operations", () => {
       expect(result[0]?.addedAt).toBe(200);
     });
 
-    it("handles accountId deduplication", () => {
+    it("preserves shared accountId entries when email is missing and refresh tokens differ", () => {
       const accounts = [
         { refreshToken: "token1", accountId: "acc-1", lastUsed: 1000 },
         { refreshToken: "token2", accountId: "acc-1", lastUsed: 2000 },
       ];
 
       const result = deduplicateAccounts(accounts);
-      expect(result.length).toBe(1);
-      expect(result[0]?.lastUsed).toBe(2000);
+      expect(result).toHaveLength(2);
+      expect(result.map((account) => account.refreshToken)).toEqual([
+        "token1",
+        "token2",
+      ]);
     });
 
     it("returns empty array for empty input", () => {

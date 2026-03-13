@@ -129,7 +129,7 @@ import {
 	loadFlaggedAccounts,
 	saveFlaggedAccounts,
 	clearFlaggedAccounts,
-	normalizeEmailKey,
+	findMatchingAccountIndex,
 	StorageError,
 	formatStorageErrorHint,
 	setStorageBackupEnabled,
@@ -526,24 +526,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					const stored = replaceAll ? null : loadedStorage;
 					const accounts = stored?.accounts ? [...stored.accounts] : [];
 
-					const indexByRefreshToken = new Map<string, number>();
-					const indexByAccountId = new Map<string, number>();
-					const indexByEmail = new Map<string, number>();
-					for (let i = 0; i < accounts.length; i += 1) {
-						const account = accounts[i];
-						if (!account) continue;
-						if (account.refreshToken) {
-							indexByRefreshToken.set(account.refreshToken, i);
-						}
-						if (account.accountId) {
-							indexByAccountId.set(account.accountId, i);
-						}
-						const emailKey = normalizeEmailKey(account.email);
-						if (emailKey) {
-							indexByEmail.set(emailKey, i);
-						}
-					}
-
 					for (const result of results) {
 						const accountId = result.accountIdOverride ?? extractAccountId(result.access);
 						const accountIdSource =
@@ -553,19 +535,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								: undefined;
 						const accountLabel = result.accountLabel;
 						const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
-						const existingByEmail =
-							accountEmail && indexByEmail.has(accountEmail)
-								? indexByEmail.get(accountEmail)
-								: undefined;
-						const existingById =
-							accountId && indexByAccountId.has(accountId)
-								? indexByAccountId.get(accountId)
-								: undefined;
-						const existingByToken = indexByRefreshToken.get(result.refresh);
-						const existingIndex = existingById ?? existingByEmail ?? existingByToken;
+						const existingIndex = findMatchingAccountIndex(accounts, {
+							accountId,
+							email: accountEmail,
+							refreshToken: result.refresh,
+						}, {
+							allowUniqueAccountIdFallbackWithoutEmail: true,
+						});
 
 						if (existingIndex === undefined) {
-							const newIndex = accounts.length;
 							accounts.push({
 								accountId,
 								accountIdSource,
@@ -577,21 +555,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								addedAt: now,
 								lastUsed: now,
 							});
-							indexByRefreshToken.set(result.refresh, newIndex);
-							if (accountId) {
-								indexByAccountId.set(accountId, newIndex);
-							}
-							if (accountEmail) {
-								indexByEmail.set(accountEmail, newIndex);
-							}
 							continue;
 						}
 
 						const existing = accounts[existingIndex];
 						if (!existing) continue;
 
-						const oldToken = existing.refreshToken;
-						const oldEmail = existing.email;
 						const nextEmail = accountEmail ?? sanitizeEmail(existing.email);
 						const nextAccountId = accountId ?? existing.accountId;
 						const nextAccountIdSource =
@@ -608,21 +577,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							expiresAt: result.expires,
 							lastUsed: now,
 						};
-						if (oldToken !== result.refresh) {
-							indexByRefreshToken.delete(oldToken);
-							indexByRefreshToken.set(result.refresh, existingIndex);
-						}
-						if (accountId) {
-							indexByAccountId.set(accountId, existingIndex);
-						}
-						const oldEmailKey = normalizeEmailKey(oldEmail);
-						const nextEmailKey = normalizeEmailKey(nextEmail);
-						if (oldEmailKey && oldEmailKey !== nextEmailKey) {
-							indexByEmail.delete(oldEmailKey);
-						}
-						if (nextEmailKey) {
-							indexByEmail.set(nextEmailKey, existingIndex);
-						}
 					}
 
 					if (accounts.length === 0) return;
@@ -1407,6 +1361,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										const accountCount = accountManager.getAccountCount();
 										const attempted = new Set<number>();
 										let restartAccountTraversalWithFallback = false;
+										let retryNextAccountBeforeFallback = false;
 										let usedPreferredSessionAccount = false;
 										const capabilityBoostByAccount: Record<number, number> = {};
 										type AccountSnapshotCandidate = {
@@ -1547,11 +1502,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 						account.accountIdSource,
 						tokenAccountId,
 					);
-					const entitlementAccountKey = resolveEntitlementAccountKey({
-						accountId: hadAccountId ? account.accountId : undefined,
-						email: account.email,
-						index: account.index,
-					});
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
@@ -1561,12 +1511,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 							accountManager.saveToDiskDebounced();
 							continue;
 						}
+											const resolvedEmail =
+												extractAccountEmail(accountAuth.access) ?? account.email;
+											const entitlementAccountKey = resolveEntitlementAccountKey({
+												accountId: account.accountId ?? accountId,
+												email: resolvedEmail,
+												refreshToken: account.refreshToken,
+												index: account.index,
+											});
 											account.accountId = accountId;
 											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
 												account.accountIdSource = account.accountIdSource ?? "token";
 											}
-											account.email =
-												extractAccountEmail(accountAuth.access) ?? account.email;
+											account.email = resolvedEmail;
 											const entitlementBlock = entitlementCache.isBlocked(
 												entitlementAccountKey,
 												model ?? modelFamily,
@@ -1817,6 +1774,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						fallbackReason: "unsupported-model-entitlement",
 					},
 				);
+				retryNextAccountBeforeFallback = true;
 				break;
 			}
 
@@ -2338,7 +2296,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 						if (successAccountForResponse.index !== account.index) {
 							accountManager.markSwitched(successAccountForResponse, "rotation", modelFamily);
 						}
-						const successAccountKey = resolveEntitlementAccountKey(successAccountForResponse);
+						const successAccountKey =
+							successAccountForResponse.index === account.index
+								? entitlementAccountKey
+								: resolveEntitlementAccountKey(successAccountForResponse);
 						accountManager.recordSuccess(successAccountForResponse, modelFamily, model);
 						capabilityPolicyStore.recordSuccess(
 							successAccountKey,
@@ -2357,6 +2318,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 						return successResponse;
 																								}
+										if (retryNextAccountBeforeFallback) {
+											retryNextAccountBeforeFallback = false;
+											continue;
+										}
+
 										if (restartAccountTraversalWithFallback) {
 											break;
 										}
@@ -3263,12 +3229,25 @@ while (attempted.size < Math.max(1, accountCount)) {
 									const label = resolved.accountLabel ?? email ?? accountId ?? "Unknown account";
 									logInfo(`Authenticated as: ${label}`);
 
-									const isDuplicate = accounts.some(
-										(account) =>
-											(accountId &&
-												(account.accountIdOverride ?? extractAccountId(account.access)) === accountId) ||
-											(email && extractAccountEmail(account.access, account.idToken) === email),
-									);
+									const isDuplicate =
+										findMatchingAccountIndex(
+											accounts.map((account) => ({
+												accountId:
+													account.accountIdOverride ?? extractAccountId(account.access),
+												email: sanitizeEmail(
+													extractAccountEmail(account.access, account.idToken),
+												),
+												refreshToken: account.refresh,
+											})),
+											{
+												accountId,
+												email: sanitizeEmail(email),
+												refreshToken: resolved.refresh,
+											},
+											{
+												allowUniqueAccountIdFallbackWithoutEmail: true,
+											},
+										) !== undefined;
 
 									if (isDuplicate) {
 										logWarn(`WARNING: duplicate account login detected (${label}). Existing entry will be updated.`);
@@ -4163,5 +4142,3 @@ while (attempted.size < Math.max(1, accountCount)) {
 export const OpenAIAuthPlugin = OpenAIOAuthPlugin;
 
 export default OpenAIOAuthPlugin;
-
-

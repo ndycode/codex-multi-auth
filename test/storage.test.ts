@@ -10,15 +10,21 @@ import {
 	deduplicateAccountsByEmail,
 	exportAccounts,
 	exportNamedBackup,
+	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getFlaggedAccountsPath,
 	getStoragePath,
 	importAccounts,
 	loadAccounts,
+	loadFlaggedAccounts,
 	normalizeAccountStorage,
+	resolveAccountSelectionIndex,
+	saveFlaggedAccounts,
 	StorageError,
 	saveAccounts,
 	setStoragePath,
 	setStoragePathDirect,
+	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
 
@@ -44,7 +50,7 @@ describe("storage", () => {
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
 	});
 	describe("deduplication", () => {
-		it("remaps activeIndexByFamily after deduplication using the active account key", () => {
+		it("preserves activeIndexByFamily when shared accountId entries remain distinct without email", () => {
 			const now = Date.now();
 
 			const raw = {
@@ -81,8 +87,8 @@ describe("storage", () => {
 
 			const normalized = normalizeAccountStorage(raw);
 			expect(normalized).not.toBeNull();
-			expect(normalized?.accounts).toHaveLength(2);
-			expect(normalized?.activeIndexByFamily?.codex).toBe(1);
+			expect(normalized?.accounts).toHaveLength(4);
+			expect(normalized?.activeIndexByFamily?.codex).toBe(3);
 		});
 
 		it("remaps activeIndex after deduplication using active account key", () => {
@@ -143,6 +149,160 @@ describe("storage", () => {
 			expect(deduped).toHaveLength(1);
 			expect(deduped[0]?.addedAt).toBe(now - 1500);
 			expect(deduped[0]?.lastUsed).toBe(now);
+		});
+
+		it("prefers composite and email matches over refresh token matches", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "token-refresh",
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+				{
+					accountId: "workspace-b",
+					email: "other@example.com",
+					refreshToken: "token-safe-email",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-b",
+				email: "match@example.com",
+				refreshToken: "token-refresh",
+			});
+
+			expect(matchIndex).toBe(1);
+		});
+
+		it("uses a unique refresh token match when no safer identifier exists", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "token-refresh",
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				refreshToken: "token-refresh",
+			});
+
+			expect(matchIndex).toBe(0);
+		});
+
+		it("falls back to composite matching when refresh tokens are ambiguous", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "shared-refresh",
+					lastUsed: 100,
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "shared-refresh",
+					lastUsed: 200,
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-b",
+				email: "match@example.com",
+				refreshToken: "shared-refresh",
+			});
+
+			expect(matchIndex).toBe(1);
+			expect(deduplicateAccounts(accounts)).toHaveLength(2);
+		});
+
+		it("prefers composite accountId plus email matches over safe-email fallbacks", () => {
+			const accounts = [
+				{
+					accountId: "workspace-other",
+					email: "match@example.com",
+					refreshToken: "token-safe-email",
+				},
+				{
+					accountId: "workspace-a",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-a",
+				email: "match@example.com",
+			});
+
+			expect(matchIndex).toBe(1);
+		});
+
+		it("falls back to a unique bare accountId when email matching is unsafe", () => {
+			const accounts = [
+				{
+					accountId: "workspace-email",
+					email: "User@Example.com",
+					refreshToken: "token-email",
+				},
+				{
+					accountId: "workspace-unique",
+					refreshToken: "token-unique",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(
+				accounts,
+				{
+					accountId: "workspace-unique",
+					email: " user@example.com ",
+				},
+				{ allowUniqueAccountIdFallbackWithoutEmail: true },
+			);
+
+			expect(matchIndex).toBe(1);
+		});
+
+		it("only uses bare accountId fallback when the accountId is unique", () => {
+			const accounts = [
+				{
+					accountId: "workspace-shared",
+					refreshToken: "refresh-a",
+				},
+				{
+					accountId: "workspace-shared",
+					refreshToken: "refresh-b",
+				},
+				{
+					accountId: "workspace-unique",
+					refreshToken: "refresh-c",
+				},
+			];
+
+			expect(
+				findMatchingAccountIndex(
+					accounts,
+					{ accountId: "workspace-shared" },
+					{ allowUniqueAccountIdFallbackWithoutEmail: true },
+				),
+			).toBeUndefined();
+			expect(
+				resolveAccountSelectionIndex(
+					accounts,
+					{ accountId: "workspace-unique" },
+					0,
+				),
+			).toBe(2);
 		});
 	});
 
@@ -237,6 +397,156 @@ describe("storage", () => {
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
 		});
 
+		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			const existing = {
+				version: 3,
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+				accounts: [
+					{
+						accountId: "shared-account",
+						email: "alpha@example.com",
+						refreshToken: "refresh-alpha",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "shared-account",
+						email: "beta@example.com",
+						refreshToken: "refresh-beta",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			};
+			// @ts-expect-error
+			await saveAccounts(existing);
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "shared-account",
+							refreshToken: "refresh-gamma",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+			);
+
+			const imported = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(imported).toEqual({ imported: 1, total: 3, skipped: 0 });
+			expect(loaded?.accounts).toHaveLength(3);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual(
+				expect.arrayContaining([
+					"refresh-alpha",
+					"refresh-beta",
+					"refresh-gamma",
+				]),
+			);
+		});
+
+		it("should preserve distinct accountId plus email pairs during import", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						email: "alpha@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify(
+					{
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "shared-workspace",
+								email: "beta@example.com",
+								refreshToken: "refresh-imported",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					},
+					null,
+					2,
+				),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(loaded?.accounts).toHaveLength(2);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
+				"refresh-existing",
+				"refresh-imported",
+			]);
+		});
+
+		it("should preserve duplicate shared accountId entries when imported rows lack email", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify(
+					{
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "shared-workspace",
+								refreshToken: "refresh-imported",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					},
+					null,
+					2,
+				),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(loaded?.accounts).toHaveLength(2);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
+				"refresh-existing",
+				"refresh-imported",
+			]);
+		});
+
 		it("should serialize concurrent transactional updates without losing accounts", async () => {
 			await saveAccounts({
 				version: 3,
@@ -279,6 +589,309 @@ describe("storage", () => {
 			expect(
 				new Set(loaded?.accounts.map((account) => account.accountId)),
 			).toEqual(new Set(["acct-a", "acct-b"]));
+		});
+
+		it("rolls back account storage when flagged persistence keeps failing inside the combined transaction", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
+						const error = Object.assign(
+							new Error("flagged storage busy"),
+							{ code: "EBUSY" },
+						);
+						throw error;
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await expect(
+					withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+						if (!current) {
+							throw new Error("expected existing account storage");
+						}
+						await persist(
+							{
+								...current,
+								accounts: [
+									...current.accounts,
+									{
+										accountId: "acct-restored",
+										email: "restored@example.com",
+										refreshToken: "refresh-restored",
+										addedAt: now,
+										lastUsed: now,
+									},
+								],
+							},
+							{
+								version: 1,
+								accounts: [],
+							},
+						);
+					}),
+				).rejects.toThrow("flagged storage busy");
+				expect(flaggedRenameAttempts).toBe(5);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loadedAccounts = await loadAccounts();
+			expect(loadedAccounts?.accounts).toHaveLength(1);
+			expect(loadedAccounts?.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-existing",
+					refreshToken: "refresh-existing",
+				}),
+			);
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-flagged",
+					refreshToken: "refresh-flagged",
+				}),
+			);
+		});
+
+		it("surfaces rollback failure when flagged persistence and account rollback both fail", async () => {
+			const now = Date.now();
+			const storagePath = getStoragePath();
+			expect(storagePath).toBeTruthy();
+			const flaggedStoragePath = getFlaggedAccountsPath();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const actualFs = await vi.importActual<typeof import("node:fs")>(
+				"node:fs",
+			);
+			let accountRenameAttempts = 0;
+			let flaggedRenameAttempts = 0;
+			vi.resetModules();
+			vi.doMock("node:fs", () => ({
+				...actualFs,
+				promises: {
+					...actualFs.promises,
+					rename: async (
+						from: Parameters<typeof actualFs.promises.rename>[0],
+						to: Parameters<typeof actualFs.promises.rename>[1],
+					) => {
+						const targetPath = String(to);
+						if (targetPath === flaggedStoragePath) {
+							flaggedRenameAttempts += 1;
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+						if (targetPath === storagePath) {
+							accountRenameAttempts += 1;
+							if (accountRenameAttempts > 1) {
+								const error = Object.assign(
+									new Error("rollback account storage busy"),
+									{ code: "EBUSY" },
+								);
+								throw error;
+							}
+						}
+						return actualFs.promises.rename(from, to);
+					},
+				},
+			}));
+			const isolatedStorageModule = await import("../lib/storage.js");
+			isolatedStorageModule.setStoragePathDirect(storagePath);
+			try {
+				let thrown: unknown;
+				try {
+					await isolatedStorageModule.withAccountAndFlaggedStorageTransaction(
+						async (current, persist) => {
+							if (!current) {
+								throw new Error("expected existing account storage");
+							}
+							await persist(
+								{
+									...current,
+									accounts: [
+										...current.accounts,
+										{
+											accountId: "acct-restored",
+											email: "restored@example.com",
+											refreshToken: "refresh-restored",
+											addedAt: now,
+											lastUsed: now,
+										},
+									],
+								},
+								{
+									version: 1,
+									accounts: [],
+								},
+							);
+						},
+					);
+				} catch (error) {
+					thrown = error;
+				}
+
+				expect(flaggedRenameAttempts).toBe(5);
+				expect(accountRenameAttempts).toBe(6);
+				expect(thrown).toBeInstanceOf(AggregateError);
+				expect((thrown as AggregateError).message).toBe(
+					"Flagged save failed and account storage rollback also failed",
+				);
+				const thrownErrors = (thrown as AggregateError).errors.map(String);
+				expect(
+					thrownErrors.some((message) =>
+						message.includes("flagged storage busy"),
+					),
+				).toBe(true);
+				expect(
+					thrownErrors.some((message) =>
+						message.includes("rollback account storage busy"),
+					),
+				).toBe(true);
+
+				const loadedAccounts = await isolatedStorageModule.loadAccounts();
+				expect(loadedAccounts?.accounts).toHaveLength(2);
+				expect(
+					loadedAccounts?.accounts.map((account) => account.refreshToken),
+				).toEqual(["refresh-existing", "refresh-restored"]);
+
+				const loadedFlagged = await isolatedStorageModule.loadFlaggedAccounts();
+				expect(loadedFlagged.accounts).toHaveLength(1);
+				expect(loadedFlagged.accounts[0]).toEqual(
+					expect.objectContaining({
+						accountId: "acct-flagged",
+						refreshToken: "refresh-flagged",
+					}),
+				);
+			} finally {
+				isolatedStorageModule.setStoragePathDirect(null);
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+			}
+		});
+
+		it("retries transient flagged storage rename and succeeds", async () => {
+			const now = Date.now();
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
+						if (flaggedRenameAttempts <= 2) {
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await saveFlaggedAccounts({
+					version: 1,
+					accounts: [
+						{
+							accountId: "acct-flagged",
+							email: "flagged@example.com",
+							refreshToken: "refresh-flagged-next",
+							addedAt: now,
+							lastUsed: now,
+							flaggedAt: now,
+						},
+					],
+				});
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			expect(flaggedRenameAttempts).toBe(3);
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					refreshToken: "refresh-flagged-next",
+				}),
+			);
 		});
 
 		it("should enforce MAX_ACCOUNTS during import", async () => {
@@ -649,6 +1262,69 @@ describe("storage", () => {
 			const deduped = deduplicateAccounts(accounts);
 			expect(deduped).toHaveLength(2);
 		});
+
+		it("preserves distinct emails when business accounts share the same accountId", () => {
+			const accounts = [
+				{
+					accountId: "workspace-1",
+					email: "alpha@example.com",
+					refreshToken: "token-alpha",
+					lastUsed: 100,
+				},
+				{
+					accountId: "workspace-1",
+					email: "beta@example.com",
+					refreshToken: "token-beta",
+					lastUsed: 200,
+				},
+				{
+					accountId: "workspace-1",
+					email: "alpha@example.com",
+					refreshToken: "token-alpha-newer",
+					lastUsed: 300,
+				},
+			];
+
+			const deduped = deduplicateAccounts(accounts);
+
+			expect(deduped).toHaveLength(2);
+			expect(deduped).toContainEqual(
+				expect.objectContaining({
+					email: "alpha@example.com",
+					refreshToken: "token-alpha-newer",
+				}),
+			);
+			expect(deduped).toContainEqual(
+				expect.objectContaining({
+					email: "beta@example.com",
+					refreshToken: "token-beta",
+				}),
+			);
+		});
+
+		it("preserves shared accountId entries when email is missing and refresh tokens differ", () => {
+			const accounts = [
+				{
+					accountId: "shared-workspace",
+					refreshToken: "refresh-a",
+					lastUsed: 100,
+					addedAt: 10,
+				},
+				{
+					accountId: "shared-workspace",
+					refreshToken: "refresh-b",
+					lastUsed: 200,
+					addedAt: 20,
+				},
+			];
+
+			const deduped = deduplicateAccounts(accounts);
+			expect(deduped).toHaveLength(2);
+			expect(deduped.map((account) => account.refreshToken)).toEqual([
+				"refresh-a",
+				"refresh-b",
+			]);
+		});
 	});
 
 	describe("deduplicateAccountsByEmail edge cases", () => {
@@ -802,6 +1478,66 @@ describe("storage", () => {
 			const result = normalizeAccountStorage(data);
 			expect(result?.accounts).toHaveLength(2);
 			expect(result?.activeIndex).toBe(1);
+		});
+
+		it("remaps activeIndex without collapsing same-workspace business accounts", () => {
+			const now = Date.now();
+			const data = {
+				version: 3,
+				activeIndex: 1,
+				accounts: [
+					{
+						refreshToken: "token-alpha-old",
+						accountId: "workspace-1",
+						email: "alpha@example.com",
+						lastUsed: now - 200,
+					},
+					{
+						refreshToken: "token-beta",
+						accountId: "workspace-1",
+						email: "beta@example.com",
+						lastUsed: now - 100,
+					},
+					{
+						refreshToken: "token-alpha-new",
+						accountId: "workspace-1",
+						email: "alpha@example.com",
+						lastUsed: now,
+					},
+				],
+			};
+
+			const result = normalizeAccountStorage(data);
+
+			expect(result?.accounts).toHaveLength(2);
+			expect(result?.activeIndex).toBe(1);
+			expect(result?.accounts[0]?.email).toBe("alpha@example.com");
+			expect(result?.accounts[1]?.email).toBe("beta@example.com");
+		});
+
+		it("preserves activeIndex for duplicate shared accountId entries when email is missing", () => {
+			const data = {
+				version: 3,
+				activeIndex: 1,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-a",
+						lastUsed: 100,
+					},
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-b",
+						lastUsed: 200,
+					},
+				],
+			};
+
+			const result = normalizeAccountStorage(data);
+			expect(result).not.toBeNull();
+			expect(result?.accounts).toHaveLength(2);
+			expect(result?.activeIndex).toBe(1);
+			expect(result?.accounts[1]?.refreshToken).toBe("refresh-b");
 		});
 
 		it("handles v1 to v3 migration", () => {

@@ -1229,6 +1229,90 @@ describe("AccountManager", () => {
       expect(account?.access).toBe(accessToken);
     });
 
+    it("trims fallback accountId before matching and persisting it", () => {
+      const now = Date.now();
+      const payload = {
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "  matching-account-id  ",
+        },
+      };
+      const accessToken = `header.${Buffer.from(JSON.stringify(payload)).toString("base64")}.signature`;
+
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "stored-token",
+            accountId: "matching-account-id",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        access: accessToken,
+        refresh: "new-refresh-token",
+        expires: now + 60_000,
+      };
+
+      const manager = new AccountManager(auth, stored);
+      expect(manager.getAccountCount()).toBe(1);
+      const account = manager.getCurrentAccount();
+      expect(account?.refreshToken).toBe("new-refresh-token");
+      expect(account?.accountId).toBe("matching-account-id");
+    });
+
+    it("ignores malformed stored rows when checking shared accountId uniqueness for fallback matching", () => {
+      const now = Date.now();
+      const payload = {
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "matching-account-id",
+        },
+      };
+      const accessToken = `header.${Buffer.from(JSON.stringify(payload)).toString("base64")}.signature`;
+
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "stored-token",
+            accountId: "matching-account-id",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "",
+            accountId: "matching-account-id",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "   ",
+            accountId: "matching-account-id",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        access: accessToken,
+        refresh: "new-refresh-token",
+        expires: now + 60_000,
+      };
+
+      const manager = new AccountManager(auth, stored);
+      expect(manager.getAccountCount()).toBe(1);
+      const account = manager.getCurrentAccount();
+      expect(account?.refreshToken).toBe("new-refresh-token");
+      expect(account?.accountId).toBe("matching-account-id");
+    });
+
     it("merges fallback auth when matching by email", () => {
       const now = Date.now();
       const payload = {
@@ -1297,6 +1381,51 @@ describe("AccountManager", () => {
       expect(account?.refreshToken).toBe("different-refresh-token");
     });
 
+    it("adds fallback as a distinct account when the same email spans multiple accountIds", () => {
+      const now = Date.now();
+      const payload = {
+        email: "shared@example.com",
+      };
+      const accessToken = `header.${Buffer.from(JSON.stringify(payload)).toString("base64")}.signature`;
+
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            accountId: "workspace-alpha",
+            email: "shared@example.com",
+            refreshToken: "refresh-alpha",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            accountId: "workspace-beta",
+            email: "shared@example.com",
+            refreshToken: "refresh-beta",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        access: accessToken,
+        refresh: "refresh-gamma",
+        expires: now + 60_000,
+      };
+
+      const manager = new AccountManager(auth, stored);
+
+      expect(manager.getAccountCount()).toBe(3);
+      expect(manager.getAccountsSnapshot().map((account) => account.refreshToken)).toEqual([
+        "refresh-alpha",
+        "refresh-beta",
+        "refresh-gamma",
+      ]);
+    });
+
     it("adds fallback as new account when no match found", () => {
       const now = Date.now();
       const stored = {
@@ -1319,6 +1448,59 @@ describe("AccountManager", () => {
       const accounts = manager.getAccountsSnapshot();
       expect(accounts[0]?.refreshToken).toBe("existing-token");
       expect(accounts[1]?.refreshToken).toBe("new-refresh");
+    });
+
+    it("adds fallback as a distinct account when duplicate business accounts share one accountId", () => {
+      const now = Date.now();
+      const payload = {
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "workspace-shared",
+        },
+        email: "gamma@example.com",
+      };
+      const accessToken = `header.${Buffer.from(JSON.stringify(payload)).toString("base64")}.signature`;
+
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            accountId: "workspace-shared",
+            email: "alpha@example.com",
+            refreshToken: "refresh-alpha",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            accountId: "workspace-shared",
+            email: "beta@example.com",
+            refreshToken: "refresh-beta",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        access: accessToken,
+        refresh: "refresh-gamma",
+        expires: now + 60_000,
+      };
+
+      const manager = new AccountManager(auth, stored);
+
+      expect(manager.getAccountCount()).toBe(3);
+      expect(manager.getAccountsSnapshot().map((account) => account.email)).toEqual([
+        "alpha@example.com",
+        "beta@example.com",
+        "gamma@example.com",
+      ]);
+      expect(manager.getAccountsSnapshot().map((account) => account.refreshToken)).toEqual([
+        "refresh-alpha",
+        "refresh-beta",
+        "refresh-gamma",
+      ]);
     });
 
     it("sets accountIdSource to token when fallbackAccountId exists", () => {
