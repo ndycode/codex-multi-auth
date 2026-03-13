@@ -46,7 +46,7 @@ const pendingHistoryWrites = new Set<Promise<void>>();
 
 async function waitForPendingHistoryWrites(): Promise<void> {
 	if (pendingHistoryWrites.size === 0) return;
-	await Promise.all(Array.from(pendingHistoryWrites));
+	await Promise.allSettled(Array.from(pendingHistoryWrites));
 }
 
 function getHistoryDirectory(): string {
@@ -171,8 +171,25 @@ export async function __resetSyncHistoryForTests(): Promise<void> {
 	const paths = getSyncHistoryPaths();
 	await waitForPendingHistoryWrites();
 	await withHistoryLock(async () => {
-		await fs.rm(paths.historyPath, { force: true });
-		await fs.rm(paths.latestPath, { force: true });
+		for (const target of [paths.historyPath, paths.latestPath]) {
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rm(target, { force: true });
+					break;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (
+						(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
+						attempt === 4
+					) {
+						throw error;
+					}
+					await new Promise((resolve) =>
+						setTimeout(resolve, 25 * 2 ** attempt),
+					);
+				}
+			}
+		}
 	});
 	lastAppendError = null;
 	lastAppendPaths = null;

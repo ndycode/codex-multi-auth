@@ -10,6 +10,7 @@ import {
 	appendSyncHistoryEntry,
 	cloneSyncHistoryEntry,
 	readLatestSyncHistorySync,
+	readSyncHistory,
 } from "../sync-history.js";
 import {
 	incrementCodexCliMetric,
@@ -154,6 +155,14 @@ export function getLastCodexCliSyncRun(): CodexCliSyncRun | null {
 				summary: { ...cloned.run.summary },
 			};
 		}
+		void readSyncHistory({ kind: "codex-cli-sync", limit: 1 })
+			.then((entries) => {
+				const latestCodexEntry = entries.at(-1);
+				if (latestCodexEntry?.kind === "codex-cli-sync") {
+					lastCodexCliSyncRun = latestCodexEntry.run;
+				}
+			})
+			.catch(() => undefined);
 	}
 
 	return null;
