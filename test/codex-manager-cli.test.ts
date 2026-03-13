@@ -15,6 +15,7 @@ const loadDashboardDisplaySettingsMock = vi.fn();
 const saveDashboardDisplaySettingsMock = vi.fn();
 const loadQuotaCacheMock = vi.fn();
 const saveQuotaCacheMock = vi.fn();
+const clearQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const previewCodexCliSyncMock = vi.fn();
@@ -25,6 +26,7 @@ const getLastCodexCliSyncRunMock = vi.fn();
 const getCodexCliAccountsPathMock = vi.fn(() => "/mock/codex/accounts.json");
 const getCodexCliAuthPathMock = vi.fn(() => "/mock/codex/auth.json");
 const getCodexCliConfigPathMock = vi.fn(() => "/mock/codex/config.toml");
+const clearCodexCliStateCacheMock = vi.fn();
 const isCodexCliSyncEnabledMock = vi.fn(() => true);
 const loadCodexCliStateMock = vi.fn();
 const getLastLiveAccountSyncSnapshotMock = vi.fn();
@@ -36,11 +38,8 @@ const exportNamedBackupMock = vi.fn();
 const promptQuestionMock = vi.fn();
 const detectOcChatgptMultiAuthTargetMock = vi.fn();
 const normalizeAccountStorageMock = vi.fn((value) => value);
-let storageBackupEnabledState = true;
-const setStorageBackupEnabledMock = vi.fn((enabled: boolean) => {
-	storageBackupEnabledState = enabled;
-});
-const isStorageBackupEnabledMock = vi.fn(() => storageBackupEnabledState);
+const clearAccountsMock = vi.fn();
+const clearFlaggedAccountsMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -102,13 +101,13 @@ vi.mock("../lib/accounts.js", () => ({
 }));
 
 vi.mock("../lib/storage.js", () => ({
-	isStorageBackupEnabled: isStorageBackupEnabledMock,
+	clearAccounts: clearAccountsMock,
+	clearFlaggedAccounts: clearFlaggedAccountsMock,
 	loadAccounts: loadAccountsMock,
 	loadFlaggedAccounts: loadFlaggedAccountsMock,
 	saveAccounts: saveAccountsMock,
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
 	setStoragePath: setStoragePathMock,
-	setStorageBackupEnabled: setStorageBackupEnabledMock,
 	getStoragePath: getStoragePathMock,
 	exportNamedBackup: exportNamedBackupMock,
 	normalizeAccountStorage: normalizeAccountStorageMock,
@@ -131,6 +130,7 @@ vi.mock("../lib/codex-cli/sync.js", () => ({
 }));
 
 vi.mock("../lib/codex-cli/state.js", () => ({
+	clearCodexCliStateCache: clearCodexCliStateCacheMock,
 	getCodexCliAccountsPath: getCodexCliAccountsPathMock,
 	getCodexCliAuthPath: getCodexCliAuthPathMock,
 	getCodexCliConfigPath: getCodexCliConfigPathMock,
@@ -175,6 +175,7 @@ vi.mock("../lib/config.js", async () => {
 });
 
 vi.mock("../lib/quota-cache.js", () => ({
+	clearQuotaCache: clearQuotaCacheMock,
 	loadQuotaCache: loadQuotaCacheMock,
 	saveQuotaCache: saveQuotaCacheMock,
 }));
@@ -454,6 +455,7 @@ describe("codex manager cli commands", () => {
 		saveDashboardDisplaySettingsMock.mockReset();
 		loadQuotaCacheMock.mockReset();
 		saveQuotaCacheMock.mockReset();
+		clearQuotaCacheMock.mockReset();
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		previewCodexCliSyncMock.mockReset();
@@ -466,7 +468,10 @@ describe("codex manager cli commands", () => {
 		getCodexCliConfigPathMock.mockReset();
 		isCodexCliSyncEnabledMock.mockReset();
 		loadCodexCliStateMock.mockReset();
+		clearCodexCliStateCacheMock.mockReset();
 		getLastLiveAccountSyncSnapshotMock.mockReset();
+		clearAccountsMock.mockReset();
+		clearFlaggedAccountsMock.mockReset();
 		selectMock.mockReset();
 		planOcChatgptSyncMock.mockReset();
 		applyOcChatgptSyncMock.mockReset();
@@ -476,9 +481,6 @@ describe("codex manager cli commands", () => {
 		detectOcChatgptMultiAuthTargetMock.mockReset();
 		normalizeAccountStorageMock.mockReset();
 		normalizeAccountStorageMock.mockImplementation((value) => value);
-		setStorageBackupEnabledMock.mockClear();
-		isStorageBackupEnabledMock.mockClear();
-		storageBackupEnabledState = true;
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -512,6 +514,7 @@ describe("codex manager cli commands", () => {
 			status: "unavailable",
 			statusDetail: "No Codex CLI sync source was found.",
 			sourcePath: null,
+			sourceState: null,
 			targetPath: "/mock/openai-codex-accounts.json",
 			summary: {
 				sourceAccountCount: 0,
@@ -2069,6 +2072,7 @@ describe("codex manager cli commands", () => {
 				status: "ready",
 				statusDetail: "Preview ready.",
 				sourcePath: "/mock/codex/accounts.json",
+				sourceState: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -2091,6 +2095,7 @@ describe("codex manager cli commands", () => {
 				status: "noop",
 				statusDetail: "Target already matches the current one-way sync result.",
 				sourcePath: "/mock/codex/accounts.json",
+				sourceState: null,
 				targetPath: "/mock/openai-codex-accounts.json",
 				summary: {
 					sourceAccountCount: 1,
@@ -2144,10 +2149,6 @@ describe("codex manager cli commands", () => {
 				},
 			},
 		});
-		saveAccountsMock.mockImplementation(async () => {
-			expect(storageBackupEnabledState).toBe(false);
-		});
-
 		let selectCall = 0;
 		selectMock.mockImplementation(async () => {
 			selectCall += 1;
@@ -2160,9 +2161,15 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
+		expect(applyCodexCliSyncToStorageMock).toHaveBeenCalledWith(
+			storage,
+			expect.objectContaining({ forceRefresh: true }),
+		);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(setStorageBackupEnabledMock).toHaveBeenNthCalledWith(1, false);
-		expect(setStorageBackupEnabledMock).toHaveBeenNthCalledWith(2, true);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ backupEnabled: false }),
+		);
 		expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledTimes(1);
 		expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
 		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(2);
@@ -2196,6 +2203,7 @@ describe("codex manager cli commands", () => {
 			status: "ready",
 			statusDetail: "Preview ready.",
 			sourcePath: "/mock/codex/accounts.json",
+			sourceState: null,
 			targetPath: "/mock/openai-codex-accounts.json",
 			summary: {
 				sourceAccountCount: 1,
@@ -2287,6 +2295,10 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
+		expect(applyCodexCliSyncToStorageMock).toHaveBeenCalledWith(
+			storage,
+			expect.objectContaining({ forceRefresh: true }),
+		);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(commitPendingCodexCliSyncRunMock).not.toHaveBeenCalled();
 		expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledTimes(1);

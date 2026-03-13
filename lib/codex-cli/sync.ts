@@ -12,6 +12,7 @@ import {
 } from "./observability.js";
 import {
 	type CodexCliAccountSnapshot,
+	type CodexCliState,
 	isCodexCliSyncEnabled,
 	loadCodexCliState,
 } from "./state.js";
@@ -75,6 +76,7 @@ export interface CodexCliSyncPreview {
 	status: "ready" | "noop" | "disabled" | "unavailable" | "error";
 	statusDetail: string;
 	sourcePath: string | null;
+	sourceState: CodexCliState | null;
 	targetPath: string;
 	summary: CodexCliSyncSummary;
 	backup: CodexCliSyncBackupContext;
@@ -546,6 +548,7 @@ export async function previewCodexCliSync(
 				status: "disabled",
 				statusDetail: "Codex CLI sync is disabled by environment override.",
 				sourcePath: null,
+				sourceState: null,
 				targetPath,
 				summary: emptySummary,
 				backup,
@@ -560,6 +563,7 @@ export async function previewCodexCliSync(
 				status: "unavailable",
 				statusDetail: "No Codex CLI sync source was found.",
 				sourcePath: null,
+				sourceState: null,
 				targetPath,
 				summary: emptySummary,
 				backup,
@@ -576,6 +580,7 @@ export async function previewCodexCliSync(
 			status,
 			statusDetail,
 			sourcePath: state.path,
+			sourceState: state,
 			targetPath,
 			summary: reconciled.summary,
 			backup,
@@ -586,6 +591,7 @@ export async function previewCodexCliSync(
 			status: "error",
 			statusDetail: error instanceof Error ? error.message : String(error),
 			sourcePath: null,
+			sourceState: null,
 			targetPath,
 			summary: emptySummary,
 			backup,
@@ -615,6 +621,7 @@ export async function previewCodexCliSync(
  */
 export async function applyCodexCliSyncToStorage(
 	current: AccountStorageV3 | null,
+	options: { forceRefresh?: boolean } = {},
 ): Promise<{
 	storage: AccountStorageV3 | null;
 	changed: boolean;
@@ -643,7 +650,9 @@ export async function applyCodexCliSyncToStorage(
 			return { storage: current, changed: false, pendingRun: null };
 		}
 
-		const state = await loadCodexCliState();
+		const state = await loadCodexCliState({
+			forceRefresh: options.forceRefresh,
+		});
 		if (!state) {
 			incrementCodexCliMetric("reconcileNoops");
 			publishCodexCliSyncRun(

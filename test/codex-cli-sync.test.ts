@@ -375,6 +375,57 @@ describe("codex-cli sync", () => {
 		expect(lastRun?.summary.destinationOnlyPreservedCount).toBe(1);
 	});
 
+	it("forces a fresh Codex CLI read when apply is requested with forceRefresh", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const loadSpy = vi.spyOn(codexCliState, "loadCodexCliState");
+		try {
+			await applyCodexCliSyncToStorage(current, { forceRefresh: true });
+			expect(loadSpy).toHaveBeenCalledWith(
+				expect.objectContaining({ forceRefresh: true }),
+			);
+		} finally {
+			loadSpy.mockRestore();
+		}
+	});
+
 	it("records a manual sync save failure over a pending changed run", async () => {
 		await writeFile(
 			accountsPath,

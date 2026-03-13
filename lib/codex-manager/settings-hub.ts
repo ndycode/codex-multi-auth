@@ -7,7 +7,6 @@ import {
 	getCodexCliAuthPath,
 	getCodexCliConfigPath,
 	isCodexCliSyncEnabled,
-	loadCodexCliState,
 } from "../codex-cli/state.js";
 import {
 	applyCodexCliSyncToStorage,
@@ -47,11 +46,9 @@ import {
 } from "../oc-chatgpt-orchestrator.js";
 import { detectOcChatgptMultiAuthTarget } from "../oc-chatgpt-target-detection.js";
 import {
-	isStorageBackupEnabled,
 	loadAccounts,
 	normalizeAccountStorage,
 	saveAccounts,
-	setStorageBackupEnabled,
 } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
@@ -2668,14 +2665,13 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		context: SyncCenterOverviewContext;
 	}> => {
 		const current = await loadAccounts();
-		const state = await loadCodexCliState({ forceRefresh });
 		const preview = await previewCodexCliSync(current, {
 			forceRefresh,
 			storageBackupEnabled: getStorageBackupEnabled(config),
 		});
 		return {
 			preview,
-			context: resolveSyncCenterContext(state),
+			context: resolveSyncCenterContext(preview.sourceState),
 		};
 	};
 
@@ -2748,14 +2744,16 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 
 		try {
 			const current = await loadAccounts();
-			const synced = await applyCodexCliSyncToStorage(current);
+			const synced = await applyCodexCliSyncToStorage(current, {
+				forceRefresh: true,
+			});
 			const storageBackupEnabled = getStorageBackupEnabled(config);
 			const nextStorage = synced.storage ?? current;
 			if (synced.changed && synced.storage) {
-				const previousStorageBackupEnabled = isStorageBackupEnabled();
-				setStorageBackupEnabled(storageBackupEnabled);
 				try {
-					await saveAccounts(synced.storage);
+					await saveAccounts(synced.storage, {
+						backupEnabled: storageBackupEnabled,
+					});
 					commitPendingCodexCliSyncRun(synced.pendingRun);
 				} catch (error) {
 					commitCodexCliSyncRunFailure(synced.pendingRun, error);
@@ -2768,16 +2766,13 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 						}`,
 					};
 					continue;
-				} finally {
-					setStorageBackupEnabled(previousStorageBackupEnabled);
 				}
 			}
-			const state = await loadCodexCliState({ forceRefresh: true });
 			preview = await previewCodexCliSync(nextStorage, {
 				forceRefresh: true,
 				storageBackupEnabled,
 			});
-			context = resolveSyncCenterContext(state);
+			context = resolveSyncCenterContext(preview.sourceState);
 		} catch (error) {
 			preview = {
 				...preview,

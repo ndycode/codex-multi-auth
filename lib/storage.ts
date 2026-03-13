@@ -1591,12 +1591,20 @@ async function loadAccountsInternal(
 	}
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
+interface SaveAccountsOptions {
+	backupEnabled?: boolean;
+}
+
+async function saveAccountsUnlocked(
+	storage: AccountStorageV3,
+	options: SaveAccountsOptions = {},
+): Promise<void> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
 	const walPath = getAccountsWalPath(path);
+	const backupEnabled = options.backupEnabled ?? storageBackupEnabled;
 
 	try {
 		await fs.mkdir(dirname(path), { recursive: true });
@@ -1628,7 +1636,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			}
 		}
 
-		if (storageBackupEnabled && existsSync(path)) {
+		if (backupEnabled && existsSync(path)) {
 			try {
 				await createRotatingAccountsBackup(path);
 			} catch (backupError) {
@@ -1748,9 +1756,12 @@ export async function withAccountStorageTransaction<T>(
  * @param storage - Account storage data to save
  * @throws StorageError with platform-aware hints on failure
  */
-export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
+export async function saveAccounts(
+	storage: AccountStorageV3,
+	options: SaveAccountsOptions = {},
+): Promise<void> {
 	return withStorageLock(async () => {
-		await saveAccountsUnlocked(storage);
+		await saveAccountsUnlocked(storage, options);
 	});
 }
 
