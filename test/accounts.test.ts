@@ -287,8 +287,13 @@ describe("AccountManager", () => {
 
     await AccountManager.loadFromDisk();
 
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
     expect(mockSaveAccounts).toHaveBeenCalledWith(syncedStorage);
+    expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledTimes(1);
     expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledWith(pendingRun);
+    expect(mockSaveAccounts.mock.invocationCallOrder[0]!).toBeLessThan(
+      commitPendingCodexCliSyncRunMock.mock.invocationCallOrder[0]!,
+    );
     expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
   });
 

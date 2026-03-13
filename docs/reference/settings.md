@@ -64,7 +64,7 @@ Controls display style:
 - `uiAccentColor`
 - `menuFocusStyle`
 
-### Sync Center
+## Sync Center
 
 The settings hub includes a preview-first sync center for Codex CLI account sync.
 
