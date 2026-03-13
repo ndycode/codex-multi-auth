@@ -1361,6 +1361,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										const accountCount = accountManager.getAccountCount();
 										const attempted = new Set<number>();
 										let restartAccountTraversalWithFallback = false;
+										let retryNextAccountBeforeFallback = false;
 										let usedPreferredSessionAccount = false;
 										const capabilityBoostByAccount: Record<number, number> = {};
 										type AccountSnapshotCandidate = {
@@ -1501,11 +1502,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 						account.accountIdSource,
 						tokenAccountId,
 					);
-					const entitlementAccountKey = resolveEntitlementAccountKey({
-						accountId: hadAccountId ? account.accountId : undefined,
-						email: account.email,
-						index: account.index,
-					});
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
@@ -1515,12 +1511,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 							accountManager.saveToDiskDebounced();
 							continue;
 						}
+											const resolvedEmail =
+												extractAccountEmail(accountAuth.access) ?? account.email;
+											const entitlementAccountKey = resolveEntitlementAccountKey({
+												accountId: account.accountId ?? accountId,
+												email: account.email ?? resolvedEmail,
+												refreshToken: account.refreshToken,
+												index: account.index,
+											});
 											account.accountId = accountId;
 											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
 												account.accountIdSource = account.accountIdSource ?? "token";
 											}
-											account.email =
-												extractAccountEmail(accountAuth.access) ?? account.email;
+											account.email = resolvedEmail;
 											const entitlementBlock = entitlementCache.isBlocked(
 												entitlementAccountKey,
 												model ?? modelFamily,
@@ -1771,6 +1774,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						fallbackReason: "unsupported-model-entitlement",
 					},
 				);
+				retryNextAccountBeforeFallback = true;
 				break;
 			}
 
@@ -2292,7 +2296,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 						if (successAccountForResponse.index !== account.index) {
 							accountManager.markSwitched(successAccountForResponse, "rotation", modelFamily);
 						}
-						const successAccountKey = resolveEntitlementAccountKey(successAccountForResponse);
+						const successAccountKey =
+							successAccountForResponse.index === account.index
+								? entitlementAccountKey
+								: resolveEntitlementAccountKey(successAccountForResponse);
 						accountManager.recordSuccess(successAccountForResponse, modelFamily, model);
 						capabilityPolicyStore.recordSuccess(
 							successAccountKey,
@@ -2311,6 +2318,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 						return successResponse;
 																								}
+										if (retryNextAccountBeforeFallback) {
+											retryNextAccountBeforeFallback = false;
+											continue;
+										}
+
 										if (restartAccountTraversalWithFallback) {
 											break;
 										}

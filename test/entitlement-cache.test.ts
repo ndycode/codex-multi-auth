@@ -12,11 +12,40 @@ describe("entitlement cache", () => {
         email: "user@example.com",
         index: 2,
       }),
-    ).toBe("id:acc_123");
+    ).toBe("account:acc_123::email:user@example.com");
     expect(
       resolveEntitlementAccountKey({ email: "User@Example.com", index: 5 }),
     ).toBe("email:user@example.com");
     expect(resolveEntitlementAccountKey({ index: 7 })).toBe("idx:7");
+  });
+
+  it("separates shared workspace ids by email or index", () => {
+    expect(
+      resolveEntitlementAccountKey({
+        accountId: "shared-workspace",
+        email: "alpha@example.com",
+        index: 0,
+      }),
+    ).toBe("account:shared-workspace::email:alpha@example.com");
+    expect(
+      resolveEntitlementAccountKey({
+        accountId: "shared-workspace",
+        email: "beta@example.com",
+        index: 1,
+      }),
+    ).toBe("account:shared-workspace::email:beta@example.com");
+    expect(
+      resolveEntitlementAccountKey({
+        accountId: "shared-workspace",
+        index: 0,
+      }),
+    ).toBe("account:shared-workspace::idx:0");
+    expect(
+      resolveEntitlementAccountKey({
+        accountId: "shared-workspace",
+        index: 1,
+      }),
+    ).toBe("account:shared-workspace::idx:1");
   });
 
   it("marks model block and expires after ttl", () => {
@@ -111,11 +140,17 @@ describe("entitlement cache", () => {
   });
   it("handles trimmed/empty account refs and non-finite indexes", () => {
     expect(resolveEntitlementAccountKey({ accountId: "  acc_trim  " })).toBe(
-      "id:acc_trim",
+      "account:acc_trim",
     );
+    expect(
+      resolveEntitlementAccountKey({ accountId: "  acc_trim  ", index: 3 }),
+    ).toBe("account:acc_trim::idx:3");
     expect(
       resolveEntitlementAccountKey({ email: "  Person@Example.com  " }),
     ).toBe("email:person@example.com");
+    expect(
+      resolveEntitlementAccountKey({ refreshToken: "  refresh-token  " }),
+    ).toBe("refresh:refresh-token");
     expect(resolveEntitlementAccountKey({ index: Number.NaN })).toBe("idx:0");
   });
 
