@@ -208,9 +208,17 @@ async function promptLoginModeFallback(
 				normalized === "fresh" ||
 				normalized === "clear"
 			) {
+				if (!(await promptDeleteAllTypedConfirm())) {
+					console.log("\nDelete saved accounts cancelled.\n");
+					continue;
+				}
 				return { mode: "fresh", deleteAll: true };
 			}
 			if (normalized === "r" || normalized === "reset") {
+				if (!(await promptResetTypedConfirm())) {
+					console.log("\nReset local state cancelled.\n");
+					continue;
+				}
 				return { mode: "reset" };
 			}
 			if (normalized === "c" || normalized === "check")
@@ -264,13 +272,13 @@ export async function promptLoginMode(
 				return { mode: "settings" };
 			case "fresh":
 				if (!(await promptDeleteAllTypedConfirm())) {
-					console.log("\nDelete all cancelled.\n");
+					console.log("\nDelete saved accounts cancelled.\n");
 					continue;
 				}
 				return { mode: "fresh", deleteAll: true };
 			case "reset-all":
 				if (!(await promptResetTypedConfirm())) {
-					console.log("\nReset cancelled.\n");
+					console.log("\nReset local state cancelled.\n");
 					continue;
 				}
 				return { mode: "reset" };
@@ -339,7 +347,7 @@ export async function promptLoginMode(
 				continue;
 			case "delete-all":
 				if (!(await promptDeleteAllTypedConfirm())) {
-					console.log("\nDelete all cancelled.\n");
+					console.log("\nDelete saved accounts cancelled.\n");
 					continue;
 				}
 				return { mode: "fresh", deleteAll: true };

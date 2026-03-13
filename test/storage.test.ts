@@ -4,24 +4,34 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
 	assessNamedBackupRestore,
+	buildNamedBackupPath,
 	clearAccounts,
+	clearFlaggedAccounts,
 	createNamedBackup,
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
 	exportAccounts,
+	exportNamedBackup,
+	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getFlaggedAccountsPath,
 	getStoragePath,
 	importAccounts,
 	listNamedBackups,
 	loadAccounts,
+	loadFlaggedAccounts,
 	normalizeAccountStorage,
 	restoreNamedBackup,
+	resolveAccountSelectionIndex,
+	saveFlaggedAccounts,
 	StorageError,
 	saveAccounts,
 	setStoragePath,
 	setStoragePathDirect,
+	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
 
@@ -47,6 +57,47 @@ describe("storage", () => {
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
 	});
 	describe("deduplication", () => {
+		it("preserves activeIndexByFamily when shared accountId entries remain distinct without email", () => {
+			const now = Date.now();
+
+			const raw = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 3 },
+				accounts: [
+					{
+						accountId: "acctA",
+						refreshToken: "tokenA-old",
+						addedAt: now - 3_000,
+						lastUsed: now - 3_000,
+					},
+					{
+						accountId: "acctA",
+						refreshToken: "tokenA-new",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+					{
+						accountId: "acctB",
+						refreshToken: "tokenB-old",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+					{
+						accountId: "acctB",
+						refreshToken: "tokenB-new",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+
+			const normalized = normalizeAccountStorage(raw);
+			expect(normalized).not.toBeNull();
+			expect(normalized?.accounts).toHaveLength(4);
+			expect(normalized?.activeIndexByFamily?.codex).toBe(3);
+		});
+
 		it("remaps activeIndex after deduplication using active account key", () => {
 			const now = Date.now();
 
@@ -106,6 +157,160 @@ describe("storage", () => {
 			expect(deduped[0]?.addedAt).toBe(now - 1500);
 			expect(deduped[0]?.lastUsed).toBe(now);
 		});
+
+		it("prefers composite and email matches over refresh token matches", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "token-refresh",
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+				{
+					accountId: "workspace-b",
+					email: "other@example.com",
+					refreshToken: "token-safe-email",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-b",
+				email: "match@example.com",
+				refreshToken: "token-refresh",
+			});
+
+			expect(matchIndex).toBe(1);
+		});
+
+		it("uses a unique refresh token match when no safer identifier exists", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "token-refresh",
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				refreshToken: "token-refresh",
+			});
+
+			expect(matchIndex).toBe(0);
+		});
+
+		it("falls back to composite matching when refresh tokens are ambiguous", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "shared-refresh",
+					lastUsed: 100,
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "shared-refresh",
+					lastUsed: 200,
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-b",
+				email: "match@example.com",
+				refreshToken: "shared-refresh",
+			});
+
+			expect(matchIndex).toBe(1);
+			expect(deduplicateAccounts(accounts)).toHaveLength(2);
+		});
+
+		it("prefers composite accountId plus email matches over safe-email fallbacks", () => {
+			const accounts = [
+				{
+					accountId: "workspace-other",
+					email: "match@example.com",
+					refreshToken: "token-safe-email",
+				},
+				{
+					accountId: "workspace-a",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-a",
+				email: "match@example.com",
+			});
+
+			expect(matchIndex).toBe(1);
+		});
+
+		it("falls back to a unique bare accountId when email matching is unsafe", () => {
+			const accounts = [
+				{
+					accountId: "workspace-email",
+					email: "User@Example.com",
+					refreshToken: "token-email",
+				},
+				{
+					accountId: "workspace-unique",
+					refreshToken: "token-unique",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(
+				accounts,
+				{
+					accountId: "workspace-unique",
+					email: " user@example.com ",
+				},
+				{ allowUniqueAccountIdFallbackWithoutEmail: true },
+			);
+
+			expect(matchIndex).toBe(1);
+		});
+
+		it("only uses bare accountId fallback when the accountId is unique", () => {
+			const accounts = [
+				{
+					accountId: "workspace-shared",
+					refreshToken: "refresh-a",
+				},
+				{
+					accountId: "workspace-shared",
+					refreshToken: "refresh-b",
+				},
+				{
+					accountId: "workspace-unique",
+					refreshToken: "refresh-c",
+				},
+			];
+
+			expect(
+				findMatchingAccountIndex(
+					accounts,
+					{ accountId: "workspace-shared" },
+					{ allowUniqueAccountIdFallbackWithoutEmail: true },
+				),
+			).toBeUndefined();
+			expect(
+				resolveAccountSelectionIndex(
+					accounts,
+					{ accountId: "workspace-unique" },
+					0,
+				),
+			).toBe(2);
+		});
 	});
 
 	describe("import/export (TDD)", () => {
@@ -127,23 +332,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			for (let attempt = 0; attempt < 5; attempt += 1) {
-				try {
-					await fs.rm(testWorkDir, { recursive: true, force: true });
-					break;
-				} catch (error) {
-					const code = (error as NodeJS.ErrnoException).code;
-					if (
-						(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
-						attempt === 4
-					) {
-						throw error;
-					}
-					await new Promise((resolve) =>
-						setTimeout(resolve, 25 * 2 ** attempt),
-					);
-				}
-			}
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("should export accounts to a file", async () => {
@@ -215,6 +404,156 @@ describe("storage", () => {
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
 		});
 
+		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			const existing = {
+				version: 3,
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+				accounts: [
+					{
+						accountId: "shared-account",
+						email: "alpha@example.com",
+						refreshToken: "refresh-alpha",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "shared-account",
+						email: "beta@example.com",
+						refreshToken: "refresh-beta",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			};
+			// @ts-expect-error
+			await saveAccounts(existing);
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "shared-account",
+							refreshToken: "refresh-gamma",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+			);
+
+			const imported = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(imported).toEqual({ imported: 1, total: 3, skipped: 0 });
+			expect(loaded?.accounts).toHaveLength(3);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual(
+				expect.arrayContaining([
+					"refresh-alpha",
+					"refresh-beta",
+					"refresh-gamma",
+				]),
+			);
+		});
+
+		it("should preserve distinct accountId plus email pairs during import", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						email: "alpha@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify(
+					{
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "shared-workspace",
+								email: "beta@example.com",
+								refreshToken: "refresh-imported",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					},
+					null,
+					2,
+				),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(loaded?.accounts).toHaveLength(2);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
+				"refresh-existing",
+				"refresh-imported",
+			]);
+		});
+
+		it("should preserve duplicate shared accountId entries when imported rows lack email", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify(
+					{
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "shared-workspace",
+								refreshToken: "refresh-imported",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					},
+					null,
+					2,
+				),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(loaded?.accounts).toHaveLength(2);
+			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
+				"refresh-existing",
+				"refresh-imported",
+			]);
+		});
+
 		it("should serialize concurrent transactional updates without losing accounts", async () => {
 			await saveAccounts({
 				version: 3,
@@ -257,6 +596,309 @@ describe("storage", () => {
 			expect(
 				new Set(loaded?.accounts.map((account) => account.accountId)),
 			).toEqual(new Set(["acct-a", "acct-b"]));
+		});
+
+		it("rolls back account storage when flagged persistence keeps failing inside the combined transaction", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
+						const error = Object.assign(
+							new Error("flagged storage busy"),
+							{ code: "EBUSY" },
+						);
+						throw error;
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await expect(
+					withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+						if (!current) {
+							throw new Error("expected existing account storage");
+						}
+						await persist(
+							{
+								...current,
+								accounts: [
+									...current.accounts,
+									{
+										accountId: "acct-restored",
+										email: "restored@example.com",
+										refreshToken: "refresh-restored",
+										addedAt: now,
+										lastUsed: now,
+									},
+								],
+							},
+							{
+								version: 1,
+								accounts: [],
+							},
+						);
+					}),
+				).rejects.toThrow("flagged storage busy");
+				expect(flaggedRenameAttempts).toBe(5);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loadedAccounts = await loadAccounts();
+			expect(loadedAccounts?.accounts).toHaveLength(1);
+			expect(loadedAccounts?.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-existing",
+					refreshToken: "refresh-existing",
+				}),
+			);
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-flagged",
+					refreshToken: "refresh-flagged",
+				}),
+			);
+		});
+
+		it("surfaces rollback failure when flagged persistence and account rollback both fail", async () => {
+			const now = Date.now();
+			const storagePath = getStoragePath();
+			expect(storagePath).toBeTruthy();
+			const flaggedStoragePath = getFlaggedAccountsPath();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const actualFs = await vi.importActual<typeof import("node:fs")>(
+				"node:fs",
+			);
+			let accountRenameAttempts = 0;
+			let flaggedRenameAttempts = 0;
+			vi.resetModules();
+			vi.doMock("node:fs", () => ({
+				...actualFs,
+				promises: {
+					...actualFs.promises,
+					rename: async (
+						from: Parameters<typeof actualFs.promises.rename>[0],
+						to: Parameters<typeof actualFs.promises.rename>[1],
+					) => {
+						const targetPath = String(to);
+						if (targetPath === flaggedStoragePath) {
+							flaggedRenameAttempts += 1;
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+						if (targetPath === storagePath) {
+							accountRenameAttempts += 1;
+							if (accountRenameAttempts > 1) {
+								const error = Object.assign(
+									new Error("rollback account storage busy"),
+									{ code: "EBUSY" },
+								);
+								throw error;
+							}
+						}
+						return actualFs.promises.rename(from, to);
+					},
+				},
+			}));
+			const isolatedStorageModule = await import("../lib/storage.js");
+			isolatedStorageModule.setStoragePathDirect(storagePath);
+			try {
+				let thrown: unknown;
+				try {
+					await isolatedStorageModule.withAccountAndFlaggedStorageTransaction(
+						async (current, persist) => {
+							if (!current) {
+								throw new Error("expected existing account storage");
+							}
+							await persist(
+								{
+									...current,
+									accounts: [
+										...current.accounts,
+										{
+											accountId: "acct-restored",
+											email: "restored@example.com",
+											refreshToken: "refresh-restored",
+											addedAt: now,
+											lastUsed: now,
+										},
+									],
+								},
+								{
+									version: 1,
+									accounts: [],
+								},
+							);
+						},
+					);
+				} catch (error) {
+					thrown = error;
+				}
+
+				expect(flaggedRenameAttempts).toBe(5);
+				expect(accountRenameAttempts).toBe(6);
+				expect(thrown).toBeInstanceOf(AggregateError);
+				expect((thrown as AggregateError).message).toBe(
+					"Flagged save failed and account storage rollback also failed",
+				);
+				const thrownErrors = (thrown as AggregateError).errors.map(String);
+				expect(
+					thrownErrors.some((message) =>
+						message.includes("flagged storage busy"),
+					),
+				).toBe(true);
+				expect(
+					thrownErrors.some((message) =>
+						message.includes("rollback account storage busy"),
+					),
+				).toBe(true);
+
+				const loadedAccounts = await isolatedStorageModule.loadAccounts();
+				expect(loadedAccounts?.accounts).toHaveLength(2);
+				expect(
+					loadedAccounts?.accounts.map((account) => account.refreshToken),
+				).toEqual(["refresh-existing", "refresh-restored"]);
+
+				const loadedFlagged = await isolatedStorageModule.loadFlaggedAccounts();
+				expect(loadedFlagged.accounts).toHaveLength(1);
+				expect(loadedFlagged.accounts[0]).toEqual(
+					expect.objectContaining({
+						accountId: "acct-flagged",
+						refreshToken: "refresh-flagged",
+					}),
+				);
+			} finally {
+				isolatedStorageModule.setStoragePathDirect(null);
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+			}
+		});
+
+		it("retries transient flagged storage rename and succeeds", async () => {
+			const now = Date.now();
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
+						if (flaggedRenameAttempts <= 2) {
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await saveFlaggedAccounts({
+					version: 1,
+					accounts: [
+						{
+							accountId: "acct-flagged",
+							email: "flagged@example.com",
+							refreshToken: "refresh-flagged-next",
+							addedAt: now,
+							lastUsed: now,
+							flaggedAt: now,
+						},
+					],
+				});
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			expect(flaggedRenameAttempts).toBe(3);
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					refreshToken: "refresh-flagged-next",
+				}),
+			);
 		});
 
 		it("should enforce MAX_ACCOUNTS during import", async () => {
@@ -312,24 +954,129 @@ describe("storage", () => {
 				/Invalid account storage format/,
 			);
 		});
-	});
 
-	describe("named backups", () => {
-		const testWorkDir = join(
-			tmpdir(),
-			"codex-backup-" + Math.random().toString(36).slice(2),
-		);
-		let testStoragePath = "";
+		describe("named backup helpers", () => {
+			it("resolves a safe backup path within the plugin backup root", () => {
+				const backupName = "backup-2026-03-09";
+				const expected = join(
+					dirname(testStoragePath),
+					"backups",
+					"backup-2026-03-09.json",
+				);
+				expect(buildNamedBackupPath(backupName)).toBe(expected);
+			});
 
-		beforeEach(async () => {
-			await fs.mkdir(testWorkDir, { recursive: true });
-			testStoragePath = join(testWorkDir, "openai-codex-accounts.json");
-			setStoragePathDirect(testStoragePath);
-		});
+			it("normalizes explicit .json names without duplicating the extension", () => {
+				const backupName = "backup-2026-03-09.json";
+				const expected = join(
+					dirname(testStoragePath),
+					"backups",
+					"backup-2026-03-09.json",
+				);
+				expect(buildNamedBackupPath(backupName)).toBe(expected);
+			});
 
-		afterEach(async () => {
-			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			const unsafeNames = [
+				"",
+				"   ",
+				"../evil",
+				"backup/escape",
+				String.raw`backup\escape`,
+				"rot.rotate.",
+				"backup.tmp",
+				"archive.wal",
+				"space name",
+				"weird!name",
+			];
+
+			it.each(unsafeNames)("rejects unsafe backup name '%s'", (input) => {
+				expect(() => buildNamedBackupPath(input)).toThrow();
+			});
+
+			it("refuses to overwrite an existing backup without force", async () => {
+				const backupName = "backup-2026-03-09";
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{ accountId: "test", refreshToken: "ref", addedAt: 1, lastUsed: 2 },
+					],
+				});
+				const destination = buildNamedBackupPath(backupName);
+				await fs.mkdir(dirname(destination), { recursive: true });
+				await fs.writeFile(destination, "exists", "utf-8");
+				await expect(exportNamedBackup(backupName)).rejects.toThrow(
+					/already exists/,
+				);
+			});
+
+			it("writes the named backup using the safe path", async () => {
+				const backupName = "backup-2026-03-09";
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{ accountId: "test", refreshToken: "ref", addedAt: 1, lastUsed: 2 },
+					],
+				});
+				const backupPath = await exportNamedBackup(backupName);
+				expect(existsSync(backupPath)).toBe(true);
+				expect(backupPath).toBe(buildNamedBackupPath(backupName));
+			});
+
+			it("overwrites an existing named backup when force is true", async () => {
+				const backupName = "backup-2026-03-10";
+				await saveAccounts({
+					version: 3,
+					activeIndex: 1,
+					accounts: [
+						{
+							accountId: "first",
+							refreshToken: "ref-1",
+							addedAt: 1,
+							lastUsed: 2,
+						},
+						{
+							accountId: "second",
+							refreshToken: "ref-2",
+							addedAt: 3,
+							lastUsed: 4,
+						},
+					],
+				});
+
+				const initialPath = await exportNamedBackup(backupName);
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "replacement",
+							refreshToken: "ref-3",
+							addedAt: 5,
+							lastUsed: 6,
+						},
+					],
+				});
+
+				const overwrittenPath = await exportNamedBackup(backupName, {
+					force: true,
+				});
+				const exported = JSON.parse(
+					await fs.readFile(overwrittenPath, "utf-8"),
+				);
+
+				expect(overwrittenPath).toBe(initialPath);
+				expect(exported.activeIndex).toBe(0);
+				expect(exported.accounts).toHaveLength(1);
+				expect(exported.accounts[0].accountId).toBe("replacement");
+			});
+
+			it("propagates export errors when no accounts exist for a named backup", async () => {
+				await expect(exportNamedBackup("backup-2026-03-11")).rejects.toThrow(
+					/No accounts to export/,
+				);
+			});
 		});
 
 		it("creates and lists named backups with metadata", async () => {
@@ -346,13 +1093,19 @@ describe("storage", () => {
 				],
 			});
 
-			const backup = await createNamedBackup("My Backup 1");
-			expect(backup.name).toBe("My-Backup-1");
+			const backup = await createNamedBackup("backup-2026-03-12");
 			const backups = await listNamedBackups();
-			expect(backups.length).toBeGreaterThan(0);
-			expect(backups[0]?.accountCount).toBe(1);
-			const backupPath = join(testWorkDir, "backups", `${backup.name}.json`);
-			expect(existsSync(backupPath)).toBe(true);
+
+			expect(backup.name).toBe("backup-2026-03-12");
+			expect(backups).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						name: "backup-2026-03-12",
+						accountCount: 1,
+						valid: true,
+					}),
+				]),
+			);
 		});
 
 		it("assesses eligibility and restores a named backup", async () => {
@@ -383,24 +1136,15 @@ describe("storage", () => {
 			expect(restored?.accounts[0]?.accountId).toBe("primary");
 		});
 
-		it("restores manually named backups without normalized filenames", async () => {
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: [
-					{
-						accountId: "manual",
-						refreshToken: "ref-manual",
-						addedAt: 1,
-						lastUsed: 1,
-					},
-				],
-			});
-
-			const backupsDir = join(testWorkDir, "backups");
-			await fs.mkdir(backupsDir, { recursive: true });
+		it("restores manually named backups that already exist inside the backups directory", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Manual Backup.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
 			await fs.writeFile(
-				join(backupsDir, "Manual Backup.json"),
+				backupPath,
 				JSON.stringify({
 					version: 3,
 					activeIndex: 0,
@@ -416,31 +1160,29 @@ describe("storage", () => {
 				"utf-8",
 			);
 
+			const backups = await listNamedBackups();
+			expect(backups).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "Manual Backup", valid: true }),
+				]),
+			);
+
 			await clearAccounts();
 			const assessment = await assessNamedBackupRestore("Manual Backup");
 			expect(assessment.valid).toBe(true);
 			expect(assessment.backup.name).toBe("Manual Backup");
+
 			const restoreResult = await restoreNamedBackup("Manual Backup");
 			expect(restoreResult.total).toBe(1);
 		});
 
-		it("rejects invalid backup names", async () => {
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: [
-					{
-						accountId: "primary",
-						refreshToken: "ref-primary",
-						addedAt: 1,
-						lastUsed: 1,
-					},
-				],
-			});
-			await expect(createNamedBackup("   ")).rejects.toThrow(
-				/Invalid backup name/,
-			);
-		});
+		it.each(["../openai-codex-accounts", String.raw`..\openai-codex-accounts`])(
+			"rejects backup names that escape the backups directory: %s",
+			async (input) => {
+				await expect(assessNamedBackupRestore(input)).rejects.toThrow();
+				await expect(restoreNamedBackup(input)).rejects.toThrow();
+			},
+		);
 	});
 
 	describe("filename migration (TDD)", () => {
@@ -632,6 +1374,69 @@ describe("storage", () => {
 			const deduped = deduplicateAccounts(accounts);
 			expect(deduped).toHaveLength(2);
 		});
+
+		it("preserves distinct emails when business accounts share the same accountId", () => {
+			const accounts = [
+				{
+					accountId: "workspace-1",
+					email: "alpha@example.com",
+					refreshToken: "token-alpha",
+					lastUsed: 100,
+				},
+				{
+					accountId: "workspace-1",
+					email: "beta@example.com",
+					refreshToken: "token-beta",
+					lastUsed: 200,
+				},
+				{
+					accountId: "workspace-1",
+					email: "alpha@example.com",
+					refreshToken: "token-alpha-newer",
+					lastUsed: 300,
+				},
+			];
+
+			const deduped = deduplicateAccounts(accounts);
+
+			expect(deduped).toHaveLength(2);
+			expect(deduped).toContainEqual(
+				expect.objectContaining({
+					email: "alpha@example.com",
+					refreshToken: "token-alpha-newer",
+				}),
+			);
+			expect(deduped).toContainEqual(
+				expect.objectContaining({
+					email: "beta@example.com",
+					refreshToken: "token-beta",
+				}),
+			);
+		});
+
+		it("preserves shared accountId entries when email is missing and refresh tokens differ", () => {
+			const accounts = [
+				{
+					accountId: "shared-workspace",
+					refreshToken: "refresh-a",
+					lastUsed: 100,
+					addedAt: 10,
+				},
+				{
+					accountId: "shared-workspace",
+					refreshToken: "refresh-b",
+					lastUsed: 200,
+					addedAt: 20,
+				},
+			];
+
+			const deduped = deduplicateAccounts(accounts);
+			expect(deduped).toHaveLength(2);
+			expect(deduped.map((account) => account.refreshToken)).toEqual([
+				"refresh-a",
+				"refresh-b",
+			]);
+		});
 	});
 
 	describe("deduplicateAccountsByEmail edge cases", () => {
@@ -787,6 +1592,66 @@ describe("storage", () => {
 			expect(result?.activeIndex).toBe(1);
 		});
 
+		it("remaps activeIndex without collapsing same-workspace business accounts", () => {
+			const now = Date.now();
+			const data = {
+				version: 3,
+				activeIndex: 1,
+				accounts: [
+					{
+						refreshToken: "token-alpha-old",
+						accountId: "workspace-1",
+						email: "alpha@example.com",
+						lastUsed: now - 200,
+					},
+					{
+						refreshToken: "token-beta",
+						accountId: "workspace-1",
+						email: "beta@example.com",
+						lastUsed: now - 100,
+					},
+					{
+						refreshToken: "token-alpha-new",
+						accountId: "workspace-1",
+						email: "alpha@example.com",
+						lastUsed: now,
+					},
+				],
+			};
+
+			const result = normalizeAccountStorage(data);
+
+			expect(result?.accounts).toHaveLength(2);
+			expect(result?.activeIndex).toBe(1);
+			expect(result?.accounts[0]?.email).toBe("alpha@example.com");
+			expect(result?.accounts[1]?.email).toBe("beta@example.com");
+		});
+
+		it("preserves activeIndex for duplicate shared accountId entries when email is missing", () => {
+			const data = {
+				version: 3,
+				activeIndex: 1,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-a",
+						lastUsed: 100,
+					},
+					{
+						accountId: "shared-workspace",
+						refreshToken: "refresh-b",
+						lastUsed: 200,
+					},
+				],
+			};
+
+			const result = normalizeAccountStorage(data);
+			expect(result).not.toBeNull();
+			expect(result?.accounts).toHaveLength(2);
+			expect(result?.activeIndex).toBe(1);
+			expect(result?.accounts[1]?.refreshToken).toBe("refresh-b");
+		});
+
 		it("handles v1 to v3 migration", () => {
 			const data = {
 				version: 1,
@@ -861,7 +1726,15 @@ describe("storage", () => {
 
 		it("returns null when file does not exist", async () => {
 			const result = await loadAccounts();
-			expect(result).toBeNull();
+			expect(result).toEqual(
+				expect.objectContaining({
+					version: 3,
+					accounts: [],
+					activeIndex: 0,
+					restoreEligible: true,
+					restoreReason: "missing-storage",
+				}),
+			);
 		});
 
 		it("returns null on parse error", async () => {
@@ -1021,6 +1894,130 @@ describe("storage", () => {
 		it("does not throw when file does not exist", async () => {
 			await expect(clearAccounts()).resolves.not.toThrow();
 		});
+
+		it.each(["EPERM", "EBUSY", "EAGAIN"] as const)(
+			"retries transient %s when clearing saved account artifacts",
+			async (code) => {
+				await fs.writeFile(testStoragePath, "{}");
+				const walPath = `${testStoragePath}.wal`;
+				await fs.writeFile(walPath, "{}");
+
+				const realUnlink = fs.unlink.bind(fs);
+				let failedOnce = false;
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === testStoragePath && !failedOnce) {
+							failedOnce = true;
+							const error = new Error("locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return realUnlink(targetPath);
+					});
+
+				try {
+					await expect(clearAccounts()).resolves.toBe(true);
+					expect(existsSync(testStoragePath)).toBe(false);
+					expect(existsSync(walPath)).toBe(false);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === testStoragePath,
+						),
+					).toHaveLength(2);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+	});
+
+	describe("clearFlaggedAccounts", () => {
+		const testWorkDir = join(
+			tmpdir(),
+			"codex-clear-flagged-test-" + Math.random().toString(36).slice(2),
+		);
+		let testStoragePath: string;
+
+		beforeEach(async () => {
+			await fs.mkdir(testWorkDir, { recursive: true });
+			testStoragePath = join(testWorkDir, "accounts.json");
+			setStoragePathDirect(testStoragePath);
+		});
+
+		afterEach(async () => {
+			setStoragePathDirect(null);
+			await fs.rm(testWorkDir, { recursive: true, force: true });
+		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"retries transient %s when clearing flagged account storage",
+			async (code) => {
+				const flaggedPath = getFlaggedAccountsPath();
+				await fs.mkdir(dirname(flaggedPath), { recursive: true });
+				await fs.writeFile(flaggedPath, "{}");
+
+				const realUnlink = fs.unlink.bind(fs);
+				let failedOnce = false;
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === flaggedPath && !failedOnce) {
+							failedOnce = true;
+							const error = new Error("locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return realUnlink(targetPath);
+					});
+
+				try {
+					await expect(clearFlaggedAccounts()).resolves.toBe(true);
+					expect(existsSync(flaggedPath)).toBe(false);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === flaggedPath,
+						),
+					).toHaveLength(2);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when clearing flagged account storage exhausts retryable %s failures",
+			async (code) => {
+				const flaggedPath = getFlaggedAccountsPath();
+				await fs.mkdir(dirname(flaggedPath), { recursive: true });
+				await fs.writeFile(flaggedPath, "{}");
+
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === flaggedPath) {
+							const error = new Error("still locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						const error = new Error("missing") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					});
+
+				try {
+					await expect(clearFlaggedAccounts()).resolves.toBe(false);
+					expect(existsSync(flaggedPath)).toBe(true);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === flaggedPath,
+						),
+					).toHaveLength(5);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 
 	describe("setStoragePath", () => {
@@ -1182,6 +2179,37 @@ describe("storage", () => {
 
 			await expect(clearAccounts()).resolves.not.toThrow();
 		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when clearing saved accounts exhausts retryable %s failures",
+			async (code) => {
+				await fs.writeFile(testStoragePath, "{}");
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === testStoragePath) {
+							const error = new Error("still locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						const error = new Error("missing") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					});
+
+				try {
+					await expect(clearAccounts()).resolves.toBe(false);
+					expect(existsSync(testStoragePath)).toBe(true);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === testStoragePath,
+						),
+					).toHaveLength(5);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 
 	describe("StorageError with cause", () => {
@@ -1595,6 +2623,36 @@ describe("storage", () => {
 			expect(existsSync(legacyWorktreePath)).toBe(false);
 		});
 
+		it("clearAccounts removes legacy project and worktree account files for linked worktrees", async () => {
+			const { worktreeRepo } = await prepareWorktreeFixture();
+
+			setStoragePath(worktreeRepo);
+			const canonicalPath = getStoragePath();
+			const legacyProjectPath = join(worktreeRepo, ".codex", "openai-codex-accounts.json");
+			const legacyWorktreePath = join(
+				getConfigDir(),
+				"projects",
+				getProjectStorageKey(worktreeRepo),
+				"openai-codex-accounts.json",
+			);
+			const storage = buildStorage([accountFromLegacy]);
+
+			await fs.mkdir(dirname(canonicalPath), { recursive: true });
+			await fs.mkdir(dirname(legacyProjectPath), { recursive: true });
+			await fs.mkdir(dirname(legacyWorktreePath), { recursive: true });
+			await Promise.all([
+				fs.writeFile(canonicalPath, JSON.stringify(storage), "utf-8"),
+				fs.writeFile(legacyProjectPath, JSON.stringify(storage), "utf-8"),
+				fs.writeFile(legacyWorktreePath, JSON.stringify(storage), "utf-8"),
+			]);
+
+			await expect(clearAccounts()).resolves.toBe(true);
+
+			expect(existsSync(canonicalPath)).toBe(false);
+			expect(existsSync(legacyProjectPath)).toBe(false);
+			expect(existsSync(legacyWorktreePath)).toBe(false);
+		});
+
 		it("keeps legacy worktree file when migration persist fails", async () => {
 			const { worktreeRepo } = await prepareWorktreeFixture();
 
@@ -1877,6 +2935,37 @@ describe("storage", () => {
 			await saveAccounts(storage);
 			expect(attemptCount).toBe(3);
 			expect(existsSync(testStoragePath)).toBe(true);
+
+			renameSpy.mockRestore();
+		});
+
+		it("retries on EAGAIN and cleans up the WAL after rename succeeds", async () => {
+			const now = Date.now();
+			const storage = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+			};
+			const walPath = `${testStoragePath}.wal`;
+
+			const originalRename = fs.rename.bind(fs);
+			let attemptCount = 0;
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (oldPath, newPath) => {
+					attemptCount++;
+					if (attemptCount === 1) {
+						const err = new Error("EAGAIN error") as NodeJS.ErrnoException;
+						err.code = "EAGAIN";
+						throw err;
+					}
+					return originalRename(oldPath as string, newPath as string);
+				});
+
+			await saveAccounts(storage);
+			expect(attemptCount).toBe(2);
+			expect(existsSync(testStoragePath)).toBe(true);
+			expect(existsSync(walPath)).toBe(false);
 
 			renameSpy.mockRestore();
 		});
@@ -2334,7 +3423,7 @@ describe("storage", () => {
 					Object.assign(new Error("EACCES error"), { code: "EACCES" }),
 				);
 
-			await clearAccounts();
+			await expect(clearAccounts()).resolves.toBe(false);
 
 			expect(unlinkSpy).toHaveBeenCalled();
 			unlinkSpy.mockRestore();
@@ -2370,14 +3459,105 @@ describe("storage", () => {
 			expect(existsSync(quotaPath)).toBe(true);
 			expect(existsSync(accountsPath)).toBe(true);
 
-			await clearQuotaCache();
+			await expect(clearQuotaCache()).resolves.toBe(true);
 
 			expect(existsSync(quotaPath)).toBe(false);
 			expect(existsSync(accountsPath)).toBe(true);
 		});
 
 		it("ignores missing quota cache file", async () => {
-			await expect(clearQuotaCache()).resolves.not.toThrow();
+			await expect(clearQuotaCache()).resolves.toBe(true);
 		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"retries transient %s when clearing the quota cache",
+			async (code) => {
+				const quotaPath = getQuotaCachePath();
+				await fs.mkdir(dirname(quotaPath), { recursive: true });
+				await fs.writeFile(quotaPath, "{}", "utf-8");
+
+				const realUnlink = fs.unlink.bind(fs);
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (target) => {
+						if (target === quotaPath && unlinkSpy.mock.calls.length === 1) {
+							const err = new Error("locked") as NodeJS.ErrnoException;
+							err.code = code;
+							throw err;
+						}
+						return realUnlink(target);
+					});
+
+				try {
+					await expect(clearQuotaCache()).resolves.toBe(true);
+					expect(existsSync(quotaPath)).toBe(false);
+					expect(unlinkSpy).toHaveBeenCalledTimes(2);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when quota-cache clear exhausts retryable %s failures",
+			async (code) => {
+				const quotaPath = getQuotaCachePath();
+				await fs.mkdir(dirname(quotaPath), { recursive: true });
+				await fs.writeFile(quotaPath, "{}", "utf-8");
+
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (target) => {
+						if (target === quotaPath) {
+							const err = new Error("still locked") as NodeJS.ErrnoException;
+							err.code = code;
+							throw err;
+						}
+						const err = new Error("missing") as NodeJS.ErrnoException;
+						err.code = "ENOENT";
+						throw err;
+					});
+
+				try {
+					await expect(clearQuotaCache()).resolves.toBe(false);
+					expect(existsSync(quotaPath)).toBe(true);
+					expect(unlinkSpy).toHaveBeenCalledTimes(5);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
+});
+
+it("clearAccounts removes discovered backup artifacts as well as fixed slots", async () => {
+	const storagePath = getStoragePath();
+	const discoveredBackup = join(
+		dirname(storagePath),
+		"openai-codex-accounts.json.20260310-010101.json",
+	);
+	const storage = {
+		version: 3,
+		activeIndex: 0,
+		activeIndexByFamily: { codex: 0 },
+		accounts: [
+			{
+				email: "clear@example.com",
+				refreshToken: "refresh-clear",
+				accessToken: "access-clear",
+				expiresAt: Date.now() + 3_600_000,
+				addedAt: Date.now(),
+				lastUsed: Date.now(),
+				accountId: "acc-clear",
+				enabled: true,
+			},
+		],
+	};
+	await fs.writeFile(storagePath, JSON.stringify(storage), "utf-8");
+	await fs.writeFile(discoveredBackup, JSON.stringify(storage), "utf-8");
+
+	await clearAccounts();
+
+	expect(existsSync(storagePath)).toBe(false);
+	expect(existsSync(discoveredBackup)).toBe(false);
 });

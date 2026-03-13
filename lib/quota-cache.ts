@@ -30,8 +30,7 @@ interface QuotaCacheFile {
 	byEmail: Record<string, QuotaCacheEntry>;
 }
 
-const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
-const QUOTA_CACHE_LABEL = basename(QUOTA_CACHE_PATH);
+const QUOTA_CACHE_FILE_NAME = "quota-cache.json";
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 
 function isRetryableFsError(error: unknown): boolean {
@@ -150,7 +149,11 @@ async function readCacheFileWithRetry(path: string): Promise<string> {
  * @returns The absolute path to the quota-cache.json file
  */
 export function getQuotaCachePath(): string {
-	return QUOTA_CACHE_PATH;
+	return join(getCodexMultiAuthDir(), QUOTA_CACHE_FILE_NAME);
+}
+
+function getQuotaCacheLabel(path: string): string {
+	return basename(path);
 }
 
 /**
@@ -172,12 +175,13 @@ export function getQuotaCachePath(): string {
  *          will be empty if the on-disk file is absent, malformed, or could not be read.
  */
 export async function loadQuotaCache(): Promise<QuotaCacheData> {
-	if (!existsSync(QUOTA_CACHE_PATH)) {
+	const quotaCachePath = getQuotaCachePath();
+	if (!existsSync(quotaCachePath)) {
 		return { byAccountId: {}, byEmail: {} };
 	}
 
 	try {
-		const content = await readCacheFileWithRetry(QUOTA_CACHE_PATH);
+		const content = await readCacheFileWithRetry(quotaCachePath);
 		const parsed = JSON.parse(content) as unknown;
 		if (!isRecord(parsed)) {
 			return { byAccountId: {}, byEmail: {} };
@@ -195,7 +199,7 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 		};
 	} catch (error) {
 		logWarn(
-			`Failed to load quota cache from ${QUOTA_CACHE_LABEL}: ${
+			`Failed to load quota cache from ${getQuotaCacheLabel(quotaCachePath)}: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
@@ -228,10 +232,11 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 		byAccountId: data.byAccountId,
 		byEmail: data.byEmail,
 	};
+	const quotaCachePath = getQuotaCachePath();
 
 	try {
 		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
-		const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+		const tempPath = `${quotaCachePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
 			encoding: "utf8",
 			mode: 0o600,
@@ -240,7 +245,7 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 		try {
 			for (let attempt = 0; attempt < 5; attempt += 1) {
 				try {
-					await fs.rename(tempPath, QUOTA_CACHE_PATH);
+					await fs.rename(tempPath, quotaCachePath);
 					renamed = true;
 					break;
 				} catch (error) {
@@ -259,7 +264,7 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 		}
 	} catch (error) {
 		logWarn(
-			`Failed to save quota cache to ${QUOTA_CACHE_LABEL}: ${
+			`Failed to save quota cache to ${getQuotaCacheLabel(quotaCachePath)}: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
@@ -269,17 +274,28 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 /**
  * Deletes the on-disk quota cache file, ignoring missing files and logging non-ENOENT errors.
  */
-export async function clearQuotaCache(): Promise<void> {
-	try {
-		await fs.unlink(QUOTA_CACHE_PATH);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code !== "ENOENT") {
-			logWarn(
-				`Failed to clear quota cache ${QUOTA_CACHE_LABEL}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
+export async function clearQuotaCache(): Promise<boolean> {
+	const quotaCachePath = getQuotaCachePath();
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.unlink(quotaCachePath);
+			return true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return true;
+			}
+			if (!isRetryableFsError(error) || attempt >= 4) {
+				logWarn(
+					`Failed to clear quota cache ${getQuotaCacheLabel(quotaCachePath)}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+				return false;
+			}
+			await sleep(10 * 2 ** attempt);
 		}
 	}
+
+	return false;
 }

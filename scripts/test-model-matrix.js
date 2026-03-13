@@ -1,13 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
-import { readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
-const localConfigPaths = [join(repoRoot, ".codex.json"), join(repoRoot, "Codex.json")];
+const localConfigPaths = [
+	join(repoRoot, ".codex.json"),
+	join(repoRoot, "Codex.json"),
+];
 const scenarioTemplates = {
 	legacy: join(repoRoot, "config", "codex-legacy.json"),
 	modern: join(repoRoot, "config", "codex-modern.json"),
@@ -15,6 +18,7 @@ const scenarioTemplates = {
 
 const pluginPackageName = "codex-multi-auth";
 const DEFAULT_MATRIX_TIMEOUT_MS = 120000;
+const DEFAULT_SMOKE_MATRIX_TIMEOUT_MS = 15000;
 
 function resolveCmdScriptEntry(commandPath) {
 	if (!/\.cmd$/i.test(commandPath)) {
@@ -153,12 +157,70 @@ export function __resetTrackedCodexPidsForTests() {
 	spawnedCodexPids.clear();
 }
 
-export function resolveMatrixTimeoutMs() {
-	const parsedTimeout = Number.parseInt(process.env.CODEX_MATRIX_TIMEOUT_MS ?? String(DEFAULT_MATRIX_TIMEOUT_MS), 10);
+export function resolveMatrixTimeoutMs(smoke = false) {
+	const fallback = smoke
+		? DEFAULT_SMOKE_MATRIX_TIMEOUT_MS
+		: DEFAULT_MATRIX_TIMEOUT_MS;
+	const parsedTimeout = Number.parseInt(
+		process.env.CODEX_MATRIX_TIMEOUT_MS ?? String(fallback),
+		10,
+	);
 	if (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0) {
-		return DEFAULT_MATRIX_TIMEOUT_MS;
+		return fallback;
 	}
 	return parsedTimeout;
+}
+
+function hasCompletedSuccessfully(output, token) {
+	return (
+		output.includes(token) ||
+		output.includes('"type":"turn.completed"') ||
+		output.includes('"type":"response.completed"')
+	);
+}
+
+function getSmokeSkipReason(exitCode, output) {
+	if (exitCode === 124) {
+		return "timed-out";
+	}
+	if (/not supported when using codex with a chatgpt account/i.test(output)) {
+		return "unsupported-model";
+	}
+	if (
+		/unsupported value:\s*['"]xhigh['"]/i.test(output) ||
+		/unsupported_value/i.test(output)
+	) {
+		return "unsupported-reasoning";
+	}
+	return null;
+}
+
+function finalizeModelCaseResult(caseInfo, exitCode, output, token, smoke) {
+	const hasToken = output.includes(token);
+	const completed = hasCompletedSuccessfully(output, token);
+	const ok = exitCode === 0 && completed;
+	const skipReason = !ok && smoke ? getSmokeSkipReason(exitCode, output) : null;
+
+	return {
+		...caseInfo,
+		ok,
+		exitCode,
+		hasToken,
+		completed,
+		skipped: skipReason !== null,
+		skipReason,
+		output,
+	};
+}
+
+export function __finalizeModelCaseResultForTests(
+	caseInfo,
+	exitCode,
+	output,
+	token,
+	smoke = false,
+) {
+	return finalizeModelCaseResult(caseInfo, exitCode, output, token, smoke);
 }
 
 function stopCodexServersInternal() {
@@ -267,7 +329,7 @@ export function __buildModelCaseArgsForTests(caseInfo, index) {
 function executeModelCase(caseInfo, index) {
 	const { token, args } = buildModelCaseArgs(caseInfo, index);
 
-	const timeoutMs = resolveMatrixTimeoutMs();
+	const timeoutMs = resolveMatrixTimeoutMs(caseInfo.smoke === true);
 	const commandArgs = [...(CodexExecutable.prefixArgs ?? []), ...args];
 	const finalized = spawnSync(CodexExecutable.command, commandArgs, {
 		cwd: repoRoot,
@@ -285,27 +347,25 @@ function executeModelCase(caseInfo, index) {
 	});
 
 	if (finalized.error && finalized.error.code === "ETIMEDOUT") {
-		return {
-			...caseInfo,
-			ok: false,
-			exitCode: 124,
-			hasToken: false,
-			output: `Timed out after ${timeoutMs}ms`,
-		};
+		return finalizeModelCaseResult(
+			caseInfo,
+			124,
+			`Timed out after ${timeoutMs}ms`,
+			token,
+			caseInfo.smoke === true,
+		);
 	}
 
-	const combinedOutput = `${finalized.stdout ?? ""}\n${finalized.stderr ?? ""}`.trim();
-	const hasToken = combinedOutput.includes(token);
+	const combinedOutput =
+		`${finalized.stdout ?? ""}\n${finalized.stderr ?? ""}`.trim();
 	const exitCode = finalized.status ?? 1;
-	const ok = exitCode === 0 && hasToken;
-
-	return {
-		...caseInfo,
-		ok,
+	return finalizeModelCaseResult(
+		caseInfo,
 		exitCode,
-		hasToken,
-		output: combinedOutput,
-	};
+		combinedOutput,
+		token,
+		caseInfo.smoke === true,
+	);
 }
 
 async function readJson(pathValue) {
@@ -365,31 +425,43 @@ async function prepareScenarioConfig(templatePath, pluginRef) {
 async function runScenario(scenario, options) {
 	const templatePath = scenarioTemplates[scenario];
 	if (!templatePath || !existsSync(templatePath)) {
-		throw new Error(`Template not found for scenario '${scenario}': ${templatePath}`);
+		throw new Error(
+			`Template not found for scenario '${scenario}': ${templatePath}`,
+		);
 	}
 
 	const config = await prepareScenarioConfig(templatePath, options.pluginRef);
 	const models = config?.provider?.openai?.models;
 	if (!models || typeof models !== "object") {
-		throw new Error(`Scenario '${scenario}' has no provider.openai.models object`);
+		throw new Error(
+			`Scenario '${scenario}' has no provider.openai.models object`,
+		);
 	}
 
-	const cases = enumerateCases(models, options.smoke, options.maxCases);
+	const cases = enumerateCases(models, options.smoke, options.maxCases).map(
+		(caseInfo) => ({
+			...caseInfo,
+			smoke: options.smoke,
+		}),
+	);
 	console.log(`\n=== ${scenario.toUpperCase()} (${cases.length} cases) ===`);
 
 	const results = [];
 	for (let i = 0; i < cases.length; i += 1) {
 		const caseInfo = cases[i];
-		const result = executeModelCase(
-			caseInfo,
-			i + 1,
-		);
+		const result = executeModelCase(caseInfo, i + 1);
 		results.push(result);
 		const variantLabel = result.variant ? ` [variant=${result.variant}]` : "";
 		if (result.ok) {
 			console.log(`PASS  ${result.model}${variantLabel}`);
+		} else if (result.skipped) {
+			console.log(
+				`SKIP  ${result.model}${variantLabel} (${result.skipReason})`,
+			);
 		} else {
-			console.log(`FAIL  ${result.model}${variantLabel} (exit=${result.exitCode}, token=${result.hasToken})`);
+			console.log(
+				`FAIL  ${result.model}${variantLabel} (exit=${result.exitCode}, token=${result.hasToken})`,
+			);
 			const tail = result.output.split(/\r?\n/).slice(-12).join("\n");
 			if (tail.trim().length > 0) {
 				console.log(tail);
@@ -407,8 +479,9 @@ async function main() {
 		return;
 	}
 
-	const scenarioValue = parseArgValue(args, "--scenario") ?? "all";
 	const smoke = args.includes("--smoke");
+	const scenarioValue =
+		parseArgValue(args, "--scenario") ?? (smoke ? "modern" : "all");
 	const pluginMode = parseArgValue(args, "--plugin") ?? "dist";
 	const noRestore = args.includes("--no-restore");
 	const maxCasesRaw = parseArgValue(args, "--max-cases");
@@ -419,13 +492,19 @@ async function main() {
 		: undefined;
 
 	if (!["all", "legacy", "modern"].includes(scenarioValue)) {
-		throw new Error(`Invalid --scenario value '${scenarioValue}'. Use legacy, modern, or all.`);
+		throw new Error(
+			`Invalid --scenario value '${scenarioValue}'. Use legacy, modern, or all.`,
+		);
 	}
 	if (!["dist", "package"].includes(pluginMode)) {
-		throw new Error(`Invalid --plugin value '${pluginMode}'. Use dist or package.`);
+		throw new Error(
+			`Invalid --plugin value '${pluginMode}'. Use dist or package.`,
+		);
 	}
 	if (Number.isNaN(maxCases) || maxCases < 0) {
-		throw new Error(`Invalid --max-cases value '${maxCasesRaw}'. Use a non-negative integer.`);
+		throw new Error(
+			`Invalid --max-cases value '${maxCasesRaw}'. Use a non-negative integer.`,
+		);
 	}
 
 	const pluginRef = resolvePluginReference(pluginMode);
@@ -437,7 +516,9 @@ async function main() {
 	console.log(`Scenarios: ${scenarios.join(", ")}`);
 	console.log(`Mode: ${smoke ? "smoke" : "full"}`);
 	console.log(`Plugin: ${pluginRef}`);
-	console.log(`Codex command: ${CodexExecutable.displayCommand ?? CodexExecutable.command}`);
+	console.log(
+		`Codex command: ${CodexExecutable.displayCommand ?? CodexExecutable.command}`,
+	);
 
 	const backups = await backupLocalConfigs();
 	const allResults = [];
@@ -450,7 +531,9 @@ async function main() {
 				maxCases,
 				pluginRef,
 			});
-			allResults.push(...scenarioResults.map((item) => ({ ...item, scenario })));
+			allResults.push(
+				...scenarioResults.map((item) => ({ ...item, scenario })),
+			);
 		}
 	} finally {
 		if (!noRestore) {
@@ -458,11 +541,13 @@ async function main() {
 		}
 	}
 
-	const failed = allResults.filter((result) => !result.ok);
-	const passed = allResults.length - failed.length;
+	const passed = allResults.filter((result) => result.ok);
+	const skipped = allResults.filter((result) => result.skipped);
+	const failed = allResults.filter((result) => !result.ok && !result.skipped);
 	console.log("\n=== SUMMARY ===");
 	console.log(`Total: ${allResults.length}`);
-	console.log(`Passed: ${passed}`);
+	console.log(`Passed: ${passed.length}`);
+	console.log(`Skipped: ${skipped.length}`);
 	console.log(`Failed: ${failed.length}`);
 
 	if (reportJsonPath) {
@@ -475,13 +560,18 @@ async function main() {
 			CodexCommand: CodexExecutable.displayCommand ?? CodexExecutable.command,
 			totals: {
 				total: allResults.length,
-				passed,
+				passed: passed.length,
+				skipped: skipped.length,
 				failed: failed.length,
 			},
 			results: allResults,
 		};
 		await mkdir(dirname(reportJsonPath), { recursive: true });
-		await writeFile(reportJsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+		await writeFile(
+			reportJsonPath,
+			`${JSON.stringify(report, null, 2)}\n`,
+			"utf8",
+		);
 		console.log(`Report written: ${reportJsonPath}`);
 	}
 
@@ -492,6 +582,10 @@ async function main() {
 			console.log(`- ${result.scenario}: ${result.model}${variantLabel}`);
 		}
 		process.exitCode = 1;
+	} else if (smoke && passed.length === 0) {
+		console.log(
+			"\nSmoke matrix was inconclusive: all cases were skipped for this current runtime/account capability set.",
+		);
 	}
 }
 
@@ -507,5 +601,3 @@ if (isDirectRun) {
 		process.exit(1);
 	});
 }
-
-

@@ -1,132 +1,132 @@
 {
-  "name": "codex-multi-auth",
-  "version": "0.1.7",
-  "description": "Multi-account OAuth manager and codex auth wrapper for the official @openai/codex CLI, with switching, health checks, and recovery tools",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "type": "module",
-  "license": "MIT",
-  "author": "ndycode",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ndycode/codex-multi-auth.git"
-  },
-  "keywords": [
-    "openai",
-    "codex",
-    "codex-cli",
-    "chatgpt",
-    "oauth2",
-    "pkce",
-    "multi-account",
-    "account-switching",
-    "oauth-manager",
-    "fault-tolerance",
-    "terminal-ui",
-    "cli-tool",
-    "typescript",
-    "nodejs",
-    "developer-tools",
-    "authentication",
-    "account-health",
-    "recovery-tools",
-    "project-scoped-storage"
-  ],
-  "homepage": "https://github.com/ndycode/codex-multi-auth#readme",
-  "bugs": {
-    "url": "https://github.com/ndycode/codex-multi-auth/issues"
-  },
-  "scripts": {
-    "build": "tsc && node scripts/copy-oauth-success.js",
-    "typecheck": "tsc --noEmit",
-    "lint": "npm run lint:ts && npm run lint:scripts",
-    "lint:ts": "eslint . --ext .ts",
-    "lint:scripts": "eslint scripts --ext .js",
-    "lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
-    "lint:ts:fix": "eslint . --ext .ts --fix",
-    "lint:scripts:fix": "eslint scripts --ext .js --fix",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:ui": "vitest --ui",
-    "test:model-matrix": "node scripts/test-model-matrix.js",
-    "test:model-matrix:smoke": "node scripts/test-model-matrix.js --smoke",
-    "test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
-    "clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
-    "clean:repo:check": "node scripts/repo-hygiene.js check",
-    "bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
-    "bench:edit-formats:smoke": "node scripts/benchmark-edit-formats.mjs --smoke --preset=codex-core",
-    "bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
-    "bench:runtime-path": "npm run build && node scripts/benchmark-runtime-path.mjs",
-    "bench:runtime-path:quick": "node scripts/benchmark-runtime-path.mjs",
-    "test:coverage": "vitest run --coverage",
-    "coverage": "npm run build && vitest run --coverage",
-    "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "audit:all": "npm audit --audit-level=high",
-    "audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
-    "audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
-    "prepublishOnly": "npm run build",
-    "prepare": "husky"
-  },
-  "bin": {
-    "codex": "scripts/codex.js",
-    "codex-multi-auth": "scripts/codex-multi-auth.js"
-  },
-  "files": [
-    "dist/",
-    "assets/",
-    "config/",
-    "scripts/",
-    "vendor/codex-ai-plugin/",
-    "vendor/codex-ai-sdk/",
-    "README.md",
-    "LICENSE"
-  ],
-  "bundleDependencies": [
-    "@codex-ai/plugin"
-  ],
-  "lint-staged": {
-    "*.ts": [
-      "eslint --max-warnings=0 --fix --no-warn-ignored"
-    ],
-    "scripts/**/*.js": [
-      "eslint --max-warnings=0 --fix --no-warn-ignored"
-    ]
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  },
-  "devDependencies": {
-    "@fast-check/vitest": "^0.2.4",
-    "@codex-ai/sdk": "file:vendor/codex-ai-sdk",
-    "@types/node": "^25.3.0",
-    "@typescript-eslint/eslint-plugin": "^8.56.0",
-    "@typescript-eslint/parser": "^8.56.0",
-    "@vitest/coverage-v8": "^4.0.18",
-    "@vitest/ui": "^4.0.18",
-    "eslint": "^10.0.0",
-    "fast-check": "^4.5.3",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
-    "typescript": "^5.9.3",
-    "typescript-language-server": "^5.1.3",
-    "vitest": "^4.0.18"
-  },
-  "dependencies": {
-    "@openauthjs/openauth": "^0.4.3",
-    "@codex-ai/plugin": "file:vendor/codex-ai-plugin",
-    "hono": "4.12.6",
-    "zod": "^4.3.6"
-  },
-  "overrides": {
-    "hono": "4.12.6",
-    "minimatch": "10.2.4",
-    "rollup": "4.59.0",
-    "vite": "^7.3.1",
-    "@typescript-eslint/typescript-estree": {
-      "minimatch": "9.0.9"
-    }
-  }
+	"name": "codex-multi-auth",
+	"version": "0.1.9",
+	"description": "Multi-account OAuth manager and codex auth wrapper for the official @openai/codex CLI, with switching, health checks, and recovery tools",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"type": "module",
+	"license": "MIT",
+	"author": "ndycode",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ndycode/codex-multi-auth.git"
+	},
+	"keywords": [
+		"openai",
+		"codex",
+		"codex-cli",
+		"chatgpt",
+		"oauth2",
+		"pkce",
+		"multi-account",
+		"account-switching",
+		"oauth-manager",
+		"fault-tolerance",
+		"terminal-ui",
+		"cli-tool",
+		"typescript",
+		"nodejs",
+		"developer-tools",
+		"authentication",
+		"account-health",
+		"recovery-tools",
+		"project-scoped-storage"
+	],
+	"homepage": "https://github.com/ndycode/codex-multi-auth#readme",
+	"bugs": {
+		"url": "https://github.com/ndycode/codex-multi-auth/issues"
+	},
+	"scripts": {
+		"build": "tsc && node scripts/copy-oauth-success.js",
+		"typecheck": "tsc --noEmit",
+		"lint": "npm run lint:ts && npm run lint:scripts",
+		"lint:ts": "eslint . --ext .ts",
+		"lint:scripts": "eslint scripts --ext .js",
+		"lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
+		"lint:ts:fix": "eslint . --ext .ts --fix",
+		"lint:scripts:fix": "eslint scripts --ext .js --fix",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:ui": "vitest --ui",
+		"test:model-matrix": "node scripts/test-model-matrix.js",
+		"test:model-matrix:smoke": "node scripts/test-model-matrix.js --smoke",
+		"test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
+		"clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
+		"clean:repo:check": "node scripts/repo-hygiene.js check",
+		"bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
+		"bench:edit-formats:smoke": "node scripts/benchmark-edit-formats.mjs --smoke --preset=codex-core",
+		"bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
+		"bench:runtime-path": "npm run build && node scripts/benchmark-runtime-path.mjs",
+		"bench:runtime-path:quick": "node scripts/benchmark-runtime-path.mjs",
+		"test:coverage": "vitest run --coverage",
+		"coverage": "npm run build && vitest run --coverage",
+		"audit:prod": "npm audit --omit=dev --audit-level=high",
+		"audit:all": "npm audit --audit-level=high",
+		"audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
+		"audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
+		"prepublishOnly": "npm run build",
+		"prepare": "husky"
+	},
+	"bin": {
+		"codex": "scripts/codex.js",
+		"codex-multi-auth": "scripts/codex-multi-auth.js"
+	},
+	"files": [
+		"dist/",
+		"assets/",
+		"config/",
+		"scripts/",
+		"vendor/codex-ai-plugin/",
+		"vendor/codex-ai-sdk/",
+		"README.md",
+		"LICENSE"
+	],
+	"bundleDependencies": [
+		"@codex-ai/plugin"
+	],
+	"lint-staged": {
+		"*.ts": [
+			"eslint --max-warnings=0 --fix --no-warn-ignored"
+		],
+		"scripts/**/*.js": [
+			"eslint --max-warnings=0 --fix --no-warn-ignored"
+		]
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	},
+	"devDependencies": {
+		"@fast-check/vitest": "^0.2.4",
+		"@codex-ai/sdk": "file:vendor/codex-ai-sdk",
+		"@types/node": "^25.3.0",
+		"@typescript-eslint/eslint-plugin": "^8.56.0",
+		"@typescript-eslint/parser": "^8.56.0",
+		"@vitest/coverage-v8": "^4.0.18",
+		"@vitest/ui": "^4.0.18",
+		"eslint": "^10.0.0",
+		"fast-check": "^4.5.3",
+		"husky": "^9.1.7",
+		"lint-staged": "^16.2.7",
+		"typescript": "^5.9.3",
+		"typescript-language-server": "^5.1.3",
+		"vitest": "^4.0.18"
+	},
+	"dependencies": {
+		"@openauthjs/openauth": "^0.4.3",
+		"@codex-ai/plugin": "file:vendor/codex-ai-plugin",
+		"hono": "4.12.6",
+		"zod": "^4.3.6"
+	},
+	"overrides": {
+		"hono": "4.12.6",
+		"minimatch": "10.2.4",
+		"rollup": "4.59.0",
+		"vite": "^7.3.1",
+		"@typescript-eslint/typescript-estree": {
+			"minimatch": "9.0.9"
+		}
+	}
 }

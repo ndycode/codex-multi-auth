@@ -5,6 +5,26 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's canonical public release line is currently `0.x`.
 
+## [0.1.8] - 2026-03-11
+
+### Fixed
+
+- Hardened flagged-account reset recovery so intentional clears remain authoritative even when the primary flagged file survives an initial delete failure.
+- Removed the fresh-worktree `npm test` dependency on prebuilt `dist/` output by validating config precedence directly from source imports.
+- Tightened model-matrix smoke classification so unsupported account/runtime capabilities are reported as non-blocking skips instead of false release failures.
+- Restored backup metadata, restore assessment, and transaction-safe named backup export behavior after merging the experimental settings and backend primitive stacks.
+
+### Changed
+
+- Codex CLI sync remains mirror-only, preserving canonical multi-auth storage as the single source of truth while still allowing mirror-file selection updates.
+- Experimental settings flows, backend primitive extraction, and wrapper non-TTY docs now ship in the stable branch.
+- Release validation now includes broader merged-feature regression coverage spanning unified settings, flagged reset suppression, mirror-only Codex CLI sync, experimental sync, named backup export, and wrapper/docs behavior.
+
+### Added
+
+- Cross-feature regression coverage for merged release behavior in `test/release-main-prs-regression.test.ts`.
+- Preview-first `oc-chatgpt-multi-auth` sync orchestration, named backup export flows, and target-detection coverage promoted from the stacked settings/sync branches.
+
 ## [0.1.7] - 2026-03-03
 
 ### Fixed
