@@ -111,22 +111,30 @@ Delete saved accounts only:
 
 ```powershell
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json.wal" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json.bak*" -Force -ErrorAction SilentlyContinue
 ```
 
 ```bash
 rm -f ~/.codex/multi-auth/openai-codex-accounts.json
+rm -f ~/.codex/multi-auth/openai-codex-accounts.json.wal
+rm -f ~/.codex/multi-auth/openai-codex-accounts.json.bak*
 ```
 
 Reset local state (also clears flagged/problem accounts and quota cache; preserves settings and Codex CLI sync state):
 
 ```powershell
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json.wal" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json.bak*" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
 ```
 
 ```bash
 rm -f ~/.codex/multi-auth/openai-codex-accounts.json
+rm -f ~/.codex/multi-auth/openai-codex-accounts.json.wal
+rm -f ~/.codex/multi-auth/openai-codex-accounts.json.bak*
 rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/quota-cache.json
 ```

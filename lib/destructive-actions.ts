@@ -68,6 +68,23 @@ export function clampActiveIndices(storage: AccountStorageV3): void {
 	storage.activeIndexByFamily = activeIndexByFamily;
 }
 
+function rebaseActiveIndicesAfterDelete(
+	storage: AccountStorageV3,
+	removedIndex: number,
+): void {
+	if (storage.activeIndex > removedIndex) {
+		storage.activeIndex -= 1;
+	}
+	const activeIndexByFamily = storage.activeIndexByFamily ?? {};
+	for (const family of MODEL_FAMILIES) {
+		const rawIndex = activeIndexByFamily[family];
+		if (typeof rawIndex === "number" && Number.isFinite(rawIndex) && rawIndex > removedIndex) {
+			activeIndexByFamily[family] = rawIndex - 1;
+		}
+	}
+	storage.activeIndexByFamily = activeIndexByFamily;
+}
+
 export interface DeleteAccountResult {
 	storage: AccountStorageV3;
 	flagged: FlaggedAccountStorageV1;
@@ -75,19 +92,41 @@ export interface DeleteAccountResult {
 	removedFlaggedCount: number;
 }
 
+export interface DestructiveActionResult {
+	accountsCleared: boolean;
+	flaggedCleared: boolean;
+	quotaCacheCleared: boolean;
+}
+
+function asError(error: unknown, fallbackMessage: string): Error {
+	return error instanceof Error
+		? error
+		: new Error(`${fallbackMessage}: ${String(error)}`);
+}
+
 export async function deleteAccountAtIndex(options: {
 	storage: AccountStorageV3;
 	index: number;
-	flaggedStorage?: FlaggedAccountStorageV1;
 }): Promise<DeleteAccountResult | null> {
 	const target = options.storage.accounts.at(options.index);
 	if (!target) return null;
+	const flagged = await loadFlaggedAccounts();
+	const nextStorage: AccountStorageV3 = {
+		...options.storage,
+		accounts: options.storage.accounts.map((account) => ({ ...account })),
+		activeIndexByFamily: { ...(options.storage.activeIndexByFamily ?? {}) },
+	};
+	const previousStorage: AccountStorageV3 = {
+		...options.storage,
+		accounts: options.storage.accounts.map((account) => ({ ...account })),
+		activeIndexByFamily: { ...(options.storage.activeIndexByFamily ?? {}) },
+	};
 
-	options.storage.accounts.splice(options.index, 1);
-	clampActiveIndices(options.storage);
-	await saveAccounts(options.storage);
+	nextStorage.accounts.splice(options.index, 1);
+	rebaseActiveIndicesAfterDelete(nextStorage, options.index);
+	clampActiveIndices(nextStorage);
+	await saveAccounts(nextStorage);
 
-	const flagged = options.flaggedStorage ?? (await loadFlaggedAccounts());
 	const remainingFlagged = flagged.accounts.filter(
 		(account) => account.refreshToken !== target.refreshToken,
 	);
@@ -95,11 +134,33 @@ export async function deleteAccountAtIndex(options: {
 	let updatedFlagged = flagged;
 	if (removedFlaggedCount > 0) {
 		updatedFlagged = { ...flagged, accounts: remainingFlagged };
-		await saveFlaggedAccounts(updatedFlagged);
+		try {
+			await saveFlaggedAccounts(updatedFlagged);
+		} catch (error) {
+			const originalError = asError(
+				error,
+				"Failed to save flagged account storage after deleting an account",
+			);
+			try {
+				await saveAccounts(previousStorage);
+			} catch (rollbackError) {
+				throw new AggregateError(
+					[
+						originalError,
+						asError(
+							rollbackError,
+							"Failed to roll back account storage after flagged save failure",
+						),
+					],
+					"Deleting the account partially failed and rollback also failed.",
+				);
+			}
+			throw originalError;
+		}
 	}
 
 	return {
-		storage: options.storage,
+		storage: nextStorage,
 		flagged: updatedFlagged,
 		removedAccount: target,
 		removedFlaggedCount,
@@ -110,17 +171,26 @@ export async function deleteAccountAtIndex(options: {
  * Delete saved accounts without touching flagged/problem accounts, settings, or Codex CLI sync state.
  * Removes the accounts WAL and backups via the underlying storage helper.
  */
-export async function deleteSavedAccounts(): Promise<void> {
-	await clearAccounts();
+export async function deleteSavedAccounts(): Promise<DestructiveActionResult> {
+	return {
+		accountsCleared: await clearAccounts(),
+		flaggedCleared: false,
+		quotaCacheCleared: false,
+	};
 }
 
 /**
  * Reset local multi-auth state: clears saved accounts, flagged/problem accounts, and quota cache.
  * Keeps unified settings and on-disk Codex CLI sync state; only the in-memory Codex CLI cache is cleared.
  */
-export async function resetLocalState(): Promise<void> {
-	await clearAccounts();
-	await clearFlaggedAccounts();
-	await clearQuotaCache();
+export async function resetLocalState(): Promise<DestructiveActionResult> {
+	const accountsCleared = await clearAccounts();
+	const flaggedCleared = await clearFlaggedAccounts();
+	const quotaCacheCleared = await clearQuotaCache();
 	clearCodexCliStateCache();
+	return {
+		accountsCleared,
+		flaggedCleared,
+		quotaCacheCleared,
+	};
 }
