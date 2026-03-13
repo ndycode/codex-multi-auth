@@ -190,7 +190,7 @@ async function unlinkWithRetry(path: string): Promise<void> {
 			if (code === "ENOENT") {
 				return;
 			}
-			if ((code === "EPERM" || code === "EBUSY") && attempt < 4) {
+			if ((code === "EPERM" || code === "EBUSY" || code === "EAGAIN") && attempt < 4) {
 				await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
 				continue;
 			}
@@ -2008,6 +2008,14 @@ export async function clearAccounts(): Promise<boolean> {
 		const walPath = getAccountsWalPath(path);
 		const backupPaths =
 			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+		const legacyPaths = Array.from(
+			new Set(
+				[currentLegacyProjectStoragePath, currentLegacyWorktreeStoragePath].filter(
+					(candidate): candidate is string =>
+						typeof candidate === "string" && candidate.length > 0,
+				),
+			),
+		);
 		await fs.writeFile(
 			resetMarkerPath,
 			JSON.stringify({ version: 1, createdAt: Date.now() }),
@@ -2030,11 +2038,8 @@ export async function clearAccounts(): Promise<boolean> {
 		};
 
 		try {
-			await Promise.all([
-				clearPath(path),
-				clearPath(walPath),
-				...backupPaths.map(clearPath),
-			]);
+			const artifacts = Array.from(new Set([path, walPath, ...backupPaths, ...legacyPaths]));
+			await Promise.all(artifacts.map(clearPath));
 		} catch {
 			// Individual path cleanup is already best-effort with per-artifact logging.
 		}

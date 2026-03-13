@@ -1785,7 +1785,7 @@ describe("storage", () => {
 			await expect(clearAccounts()).resolves.not.toThrow();
 		});
 
-		it.each(["EPERM", "EBUSY"] as const)(
+		it.each(["EPERM", "EBUSY", "EAGAIN"] as const)(
 			"retries transient %s when clearing saved account artifacts",
 			async (code) => {
 				await fs.writeFile(testStoragePath, "{}");
@@ -2510,6 +2510,36 @@ describe("storage", () => {
 				loaded?.accounts.map((account) => account.accountId) ?? [];
 			expect(accountIds).toContain("canonical-account");
 			expect(accountIds).toContain("legacy-account");
+			expect(existsSync(legacyWorktreePath)).toBe(false);
+		});
+
+		it("clearAccounts removes legacy project and worktree account files for linked worktrees", async () => {
+			const { worktreeRepo } = await prepareWorktreeFixture();
+
+			setStoragePath(worktreeRepo);
+			const canonicalPath = getStoragePath();
+			const legacyProjectPath = join(worktreeRepo, ".codex", "openai-codex-accounts.json");
+			const legacyWorktreePath = join(
+				getConfigDir(),
+				"projects",
+				getProjectStorageKey(worktreeRepo),
+				"openai-codex-accounts.json",
+			);
+			const storage = buildStorage([accountFromLegacy]);
+
+			await fs.mkdir(dirname(canonicalPath), { recursive: true });
+			await fs.mkdir(dirname(legacyProjectPath), { recursive: true });
+			await fs.mkdir(dirname(legacyWorktreePath), { recursive: true });
+			await Promise.all([
+				fs.writeFile(canonicalPath, JSON.stringify(storage), "utf-8"),
+				fs.writeFile(legacyProjectPath, JSON.stringify(storage), "utf-8"),
+				fs.writeFile(legacyWorktreePath, JSON.stringify(storage), "utf-8"),
+			]);
+
+			await expect(clearAccounts()).resolves.toBe(true);
+
+			expect(existsSync(canonicalPath)).toBe(false);
+			expect(existsSync(legacyProjectPath)).toBe(false);
 			expect(existsSync(legacyWorktreePath)).toBe(false);
 		});
 
@@ -3329,31 +3359,64 @@ describe("storage", () => {
 			await expect(clearQuotaCache()).resolves.toBe(true);
 		});
 
-		it("retries transient EPERM when clearing the quota cache", async () => {
-			const quotaPath = getQuotaCachePath();
-			await fs.mkdir(dirname(quotaPath), { recursive: true });
-			await fs.writeFile(quotaPath, "{}", "utf-8");
+		it.each(["EPERM", "EBUSY"] as const)(
+			"retries transient %s when clearing the quota cache",
+			async (code) => {
+				const quotaPath = getQuotaCachePath();
+				await fs.mkdir(dirname(quotaPath), { recursive: true });
+				await fs.writeFile(quotaPath, "{}", "utf-8");
 
-			const realUnlink = fs.unlink.bind(fs);
-			const unlinkSpy = vi
-				.spyOn(fs, "unlink")
-				.mockImplementation(async (target) => {
-					if (target === quotaPath && unlinkSpy.mock.calls.length === 1) {
-						const err = new Error("locked") as NodeJS.ErrnoException;
-						err.code = "EPERM";
+				const realUnlink = fs.unlink.bind(fs);
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (target) => {
+						if (target === quotaPath && unlinkSpy.mock.calls.length === 1) {
+							const err = new Error("locked") as NodeJS.ErrnoException;
+							err.code = code;
+							throw err;
+						}
+						return realUnlink(target);
+					});
+
+				try {
+					await expect(clearQuotaCache()).resolves.toBe(true);
+					expect(existsSync(quotaPath)).toBe(false);
+					expect(unlinkSpy).toHaveBeenCalledTimes(2);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when quota-cache clear exhausts retryable %s failures",
+			async (code) => {
+				const quotaPath = getQuotaCachePath();
+				await fs.mkdir(dirname(quotaPath), { recursive: true });
+				await fs.writeFile(quotaPath, "{}", "utf-8");
+
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (target) => {
+						if (target === quotaPath) {
+							const err = new Error("still locked") as NodeJS.ErrnoException;
+							err.code = code;
+							throw err;
+						}
+						const err = new Error("missing") as NodeJS.ErrnoException;
+						err.code = "ENOENT";
 						throw err;
-					}
-					return realUnlink(target);
-				});
+					});
 
-			try {
-				await expect(clearQuotaCache()).resolves.toBe(true);
-				expect(existsSync(quotaPath)).toBe(false);
-				expect(unlinkSpy).toHaveBeenCalledTimes(2);
-			} finally {
-				unlinkSpy.mockRestore();
-			}
-		});
+				try {
+					await expect(clearQuotaCache()).resolves.toBe(false);
+					expect(existsSync(quotaPath)).toBe(true);
+					expect(unlinkSpy).toHaveBeenCalledTimes(5);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 });
 

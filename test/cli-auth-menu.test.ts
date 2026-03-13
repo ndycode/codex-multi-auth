@@ -290,7 +290,7 @@ describe("CLI auth menu shortcuts", () => {
 		const result = await promptLoginMode([{ index: 0 }]);
 
 		expect(result).toEqual({ mode: "cancel" });
-		expect(consoleSpy).toHaveBeenCalledWith("\nDelete all cancelled.\n");
+		expect(consoleSpy).toHaveBeenCalledWith("\nDelete saved accounts cancelled.\n");
 		consoleSpy.mockRestore();
 	});
 
@@ -333,7 +333,7 @@ describe("CLI auth menu shortcuts", () => {
 		const result = await promptLoginMode([{ index: 0 }]);
 
 		expect(result).toEqual({ mode: "cancel" });
-		expect(consoleSpy).toHaveBeenCalledWith("\nDelete all cancelled.\n");
+		expect(consoleSpy).toHaveBeenCalledWith("\nDelete saved accounts cancelled.\n");
 		consoleSpy.mockRestore();
 	});
 

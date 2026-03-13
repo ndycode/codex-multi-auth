@@ -3,6 +3,8 @@ import type { AccountInfo } from "../lib/ui/auth-menu.js";
 
 const selectMock = vi.fn();
 const confirmMock = vi.fn(async () => true);
+const searchQuestionMock = vi.fn();
+const searchCloseMock = vi.fn();
 
 vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
@@ -10,6 +12,13 @@ vi.mock("../lib/ui/select.js", () => ({
 
 vi.mock("../lib/ui/confirm.js", () => ({
 	confirm: confirmMock,
+}));
+
+vi.mock("node:readline/promises", () => ({
+	createInterface: vi.fn(() => ({
+		question: searchQuestionMock,
+		close: searchCloseMock,
+	})),
 }));
 
 function createAccounts(): AccountInfo[] {
@@ -27,6 +36,8 @@ describe("auth-menu hotkeys", () => {
 		vi.resetModules();
 		selectMock.mockReset();
 		confirmMock.mockReset();
+		searchQuestionMock.mockReset();
+		searchCloseMock.mockReset();
 		confirmMock.mockResolvedValue(true);
 		previousCliVersion = process.env.CODEX_MULTI_AUTH_CLI_VERSION;
 		delete process.env.CODEX_MULTI_AUTH_CLI_VERSION;
@@ -136,6 +147,34 @@ describe("auth-menu hotkeys", () => {
 
 		expect(result).toEqual({ type: "cancel" });
 		expect(selectMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("sanitizes search subtitles and status messages", async () => {
+		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+		searchQuestionMock.mockResolvedValueOnce(" \u001b[31mNeedle\u0007 ");
+		selectMock
+			.mockImplementationOnce(
+				async (items: unknown[], options: { onInput?: (...args: unknown[]) => unknown }) => {
+					if (!options.onInput) return null;
+					return options.onInput("/", {
+						cursor: 0,
+						items,
+						requestRerender: () => undefined,
+					});
+				},
+			)
+			.mockResolvedValueOnce({ type: "cancel" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		const result = await showAuthMenu(createAccounts(), {
+			statusMessage: () => "\u001b[32mNeeds\u0000 attention\u0007 ",
+		});
+
+		expect(result).toEqual({ type: "cancel" });
+		expect(searchCloseMock).toHaveBeenCalledTimes(1);
+		const options = selectMock.mock.calls[1]?.[1] as { subtitle?: string };
+		expect(options.subtitle).toBe("Search: needle | Needs attention");
 	});
 
 	it("supports help toggle hotkey (?) and requests rerender", async () => {
@@ -258,6 +297,7 @@ describe("auth-menu hotkeys", () => {
 		expect(strippedLabels[0]).toContain("1. first@example.com");
 		expect(strippedLabels[1]).toContain("2. Friendly Label");
 		expect(strippedLabels[2]).toContain("3. acc-id-42");
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional test assertion
 		expect(strippedLabels.join("")).not.toMatch(/[\u0000\u0007\u007f]/);
 	});
 });

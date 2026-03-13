@@ -107,11 +107,10 @@ function asError(error: unknown, fallbackMessage: string): Error {
 export async function deleteAccountAtIndex(options: {
 	storage: AccountStorageV3;
 	index: number;
-	flaggedStorage?: FlaggedAccountStorageV1;
 }): Promise<DeleteAccountResult | null> {
 	const target = options.storage.accounts.at(options.index);
 	if (!target) return null;
-	const flagged = options.flaggedStorage ?? (await loadFlaggedAccounts());
+	const flagged = await loadFlaggedAccounts();
 	const nextStorage: AccountStorageV3 = {
 		...options.storage,
 		accounts: options.storage.accounts.map((account) => ({ ...account })),

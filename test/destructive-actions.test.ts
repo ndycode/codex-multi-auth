@@ -137,6 +137,59 @@ describe("destructive actions", () => {
 		);
 	});
 
+	it("reloads flagged storage at delete time so newer flagged entries are preserved", async () => {
+		loadFlaggedAccountsMock.mockResolvedValue({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "refresh-remove",
+					addedAt: 2,
+					lastUsed: 2,
+					flaggedAt: 2,
+				},
+				{
+					refreshToken: "refresh-newer",
+					addedAt: 3,
+					lastUsed: 3,
+					flaggedAt: 3,
+				},
+			],
+		});
+
+		const { deleteAccountAtIndex } = await import(
+			"../lib/destructive-actions.js"
+		);
+
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-keep",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					refreshToken: "refresh-remove",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+
+		const deleted = await deleteAccountAtIndex({ storage, index: 1 });
+
+		expect(deleted).not.toBeNull();
+		expect(deleted?.flagged.accounts).toEqual([
+			expect.objectContaining({ refreshToken: "refresh-newer" }),
+		]);
+		expect(saveFlaggedAccountsMock).toHaveBeenCalledWith({
+			version: 1,
+			accounts: [expect.objectContaining({ refreshToken: "refresh-newer" })],
+		});
+	});
+
 	it("rethrows the original flagged-save failure after a successful rollback", async () => {
 		const flaggedSaveError = Object.assign(new Error("flagged save failed"), {
 			code: "EPERM",

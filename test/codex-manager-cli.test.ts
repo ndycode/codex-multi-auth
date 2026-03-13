@@ -157,12 +157,20 @@ vi.mock("../lib/destructive-actions.js", () => ({
 	DESTRUCTIVE_ACTION_COPY: {
 		deleteSavedAccounts: {
 			label: "Delete Saved Accounts",
+			typedConfirm:
+				"Type DELETE to delete saved accounts only (saved accounts: delete; flagged/problem accounts, settings, and Codex CLI sync state: keep): ",
+			confirm:
+				"Delete saved accounts? (Saved accounts: delete. Flagged/problem accounts: keep. Settings: keep. Codex CLI sync state: keep.)",
 			stage: "Deleting saved accounts only",
 			completed:
 				"Deleted saved accounts. Saved accounts deleted; flagged/problem accounts, settings, and Codex CLI sync state kept.",
 		},
 		resetLocalState: {
 			label: "Reset Local State",
+			typedConfirm:
+				"Type RESET to reset local state (saved accounts + flagged/problem accounts: delete; settings + Codex CLI sync state: keep; quota cache: clear): ",
+			confirm:
+				"Reset local state? (Saved accounts: delete. Flagged/problem accounts: delete. Settings: keep. Codex CLI sync state: keep. Quota cache: clear.)",
 			stage:
 				"Clearing saved accounts, flagged/problem accounts, and quota cache",
 			completed:

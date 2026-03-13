@@ -68,7 +68,6 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
-	type FlaggedAccountStorageV1,
 } from "./storage.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import {
@@ -3743,7 +3742,6 @@ async function runDoctor(args: string[]): Promise<number> {
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
-	flaggedStorage?: FlaggedAccountStorageV1,
 ): Promise<void> {
 	if (typeof menuResult.switchAccountIndex === "number") {
 		const index = menuResult.switchAccountIndex;
@@ -3757,7 +3755,6 @@ async function handleManageAction(
 			const deleted = await deleteAccountAtIndex({
 				storage,
 				index: idx,
-				flaggedStorage,
 			});
 			if (deleted) {
 				const label = `Account ${idx + 1}`;
@@ -3952,11 +3949,11 @@ async function runAuthLogin(): Promise<number> {
 				if (menuResult.mode === "manage") {
 					const requiresInteractiveOAuth = typeof menuResult.refreshAccountIndex === "number";
 					if (requiresInteractiveOAuth) {
-						await handleManageAction(currentStorage, menuResult, flaggedStorage);
+						await handleManageAction(currentStorage, menuResult);
 						continue;
 					}
 					await runActionPanel("Applying Change", "Updating selected account", async () => {
-						await handleManageAction(currentStorage, menuResult, flaggedStorage);
+						await handleManageAction(currentStorage, menuResult);
 					}, displaySettings);
 					continue;
 				}

@@ -494,7 +494,7 @@ async function promptSearchQuery(current: string): Promise<string> {
 	try {
 		const suffix = current ? ` (${current})` : "";
 		const answer = await rl.question(`Search${suffix} (blank clears): `);
-		return answer.trim().toLowerCase();
+		return (sanitizeTerminalText(answer) ?? "").toLowerCase();
 	} finally {
 		rl.close();
 	}
@@ -685,15 +685,15 @@ export async function showAuthMenu(
 				typeof options.statusMessage === "function"
 					? options.statusMessage()
 					: options.statusMessage;
-			return typeof raw === "string" && raw.trim().length > 0
-				? raw.trim()
-				: undefined;
+			const sanitized = typeof raw === "string" ? sanitizeTerminalText(raw) : undefined;
+			return sanitized && sanitized.length > 0 ? sanitized : undefined;
 		};
 		const buildSubtitle = (): string | undefined => {
 			const parts: string[] = [];
-			if (normalizedSearch.length > 0) {
+			const safeSearch = sanitizeTerminalText(normalizedSearch);
+			if (safeSearch && safeSearch.length > 0) {
 				parts.push(
-					`${UI_COPY.mainMenu.searchSubtitlePrefix} ${normalizedSearch}`,
+					`${UI_COPY.mainMenu.searchSubtitlePrefix} ${safeSearch}`,
 				);
 			}
 			const statusText = resolveStatusMessage();

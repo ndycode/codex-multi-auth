@@ -3108,7 +3108,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 											const deleted = await deleteAccountAtIndex({
 												storage: workingStorage,
 												index: menuResult.deleteAccountIndex,
-												flaggedStorage,
 											});
 											if (deleted) {
 												invalidateAccountManagerCache();

@@ -271,7 +271,7 @@ export async function promptLoginMode(
 				return { mode: "settings" };
 			case "fresh":
 				if (!(await promptDeleteAllTypedConfirm())) {
-					console.log("\nDelete all cancelled.\n");
+					console.log("\nDelete saved accounts cancelled.\n");
 					continue;
 				}
 				return { mode: "fresh", deleteAll: true };
@@ -344,7 +344,7 @@ export async function promptLoginMode(
 				continue;
 			case "delete-all":
 				if (!(await promptDeleteAllTypedConfirm())) {
-					console.log("\nDelete all cancelled.\n");
+					console.log("\nDelete saved accounts cancelled.\n");
 					continue;
 				}
 				return { mode: "fresh", deleteAll: true };
