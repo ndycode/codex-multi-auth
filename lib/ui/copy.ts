@@ -133,8 +133,8 @@ export const UI_COPY = {
 		addAnotherQuestion: (count: number) =>
 			`Add another account? (${count} added) (y/n): `,
 		selectModePrompt:
-			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (r) reset, (q) back [a/c/b/x/s/d/g/f/r/q]: ",
-		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, f, r, q.",
+			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (u) restore backup, (f) fresh, (r) reset, (q) back [a/c/b/x/s/d/g/u/f/r/q]: ",
+		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, u, f, r, q.",
 	},
 } as const;
 

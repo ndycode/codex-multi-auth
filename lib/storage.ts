@@ -1649,13 +1649,14 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to list named backups", {
-				path: backupRoot,
-				error: String(error),
-			});
+		if (code === "ENOENT") {
+			return { backups: [], totalBackups: 0 };
 		}
-		return { backups: [], totalBackups: 0 };
+		log.warn("Failed to list named backups", {
+			path: backupRoot,
+			error: String(error),
+		});
+		throw error;
 	}
 }
 
@@ -1709,6 +1710,30 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataList
 export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 	const scanResult = await scanNamedBackups();
 	return scanResult.backups.map((entry) => entry.backup);
+}
+
+function isRetryableFilesystemErrorCode(
+	code: string | undefined,
+): code is "EPERM" | "EBUSY" | "EAGAIN" {
+	return code === "EPERM" || code === "EBUSY" || code === "EAGAIN";
+}
+
+async function retryTransientFilesystemOperation<T>(
+	operation: () => Promise<T>,
+): Promise<T> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+		}
+	}
+
+	throw new Error("Retry loop exhausted unexpectedly");
 }
 
 export function getNamedBackupsDirectoryPath(): string {
@@ -1909,7 +1934,9 @@ async function loadAccountsFromPath(path: string): Promise<{
 
 async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate> {
 	try {
-		return await loadAccountsFromPath(path);
+		return await retryTransientFilesystemOperation(() =>
+			loadAccountsFromPath(path),
+		);
 	} catch (error) {
 		return {
 			normalized: null,
@@ -1970,7 +1997,29 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	if (existingPath) {
 		return existingPath;
 	}
-	return buildNamedBackupPath(name);
+	const requested = (name ?? "").trim();
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
+		? requested
+		: `${requested}.json`;
+	try {
+		return buildNamedBackupPath(name);
+	} catch (error) {
+		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
+			? requestedWithExtension.slice(0, -".json".length)
+			: requestedWithExtension;
+		if (
+			requested.length > 0 &&
+			basename(requestedWithExtension) === requestedWithExtension &&
+			!requestedWithExtension.includes("..") &&
+			!/^[A-Za-z0-9_-]+$/.test(baseName)
+		) {
+			throw new Error(
+				`Import file not found: ${resolvePath(join(backupRoot, requestedWithExtension))}`,
+			);
+		}
+		throw error;
+	}
 }
 
 async function loadAccountsFromJournal(
@@ -2194,7 +2243,7 @@ async function buildNamedBackupMetadata(
 		ctimeMs?: number;
 	} | null = null;
 	try {
-		stats = await fs.stat(path);
+		stats = await retryTransientFilesystemOperation(() => fs.stat(path));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
@@ -2788,13 +2837,15 @@ export async function exportAccounts(
 
 	const transactionState = transactionSnapshotContext.getStore();
 	const currentStoragePath = getStoragePath();
-	const storage =
-		transactionState?.active &&
-		transactionState.storagePath === currentStoragePath
-		? transactionState.snapshot
-		: await withAccountStorageTransaction((current) =>
-				Promise.resolve(current),
-			);
+	const storage = transactionState?.active
+		? transactionState.storagePath === currentStoragePath
+			? transactionState.snapshot
+			: (() => {
+					throw new Error(
+						"exportAccounts called inside an active transaction for a different storage path",
+					);
+				})()
+		: await withAccountStorageTransaction((current) => Promise.resolve(current));
 	if (!storage || storage.accounts.length === 0) {
 		throw new Error("No accounts to export");
 	}

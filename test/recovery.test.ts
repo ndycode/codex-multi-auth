@@ -681,10 +681,12 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		expect(result.assessments.map((item) => item.backup.name)).toEqual([
 			"valid-backup",
 		]);
-		expect(readFileSpy).toHaveBeenCalledTimes(2);
-		expect(readFileSpy.mock.calls.map(([path]) => path)).toEqual(
+		const readPaths = readFileSpy.mock.calls.map(([path]) => path);
+		expect(readPaths).toEqual(
 			expect.arrayContaining([lockedBackup?.path, validBackup?.path]),
 		);
+		expect(readPaths.filter((path) => path === lockedBackup?.path)).toHaveLength(5);
+		expect(readPaths.filter((path) => path === validBackup?.path)).toHaveLength(1);
 	});
 
 });

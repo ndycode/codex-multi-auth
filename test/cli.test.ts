@@ -704,6 +704,20 @@ describe("CLI Module", () => {
 			});
 		});
 
+		it("returns restore-backup for fallback restore aliases", async () => {
+			const { promptLoginMode } = await import("../lib/cli.js");
+
+			mockRl.question.mockResolvedValueOnce("u");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "restore-backup",
+			});
+
+			mockRl.question.mockResolvedValueOnce("restore");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "restore-backup",
+			});
+		});
+
 		it("evaluates CODEX_TUI/CODEX_DESKTOP/TERM_PROGRAM/ELECTRON branches when TTY is true", async () => {
 			delete process.env.FORCE_INTERACTIVE_MODE;
 			const { stdin, stdout } = await import("node:process");
