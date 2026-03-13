@@ -708,10 +708,12 @@ describe("codex manager cli commands", () => {
 			valid: true,
 			error: "",
 		};
-		getActionableNamedBackupRestoresMock.mockResolvedValue({
-			assessments: [assessment],
-			totalBackups: 2,
-		});
+		getActionableNamedBackupRestoresMock
+			.mockResolvedValueOnce({
+				assessments: [assessment],
+				totalBackups: 2,
+			})
+			.mockRejectedValueOnce(makeErrnoError("resource busy", "EBUSY"));
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
@@ -723,7 +725,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(2);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledTimes(2);
 		expect(selectMock).toHaveBeenCalled();
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
@@ -764,10 +766,12 @@ describe("codex manager cli commands", () => {
 			valid: true,
 			error: "",
 		};
-		getActionableNamedBackupRestoresMock.mockResolvedValue({
-			assessments: [assessment],
-			totalBackups: 2,
-		});
+		getActionableNamedBackupRestoresMock
+			.mockResolvedValueOnce({
+				assessments: [assessment],
+				totalBackups: 2,
+			})
+			.mockRejectedValueOnce(makeErrnoError("resource busy", "EBUSY"));
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock
@@ -782,7 +786,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(2);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledTimes(3);
 		expect(selectMock).toHaveBeenCalled();
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
@@ -1752,10 +1756,12 @@ describe("codex manager cli commands", () => {
 			valid: true,
 			error: "",
 		};
-		getActionableNamedBackupRestoresMock.mockResolvedValue({
-			assessments: [assessment],
-			totalBackups: 2,
-		});
+		getActionableNamedBackupRestoresMock
+			.mockResolvedValueOnce({
+				assessments: [assessment],
+				totalBackups: 2,
+			})
+			.mockRejectedValueOnce(makeErrnoError("resource busy", "EBUSY"));
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock
@@ -1774,7 +1780,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(2);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledTimes(3);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("startup-backup");
 		expect(warnSpy).toHaveBeenCalledWith(
@@ -1846,7 +1852,7 @@ describe("codex manager cli commands", () => {
 		warnSpy.mockRestore();
 	});
 
-	it("falls back to OAuth when startup recovery prompt setup fails before confirm", async () => {
+	it("falls back to OAuth when startup recovery display settings load fails before confirm", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		let storageState = {
@@ -1884,12 +1890,25 @@ describe("codex manager cli commands", () => {
 			assessments: [assessment],
 			totalBackups: 2,
 		});
-		getNamedBackupsDirectoryPathMock.mockImplementationOnce(() => {
-			throw makeErrnoError(
+		loadDashboardDisplaySettingsMock
+			.mockResolvedValueOnce({
+				showPerAccountRows: true,
+				showQuotaDetails: true,
+				showForecastReasons: true,
+				showRecommendations: true,
+				showLiveProbeNotes: true,
+				menuAutoFetchLimits: true,
+				menuSortEnabled: true,
+				menuSortMode: "ready-first",
+				menuSortPinCurrent: true,
+				menuSortQuickSwitchVisibleRow: true,
+			})
+			.mockImplementationOnce(async () => {
+				throw makeErrnoError(
 				"no such file or directory, open '/mock/dashboard-settings.json'",
 				"ENOENT",
 			);
-		});
+			});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		await configureSuccessfulOAuthFlow(now);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1899,7 +1918,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
-		expect(getNamedBackupsDirectoryPathMock).toHaveBeenCalledTimes(1);
+		expect(getNamedBackupsDirectoryPathMock).not.toHaveBeenCalled();
 		expect(confirmMock).not.toHaveBeenCalled();
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(warnSpy).toHaveBeenCalledWith(

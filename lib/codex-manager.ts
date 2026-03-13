@@ -4237,11 +4237,15 @@ async function runAuthLogin(): Promise<number> {
 	setStoragePath(null);
 	let suppressRecoveryPrompt = false;
 	let recoveryPromptAttempted = false;
+	let pendingRecoveryState: Awaited<
+		ReturnType<typeof getActionableNamedBackupRestores>
+	> | null = null;
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
 	loginFlow: while (true) {
 		let existingStorage = await loadAccounts();
 		if (existingStorage && existingStorage.accounts.length > 0) {
+			pendingRecoveryState = null;
 			while (true) {
 				existingStorage = await loadAccounts();
 				if (!existingStorage || existingStorage.accounts.length === 0) {
@@ -4432,17 +4436,20 @@ async function runAuthLogin(): Promise<number> {
 			recoveryPromptAttempted = true;
 			let recoveryState: Awaited<
 				ReturnType<typeof getActionableNamedBackupRestores>
-			>;
-			try {
-				recoveryState = await getActionableNamedBackupRestores({
-					currentStorage: refreshedStorage,
-				});
-			} catch (error) {
-				const errorLabel = getRedactedFilesystemErrorLabel(error);
-				console.warn(
-					`Startup recovery scan failed (${errorLabel}). Continuing with OAuth.`,
-				);
-				recoveryState = { assessments: [], totalBackups: 0 };
+			> | null = pendingRecoveryState;
+			pendingRecoveryState = null;
+			if (recoveryState === null) {
+				try {
+					recoveryState = await getActionableNamedBackupRestores({
+						currentStorage: refreshedStorage,
+					});
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Startup recovery scan failed (${errorLabel}). Continuing with OAuth.`,
+					);
+					recoveryState = { assessments: [], totalBackups: 0 };
+				}
 			}
 			if (recoveryState.assessments.length > 0) {
 				let promptWasShown = false;
@@ -4467,6 +4474,7 @@ async function runAuthLogin(): Promise<number> {
 							recoveryState.assessments,
 						);
 						if (restoreResult !== "restored") {
+							pendingRecoveryState = recoveryState;
 							recoveryPromptAttempted = false;
 						}
 						continue;
