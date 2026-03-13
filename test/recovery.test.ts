@@ -446,6 +446,96 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		}
 	});
 
+	it("keeps injected-assessor backups when metadata stat hits EBUSY", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "first-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("first-backup");
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "second@example.com",
+					refreshToken: "second-token",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+		await storage.createNamedBackup("second-backup");
+		await storage.saveAccounts(emptyStorage);
+
+		const backups = await storage.listNamedBackups();
+		const backupByName = new Map(backups.map((backup) => [backup.name, backup]));
+		const lockedBackup = backupByName.get("first-backup");
+		const secondBackup = backupByName.get("second-backup");
+		expect(lockedBackup).toBeDefined();
+		expect(secondBackup).toBeDefined();
+
+		const originalStat = fs.stat.bind(fs);
+		const statSpy = vi.spyOn(fs, "stat").mockImplementation(
+			(async (...args: Parameters<typeof fs.stat>) => {
+				const [path] = args;
+				if (path === lockedBackup?.path) {
+					const error = new Error("resource busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalStat(...args);
+			}) as typeof fs.stat,
+		);
+		const readFileSpy = vi.spyOn(fs, "readFile");
+		const assess = vi.fn(async (name: string) => ({
+			backup: backupByName.get(name)!,
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: undefined,
+		}));
+
+		try {
+			const result = await storage.getActionableNamedBackupRestores({
+				assess,
+				currentStorage: emptyStorage,
+			});
+
+			expect(result.totalBackups).toBe(2);
+			expect(result.assessments).toHaveLength(2);
+			expect(
+				assess.mock.calls.map(([name]) => name).sort((a, b) => a.localeCompare(b)),
+			).toEqual(["first-backup", "second-backup"]);
+			expect(readFileSpy).not.toHaveBeenCalled();
+			expect(statSpy.mock.calls.map(([path]) => path)).toEqual(
+				expect.arrayContaining([lockedBackup?.path, secondBackup?.path]),
+			);
+		} finally {
+			statSpy.mockRestore();
+			readFileSpy.mockRestore();
+		}
+	});
+
 	it("keeps actionable backups when default assessment hits EBUSY", async () => {
 		const storage = await import("../lib/storage.js");
 		const emptyStorage = {

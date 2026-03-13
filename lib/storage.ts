@@ -1348,11 +1348,22 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadata[]> 
 
 			const name = deriveBackupNameFromFile(entry.name);
 			const path = join(backupDir, entry.name);
-			backups.push(
-				await buildNamedBackupMetadata(name, path, {
-					candidate: UNLOADED_BACKUP_CANDIDATE,
-				}),
-			);
+			try {
+				backups.push(
+					await buildNamedBackupMetadata(name, path, {
+						candidate: UNLOADED_BACKUP_CANDIDATE,
+					}),
+				);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.warn("Failed to build named backup metadata", {
+						name,
+						path,
+						error: String(error),
+					});
+				}
+			}
 		}
 
 		return backups.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
