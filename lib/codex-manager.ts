@@ -3821,173 +3821,167 @@ async function runAuthLogin(): Promise<number> {
 	let menuQuotaRefreshStatus: string | undefined;
 	loginFlow:
 	while (true) {
-		let existingStorage = await loadAccounts();
-		if (existingStorage && existingStorage.accounts.length > 0) {
-			while (true) {
-				existingStorage = await loadAccounts();
-				if (!existingStorage || existingStorage.accounts.length === 0) {
-					break;
-				}
-				const currentStorage = existingStorage;
-				const displaySettings = await loadDashboardDisplaySettings();
-				applyUiThemeFromDashboardSettings(displaySettings);
-				const quotaCache = await loadQuotaCache();
-				const shouldAutoFetchLimits = displaySettings.menuAutoFetchLimits ?? true;
-				const showFetchStatus = displaySettings.menuShowFetchStatus ?? true;
-				const quotaTtlMs = displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
-				if (shouldAutoFetchLimits && !pendingMenuQuotaRefresh) {
-					const staleCount = countMenuQuotaRefreshTargets(currentStorage, quotaCache, quotaTtlMs);
-					if (staleCount > 0) {
-						if (showFetchStatus) {
-							menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [0/${staleCount}]`;
-						}
-						pendingMenuQuotaRefresh = refreshQuotaCacheForMenu(
-							currentStorage,
-							quotaCache,
-							quotaTtlMs,
-							(current, total) => {
-								if (!showFetchStatus) return;
-								menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [${current}/${total}]`;
-							},
-						)
-							.then(() => undefined)
-							.catch(() => undefined)
-							.finally(() => {
-								menuQuotaRefreshStatus = undefined;
-								pendingMenuQuotaRefresh = null;
-							});
+		while (true) {
+			const existingStorage = await loadAccounts();
+			const currentStorage = existingStorage ?? createEmptyAccountStorage();
+			const displaySettings = await loadDashboardDisplaySettings();
+			applyUiThemeFromDashboardSettings(displaySettings);
+			const quotaCache = await loadQuotaCache();
+			const shouldAutoFetchLimits = displaySettings.menuAutoFetchLimits ?? true;
+			const showFetchStatus = displaySettings.menuShowFetchStatus ?? true;
+			const quotaTtlMs = displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
+			if (shouldAutoFetchLimits && !pendingMenuQuotaRefresh) {
+				const staleCount = countMenuQuotaRefreshTargets(currentStorage, quotaCache, quotaTtlMs);
+				if (staleCount > 0) {
+					if (showFetchStatus) {
+						menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [0/${staleCount}]`;
 					}
+					pendingMenuQuotaRefresh = refreshQuotaCacheForMenu(
+						currentStorage,
+						quotaCache,
+						quotaTtlMs,
+						(current, total) => {
+							if (!showFetchStatus) return;
+							menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [${current}/${total}]`;
+						},
+					)
+						.then(() => undefined)
+						.catch(() => undefined)
+						.finally(() => {
+							menuQuotaRefreshStatus = undefined;
+							pendingMenuQuotaRefresh = null;
+						});
 				}
-				const flaggedStorage = await loadFlaggedAccounts();
+			}
+			const flaggedStorage = await loadFlaggedAccounts();
 
-				const menuResult = await promptLoginMode(
-					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
-					{
-						flaggedCount: flaggedStorage.accounts.length,
-						statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
-					},
-				);
+			const menuResult = await promptLoginMode(
+				toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
+				{
+					flaggedCount: flaggedStorage.accounts.length,
+					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
+				},
+			);
 
-				if (menuResult.mode === "cancel") {
-					console.log("Cancelled.");
-					return 0;
+			if (menuResult.mode === "cancel") {
+				console.log("Cancelled.");
+				return 0;
+			}
+			if (menuResult.mode === "check") {
+				await runActionPanel("Quick Check", "Checking local session + live status", async () => {
+					await runHealthCheck({ forceRefresh: false, liveProbe: true });
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "deep-check") {
+				await runActionPanel("Deep Check", "Refreshing and testing all accounts", async () => {
+					await runHealthCheck({ forceRefresh: true, liveProbe: true });
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "forecast") {
+				await runActionPanel("Best Account", "Comparing accounts", async () => {
+					await runForecast(["--live"]);
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "fix") {
+				await runActionPanel("Auto-Fix", "Checking and fixing common issues", async () => {
+					await runFix(["--live"]);
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "settings") {
+				await configureUnifiedSettings(displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "verify-flagged") {
+				await runActionPanel("Problem Account Check", "Checking problem accounts", async () => {
+					await runVerifyFlagged([]);
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "restore-backup") {
+				try {
+					await runBackupRestoreManager(displaySettings);
+				} catch (error) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					console.error(
+						`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
+					);
 				}
-				if (menuResult.mode === "check") {
-					await runActionPanel("Quick Check", "Checking local session + live status", async () => {
-						await runHealthCheck({ forceRefresh: false, liveProbe: true });
-					}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "fresh" && menuResult.deleteAll) {
+				if (destructiveActionInFlight) {
+					console.log("Another destructive action is already running. Wait for it to finish.");
 					continue;
 				}
-				if (menuResult.mode === "deep-check") {
-					await runActionPanel("Deep Check", "Refreshing and testing all accounts", async () => {
-						await runHealthCheck({ forceRefresh: true, liveProbe: true });
-					}, displaySettings);
+				destructiveActionInFlight = true;
+				try {
+					await runActionPanel(
+						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
+						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
+						async () => {
+							const result = await deleteSavedAccounts();
+							console.log(
+								result.accountsCleared
+									? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed
+									: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs.",
+							);
+						},
+						displaySettings,
+					);
+				} finally {
+					destructiveActionInFlight = false;
+				}
+				continue;
+			}
+			if (menuResult.mode === "reset") {
+				if (destructiveActionInFlight) {
+					console.log("Another destructive action is already running. Wait for it to finish.");
 					continue;
 				}
-				if (menuResult.mode === "forecast") {
-					await runActionPanel("Best Account", "Comparing accounts", async () => {
-						await runForecast(["--live"]);
-					}, displaySettings);
+				destructiveActionInFlight = true;
+				try {
+					await runActionPanel(
+						DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
+						DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
+						async () => {
+							const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+							if (pendingQuotaRefresh) {
+								await pendingQuotaRefresh;
+							}
+							const result = await resetLocalState();
+							console.log(
+								result.accountsCleared &&
+									result.flaggedCleared &&
+									result.quotaCacheCleared
+									? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
+									: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs.",
+							);
+						},
+						displaySettings,
+					);
+				} finally {
+					destructiveActionInFlight = false;
+				}
+				continue;
+			}
+			if (menuResult.mode === "manage") {
+				const requiresInteractiveOAuth = typeof menuResult.refreshAccountIndex === "number";
+				if (requiresInteractiveOAuth) {
+					await handleManageAction(currentStorage, menuResult);
 					continue;
 				}
-				if (menuResult.mode === "fix") {
-					await runActionPanel("Auto-Fix", "Checking and fixing common issues", async () => {
-						await runFix(["--live"]);
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "settings") {
-					await configureUnifiedSettings(displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "verify-flagged") {
-					await runActionPanel("Problem Account Check", "Checking problem accounts", async () => {
-						await runVerifyFlagged([]);
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "restore-backup") {
-					try {
-						await runBackupRestoreManager(displaySettings);
-					} catch (error) {
-						const message =
-							error instanceof Error ? error.message : String(error);
-						console.error(
-							`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
-						);
-					}
-					continue;
-				}
-				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
-					if (destructiveActionInFlight) {
-						console.log("Another destructive action is already running. Wait for it to finish.");
-						continue;
-					}
-					destructiveActionInFlight = true;
-					try {
-						await runActionPanel(
-							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
-							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
-							async () => {
-								const result = await deleteSavedAccounts();
-								console.log(
-									result.accountsCleared
-										? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed
-										: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs.",
-								);
-							},
-							displaySettings,
-						);
-					} finally {
-						destructiveActionInFlight = false;
-					}
-					continue;
-				}
-				if (menuResult.mode === "reset") {
-					if (destructiveActionInFlight) {
-						console.log("Another destructive action is already running. Wait for it to finish.");
-						continue;
-					}
-					destructiveActionInFlight = true;
-					try {
-						await runActionPanel(
-							DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
-							DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
-							async () => {
-								const pendingQuotaRefresh = pendingMenuQuotaRefresh;
-								if (pendingQuotaRefresh) {
-									await pendingQuotaRefresh;
-								}
-								const result = await resetLocalState();
-								console.log(
-									result.accountsCleared &&
-										result.flaggedCleared &&
-										result.quotaCacheCleared
-										? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
-										: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs.",
-								);
-							},
-							displaySettings,
-						);
-					} finally {
-						destructiveActionInFlight = false;
-					}
-					continue;
-				}
-				if (menuResult.mode === "manage") {
-					const requiresInteractiveOAuth = typeof menuResult.refreshAccountIndex === "number";
-					if (requiresInteractiveOAuth) {
-						await handleManageAction(currentStorage, menuResult);
-						continue;
-					}
-					await runActionPanel("Applying Change", "Updating selected account", async () => {
-						await handleManageAction(currentStorage, menuResult);
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "add") {
-					break;
-				}
+				await runActionPanel("Applying Change", "Updating selected account", async () => {
+					await handleManageAction(currentStorage, menuResult);
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "add") {
+				break;
 			}
 		}
 

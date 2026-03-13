@@ -234,6 +234,14 @@ async function promptLoginModeFallback(
 			) {
 				return { mode: "verify-flagged" };
 			}
+			if (
+				normalized === "u" ||
+				normalized === "backup" ||
+				normalized === "restore" ||
+				normalized === "restore-backup"
+			) {
+				return { mode: "restore-backup" };
+			}
 			if (normalized === "q" || normalized === "quit")
 				return { mode: "cancel" };
 			console.log(UI_COPY.fallback.invalidModePrompt);

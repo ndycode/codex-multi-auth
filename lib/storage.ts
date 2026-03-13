@@ -1598,14 +1598,39 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 		return backups.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to list named backups", {
-				path: backupRoot,
-				error: String(error),
-			});
+		if (code === "ENOENT") {
+			return [];
 		}
-		return [];
+		log.warn("Failed to list named backups", {
+			path: backupRoot,
+			error: String(error),
+		});
+		throw error;
 	}
+}
+
+function isRetryableFilesystemErrorCode(
+	code: string | undefined,
+): code is "EPERM" | "EBUSY" | "EAGAIN" {
+	return code === "EPERM" || code === "EBUSY" || code === "EAGAIN";
+}
+
+async function retryTransientFilesystemOperation<T>(
+	operation: () => Promise<T>,
+): Promise<T> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+		}
+	}
+
+	throw new Error("Retry loop exhausted unexpectedly");
 }
 
 export function getNamedBackupsDirectoryPath(): string {
@@ -1715,7 +1740,9 @@ async function loadBackupCandidate(path: string): Promise<{
 	error?: string;
 }> {
 	try {
-		return await loadAccountsFromPath(path);
+		return await retryTransientFilesystemOperation(() =>
+			loadAccountsFromPath(path),
+		);
 	} catch (error) {
 		return {
 			normalized: null,
@@ -2022,7 +2049,7 @@ async function buildNamedBackupMetadata(
 		ctimeMs?: number;
 	} | null = null;
 	try {
-		stats = await fs.stat(path);
+		stats = await retryTransientFilesystemOperation(() => fs.stat(path));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {

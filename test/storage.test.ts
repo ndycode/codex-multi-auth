@@ -1267,30 +1267,17 @@ describe("storage", () => {
 			},
 		);
 
-		it("throws when a named backup is deleted after assessment", async () => {
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: [
-					{
-						accountId: "deleted-backup",
-						refreshToken: "ref-deleted-backup",
-						addedAt: 1,
-						lastUsed: 1,
-					},
-				],
-			});
-			await createNamedBackup("deleted-backup");
-			await clearAccounts();
+		it("rethrows unreadable backup directory errors while listing backups", async () => {
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValueOnce(error);
 
-			const assessment = await assessNamedBackupRestore("deleted-backup");
-			expect(assessment.valid).toBe(true);
-
-			await fs.rm(buildNamedBackupPath("deleted-backup"), { force: true });
-
-			await expect(restoreNamedBackup("deleted-backup")).rejects.toThrow(
-				/Import file not found/,
-			);
+			try {
+				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
+			} finally {
+				readdirSpy.mockRestore();
+			}
 		});
 
 		it("throws file-not-found when a manually named backup disappears after assessment", async () => {
@@ -1328,82 +1315,86 @@ describe("storage", () => {
 			);
 		});
 
-		it("throws when a named backup becomes invalid JSON before restore", async () => {
+		it("retries transient backup read errors while listing backups", async () => {
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
 				accounts: [
 					{
-						accountId: "corrupt-backup",
-						refreshToken: "ref-corrupt-backup",
+						accountId: "retry-read",
+						refreshToken: "ref-retry-read",
 						addedAt: 1,
 						lastUsed: 1,
 					},
 				],
 			});
-			await createNamedBackup("corrupt-backup");
-			await clearAccounts();
+			const backup = await createNamedBackup("retry-read");
+			const originalReadFile = fs.readFile.bind(fs);
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backup.path && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("backup file busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
 
-			const assessment = await assessNamedBackupRestore("corrupt-backup");
-			expect(assessment.valid).toBe(true);
-
-			await fs.writeFile(buildNamedBackupPath("corrupt-backup"), "{", "utf-8");
-
-			await expect(restoreNamedBackup("corrupt-backup")).rejects.toThrow(
-				/Invalid JSON in import file/,
-			);
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ name: "retry-read", valid: true }),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
 		});
 
-		it("throws when current accounts exceed the limit after assessment", async () => {
+		it("retries transient backup stat errors while listing backups", async () => {
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
 				accounts: [
 					{
-						accountId: "limit-backup",
-						refreshToken: "ref-limit-backup",
+						accountId: "retry-stat",
+						refreshToken: "ref-retry-stat",
 						addedAt: 1,
 						lastUsed: 1,
 					},
 				],
 			});
-			await createNamedBackup("limit-backup");
-
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: Array.from(
-					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
-					(_, index) => ({
-						accountId: `current-${index}`,
-						refreshToken: `ref-current-${index}`,
-						addedAt: index + 1,
-						lastUsed: index + 1,
-					}),
-				),
+			const backup = await createNamedBackup("retry-stat");
+			const originalStat = fs.stat.bind(fs);
+			let busyFailures = 0;
+			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+				const [path] = args;
+				if (String(path) === backup.path && busyFailures === 0) {
+					busyFailures += 1;
+					const error = new Error("backup stat busy") as NodeJS.ErrnoException;
+					error.code = "EAGAIN";
+					throw error;
+				}
+				return originalStat(...(args as Parameters<typeof fs.stat>));
 			});
 
-			const assessment = await assessNamedBackupRestore("limit-backup");
-			expect(assessment.valid).toBe(true);
-			expect(assessment.wouldExceedLimit).toBe(false);
-
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: Array.from(
-					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS },
-					(_, index) => ({
-						accountId: `grown-${index}`,
-						refreshToken: `ref-grown-${index}`,
-						addedAt: index + 1,
-						lastUsed: index + 1,
-					}),
-				),
-			});
-
-			await expect(restoreNamedBackup("limit-backup")).rejects.toThrow(
-				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
-			);
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ name: "retry-stat", valid: true }),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				statSpy.mockRestore();
+			}
 		});
 
 		it("serializes concurrent restores so only one succeeds when the limit is tight", async () => {

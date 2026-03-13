@@ -102,6 +102,13 @@ Rules:
 - `.rotate.`, `.tmp`, and `.wal` names are rejected
 - existing files are not overwritten unless a lower-level force path is used explicitly
 
+Restore workflow:
+
+1. Run `codex auth login`.
+2. Open the `Recovery` section.
+3. Choose `Restore From Backup`.
+4. Pick a backup and confirm the merge summary before import.
+
 ---
 
 ## oc-chatgpt Target Paths
@@ -117,6 +124,7 @@ Experimental sync targets the companion `oc-chatgpt-multi-auth` storage layout:
 ## Verification Commands
 
 ```bash
+codex auth login
 codex auth status
 codex auth list
 ```
