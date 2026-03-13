@@ -208,7 +208,7 @@ export class AccountManager {
 				const account = stored.accounts[index];
 				if (
 					typeof account?.refreshToken !== "string" ||
-					!account.refreshToken
+					!account.refreshToken.trim()
 				) {
 					continue;
 				}
@@ -238,7 +238,10 @@ export class AccountManager {
 			const baseNow = nowMs();
 			this.accounts = stored.accounts
 				.map((account, index): ManagedAccount | null => {
-					if (!account.refreshToken || typeof account.refreshToken !== "string") {
+					if (
+						typeof account.refreshToken !== "string" ||
+						!account.refreshToken.trim()
+					) {
 						return null;
 					}
 

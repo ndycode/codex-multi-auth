@@ -10,12 +10,14 @@ import {
 	deduplicateAccountsByEmail,
 	exportAccounts,
 	exportNamedBackup,
+	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getStoragePath,
 	importAccounts,
 	loadAccounts,
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
+	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
 	StorageError,
 	saveAccounts,
@@ -146,6 +148,113 @@ describe("storage", () => {
 			expect(deduped).toHaveLength(1);
 			expect(deduped[0]?.addedAt).toBe(now - 1500);
 			expect(deduped[0]?.lastUsed).toBe(now);
+		});
+
+		it("prefers refresh token matches over composite and email matches", () => {
+			const accounts = [
+				{
+					accountId: "workspace-a",
+					email: "alpha@example.com",
+					refreshToken: "token-refresh",
+				},
+				{
+					accountId: "workspace-b",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+				{
+					accountId: "workspace-b",
+					email: "other@example.com",
+					refreshToken: "token-safe-email",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-b",
+				email: "match@example.com",
+				refreshToken: "token-refresh",
+			});
+
+			expect(matchIndex).toBe(0);
+		});
+
+		it("prefers composite accountId plus email matches over safe-email fallbacks", () => {
+			const accounts = [
+				{
+					accountId: "workspace-other",
+					email: "match@example.com",
+					refreshToken: "token-safe-email",
+				},
+				{
+					accountId: "workspace-a",
+					email: "match@example.com",
+					refreshToken: "token-composite",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-a",
+				email: "match@example.com",
+			});
+
+			expect(matchIndex).toBe(1);
+		});
+
+		it("falls back to a unique bare accountId when email matching is unsafe", () => {
+			const accounts = [
+				{
+					accountId: "workspace-email",
+					email: "User@Example.com",
+					refreshToken: "token-email",
+				},
+				{
+					accountId: "workspace-unique",
+					refreshToken: "token-unique",
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(
+				accounts,
+				{
+					accountId: "workspace-unique",
+					email: " user@example.com ",
+				},
+				{ allowUniqueAccountIdFallbackWithoutEmail: true },
+			);
+
+			expect(matchIndex).toBe(1);
+		});
+
+		it("only uses bare accountId fallback when the accountId is unique", () => {
+			const accounts = [
+				{
+					accountId: "workspace-shared",
+					refreshToken: "refresh-a",
+				},
+				{
+					accountId: "workspace-shared",
+					refreshToken: "refresh-b",
+				},
+				{
+					accountId: "workspace-unique",
+					refreshToken: "refresh-c",
+				},
+			];
+
+			expect(
+				findMatchingAccountIndex(
+					accounts,
+					{ accountId: "workspace-shared" },
+					{ allowUniqueAccountIdFallbackWithoutEmail: true },
+				),
+			).toBeUndefined();
+			expect(
+				resolveAccountSelectionIndex(
+					accounts,
+					{ accountId: "workspace-unique" },
+					0,
+				),
+			).toBe(2);
 		});
 	});
 
@@ -434,7 +543,7 @@ describe("storage", () => {
 			).toEqual(new Set(["acct-a", "acct-b"]));
 		});
 
-		it("rolls back account storage when flagged persistence fails inside the combined transaction", async () => {
+		it("rolls back account storage when flagged persistence keeps failing inside the combined transaction", async () => {
 			const now = Date.now();
 			await saveAccounts({
 				version: 3,
@@ -465,14 +574,11 @@ describe("storage", () => {
 			});
 
 			const originalRename = fs.rename.bind(fs);
-			let failFlaggedRename = true;
+			let flaggedRenameAttempts = 0;
 			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
 				async (from, to) => {
-					if (
-						failFlaggedRename &&
-						String(to).endsWith("openai-codex-flagged-accounts.json")
-					) {
-						failFlaggedRename = false;
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
 						const error = Object.assign(
 							new Error("flagged storage busy"),
 							{ code: "EBUSY" },
@@ -510,6 +616,7 @@ describe("storage", () => {
 						);
 					}),
 				).rejects.toThrow("flagged storage busy");
+				expect(flaggedRenameAttempts).toBe(5);
 			} finally {
 				renameSpy.mockRestore();
 			}
@@ -529,6 +636,68 @@ describe("storage", () => {
 				expect.objectContaining({
 					accountId: "acct-flagged",
 					refreshToken: "refresh-flagged",
+				}),
+			);
+		});
+
+		it("retries transient flagged storage rename and succeeds", async () => {
+			const now = Date.now();
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
+						if (flaggedRenameAttempts <= 2) {
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await saveFlaggedAccounts({
+					version: 1,
+					accounts: [
+						{
+							accountId: "acct-flagged",
+							email: "flagged@example.com",
+							refreshToken: "refresh-flagged-next",
+							addedAt: now,
+							lastUsed: now,
+							flaggedAt: now,
+						},
+					],
+				});
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			expect(flaggedRenameAttempts).toBe(3);
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					refreshToken: "refresh-flagged-next",
 				}),
 			);
 		});

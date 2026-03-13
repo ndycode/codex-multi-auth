@@ -2039,6 +2039,121 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		).toEqual(["refresh-a", "refresh-b", "refresh-c"]);
 	});
 
+	it("serializes concurrent manual logins through the storage transaction queue", async () => {
+		const createDeferred = () => {
+			let resolve!: () => void;
+			const promise = new Promise<void>((res) => {
+				resolve = res;
+			});
+			return { promise, resolve };
+		};
+
+		mockStorage.accounts = [];
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = {};
+
+		const firstPersist = createDeferred();
+		saveAccountsMock
+			.mockImplementationOnce(async (storage) => {
+				await firstPersist.promise;
+				mockStorage.version = storage.version;
+				mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+				mockStorage.activeIndex = storage.activeIndex;
+				mockStorage.activeIndexByFamily = {
+					...(storage.activeIndexByFamily ?? {}),
+				};
+			})
+			.mockImplementation(async (storage) => {
+				mockStorage.version = storage.version;
+				mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+				mockStorage.activeIndex = storage.activeIndex;
+				mockStorage.activeIndexByFamily = {
+					...(storage.activeIndexByFamily ?? {}),
+				};
+			});
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow)
+			.mockResolvedValueOnce({
+				pkce: { verifier: "persist-concurrent-verifier-1", challenge: "persist-concurrent-challenge-1" },
+				state: "persist-concurrent-state-1",
+				url: "https://auth.openai.com/test?state=persist-concurrent-state-1",
+			})
+			.mockResolvedValueOnce({
+				pkce: { verifier: "persist-concurrent-verifier-2", challenge: "persist-concurrent-challenge-2" },
+				state: "persist-concurrent-state-2",
+				url: "https://auth.openai.com/test?state=persist-concurrent-state-2",
+			});
+		vi.mocked(authModule.exchangeAuthorizationCode)
+			.mockResolvedValueOnce({
+				type: "success",
+				access: "access-token-1",
+				refresh: "refresh-1",
+				expires: Date.now() + 3600_000,
+				idToken: undefined,
+			})
+			.mockResolvedValueOnce({
+				type: "success",
+				access: "access-token-2",
+				refresh: "refresh-2",
+				expires: Date.now() + 3600_000,
+				idToken: undefined,
+			});
+		vi.mocked(accountsModule.extractAccountEmail)
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("beta@example.com");
+		vi.mocked(accountsModule.extractAccountId)
+			.mockReturnValueOnce("workspace-alpha")
+			.mockReturnValueOnce("workspace-beta");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flowOne = await manualMethod.authorize();
+		const flowTwo = await manualMethod.authorize();
+		const firstCallback = flowOne.callback(
+			"http://127.0.0.1:1455/auth/callback?code=alpha&state=persist-concurrent-state-1",
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		const secondCallback = flowTwo.callback(
+			"http://127.0.0.1:1455/auth/callback?code=beta&state=persist-concurrent-state-2",
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+
+		firstPersist.resolve();
+
+		const [firstResult, secondResult] = await Promise.all([
+			firstCallback,
+			secondCallback,
+		]);
+
+		expect(firstResult.type).toBe("success");
+		expect(secondResult.type).toBe("success");
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+		expect(mockStorage.accounts).toHaveLength(2);
+		expect(
+			mockStorage.accounts.map((account) => ({
+				email: account.email,
+				refreshToken: account.refreshToken,
+			})),
+		).toEqual([
+			{ email: "alpha@example.com", refreshToken: "refresh-1" },
+			{ email: "beta@example.com", refreshToken: "refresh-2" },
+		]);
+	});
+
 	it("updates a unique shared accountId entry when a login has no email claim", async () => {
 		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
 		mockStorage.accounts = [
