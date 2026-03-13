@@ -3443,6 +3443,79 @@ describe("codex manager cli commands", () => {
 		logSpy.mockRestore();
 	});
 
+	it("skips a second destructive action while reset is already running", async () => {
+		const now = Date.now();
+		const skipMessage =
+			"Another destructive action is already running. Wait for it to finish.";
+		const secondMenuAttempted = createDeferred<void>();
+		const skipLogged = createDeferred<void>();
+		const logSpy = vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+			if (message === skipMessage) {
+				skipLogged.resolve();
+			}
+		});
+		const firstResetStarted = createDeferred<void>();
+		const allowFirstResetToFinish = createDeferred<void>();
+		let menuPromptCall = 0;
+
+		loadAccountsMock.mockImplementation(async () => ({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		}));
+		promptLoginModeMock.mockImplementation(async () => {
+			menuPromptCall += 1;
+			if (menuPromptCall === 2) {
+				secondMenuAttempted.resolve();
+			}
+			if (menuPromptCall <= 2) {
+				return { mode: "reset" };
+			}
+			return { mode: "cancel" };
+		});
+		resetLocalStateMock.mockImplementationOnce(async () => {
+			firstResetStarted.resolve();
+			await allowFirstResetToFinish.promise;
+			return {
+				accountsCleared: true,
+				flaggedCleared: true,
+				quotaCacheCleared: true,
+			};
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const firstRunPromise = runCodexMultiAuthCli(["auth", "login"]);
+
+		await firstResetStarted.promise;
+
+		const secondRunPromise = runCodexMultiAuthCli(["auth", "login"]);
+		await secondMenuAttempted.promise;
+		await skipLogged.promise;
+
+		expect(resetLocalStateMock).toHaveBeenCalledTimes(1);
+
+		allowFirstResetToFinish.resolve();
+
+		const [firstExitCode, secondExitCode] = await Promise.all([
+			firstRunPromise,
+			secondRunPromise,
+		]);
+
+		expect(firstExitCode).toBe(0);
+		expect(secondExitCode).toBe(0);
+		expect(resetLocalStateMock).toHaveBeenCalledTimes(1);
+		expect(logSpy).toHaveBeenCalledWith(skipMessage);
+		logSpy.mockRestore();
+	});
+
 	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue(

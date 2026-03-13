@@ -92,6 +92,8 @@ type TokenSuccessWithAccount = TokenSuccess & {
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 
+let destructiveActionInFlight = false;
+
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
 	const ui = getUiRuntimeOptions();
@@ -3892,41 +3894,59 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
-					await runActionPanel(
-						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
-						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
-						async () => {
-							const result = await deleteSavedAccounts();
-							console.log(
-								result.accountsCleared
-									? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed
-									: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs.",
-							);
-						},
-						displaySettings,
-					);
+					if (destructiveActionInFlight) {
+						console.log("Another destructive action is already running. Wait for it to finish.");
+						continue;
+					}
+					destructiveActionInFlight = true;
+					try {
+						await runActionPanel(
+							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
+							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
+							async () => {
+								const result = await deleteSavedAccounts();
+								console.log(
+									result.accountsCleared
+										? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed
+										: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs.",
+								);
+							},
+							displaySettings,
+						);
+					} finally {
+						destructiveActionInFlight = false;
+					}
 					continue;
 				}
 				if (menuResult.mode === "reset") {
-					await runActionPanel(
-						DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
-						DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
-						async () => {
-							const pendingQuotaRefresh = pendingMenuQuotaRefresh;
-							if (pendingQuotaRefresh) {
-								await pendingQuotaRefresh;
-							}
-							const result = await resetLocalState();
-							console.log(
-								result.accountsCleared &&
-									result.flaggedCleared &&
-									result.quotaCacheCleared
-									? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
-									: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs.",
-							);
-						},
-						displaySettings,
-					);
+					if (destructiveActionInFlight) {
+						console.log("Another destructive action is already running. Wait for it to finish.");
+						continue;
+					}
+					destructiveActionInFlight = true;
+					try {
+						await runActionPanel(
+							DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
+							DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
+							async () => {
+								const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+								if (pendingQuotaRefresh) {
+									await pendingQuotaRefresh;
+								}
+								const result = await resetLocalState();
+								console.log(
+									result.accountsCleared &&
+										result.flaggedCleared &&
+										result.quotaCacheCleared
+										? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
+										: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs.",
+								);
+							},
+							displaySettings,
+						);
+					} finally {
+						destructiveActionInFlight = false;
+					}
 					continue;
 				}
 				if (menuResult.mode === "manage") {
