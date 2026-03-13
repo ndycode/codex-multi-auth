@@ -1526,6 +1526,79 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
+	it("shows limit-exceeded named backups as red in the backup browser list", async () => {
+		setInteractiveTTY(false);
+		const now = Date.now();
+		const currentStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "refresh-existing",
+					accountId: "acc-existing",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: now - 1_000,
+				updatedAt: now - 1_000,
+				sizeBytes: 512,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 10,
+			mergedAccountCount: 11,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: true,
+			valid: true,
+			error: undefined,
+		};
+
+		loadAccountsMock.mockResolvedValue(currentStorage);
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		selectMock.mockResolvedValueOnce({ type: "back" });
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const authModule = await import("../lib/auth/auth.js");
+		const createAuthorizationFlowMock = vi.mocked(
+			authModule.createAuthorizationFlow,
+		);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		const firstMenuItems = selectMock.mock.calls[0]?.[0] as Array<{
+			label: string;
+			hint?: string;
+			color?: string;
+		}>;
+		const limitExceededItem = firstMenuItems.find(
+			(item) => item.label === "named-backup",
+		);
+
+		expect(exitCode).toBe(0);
+		expect(limitExceededItem).toMatchObject({
+			label: "named-backup",
+			color: "red",
+			hint: expect.stringContaining("would exceed"),
+		});
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
 	it("keeps auth login running when a named backup assessment fails inside the browser", async () => {
 		setInteractiveTTY(false);
 		const now = Date.now();

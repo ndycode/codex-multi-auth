@@ -4201,6 +4201,9 @@ function backupMenuColor(
 	if (entry.kind === "named" && entry.assessment === null) {
 		return entry.backup.valid ? "yellow" : "red";
 	}
+	if (hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit) {
+		return "red";
+	}
 	return entry.backup.valid ? "green" : "red";
 }
 
