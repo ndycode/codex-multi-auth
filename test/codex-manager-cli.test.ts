@@ -13,6 +13,7 @@ const getActionableNamedBackupRestoresMock = vi.fn();
 const listNamedBackupsMock = vi.fn();
 const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
+const listAccountSnapshotsMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
@@ -114,6 +115,7 @@ vi.mock("../lib/storage.js", () => ({
 	listNamedBackups: listNamedBackupsMock,
 	listRotatingBackups: listRotatingBackupsMock,
 	assessNamedBackupRestore: assessNamedBackupRestoreMock,
+	listAccountSnapshots: listAccountSnapshotsMock,
 	getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
 	restoreNamedBackup: restoreNamedBackupMock,
 }));
@@ -305,6 +307,7 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockReset();
 		listRotatingBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
+		listAccountSnapshotsMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
 		restoreNamedBackupMock.mockReset();
 		confirmMock.mockReset();
@@ -314,6 +317,7 @@ describe("codex manager cli commands", () => {
 		});
 		listNamedBackupsMock.mockResolvedValue([]);
 		listRotatingBackupsMock.mockResolvedValue([]);
+		listAccountSnapshotsMock.mockResolvedValue([]);
 		assessNamedBackupRestoreMock.mockResolvedValue({
 			backup: {
 				name: "",
@@ -1784,6 +1788,40 @@ describe("codex manager cli commands", () => {
 					"Pool 1 active | Sync none | Restore none | Rollback none | Doctor ok",
 				disabled: true,
 				hint: "Accounts: 1 enabled / 0 disabled / 1 total",
+			}),
+		);
+	});
+
+	it("falls back to a safe health summary when restore or rollback state reads fail", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		});
+		getActionableNamedBackupRestoresMock.mockRejectedValue(
+			new Error("EBUSY backups"),
+		);
+		getLastCodexCliSyncRunMock.mockReturnValue(null);
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({
+				healthSummary: expect.objectContaining({
+					label: expect.stringContaining("Pool 1 active"),
+				}),
 			}),
 		);
 	});

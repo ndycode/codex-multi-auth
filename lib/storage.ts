@@ -1538,6 +1538,13 @@ export async function getActionableNamedBackupRestores(
 	return { assessments: actionable, totalBackups: backups.length };
 }
 
+export async function listAccountSnapshots(): Promise<NamedBackupMetadata[]> {
+	const backups = await listNamedBackups();
+	return backups.filter((backup) =>
+		AUTO_SNAPSHOT_NAME_PATTERN.test(backup.name),
+	);
+}
+
 export async function createNamedBackup(
 	name: string,
 	options: { force?: boolean } = {},

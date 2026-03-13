@@ -4350,10 +4350,27 @@ async function buildLoginMenuHealthSummary(
 		(account) => account.enabled !== false,
 	).length;
 	const disabledCount = storage.accounts.length - enabledCount;
-	const [actionableRestores, rollbackPlan] = await Promise.all([
-		getActionableNamedBackupRestores({ currentStorage: storage }),
-		getLatestCodexCliSyncRollbackPlan(),
-	]);
+	let actionableRestores: Awaited<
+		ReturnType<typeof getActionableNamedBackupRestores>
+	> = {
+		assessments: [],
+		totalBackups: 0,
+	};
+	let rollbackPlan: Awaited<
+		ReturnType<typeof getLatestCodexCliSyncRollbackPlan>
+	> = {
+		status: "unavailable" as const,
+		reason: "health summary unavailable",
+		snapshot: null,
+	};
+	try {
+		[actionableRestores, rollbackPlan] = await Promise.all([
+			getActionableNamedBackupRestores({ currentStorage: storage }),
+			getLatestCodexCliSyncRollbackPlan(),
+		]);
+	} catch (error) {
+		console.warn("Failed to build login menu health summary", error);
+	}
 	const syncSummary = summarizeLatestCodexCliSyncState();
 	const doctorSummary = summarizeReadOnlyDoctorState(storage);
 	const restoreLabel =
@@ -4369,9 +4386,9 @@ async function buildLoginMenuHealthSummary(
 		`Accounts: ${enabledCount} enabled / ${disabledCount} disabled / ${storage.accounts.length} total`,
 		`Sync: ${syncSummary.hint}`,
 		`Restore backups: ${actionableRestores.assessments.length} actionable of ${actionableRestores.totalBackups} total`,
-		`Rollback: ${rollbackPlan.reason}`,
-		`Doctor: ${doctorSummary.hint}`,
-	];
+		rollbackPlan.reason ? `Rollback: ${rollbackPlan.reason}` : undefined,
+		doctorSummary.hint ? `Doctor: ${doctorSummary.hint}` : undefined,
+	].filter((value): value is string => Boolean(value));
 
 	return {
 		label:
