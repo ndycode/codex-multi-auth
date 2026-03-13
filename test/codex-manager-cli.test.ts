@@ -1350,6 +1350,7 @@ describe("codex manager cli commands", () => {
 		setInteractiveTTY(false);
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(true);
 		const now = Date.now();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		let loadCount = 0;
 		loadAccountsMock.mockImplementation(async () => {
 			loadCount += 1;
@@ -1397,6 +1398,11 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		listRotatingBackupsMock.mockResolvedValue([]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		restoreNamedBackupMock.mockResolvedValueOnce({
+			imported: 1,
+			skipped: 0,
+			total: 1,
+		});
 		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
 		selectMock
 			.mockResolvedValueOnce({
@@ -1428,6 +1434,12 @@ describe("codex manager cli commands", () => {
 			"Restore backup named-backup?",
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(
+			logSpy.mock.calls.some(
+				(call) =>
+					call[0] === "Imported 1 account. Skipped 0. Total accounts: 1.",
+			),
+		).toBe(true);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	}, 20_000);
 
