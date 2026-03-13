@@ -1846,6 +1846,69 @@ describe("codex manager cli commands", () => {
 		warnSpy.mockRestore();
 	});
 
+	it("falls back to OAuth when startup recovery prompt setup fails before confirm", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		const assessment = {
+			backup: {
+				name: "startup-backup",
+				path: "/mock/backups/startup-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: "",
+		};
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [assessment],
+			totalBackups: 2,
+		});
+		getNamedBackupsDirectoryPathMock.mockImplementationOnce(() => {
+			throw makeErrnoError(
+				"no such file or directory, open '/mock/dashboard-settings.json'",
+				"ENOENT",
+			);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		await configureSuccessfulOAuthFlow(now);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(getNamedBackupsDirectoryPathMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledWith(
+			"Startup recovery prompt failed (ENOENT). Continuing with OAuth.",
+		);
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+		warnSpy.mockRestore();
+	});
+
 	it("keeps login loop running when settings action is selected", async () => {
 		const now = Date.now();
 		const storage = {

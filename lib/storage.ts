@@ -543,6 +543,11 @@ interface NamedBackupScanEntry {
 	candidate: LoadedBackupCandidate;
 }
 
+interface NamedBackupScanResult {
+	backups: NamedBackupScanEntry[];
+	totalBackups: number;
+}
+
 function createUnloadedBackupCandidate(): LoadedBackupCandidate {
 	return {
 		normalized: null,
@@ -1308,14 +1313,16 @@ async function buildNamedBackupMetadata(
 	};
 }
 
-async function scanNamedBackups(): Promise<NamedBackupScanEntry[]> {
+async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 	const backupDir = getNamedBackupsDirectory();
 	try {
 		const entries = await fs.readdir(backupDir, { withFileTypes: true });
 		const backups: NamedBackupScanEntry[] = [];
+		let totalBackups = 0;
 		for (const entry of entries) {
 			if (!entry.isFile()) continue;
 			if (!entry.name.endsWith(NAMED_BACKUP_EXTENSION)) continue;
+			totalBackups += 1;
 
 			const name = deriveBackupNameFromFile(entry.name);
 			const path = join(backupDir, entry.name);
@@ -1335,9 +1342,12 @@ async function scanNamedBackups(): Promise<NamedBackupScanEntry[]> {
 			}
 		}
 
-		return backups.sort(
-			(a, b) => (b.backup.updatedAt ?? 0) - (a.backup.updatedAt ?? 0),
-		);
+		return {
+			backups: backups.sort(
+				(a, b) => (b.backup.updatedAt ?? 0) - (a.backup.updatedAt ?? 0),
+			),
+			totalBackups,
+		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
@@ -1346,7 +1356,7 @@ async function scanNamedBackups(): Promise<NamedBackupScanEntry[]> {
 				error: String(error),
 			});
 		}
-		return [];
+		return { backups: [], totalBackups: 0 };
 	}
 }
 
@@ -1393,8 +1403,8 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadata[]> 
 }
 
 export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
-	const backups = await scanNamedBackups();
-	return backups.map((entry) => entry.backup);
+	const scanResult = await scanNamedBackups();
+	return scanResult.backups.map((entry) => entry.backup);
 }
 
 export function getNamedBackupsDirectoryPath(): string {
@@ -1410,14 +1420,21 @@ export async function getActionableNamedBackupRestores(
 ): Promise<ActionableNamedBackupRecoveries> {
 	const usesFastPath =
 		options.backups === undefined && options.assess === undefined;
-	const scannedBackups = usesFastPath ? await scanNamedBackups() : [];
+	const scannedBackupResult = usesFastPath
+		? await scanNamedBackups()
+		: { backups: [], totalBackups: 0 };
+	const scannedBackups = scannedBackupResult.backups;
 	const backups =
 		options.backups ??
 		(usesFastPath
 			? scannedBackups.map((entry) => entry.backup)
 			: await listNamedBackupsWithoutLoading());
-	if (backups.length === 0) {
+	const totalBackups = usesFastPath ? scannedBackupResult.totalBackups : backups.length;
+	if (totalBackups === 0) {
 		return { assessments: [], totalBackups: 0 };
+	}
+	if (usesFastPath && scannedBackups.length === 0) {
+		return { assessments: [], totalBackups };
 	}
 
 	const currentStorage =
@@ -1453,7 +1470,7 @@ export async function getActionableNamedBackupRestores(
 				});
 			}
 		}
-		return { assessments: actionable, totalBackups: backups.length };
+		return { assessments: actionable, totalBackups };
 	}
 
 	const assess = options.assess ?? assessNamedBackupRestore;

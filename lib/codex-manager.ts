@@ -4445,6 +4445,7 @@ async function runAuthLogin(): Promise<number> {
 				recoveryState = { assessments: [], totalBackups: 0 };
 			}
 			if (recoveryState.assessments.length > 0) {
+				let promptWasShown = false;
 				try {
 					const displaySettings = await loadDashboardDisplaySettings();
 					applyUiThemeFromDashboardSettings(displaySettings);
@@ -4454,6 +4455,7 @@ async function runAuthLogin(): Promise<number> {
 						recoveryState.assessments.length === 1
 							? (sample?.backup.name ?? "1 backup")
 							: `${recoveryState.assessments.length} backups`;
+					promptWasShown = true;
 					const restoreNow = await confirm(
 						`Found ${recoveryState.assessments.length} recoverable backup${
 							recoveryState.assessments.length === 1 ? "" : "s"
@@ -4470,6 +4472,9 @@ async function runAuthLogin(): Promise<number> {
 						continue;
 					}
 				} catch (error) {
+					if (!promptWasShown) {
+						recoveryPromptAttempted = false;
+					}
 					const errorLabel = getRedactedFilesystemErrorLabel(error);
 					console.warn(
 						`Startup recovery prompt failed (${errorLabel}). Continuing with OAuth.`,

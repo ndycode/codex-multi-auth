@@ -377,6 +377,81 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		expect(result.assessments[0]?.imported).toBe(1);
 	});
 
+	it("keeps actionable backups when fast-path scan hits EBUSY", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "locked@example.com",
+					refreshToken: "locked-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("locked-backup");
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "valid@example.com",
+					refreshToken: "valid-token",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+		await storage.createNamedBackup("valid-backup");
+		await storage.saveAccounts(emptyStorage);
+
+		const backups = await storage.listNamedBackups();
+		const lockedBackup = backups.find((backup) => backup.name === "locked-backup");
+		const validBackup = backups.find((backup) => backup.name === "valid-backup");
+		expect(lockedBackup).toBeDefined();
+		expect(validBackup).toBeDefined();
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(
+			(async (...args: Parameters<typeof fs.readFile>) => {
+				const [path] = args;
+				if (path === lockedBackup?.path) {
+					const error = new Error("resource busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalReadFile(...args);
+			}) as typeof fs.readFile,
+		);
+
+		try {
+			const result = await storage.getActionableNamedBackupRestores({
+				currentStorage: emptyStorage,
+			});
+
+			expect(result.totalBackups).toBe(2);
+			expect(result.assessments.map((item) => item.backup.name)).toEqual([
+				"valid-backup",
+			]);
+			expect(result.assessments[0]?.imported).toBe(1);
+			expect(readFileSpy.mock.calls.map(([path]) => path)).toEqual(
+				expect.arrayContaining([lockedBackup?.path, validBackup?.path]),
+			);
+		} finally {
+			readFileSpy.mockRestore();
+		}
+	});
+
 	it("does not pre-read backups when a custom assessor is injected", async () => {
 		const storage = await import("../lib/storage.js");
 		const emptyStorage = {
