@@ -5,6 +5,8 @@ const mockLoadAccounts = vi.fn();
 const mockSaveAccounts = vi.fn();
 const mockLoadCodexCliState = vi.fn();
 const mockSyncAccountStorageFromCodexCli = vi.fn();
+const mockCommitPendingCodexCliSyncRun = vi.fn();
+const mockCommitCodexCliSyncRunFailure = vi.fn();
 const mockSetCodexCliActiveSelection = vi.fn();
 const mockSelectHybridAccount = vi.fn();
 
@@ -27,6 +29,8 @@ vi.mock("../lib/codex-cli/state.js", async (importOriginal) => {
 });
 
 vi.mock("../lib/codex-cli/sync.js", () => ({
+  commitPendingCodexCliSyncRun: mockCommitPendingCodexCliSyncRun,
+  commitCodexCliSyncRunFailure: mockCommitCodexCliSyncRunFailure,
   syncAccountStorageFromCodexCli: mockSyncAccountStorageFromCodexCli,
 }));
 
@@ -79,6 +83,8 @@ async function importAccountsModule() {
 describe("accounts edge branches", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCommitPendingCodexCliSyncRun.mockReset();
+    mockCommitCodexCliSyncRunFailure.mockReset();
     mockLoadAccounts.mockResolvedValue(null);
     mockSaveAccounts.mockResolvedValue(undefined);
     mockLoadCodexCliState.mockResolvedValue(null);

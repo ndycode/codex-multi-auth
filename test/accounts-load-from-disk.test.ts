@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 
+const {
+  commitPendingCodexCliSyncRunMock,
+  commitCodexCliSyncRunFailureMock,
+} = vi.hoisted(() => ({
+  commitPendingCodexCliSyncRunMock: vi.fn(),
+  commitCodexCliSyncRunFailureMock: vi.fn(),
+}));
+
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
   return {
@@ -11,6 +19,8 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
 });
 
 vi.mock("../lib/codex-cli/sync.js", () => ({
+  commitPendingCodexCliSyncRun: commitPendingCodexCliSyncRunMock,
+  commitCodexCliSyncRunFailure: commitCodexCliSyncRunFailureMock,
   syncAccountStorageFromCodexCli: vi.fn(),
 }));
 
@@ -30,6 +40,8 @@ import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 describe("AccountManager loadFromDisk", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    commitPendingCodexCliSyncRunMock.mockReset();
+    commitCodexCliSyncRunFailureMock.mockReset();
     vi.mocked(loadAccounts).mockResolvedValue(null);
     vi.mocked(saveAccounts).mockResolvedValue(undefined);
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({

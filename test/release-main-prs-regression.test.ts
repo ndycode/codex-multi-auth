@@ -199,7 +199,7 @@ describe("release-main-prs regressions", () => {
 			return originalUnlink(targetPath);
 		});
 
-		await expect(clearFlaggedAccounts()).rejects.toThrow("EPERM primary delete");
+		await expect(clearFlaggedAccounts()).resolves.toBe(false);
 
 		const flagged = await loadFlaggedAccounts();
 		const syncResult = await syncAccountStorageFromCodexCli(null);

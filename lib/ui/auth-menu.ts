@@ -1,6 +1,5 @@
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { DESTRUCTIVE_ACTION_COPY } from "../destructive-actions.js";
 import { ANSI, isTTY } from "./ansi.js";
 import { confirm } from "./confirm.js";
 import { formatCheckFlaggedLabel, UI_COPY } from "./copy.js";
@@ -82,6 +81,9 @@ export type AccountAction =
 	| "set-current"
 	| "cancel";
 
+const ANSI_ESCAPE_PATTERN = new RegExp("\\u001b\\[[0-?]*[ -/]*[@-~]", "g");
+const CONTROL_CHAR_PATTERN = new RegExp("[\\u0000-\\u001f\\u007f]", "g");
+
 function resolveCliVersionLabel(): string | null {
 	const raw = (process.env.CODEX_MULTI_AUTH_CLI_VERSION ?? "").trim();
 	if (raw.length === 0) return null;
@@ -97,8 +99,8 @@ function mainMenuTitleWithVersion(): string {
 function sanitizeTerminalText(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	return value
-		.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-		.replace(/[\u0000-\u001f\u007f]/g, "")
+		.replace(ANSI_ESCAPE_PATTERN, "")
+		.replace(CONTROL_CHAR_PATTERN, "")
 		.trim();
 }
 
@@ -773,18 +775,6 @@ export async function showAuthMenu(
 			searchQuery = await promptSearchQuery(searchQuery);
 			focusKey = "action:search";
 			continue;
-		}
-		if (result.type === "delete-all") {
-			const confirmed = await confirm(
-				DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.confirm,
-			);
-			if (!confirmed) continue;
-		}
-		if (result.type === "reset-all") {
-			const confirmed = await confirm(
-				DESTRUCTIVE_ACTION_COPY.resetLocalState.confirm,
-			);
-			if (!confirmed) continue;
 		}
 		if (result.type === "delete-account") {
 			const confirmed = await confirm(
