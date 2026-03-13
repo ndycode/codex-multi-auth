@@ -194,7 +194,7 @@ export class AccountManager {
 	}
 
 	constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorageV3 | null) {
-		const fallbackAccountId = extractAccountId(authFallback?.access);
+		const fallbackAccountId = extractAccountId(authFallback?.access)?.trim() || undefined;
 		const fallbackAccountEmail = sanitizeEmail(extractAccountEmail(authFallback?.access));
 
 		if (stored && stored.accounts.length > 0) {

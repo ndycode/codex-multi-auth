@@ -2067,6 +2067,11 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(
 			mockStorage.accounts.map((account) => account.refreshToken),
 		).toEqual(["refresh-a", "refresh-b", "refresh-c"]);
+		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
+			"shared-workspace",
+			"shared-workspace",
+			"shared-workspace",
+		]);
 	});
 
 	it("serializes concurrent manual logins through the storage transaction queue", async () => {

@@ -401,6 +401,61 @@ describe("oc-chatgpt import adapter", () => {
 		);
 	});
 
+	it("keeps reversed-order shared-account imports distinct when only one destination email exists", () => {
+		const destination: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "shared-account",
+					email: "alice@example.com",
+					refreshToken: "dest-alice",
+					addedAt: 10,
+					lastUsed: 10,
+				},
+			],
+		};
+
+		const source: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 1,
+			accounts: [
+				{
+					accountId: "shared-account",
+					email: "bob@example.com",
+					refreshToken: "source-bob",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+				{
+					accountId: "shared-account",
+					email: "alice@example.com",
+					refreshToken: "source-alice-older",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+
+		const preview = previewOcChatgptImportMerge({ source, destination });
+
+		expect(preview.toUpdate).toHaveLength(0);
+		expect(preview.toAdd).toEqual([
+			{
+				accountId: "shared-account",
+				email: "bob@example.com",
+				refreshTokenLast4: "-bob",
+			},
+		]);
+		expect(preview.merged.accounts).toHaveLength(2);
+		expect(preview.merged.accounts.map((account) => account.email)).toEqual(
+			expect.arrayContaining(["alice@example.com", "bob@example.com"]),
+		);
+		expect(preview.merged.accounts.map((account) => account.refreshToken)).toEqual(
+			expect.arrayContaining(["dest-alice", "source-bob"]),
+		);
+	});
+
 	it("keeps newer destination metadata when a refresh-token fallback match is older than destination", () => {
 		const destination: AccountStorageV3 = {
 			version: 3,
