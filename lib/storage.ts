@@ -1319,9 +1319,20 @@ async function scanNamedBackups(): Promise<NamedBackupScanEntry[]> {
 
 			const name = deriveBackupNameFromFile(entry.name);
 			const path = join(backupDir, entry.name);
-			const candidate = await loadBackupCandidate(path);
-			const backup = await buildNamedBackupMetadata(name, path, { candidate });
-			backups.push({ backup, candidate });
+			try {
+				const candidate = await loadBackupCandidate(path);
+				const backup = await buildNamedBackupMetadata(name, path, { candidate });
+				backups.push({ backup, candidate });
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.warn("Failed to scan named backup", {
+						name,
+						path,
+						error: String(error),
+					});
+				}
+			}
 		}
 
 		return backups.sort(

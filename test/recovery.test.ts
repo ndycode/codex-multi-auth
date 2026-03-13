@@ -495,7 +495,12 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		const statSpy = vi.spyOn(fs, "stat").mockImplementation(
 			(async (...args: Parameters<typeof fs.stat>) => {
 				const [path] = args;
-				if (path === lockedBackup?.path) {
+				const normalizedPath =
+					typeof path === "string" ? path.replaceAll("\\", "/") : String(path);
+				if (
+					path === lockedBackup?.path ||
+					normalizedPath.endsWith("/locked-backup.json")
+				) {
 					const error = new Error("resource busy") as NodeJS.ErrnoException;
 					error.code = "EBUSY";
 					throw error;
@@ -606,6 +611,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 			expect.arrayContaining([lockedBackup?.path, validBackup?.path]),
 		);
 	});
+
 });
 
 describe("isRecoverableError", () => {

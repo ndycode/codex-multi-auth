@@ -645,8 +645,16 @@ describe("codex manager cli commands", () => {
 			valid: true,
 			error: "",
 		};
+		const secondAssessment = {
+			...assessment,
+			backup: {
+				...assessment.backup,
+				name: "startup-backup-2",
+				path: "/mock/backups/startup-backup-2.json",
+			},
+		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
-			assessments: [assessment],
+			assessments: [assessment, secondAssessment],
 			totalBackups: 2,
 		});
 		confirmMock.mockResolvedValue(false);
@@ -659,6 +667,9 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).toHaveBeenCalledWith(
+			"Found 2 recoverable backups out of 2 total (2 backups) in /mock/backups. Restore now?",
+		);
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});

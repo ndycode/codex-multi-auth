@@ -4451,10 +4451,9 @@ async function runAuthLogin(): Promise<number> {
 					const backupDir = getNamedBackupsDirectoryPath();
 					const sample = recoveryState.assessments[0];
 					const backupLabel =
-						sample?.backup.name ??
-						`${recoveryState.assessments.length} backup${
-							recoveryState.assessments.length === 1 ? "" : "s"
-						}`;
+						recoveryState.assessments.length === 1
+							? (sample?.backup.name ?? "1 backup")
+							: `${recoveryState.assessments.length} backups`;
 					const restoreNow = await confirm(
 						`Found ${recoveryState.assessments.length} recoverable backup${
 							recoveryState.assessments.length === 1 ? "" : "s"
