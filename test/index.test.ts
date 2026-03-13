@@ -232,29 +232,97 @@ const mockStorage = {
 	activeIndexByFamily: {} as Record<string, number>,
 };
 
+const loadAccountsMock = vi.fn(async () => mockStorage);
+const saveAccountsMock = vi.fn(
+	async (storage: {
+		version: 3;
+		accounts: typeof mockStorage.accounts;
+		activeIndex: number;
+		activeIndexByFamily?: Record<string, number>;
+	}) => {
+		mockStorage.version = storage.version;
+		mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+		mockStorage.activeIndex = storage.activeIndex;
+		mockStorage.activeIndexByFamily = {
+			...(storage.activeIndexByFamily ?? {}),
+		};
+	},
+);
+const clearAccountsMock = vi.fn(async () => {
+	mockStorage.accounts = [];
+	mockStorage.activeIndex = 0;
+	mockStorage.activeIndexByFamily = {};
+});
+let storageTransactionQueue: Promise<unknown> = Promise.resolve();
+const withAccountStorageTransactionMock = vi.fn(
+	async (
+		handler: (
+			current: {
+				version: 3;
+				accounts: typeof mockStorage.accounts;
+				activeIndex: number;
+				activeIndexByFamily: Record<string, number>;
+			},
+			persist: (storage: {
+				version: 3;
+				accounts: typeof mockStorage.accounts;
+				activeIndex: number;
+				activeIndexByFamily?: Record<string, number>;
+			}) => Promise<void>,
+		) => Promise<unknown>,
+	) => {
+		const run = async () =>
+			handler(
+				{
+					version: 3,
+					accounts: mockStorage.accounts.map((account) => ({ ...account })),
+					activeIndex: mockStorage.activeIndex,
+					activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+				},
+				async (storage) => {
+					await saveAccountsMock(storage);
+				},
+			);
+		const nextRun = storageTransactionQueue.then(run, run);
+		storageTransactionQueue = nextRun.then(
+			() => undefined,
+			() => undefined,
+		);
+		return nextRun;
+	},
+);
+
 const syncCodexCliSelectionMock = vi.fn(async (_index: number) => {});
 
-vi.mock("../lib/storage.js", () => ({
-	getStoragePath: () => "/mock/path/accounts.json",
-	loadAccounts: vi.fn(async () => mockStorage),
-	saveAccounts: vi.fn(async () => {}),
-	clearAccounts: vi.fn(async () => {}),
-	setStoragePath: vi.fn(),
-	setStorageBackupEnabled: vi.fn(),
-	exportAccounts: vi.fn(async () => {}),
-	importAccounts: vi.fn(async () => ({ imported: 2, skipped: 1, total: 5 })),
-	loadFlaggedAccounts: vi.fn(async () => ({ version: 1, accounts: [] })),
-	saveFlaggedAccounts: vi.fn(async () => {}),
-	clearFlaggedAccounts: vi.fn(async () => {}),
-	StorageError: class StorageError extends Error {
-		hint: string;
-		constructor(message: string, hint: string) {
-			super(message);
-			this.hint = hint;
-		}
-	},
-	formatStorageErrorHint: () => "Check file permissions",
-}));
+vi.mock("../lib/storage.js", async () => {
+	const actual = await vi.importActual("../lib/storage.js");
+	return {
+		...(actual as Record<string, unknown>),
+		getStoragePath: () => "/mock/path/accounts.json",
+		loadAccounts: loadAccountsMock,
+		saveAccounts: saveAccountsMock,
+		withAccountStorageTransaction: withAccountStorageTransactionMock,
+		clearAccounts: clearAccountsMock,
+		setStoragePath: vi.fn(),
+		setStorageBackupEnabled: vi.fn(),
+		exportAccounts: vi.fn(async () => {}),
+		importAccounts: vi.fn(async () => ({ imported: 2, skipped: 1, total: 5 })),
+		loadFlaggedAccounts: vi.fn(async () => ({ version: 1, accounts: [] })),
+		saveFlaggedAccounts: vi.fn(async () => {}),
+		clearFlaggedAccounts: vi.fn(async () => {}),
+		StorageError: class StorageError extends Error {
+			hint: string;
+			constructor(message: string, hint: string) {
+				super(message);
+				this.hint = hint;
+			}
+		},
+		formatStorageErrorHint: () => "Check file permissions",
+	};
+});
+
+const extractAccountEmailMock = vi.fn(() => "user@example.com");
+const extractAccountIdMock = vi.fn(() => "account-1");
 
 vi.mock("../lib/accounts.js", () => {
 	class MockAccountManager {
@@ -339,8 +407,8 @@ vi.mock("../lib/accounts.js", () => {
 		AccountManager: MockAccountManager,
 		getAccountIdCandidates: () => [{ accountId: "acc-1", source: "token", label: "Test" }],
 		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
-		extractAccountEmail: () => "user@example.com",
-		extractAccountId: () => "account-1",
+		extractAccountEmail: extractAccountEmailMock,
+		extractAccountId: extractAccountIdMock,
 		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
 		formatAccountLabel: (_account: unknown, index: number) => `Account ${index + 1}`,
 		formatCooldown: () => null,
@@ -416,6 +484,11 @@ describe("OpenAIOAuthPlugin", () => {
 	beforeEach(async () => {
 		vi.clearAllMocks();
 		mockClient = createMockClient();
+		storageTransactionQueue = Promise.resolve();
+		extractAccountEmailMock.mockReset();
+		extractAccountEmailMock.mockImplementation(() => "user@example.com");
+		extractAccountIdMock.mockReset();
+		extractAccountIdMock.mockImplementation(() => "account-1");
 
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
@@ -427,6 +500,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		delete process.env.CODEX_AUTH_ACCOUNT_ID;
 	});
 
 	describe("plugin structure", () => {
@@ -845,6 +919,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		delete process.env.CODEX_AUTH_ACCOUNT_ID;
 	});
 
 	it("handles event handler errors gracefully", async () => {
@@ -1064,6 +1139,36 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
+	});
+
+	it("uses the refreshed token email when checking entitlement blocks", async () => {
+		mockStorage.accounts = [
+			{
+				accountId: "acc-1",
+				email: "stale@example.com",
+				refreshToken: "refresh-1",
+			},
+		];
+		extractAccountEmailMock.mockReturnValueOnce("fresh@example.com");
+		const entitlementModule = await import("../lib/entitlement-cache.js");
+		const isBlockedSpy = vi
+			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
+			.mockReturnValue({ blocked: false, waitMs: 0 });
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(isBlockedSpy).toHaveBeenCalledWith(
+			"account:acc-1::email:fresh@example.com",
+			"gpt-5.1",
+		);
 	});
 
 	it("handles network errors and rotates to next account", async () => {
@@ -1798,6 +1903,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		delete process.env.CODEX_AUTH_ACCOUNT_ID;
 	});
 
 	it("handles existing account update by refreshToken", async () => {
@@ -1832,6 +1938,315 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		await OpenAIOAuthPlugin({ client: mockClient } as never);
 
 		expect(mockStorage.accounts).toHaveLength(1);
+	});
+
+	it("preserves distinct accountId plus email pairs during manual login", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				email: "alpha@example.com",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: {
+				verifier: "persist-verifier-email",
+				challenge: "persist-challenge-email",
+			},
+			state: "persist-state-email",
+			url: "https://auth.openai.com/test?state=persist-state-email",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-b",
+			expires: Date.now() + 3600_000,
+			idToken: "id-token",
+		});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-state-email",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(2);
+		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
+			"shared-workspace",
+			"shared-workspace",
+		]);
+		expect(
+			mockStorage.accounts.map((account) => ({
+				email: account.email,
+				refreshToken: account.refreshToken,
+			})),
+		).toEqual([
+			{
+				email: "alpha@example.com",
+				refreshToken: "refresh-a",
+			},
+			{
+				email: "user@example.com",
+				refreshToken: "refresh-b",
+			},
+		]);
+	});
+
+	it("preserves duplicate shared accountId entries when a login has no email claim", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+			},
+			{
+				accountId: "shared-workspace",
+				refreshToken: "refresh-b",
+				addedAt: Date.now() - 100000,
+				lastUsed: Date.now() - 100000,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-verifier", challenge: "persist-challenge" },
+			state: "persist-state",
+			url: "https://auth.openai.com/test?state=persist-state",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-c",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(undefined);
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
+			"shared-workspace",
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-state",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(3);
+		expect(
+			mockStorage.accounts.map((account) => account.refreshToken),
+		).toEqual(["refresh-a", "refresh-b", "refresh-c"]);
+		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
+			"shared-workspace",
+			"shared-workspace",
+			"shared-workspace",
+		]);
+	});
+
+	it("serializes concurrent manual logins through the storage transaction queue", async () => {
+		const createDeferred = () => {
+			let resolve!: () => void;
+			const promise = new Promise<void>((res) => {
+				resolve = res;
+			});
+			return { promise, resolve };
+		};
+
+		mockStorage.accounts = [];
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = {};
+
+		const firstPersist = createDeferred();
+		saveAccountsMock
+			.mockImplementationOnce(async (storage) => {
+				await firstPersist.promise;
+				mockStorage.version = storage.version;
+				mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+				mockStorage.activeIndex = storage.activeIndex;
+				mockStorage.activeIndexByFamily = {
+					...(storage.activeIndexByFamily ?? {}),
+				};
+			})
+			.mockImplementation(async (storage) => {
+				mockStorage.version = storage.version;
+				mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+				mockStorage.activeIndex = storage.activeIndex;
+				mockStorage.activeIndexByFamily = {
+					...(storage.activeIndexByFamily ?? {}),
+				};
+			});
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow)
+			.mockResolvedValueOnce({
+				pkce: { verifier: "persist-concurrent-verifier-1", challenge: "persist-concurrent-challenge-1" },
+				state: "persist-concurrent-state-1",
+				url: "https://auth.openai.com/test?state=persist-concurrent-state-1",
+			})
+			.mockResolvedValueOnce({
+				pkce: { verifier: "persist-concurrent-verifier-2", challenge: "persist-concurrent-challenge-2" },
+				state: "persist-concurrent-state-2",
+				url: "https://auth.openai.com/test?state=persist-concurrent-state-2",
+			});
+		vi.mocked(authModule.exchangeAuthorizationCode)
+			.mockResolvedValueOnce({
+				type: "success",
+				access: "access-token-1",
+				refresh: "refresh-1",
+				expires: Date.now() + 3600_000,
+				idToken: undefined,
+			})
+			.mockResolvedValueOnce({
+				type: "success",
+				access: "access-token-2",
+				refresh: "refresh-2",
+				expires: Date.now() + 3600_000,
+				idToken: undefined,
+			});
+		vi.mocked(accountsModule.extractAccountEmail)
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("beta@example.com");
+		vi.mocked(accountsModule.extractAccountId)
+			.mockReturnValueOnce("workspace-alpha")
+			.mockReturnValueOnce("workspace-beta");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flowOne = await manualMethod.authorize();
+		const flowTwo = await manualMethod.authorize();
+		const firstCallback = flowOne.callback(
+			"http://127.0.0.1:1455/auth/callback?code=alpha&state=persist-concurrent-state-1",
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		const secondCallback = flowTwo.callback(
+			"http://127.0.0.1:1455/auth/callback?code=beta&state=persist-concurrent-state-2",
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+
+		firstPersist.resolve();
+
+		const [firstResult, secondResult] = await Promise.all([
+			firstCallback,
+			secondCallback,
+		]);
+
+		expect(firstResult.type).toBe("success");
+		expect(secondResult.type).toBe("success");
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+		expect(mockStorage.accounts).toHaveLength(2);
+		expect(
+			mockStorage.accounts.map((account) => ({
+				email: account.email,
+				refreshToken: account.refreshToken,
+			})),
+		).toEqual([
+			{ email: "alpha@example.com", refreshToken: "refresh-1" },
+			{ email: "beta@example.com", refreshToken: "refresh-2" },
+		]);
+	});
+
+	it("updates a unique shared accountId entry when a login has no email claim", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: {
+				verifier: "persist-unique-verifier",
+				challenge: "persist-unique-challenge",
+			},
+			state: "persist-unique-state",
+			url: "https://auth.openai.com/test?state=persist-unique-state",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(undefined);
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
+			"shared-workspace",
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-unique-state",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "shared-workspace",
+				refreshToken: "refresh-updated",
+			}),
+		);
 	});
 });
 
