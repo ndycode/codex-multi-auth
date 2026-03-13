@@ -1623,6 +1623,7 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		vi.doUnmock("../lib/ui/confirm.js");
 	});
 
 	it.each([

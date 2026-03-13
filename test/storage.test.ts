@@ -127,7 +127,23 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rm(testWorkDir, { recursive: true, force: true });
+					break;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (
+						(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
+						attempt === 4
+					) {
+						throw error;
+					}
+					await new Promise((resolve) =>
+						setTimeout(resolve, 25 * 2 ** attempt),
+					);
+				}
+			}
 		});
 
 		it("should export accounts to a file", async () => {
@@ -367,6 +383,47 @@ describe("storage", () => {
 			expect(restored?.accounts[0]?.accountId).toBe("primary");
 		});
 
+		it("restores manually named backups without normalized filenames", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "manual",
+						refreshToken: "ref-manual",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backupsDir = join(testWorkDir, "backups");
+			await fs.mkdir(backupsDir, { recursive: true });
+			await fs.writeFile(
+				join(backupsDir, "Manual Backup.json"),
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "manual",
+							refreshToken: "ref-manual",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await clearAccounts();
+			const assessment = await assessNamedBackupRestore("Manual Backup");
+			expect(assessment.valid).toBe(true);
+			expect(assessment.backup.name).toBe("Manual Backup");
+			const restoreResult = await restoreNamedBackup("Manual Backup");
+			expect(restoreResult.total).toBe(1);
+		});
+
 		it("rejects invalid backup names", async () => {
 			await saveAccounts({
 				version: 3,
@@ -380,7 +437,9 @@ describe("storage", () => {
 					},
 				],
 			});
-			await expect(createNamedBackup("   ")).rejects.toThrow(/Invalid backup name/);
+			await expect(createNamedBackup("   ")).rejects.toThrow(
+				/Invalid backup name/,
+			);
 		});
 	});
 
