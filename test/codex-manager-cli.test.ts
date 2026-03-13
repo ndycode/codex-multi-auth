@@ -527,7 +527,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		});
 		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
@@ -2400,7 +2400,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
@@ -2449,7 +2449,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
@@ -2510,7 +2510,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
@@ -2576,7 +2576,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
@@ -2608,6 +2608,92 @@ describe("codex manager cli commands", () => {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();
 		}
+	});
+
+	it("reassesses a backup before confirmation so the merge summary stays current", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const initialAssessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		const refreshedAssessment = {
+			...initialAssessment,
+			currentAccountCount: 3,
+			mergedAccountCount: 4,
+		};
+		listNamedBackupsMock.mockResolvedValue([initialAssessment.backup]);
+		assessNamedBackupRestoreMock
+			.mockResolvedValueOnce(initialAssessment)
+			.mockResolvedValueOnce(refreshedAssessment);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({
+			type: "restore",
+			assessment: initialAssessment,
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+			1,
+			"named-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({
+					accounts: expect.any(Array),
+				}),
+			}),
+		);
+		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+			2,
+			"named-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({
+					accounts: expect.any(Array),
+				}),
+			}),
+		);
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.stringContaining("into 3 current (4 after dedupe)"),
+		);
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
 	});
 
 	it("shows experimental settings in the settings hub", async () => {

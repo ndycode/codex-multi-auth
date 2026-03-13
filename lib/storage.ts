@@ -135,7 +135,7 @@ export interface BackupRestoreAssessment {
 	imported: number | null;
 	skipped: number | null;
 	wouldExceedLimit: boolean;
-	valid: boolean;
+	eligibleForRestore: boolean;
 	error?: string;
 }
 
@@ -1672,7 +1672,7 @@ export async function assessNamedBackupRestore(
 			imported: null,
 			skipped: null,
 			wouldExceedLimit: false,
-			valid: false,
+			eligibleForRestore: false,
 			error: backup.loadError ?? "Backup is empty or invalid",
 		};
 	}
@@ -1696,7 +1696,7 @@ export async function assessNamedBackupRestore(
 		imported,
 		skipped,
 		wouldExceedLimit,
-		valid: !wouldExceedLimit,
+		eligibleForRestore: !wouldExceedLimit,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
 			: undefined,

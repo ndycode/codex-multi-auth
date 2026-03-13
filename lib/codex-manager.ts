@@ -4221,7 +4221,7 @@ async function runBackupRestoreManager(
 
 	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
 		const status =
-			assessment.valid && !assessment.wouldExceedLimit
+			assessment.eligibleForRestore
 				? "ready"
 				: assessment.wouldExceedLimit
 					? "limit"
@@ -4247,7 +4247,7 @@ async function runBackupRestoreManager(
 			value: { type: "restore", assessment },
 			color:
 				status === "ready" ? "green" : status === "limit" ? "red" : "yellow",
-			disabled: !assessment.valid || assessment.wouldExceedLimit,
+			disabled: !assessment.eligibleForRestore,
 		};
 	});
 
@@ -4268,20 +4268,23 @@ async function runBackupRestoreManager(
 		return;
 	}
 
-	const assessment = selection.assessment;
-	if (!assessment.valid || assessment.wouldExceedLimit) {
-		console.log(assessment.error ?? "Backup is not eligible for restore.");
+	const latestAssessment = await assessNamedBackupRestore(
+		selection.assessment.backup.name,
+		{ currentStorage: await loadAccounts() },
+	);
+	if (!latestAssessment.eligibleForRestore) {
+		console.log(latestAssessment.error ?? "Backup is not eligible for restore.");
 		return;
 	}
 
-	const confirmMessage = `Restore backup "${assessment.backup.name}"? This will merge ${assessment.backup.accountCount ?? 0} account(s) into ${assessment.currentAccountCount} current (${assessment.mergedAccountCount ?? assessment.currentAccountCount} after dedupe).`;
+	const confirmMessage = `Restore backup "${latestAssessment.backup.name}"? This will merge ${latestAssessment.backup.accountCount ?? 0} account(s) into ${latestAssessment.currentAccountCount} current (${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`;
 	const confirmed = await confirm(confirmMessage);
 	if (!confirmed) return;
 
 	try {
-		const result = await restoreNamedBackup(assessment.backup.name);
+		const result = await restoreNamedBackup(latestAssessment.backup.name);
 		console.log(
-			`Restored backup "${assessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
+			`Restored backup "${latestAssessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
