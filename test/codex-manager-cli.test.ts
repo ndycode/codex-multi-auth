@@ -40,14 +40,16 @@ const deleteSavedAccountsMock = vi.fn();
 const resetLocalStateMock = vi.fn();
 const deleteAccountAtIndexMock = vi.fn();
 const confirmMock = vi.fn();
+const loggerWarnMock = vi.fn();
+const createLoggerMock = vi.fn(() => ({
+	debug: vi.fn(),
+	info: vi.fn(),
+	warn: loggerWarnMock,
+	error: vi.fn(),
+}));
 
 vi.mock("../lib/logger.js", () => ({
-	createLogger: vi.fn(() => ({
-		debug: vi.fn(),
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-	})),
+	createLogger: createLoggerMock,
 	logWarn: vi.fn(),
 }));
 
@@ -302,6 +304,8 @@ describe("codex manager cli commands", () => {
 		getNamedBackupsDirectoryPathMock.mockReset();
 		restoreNamedBackupMock.mockReset();
 		confirmMock.mockReset();
+		createLoggerMock.mockClear();
+		loggerWarnMock.mockReset();
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
 			assessments: [],
 			totalBackups: 0,
@@ -1525,7 +1529,9 @@ describe("codex manager cli commands", () => {
 	it("keeps auth login running when a named backup assessment fails inside the browser", async () => {
 		setInteractiveTTY(false);
 		const now = Date.now();
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const consoleWarnSpy = vi
+			.spyOn(console, "warn")
+			.mockImplementation(() => {});
 		const emptyStorage = {
 			version: 3,
 			activeIndex: 0,
@@ -1609,6 +1615,15 @@ describe("codex manager cli commands", () => {
 		try {
 			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+			const firstMenuItems = selectMock.mock.calls[0]?.[0] as Array<{
+				label: string;
+				hint?: string;
+				color?: string;
+				value: { type: string; entry?: unknown };
+			}>;
+			const brokenItem = firstMenuItems.find(
+				(item) => item.label === "broken-backup",
+			);
 
 			expect(exitCode).toBe(0);
 			expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(2);
@@ -1616,13 +1631,31 @@ describe("codex manager cli commands", () => {
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
 			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
-			expect(warnSpy).toHaveBeenCalledWith(
-				expect.stringContaining(
-					"Failed to assess named backup broken-backup: Error: EPERM: stale symlink",
-				),
+			expect(brokenItem).toMatchObject({
+				label: "broken-backup",
+				color: "yellow",
+				hint: expect.stringContaining("restore assessment unavailable"),
+				value: {
+					type: "inspect",
+					entry: {
+						kind: "named",
+						label: "broken-backup",
+						backup: brokenBackup,
+						assessment: null,
+						assessmentError: "EPERM: stale symlink",
+					},
+				},
+			});
+			expect(loggerWarnMock).toHaveBeenCalledWith(
+				"Failed to assess named backup for backup browser",
+				expect.objectContaining({
+					name: "broken-backup",
+					error: "EPERM: stale symlink",
+				}),
 			);
+			expect(consoleWarnSpy).not.toHaveBeenCalled();
 		} finally {
-			warnSpy.mockRestore();
+			consoleWarnSpy.mockRestore();
 		}
 	});
 

@@ -58,6 +58,7 @@ import {
 	recommendForecastAccount,
 	summarizeForecast,
 } from "./forecast.js";
+import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	loadQuotaCache,
@@ -104,6 +105,7 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
+const log = createLogger("codex-manager");
 
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
@@ -4118,13 +4120,24 @@ type RotatingBackupEntry = Awaited<
 	ReturnType<typeof listRotatingBackups>
 >[number];
 
-type BackupBrowserEntry =
+type NamedBackupBrowserEntry =
 	| {
 			kind: "named";
 			label: string;
 			backup: NamedBackupEntry;
 			assessment: NamedBackupAssessment;
+			assessmentError?: undefined;
 	  }
+	| {
+			kind: "named";
+			label: string;
+			backup: NamedBackupEntry;
+			assessment: null;
+			assessmentError: string;
+	  };
+
+type BackupBrowserEntry =
+	| NamedBackupBrowserEntry
 	| {
 			kind: "rotating";
 			label: string;
@@ -4138,6 +4151,21 @@ type BackupMenuAction =
 	  }
 	| { type: "back" };
 
+function hasNamedBackupAssessment(
+	entry: BackupBrowserEntry,
+): entry is Extract<NamedBackupBrowserEntry, { assessment: NamedBackupAssessment }> {
+	return entry.kind === "named" && entry.assessment !== null;
+}
+
+function normalizeBackupAssessmentError(error: unknown): string {
+	const detail = collapseWhitespace(
+		error instanceof Error ? error.message : String(error),
+	);
+	return detail.length > 0
+		? detail
+		: "Unable to assess restore eligibility";
+}
+
 function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
 	const backup = entry.backup;
 	const lastUpdated = formatRelativeDateShort(backup.updatedAt);
@@ -4150,8 +4178,14 @@ function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
 			? `${backup.accountCount} account${backup.accountCount === 1 ? "" : "s"}`
 			: undefined,
 		lastUpdated ? `updated ${lastUpdated}` : undefined,
-		entry.kind === "named" && entry.assessment.wouldExceedLimit
+		hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit
 			? `would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS}`
+			: undefined,
+		entry.kind === "named" && entry.assessment === null
+			? "restore assessment unavailable"
+			: undefined,
+		entry.kind === "named" && entry.assessment === null
+			? entry.assessmentError
 			: undefined,
 		backup.loadError,
 	].filter(
@@ -4164,6 +4198,9 @@ function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
 function backupMenuColor(
 	entry: BackupBrowserEntry,
 ): MenuItem<BackupMenuAction>["color"] {
+	if (entry.kind === "named" && entry.assessment === null) {
+		return entry.backup.valid ? "yellow" : "red";
+	}
 	return entry.backup.valid ? "green" : "red";
 }
 
@@ -4172,7 +4209,10 @@ function buildBackupStatusSummary(entry: BackupBrowserEntry): string {
 	if (!backup.valid) {
 		return stylePromptText("Invalid backup", "danger");
 	}
-	if (entry.kind === "named" && entry.assessment.wouldExceedLimit) {
+	if (entry.kind === "named" && entry.assessment === null) {
+		return stylePromptText("Restore assessment unavailable", "warning");
+	}
+	if (hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit) {
 		return stylePromptText("Valid file, restore would exceed limit", "warning");
 	}
 	return stylePromptText("Valid backup", "success");
@@ -4201,16 +4241,22 @@ async function showBackupBrowserDetails(
 	];
 
 	if (entry.kind === "named") {
-		const assessment = entry.assessment;
-		lines.push(
-			"",
-			stylePromptText("Restore Assessment", "accent"),
-			`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
-			`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
-			`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
-			`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
-			`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.valid ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
-		);
+		lines.push("", stylePromptText("Restore Assessment", "accent"));
+		if (entry.assessment === null) {
+			lines.push(
+				`${stylePromptText("Eligibility:", "muted")} Unavailable`,
+				`${stylePromptText("Reason:", "muted")} ${entry.assessmentError}`,
+			);
+		} else {
+			const assessment = entry.assessment;
+			lines.push(
+				`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
+				`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
+				`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
+				`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
+				`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.valid ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
+			);
+		}
 	}
 
 	if (backup.schemaErrors.length > 0 || backup.loadError) {
@@ -4237,6 +4283,7 @@ async function showBackupBrowserDetails(
 	console.log("");
 	if (
 		entry.kind !== "named" ||
+		entry.assessment === null ||
 		!entry.assessment.valid ||
 		entry.assessment.wouldExceedLimit
 	) {
@@ -4262,7 +4309,7 @@ async function showBackupBrowserDetails(
 }
 
 async function loadBackupBrowserEntries(): Promise<{
-	namedEntries: Extract<BackupBrowserEntry, { kind: "named" }>[];
+	namedEntries: NamedBackupBrowserEntry[];
 	rotatingEntries: Extract<BackupBrowserEntry, { kind: "rotating" }>[];
 }> {
 	const [namedBackups, rotatingBackups] = await Promise.all([
@@ -4270,31 +4317,36 @@ async function loadBackupBrowserEntries(): Promise<{
 		listRotatingBackups(),
 	]);
 	const currentStorage = await loadAccounts();
-	const assessments = await Promise.all(
-		namedBackups.map((backup) =>
-			assessNamedBackupRestore(backup.name, { currentStorage }).catch(
-				(error) => {
-					console.warn(
-						`Failed to assess named backup ${backup.name}: ${String(error)}`,
-					);
-					return null;
-				},
-			),
-		),
-	);
-	const validAssessments = assessments.filter(
-		(
-			assessment,
-		): assessment is Awaited<ReturnType<typeof assessNamedBackupRestore>> =>
-			assessment !== null,
+	const namedEntries: NamedBackupBrowserEntry[] = await Promise.all(
+		namedBackups.map(async (backup) => {
+			try {
+				const assessment = await assessNamedBackupRestore(backup.name, {
+					currentStorage,
+				});
+				return {
+					kind: "named",
+					label: assessment.backup.name,
+					backup: assessment.backup,
+					assessment,
+				};
+			} catch (error) {
+				const assessmentError = normalizeBackupAssessmentError(error);
+				log.warn("Failed to assess named backup for backup browser", {
+					name: backup.name,
+					error: assessmentError,
+				});
+				return {
+					kind: "named",
+					label: backup.name,
+					backup,
+					assessment: null,
+					assessmentError,
+				};
+			}
+		}),
 	);
 	return {
-		namedEntries: validAssessments.map((assessment) => ({
-			kind: "named",
-			label: assessment.backup.name,
-			backup: assessment.backup,
-			assessment,
-		})),
+		namedEntries,
 		rotatingEntries: rotatingBackups.map((backup) => ({
 			kind: "rotating",
 			label: backup.label,
