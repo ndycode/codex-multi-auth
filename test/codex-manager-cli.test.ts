@@ -443,7 +443,14 @@ describe("codex manager cli commands", () => {
 			async (handler) => {
 				const current = await loadAccountsMock();
 				return handler(
-					current == null ? null : structuredClone(current),
+					current == null
+						? {
+							version: 3,
+							accounts: [],
+							activeIndex: 0,
+							activeIndexByFamily: {},
+						}
+						: structuredClone(current),
 					async (storage: unknown) => saveAccountsMock(storage),
 				);
 			},
