@@ -472,11 +472,19 @@ async function ensureNamedBackupsDirectory(): Promise<string> {
 }
 
 function resolveNamedBackupPath(name: string): string {
-	const normalizedName = normalizeBackupName(name);
-	return join(
-		getNamedBackupsDirectory(),
-		`${normalizedName}${NAMED_BACKUP_EXTENSION}`,
+	const backupDir = getNamedBackupsDirectory();
+	const trimmedName = name.trim();
+	const directPath = join(
+		backupDir,
+		trimmedName.endsWith(NAMED_BACKUP_EXTENSION)
+			? trimmedName
+			: `${trimmedName}${NAMED_BACKUP_EXTENSION}`,
 	);
+	if (existsSync(directPath)) {
+		return directPath;
+	}
+	const normalizedName = normalizeBackupName(trimmedName);
+	return join(backupDir, `${normalizedName}${NAMED_BACKUP_EXTENSION}`);
 }
 
 function deriveBackupNameFromFile(fileName: string): string {
@@ -1415,10 +1423,10 @@ export async function assessNamedBackupRestore(
 	name: string,
 	options: { currentStorage?: AccountStorageV3 | null } = {},
 ): Promise<BackupRestoreAssessment> {
-	const normalizedName = normalizeBackupName(name);
-	const backupPath = resolveNamedBackupPath(normalizedName);
+	const backupPath = resolveNamedBackupPath(name);
+	const backupName = deriveBackupNameFromFile(basename(backupPath));
 	const candidate = await loadBackupCandidate(backupPath);
-	const backup = await buildNamedBackupMetadata(normalizedName, backupPath, {
+	const backup = await buildNamedBackupMetadata(backupName, backupPath, {
 		candidate,
 	});
 	const currentStorage =
@@ -1480,8 +1488,7 @@ function assessNamedBackupRestoreCandidate(
 export async function restoreNamedBackup(
 	name: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
-	const normalizedName = normalizeBackupName(name);
-	const backupPath = resolveNamedBackupPath(normalizedName);
+	const backupPath = resolveNamedBackupPath(name);
 	return importAccounts(backupPath);
 }
 
