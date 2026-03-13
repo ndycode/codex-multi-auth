@@ -527,6 +527,87 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
+	it("continues backup restore manager assessment when one backup is locked", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const currentStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "existing-refresh",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+		const lockedBackup = {
+			name: "locked-backup",
+			path: "/mock/backups/locked-backup.json",
+			createdAt: null,
+			updatedAt: now - 1_000,
+			sizeBytes: 64,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: [],
+			valid: true,
+			loadError: "",
+		};
+		const validAssessment = {
+			backup: {
+				name: "valid-backup",
+				path: "/mock/backups/valid-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			valid: true,
+			error: "",
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(currentStorage));
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		listNamedBackupsMock.mockResolvedValue([
+			lockedBackup,
+			validAssessment.backup,
+		]);
+		assessNamedBackupRestoreMock
+			.mockRejectedValueOnce(makeErrnoError("resource busy", "EBUSY"))
+			.mockResolvedValueOnce(validAssessment);
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment: validAssessment });
+		confirmMock.mockResolvedValueOnce(true);
+		restoreNamedBackupMock.mockResolvedValueOnce({
+			imported: 1,
+			skipped: 0,
+			total: 2,
+		});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(2);
+		expect(warnSpy).toHaveBeenCalledWith(
+			'Failed to assess backup "locked-backup" in restore manager: resource busy',
+		);
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("valid-backup");
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
 	it("continues into OAuth when startup recovery is declined", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
@@ -741,7 +822,7 @@ describe("codex manager cli commands", () => {
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 	});
 
-	it("falls back to OAuth when startup recovery scan throws", async () => {
+	it("falls back to OAuth when startup recovery scan throws EBUSY", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		let storageState = {
@@ -755,9 +836,10 @@ describe("codex manager cli commands", () => {
 			storageState = structuredClone(nextStorage);
 		});
 		getActionableNamedBackupRestoresMock.mockRejectedValueOnce(
-			new Error("scan failed"),
+			makeErrnoError("resource busy", "EBUSY"),
 		);
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		await configureSuccessfulOAuthFlow(now);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -768,6 +850,9 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).not.toHaveBeenCalled();
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+		expect(warnSpy).toHaveBeenCalledWith(
+			"Startup recovery scan failed: resource busy. Continuing with OAuth.",
+		);
 	});
 
 	it.each([

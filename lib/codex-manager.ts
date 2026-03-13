@@ -4109,9 +4109,26 @@ async function runBackupRestoreManager(
 	const currentStorage = await loadAccounts();
 	const assessments: Awaited<ReturnType<typeof assessNamedBackupRestore>>[] = [];
 	for (const backup of backups) {
-		assessments.push(
-			await assessNamedBackupRestore(backup.name, { currentStorage }),
-		);
+		try {
+			assessments.push(
+				await assessNamedBackupRestore(backup.name, { currentStorage }),
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(
+				`Failed to assess backup "${backup.name}" in restore manager: ${message}`,
+			);
+			assessments.push({
+				backup,
+				currentAccountCount: currentStorage?.accounts.length ?? 0,
+				mergedAccountCount: null,
+				imported: null,
+				skipped: null,
+				wouldExceedLimit: false,
+				valid: false,
+				error: message,
+			});
+		}
 	}
 
 	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
@@ -4310,7 +4327,6 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
-					suppressRecoveryPrompt = true;
 					await runActionPanel(
 						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
 						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
@@ -4322,10 +4338,10 @@ async function runAuthLogin(): Promise<number> {
 						},
 						displaySettings,
 					);
+					suppressRecoveryPrompt = true;
 					continue;
 				}
 				if (menuResult.mode === "reset") {
-					suppressRecoveryPrompt = true;
 					await runActionPanel(
 						DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
 						DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
@@ -4335,6 +4351,7 @@ async function runAuthLogin(): Promise<number> {
 						},
 						displaySettings,
 					);
+					suppressRecoveryPrompt = true;
 					continue;
 				}
 				if (menuResult.mode === "manage") {
@@ -4384,7 +4401,11 @@ async function runAuthLogin(): Promise<number> {
 				recoveryState = await getActionableNamedBackupRestores({
 					currentStorage: refreshedStorage,
 				});
-			} catch {
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				console.warn(
+					`Startup recovery scan failed: ${message}. Continuing with OAuth.`,
+				);
 				recoveryState = { assessments: [], totalBackups: 0 };
 			}
 			if (recoveryState.assessments.length > 0) {

@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createSessionRecoveryHook,
@@ -38,6 +41,24 @@ const mockedFindMessageByIndexNeedingThinking = vi.mocked(
 );
 const mockedPrependThinkingPart = vi.mocked(prependThinkingPart);
 const mockedStripThinkingParts = vi.mocked(stripThinkingParts);
+
+async function removeWithRetry(targetPath: string): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.rm(targetPath, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
+				attempt === 4
+			) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
 
 function createMockClient() {
 	return {
@@ -298,6 +319,128 @@ describe("getActionableNamedBackupRestores (override)", () => {
 			"valid-backup",
 		]);
 		expect(assess).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
+	let testWorkDir: string;
+	let testStoragePath: string;
+
+	beforeEach(async () => {
+		testWorkDir = await fs.mkdtemp(join(tmpdir(), "recovery-backups-"));
+		testStoragePath = join(testWorkDir, "accounts.json");
+		const storage = await import("../lib/storage.js");
+		storage.setStoragePathDirect(testStoragePath);
+	});
+
+	afterEach(async () => {
+		const storage = await import("../lib/storage.js");
+		storage.setStoragePathDirect(null);
+		await removeWithRetry(testWorkDir);
+	});
+
+	it("scans named backups by default and returns actionable restores", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "restored@example.com",
+					refreshToken: "restore-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("startup-fast-path");
+		await storage.saveAccounts(emptyStorage);
+
+		const result = await storage.getActionableNamedBackupRestores();
+
+		expect(result.totalBackups).toBe(1);
+		expect(result.assessments.map((item) => item.backup.name)).toEqual([
+			"startup-fast-path",
+		]);
+		expect(result.assessments[0]?.imported).toBe(1);
+	});
+
+	it("keeps actionable backups when default assessment hits EBUSY", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "locked@example.com",
+					refreshToken: "locked-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("locked-backup");
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "valid@example.com",
+					refreshToken: "valid-token",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+		await storage.createNamedBackup("valid-backup");
+		await storage.saveAccounts(emptyStorage);
+		const backups = await storage.listNamedBackups();
+		const lockedBackup = backups.find((backup) => backup.name === "locked-backup");
+		const validBackup = backups.find((backup) => backup.name === "valid-backup");
+		expect(lockedBackup).toBeDefined();
+		expect(validBackup).toBeDefined();
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(
+			(async (...args: Parameters<typeof fs.readFile>) => {
+				const [path] = args;
+				if (path === lockedBackup?.path) {
+					const error = new Error("resource busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalReadFile(...args);
+			}) as typeof fs.readFile,
+		);
+
+		const result = await storage.getActionableNamedBackupRestores({
+			backups,
+			currentStorage: emptyStorage,
+		});
+
+		expect(result.totalBackups).toBe(2);
+		expect(result.assessments.map((item) => item.backup.name)).toEqual([
+			"valid-backup",
+		]);
+		expect(readFileSpy).toHaveBeenCalledTimes(2);
+		expect(readFileSpy.mock.calls.map(([path]) => path)).toEqual(
+			expect.arrayContaining([lockedBackup?.path, validBackup?.path]),
+		);
 	});
 });
 
