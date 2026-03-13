@@ -1893,9 +1893,16 @@ describe("codex manager cli commands", () => {
 		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
 			command: string;
 			summary: { ok: number; warn: number; error: number };
+			checks: Array<{ key: string; severity: string }>;
 		};
 		expect(payload.command).toBe("doctor");
 		expect(payload.summary.error).toBe(0);
+		expect(payload.checks).toContainEqual(
+			expect.objectContaining({
+				key: "duplicate-refresh-token",
+				severity: "ok",
+			}),
+		);
 	});
 
 	it("runs doctor --fix in dry-run mode", async () => {

@@ -2165,7 +2165,9 @@ async function saveFlaggedAccountsUnlocked(
 		await fs.mkdir(dirname(path), { recursive: true });
 		if (existsSync(path)) {
 			try {
-				await fs.copyFile(path, `${path}.bak`);
+				await copyFileWithRetry(path, `${path}.bak`, {
+					allowMissingSource: true,
+				});
 			} catch (backupError) {
 				log.warn("Failed to create flagged backup snapshot", {
 					path,
@@ -2175,7 +2177,7 @@ async function saveFlaggedAccountsUnlocked(
 		}
 		const content = JSON.stringify(normalizeFlaggedStorage(storage), null, 2);
 		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-		await fs.rename(tempPath, path);
+		await renameFileWithRetry(tempPath, path);
 		try {
 			await fs.unlink(markerPath);
 		} catch {

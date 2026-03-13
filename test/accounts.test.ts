@@ -1254,6 +1254,12 @@ describe("AccountManager", () => {
             addedAt: now,
             lastUsed: now,
           },
+          {
+            refreshToken: "   ",
+            accountId: "matching-account-id",
+            addedAt: now,
+            lastUsed: now,
+          },
         ],
       };
 
