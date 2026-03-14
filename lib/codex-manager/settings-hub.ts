@@ -2,10 +2,12 @@ import { promises as fs } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
+	type CodexCliState,
 	getCodexCliAccountsPath,
 	getCodexCliAuthPath,
 	getCodexCliConfigPath,
 	isCodexCliSyncEnabled,
+	loadCodexCliState,
 } from "../codex-cli/state.js";
 import {
 	applyCodexCliSyncToStorage,
@@ -2680,15 +2682,21 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 	): Promise<{
 		preview: CodexCliSyncPreview;
 		context: SyncCenterOverviewContext;
+		sourceState: CodexCliState | null;
 	}> => {
 		const current = await loadAccounts();
+		const sourceState = isCodexCliSyncEnabled()
+			? await loadCodexCliState({ forceRefresh })
+			: null;
 		const preview = await previewCodexCliSync(current, {
 			forceRefresh,
+			sourceState,
 			storageBackupEnabled: getStorageBackupEnabled(config),
 		});
 		return {
 			preview,
 			context: resolveSyncCenterContext(preview.sourceAccountCount),
+			sourceState,
 		};
 	};
 	const buildErrorState = (
@@ -2697,6 +2705,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 	): {
 		preview: CodexCliSyncPreview;
 		context: SyncCenterOverviewContext;
+		sourceState: CodexCliState | null;
 	} => {
 		if (previousPreview) {
 			return {
@@ -2707,6 +2716,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 					statusDetail: message,
 				},
 				context: resolveSyncCenterContext(previousPreview.sourceAccountCount),
+				sourceState: null,
 			};
 		}
 
@@ -2737,6 +2747,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				lastSync: getLastCodexCliSyncRun(),
 			},
 			context: resolveSyncCenterContext(null),
+			sourceState: null,
 		};
 	};
 	const buildPreviewSafely = async (
@@ -2745,6 +2756,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 	): Promise<{
 		preview: CodexCliSyncPreview;
 		context: SyncCenterOverviewContext;
+		sourceState: CodexCliState | null;
 	}> => {
 		try {
 			return await withQueuedRetry(getStoragePath(), async () =>
@@ -2760,7 +2772,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		}
 	};
 
-	let { preview, context } = await buildPreviewSafely(true);
+	let { preview, context, sourceState } = await buildPreviewSafely(true);
 	while (true) {
 		const overview = buildSyncCenterOverview(preview, context);
 		const items: MenuItem<SyncCenterAction>[] = [
@@ -2823,16 +2835,19 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 
 		if (!result || result.type === "back") return;
 		if (result.type === "refresh") {
-			({ preview, context } = await buildPreviewSafely(true, preview));
+			({ preview, context, sourceState } = await buildPreviewSafely(
+				true,
+				preview,
+			));
 			continue;
 		}
 
 		try {
-			const current = await withQueuedRetry(preview.targetPath, async () =>
-				loadAccounts(),
-			);
-			const synced = await applyCodexCliSyncToStorage(current, {
-				forceRefresh: true,
+			const synced = await withQueuedRetry(preview.targetPath, async () => {
+				const current = await loadAccounts();
+				return applyCodexCliSyncToStorage(current, {
+					sourceState,
+				});
 			});
 			const storageBackupEnabled = getStorageBackupEnabled(config);
 			if (synced.changed && synced.storage) {
@@ -2857,7 +2872,10 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 					continue;
 				}
 			}
-			({ preview, context } = await buildPreviewSafely(true, preview));
+			({ preview, context, sourceState } = await buildPreviewSafely(
+				true,
+				preview,
+			));
 		} catch (error) {
 			preview = {
 				...preview,

@@ -13,14 +13,17 @@ import {
 	incrementCodexCliMetric,
 	makeAccountFingerprint,
 } from "./observability.js";
+import { sleep } from "../utils.js";
 import {
 	type CodexCliAccountSnapshot,
+	type CodexCliState,
 	isCodexCliSyncEnabled,
 	loadCodexCliState,
 } from "./state.js";
 import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
+const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -109,6 +112,7 @@ interface ReconcileResult {
 let lastCodexCliSyncRun: CodexCliSyncRun | null = null;
 let lastCodexCliSyncRunRevision = 0;
 let nextCodexCliSyncRunRevision = 0;
+const completedPendingCodexCliSyncRunRevisions = new Set<number>();
 
 function createEmptySyncSummary(): CodexCliSyncSummary {
 	return {
@@ -140,6 +144,14 @@ function normalizeIndexCandidate(value: number, fallback: number): number {
 function allocateCodexCliSyncRunRevision(): number {
 	nextCodexCliSyncRunRevision += 1;
 	return nextCodexCliSyncRunRevision;
+}
+
+function markPendingCodexCliSyncRunCompleted(revision: number): boolean {
+	if (completedPendingCodexCliSyncRunRevisions.has(revision)) {
+		return false;
+	}
+	completedPendingCodexCliSyncRunRevisions.add(revision);
+	return true;
 }
 
 function publishCodexCliSyncRun(
@@ -174,6 +186,24 @@ function createSyncRun(
 	};
 }
 
+function hasSourceStateOverride(options: {
+	sourceState?: CodexCliState | null;
+}): boolean {
+	return Object.prototype.hasOwnProperty.call(options, "sourceState");
+}
+
+async function resolveCodexCliSyncState(options: {
+	forceRefresh?: boolean;
+	sourceState?: CodexCliState | null;
+}): Promise<CodexCliState | null> {
+	if (hasSourceStateOverride(options)) {
+		return options.sourceState ?? null;
+	}
+	return loadCodexCliState({
+		forceRefresh: options.forceRefresh,
+	});
+}
+
 export function getLastCodexCliSyncRun(): CodexCliSyncRun | null {
 	return lastCodexCliSyncRun ? cloneCodexCliSyncRun(lastCodexCliSyncRun) : null;
 }
@@ -182,12 +212,15 @@ export function commitPendingCodexCliSyncRun(
 	pendingRun: PendingCodexCliSyncRun | null | undefined,
 ): void {
 	if (!pendingRun) return;
+	if (!markPendingCodexCliSyncRunCompleted(pendingRun.revision)) {
+		return;
+	}
 	publishCodexCliSyncRun(
 		{
 			...pendingRun.run,
 			runAt: Date.now(),
 		},
-		pendingRun.revision,
+		allocateCodexCliSyncRunRevision(),
 	);
 }
 
@@ -196,6 +229,9 @@ export function commitCodexCliSyncRunFailure(
 	error: unknown,
 ): void {
 	if (!pendingRun) return;
+	if (!markPendingCodexCliSyncRunCompleted(pendingRun.revision)) {
+		return;
+	}
 	publishCodexCliSyncRun(
 		buildSyncRunError(
 			{
@@ -204,7 +240,7 @@ export function commitCodexCliSyncRunFailure(
 			},
 			error,
 		),
-		pendingRun.revision,
+		allocateCodexCliSyncRunRevision(),
 	);
 }
 
@@ -212,6 +248,7 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	lastCodexCliSyncRun = null;
 	lastCodexCliSyncRunRevision = 0;
 	nextCodexCliSyncRunRevision = 0;
+	completedPendingCodexCliSyncRunRevisions.clear();
 }
 
 function hasConflictingIdentity(
@@ -335,16 +372,29 @@ function applyCodexCliSelection(
 }
 
 async function getPersistedLocalSelectionTimestamp(): Promise<number | null> {
-	try {
-		const stats = await fs.stat(getStoragePath());
-		return Number.isFinite(stats.mtimeMs) ? stats.mtimeMs : 0;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return 0;
+	let lastError: unknown;
+	for (let attempt = 0; attempt < 4; attempt += 1) {
+		try {
+			const stats = await fs.stat(getStoragePath());
+			return Number.isFinite(stats.mtimeMs) ? stats.mtimeMs : 0;
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return 0;
+			}
+			if (
+				typeof code !== "string" ||
+				!RETRYABLE_SELECTION_TIMESTAMP_CODES.has(code) ||
+				attempt >= 3
+			) {
+				return null;
+			}
+			await sleep(10 * 2 ** attempt);
 		}
-		return null;
 	}
+	void lastError;
+	return null;
 }
 
 /**
@@ -443,7 +493,7 @@ function shouldApplyCodexCliSelection(
 		inProcessLocalVersion,
 		persistedLocalTimestamp ?? 0,
 	);
-	if (codexVersion <= 0) return true;
+	if (codexVersion <= 0) return localVersion <= 0;
 	if (localVersion <= 0) {
 		return persistedLocalTimestamp !== null;
 	}
@@ -549,7 +599,11 @@ function reconcileCodexCliState(
 
 export async function previewCodexCliSync(
 	current: AccountStorageV3 | null,
-	options: { forceRefresh?: boolean; storageBackupEnabled?: boolean } = {},
+	options: {
+		forceRefresh?: boolean;
+		storageBackupEnabled?: boolean;
+		sourceState?: CodexCliState | null;
+	} = {},
 ): Promise<CodexCliSyncPreview> {
 	const targetPath = getStoragePath();
 	const syncEnabled = isCodexCliSyncEnabled();
@@ -575,9 +629,7 @@ export async function previewCodexCliSync(
 				lastSync,
 			};
 		}
-		const state = await loadCodexCliState({
-			forceRefresh: options.forceRefresh,
-		});
+		const state = await resolveCodexCliSyncState(options);
 		if (!state) {
 			return {
 				status: "unavailable",
@@ -654,7 +706,7 @@ export async function previewCodexCliSync(
  */
 export async function applyCodexCliSyncToStorage(
 	current: AccountStorageV3 | null,
-	options: { forceRefresh?: boolean } = {},
+	options: { forceRefresh?: boolean; sourceState?: CodexCliState | null } = {},
 ): Promise<{
 	storage: AccountStorageV3 | null;
 	changed: boolean;
@@ -662,7 +714,6 @@ export async function applyCodexCliSyncToStorage(
 }> {
 	incrementCodexCliMetric("reconcileAttempts");
 	const targetPath = getStoragePath();
-	const revision = allocateCodexCliSyncRunRevision();
 	try {
 		if (!isCodexCliSyncEnabled()) {
 			incrementCodexCliMetric("reconcileNoops");
@@ -678,12 +729,13 @@ export async function applyCodexCliSyncToStorage(
 					},
 					message: "Codex CLI sync disabled by environment override.",
 				}),
-				revision,
+				allocateCodexCliSyncRunRevision(),
 			);
 			return { storage: current, changed: false, pendingRun: null };
 		}
 
-		const state = await loadCodexCliState({
+		const state = await resolveCodexCliSyncState({
+			...options,
 			forceRefresh: options.forceRefresh ?? true,
 		});
 		if (!state) {
@@ -700,7 +752,7 @@ export async function applyCodexCliSyncToStorage(
 					},
 					message: "No Codex CLI sync source was available.",
 				}),
-				revision,
+				allocateCodexCliSyncRunRevision(),
 			);
 			return { storage: current, changed: false, pendingRun: null };
 		}
@@ -721,7 +773,7 @@ export async function applyCodexCliSyncToStorage(
 
 		if (!changed) {
 			incrementCodexCliMetric("reconcileNoops");
-			publishCodexCliSyncRun(syncRun, revision);
+			publishCodexCliSyncRun(syncRun, allocateCodexCliSyncRunRevision());
 		} else {
 			incrementCodexCliMetric("reconcileChanges");
 		}
@@ -739,7 +791,12 @@ export async function applyCodexCliSyncToStorage(
 		return {
 			storage,
 			changed,
-			pendingRun: changed ? { revision, run: syncRun } : null,
+			pendingRun: changed
+				? {
+						revision: allocateCodexCliSyncRunRevision(),
+						run: syncRun,
+					}
+				: null,
 		};
 	} catch (error) {
 		incrementCodexCliMetric("reconcileFailures");
@@ -755,7 +812,7 @@ export async function applyCodexCliSyncToStorage(
 				},
 				message: error instanceof Error ? error.message : String(error),
 			}),
-			revision,
+			allocateCodexCliSyncRunRevision(),
 		);
 		log.warn("Codex CLI reconcile failed", {
 			operation: "reconcile-storage",

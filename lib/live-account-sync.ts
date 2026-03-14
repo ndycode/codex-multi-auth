@@ -103,7 +103,9 @@ export class LiveAccountSync {
 	private lastSyncAt: number | null = null;
 	private reloadCount = 0;
 	private errorCount = 0;
-	private reloadInFlight: Promise<void> | null = null;
+	private generation = 0;
+	private reloadInFlight: { generation: number; promise: Promise<void> } | null =
+		null;
 
 	constructor(
 		reload: () => Promise<void>,
@@ -122,9 +124,13 @@ export class LiveAccountSync {
 		if (!path) return;
 		if (this.currentPath === path && this.running) return;
 		this.stop();
+		const generation = this.generation;
 
 		this.currentPath = path;
 		this.lastKnownMtimeMs = await readMtimeMs(path);
+		if (generation !== this.generation) {
+			return;
+		}
 		const targetDir = dirname(path);
 		const targetName = basename(path);
 
@@ -168,6 +174,8 @@ export class LiveAccountSync {
 	}
 
 	stop(): void {
+		this.generation += 1;
+		this.reloadInFlight = null;
 		this.running = false;
 		if (this.watcher) {
 			this.watcher.close();
@@ -234,22 +242,35 @@ export class LiveAccountSync {
 	private async runReload(reason: "watch" | "poll"): Promise<void> {
 		if (!this.running || !this.currentPath) return;
 		const targetPath = this.currentPath;
+		const generation = this.generation;
 		if (this.reloadInFlight) {
-			await this.reloadInFlight;
-			return;
+			if (this.reloadInFlight.generation === generation) {
+				await this.reloadInFlight.promise;
+				return;
+			}
+			this.reloadInFlight = null;
 		}
 
-		this.reloadInFlight = (async () => {
+		const promise = (async () => {
 			try {
 				await this.reload();
+				if (generation !== this.generation || targetPath !== this.currentPath) {
+					return;
+				}
 				this.lastSyncAt = Date.now();
 				this.reloadCount += 1;
 				this.lastKnownMtimeMs = await readMtimeMs(targetPath);
+				if (generation !== this.generation || targetPath !== this.currentPath) {
+					return;
+				}
 				log.debug("Reloaded account manager from live storage update", {
 					reason,
 					path: summarizeWatchPath(targetPath),
 				});
 			} catch (error) {
+				if (generation !== this.generation || targetPath !== this.currentPath) {
+					return;
+				}
 				this.errorCount += 1;
 				log.warn("Live account sync reload failed", {
 					reason,
@@ -258,12 +279,15 @@ export class LiveAccountSync {
 				});
 			}
 		})();
+		this.reloadInFlight = { generation, promise };
 
 		try {
-			await this.reloadInFlight;
+			await promise;
 		} finally {
-			this.reloadInFlight = null;
-			this.publishSnapshot();
+			if (this.reloadInFlight?.promise === promise) {
+				this.reloadInFlight = null;
+				this.publishSnapshot();
+			}
 		}
 	}
 }

@@ -43,9 +43,7 @@ type SettingsHubTestApi = {
 			accountsPath: string;
 			authPath: string;
 			configPath: string;
-			state: {
-				accounts: unknown[];
-			} | null;
+			sourceAccountCount: number | null;
 			liveSync: {
 				path: string | null;
 				running: boolean;
