@@ -1647,6 +1647,35 @@ describe("storage", () => {
 			},
 		);
 
+		it("allows backup filenames that begin with dots when they stay inside the backups directory", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "..notes.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "leading-dot-backup",
+							refreshToken: "ref-leading-dot-backup",
+							addedAt: 1,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const assessment = await assessNamedBackupRestore("..notes");
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			const result = await restoreNamedBackup("..notes");
+			expect(result.imported).toBe(1);
+			expect((await loadAccounts())?.accounts).toHaveLength(1);
+		});
+
 		it("rejects matched backup entries whose resolved path escapes the backups directory", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const originalReaddir = fs.readdir.bind(fs);
@@ -2174,10 +2203,14 @@ describe("storage", () => {
 			});
 			const backup = await createNamedBackup("cached-backup");
 			const readFileSpy = vi.spyOn(fs, "readFile");
+			const candidateCache = new Map<string, unknown>();
 
 			try {
-				await listNamedBackups();
-				await assessNamedBackupRestore("cached-backup", { currentStorage: null });
+				await listNamedBackups({ candidateCache });
+				await assessNamedBackupRestore("cached-backup", {
+					currentStorage: null,
+					candidateCache,
+				});
 
 				const firstPassReads = readFileSpy.mock.calls.filter(
 					([path]) => path === backup.path,
@@ -2190,6 +2223,57 @@ describe("storage", () => {
 					([path]) => path === backup.path,
 				);
 				expect(secondPassReads).toHaveLength(2);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("keeps per-call named-backup caches isolated across concurrent listings", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "isolated-cache-backup",
+						refreshToken: "ref-isolated-cache-backup",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			const backup = await createNamedBackup("isolated-cache-backup");
+			const readFileSpy = vi.spyOn(fs, "readFile");
+			const firstCandidateCache = new Map<string, unknown>();
+			const secondCandidateCache = new Map<string, unknown>();
+
+			try {
+				await Promise.all([
+					listNamedBackups({ candidateCache: firstCandidateCache }),
+					listNamedBackups({ candidateCache: secondCandidateCache }),
+				]);
+
+				await assessNamedBackupRestore("isolated-cache-backup", {
+					currentStorage: null,
+					candidateCache: firstCandidateCache,
+				});
+				await assessNamedBackupRestore("isolated-cache-backup", {
+					currentStorage: null,
+					candidateCache: secondCandidateCache,
+				});
+
+				const cachedReads = readFileSpy.mock.calls.filter(
+					([path]) => path === backup.path,
+				);
+				expect(cachedReads).toHaveLength(2);
+
+				await assessNamedBackupRestore("isolated-cache-backup", {
+					currentStorage: null,
+				});
+
+				const rereadCalls = readFileSpy.mock.calls.filter(
+					([path]) => path === backup.path,
+				);
+				expect(rereadCalls).toHaveLength(3);
 			} finally {
 				readFileSpy.mockRestore();
 			}

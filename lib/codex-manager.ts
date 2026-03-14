@@ -4220,9 +4220,10 @@ async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
 ): Promise<void> {
 	const backupDir = getNamedBackupsDirectoryPath();
+	const candidateCache = new Map<string, unknown>();
 	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
 	try {
-		backups = await listNamedBackups();
+		backups = await listNamedBackups({ candidateCache });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(
@@ -4247,7 +4248,10 @@ async function runBackupRestoreManager(
 		const chunk = backups.slice(index, index + NAMED_BACKUP_ASSESS_CONCURRENCY);
 		const settledAssessments = await Promise.allSettled(
 			chunk.map((backup) =>
-				assessNamedBackupRestore(backup.name, { currentStorage }),
+				assessNamedBackupRestore(backup.name, {
+					currentStorage,
+					candidateCache,
+				}),
 			),
 		);
 		for (const [resultIndex, result] of settledAssessments.entries()) {

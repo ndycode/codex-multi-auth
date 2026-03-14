@@ -3178,34 +3178,38 @@ describe("codex manager cli commands", () => {
 		});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
-		expect(exitCode).toBe(0);
-		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
-		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-			1,
-			"named-backup",
-			expect.objectContaining({
-				currentStorage: expect.objectContaining({
-					accounts: expect.any(Array),
+			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+				1,
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						accounts: expect.any(Array),
+					}),
 				}),
-			}),
-		);
-		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-			2,
-			"named-backup",
-			expect.objectContaining({
-				currentStorage: expect.objectContaining({
-					accounts: expect.any(Array),
+			);
+			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+				2,
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						accounts: expect.any(Array),
+					}),
 				}),
-			}),
-		);
-		expect(confirmMock).not.toHaveBeenCalled();
-		expect(importAccountsMock).not.toHaveBeenCalled();
-		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringContaining("Restore failed: backup busy"),
-		);
+			);
+			expect(confirmMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Restore failed: backup busy"),
+			);
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 
 	it("shows epoch backup timestamps in restore hints", async () => {

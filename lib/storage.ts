@@ -151,7 +151,13 @@ type LoadedBackupCandidate = {
 	error?: string;
 };
 
-const namedBackupCandidateCache = new Map<string, LoadedBackupCandidate>();
+type NamedBackupCandidateCache = Map<string, LoadedBackupCandidate>;
+
+function getNamedBackupCandidateCache(
+	candidateCache: Map<string, unknown> | undefined,
+): NamedBackupCandidateCache | undefined {
+	return candidateCache as NamedBackupCandidateCache | undefined;
+}
 
 /**
  * Custom error class for storage operations with platform-aware hints.
@@ -1591,10 +1597,12 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 	};
 }
 
-export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
+export async function listNamedBackups(
+	options: { candidateCache?: Map<string, unknown> } = {},
+): Promise<NamedBackupMetadata[]> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const candidateCache = getNamedBackupCandidateCache(options.candidateCache);
 	try {
-		namedBackupCandidateCache.clear();
 		const entries = await retryTransientFilesystemOperation(() =>
 			fs.readdir(backupRoot, { withFileTypes: true }),
 		);
@@ -1616,7 +1624,7 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 					chunk.map(async (entry) => {
 						const path = resolvePath(join(backupRoot, entry.name));
 						const candidate = await loadBackupCandidate(path);
-						namedBackupCandidateCache.set(path, candidate);
+						candidateCache?.set(path, candidate);
 						return buildNamedBackupMetadata(
 							entry.name.slice(0, -".json".length),
 							path,
@@ -1711,12 +1719,16 @@ export async function createNamedBackup(
 
 export async function assessNamedBackupRestore(
 	name: string,
-	options: { currentStorage?: AccountStorageV3 | null } = {},
+	options: {
+		currentStorage?: AccountStorageV3 | null;
+		candidateCache?: Map<string, unknown>;
+	} = {},
 ): Promise<BackupRestoreAssessment> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
+	const candidateCache = getNamedBackupCandidateCache(options.candidateCache);
 	const candidate =
-		namedBackupCandidateCache.get(backupPath) ?? (await loadBackupCandidate(backupPath));
-	namedBackupCandidateCache.delete(backupPath);
+		candidateCache?.get(backupPath) ?? (await loadBackupCandidate(backupPath));
+	candidateCache?.delete(backupPath);
 	const backup = await buildNamedBackupMetadata(
 		basename(backupPath).slice(0, -".json".length),
 		backupPath,
@@ -1944,9 +1956,10 @@ function assertNamedBackupRestorePath(
 ): string {
 	const resolvedPath = resolvePath(path);
 	const relativePath = relative(resolvePath(backupRoot), resolvedPath);
+	const firstSegment = relativePath.split(/[\\/]/)[0];
 	if (
 		relativePath.length === 0 ||
-		relativePath.startsWith("..") ||
+		firstSegment === ".." ||
 		isAbsolute(relativePath)
 	) {
 		throw new Error(`Backup path escapes backup directory: ${resolvedPath}`);
