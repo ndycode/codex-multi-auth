@@ -1996,7 +1996,7 @@ describe("storage", () => {
 				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
 					code: "EAGAIN",
 				});
-				expect(readdirSpy).toHaveBeenCalledTimes(5);
+				expect(readdirSpy).toHaveBeenCalledTimes(7);
 			} finally {
 				readdirSpy.mockRestore();
 				platformSpy.mockRestore();

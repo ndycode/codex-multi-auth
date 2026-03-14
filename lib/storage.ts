@@ -47,6 +47,8 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const TRANSIENT_FILESYSTEM_MAX_ATTEMPTS = 7;
+const TRANSIENT_FILESYSTEM_BASE_DELAY_MS = 10;
 export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 // Each assessment does more I/O than a listing pass, so keep a lower ceiling to
 // reduce transient AV/file-lock pressure on Windows restore menus.
@@ -1728,10 +1730,13 @@ async function retryTransientFilesystemOperation<T>(
 			return await operation();
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
+			if (
+				!isRetryableFilesystemErrorCode(code) ||
+				attempt >= TRANSIENT_FILESYSTEM_MAX_ATTEMPTS - 1
+			) {
 				throw error;
 			}
-			const baseDelayMs = 10 * 2 ** attempt;
+			const baseDelayMs = TRANSIENT_FILESYSTEM_BASE_DELAY_MS * 2 ** attempt;
 			const jitterMs = Math.floor(Math.random() * 10);
 			await new Promise((resolve) =>
 				setTimeout(resolve, baseDelayMs + jitterMs),
@@ -1834,7 +1839,11 @@ export async function restoreNamedBackup(
 			assessment.error ?? "Backup is not eligible for restore.",
 		);
 	}
-	return importAccounts(assessment.backup.path);
+	const validatedPath = assertNamedBackupRestorePath(
+		assessment.backup.path,
+		getNamedBackupRoot(getStoragePath()),
+	);
+	return importAccounts(validatedPath);
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -2959,7 +2968,7 @@ export async function importAccounts(
 			);
 		}
 		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
+		const skipped = Math.max(0, normalized.accounts.length - imported);
 		const changed = !haveEquivalentAccountRows(
 			deduplicatedAccounts,
 			existingAccounts,
