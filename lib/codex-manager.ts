@@ -59,6 +59,7 @@ import {
 	assessNamedBackupRestore,
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
+	NAMED_BACKUP_LIST_CONCURRENCY,
 	restoreNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
@@ -4213,11 +4214,21 @@ async function runBackupRestoreManager(
 	}
 
 	const currentStorage = await loadAccounts();
-	const assessments = await Promise.all(
-		backups.map((backup) =>
-			assessNamedBackupRestore(backup.name, { currentStorage }),
-		),
-	);
+	const assessments: Awaited<ReturnType<typeof assessNamedBackupRestore>>[] = [];
+	for (
+		let index = 0;
+		index < backups.length;
+		index += NAMED_BACKUP_LIST_CONCURRENCY
+	) {
+		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
+		assessments.push(
+			...(await Promise.all(
+				chunk.map((backup) =>
+					assessNamedBackupRestore(backup.name, { currentStorage }),
+				),
+			)),
+		);
+	}
 
 	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
 		const status =

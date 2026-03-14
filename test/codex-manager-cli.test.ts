@@ -2610,6 +2610,67 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("limits concurrent backup assessments in the restore menu", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const backups = Array.from({ length: 9 }, (_value, index) => ({
+			name: `named-backup-${index + 1}`,
+			path: `/mock/backups/named-backup-${index + 1}.json`,
+			createdAt: null,
+			updatedAt: Date.now() + index,
+			sizeBytes: 128,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: [],
+			valid: true,
+			loadError: undefined,
+		}));
+		const backupsByName = new Map(backups.map((backup) => [backup.name, backup]));
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let pending: Array<ReturnType<typeof createDeferred<void>>> = [];
+		const finalBackupName = backups[backups.length - 1]?.name;
+		listNamedBackupsMock.mockResolvedValue(backups);
+		assessNamedBackupRestoreMock.mockImplementation(async (name: string) => {
+			inFlight += 1;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			const gate = createDeferred<void>();
+			pending.push(gate);
+			if (pending.length === 8 || name === finalBackupName) {
+				const release = pending;
+				pending = [];
+				queueMicrotask(() => {
+					for (const deferred of release) {
+						deferred.resolve();
+					}
+				});
+			}
+			await gate.promise;
+			inFlight -= 1;
+			return {
+				backup: backupsByName.get(name) ?? backups[0],
+				currentAccountCount: 0,
+				mergedAccountCount: 1,
+				imported: 1,
+				skipped: 0,
+				wouldExceedLimit: false,
+				eligibleForRestore: true,
+				error: undefined,
+			};
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({ type: "back" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(backups.length);
+		expect(maxInFlight).toBeLessThanOrEqual(8);
+	});
+
 	it("reassesses a backup before confirmation so the merge summary stays current", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
