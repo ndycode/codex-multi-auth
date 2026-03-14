@@ -504,7 +504,7 @@ describe("storage", () => {
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
 		});
 
-		it("imports accounts inside a flagged transaction without reacquiring the storage lock", async () => {
+		it("imports accounts inside an account transaction without reacquiring the storage lock", async () => {
 			const importPath = join(testWorkDir, "nested-import.json");
 			const nestedExportPath = join(testWorkDir, "nested-import-export.json");
 			const now = Date.now();
@@ -546,12 +546,12 @@ describe("storage", () => {
 				const timer = setTimeout(() => {
 					reject(
 						new Error(
-							"importAccounts should not deadlock inside withAccountAndFlaggedStorageTransaction",
+							"importAccounts should not deadlock inside withAccountStorageTransaction",
 						),
 					);
 				}, 5_000);
 
-				void withAccountAndFlaggedStorageTransaction(async (current) => {
+				void withAccountStorageTransaction(async (current) => {
 					if (!current) {
 						throw new Error("expected existing account storage");
 					}
@@ -600,6 +600,126 @@ describe("storage", () => {
 				]),
 			);
 		}, 10_000);
+
+		it("rejects importAccounts inside the flagged transaction so rollback stays atomic", async () => {
+			const importPath = join(testWorkDir, "nested-import-rejected.json");
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-imported",
+							email: "imported@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: now,
+							lastUsed: now,
+						},
+					],
+				}),
+			);
+
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
+						const error = Object.assign(
+							new Error("flagged storage busy"),
+							{ code: "EBUSY" },
+						);
+						throw error;
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await expect(
+					withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+						if (!current) {
+							throw new Error("expected existing account storage");
+						}
+
+						await expect(importAccounts(importPath)).rejects.toThrow(
+							/withAccountAndFlaggedStorageTransaction/,
+						);
+
+						await persist(
+							{
+								...current,
+								accounts: [
+									...current.accounts,
+									{
+										accountId: "acct-restored",
+										email: "restored@example.com",
+										refreshToken: "refresh-restored",
+										addedAt: now,
+										lastUsed: now,
+									},
+								],
+							},
+							{
+								version: 1,
+								accounts: [],
+							},
+						);
+					}),
+				).rejects.toThrow("flagged storage busy");
+				expect(flaggedRenameAttempts).toBe(5);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loadedAccounts = await loadAccounts();
+			expect(loadedAccounts?.accounts).toHaveLength(1);
+			expect(loadedAccounts?.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-existing",
+					refreshToken: "refresh-existing",
+				}),
+			);
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-flagged",
+					refreshToken: "refresh-flagged",
+				}),
+			);
+		});
 
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
 			const existing = {

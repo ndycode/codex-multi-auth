@@ -168,6 +168,7 @@ let storageMutex: Promise<void> = Promise.resolve();
 const transactionSnapshotContext = new AsyncLocalStorage<{
 	snapshot: AccountStorageV3 | null;
 	active: boolean;
+	kind: "accounts" | "accounts-and-flagged";
 }>();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -1915,6 +1916,7 @@ export async function withAccountStorageTransaction<T>(
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
+			kind: "accounts" as const,
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
@@ -1940,6 +1942,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
+			kind: "accounts-and-flagged" as const,
 		};
 		const current = state.snapshot;
 		const persist = async (
@@ -2381,6 +2384,13 @@ export async function importAccounts(
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
+	if (transactionState?.active) {
+		if (transactionState.kind === "accounts-and-flagged") {
+			throw new Error(
+				"importAccounts cannot run inside withAccountAndFlaggedStorageTransaction; import before the combined transaction or merge the imported accounts into persist().",
+			);
+		}
+	}
 	const {
 		imported: importedCount,
 		total,
