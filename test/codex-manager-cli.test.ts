@@ -465,6 +465,7 @@ describe("codex manager cli commands", () => {
 		withAccountStorageTransactionMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
 		promptAddAnotherAccountMock.mockReset();
 		promptLoginModeMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockReset();
@@ -2433,7 +2434,27 @@ describe("codex manager cli commands", () => {
 	it("offers backup restore from the login menu when no accounts are saved", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue(null);
+		const restoredStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "restored@example.com",
+					accountId: "acc_restored",
+					refreshToken: "refresh-restored",
+					accessToken: "access-restored",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 500,
+					lastUsed: now - 500,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValue(restoredStorage);
 		const assessment = {
 			backup: {
 				name: "named-backup",
@@ -2474,6 +2495,14 @@ describe("codex manager cli commands", () => {
 		);
 		expect(importAccountsMock).toHaveBeenCalledWith(
 			"/mock/backups/named-backup.json",
+		);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_restored",
+				email: "restored@example.com",
+				refreshToken: "refresh-restored",
+				accessToken: "access-restored",
+			}),
 		);
 	});
 
@@ -2976,6 +3005,16 @@ describe("codex manager cli commands", () => {
 					lastUsed: now - 1_000,
 					enabled: true,
 				},
+				{
+					email: "same@example.com",
+					accountId: "acc_same",
+					refreshToken: "refresh-same",
+					accessToken: "access-same",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
 			],
 		});
 		const assessment = {
@@ -2986,15 +3025,15 @@ describe("codex manager cli commands", () => {
 				updatedAt: now,
 				sizeBytes: 128,
 				version: 3,
-				accountCount: 1,
+				accountCount: 2,
 				schemaErrors: [],
 				valid: true,
 				loadError: undefined,
 			},
-			currentAccountCount: 1,
-			mergedAccountCount: 1,
+			currentAccountCount: 2,
+			mergedAccountCount: 2,
 			imported: 0,
-			skipped: 1,
+			skipped: 2,
 			wouldExceedLimit: false,
 			eligibleForRestore: true,
 			error: undefined,
@@ -3003,8 +3042,8 @@ describe("codex manager cli commands", () => {
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		importAccountsMock.mockResolvedValueOnce({
 			imported: 0,
-			skipped: 1,
-			total: 1,
+			skipped: 2,
+			total: 2,
 			changed: true,
 		});
 		promptLoginModeMock
@@ -3022,16 +3061,21 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(confirmMock).toHaveBeenCalledWith(
-				expect.stringContaining("refresh stored metadata"),
+				expect.stringContaining(
+					"refresh stored metadata for matching existing account(s)",
+				),
+			);
+			expect(confirmMock).not.toHaveBeenCalledWith(
+				expect.stringContaining("for 2 existing account(s)"),
 			);
 			expect(importAccountsMock).toHaveBeenCalledWith(
 				"/mock/backups/named-backup.json",
 			);
 			expect(logSpy).toHaveBeenCalledWith(
-				'Restored backup "named-backup". Refreshed metadata for 1 existing account(s).',
+				'Restored backup "named-backup". Refreshed stored metadata for matching existing account(s).',
 			);
 			expect(logSpy).not.toHaveBeenCalledWith(
-				expect.stringContaining("Imported 0, skipped 1"),
+				expect.stringContaining("Imported 0, skipped 2"),
 			);
 		} finally {
 			logSpy.mockRestore();

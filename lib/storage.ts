@@ -1619,23 +1619,34 @@ export async function listNamedBackups(
 				index,
 				index + NAMED_BACKUP_LIST_CONCURRENCY,
 			);
-			backups.push(
-				...(await Promise.all(
-					chunk.map(async (entry) => {
-						const path = assertNamedBackupRestorePath(
-							resolvePath(join(backupRoot, entry.name)),
-							backupRoot,
-						);
-						const candidate = await loadBackupCandidate(path);
-						candidateCache?.set(path, candidate);
-						return buildNamedBackupMetadata(
-							entry.name.slice(0, -".json".length),
-							path,
-							{ candidate },
-						);
-					}),
-				)),
+			const chunkResults = await Promise.allSettled(
+				chunk.map(async (entry) => {
+					const path = assertNamedBackupRestorePath(
+						resolvePath(join(backupRoot, entry.name)),
+						backupRoot,
+					);
+					const candidate = await loadBackupCandidate(path);
+					candidateCache?.set(path, candidate);
+					return buildNamedBackupMetadata(
+						entry.name.slice(0, -".json".length),
+						path,
+						{ candidate },
+					);
+				}),
 			);
+			for (const [chunkIndex, result] of chunkResults.entries()) {
+				if (result.status === "fulfilled") {
+					backups.push(result.value);
+					continue;
+				}
+				if (isNamedBackupContainmentError(result.reason)) {
+					throw result.reason;
+				}
+				log.warn("Skipped named backup during listing", {
+					path: join(backupRoot, chunk[chunkIndex]?.name ?? "<unknown>"),
+					error: String(result.reason),
+				});
+			}
 		}
 		return backups.sort((left, right) => {
 			// Treat epoch (0), null, and non-finite mtimes as "unknown" so the
@@ -1672,13 +1683,10 @@ export async function listNamedBackups(
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
 ): code is "EPERM" | "EBUSY" | "EAGAIN" | "ENOTEMPTY" {
-	if (code === "EBUSY" || code === "ENOTEMPTY") {
+	if (code === "EBUSY" || code === "ENOTEMPTY" || code === "EAGAIN") {
 		return true;
 	}
-	return (
-		(code === "EPERM" || code === "EAGAIN") &&
-		process.platform === "win32"
-	);
+	return code === "EPERM" && process.platform === "win32";
 }
 
 async function retryTransientFilesystemOperation<T>(
@@ -1817,6 +1825,11 @@ export type ImportAccountsResult = {
 	skipped: number;
 	changed: boolean;
 };
+
+function normalizeStoragePathForComparison(path: string): string {
+	const resolved = resolvePath(path);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
 
 function canonicalizeComparisonValue(value: unknown): unknown {
 	if (Array.isArray(value)) {
@@ -1970,6 +1983,13 @@ function assertNamedBackupRestorePath(
 	return resolvedPath;
 }
 
+function isNamedBackupContainmentError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		/escapes backup directory/i.test(error.message)
+	);
+}
+
 async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const requested = (name ?? "").trim();
 	const backupRoot = getNamedBackupRoot(getStoragePath());
@@ -1980,10 +2000,11 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
 		? requested
 		: `${requested}.json`;
+	const baseName = requestedWithExtension.slice(0, -".json".length);
+	let builtPath: string;
 	try {
-		return assertNamedBackupRestorePath(buildNamedBackupPath(name), backupRoot);
+		builtPath = buildNamedBackupPath(name);
 	} catch (error) {
-		const baseName = requestedWithExtension.slice(0, -".json".length);
 		// buildNamedBackupPath rejects names with special characters even when the
 		// requested backup name is a plain filename inside the backups directory.
 		// In that case, reporting ENOENT is clearer than surfacing the filename
@@ -2000,6 +2021,7 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 		}
 		throw error;
 	}
+	return assertNamedBackupRestorePath(builtPath, backupRoot);
 }
 
 async function loadAccountsFromJournal(
@@ -2816,9 +2838,10 @@ export async function exportAccounts(
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
-	const currentStoragePath = getStoragePath();
+	const currentStoragePath = normalizeStoragePathForComparison(getStoragePath());
 	const storage = transactionState?.active
-		? transactionState.storagePath === currentStoragePath
+		? normalizeStoragePathForComparison(transactionState.storagePath) ===
+			currentStoragePath
 			? transactionState.snapshot
 			: (() => {
 					throw new Error(
@@ -2869,7 +2892,9 @@ export async function importAccounts(
 		throw new Error(`Import file not found: ${resolvedPath}`);
 	}
 
-	const content = await fs.readFile(resolvedPath, "utf-8");
+	const content = await retryTransientFilesystemOperation(() =>
+		fs.readFile(resolvedPath, "utf-8"),
+	);
 
 	let imported: unknown;
 	try {

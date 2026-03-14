@@ -4360,19 +4360,33 @@ async function runBackupRestoreManager(
 			console.log(
 				UI_COPY.mainMenu.restoreBackupRefreshSuccess(
 					latestAssessment.backup.name,
-					result.skipped,
 				),
 			);
-			return;
+		} else {
+			console.log(
+				UI_COPY.mainMenu.restoreBackupSuccess(
+					latestAssessment.backup.name,
+					result.imported,
+					result.skipped,
+					result.total,
+				),
+			);
 		}
-		console.log(
-			UI_COPY.mainMenu.restoreBackupSuccess(
-				latestAssessment.backup.name,
-				result.imported,
-				result.skipped,
-				result.total,
-			),
-		);
+		try {
+			const synced = await autoSyncActiveAccountToCodex();
+			if (!synced) {
+				console.warn(
+					"Backup restored, but Codex CLI auth state could not be synced.",
+				);
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(
+				`Backup restored, but Codex CLI auth sync failed: ${
+					collapseWhitespace(message) || "unknown error"
+				}`,
+			);
+		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(

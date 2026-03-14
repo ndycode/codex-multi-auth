@@ -398,6 +398,41 @@ describe("storage", () => {
 			).rejects.toThrow(/different storage path/);
 		});
 
+		it("allows exporting inside an active transaction when the storage path only differs by case on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "transactional-export-same-path",
+						refreshToken: "ref-transactional-export-same-path",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const casedStoragePath = testStoragePath.toUpperCase();
+
+			try {
+				await expect(
+					withAccountStorageTransaction(async () => {
+						setStoragePathDirect(casedStoragePath);
+						try {
+							await exportAccounts(exportPath);
+						} finally {
+							setStoragePathDirect(testStoragePath);
+						}
+					}),
+				).resolves.toBeUndefined();
+				expect(existsSync(exportPath)).toBe(true);
+			} finally {
+				platformSpy.mockRestore();
+			}
+		});
+
 		it("should import accounts from a file and merge", async () => {
 			// @ts-expect-error
 			const { importAccounts } = await import("../lib/storage.js");
@@ -460,7 +495,14 @@ describe("storage", () => {
 					total: 1,
 					changed: false,
 				});
-				expect(writeFileSpy).not.toHaveBeenCalled();
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
 			} finally {
 				writeFileSpy.mockRestore();
 			}
@@ -545,7 +587,14 @@ describe("storage", () => {
 					total: 1,
 					changed: false,
 				});
-				expect(writeFileSpy).not.toHaveBeenCalled();
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
 			} finally {
 				writeFileSpy.mockRestore();
 			}
@@ -1169,6 +1218,51 @@ describe("storage", () => {
 			await expect(importAccounts(nonexistentPath)).rejects.toThrow(
 				/Import file not found/,
 			);
+		});
+
+		it("retries transient import read errors before parsing the backup", async () => {
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "retry-import-read",
+							refreshToken: "ref-retry-import-read",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			const originalReadFile = fs.readFile.bind(fs);
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === exportPath && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("import file busy") as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toMatchObject({
+					imported: 1,
+					skipped: 0,
+					total: 1,
+					changed: true,
+				});
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
 		});
 
 		it("should fail import when file contains invalid JSON", async () => {
@@ -1834,7 +1928,7 @@ describe("storage", () => {
 			}
 		});
 
-		it("rethrows EAGAIN backup directory errors while restoring backups on non-Windows platforms", async () => {
+		it("retries EAGAIN backup directory errors while restoring backups on non-Windows platforms", async () => {
 			const platformSpy = vi
 				.spyOn(process, "platform", "get")
 				.mockReturnValue("linux");
@@ -1847,7 +1941,7 @@ describe("storage", () => {
 				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
 					code: "EAGAIN",
 				});
-				expect(readdirSpy).toHaveBeenCalledTimes(1);
+				expect(readdirSpy).toHaveBeenCalledTimes(5);
 			} finally {
 				readdirSpy.mockRestore();
 				platformSpy.mockRestore();
@@ -1999,10 +2093,7 @@ describe("storage", () => {
 			}
 		});
 
-		it("retries transient EAGAIN backup directory errors while restoring backups on win32", async () => {
-			const platformSpy = vi
-				.spyOn(process, "platform", "get")
-				.mockReturnValue("win32");
+		it("retries transient EAGAIN backup directory errors while restoring backups", async () => {
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -2041,7 +2132,6 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
-				platformSpy.mockRestore();
 			}
 		});
 
@@ -2072,12 +2162,15 @@ describe("storage", () => {
 
 			const assessment = await assessNamedBackupRestore("Manual Backup");
 			expect(assessment.eligibleForRestore).toBe(true);
+			const storageBeforeRestore = await loadAccounts();
+			expect(storageBeforeRestore?.accounts ?? []).toHaveLength(0);
 
 			await removeWithRetry(backupPath, { force: true });
 
 			await expect(restoreNamedBackup("Manual Backup")).rejects.toThrow(
 				/Import file not found/,
 			);
+			expect(await loadAccounts()).toEqual(storageBeforeRestore);
 		});
 
 		it("retries transient backup read errors while listing backups", async () => {
@@ -2122,13 +2215,9 @@ describe("storage", () => {
 			}
 		});
 
-		it("retries transient backup stat errors while listing backups on win32", async () => {
-			let platformSpy: ReturnType<typeof vi.spyOn> | undefined;
+		it("retries transient backup stat EAGAIN errors while listing backups", async () => {
 			let statSpy: ReturnType<typeof vi.spyOn> | undefined;
 			try {
-				platformSpy = vi
-					.spyOn(process, "platform", "get")
-					.mockReturnValue("win32");
 				await saveAccounts({
 					version: 3,
 					activeIndex: 0,
@@ -2164,7 +2253,6 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				statSpy?.mockRestore();
-				platformSpy?.mockRestore();
 			}
 		});
 
