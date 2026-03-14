@@ -517,6 +517,40 @@ describe("storage", () => {
 			});
 		});
 
+		it("should skip semantically identical duplicate-only imports even when key order differs", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				'{"version":3,"activeIndex":0,"accounts":[{"lastUsed":2,"addedAt":1,"refreshToken":"ref-existing","accountId":"existing"}]}',
+			);
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				expect(writeFileSpy).not.toHaveBeenCalled();
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+		});
+
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			const existing = {

@@ -23,7 +23,9 @@ export const UI_COPY = {
 			currentAccountCount: number,
 			mergedAccountCount: number,
 		) =>
-			`Restore backup "${name}"? This will add ${netNewAccounts} new account(s) (${backupAccountCount} in backup, ${currentAccountCount} current -> ${mergedAccountCount} after dedupe).`,
+			netNewAccounts === 0
+				? `Restore backup "${name}"? This will refresh stored metadata for ${backupAccountCount} existing account(s).`
+				: `Restore backup "${name}"? This will add ${netNewAccounts} new account(s) (${backupAccountCount} in backup, ${currentAccountCount} current -> ${mergedAccountCount} after dedupe).`,
 		restoreBackupSuccess: (
 			name: string,
 			imported: number,

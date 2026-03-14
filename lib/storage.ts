@@ -1616,8 +1616,22 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 			);
 		}
 		return backups.sort((left, right) => {
-			const leftTime = Number.isFinite(left.updatedAt) ? left.updatedAt : 0;
-			const rightTime = Number.isFinite(right.updatedAt) ? right.updatedAt : 0;
+			// Treat epoch (0), null, and non-finite mtimes as "unknown" so the
+			// sort order matches the restore hints, which also suppress them.
+			const leftUpdatedAt = left.updatedAt;
+			const leftTime =
+				typeof leftUpdatedAt === "number" &&
+				Number.isFinite(leftUpdatedAt) &&
+				leftUpdatedAt !== 0
+					? leftUpdatedAt
+					: 0;
+			const rightUpdatedAt = right.updatedAt;
+			const rightTime =
+				typeof rightUpdatedAt === "number" &&
+				Number.isFinite(rightUpdatedAt) &&
+				rightUpdatedAt !== 0
+					? rightUpdatedAt
+					: 0;
 			return rightTime - leftTime;
 		});
 	} catch (error) {
@@ -1648,7 +1662,8 @@ function isRetryableFilesystemErrorCode(
 async function retryTransientFilesystemOperation<T>(
 	operation: () => Promise<T>,
 ): Promise<T> {
-	for (let attempt = 0; attempt < 5; attempt += 1) {
+	let attempt = 0;
+	while (true) {
 		try {
 			return await operation();
 		} catch (error) {
@@ -1662,9 +1677,8 @@ async function retryTransientFilesystemOperation<T>(
 				setTimeout(resolve, baseDelayMs + jitterMs),
 			);
 		}
+		attempt += 1;
 	}
-
-	throw new Error("Retry loop exhausted unexpectedly");
 }
 
 export function getNamedBackupsDirectoryPath(): string {
@@ -1776,9 +1790,26 @@ export type ImportAccountsResult = {
 	changed: boolean;
 };
 
-// NOTE: comparison is order-sensitive. This early-exit relies on
-// deduplicateAccounts preserving the existing-first ordering from
-// [...existingAccounts, ...normalized.accounts].
+function canonicalizeComparisonValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((entry) => canonicalizeComparisonValue(entry));
+	}
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+
+	const record = value as Record<string, unknown>;
+	return Object.fromEntries(
+		Object.keys(record)
+			.sort()
+			.map((key) => [key, canonicalizeComparisonValue(record[key])] as const),
+	);
+}
+
+function stableStringifyForComparison(value: unknown): string {
+	return JSON.stringify(canonicalizeComparisonValue(value));
+}
+
 function haveEquivalentAccountRows(
 	left: readonly unknown[],
 	right: readonly unknown[],
@@ -1787,7 +1818,10 @@ function haveEquivalentAccountRows(
 		return false;
 	}
 	for (let index = 0; index < left.length; index += 1) {
-		if (JSON.stringify(left[index]) !== JSON.stringify(right[index])) {
+		if (
+			stableStringifyForComparison(left[index]) !==
+			stableStringifyForComparison(right[index])
+		) {
 			return false;
 		}
 	}

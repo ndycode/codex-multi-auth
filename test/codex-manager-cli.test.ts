@@ -2958,6 +2958,75 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("uses metadata refresh wording when a restore only updates existing accounts", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 1,
+			imported: 0,
+			skipped: 1,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		importAccountsMock.mockResolvedValueOnce({
+			imported: 0,
+			skipped: 1,
+			total: 1,
+			changed: true,
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({
+			type: "restore",
+			assessment,
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.stringContaining("refresh stored metadata"),
+		);
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/backups/named-backup.json",
+		);
+	});
+
 	it("returns to the login menu when backup reassessment becomes ineligible", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
