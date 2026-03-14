@@ -1488,6 +1488,26 @@ describe("storage", () => {
 			}
 		});
 
+		it("rethrows EAGAIN backup directory errors while restoring backups on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory busy") as NodeJS.ErrnoException;
+			error.code = "EAGAIN";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
+					code: "EAGAIN",
+				});
+				expect(readdirSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
+			}
+		});
+
 		it("retries transient backup directory errors while listing backups", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1633,7 +1653,10 @@ describe("storage", () => {
 			}
 		});
 
-		it("retries transient backup directory errors while restoring backups", async () => {
+		it("retries transient EAGAIN backup directory errors while restoring backups on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -1672,6 +1695,7 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 

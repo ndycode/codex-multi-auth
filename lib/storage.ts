@@ -1628,10 +1628,13 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
 ): code is "EPERM" | "EBUSY" | "EAGAIN" | "ENOTEMPTY" {
-	if (code === "EBUSY" || code === "EAGAIN" || code === "ENOTEMPTY") {
+	if (code === "EBUSY" || code === "ENOTEMPTY") {
 		return true;
 	}
-	return code === "EPERM" && process.platform === "win32";
+	return (
+		(code === "EPERM" || code === "EAGAIN") &&
+		process.platform === "win32"
+	);
 }
 
 async function retryTransientFilesystemOperation<T>(

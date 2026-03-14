@@ -9,7 +9,7 @@ const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
 const listNamedBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
-const restoreNamedBackupMock = vi.fn();
+const importAccountsMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
@@ -110,7 +110,7 @@ vi.mock("../lib/storage.js", async () => {
 		listNamedBackups: listNamedBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
-		restoreNamedBackup: restoreNamedBackupMock,
+		importAccounts: importAccountsMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,
 	};
@@ -506,7 +506,7 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
-		restoreNamedBackupMock.mockReset();
+		importAccountsMock.mockReset();
 		confirmMock.mockReset();
 		listNamedBackupsMock.mockResolvedValue([]);
 		assessNamedBackupRestoreMock.mockResolvedValue({
@@ -531,7 +531,7 @@ describe("codex manager cli commands", () => {
 			error: undefined,
 		});
 		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
-		restoreNamedBackupMock.mockResolvedValue({
+		importAccountsMock.mockResolvedValue({
 			imported: 1,
 			skipped: 0,
 			total: 1,
@@ -2424,7 +2424,9 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		expect(confirmMock).toHaveBeenCalledOnce();
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/backups/named-backup.json",
+		);
 	});
 
 	it("offers backup restore from the login menu when no accounts are saved", async () => {
@@ -2469,7 +2471,9 @@ describe("codex manager cli commands", () => {
 			"named-backup",
 			expect.objectContaining({ currentStorage: null }),
 		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/backups/named-backup.json",
+		);
 	});
 
 	it("does not restore a named backup when confirmation is declined", async () => {
@@ -2536,7 +2540,7 @@ describe("codex manager cli commands", () => {
 		);
 		expect(confirmMock).toHaveBeenCalledOnce();
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
-		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
 	});
 
 	it("catches restore failures and returns to the login menu", async () => {
@@ -2582,7 +2586,7 @@ describe("codex manager cli commands", () => {
 		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
-		restoreNamedBackupMock.mockRejectedValueOnce(
+		importAccountsMock.mockRejectedValueOnce(
 			new Error("Import file not found: /mock/backups/named-backup.json"),
 		);
 		promptLoginModeMock
@@ -2598,7 +2602,9 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
-			expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+			expect(importAccountsMock).toHaveBeenCalledWith(
+				"/mock/backups/named-backup.json",
+			);
 			const restoreFailureCalls = [
 				...errorSpy.mock.calls,
 				...logSpy.mock.calls,
@@ -2633,7 +2639,7 @@ describe("codex manager cli commands", () => {
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 			expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
 			expect(selectMock).not.toHaveBeenCalled();
-			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
 			expect(errorSpy).toHaveBeenCalledWith(
 				expect.stringContaining(
 					"Could not read backup directory: EPERM: operation not permitted",
@@ -2699,7 +2705,9 @@ describe("codex manager cli commands", () => {
 			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 			expect(exitCode).toBe(0);
-			expect(restoreNamedBackupMock).toHaveBeenCalledWith("healthy-backup");
+			expect(importAccountsMock).toHaveBeenCalledWith(
+				"/mock/backups/healthy-backup.json",
+			);
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining(
 					'Skipped backup assessment for "broken-backup": backup directory busy',
@@ -2870,7 +2878,9 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledWith(
 			expect.stringContaining("add 1 new account(s)"),
 		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/backups/named-backup.json",
+		);
 	});
 
 	it("returns to the login menu when backup reassessment becomes ineligible", async () => {
@@ -2961,7 +2971,7 @@ describe("codex manager cli commands", () => {
 				}),
 			);
 			expect(confirmMock).not.toHaveBeenCalled();
-			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
 			expect(logSpy).toHaveBeenCalledWith(
 				"All accounts in this backup already exist",
 			);
@@ -3048,7 +3058,7 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		expect(confirmMock).not.toHaveBeenCalled();
-		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Restore failed: backup busy"),
 		);

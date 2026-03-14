@@ -57,10 +57,10 @@ import {
 } from "./quota-cache.js";
 import {
 	assessNamedBackupRestore,
+	importAccounts,
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
 	NAMED_BACKUP_LIST_CONCURRENCY,
-	restoreNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -4334,14 +4334,25 @@ async function runBackupRestoreManager(
 	}
 
 	const netNewAccounts = latestAssessment.imported ?? 0;
-	const confirmMessage = `Restore backup "${latestAssessment.backup.name}"? This will add ${netNewAccounts} new account(s) (${latestAssessment.backup.accountCount ?? 0} in backup, ${latestAssessment.currentAccountCount} current -> ${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`;
+	const confirmMessage = UI_COPY.mainMenu.restoreBackupConfirm(
+		latestAssessment.backup.name,
+		netNewAccounts,
+		latestAssessment.backup.accountCount ?? 0,
+		latestAssessment.currentAccountCount,
+		latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount,
+	);
 	const confirmed = await confirm(confirmMessage);
 	if (!confirmed) return;
 
 	try {
-		const result = await restoreNamedBackup(latestAssessment.backup.name);
+		const result = await importAccounts(latestAssessment.backup.path);
 		console.log(
-			`Restored backup "${latestAssessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
+			UI_COPY.mainMenu.restoreBackupSuccess(
+				latestAssessment.backup.name,
+				result.imported,
+				result.skipped,
+				result.total,
+			),
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
