@@ -1875,6 +1875,44 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("opens the empty storage menu before OAuth when startup recovery finds no actionable backups", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [],
+			totalBackups: 2,
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "add" });
+		await configureSuccessfulOAuthFlow(now);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
+		expect(promptLoginModeMock.mock.calls[0]?.[0]).toEqual([]);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(getNamedBackupsDirectoryPathMock).not.toHaveBeenCalled();
+		expect(listNamedBackupsMock).not.toHaveBeenCalled();
+		expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+		expect(promptLoginModeMock.mock.invocationCallOrder[0]).toBeLessThan(
+			createAuthorizationFlowMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+	});
+
 	it("re-prompts startup recovery after backing out of the backup browser", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
