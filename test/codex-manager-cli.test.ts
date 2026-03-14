@@ -1281,6 +1281,62 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
 	});
 
+	it("uses visible dashboard row numbers when manage mode switches a reordered account", async () => {
+		const now = Date.now();
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: Array.from({ length: 29 }, (_, index) => ({
+				email: `account-${index + 1}@example.com`,
+				accountId: `acc_${index + 1}`,
+				refreshToken: `refresh-${index + 1}`,
+				accessToken: `access-${index + 1}`,
+				expiresAt: now + 3_600_000,
+				addedAt: now - 1_000 - index,
+				lastUsed: now - 1_000 - index,
+				enabled: true,
+			})),
+		};
+		loadAccountsMock.mockResolvedValue(storage);
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+		promptLoginModeMock
+			.mockResolvedValueOnce({
+				mode: "manage",
+				switchAccountIndex: 28,
+				selectedAccountNumber: 1,
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndex).toBe(28);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndexByFamily?.codex).toBe(
+			28,
+		);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				email: "account-29@example.com",
+				accountId: "acc_29",
+				refreshToken: "refresh-29",
+			}),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Switched to account 1"),
+		);
+		expect(
+			logSpy.mock.calls.some((call) =>
+				String(call[0]).includes("Switched to account 29"),
+			),
+		).toBe(false);
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
 	it("marks newly added login account active so smart sort reflects it immediately", async () => {
 		const now = Date.now();
 		let storageState: {
@@ -3166,9 +3222,14 @@ describe("codex manager cli commands", () => {
 			],
 		});
 		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
+			.mockResolvedValueOnce({
+				mode: "manage",
+				deleteAccountIndex: 1,
+				selectedAccountNumber: 1,
+			})
 			.mockResolvedValueOnce({ mode: "cancel" });
 
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
@@ -3178,6 +3239,12 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe(
 			"first@example.com",
 		);
+		expect(logSpy).toHaveBeenCalledWith("Deleted account 1.");
+		expect(
+			logSpy.mock.calls.some((call) =>
+				String(call[0]).includes("Deleted account 2"),
+			),
+		).toBe(false);
 	});
 
 	it("toggles account enabled state from manage mode", async () => {
@@ -3188,26 +3255,128 @@ describe("codex manager cli commands", () => {
 			activeIndexByFamily: { codex: 0 },
 			accounts: [
 				{
-					email: "toggle@example.com",
-					refreshToken: "refresh-toggle",
+					email: "first@example.com",
+					refreshToken: "refresh-first",
 					addedAt: now - 1_000,
 					lastUsed: now - 1_000,
+					enabled: true,
+				},
+				{
+					email: "toggle@example.com",
+					refreshToken: "refresh-toggle",
+					addedAt: now - 500,
+					lastUsed: now - 500,
 					enabled: true,
 				},
 			],
 		});
 		promptLoginModeMock
-			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({
+				mode: "manage",
+				toggleAccountIndex: 1,
+				selectedAccountNumber: 1,
+			})
 			.mockResolvedValueOnce({ mode: "cancel" });
 
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.enabled).toBe(
+			true,
+		);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[1]?.enabled).toBe(
 			false,
 		);
+		expect(logSpy).toHaveBeenCalledWith("Disabled account 1.");
+		expect(
+			logSpy.mock.calls.some((call) =>
+				String(call[0]).includes("Disabled account 2"),
+			),
+		).toBe(false);
+	});
+
+	it("refreshes reordered accounts from manage mode using visible row numbers", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc_first",
+					refreshToken: "refresh-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "refresh@example.com",
+					accountId: "acc_refresh",
+					refreshToken: "refresh-second",
+					accessToken: "access-second",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({
+				mode: "manage",
+				refreshAccountIndex: 1,
+				selectedAccountNumber: 1,
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const authModule = await import("../lib/auth/auth.js");
+		const browserModule = await import("../lib/auth/browser.js");
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValue({
+			type: "success",
+			access: "access-second-next",
+			refresh: "refresh-second-next",
+			expires: now + 7_200_000,
+			idToken: "id-second-next",
+		});
+		vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+			ready: true,
+			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			close: vi.fn(),
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(authModule.createAuthorizationFlow).toHaveBeenCalledTimes(1);
+		expect(authModule.exchangeAuthorizationCode).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		expect(logSpy).toHaveBeenCalledWith("Refreshed account 1.");
+		expect(
+			logSpy.mock.calls.some((call) =>
+				String(call[0]).includes("Refreshed account 2"),
+			),
+		).toBe(false);
 	});
 
 	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {

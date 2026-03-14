@@ -91,6 +91,7 @@ export interface LoginMenuResult {
 	refreshAccountIndex?: number;
 	toggleAccountIndex?: number;
 	switchAccountIndex?: number;
+	selectedAccountNumber?: number;
 	deleteAll?: boolean;
 }
 
@@ -122,9 +123,38 @@ function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
 	return -1;
 }
 
+function resolveAccountDisplayNumber(
+	account: ExistingAccountInfo,
+): number | undefined {
+	if (
+		typeof account.quickSwitchNumber === "number" &&
+		Number.isFinite(account.quickSwitchNumber)
+	) {
+		return Math.max(1, Math.floor(account.quickSwitchNumber));
+	}
+	if (typeof account.index === "number" && Number.isFinite(account.index)) {
+		return Math.max(1, Math.floor(account.index) + 1);
+	}
+	return undefined;
+}
+
 function warnUnresolvableAccountSelection(account: ExistingAccountInfo): void {
 	const label = account.email?.trim() || account.accountId?.trim() || `index ${account.index + 1}`;
 	console.log(`Unable to resolve saved account for action: ${label}`);
+}
+
+function buildManageResult(
+	account: ExistingAccountInfo,
+	result: Omit<LoginMenuResult, "mode" | "selectedAccountNumber">,
+): LoginMenuResult {
+	const selectedAccountNumber = resolveAccountDisplayNumber(account);
+	return {
+		mode: "manage",
+		...result,
+		...(typeof selectedAccountNumber === "number"
+			? { selectedAccountNumber }
+			: {}),
+	};
 }
 
 async function promptDeleteAllTypedConfirm(): Promise<boolean> {
@@ -225,25 +255,41 @@ export async function promptLoginMode(
 				const accountAction = await showAccountDetails(action.account);
 				if (accountAction === "delete") {
 					const index = resolveAccountSourceIndex(action.account);
-					if (index >= 0) return { mode: "manage", deleteAccountIndex: index };
+					if (index >= 0) {
+						return buildManageResult(action.account, {
+							deleteAccountIndex: index,
+						});
+					}
 					warnUnresolvableAccountSelection(action.account);
 					continue;
 				}
 				if (accountAction === "set-current") {
 					const index = resolveAccountSourceIndex(action.account);
-					if (index >= 0) return { mode: "manage", switchAccountIndex: index };
+					if (index >= 0) {
+						return buildManageResult(action.account, {
+							switchAccountIndex: index,
+						});
+					}
 					warnUnresolvableAccountSelection(action.account);
 					continue;
 				}
 				if (accountAction === "refresh") {
 					const index = resolveAccountSourceIndex(action.account);
-					if (index >= 0) return { mode: "manage", refreshAccountIndex: index };
+					if (index >= 0) {
+						return buildManageResult(action.account, {
+							refreshAccountIndex: index,
+						});
+					}
 					warnUnresolvableAccountSelection(action.account);
 					continue;
 				}
 				if (accountAction === "toggle") {
 					const index = resolveAccountSourceIndex(action.account);
-					if (index >= 0) return { mode: "manage", toggleAccountIndex: index };
+					if (index >= 0) {
+						return buildManageResult(action.account, {
+							toggleAccountIndex: index,
+						});
+					}
 					warnUnresolvableAccountSelection(action.account);
 					continue;
 				}
@@ -251,25 +297,41 @@ export async function promptLoginMode(
 			}
 			case "set-current-account": {
 				const index = resolveAccountSourceIndex(action.account);
-				if (index >= 0) return { mode: "manage", switchAccountIndex: index };
+				if (index >= 0) {
+					return buildManageResult(action.account, {
+						switchAccountIndex: index,
+					});
+				}
 				warnUnresolvableAccountSelection(action.account);
 				continue;
 			}
 			case "refresh-account": {
 				const index = resolveAccountSourceIndex(action.account);
-				if (index >= 0) return { mode: "manage", refreshAccountIndex: index };
+				if (index >= 0) {
+					return buildManageResult(action.account, {
+						refreshAccountIndex: index,
+					});
+				}
 				warnUnresolvableAccountSelection(action.account);
 				continue;
 			}
 			case "toggle-account": {
 				const index = resolveAccountSourceIndex(action.account);
-				if (index >= 0) return { mode: "manage", toggleAccountIndex: index };
+				if (index >= 0) {
+					return buildManageResult(action.account, {
+						toggleAccountIndex: index,
+					});
+				}
 				warnUnresolvableAccountSelection(action.account);
 				continue;
 			}
 			case "delete-account": {
 				const index = resolveAccountSourceIndex(action.account);
-				if (index >= 0) return { mode: "manage", deleteAccountIndex: index };
+				if (index >= 0) {
+					return buildManageResult(action.account, {
+						deleteAccountIndex: index,
+					});
+				}
 				warnUnresolvableAccountSelection(action.account);
 				continue;
 			}

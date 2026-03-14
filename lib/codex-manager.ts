@@ -3736,18 +3736,44 @@ async function clearAccountsAndReset(): Promise<void> {
 	await clearAccounts();
 }
 
+function resolveManageActionAccountNumber(
+	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
+	fallbackIndex: number,
+): number {
+	if (
+		typeof menuResult.selectedAccountNumber === "number" &&
+		Number.isFinite(menuResult.selectedAccountNumber)
+	) {
+		return Math.max(1, Math.floor(menuResult.selectedAccountNumber));
+	}
+	return fallbackIndex + 1;
+}
+
+interface RunSwitchOptions {
+	displayAccountNumber?: number;
+}
+
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
 ): Promise<void> {
 	if (typeof menuResult.switchAccountIndex === "number") {
 		const index = menuResult.switchAccountIndex;
-		await runSwitch([String(index + 1)]);
+		await runSwitch([String(index + 1)], {
+			displayAccountNumber: resolveManageActionAccountNumber(
+				menuResult,
+				index,
+			),
+		});
 		return;
 	}
 
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
+		const displayAccountNumber = resolveManageActionAccountNumber(
+			menuResult,
+			idx,
+		);
 		if (idx >= 0 && idx < storage.accounts.length) {
 			storage.accounts.splice(idx, 1);
 			storage.activeIndex = 0;
@@ -3756,19 +3782,23 @@ async function handleManageAction(
 				storage.activeIndexByFamily[family] = 0;
 			}
 			await saveAccounts(storage);
-			console.log(`Deleted account ${idx + 1}.`);
+			console.log(`Deleted account ${displayAccountNumber}.`);
 		}
 		return;
 	}
 
 	if (typeof menuResult.toggleAccountIndex === "number") {
 		const idx = menuResult.toggleAccountIndex;
+		const displayAccountNumber = resolveManageActionAccountNumber(
+			menuResult,
+			idx,
+		);
 		const account = storage.accounts[idx];
 		if (account) {
 			account.enabled = account.enabled === false;
 			await saveAccounts(storage);
 			console.log(
-				`${account.enabled === false ? "Disabled" : "Enabled"} account ${idx + 1}.`,
+				`${account.enabled === false ? "Disabled" : "Enabled"} account ${displayAccountNumber}.`,
 			);
 		}
 		return;
@@ -3776,6 +3806,10 @@ async function handleManageAction(
 
 	if (typeof menuResult.refreshAccountIndex === "number") {
 		const idx = menuResult.refreshAccountIndex;
+		const displayAccountNumber = resolveManageActionAccountNumber(
+			menuResult,
+			idx,
+		);
 		const existing = storage.accounts[idx];
 		if (!existing) return;
 
@@ -3788,7 +3822,7 @@ async function handleManageAction(
 		const resolved = resolveAccountSelection(tokenResult);
 		await persistAccountPool([resolved], false);
 		await syncSelectionToCodex(resolved);
-		console.log(`Refreshed account ${idx + 1}.`);
+		console.log(`Refreshed account ${displayAccountNumber}.`);
 	}
 }
 
@@ -3945,7 +3979,10 @@ async function runAuthLogin(): Promise<number> {
 	}
 }
 
-async function runSwitch(args: string[]): Promise<number> {
+async function runSwitch(
+	args: string[],
+	options: RunSwitchOptions = {},
+): Promise<number> {
 	setStoragePath(null);
 	const indexArg = args[0];
 	if (!indexArg) {
@@ -3958,6 +3995,11 @@ async function runSwitch(args: string[]): Promise<number> {
 		return 1;
 	}
 	const targetIndex = parsed - 1;
+	const displayAccountNumber =
+		typeof options.displayAccountNumber === "number" &&
+		Number.isFinite(options.displayAccountNumber)
+			? Math.max(1, Math.floor(options.displayAccountNumber))
+			: parsed;
 
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
@@ -4017,7 +4059,7 @@ async function runSwitch(args: string[]): Promise<number> {
 			syncIdToken = refreshResult.idToken;
 		} else {
 			console.warn(
-				`Switch validation refresh failed for account ${parsed}: ${normalizeFailureDetail(refreshResult.message, refreshResult.reason)}.`,
+				`Switch validation refresh failed for account ${displayAccountNumber}: ${normalizeFailureDetail(refreshResult.message, refreshResult.reason)}.`,
 			);
 		}
 	}
@@ -4036,12 +4078,12 @@ async function runSwitch(args: string[]): Promise<number> {
 	});
 	if (!synced) {
 		console.warn(
-			`Switched account ${parsed} locally, but Codex auth sync did not complete. Multi-auth routing will still use this account.`,
+			`Switched account ${displayAccountNumber} locally, but Codex auth sync did not complete. Multi-auth routing will still use this account.`,
 		);
 	}
 
 	console.log(
-		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
+		`Switched to account ${displayAccountNumber}: ${formatAccountLabel(account, displayAccountNumber - 1)}${wasDisabled ? " (re-enabled)" : ""}`,
 	);
 	return 0;
 }
