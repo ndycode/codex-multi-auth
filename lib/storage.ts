@@ -1745,7 +1745,7 @@ export async function assessNamedBackupRestore(
 
 export async function restoreNamedBackup(
 	name: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
+): Promise<ImportAccountsResult> {
 	const assessment = await assessNamedBackupRestore(name);
 	if (!assessment.eligibleForRestore) {
 		throw new Error(
@@ -1766,6 +1766,28 @@ function parseAndNormalizeStorage(data: unknown): {
 		? (data as { version?: unknown }).version
 		: undefined;
 	return { normalized, storedVersion, schemaErrors };
+}
+
+export type ImportAccountsResult = {
+	imported: number;
+	total: number;
+	skipped: number;
+	changed: boolean;
+};
+
+function haveEquivalentAccountRows(
+	left: readonly unknown[],
+	right: readonly unknown[],
+): boolean {
+	if (left.length !== right.length) {
+		return false;
+	}
+	for (let index = 0; index < left.length; index += 1) {
+		if (JSON.stringify(left[index]) !== JSON.stringify(right[index])) {
+			return false;
+		}
+	}
+	return true;
 }
 
 async function loadAccountsFromPath(path: string): Promise<{
@@ -2777,7 +2799,7 @@ export async function exportAccounts(
  */
 export async function importAccounts(
 	filePath: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
+): Promise<ImportAccountsResult> {
 	const resolvedPath = resolvePath(filePath);
 
 	// Check file exists with friendly error
@@ -2803,6 +2825,7 @@ export async function importAccounts(
 		imported: importedCount,
 		total,
 		skipped: skippedCount,
+		changed,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
 		const existingActiveIndex = existing?.activeIndex ?? 0;
@@ -2821,9 +2844,18 @@ export async function importAccounts(
 		const deduplicatedAccounts = deduplicateAccounts(merged);
 		const imported = deduplicatedAccounts.length - existingAccounts.length;
 		const skipped = normalized.accounts.length - imported;
+		const changed = !haveEquivalentAccountRows(
+			deduplicatedAccounts,
+			existingAccounts,
+		);
 
-		if (imported === 0) {
-			return { imported, total: deduplicatedAccounts.length, skipped };
+		if (!changed) {
+			return {
+				imported,
+				total: deduplicatedAccounts.length,
+				skipped,
+				changed,
+			};
 		}
 
 		const newStorage: AccountStorageV3 = {
@@ -2834,7 +2866,12 @@ export async function importAccounts(
 		};
 
 		await persist(newStorage);
-		return { imported, total: deduplicatedAccounts.length, skipped };
+		return {
+			imported,
+			total: deduplicatedAccounts.length,
+			skipped,
+			changed,
+		};
 	});
 
 	log.info("Imported accounts", {
@@ -2844,5 +2881,10 @@ export async function importAccounts(
 		total,
 	});
 
-	return { imported: importedCount, total, skipped: skippedCount };
+	return {
+		imported: importedCount,
+		total,
+		skipped: skippedCount,
+		changed,
+	};
 }

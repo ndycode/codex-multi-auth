@@ -535,6 +535,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			total: 1,
+			changed: true,
 		});
 		confirmMock.mockResolvedValue(true);
 		withAccountStorageTransactionMock.mockImplementation(
@@ -2665,6 +2666,7 @@ describe("codex manager cli commands", () => {
 			imported: 0,
 			skipped: 1,
 			total: 1,
+			changed: false,
 		});
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })

@@ -454,11 +454,67 @@ describe("storage", () => {
 			const writeFileSpy = vi.spyOn(fs, "writeFile");
 			try {
 				const result = await importAccounts(exportPath);
-				expect(result).toEqual({ imported: 0, skipped: 1, total: 1 });
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
 				expect(writeFileSpy).not.toHaveBeenCalled();
 			} finally {
 				writeFileSpy.mockRestore();
 			}
+		});
+
+		it("should persist duplicate-only imports when they refresh stored metadata", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						accessToken: "stale-access",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "existing",
+							email: "existing@example.com",
+							refreshToken: "ref-existing",
+							accessToken: "fresh-access",
+							addedAt: 1,
+							lastUsed: 10,
+						},
+					],
+				}),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({
+				imported: 0,
+				skipped: 1,
+				total: 1,
+				changed: true,
+			});
+			expect(loaded?.accounts).toHaveLength(1);
+			expect(loaded?.accounts[0]).toMatchObject({
+				accountId: "existing",
+				accessToken: "fresh-access",
+				lastUsed: 10,
+			});
 		});
 
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
@@ -506,7 +562,12 @@ describe("storage", () => {
 			const imported = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(imported).toEqual({ imported: 1, total: 3, skipped: 0 });
+			expect(imported).toEqual({
+				imported: 1,
+				total: 3,
+				skipped: 0,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(3);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual(
 				expect.arrayContaining([
@@ -557,7 +618,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
@@ -603,7 +669,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
