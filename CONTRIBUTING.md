@@ -59,8 +59,10 @@ For user-facing behavior changes, review these files at minimum:
    - `npm test`
    - `npm run build`
 4. Include command output evidence in the PR description.
-5. Document behavior changes and migration notes when needed.
-6. Ensure no secrets or local runtime data are committed.
+5. Keep `.github/pull_request_template.md` intact and fill every section when opening or updating the PR.
+6. PRs are screened by automated PR quality checks; a `needs-human-review` label means maintainer follow-up is required before merge.
+7. Document behavior changes and migration notes when needed.
+8. Ensure no secrets or local runtime data are committed.
 
 Use `.github/pull_request_template.md` when opening the PR.
 

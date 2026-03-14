@@ -405,12 +405,17 @@ describe("Documentation Integrity", () => {
 	});
 
 	it("keeps governance templates and security reporting guidance present", () => {
+		const antiSlopWorkflow = ".github/workflows/anti-slop.yml";
 		const prTemplate = ".github/pull_request_template.md";
 		const issueConfig = ".github/ISSUE_TEMPLATE/config.yml";
 		const bugTemplate = ".github/ISSUE_TEMPLATE/bug_report.md";
 		const featureTemplate = ".github/ISSUE_TEMPLATE/feature_request.md";
 		const codeOfConduct = "CODE_OF_CONDUCT.md";
 
+		expect(
+			existsSync(join(projectRoot, antiSlopWorkflow)),
+			`${antiSlopWorkflow} should exist`,
+		).toBe(true);
 		expect(
 			existsSync(join(projectRoot, prTemplate)),
 			`${prTemplate} should exist`,
@@ -432,12 +437,27 @@ describe("Documentation Integrity", () => {
 			`${codeOfConduct} should exist`,
 		).toBe(true);
 
+		const antiSlop = read(antiSlopWorkflow);
+		expect(antiSlop).toContain("peakoss/anti-slop@v0.2.1");
+		expect(antiSlop).toContain("pull_request_target:");
+		expect(antiSlop).toContain("types: [opened, reopened, ready_for_review]");
+		expect(antiSlop).toContain("require-pr-template: true");
+		expect(antiSlop).toContain("strict-pr-template-sections: Validation");
+		expect(antiSlop).toContain("optional-pr-template-sections: Additional Notes");
+		expect(antiSlop).toContain('blocked-paths: ""');
+		expect(antiSlop).toContain("failure-add-pr-labels: needs-human-review");
+		expect(antiSlop).toContain("close-pr: false");
+		expect(antiSlop).toContain("lock-pr: false");
+
 		const prBody = read(prTemplate);
 		expect(prBody).toContain("npm run lint");
 		expect(prBody).toContain("npm run typecheck");
 		expect(prBody).toContain("npm test");
 		expect(prBody).toContain("npm test -- test/documentation.test.ts");
 		expect(prBody).toContain("npm run build");
+		expect(prBody).toContain("## Docs Impact");
+		expect(prBody).toContain("## Governance Review");
+		expect(prBody).not.toContain("## Docs and Governance Checklist");
 
 		const security = read("SECURITY.md").toLowerCase();
 		expect(security).toContain("do not open a public issue");
@@ -450,6 +470,8 @@ describe("Documentation Integrity", () => {
 		expect(contributing).toContain("npm run lint");
 		expect(contributing).toContain("npm test");
 		expect(contributing).toContain("npm run build");
+		expect(contributing).toContain("needs-human-review");
+		expect(contributing).toContain("pull_request_template.md");
 
 		const conduct = read("CODE_OF_CONDUCT.md").toLowerCase();
 		expect(conduct).toContain("respectful");
