@@ -1875,7 +1875,7 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("opens the empty storage menu before OAuth when startup recovery finds no actionable backups", async () => {
+	it("shows the empty storage menu before OAuth when startup recovery finds backups but none are actionable", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		let storageState = {
@@ -1903,6 +1903,10 @@ describe("codex manager cli commands", () => {
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
 		expect(promptLoginModeMock.mock.calls[0]?.[0]).toEqual([]);
 		expect(confirmMock).not.toHaveBeenCalled();
+		expect(selectMock).toHaveBeenCalledTimes(1);
+		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
+			message: "Sign-In Method",
+		});
 		expect(getNamedBackupsDirectoryPathMock).not.toHaveBeenCalled();
 		expect(listNamedBackupsMock).not.toHaveBeenCalled();
 		expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();

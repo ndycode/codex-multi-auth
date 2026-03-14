@@ -769,6 +769,40 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 
 });
 
+describe("resolveStartupRecoveryAction", () => {
+	it("re-enters the empty storage menu instead of OAuth when backups exist but none are actionable", async () => {
+		const { resolveStartupRecoveryAction } = await import(
+			"../lib/codex-manager.js"
+		);
+
+		expect(
+			resolveStartupRecoveryAction(
+				{ assessments: [], totalBackups: 2 },
+				false,
+			),
+		).toBe("open-empty-storage-menu");
+		expect(
+			resolveStartupRecoveryAction(
+				{ assessments: [], totalBackups: 2 },
+				false,
+			),
+		).not.toBe("continue-with-oauth");
+	});
+
+	it("falls through to OAuth when the startup recovery scan itself failed", async () => {
+		const { resolveStartupRecoveryAction } = await import(
+			"../lib/codex-manager.js"
+		);
+
+		expect(
+			resolveStartupRecoveryAction(
+				{ assessments: [], totalBackups: 0 },
+				true,
+			),
+		).toBe("continue-with-oauth");
+	});
+});
+
 describe("isRecoverableError", () => {
 	it("returns true for tool_result_missing", () => {
 		const error = "tool_use without tool_result";

@@ -3821,6 +3821,23 @@ async function handleManageAction(
 	}
 }
 
+type StartupRecoveryAction =
+	| "continue-with-oauth"
+	| "open-empty-storage-menu"
+	| "show-recovery-prompt";
+
+export function resolveStartupRecoveryAction(
+	recoveryState: Awaited<ReturnType<typeof getActionableNamedBackupRestores>>,
+	recoveryScanFailed: boolean,
+): StartupRecoveryAction {
+	if (recoveryState.assessments.length > 0) {
+		return "show-recovery-prompt";
+	}
+	return recoveryScanFailed
+		? "continue-with-oauth"
+		: "open-empty-storage-menu";
+}
+
 async function runAuthLogin(): Promise<number> {
 	setStoragePath(null);
 	let suppressRecoveryPrompt = false;
@@ -4042,7 +4059,10 @@ async function runAuthLogin(): Promise<number> {
 					);
 					recoveryState = { assessments: [], totalBackups: 0 };
 				}
-				if (recoveryState.assessments.length === 0 && !recoveryScanFailed) {
+				if (
+					resolveStartupRecoveryAction(recoveryState, recoveryScanFailed) ===
+					"open-empty-storage-menu"
+				) {
 					allowEmptyStorageMenu = true;
 					continue loginFlow;
 				}
