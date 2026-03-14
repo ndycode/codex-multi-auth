@@ -1906,6 +1906,22 @@ function cloneAccountStorageForPersistence(
 	};
 }
 
+function syncAccountStorageSnapshot(
+	current: AccountStorageV3 | null,
+	next: AccountStorageV3,
+): AccountStorageV3 {
+	const snapshot = cloneAccountStorageForPersistence(next);
+	if (!current) {
+		return snapshot;
+	}
+
+	current.version = snapshot.version;
+	current.accounts = snapshot.accounts;
+	current.activeIndex = snapshot.activeIndex;
+	current.activeIndexByFamily = snapshot.activeIndexByFamily;
+	return current;
+}
+
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -1920,8 +1936,9 @@ export async function withAccountStorageTransaction<T>(
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
-			state.snapshot = storage;
+			const nextStorage = cloneAccountStorageForPersistence(storage);
+			await saveAccountsUnlocked(nextStorage);
+			state.snapshot = syncAccountStorageSnapshot(state.snapshot, nextStorage);
 		};
 		return transactionSnapshotContext.run(state, () =>
 			handler(current, persist),
@@ -1954,11 +1971,14 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			await saveAccountsUnlocked(nextAccounts);
 			try {
 				await saveFlaggedAccountsUnlocked(flaggedStorage);
-				state.snapshot = nextAccounts;
+				state.snapshot = syncAccountStorageSnapshot(state.snapshot, nextAccounts);
 			} catch (error) {
 				try {
 					await saveAccountsUnlocked(previousAccounts);
-					state.snapshot = previousAccounts;
+					state.snapshot = syncAccountStorageSnapshot(
+						state.snapshot,
+						previousAccounts,
+					);
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
 						[error, rollbackError],
@@ -2432,8 +2452,12 @@ export async function importAccounts(
 
 		if (transactionState?.active) {
 			return applyImport(transactionState.snapshot, async (storage) => {
-				await saveAccountsUnlocked(storage);
-				transactionState.snapshot = storage;
+				const nextStorage = cloneAccountStorageForPersistence(storage);
+				await saveAccountsUnlocked(nextStorage);
+				transactionState.snapshot = syncAccountStorageSnapshot(
+					transactionState.snapshot,
+					nextStorage,
+				);
 			});
 		}
 
