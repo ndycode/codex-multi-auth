@@ -1768,7 +1768,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
@@ -1843,7 +1843,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: "",
 		};
 		const secondAssessment = {
@@ -1944,7 +1944,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: "",
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
@@ -2000,7 +2000,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: "",
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
@@ -2059,7 +2059,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: "",
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
@@ -2206,7 +2206,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: "",
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
@@ -2268,7 +2268,7 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: "",
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({

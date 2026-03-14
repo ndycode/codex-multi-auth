@@ -4055,7 +4055,8 @@ async function runAuthLogin(): Promise<number> {
 					const backupDir = getNamedBackupsDirectoryPath();
 					const sample = recoveryState.assessments[0];
 					if (sample === undefined) {
-						continue;
+						recoveryPromptAttempted = false;
+						continue loginFlow;
 					}
 					const backupLabel =
 						recoveryState.assessments.length === 1
