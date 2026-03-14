@@ -174,6 +174,11 @@ type AccountTransactionState = {
 };
 const transactionSnapshotContext = new AsyncLocalStorage<AccountTransactionState>();
 
+function getActiveAccountTransaction(): AccountTransactionState | undefined {
+	const state = transactionSnapshotContext.getStore();
+	return state?.active ? state : undefined;
+}
+
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previousMutex = storageMutex;
 	let releaseLock: () => void;
@@ -2014,6 +2019,11 @@ export async function withAccountStorageTransaction<T>(
 		getCurrent: () => AccountStorageV3 | null,
 	) => Promise<T>,
 ): Promise<T> {
+	if (getActiveAccountTransaction()) {
+		throw new Error(
+			"Nested account storage transactions are not supported; use the active transaction's persist/getCurrent helpers instead.",
+		);
+	}
 	return withStorageLock(async () => {
 		const loadedSnapshot = await loadAccountsInternal(saveAccountsUnlocked);
 		const state = {
@@ -2042,9 +2052,13 @@ export async function withAccountStorageTransaction<T>(
 				state.revision,
 			);
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist, getCurrent),
-		);
+		return transactionSnapshotContext.run(state, async () => {
+			try {
+				return await handler(current, persist, getCurrent);
+			} finally {
+				state.active = false;
+			}
+		});
 	});
 }
 
@@ -2058,6 +2072,11 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		getCurrent: () => AccountStorageV3 | null,
 	) => Promise<T>,
 ): Promise<T> {
+	if (getActiveAccountTransaction()) {
+		throw new Error(
+			"Nested account storage transactions are not supported; use the active transaction's persist/getCurrent helpers instead.",
+		);
+	}
 	return withStorageLock(async () => {
 		const loadedSnapshot = await loadAccountsInternal(saveAccountsUnlocked);
 		const state = {
@@ -2075,7 +2094,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			flaggedStorage: FlaggedAccountStorageV1,
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
-			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
+			const payloadRevision = getTransactionSnapshotRevision(accountStorage);
+			const nextAccounts =
+				state.revision > 0 &&
+					state.snapshot &&
+					(payloadRevision === null || payloadRevision < state.revision)
+					? mergeStaleTransactionSnapshot(state.snapshot, accountStorage)
+					: cloneAccountStorageForPersistence(accountStorage);
 			state.revision += 1;
 			await saveAccountsUnlocked(nextAccounts);
 			try {
@@ -2111,9 +2136,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 				throw error;
 			}
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist, getCurrent),
-		);
+		return transactionSnapshotContext.run(state, async () => {
+			try {
+				return await handler(current, persist, getCurrent);
+			} finally {
+				state.active = false;
+			}
+		});
 	});
 }
 
@@ -2450,8 +2479,9 @@ export async function exportAccounts(
 
 	const transactionState = transactionSnapshotContext.getStore();
 	// Inside a transaction, reuse the in-flight snapshot instead of reacquiring
-	// the storage mutex. The snapshot only reflects writes after persist() runs,
-	// so pre-persist exports intentionally return the initial loaded state.
+	// the storage mutex. The snapshot reflects nested importAccounts writes and
+	// prior persist() calls, so a pre-persist export returns the initially loaded
+	// state only when no nested import has already updated the transaction.
 	// This avoids deadlocks and redundant disk reads on Windows where antivirus
 	// may temporarily hold exclusive locks on freshly written files.
 	const storage = transactionState?.active
@@ -2482,6 +2512,9 @@ export async function exportAccounts(
 	// POSIX honors 0o600 for plaintext token exports. Windows ignores mode bits
 	// here and falls back to the destination directory's inherited ACLs instead.
 	await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
+	// Keep export logs metadata-only: path/count are safe to emit, but never
+	// include token or email fields because Windows log destinations may inherit
+	// broader ACLs from the target directory.
 	if (process.platform === "win32") {
 		log.warn(
 			"Exported token file permissions rely on directory ACL inheritance on Windows; ensure the destination folder is not world-readable.",
@@ -2592,6 +2625,8 @@ export async function importAccounts(
 		return withAccountStorageTransaction(applyImport);
 	})();
 
+	// Keep import logs metadata-only: path and counts are enough for auditing
+	// without exposing token or account identity data in shared log locations.
 	log.info("Imported accounts", {
 		path: resolvedPath,
 		imported: importedCount,

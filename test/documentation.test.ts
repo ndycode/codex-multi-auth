@@ -459,6 +459,7 @@ describe("Documentation Integrity", () => {
 		}
 		// Keep this focused on security and template-governance invariants.
 		// Operational thresholds and failure actions are intentionally tuneable.
+		expect(antiSlop).toContain("issues: write");
 		expect(antiSlop).toMatch(/github-token:\s*\$\{\{\s*github\.token\s*\}\}/);
 		expect(antiSlop).toContain("require-pr-template: true");
 		expect(antiSlop).toContain("strict-pr-template-sections: Validation");

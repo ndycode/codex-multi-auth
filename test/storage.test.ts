@@ -601,6 +601,21 @@ describe("storage", () => {
 			);
 		}, 10_000);
 
+		it("rejects direct nested transaction entry points inside an active account transaction", async () => {
+			await withAccountStorageTransaction(async () => {
+				await expect(
+					withAccountStorageTransaction(
+						async (_current, _persist, _getCurrent) => undefined,
+					),
+				).rejects.toThrow(/Nested account storage transactions are not supported/);
+				await expect(
+					withAccountAndFlaggedStorageTransaction(
+						async (_current, _persist, _getCurrent) => undefined,
+					),
+				).rejects.toThrow(/Nested account storage transactions are not supported/);
+			});
+		});
+
 		it("preserves imported accounts when the outer account transaction persists afterward", async () => {
 			const importPath = join(testWorkDir, "nested-import-with-persist.json");
 			const now = Date.now();
@@ -1007,6 +1022,106 @@ describe("storage", () => {
 			);
 		});
 
+		it("reacquires storage after deferred async work outlives a flagged transaction", async () => {
+			const exportPath = join(testWorkDir, "post-flagged-transaction-export.json");
+			const now = Date.now();
+			let releaseExportGate: () => void = () => undefined;
+			const exportGate = new Promise<void>((resolve) => {
+				releaseExportGate = resolve;
+			});
+			let deferredExport: Promise<void> | undefined;
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+				],
+			});
+
+			await withAccountAndFlaggedStorageTransaction(
+				async (current, persist) => {
+					if (!current) {
+						throw new Error("expected existing account storage");
+					}
+
+					await persist(
+						{
+							...current,
+							accounts: [
+								...current.accounts,
+								{
+									accountId: "acct-transaction",
+									email: "transaction@example.com",
+									refreshToken: "refresh-transaction",
+									addedAt: now - 1_000,
+									lastUsed: now - 1_000,
+								},
+							],
+						},
+						{
+							version: 1,
+							accounts: [],
+						},
+					);
+
+					deferredExport = new Promise<void>((resolve, reject) => {
+						setTimeout(() => {
+							void exportGate
+								.then(() => exportAccounts(exportPath))
+								.then(resolve, reject);
+						}, 0);
+					});
+				},
+			);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-latest",
+						email: "latest@example.com",
+						refreshToken: "refresh-latest",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			});
+
+			releaseExportGate();
+			if (!deferredExport) {
+				throw new Error("expected deferred export");
+			}
+			await deferredExport;
+
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+			expect(exported.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-latest",
+						refreshToken: "refresh-latest",
+					}),
+				]),
+			);
+			expect(exported.accounts).not.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-transaction",
+						refreshToken: "refresh-transaction",
+					}),
+				]),
+			);
+		});
+
 		it("getCurrent exposes the live snapshot after persist inside a flagged transaction", async () => {
 			const now = Date.now();
 			let liveSnapshot: Awaited<ReturnType<typeof loadAccounts>> = null;
@@ -1114,6 +1229,130 @@ describe("storage", () => {
 					expect.objectContaining({
 						accountId: "acct-created",
 						refreshToken: "refresh-created",
+					}),
+				]),
+			);
+		});
+
+		it("preserves earlier account writes when a later flagged persist reuses a stale payload", async () => {
+			const now = Date.now();
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+				],
+			});
+
+			await withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+				if (!current) {
+					throw new Error("expected existing account storage");
+				}
+
+				const stalePersistPayload = {
+					...current,
+					activeIndex: 1,
+					activeIndexByFamily: { codex: 1 },
+					accounts: [
+						...current.accounts,
+						{
+							accountId: "acct-appended",
+							email: "appended@example.com",
+							refreshToken: "refresh-appended",
+							addedAt: now,
+							lastUsed: now,
+						},
+					],
+				};
+
+				await persist(
+					{
+						...current,
+						accounts: [
+							...current.accounts,
+							{
+								accountId: "acct-first",
+								email: "first@example.com",
+								refreshToken: "refresh-first",
+								addedAt: now - 1_000,
+								lastUsed: now - 1_000,
+							},
+						],
+					},
+					{
+						version: 1,
+						accounts: [
+							{
+								accountId: "flagged-first",
+								email: "flagged-first@example.com",
+								refreshToken: "refresh-flagged-first",
+								addedAt: now - 1_000,
+								lastUsed: now - 1_000,
+								flaggedAt: now - 1_000,
+							},
+						],
+					},
+				);
+
+				await persist(stalePersistPayload, {
+					version: 1,
+					accounts: [
+						{
+							accountId: "flagged-second",
+							email: "flagged-second@example.com",
+							refreshToken: "refresh-flagged-second",
+							addedAt: now,
+							lastUsed: now,
+							flaggedAt: now,
+						},
+					],
+				});
+			});
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+					expect.objectContaining({
+						accountId: "acct-first",
+						refreshToken: "refresh-first",
+					}),
+					expect.objectContaining({
+						accountId: "acct-appended",
+						refreshToken: "refresh-appended",
+					}),
+				]),
+			);
+			expect(loaded?.accounts[loaded.activeIndex]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-appended",
+					refreshToken: "refresh-appended",
+				}),
+			);
+			expect(loaded?.accounts[loaded.activeIndexByFamily?.codex ?? -1]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-appended",
+					refreshToken: "refresh-appended",
+				}),
+			);
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "flagged-second",
+						refreshToken: "refresh-flagged-second",
 					}),
 				]),
 			);
