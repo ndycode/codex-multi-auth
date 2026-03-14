@@ -1725,7 +1725,8 @@ export async function assessNamedBackupRestore(
 	const skipped = wouldExceedLimit
 		? null
 		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
-	const nothingToImport = !wouldExceedLimit && imported === 0;
+	const changed = !haveEquivalentAccountRows(mergedAccounts, currentAccounts);
+	const nothingToImport = !wouldExceedLimit && !changed;
 
 	return {
 		backup,
@@ -1775,6 +1776,9 @@ export type ImportAccountsResult = {
 	changed: boolean;
 };
 
+// NOTE: comparison is order-sensitive. This early-exit relies on
+// deduplicateAccounts preserving the existing-first ordering from
+// [...existingAccounts, ...normalized.accounts].
 function haveEquivalentAccountRows(
 	left: readonly unknown[],
 	right: readonly unknown[],
@@ -2831,17 +2835,12 @@ export async function importAccounts(
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
 		const merged = [...existingAccounts, ...normalized.accounts];
-
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccounts(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
-			}
-		}
-
 		const deduplicatedAccounts = deduplicateAccounts(merged);
+		if (deduplicatedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			throw new Error(
+				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduplicatedAccounts.length})`,
+			);
+		}
 		const imported = deduplicatedAccounts.length - existingAccounts.length;
 		const skipped = normalized.accounts.length - imported;
 		const changed = !haveEquivalentAccountRows(

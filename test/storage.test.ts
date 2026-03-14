@@ -1053,6 +1053,73 @@ describe("storage", () => {
 			);
 		});
 
+		it("rejects a second import that would exceed MAX_ACCOUNTS", async () => {
+			const nearLimitAccounts = Array.from(
+				{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
+				(_, index) => ({
+					accountId: `existing-${index}`,
+					refreshToken: `ref-existing-${index}`,
+					addedAt: index + 1,
+					lastUsed: index + 1,
+				}),
+			);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: nearLimitAccounts,
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "extra-one",
+							refreshToken: "ref-extra-one",
+							addedAt: 10_000,
+							lastUsed: 10_000,
+						},
+					],
+				}),
+			);
+
+			const first = await importAccounts(exportPath);
+			expect(first).toMatchObject({
+				imported: 1,
+				skipped: 0,
+				total: ACCOUNT_LIMITS.MAX_ACCOUNTS,
+				changed: true,
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "extra-two",
+							refreshToken: "ref-extra-two",
+							addedAt: 20_000,
+							lastUsed: 20_000,
+						},
+					],
+				}),
+			);
+
+			await expect(importAccounts(exportPath)).rejects.toThrow(
+				/exceed maximum/,
+			);
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toHaveLength(ACCOUNT_LIMITS.MAX_ACCOUNTS);
+			expect(
+				loaded?.accounts.some((account) => account.accountId === "extra-two"),
+			).toBe(false);
+		});
+
 		it("should fail export when no accounts exist", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
@@ -1342,6 +1409,60 @@ describe("storage", () => {
 			await expect(restoreNamedBackup("already-present")).rejects.toThrow(
 				"All accounts in this backup already exist",
 			);
+		});
+
+		it("keeps metadata-only backups eligible for restore", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						email: "existing@example.com",
+						refreshToken: "ref-existing-account",
+						accessToken: "fresh-access",
+						addedAt: 1,
+						lastUsed: 10,
+					},
+				],
+			});
+			await createNamedBackup("metadata-refresh");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						email: "existing@example.com",
+						refreshToken: "ref-existing-account",
+						accessToken: "stale-access",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("metadata-refresh");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.error).toBeUndefined();
+
+			const restoreResult = await restoreNamedBackup("metadata-refresh");
+			expect(restoreResult).toMatchObject({
+				imported: 0,
+				skipped: 1,
+				total: 1,
+				changed: true,
+			});
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts[0]).toMatchObject({
+				accountId: "existing-account",
+				accessToken: "fresh-access",
+				lastUsed: 10,
+			});
 		});
 
 		it("restores manually named backups that already exist inside the backups directory", async () => {
