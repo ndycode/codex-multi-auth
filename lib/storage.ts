@@ -47,6 +47,7 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -1616,34 +1617,52 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
 		const entries = await fs.readdir(backupRoot, { withFileTypes: true });
+		const backupEntries = entries
+			.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
+			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
 		const backups: NamedBackupScanEntry[] = [];
-		let totalBackups = 0;
-		for (const entry of entries) {
-			if (!entry.isFile() || entry.isSymbolicLink()) continue;
-			if (!entry.name.toLowerCase().endsWith(".json")) continue;
-			totalBackups += 1;
-
-			const path = resolvePath(join(backupRoot, entry.name));
-			const name = entry.name.slice(0, -".json".length);
-			try {
-				const candidate = await loadBackupCandidate(path);
-				const backup = await buildNamedBackupMetadata(name, path, { candidate });
-				backups.push({ backup, candidate });
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					log.warn("Failed to scan named backup", {
-						name,
-						path,
-						error: String(error),
-					});
-				}
-			}
+		const totalBackups = backupEntries.length;
+		for (
+			let index = 0;
+			index < backupEntries.length;
+			index += NAMED_BACKUP_LIST_CONCURRENCY
+		) {
+			const chunk = backupEntries.slice(
+				index,
+				index + NAMED_BACKUP_LIST_CONCURRENCY,
+			);
+			backups.push(
+				...(await Promise.all(
+					chunk.map(async (entry) => {
+						const path = resolvePath(join(backupRoot, entry.name));
+						const name = entry.name.slice(0, -".json".length);
+						try {
+							const candidate = await loadBackupCandidate(path);
+							const backup = await buildNamedBackupMetadata(name, path, {
+								candidate,
+							});
+							return { backup, candidate };
+						} catch (error) {
+							const code = (error as NodeJS.ErrnoException).code;
+							if (code !== "ENOENT") {
+								log.warn("Failed to scan named backup", {
+									name,
+									path,
+									error: String(error),
+								});
+							}
+							return null;
+						}
+					}),
+				)).filter(
+					(entry): entry is NamedBackupScanEntry => entry !== null,
+				),
+			);
 		}
-
 		return {
 			backups: backups.sort(
-				(left, right) => (right.backup.updatedAt ?? 0) - (left.backup.updatedAt ?? 0),
+				(left, right) =>
+					(right.backup.updatedAt ?? 0) - (left.backup.updatedAt ?? 0),
 			),
 			totalBackups,
 		};
@@ -1850,9 +1869,9 @@ export async function assessNamedBackupRestore(
 		{ candidate },
 	);
 	const currentStorage =
-		options.currentStorage === undefined
-			? await loadAccounts()
-			: options.currentStorage;
+		options.currentStorage !== undefined
+			? options.currentStorage
+			: await loadAccounts();
 	return assessNamedBackupRestoreCandidate(backup, candidate, currentStorage);
 }
 
