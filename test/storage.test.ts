@@ -2062,7 +2062,10 @@ describe("storage", () => {
 			}
 		});
 
-		it("retries transient backup stat errors while listing backups", async () => {
+		it("retries transient backup stat errors while listing backups on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -2099,6 +2102,7 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				statSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
