@@ -4007,13 +4007,15 @@ async function runSwitch(
 		return 1;
 	}
 	if (targetIndex < 0 || targetIndex >= storage.accounts.length) {
-		console.error(`Index out of range. Valid range: 1-${storage.accounts.length}`);
+		console.error(
+			`Selected account ${displayAccountNumber} is out of range. Valid range: 1-${storage.accounts.length}.`,
+		);
 		return 1;
 	}
 
 	const account = storage.accounts[targetIndex];
 	if (!account) {
-		console.error(`Account ${parsed} not found.`);
+		console.error(`Selected account ${displayAccountNumber} is no longer available.`);
 		return 1;
 	}
 
