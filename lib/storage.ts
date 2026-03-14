@@ -44,7 +44,7 @@ const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
 const ACCOUNTS_BACKUP_SUFFIX = ".bak";
 const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
-const BACKUP_COPY_MAX_ATTEMPTS = 5;
+export const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
@@ -1857,7 +1857,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 
 		// Retry rename with exponential backoff for Windows EPERM/EBUSY
 		let lastError: NodeJS.ErrnoException | null = null;
-		for (let attempt = 0; attempt < 5; attempt++) {
+		for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt++) {
 			try {
 				await fs.rename(tempPath, path);
 				try {
@@ -2183,6 +2183,15 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 						rollbackRevision,
 					);
 				} catch (rollbackError) {
+					// The first account save already committed, so any retry must treat
+					// that snapshot as the live base even though the flagged save and
+					// rollback both failed.
+					state.revision = nextRevision;
+					state.snapshot = syncAccountStorageSnapshot(
+						state.snapshot,
+						nextAccounts,
+						nextRevision,
+					);
 					const combinedError = new AggregateError(
 						[error, rollbackError],
 						"Flagged save failed and account storage rollback also failed",

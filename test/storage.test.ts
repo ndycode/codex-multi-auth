@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import {
+	BACKUP_COPY_MAX_ATTEMPTS,
 	buildNamedBackupPath,
 	clearAccounts,
 	deduplicateAccounts,
@@ -1192,7 +1193,7 @@ describe("storage", () => {
 						);
 					}),
 				).rejects.toThrow("flagged storage busy");
-				expect(flaggedRenameAttempts).toBe(5); // matches BACKUP_COPY_MAX_ATTEMPTS in storage.ts
+				expect(flaggedRenameAttempts).toBe(BACKUP_COPY_MAX_ATTEMPTS);
 			} finally {
 				renameSpy.mockRestore();
 			}
@@ -1216,6 +1217,132 @@ describe("storage", () => {
 			);
 		});
 
+		it("keeps combined transaction state aligned when the account write fails before flagged persistence", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let accountRenameAttempts = 0;
+			let failingRenameAttemptsRemaining = BACKUP_COPY_MAX_ATTEMPTS;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to) === testStoragePath) {
+						accountRenameAttempts += 1;
+						if (failingRenameAttemptsRemaining > 0) {
+							failingRenameAttemptsRemaining -= 1;
+							const error = Object.assign(new Error("accounts busy"), {
+								code: "EBUSY",
+							});
+							throw error;
+						}
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await withAccountAndFlaggedStorageTransaction(
+					async (_current, persist, getCurrent) => {
+						await expect(
+							persist(
+								{
+									version: 3,
+									activeIndex: 0,
+									activeIndexByFamily: { codex: 0 },
+									accounts: [
+										{
+											accountId: "acct-failed",
+											email: "failed@example.com",
+											refreshToken: "refresh-failed",
+											addedAt: now,
+											lastUsed: now,
+										},
+									],
+								},
+								{
+									version: 1,
+									accounts: [],
+								},
+							),
+						).rejects.toThrow(/accounts busy/);
+
+						const accountsAfterFailure = await loadAccounts();
+						expect(accountsAfterFailure?.accounts).toEqual([
+							expect.objectContaining({
+								accountId: "acct-existing",
+								refreshToken: "refresh-existing",
+							}),
+						]);
+						const flaggedAfterFailure = await loadFlaggedAccounts();
+						expect(flaggedAfterFailure.accounts).toEqual([
+							expect.objectContaining({
+								accountId: "acct-flagged",
+								refreshToken: "refresh-flagged",
+							}),
+						]);
+
+						const liveCurrent = getCurrent();
+						if (!liveCurrent) {
+							throw new Error("expected live transaction snapshot");
+						}
+
+						liveCurrent.accounts = [
+							{
+								accountId: "acct-retry",
+								email: "retry@example.com",
+								refreshToken: "refresh-retry",
+								addedAt: now + 1,
+								lastUsed: now + 1,
+							},
+						];
+						await persist(liveCurrent, {
+							version: 1,
+							accounts: [],
+						});
+					},
+				);
+				expect(accountRenameAttempts).toBe(BACKUP_COPY_MAX_ATTEMPTS + 1);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loadedAccounts = await loadAccounts();
+			expect(loadedAccounts?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "acct-retry",
+					refreshToken: "refresh-retry",
+				}),
+			]);
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(0);
+		});
+
 		it("keeps revision aligned when an account persist fails before a later retry", async () => {
 			const now = Date.now();
 			await saveAccounts({
@@ -1234,7 +1361,7 @@ describe("storage", () => {
 			});
 
 			const originalRename = fs.rename.bind(fs);
-			let failingRenameAttemptsRemaining = 5;
+			let failingRenameAttemptsRemaining = BACKUP_COPY_MAX_ATTEMPTS;
 			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
 				async (from, to) => {
 					if (
@@ -1337,7 +1464,7 @@ describe("storage", () => {
 			);
 
 			const originalRename = fs.rename.bind(fs);
-			let failingRenameAttemptsRemaining = 5;
+			let failingRenameAttemptsRemaining = BACKUP_COPY_MAX_ATTEMPTS;
 			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
 				async (from, to) => {
 					if (
@@ -2196,8 +2323,8 @@ describe("storage", () => {
 					thrown = error;
 				}
 
-				expect(flaggedRenameAttempts).toBe(5); // matches BACKUP_COPY_MAX_ATTEMPTS in storage.ts
-				expect(accountRenameAttempts).toBe(6);
+				expect(flaggedRenameAttempts).toBe(BACKUP_COPY_MAX_ATTEMPTS);
+				expect(accountRenameAttempts).toBe(BACKUP_COPY_MAX_ATTEMPTS + 1);
 				expect(thrown).toBeInstanceOf(AggregateError);
 				expect((thrown as AggregateError).message).toBe(
 					"Flagged save failed and account storage rollback also failed",
@@ -2228,6 +2355,164 @@ describe("storage", () => {
 						refreshToken: "refresh-flagged",
 					}),
 				);
+			} finally {
+				isolatedStorageModule.setStoragePathDirect(null);
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+			}
+		});
+
+		it("preserves the partially applied account snapshot when a combined rollback failure is retried", async () => {
+			const now = Date.now();
+			const storagePath = getStoragePath();
+			expect(storagePath).toBeTruthy();
+			const flaggedStoragePath = getFlaggedAccountsPath();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const actualFs = await vi.importActual<typeof import("node:fs")>(
+				"node:fs",
+			);
+			let accountRenameAttempts = 0;
+			let flaggedRenameAttempts = 0;
+			vi.resetModules();
+			vi.doMock("node:fs", () => ({
+				...actualFs,
+				promises: {
+					...actualFs.promises,
+					rename: async (
+						from: Parameters<typeof actualFs.promises.rename>[0],
+						to: Parameters<typeof actualFs.promises.rename>[1],
+					) => {
+						const targetPath = String(to);
+						if (targetPath === flaggedStoragePath) {
+							flaggedRenameAttempts += 1;
+							if (flaggedRenameAttempts <= BACKUP_COPY_MAX_ATTEMPTS) {
+								const error = Object.assign(
+									new Error("flagged storage busy"),
+									{ code: "EBUSY" },
+								);
+								throw error;
+							}
+						}
+						if (
+							targetPath === storagePath &&
+							accountRenameAttempts > 0 &&
+							accountRenameAttempts <= BACKUP_COPY_MAX_ATTEMPTS
+						) {
+							accountRenameAttempts += 1;
+							const error = Object.assign(
+								new Error("rollback account storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+						if (targetPath === storagePath) {
+							accountRenameAttempts += 1;
+						}
+						return actualFs.promises.rename(from, to);
+					},
+				},
+			}));
+			const isolatedStorageModule = await import("../lib/storage.js");
+			isolatedStorageModule.setStoragePathDirect(storagePath);
+			try {
+				await isolatedStorageModule.withAccountAndFlaggedStorageTransaction(
+					async (current, persist) => {
+						if (!current) {
+							throw new Error("expected existing account storage");
+						}
+						const retryBase = {
+							...current,
+							accounts: [...current.accounts],
+						};
+
+						await expect(
+							persist(
+								{
+									...retryBase,
+									accounts: [
+										...retryBase.accounts,
+										{
+											accountId: "acct-restored",
+											email: "restored@example.com",
+											refreshToken: "refresh-restored",
+											addedAt: now,
+											lastUsed: now,
+										},
+									],
+								},
+								{
+									version: 1,
+									accounts: [],
+								},
+							),
+						).rejects.toThrow(
+							"Flagged save failed and account storage rollback also failed",
+						);
+
+						await persist(
+							{
+								...retryBase,
+								accounts: [
+									...retryBase.accounts,
+									{
+										accountId: "acct-retry",
+										email: "retry@example.com",
+										refreshToken: "refresh-retry",
+										addedAt: now + 1,
+										lastUsed: now + 1,
+									},
+								],
+							},
+							{
+								version: 1,
+								accounts: [],
+							},
+						);
+					},
+				);
+
+				expect(flaggedRenameAttempts).toBe(BACKUP_COPY_MAX_ATTEMPTS + 1);
+				expect(accountRenameAttempts).toBe(BACKUP_COPY_MAX_ATTEMPTS + 2);
+
+				const loadedAccounts = await isolatedStorageModule.loadAccounts();
+				expect(loadedAccounts?.accounts).toHaveLength(3);
+				expect(
+					loadedAccounts?.accounts.map((account) => account.refreshToken),
+				).toEqual([
+					"refresh-existing",
+					"refresh-restored",
+					"refresh-retry",
+				]);
+
+				const loadedFlagged = await isolatedStorageModule.loadFlaggedAccounts();
+				expect(loadedFlagged.accounts).toHaveLength(0);
 			} finally {
 				isolatedStorageModule.setStoragePathDirect(null);
 				vi.doUnmock("node:fs");
