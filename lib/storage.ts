@@ -47,6 +47,7 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -1581,11 +1582,22 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
 		const entries = await fs.readdir(backupRoot, { withFileTypes: true });
-		const backups = await Promise.all(
-			entries
-				.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
-				.filter((entry) => entry.name.toLowerCase().endsWith(".json"))
-				.map(async (entry) => {
+		const backupEntries = entries
+			.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
+			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
+		const backups: NamedBackupMetadata[] = [];
+		for (
+			let index = 0;
+			index < backupEntries.length;
+			index += NAMED_BACKUP_LIST_CONCURRENCY
+		) {
+			const chunk = backupEntries.slice(
+				index,
+				index + NAMED_BACKUP_LIST_CONCURRENCY,
+			);
+			backups.push(
+				...(await Promise.all(
+					chunk.map(async (entry) => {
 					const path = resolvePath(join(backupRoot, entry.name));
 					const candidate = await loadBackupCandidate(path);
 					return buildNamedBackupMetadata(
@@ -1593,8 +1605,10 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 						path,
 						{ candidate },
 					);
-				}),
-		);
+					}),
+				)),
+			);
+		}
 		return backups.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
@@ -1661,7 +1675,10 @@ export async function assessNamedBackupRestore(
 		backupPath,
 		{ candidate },
 	);
-	const currentStorage = options.currentStorage ?? (await loadAccounts());
+	const currentStorage =
+		options.currentStorage !== undefined
+			? options.currentStorage
+			: await loadAccounts();
 	const currentAccounts = currentStorage?.accounts ?? [];
 
 	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {

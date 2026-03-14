@@ -1165,6 +1165,46 @@ describe("storage", () => {
 			expect(restored?.accounts[0]?.accountId).toBe("primary");
 		});
 
+		it("honors explicit null currentStorage when assessing a named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-account",
+						refreshToken: "ref-backup-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("explicit-null-current-storage");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "current-account",
+						refreshToken: "ref-current-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore(
+				"explicit-null-current-storage",
+				{ currentStorage: null },
+			);
+
+			expect(assessment.currentAccountCount).toBe(0);
+			expect(assessment.mergedAccountCount).toBe(1);
+			expect(assessment.imported).toBe(1);
+			expect(assessment.skipped).toBe(0);
+			expect(assessment.eligibleForRestore).toBe(true);
+		});
+
 		it("restores manually named backups that already exist inside the backups directory", async () => {
 			const backupPath = join(
 				dirname(testStoragePath),
@@ -1394,6 +1434,57 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				statSpy.mockRestore();
+			}
+		});
+
+		it("limits concurrent backup reads while listing backups", async () => {
+			const backupPaths: string[] = [];
+			for (let index = 0; index < 12; index += 1) {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: `concurrency-${index}`,
+							refreshToken: `ref-concurrency-${index}`,
+							addedAt: index + 1,
+							lastUsed: index + 1,
+						},
+					],
+				});
+				const backup = await createNamedBackup(`concurrency-${index}`);
+				backupPaths.push(backup.path);
+			}
+
+			const originalReadFile = fs.readFile.bind(fs);
+			const delayedPaths = new Set(backupPaths);
+			let activeReads = 0;
+			let peakReads = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (delayedPaths.has(String(path))) {
+						activeReads += 1;
+						peakReads = Math.max(peakReads, activeReads);
+						try {
+							await new Promise((resolve) => setTimeout(resolve, 10));
+							return await originalReadFile(
+								...(args as Parameters<typeof fs.readFile>),
+							);
+						} finally {
+							activeReads -= 1;
+						}
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toHaveLength(12);
+				expect(peakReads).toBeLessThanOrEqual(8);
+			} finally {
+				readFileSpy.mockRestore();
 			}
 		});
 
