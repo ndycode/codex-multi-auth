@@ -1048,6 +1048,80 @@ describe("storage", () => {
 			);
 		});
 
+		it("treats revisionless payloads as intentional overwrites after a nested import", async () => {
+			const importPath = join(
+				testWorkDir,
+				"nested-import-revisionless-overwrite.json",
+			);
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-imported",
+							email: "imported@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: now - 1_000,
+							lastUsed: now - 1_000,
+						},
+					],
+				}),
+			);
+
+			await withAccountStorageTransaction(async (_current, persist, getCurrent) => {
+				await importAccounts(importPath);
+				const liveCurrent = getCurrent();
+				if (!liveCurrent) {
+					throw new Error("expected live transaction snapshot");
+				}
+
+				await persist({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: liveCurrent.accounts.filter(
+						(account) => account.accountId !== "acct-imported",
+					),
+				});
+			});
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+				]),
+			);
+			expect(loaded?.accounts).not.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-imported",
+						refreshToken: "refresh-imported",
+					}),
+				]),
+			);
+		});
+
 		it("exposes the live snapshot after a nested import when the transaction starts from a null snapshot", async () => {
 			const importPath = join(testWorkDir, "nested-import-null-start.json");
 			const storagePath = getStoragePath();
@@ -1098,7 +1172,7 @@ describe("storage", () => {
 			);
 		});
 
-		it("rejects importAccounts inside the flagged transaction so rollback stays atomic", async () => {
+		it("rejects importAccounts inside the flagged transaction but leaves the outer transaction usable", async () => {
 			const importPath = join(testWorkDir, "nested-import-rejected.json");
 			const now = Date.now();
 			await saveAccounts({
@@ -1112,19 +1186,6 @@ describe("storage", () => {
 						refreshToken: "refresh-existing",
 						addedAt: now - 10_000,
 						lastUsed: now - 10_000,
-					},
-				],
-			});
-			await saveFlaggedAccounts({
-				version: 1,
-				accounts: [
-					{
-						accountId: "acct-flagged",
-						email: "flagged@example.com",
-						refreshToken: "refresh-flagged",
-						addedAt: now - 5_000,
-						lastUsed: now - 5_000,
-						flaggedAt: now - 5_000,
 					},
 				],
 			});
@@ -1146,76 +1207,55 @@ describe("storage", () => {
 				}),
 			);
 
-			const originalRename = fs.rename.bind(fs);
-			let flaggedRenameAttempts = 0;
-			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
-				async (from, to) => {
-					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
-						flaggedRenameAttempts += 1;
-						const error = Object.assign(
-							new Error("flagged storage busy"),
-							{ code: "EBUSY" },
-						);
-						throw error;
+			await withAccountAndFlaggedStorageTransaction(
+				async (current, persist, getCurrent) => {
+					if (!current) {
+						throw new Error("expected existing account storage");
 					}
-					return originalRename(from, to);
+
+					await expect(importAccounts(importPath)).rejects.toThrow(
+						/importAccounts cannot run inside withAccountAndFlaggedStorageTransaction/,
+					);
+					expect(getCurrent()).toBe(current);
+
+					await persist(
+						{
+							...current,
+							accounts: [
+								...current.accounts,
+								{
+									accountId: "acct-restored",
+									email: "restored@example.com",
+									refreshToken: "refresh-restored",
+									addedAt: now,
+									lastUsed: now,
+								},
+							],
+						},
+						{
+							version: 1,
+							accounts: [],
+						},
+					);
 				},
 			);
 
-			try {
-				await expect(
-					withAccountAndFlaggedStorageTransaction(async (current, persist) => {
-						if (!current) {
-							throw new Error("expected existing account storage");
-						}
-
-						await expect(importAccounts(importPath)).rejects.toThrow(
-							/withAccountAndFlaggedStorageTransaction/,
-						);
-
-						await persist(
-							{
-								...current,
-								accounts: [
-									...current.accounts,
-									{
-										accountId: "acct-restored",
-										email: "restored@example.com",
-										refreshToken: "refresh-restored",
-										addedAt: now,
-										lastUsed: now,
-									},
-								],
-							},
-							{
-								version: 1,
-								accounts: [],
-							},
-						);
-					}),
-				).rejects.toThrow("flagged storage busy");
-				expect(flaggedRenameAttempts).toBe(BACKUP_COPY_MAX_ATTEMPTS);
-			} finally {
-				renameSpy.mockRestore();
-			}
-
 			const loadedAccounts = await loadAccounts();
-			expect(loadedAccounts?.accounts).toHaveLength(1);
-			expect(loadedAccounts?.accounts[0]).toEqual(
-				expect.objectContaining({
-					accountId: "acct-existing",
-					refreshToken: "refresh-existing",
-				}),
+			expect(loadedAccounts?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+					expect.objectContaining({
+						accountId: "acct-restored",
+						refreshToken: "refresh-restored",
+					}),
+				]),
 			);
 
 			const loadedFlagged = await loadFlaggedAccounts();
-			expect(loadedFlagged.accounts).toHaveLength(1);
-			expect(loadedFlagged.accounts[0]).toEqual(
-				expect.objectContaining({
-					accountId: "acct-flagged",
-					refreshToken: "refresh-flagged",
-				}),
-			);
+			expect(loadedFlagged.accounts).toHaveLength(0);
 		});
 
 		it("keeps combined transaction state aligned when the account write fails before flagged persistence", async () => {

@@ -2090,6 +2090,9 @@ export async function withAccountStorageTransaction<T>(
 			kind: "accounts" as const,
 			revision: 0,
 		};
+		// `current` is the live in-transaction snapshot. Nested writes mutate this
+		// object in place when it already exists, so use getCurrent() when you need
+		// an explicit re-read after importAccounts() or later persists.
 		const current = state.snapshot;
 		const getCurrent = (): AccountStorageV3 | null => state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
@@ -2097,7 +2100,10 @@ export async function withAccountStorageTransaction<T>(
 			const nextStorage =
 				state.revision > 0 &&
 					state.snapshot &&
-					(payloadRevision === null || payloadRevision < state.revision)
+					// Only stamped snapshots are stale-merge candidates. Fresh payloads
+					// without a revision marker are treated as intentional overwrites so
+					// explicit clears do not get merged back in.
+					(payloadRevision !== null && payloadRevision < state.revision)
 					? mergeStaleTransactionSnapshot(state.snapshot, storage)
 					: cloneAccountStorageForPersistence(storage);
 			const nextRevision = state.revision + 1;
@@ -2144,6 +2150,9 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			kind: "accounts-and-flagged" as const,
 			revision: 0,
 		};
+		// `current` is the live in-transaction snapshot. Successful persists mutate
+		// this object in place when it already exists, so use getCurrent() for an
+		// explicit re-read after any nested write.
 		const current = state.snapshot;
 		const getCurrent = (): AccountStorageV3 | null => state.snapshot;
 		const persist = async (
@@ -2162,7 +2171,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			const nextAccounts =
 				state.revision > 0 &&
 					state.snapshot &&
-					(payloadRevision === null || payloadRevision < state.revision)
+					(payloadRevision !== null && payloadRevision < state.revision)
 					? mergeStaleTransactionSnapshot(state.snapshot, accountStorage)
 					: cloneAccountStorageForPersistence(accountStorage);
 			const nextRevision = state.revision + 1;
