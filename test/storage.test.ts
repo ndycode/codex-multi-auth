@@ -1155,7 +1155,7 @@ describe("storage", () => {
 			await clearAccounts();
 
 			const assessment = await assessNamedBackupRestore("restore-me");
-			expect(assessment.valid).toBe(true);
+			expect(assessment.eligibleForRestore).toBe(true);
 			expect(assessment.wouldExceedLimit).toBe(false);
 
 			const restoreResult = await restoreNamedBackup("restore-me");
@@ -1198,7 +1198,7 @@ describe("storage", () => {
 
 			await clearAccounts();
 			const assessment = await assessNamedBackupRestore("Manual Backup");
-			expect(assessment.valid).toBe(true);
+			expect(assessment.eligibleForRestore).toBe(true);
 			expect(assessment.backup.name).toBe("Manual Backup");
 
 			const restoreResult = await restoreNamedBackup("Manual Backup");
@@ -1223,7 +1223,7 @@ describe("storage", () => {
 			await clearAccounts();
 
 			const assessment = await assessNamedBackupRestore("deleted-after-assessment");
-			expect(assessment.valid).toBe(true);
+			expect(assessment.eligibleForRestore).toBe(true);
 
 			await fs.unlink(backup.path);
 
@@ -1250,7 +1250,7 @@ describe("storage", () => {
 			await clearAccounts();
 
 			const assessment = await assessNamedBackupRestore("invalid-after-assessment");
-			expect(assessment.valid).toBe(true);
+			expect(assessment.eligibleForRestore).toBe(true);
 
 			await fs.writeFile(backup.path, "not valid json {[", "utf-8");
 
@@ -1306,7 +1306,7 @@ describe("storage", () => {
 			await clearAccounts();
 
 			const assessment = await assessNamedBackupRestore("Manual Backup");
-			expect(assessment.valid).toBe(true);
+			expect(assessment.eligibleForRestore).toBe(true);
 
 			await fs.rm(backupPath, { force: true });
 
@@ -1442,8 +1442,8 @@ describe("storage", () => {
 
 			const assessmentA = await assessNamedBackupRestore("backup-a");
 			const assessmentB = await assessNamedBackupRestore("backup-b");
-			expect(assessmentA.valid).toBe(true);
-			expect(assessmentB.valid).toBe(true);
+			expect(assessmentA.eligibleForRestore).toBe(true);
+			expect(assessmentB.eligibleForRestore).toBe(true);
 
 			const results = await Promise.allSettled([
 				restoreNamedBackup("backup-a"),

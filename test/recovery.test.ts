@@ -202,7 +202,7 @@ describe("getActionableNamedBackupRestores (override)", () => {
 						imported: 1,
 						skipped: 0,
 						wouldExceedLimit: false,
-						valid: true,
+						eligibleForRestore: true,
 						error: undefined,
 					};
 				}
@@ -214,7 +214,7 @@ describe("getActionableNamedBackupRestores (override)", () => {
 					imported: null,
 					skipped: null,
 					wouldExceedLimit: false,
-					valid: false,
+					eligibleForRestore: false,
 					error: "invalid",
 				};
 			},
@@ -249,7 +249,7 @@ describe("getActionableNamedBackupRestores (override)", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		}));
 
@@ -307,7 +307,7 @@ describe("getActionableNamedBackupRestores (override)", () => {
 				imported: 1,
 				skipped: 0,
 				wouldExceedLimit: false,
-				valid: true,
+				eligibleForRestore: true,
 				error: undefined,
 			};
 		});
@@ -577,7 +577,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		}));
 
@@ -669,7 +669,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			error: undefined,
 		}));
 

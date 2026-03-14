@@ -135,7 +135,7 @@ export interface BackupRestoreAssessment {
 	imported: number | null;
 	skipped: number | null;
 	wouldExceedLimit: boolean;
-	valid: boolean;
+	eligibleForRestore: boolean;
 	error?: string;
 }
 
@@ -1779,7 +1779,7 @@ export async function getActionableNamedBackupRestores(
 	const actionable: BackupRestoreAssessment[] = [];
 	const maybePushActionable = (assessment: BackupRestoreAssessment): void => {
 		if (
-			assessment.valid &&
+			assessment.eligibleForRestore &&
 			!assessment.wouldExceedLimit &&
 			assessment.imported !== null &&
 			assessment.imported > 0
@@ -1871,7 +1871,7 @@ function assessNamedBackupRestoreCandidate(
 			imported: null,
 			skipped: null,
 			wouldExceedLimit: false,
-			valid: false,
+			eligibleForRestore: false,
 			error: backup.loadError ?? "Backup is empty or invalid",
 		};
 	}
@@ -1895,7 +1895,7 @@ function assessNamedBackupRestoreCandidate(
 		imported,
 		skipped,
 		wouldExceedLimit,
-		valid: !wouldExceedLimit,
+		eligibleForRestore: !wouldExceedLimit,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
 			: undefined,
