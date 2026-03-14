@@ -1622,7 +1622,10 @@ export async function listNamedBackups(
 			backups.push(
 				...(await Promise.all(
 					chunk.map(async (entry) => {
-						const path = resolvePath(join(backupRoot, entry.name));
+						const path = assertNamedBackupRestorePath(
+							resolvePath(join(backupRoot, entry.name)),
+							backupRoot,
+						);
 						const candidate = await loadBackupCandidate(path);
 						candidateCache?.set(path, candidate);
 						return buildNamedBackupMetadata(

@@ -33,6 +33,8 @@ export const UI_COPY = {
 			total: number,
 		) =>
 			`Restored backup "${name}". Imported ${imported}, skipped ${skipped}, total ${total}.`,
+		restoreBackupRefreshSuccess: (name: string, refreshed: number) =>
+			`Restored backup "${name}". Refreshed metadata for ${refreshed} existing account(s).`,
 		dangerZone: "Danger Zone",
 		removeAllAccounts: "Delete Saved Accounts",
 		resetLocalState: "Reset Local State",

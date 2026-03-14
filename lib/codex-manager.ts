@@ -4356,6 +4356,15 @@ async function runBackupRestoreManager(
 			console.log("All accounts in this backup already exist");
 			return;
 		}
+		if (result.imported === 0) {
+			console.log(
+				UI_COPY.mainMenu.restoreBackupRefreshSuccess(
+					latestAssessment.backup.name,
+					result.skipped,
+				),
+			);
+			return;
+		}
 		console.log(
 			UI_COPY.mainMenu.restoreBackupSuccess(
 				latestAssessment.backup.name,

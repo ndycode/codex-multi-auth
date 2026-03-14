@@ -3014,17 +3014,28 @@ describe("codex manager cli commands", () => {
 			type: "restore",
 			assessment,
 		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
-		expect(exitCode).toBe(0);
-		expect(confirmMock).toHaveBeenCalledWith(
-			expect.stringContaining("refresh stored metadata"),
-		);
-		expect(importAccountsMock).toHaveBeenCalledWith(
-			"/mock/backups/named-backup.json",
-		);
+			expect(exitCode).toBe(0);
+			expect(confirmMock).toHaveBeenCalledWith(
+				expect.stringContaining("refresh stored metadata"),
+			);
+			expect(importAccountsMock).toHaveBeenCalledWith(
+				"/mock/backups/named-backup.json",
+			);
+			expect(logSpy).toHaveBeenCalledWith(
+				'Restored backup "named-backup". Refreshed metadata for 1 existing account(s).',
+			);
+			expect(logSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining("Imported 0, skipped 1"),
+			);
+		} finally {
+			logSpy.mockRestore();
+		}
 	});
 
 	it("returns to the login menu when backup reassessment becomes ineligible", async () => {
