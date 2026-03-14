@@ -2063,36 +2063,38 @@ describe("storage", () => {
 		});
 
 		it("retries transient backup stat errors while listing backups on win32", async () => {
-			const platformSpy = vi
-				.spyOn(process, "platform", "get")
-				.mockReturnValue("win32");
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: [
-					{
-						accountId: "retry-stat",
-						refreshToken: "ref-retry-stat",
-						addedAt: 1,
-						lastUsed: 1,
-					},
-				],
-			});
-			const backup = await createNamedBackup("retry-stat");
-			const originalStat = fs.stat.bind(fs);
-			let busyFailures = 0;
-			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
-				const [path] = args;
-				if (String(path) === backup.path && busyFailures === 0) {
-					busyFailures += 1;
-					const error = new Error("backup stat busy") as NodeJS.ErrnoException;
-					error.code = "EAGAIN";
-					throw error;
-				}
-				return originalStat(...(args as Parameters<typeof fs.stat>));
-			});
-
+			let platformSpy: ReturnType<typeof vi.spyOn> | undefined;
+			let statSpy: ReturnType<typeof vi.spyOn> | undefined;
 			try {
+				platformSpy = vi
+					.spyOn(process, "platform", "get")
+					.mockReturnValue("win32");
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "retry-stat",
+							refreshToken: "ref-retry-stat",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
+				const backup = await createNamedBackup("retry-stat");
+				const originalStat = fs.stat.bind(fs);
+				let busyFailures = 0;
+				statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backup.path && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("backup stat busy") as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalStat(...(args as Parameters<typeof fs.stat>));
+				});
+
 				const backups = await listNamedBackups();
 				expect(backups).toEqual(
 					expect.arrayContaining([
@@ -2101,8 +2103,8 @@ describe("storage", () => {
 				);
 				expect(busyFailures).toBe(1);
 			} finally {
-				statSpy.mockRestore();
-				platformSpy.mockRestore();
+				statSpy?.mockRestore();
+				platformSpy?.mockRestore();
 			}
 		});
 
