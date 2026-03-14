@@ -2868,9 +2868,106 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		expect(confirmMock).toHaveBeenCalledWith(
-			expect.stringContaining("into 3 current (4 after dedupe)"),
+			expect.stringContaining("add 1 new account(s)"),
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+	});
+
+	it("returns to the login menu when backup reassessment becomes ineligible", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const initialAssessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		const refreshedAssessment = {
+			...initialAssessment,
+			currentAccountCount: 1,
+			mergedAccountCount: 1,
+			imported: 0,
+			skipped: 1,
+			eligibleForRestore: false,
+			error: "All accounts in this backup already exist",
+		};
+		listNamedBackupsMock.mockResolvedValue([initialAssessment.backup]);
+		assessNamedBackupRestoreMock
+			.mockResolvedValueOnce(initialAssessment)
+			.mockResolvedValueOnce(refreshedAssessment);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({
+			type: "restore",
+			assessment: initialAssessment,
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+				1,
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						accounts: expect.any(Array),
+					}),
+				}),
+			);
+			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+				2,
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						accounts: expect.any(Array),
+					}),
+				}),
+			);
+			expect(confirmMock).not.toHaveBeenCalled();
+			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+			expect(logSpy).toHaveBeenCalledWith(
+				"All accounts in this backup already exist",
+			);
+		} finally {
+			logSpy.mockRestore();
+		}
 	});
 
 	it("returns to the login menu when backup reassessment fails before confirmation", async () => {
@@ -2993,7 +3090,8 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		const backupItems = selectMock.mock.calls[0]?.[0];
-		expect(backupItems?.[0]?.hint).toContain("updated ");
+		expect(backupItems?.[0]?.hint).toContain("1 account");
+		expect(backupItems?.[0]?.hint).not.toContain("updated ");
 	});
 
 	it("shows experimental settings in the settings hub", async () => {

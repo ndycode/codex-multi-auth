@@ -134,7 +134,7 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 function formatRelativeDateShort(
 	timestamp: number | null | undefined,
 ): string | null {
-	if (timestamp === null || timestamp === undefined) return null;
+	if (!timestamp) return null;
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
 	if (days <= 0) return "today";
 	if (days === 1) return "yesterday";
@@ -4333,7 +4333,8 @@ async function runBackupRestoreManager(
 		return;
 	}
 
-	const confirmMessage = `Restore backup "${latestAssessment.backup.name}"? This will merge ${latestAssessment.backup.accountCount ?? 0} account(s) into ${latestAssessment.currentAccountCount} current (${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`;
+	const netNewAccounts = latestAssessment.imported ?? 0;
+	const confirmMessage = `Restore backup "${latestAssessment.backup.name}"? This will add ${netNewAccounts} new account(s) (${latestAssessment.backup.accountCount ?? 0} in backup, ${latestAssessment.currentAccountCount} current -> ${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`;
 	const confirmed = await confirm(confirmMessage);
 	if (!confirmed) return;
 

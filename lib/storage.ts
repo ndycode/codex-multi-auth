@@ -1627,8 +1627,8 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
-): code is "EPERM" | "EBUSY" | "EAGAIN" {
-	if (code === "EBUSY" || code === "EAGAIN") {
+): code is "EPERM" | "EBUSY" | "EAGAIN" | "ENOTEMPTY" {
+	if (code === "EBUSY" || code === "EAGAIN" || code === "ENOTEMPTY") {
 		return true;
 	}
 	return code === "EPERM" && process.platform === "win32";
@@ -1714,6 +1714,7 @@ export async function assessNamedBackupRestore(
 	const skipped = wouldExceedLimit
 		? null
 		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
+	const nothingToImport = !wouldExceedLimit && imported === 0;
 
 	return {
 		backup,
@@ -1722,16 +1723,24 @@ export async function assessNamedBackupRestore(
 		imported,
 		skipped,
 		wouldExceedLimit,
-		eligibleForRestore: !wouldExceedLimit,
+		eligibleForRestore: !wouldExceedLimit && !nothingToImport,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
-			: undefined,
+			: nothingToImport
+				? "All accounts in this backup already exist"
+				: undefined,
 	};
 }
 
 export async function restoreNamedBackup(
 	name: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
+	const assessment = await assessNamedBackupRestore(name);
+	if (!assessment.eligibleForRestore) {
+		throw new Error(
+			assessment.error ?? "Backup is not eligible for restore.",
+		);
+	}
 	const backupPath = await resolveNamedBackupRestorePath(name);
 	return importAccounts(backupPath);
 }
@@ -1770,11 +1779,19 @@ async function loadBackupCandidate(path: string): Promise<{
 			loadAccountsFromPath(path),
 		);
 	} catch (error) {
+		const errorMessage =
+			error instanceof SyntaxError
+				? `Invalid JSON in import file: ${path}`
+				: (error as NodeJS.ErrnoException).code === "ENOENT"
+					? `Import file not found: ${path}`
+					: error instanceof Error
+						? error.message
+						: String(error);
 		return {
 			normalized: null,
 			storedVersion: undefined,
 			schemaErrors: [],
-			error: String(error),
+			error: errorMessage,
 		};
 	}
 }

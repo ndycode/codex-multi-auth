@@ -958,6 +958,7 @@ describe("storage", () => {
 		it("should fail export when no accounts exist", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
+			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);
@@ -1204,6 +1205,45 @@ describe("storage", () => {
 			expect(assessment.imported).toBe(1);
 			expect(assessment.skipped).toBe(0);
 			expect(assessment.eligibleForRestore).toBe(true);
+		});
+
+		it("rejects duplicate-only backups with nothing new to restore", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						refreshToken: "ref-existing-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("already-present");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						refreshToken: "ref-existing-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("already-present");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+
+			await expect(restoreNamedBackup("already-present")).rejects.toThrow(
+				"All accounts in this backup already exist",
+			);
 		});
 
 		it("restores manually named backups that already exist inside the backups directory", async () => {
@@ -1485,6 +1525,54 @@ describe("storage", () => {
 				expect(backups).toEqual(
 					expect.arrayContaining([
 						expect.objectContaining({ name: "retry-list-dir", valid: true }),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient ENOTEMPTY backup directory errors while listing backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list-dir-not-empty",
+						refreshToken: "ref-retry-list-dir-not-empty",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-list-dir-not-empty");
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory not empty yet",
+						) as NodeJS.ErrnoException;
+						error.code = "ENOTEMPTY";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							name: "retry-list-dir-not-empty",
+							valid: true,
+						}),
 					]),
 				);
 				expect(busyFailures).toBe(1);
