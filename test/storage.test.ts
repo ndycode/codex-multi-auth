@@ -329,9 +329,6 @@ describe("storage", () => {
 		});
 
 		it("should export accounts to a file", async () => {
-			// @ts-expect-error - exportAccounts doesn't exist yet
-			const { exportAccounts } = await import("../lib/storage.js");
-
 			const storage = {
 				version: 3,
 				activeIndex: 0,
@@ -342,7 +339,6 @@ describe("storage", () => {
 			// @ts-expect-error
 			await saveAccounts(storage);
 
-			// @ts-expect-error
 			await exportAccounts(exportPath);
 
 			expect(existsSync(exportPath)).toBe(true);
@@ -369,13 +365,15 @@ describe("storage", () => {
 			});
 
 			await new Promise<void>((resolve, reject) => {
+				// Windows antivirus can hold exclusive locks on freshly written files
+				// for several hundred milliseconds, so keep the deadlock guard generous.
 				const timer = setTimeout(() => {
 					reject(
 						new Error(
 							"exportAccounts should not deadlock inside withAccountAndFlaggedStorageTransaction",
 						),
 					);
-				}, 1_000);
+				}, 5_000);
 
 				void withAccountAndFlaggedStorageTransaction(async (current, persist) => {
 					if (!current) {
@@ -427,20 +425,14 @@ describe("storage", () => {
 		});
 
 		it("should fail export if file exists and force is false", async () => {
-			// @ts-expect-error
-			const { exportAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "exists");
 
-			// @ts-expect-error
 			await expect(exportAccounts(exportPath, false)).rejects.toThrow(
 				/already exists/,
 			);
 		});
 
 		it("should import accounts from a file and merge", async () => {
-			// @ts-expect-error
-			const { importAccounts } = await import("../lib/storage.js");
-
 			const existing = {
 				version: 3,
 				activeIndex: 0,
@@ -465,7 +457,6 @@ describe("storage", () => {
 			};
 			await fs.writeFile(exportPath, JSON.stringify(toImport));
 
-			// @ts-expect-error
 			await importAccounts(exportPath);
 
 			const loaded = await loadAccounts();
@@ -474,7 +465,6 @@ describe("storage", () => {
 		});
 
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			const existing = {
 				version: 3,
 				activeIndex: 1,
@@ -496,7 +486,6 @@ describe("storage", () => {
 					},
 				],
 			};
-			// @ts-expect-error
 			await saveAccounts(existing);
 
 			await fs.writeFile(
@@ -530,7 +519,6 @@ describe("storage", () => {
 		});
 
 		it("should preserve distinct accountId plus email pairs during import", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -578,7 +566,6 @@ describe("storage", () => {
 		});
 
 		it("should preserve duplicate shared accountId entries when imported rows lack email", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -971,9 +958,6 @@ describe("storage", () => {
 		});
 
 		it("should enforce MAX_ACCOUNTS during import", async () => {
-			// @ts-expect-error
-			const { importAccounts } = await import("../lib/storage.js");
-
 			const manyAccounts = Array.from({ length: 21 }, (_, i) => ({
 				accountId: `acct${i}`,
 				refreshToken: `ref${i}`,
@@ -988,14 +972,12 @@ describe("storage", () => {
 			};
 			await fs.writeFile(exportPath, JSON.stringify(toImport));
 
-			// @ts-expect-error
 			await expect(importAccounts(exportPath)).rejects.toThrow(
 				/exceed maximum/,
 			);
 		});
 
 		it("should fail export when no accounts exist", async () => {
-			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
 			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
@@ -1004,7 +986,6 @@ describe("storage", () => {
 		});
 
 		it("should fail import when file does not exist", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			const nonexistentPath = join(testWorkDir, "nonexistent-file.json");
 			await expect(importAccounts(nonexistentPath)).rejects.toThrow(
 				/Import file not found/,
@@ -1012,13 +993,11 @@ describe("storage", () => {
 		});
 
 		it("should fail import when file contains invalid JSON", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "not valid json {[");
 			await expect(importAccounts(exportPath)).rejects.toThrow(/Invalid JSON/);
 		});
 
 		it("should fail import when file contains invalid format", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, JSON.stringify({ invalid: "format" }));
 			await expect(importAccounts(exportPath)).rejects.toThrow(
 				/Invalid account storage format/,

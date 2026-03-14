@@ -438,11 +438,12 @@ describe("Documentation Integrity", () => {
 		).toBe(true);
 
 		const antiSlop = read(antiSlopWorkflow);
-		expect(antiSlop).toContain(
-			"peakoss/anti-slop@5b9bb56579545d24e488e3312108968079ef425c",
-		);
+		// pull_request_target runs in the base repo context, so third-party actions
+		// must stay pinned to a full SHA to avoid supply-chain drift via mutable tags.
+		expect(antiSlop).toMatch(/uses:\s*peakoss\/anti-slop@[a-f0-9]{40}\b/i);
 		expect(antiSlop).toContain("pull_request_target:");
 		expect(antiSlop).toContain("types: [opened, reopened, ready_for_review]");
+		expect(antiSlop).toContain("github-token: ${{ github.token }}");
 		expect(antiSlop).toContain("require-pr-template: true");
 		expect(antiSlop).toContain("strict-pr-template-sections: Validation");
 		expect(antiSlop).toContain("optional-pr-template-sections: Additional Notes");

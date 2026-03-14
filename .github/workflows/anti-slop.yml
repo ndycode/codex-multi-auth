@@ -19,6 +19,7 @@ jobs:
       - name: Run anti-slop checks
         uses: peakoss/anti-slop@5b9bb56579545d24e488e3312108968079ef425c # v0.2.1
         with:
+          github-token: ${{ github.token }}
           max-failures: 4
           require-pr-template: true
           strict-pr-template-sections: Validation
