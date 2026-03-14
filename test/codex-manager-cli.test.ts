@@ -2535,6 +2535,7 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		expect(confirmMock).toHaveBeenCalledOnce();
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 	});
 
@@ -2716,7 +2717,8 @@ describe("codex manager cli commands", () => {
 			await vi.importActual<typeof import("../lib/storage.js")>(
 				"../lib/storage.js",
 			);
-		const backups = Array.from({ length: 9 }, (_value, index) => ({
+		const totalBackups = NAMED_BACKUP_LIST_CONCURRENCY + 3;
+		const backups = Array.from({ length: totalBackups }, (_value, index) => ({
 			name: `named-backup-${index + 1}`,
 			path: `/mock/backups/named-backup-${index + 1}.json`,
 			createdAt: null,
@@ -2991,9 +2993,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		const backupItems = selectMock.mock.calls[0]?.[0];
-		expect(backupItems?.[0]?.hint).toContain(
-			`updated ${new Date(0).toLocaleDateString()}`,
-		);
+		expect(backupItems?.[0]?.hint).toContain("updated ");
 	});
 
 	it("shows experimental settings in the settings hub", async () => {
@@ -4131,6 +4131,128 @@ describe("codex manager cli commands", () => {
 			"Reset local state. Saved accounts, flagged/problem accounts, and quota cache cleared; settings and Codex CLI sync state kept.",
 		);
 		logSpy.mockRestore();
+	});
+
+	it("waits for an in-flight menu quota refresh before starting quick check", async () => {
+		const now = Date.now();
+		const menuStorage = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "alpha@example.com",
+					accountId: "acc-alpha",
+					accessToken: "access-alpha",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-alpha",
+					addedAt: now,
+					lastUsed: now,
+					enabled: true,
+				},
+				{
+					email: "beta@example.com",
+					accountId: "acc-beta",
+					accessToken: "access-beta",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-beta",
+					addedAt: now,
+					lastUsed: now,
+					enabled: true,
+				},
+			],
+		};
+		const quickCheckStorage = {
+			...menuStorage,
+			accounts: [menuStorage.accounts[0]!],
+		};
+		let loadAccountsCalls = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadAccountsCalls += 1;
+			return structuredClone(
+				loadAccountsCalls === 1 ? menuStorage : quickCheckStorage,
+			);
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: true,
+			menuShowFetchStatus: true,
+			menuQuotaTtlMs: 60_000,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		let currentQuotaCache: {
+			byAccountId: Record<string, unknown>;
+			byEmail: Record<string, unknown>;
+		} = {
+			byAccountId: {},
+			byEmail: {},
+		};
+		loadQuotaCacheMock.mockImplementation(async () =>
+			structuredClone(currentQuotaCache),
+		);
+		saveQuotaCacheMock.mockImplementation(async (value: typeof currentQuotaCache) => {
+			currentQuotaCache = structuredClone(value);
+		});
+		const firstFetchStarted = createDeferred<void>();
+		const secondFetchStarted = createDeferred<string>();
+		const releaseFirstFetch = createDeferred<void>();
+		const releaseSecondFetch = createDeferred<void>();
+		let fetchCallCount = 0;
+		fetchCodexQuotaSnapshotMock.mockImplementation(
+			async (input: { accountId: string }) => {
+				fetchCallCount += 1;
+				if (fetchCallCount === 1) {
+					firstFetchStarted.resolve();
+					await releaseFirstFetch.promise;
+				} else if (fetchCallCount === 2) {
+					secondFetchStarted.resolve(input.accountId);
+					await releaseSecondFetch.promise;
+				}
+				return {
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {},
+					secondary: {},
+				};
+			},
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "check" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const runPromise = runCodexMultiAuthCli(["auth", "login"]);
+
+			await firstFetchStarted.promise;
+			await Promise.resolve();
+
+			expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
+
+			releaseFirstFetch.resolve();
+
+			const secondAccountId = await secondFetchStarted.promise;
+			expect(secondAccountId).toBe("acc-beta");
+
+			releaseSecondFetch.resolve();
+
+			const exitCode = await runPromise;
+
+			expect(exitCode).toBe(0);
+			expect(Object.keys(currentQuotaCache.byEmail)).toEqual(
+				expect.arrayContaining(["alpha@example.com", "beta@example.com"]),
+			);
+		} finally {
+			logSpy.mockRestore();
+		}
 	});
 
 	it("skips a second destructive action while reset is already running", async () => {

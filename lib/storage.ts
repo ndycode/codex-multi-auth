@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, promises as fs, type Dirent } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
@@ -1628,7 +1628,10 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
 ): code is "EPERM" | "EBUSY" | "EAGAIN" {
-	return code === "EPERM" || code === "EBUSY" || code === "EAGAIN";
+	if (code === "EBUSY" || code === "EAGAIN") {
+		return true;
+	}
+	return code === "EPERM" && process.platform === "win32";
 }
 
 async function retryTransientFilesystemOperation<T>(
@@ -1642,7 +1645,11 @@ async function retryTransientFilesystemOperation<T>(
 			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
 				throw error;
 			}
-			await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+			const baseDelayMs = 10 * 2 ** attempt;
+			const jitterMs = Math.floor(Math.random() * 10);
+			await new Promise((resolve) =>
+				setTimeout(resolve, baseDelayMs + jitterMs),
+			);
 		}
 	}
 
@@ -1797,28 +1804,12 @@ async function findExistingNamedBackupPath(
 		? requested
 		: `${requested}.json`;
 	const requestedBaseName = stripNamedBackupJsonExtension(requestedWithExtension);
+	let entries: Dirent[];
 
 	try {
-		const entries = await retryTransientFilesystemOperation(() =>
+		entries = await retryTransientFilesystemOperation(() =>
 			fs.readdir(backupRoot, { withFileTypes: true }),
 		);
-		for (const entry of entries) {
-			if (!entry.name.toLowerCase().endsWith(".json")) continue;
-			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
-			const matchesRequestedEntry =
-				equalsNamedBackupEntry(entry.name, requested) ||
-				equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
-				equalsNamedBackupEntry(entryBaseName, requestedBaseName);
-			if (!matchesRequestedEntry) {
-				continue;
-			}
-			if (entry.isSymbolicLink() || !entry.isFile()) {
-				throw new Error(
-					`Named backup "${entryBaseName}" is not a regular backup file`,
-				);
-			}
-			return resolvePath(join(backupRoot, entry.name));
-		}
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
@@ -1829,6 +1820,24 @@ async function findExistingNamedBackupPath(
 			error: String(error),
 		});
 		throw error;
+	}
+
+	for (const entry of entries) {
+		if (!entry.name.toLowerCase().endsWith(".json")) continue;
+		const entryBaseName = stripNamedBackupJsonExtension(entry.name);
+		const matchesRequestedEntry =
+			equalsNamedBackupEntry(entry.name, requested) ||
+			equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
+			equalsNamedBackupEntry(entryBaseName, requestedBaseName);
+		if (!matchesRequestedEntry) {
+			continue;
+		}
+		if (entry.isSymbolicLink() || !entry.isFile()) {
+			throw new Error(
+				`Named backup "${entryBaseName}" is not a regular backup file`,
+			);
+		}
+		return resolvePath(join(backupRoot, entry.name));
 	}
 
 	return undefined;

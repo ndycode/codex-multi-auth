@@ -1410,7 +1410,10 @@ describe("storage", () => {
 			}
 		});
 
-		it("rethrows unreadable backup directory errors while listing backups", async () => {
+		it("rethrows unreadable backup directory errors while listing backups on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
@@ -1418,12 +1421,17 @@ describe("storage", () => {
 
 			try {
 				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
+				expect(readdirSpy).toHaveBeenCalledTimes(1);
 			} finally {
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
-		it("rethrows unreadable backup directory errors while restoring backups", async () => {
+		it("rethrows unreadable backup directory errors while restoring backups on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
@@ -1433,8 +1441,10 @@ describe("storage", () => {
 				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
 					code: "EPERM",
 				});
+				expect(readdirSpy).toHaveBeenCalledTimes(1);
 			} finally {
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
@@ -1480,6 +1490,58 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient EPERM backup directory errors while listing backups on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list-dir-eperm",
+						refreshToken: "ref-retry-list-dir-eperm",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-list-dir-eperm");
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory busy",
+						) as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							name: "retry-list-dir-eperm",
+							valid: true,
+						}),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
@@ -1644,7 +1706,8 @@ describe("storage", () => {
 
 		it("limits concurrent backup reads while listing backups", async () => {
 			const backupPaths: string[] = [];
-			for (let index = 0; index < 12; index += 1) {
+			const totalBackups = NAMED_BACKUP_LIST_CONCURRENCY + 4;
+			for (let index = 0; index < totalBackups; index += 1) {
 				await saveAccounts({
 					version: 3,
 					activeIndex: 0,
@@ -1686,7 +1749,7 @@ describe("storage", () => {
 
 			try {
 				const backups = await listNamedBackups();
-				expect(backups).toHaveLength(12);
+				expect(backups).toHaveLength(totalBackups);
 				expect(peakReads).toBeLessThanOrEqual(
 					NAMED_BACKUP_LIST_CONCURRENCY,
 				);

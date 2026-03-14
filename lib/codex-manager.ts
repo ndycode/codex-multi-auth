@@ -3868,6 +3868,17 @@ async function runAuthLogin(): Promise<number> {
 				console.log("Cancelled.");
 				return 0;
 			}
+			const modeTouchesQuotaCache =
+				menuResult.mode === "check" ||
+				menuResult.mode === "deep-check" ||
+				menuResult.mode === "forecast" ||
+				menuResult.mode === "fix";
+			if (modeTouchesQuotaCache) {
+				const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+				if (pendingQuotaRefresh) {
+					await pendingQuotaRefresh;
+				}
+			}
 			if (menuResult.mode === "check") {
 				await runActionPanel("Quick Check", "Checking local session + live status", async () => {
 					await runHealthCheck({ forceRefresh: false, liveProbe: true });
