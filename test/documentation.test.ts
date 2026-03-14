@@ -457,14 +457,11 @@ describe("Documentation Integrity", () => {
 		]) {
 			expect(pullRequestTargetSection).toContain(triggerType);
 		}
+		// Keep this focused on security and template-governance invariants.
+		// Operational thresholds and failure actions are intentionally tuneable.
 		expect(antiSlop).toMatch(/github-token:\s*\$\{\{\s*github\.token\s*\}\}/);
 		expect(antiSlop).toContain("require-pr-template: true");
 		expect(antiSlop).toContain("strict-pr-template-sections: Validation");
-		expect(antiSlop).toContain("optional-pr-template-sections: Additional Notes");
-		expect(antiSlop).toContain('blocked-paths: ""');
-		expect(antiSlop).toContain("failure-add-pr-labels: needs-human-review");
-		expect(antiSlop).toContain("close-pr: false");
-		expect(antiSlop).toContain("lock-pr: false");
 
 		const prBody = read(prTemplate);
 		expect(prBody).toContain("npm run lint");

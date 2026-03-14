@@ -2341,6 +2341,8 @@ export async function exportAccounts(
 		null,
 		2,
 	);
+	// POSIX honors 0o600 for plaintext token exports. Windows ignores mode bits
+	// here and falls back to the destination directory's inherited ACLs instead.
 	await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
 	log.info("Exported accounts", {
 		path: resolvedPath,
@@ -2378,40 +2380,55 @@ export async function importAccounts(
 		throw new Error("Invalid account storage format");
 	}
 
+	const transactionState = transactionSnapshotContext.getStore();
 	const {
 		imported: importedCount,
 		total,
 		skipped: skippedCount,
-	} = await withAccountStorageTransaction(async (existing, persist) => {
-		const existingAccounts = existing?.accounts ?? [];
-		const existingActiveIndex = existing?.activeIndex ?? 0;
+	} = await (async () => {
+		const applyImport = async (
+			existing: AccountStorageV3 | null,
+			persist: (storage: AccountStorageV3) => Promise<void>,
+		): Promise<{ imported: number; total: number; skipped: number }> => {
+			const existingAccounts = existing?.accounts ?? [];
+			const existingActiveIndex = existing?.activeIndex ?? 0;
 
-		const merged = [...existingAccounts, ...normalized.accounts];
+			const merged = [...existingAccounts, ...normalized.accounts];
 
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccounts(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
+			if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+				const deduped = deduplicateAccounts(merged);
+				if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+					throw new Error(
+						`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
+					);
+				}
 			}
-		}
 
-		const deduplicatedAccounts = deduplicateAccounts(merged);
+			const deduplicatedAccounts = deduplicateAccounts(merged);
 
-		const newStorage: AccountStorageV3 = {
-			version: 3,
-			accounts: deduplicatedAccounts,
-			activeIndex: existingActiveIndex,
-			activeIndexByFamily: existing?.activeIndexByFamily,
+			const newStorage: AccountStorageV3 = {
+				version: 3,
+				accounts: deduplicatedAccounts,
+				activeIndex: existingActiveIndex,
+				activeIndexByFamily: existing?.activeIndexByFamily,
+			};
+
+			await persist(newStorage);
+
+			const imported = deduplicatedAccounts.length - existingAccounts.length;
+			const skipped = normalized.accounts.length - imported;
+			return { imported, total: deduplicatedAccounts.length, skipped };
 		};
 
-		await persist(newStorage);
+		if (transactionState?.active) {
+			return applyImport(transactionState.snapshot, async (storage) => {
+				await saveAccountsUnlocked(storage);
+				transactionState.snapshot = storage;
+			});
+		}
 
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
-		return { imported, total: deduplicatedAccounts.length, skipped };
-	});
+		return withAccountStorageTransaction(applyImport);
+	})();
 
 	log.info("Imported accounts", {
 		path: resolvedPath,

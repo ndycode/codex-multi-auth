@@ -344,6 +344,11 @@ describe("storage", () => {
 			expect(existsSync(exportPath)).toBe(true);
 			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
 			expect(exported.accounts[0].accountId).toBe("test");
+			if (process.platform !== "win32") {
+				// Windows ignores POSIX mode bits here and relies on ACL inheritance.
+				const exportMode = (await fs.stat(exportPath)).mode & 0o777;
+				expect(exportMode).toBe(0o600);
+			}
 		});
 
 		it("exports the correct transaction snapshot before and after persist without reacquiring the storage lock", async () => {
@@ -498,6 +503,103 @@ describe("storage", () => {
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
 		});
+
+		it("imports accounts inside a flagged transaction without reacquiring the storage lock", async () => {
+			const importPath = join(testWorkDir, "nested-import.json");
+			const nestedExportPath = join(testWorkDir, "nested-import-export.json");
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-imported",
+							email: "imported@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: now,
+							lastUsed: now,
+						},
+					],
+				}),
+			);
+
+			await new Promise<void>((resolve, reject) => {
+				// Windows antivirus can hold exclusive locks on freshly written files
+				// for several hundred milliseconds, so keep the deadlock guard generous.
+				const timer = setTimeout(() => {
+					reject(
+						new Error(
+							"importAccounts should not deadlock inside withAccountAndFlaggedStorageTransaction",
+						),
+					);
+				}, 5_000);
+
+				void withAccountAndFlaggedStorageTransaction(async (current) => {
+					if (!current) {
+						throw new Error("expected existing account storage");
+					}
+
+					await importAccounts(importPath);
+					await exportAccounts(nestedExportPath);
+				}).then(
+					() => {
+						clearTimeout(timer);
+						resolve();
+					},
+					(error) => {
+						clearTimeout(timer);
+						reject(error);
+					},
+				);
+			});
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+					expect.objectContaining({
+						accountId: "acct-imported",
+						refreshToken: "refresh-imported",
+					}),
+				]),
+			);
+
+			const nestedExport = JSON.parse(
+				await fs.readFile(nestedExportPath, "utf-8"),
+			);
+			expect(nestedExport.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+					expect.objectContaining({
+						accountId: "acct-imported",
+						refreshToken: "refresh-imported",
+					}),
+				]),
+			);
+		}, 10_000);
 
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
 			const existing = {
