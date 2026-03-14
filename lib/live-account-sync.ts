@@ -175,7 +175,6 @@ export class LiveAccountSync {
 
 	stop(): void {
 		this.generation += 1;
-		this.reloadInFlight = null;
 		this.running = false;
 		if (this.watcher) {
 			this.watcher.close();
@@ -243,12 +242,19 @@ export class LiveAccountSync {
 		if (!this.running || !this.currentPath) return;
 		const targetPath = this.currentPath;
 		const generation = this.generation;
-		if (this.reloadInFlight) {
-			if (this.reloadInFlight.generation === generation) {
-				await this.reloadInFlight.promise;
+		while (this.reloadInFlight) {
+			const inFlightReload = this.reloadInFlight;
+			await inFlightReload.promise;
+			if (inFlightReload.generation === generation) {
 				return;
 			}
-			this.reloadInFlight = null;
+			if (this.reloadInFlight?.promise === inFlightReload.promise) {
+				this.reloadInFlight = null;
+			}
+			if (!this.running || !this.currentPath) return;
+			if (generation !== this.generation || targetPath !== this.currentPath) {
+				return;
+			}
 		}
 
 		const promise = (async () => {

@@ -110,6 +110,7 @@ type SettingsHubTestApi = {
 	promptExperimentalSettings: (
 		initial: PluginConfig,
 	) => Promise<PluginConfig | null>;
+	promptSyncCenter: (config: PluginConfig) => Promise<void>;
 };
 
 type UiRuntimeOptions = ReturnType<typeof getUiRuntimeOptions>;
@@ -294,6 +295,8 @@ describe("settings-hub utility coverage", () => {
 		expect(overview[2]?.hint).toContain("/tmp/source/config.toml");
 		expect(overview[3]?.label).toContain("Live watcher: running");
 		expect(overview[4]?.label).toContain("Preview mode: read-only until apply");
+		expect(overview[4]?.hint).toContain("latest preview snapshot");
+		expect(overview[4]?.hint).toContain("refresh before apply");
 		expect(overview[5]?.label).toContain(
 			"add 1 | update 2 | preserve 3 | after 6",
 		);
@@ -302,6 +305,72 @@ describe("settings-hub utility coverage", () => {
 		expect(overview[8]?.hint).toContain(".bak");
 		expect(overview[8]?.hint).toContain(".wal");
 	});
+
+	it.each([
+		{
+			outcome: "disabled" as const,
+			statusLabel: "Status: disabled",
+			lastSyncLabel: "Last sync: disabled",
+		},
+		{
+			outcome: "unavailable" as const,
+			statusLabel: "Status: unavailable",
+			lastSyncLabel: "Last sync: source missing",
+		},
+		{
+			outcome: "error" as const,
+			statusLabel: "Status: error",
+			lastSyncLabel: "Last sync: error: save busy",
+			message: "save busy",
+		},
+	])(
+		"formats sync-center overview status text for $outcome last-sync outcomes",
+		async ({ outcome, statusLabel, lastSyncLabel, message }) => {
+			const api = await loadSettingsHubTestApi();
+			const overview = api.buildSyncCenterOverview(
+				{
+					status: outcome,
+					statusDetail: `Status ${outcome}`,
+					sourcePath: null,
+					targetPath: "/tmp/target/openai-codex-accounts.json",
+					summary: {
+						addedAccountCount: 0,
+						updatedAccountCount: 0,
+						destinationOnlyPreservedCount: 0,
+						targetAccountCountAfter: 0,
+						selectionChanged: false,
+					},
+					backup: {
+						enabled: false,
+						rollbackPaths: [],
+					},
+					lastSync: {
+						outcome,
+						runAt: Date.parse("2026-03-01T00:00:00.000Z"),
+						message,
+					},
+				},
+				{
+					accountsPath: "/tmp/source/accounts.json",
+					authPath: "/tmp/source/auth.json",
+					configPath: "/tmp/source/config.toml",
+					sourceAccountCount: null,
+					liveSync: {
+						path: null,
+						running: false,
+						lastKnownMtimeMs: null,
+						lastSyncAt: null,
+						reloadCount: 0,
+						errorCount: 0,
+					},
+					syncEnabled: outcome !== "disabled",
+				},
+			);
+
+			expect(overview[0]?.label).toContain(statusLabel);
+			expect(overview[0]?.hint).toContain(lastSyncLabel);
+		},
+	);
 
 	it("matches windows-style source paths when labeling the active sync source", async () => {
 		const api = await loadSettingsHubTestApi();
@@ -424,6 +493,46 @@ describe("settings-hub utility coverage", () => {
 		);
 		expect(result).toBe("ok");
 		expect(attempts).toBe(3);
+	});
+
+	it("retries sync-center preview loading when loadAccounts hits a retryable lock", async () => {
+		const api = await loadSettingsHubTestApi();
+		const storageModule = await import("../lib/storage.js");
+		const codexCliState = await import("../lib/codex-cli/state.js");
+		let loadAttempts = 0;
+		const loadAccountsSpy = vi
+			.spyOn(storageModule, "loadAccounts")
+			.mockImplementation(async () => {
+				loadAttempts += 1;
+				if (loadAttempts === 1) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return {
+					version: 3,
+					accounts: [],
+					activeIndex: 0,
+					activeIndexByFamily: {},
+				};
+			});
+		const loadStateSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockResolvedValue({
+				path: "/tmp/source/accounts.json",
+				accounts: [],
+			});
+
+		queueSelectResults({ type: "back" });
+
+		try {
+			await api.promptSyncCenter({});
+			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+			expect(loadStateSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			loadAccountsSpy.mockRestore();
+			loadStateSpy.mockRestore();
+		}
 	});
 
 	it("propagates non-retryable filesystem errors immediately", async () => {

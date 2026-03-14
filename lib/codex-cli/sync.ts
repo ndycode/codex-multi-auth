@@ -112,7 +112,7 @@ interface ReconcileResult {
 let lastCodexCliSyncRun: CodexCliSyncRun | null = null;
 let lastCodexCliSyncRunRevision = 0;
 let nextCodexCliSyncRunRevision = 0;
-const completedPendingCodexCliSyncRunRevisions = new Set<number>();
+const activePendingCodexCliSyncRunRevisions = new Set<number>();
 
 function createEmptySyncSummary(): CodexCliSyncSummary {
 	return {
@@ -146,12 +146,14 @@ function allocateCodexCliSyncRunRevision(): number {
 	return nextCodexCliSyncRunRevision;
 }
 
+function allocatePendingCodexCliSyncRunRevision(): number {
+	const revision = allocateCodexCliSyncRunRevision();
+	activePendingCodexCliSyncRunRevisions.add(revision);
+	return revision;
+}
+
 function markPendingCodexCliSyncRunCompleted(revision: number): boolean {
-	if (completedPendingCodexCliSyncRunRevisions.has(revision)) {
-		return false;
-	}
-	completedPendingCodexCliSyncRunRevisions.add(revision);
-	return true;
+	return activePendingCodexCliSyncRunRevisions.delete(revision);
 }
 
 function publishCodexCliSyncRun(
@@ -248,7 +250,7 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	lastCodexCliSyncRun = null;
 	lastCodexCliSyncRunRevision = 0;
 	nextCodexCliSyncRunRevision = 0;
-	completedPendingCodexCliSyncRunRevisions.clear();
+	activePendingCodexCliSyncRunRevisions.clear();
 }
 
 function hasConflictingIdentity(
@@ -393,7 +395,9 @@ async function getPersistedLocalSelectionTimestamp(): Promise<number | null> {
 			await sleep(10 * 2 ** attempt);
 		}
 	}
-	void lastError;
+	log.debug("Exhausted retries reading persisted local selection timestamp", {
+		error: lastError instanceof Error ? lastError.message : String(lastError),
+	});
 	return null;
 }
 
@@ -489,6 +493,9 @@ function shouldApplyCodexCliSelection(
 		getLastAccountsSaveTimestamp(),
 		getLastCodexCliSelectionWriteTimestamp(),
 	);
+	if (persistedLocalTimestamp === null && inProcessLocalVersion <= 0) {
+		return false;
+	}
 	const localVersion = Math.max(
 		inProcessLocalVersion,
 		persistedLocalTimestamp ?? 0,
@@ -793,7 +800,7 @@ export async function applyCodexCliSyncToStorage(
 			changed,
 			pendingRun: changed
 				? {
-						revision: allocateCodexCliSyncRunRevision(),
+						revision: allocatePendingCodexCliSyncRunRevision(),
 						run: syncRun,
 					}
 				: null,

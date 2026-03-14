@@ -336,9 +336,11 @@ describe("live-account-sync", () => {
 
 		await sync.syncToPath(secondStoragePath);
 		const second = invoke("watch");
-		await secondReloadStarted.promise;
+		await vi.advanceTimersByTimeAsync(0);
+		expect(reload).toHaveBeenCalledTimes(1);
 
 		firstReloadFinished.resolve(undefined);
+		await secondReloadStarted.promise;
 		await Promise.all([first, second]);
 
 		expect(seenPaths).toEqual([storagePath, secondStoragePath]);
@@ -352,6 +354,90 @@ describe("live-account-sync", () => {
 			}),
 		);
 		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: secondStoragePath,
+				running: true,
+				reloadCount: 1,
+				errorCount: 0,
+			}),
+		);
+
+		sync.stop();
+	});
+
+	it("waits for the prior path reload before counting the next path as synced", async () => {
+		const secondStoragePath = join(workDir, "openai-codex-accounts-third.json");
+		await fs.writeFile(
+			secondStoragePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+
+		const firstReloadStarted = createDeferred<void>();
+		const firstReloadFinished = createDeferred<void>();
+		const secondReloadStarted = createDeferred<void>();
+		const secondReloadFinished = createDeferred<void>();
+		const startedReloadPaths: string[] = [];
+		let sharedReloadPromise: Promise<void> | null = null;
+		let sync: LiveAccountSync;
+
+		const reload = vi.fn(async () => {
+			if (sharedReloadPromise) {
+				return sharedReloadPromise;
+			}
+			const currentPath = Reflect.get(sync, "currentPath") as string | null;
+			startedReloadPaths.push(currentPath ?? "<null>");
+			if (startedReloadPaths.length === 1) {
+				sharedReloadPromise = (async () => {
+					firstReloadStarted.resolve(undefined);
+					await firstReloadFinished.promise;
+					sharedReloadPromise = null;
+				})();
+				return sharedReloadPromise;
+			}
+			sharedReloadPromise = (async () => {
+				secondReloadStarted.resolve(undefined);
+				await secondReloadFinished.promise;
+				sharedReloadPromise = null;
+			})();
+			return sharedReloadPromise;
+		});
+
+		sync = new LiveAccountSync(reload, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+		await sync.syncToPath(storagePath);
+
+		const runReload = Reflect.get(sync, "runReload") as (
+			reason: "watch" | "poll",
+		) => Promise<void>;
+		const invoke = (reason: "watch" | "poll") =>
+			Reflect.apply(
+				runReload as (...args: unknown[]) => unknown,
+				sync as object,
+				[reason],
+			) as Promise<void>;
+
+		const first = invoke("poll");
+		await firstReloadStarted.promise;
+
+		await sync.syncToPath(secondStoragePath);
+		const second = invoke("watch");
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(startedReloadPaths).toEqual([storagePath]);
+		expect(sync.getSnapshot().reloadCount).toBe(0);
+
+		firstReloadFinished.resolve(undefined);
+		await secondReloadStarted.promise;
+		expect(startedReloadPaths).toEqual([storagePath, secondStoragePath]);
+		expect(sync.getSnapshot().reloadCount).toBe(0);
+
+		secondReloadFinished.resolve(undefined);
+		await Promise.all([first, second]);
+
+		expect(sync.getSnapshot()).toEqual(
 			expect.objectContaining({
 				path: secondStoragePath,
 				running: true,

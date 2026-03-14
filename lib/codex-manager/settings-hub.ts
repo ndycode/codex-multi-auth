@@ -1410,7 +1410,7 @@ function buildSyncCenterOverview(
 		},
 		{
 			label: "Preview mode: read-only until apply",
-			hint: "Refresh only re-reads the Codex CLI source and recomputes the one-way result. Apply writes that preview into the target path; it does not create a bidirectional merge.",
+			hint: "Refresh only re-reads the Codex CLI source and recomputes the one-way result. Apply writes the latest preview snapshot into the target path; refresh before apply if the Codex CLI files may have changed. It does not create a bidirectional merge.",
 		},
 		{
 			label: `Preview summary: ${formatSyncSummary(preview.summary)}`,
@@ -1491,6 +1491,7 @@ const __testOnly = {
 	promptBehaviorSettings,
 	promptThemeSettings,
 	promptBackendSettings,
+	promptSyncCenter,
 };
 
 /* c8 ignore start - interactive prompt flows are covered by integration tests */
