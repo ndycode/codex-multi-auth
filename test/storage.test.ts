@@ -676,7 +676,7 @@ describe("storage", () => {
 			);
 		});
 
-		it("documents that a stale outer persist payload can overwrite a nested import", async () => {
+		it("preserves imported accounts when the outer persist payload was captured before the nested import", async () => {
 			const importPath = join(testWorkDir, "nested-import-stale-payload.json");
 			const now = Date.now();
 			await saveAccounts({
@@ -742,16 +742,72 @@ describe("storage", () => {
 						refreshToken: "refresh-existing",
 					}),
 					expect.objectContaining({
+						accountId: "acct-imported",
+						refreshToken: "refresh-imported",
+					}),
+					expect.objectContaining({
 						accountId: "acct-appended",
 						refreshToken: "refresh-appended",
 					}),
 				]),
 			);
-			expect(loaded?.accounts).not.toEqual(
+		});
+
+		it("preserves imported accounts when the transaction starts from a null snapshot", async () => {
+			const importPath = join(testWorkDir, "nested-import-null-start.json");
+			const storagePath = getStoragePath();
+			const now = Date.now();
+
+			await fs.mkdir(dirname(storagePath), { recursive: true });
+			await fs.writeFile(storagePath, "{invalid-json", "utf-8");
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-imported",
+							email: "imported@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: now - 1_000,
+							lastUsed: now - 1_000,
+						},
+					],
+				}),
+			);
+
+			await withAccountStorageTransaction(async (current, persist) => {
+				expect(current).toBeNull();
+
+				await importAccounts(importPath);
+				await persist({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-appended",
+							email: "appended@example.com",
+							refreshToken: "refresh-appended",
+							addedAt: now,
+							lastUsed: now,
+						},
+					],
+				});
+			});
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
 						accountId: "acct-imported",
 						refreshToken: "refresh-imported",
+					}),
+					expect.objectContaining({
+						accountId: "acct-appended",
+						refreshToken: "refresh-appended",
 					}),
 				]),
 			);

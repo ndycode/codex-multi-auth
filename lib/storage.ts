@@ -165,11 +165,13 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
-const transactionSnapshotContext = new AsyncLocalStorage<{
+type AccountTransactionState = {
 	snapshot: AccountStorageV3 | null;
 	active: boolean;
 	kind: "accounts" | "accounts-and-flagged";
-}>();
+	pendingImportedAccounts: AccountStorageV3["accounts"];
+};
+const transactionSnapshotContext = new AsyncLocalStorage<AccountTransactionState>();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previousMutex = storageMutex;
@@ -1926,6 +1928,26 @@ function syncAccountStorageSnapshot(
 	return current;
 }
 
+function mergePendingImportedAccounts(
+	storage: AccountStorageV3,
+	pendingImportedAccounts: AccountStorageV3["accounts"],
+): AccountStorageV3 {
+	if (pendingImportedAccounts.length === 0) {
+		return cloneAccountStorageForPersistence(storage);
+	}
+
+	const merged = normalizeAccountStorage({
+		version: 3,
+		accounts: deduplicateAccounts([
+			...storage.accounts,
+			...pendingImportedAccounts,
+		]),
+		activeIndex: storage.activeIndex,
+		activeIndexByFamily: storage.activeIndexByFamily,
+	});
+	return cloneAccountStorageForPersistence(merged ?? storage);
+}
+
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -1937,10 +1959,14 @@ export async function withAccountStorageTransaction<T>(
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
 			kind: "accounts" as const,
+			pendingImportedAccounts: [],
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			const nextStorage = cloneAccountStorageForPersistence(storage);
+			const nextStorage = mergePendingImportedAccounts(
+				storage,
+				state.pendingImportedAccounts,
+			);
 			await saveAccountsUnlocked(nextStorage);
 			state.snapshot = syncAccountStorageSnapshot(state.snapshot, nextStorage);
 		};
@@ -1964,6 +1990,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
 			kind: "accounts-and-flagged" as const,
+			pendingImportedAccounts: [],
 		};
 		const current = state.snapshot;
 		const persist = async (
@@ -2455,11 +2482,9 @@ export async function importAccounts(
 		};
 
 		if (transactionState?.active) {
-			// WARNING: this is an immediate disk write, separate from the outer
-			// transaction's persist(). If the handler later persists a payload that
-			// was built before importAccounts() ran, that second write will win and
-			// can overwrite the imported accounts. Build the outer persist payload
-			// from the live `current` snapshot after importAccounts() returns.
+			// Nested imports write immediately to avoid re-entering the storage
+			// mutex. Record the imported accounts so a later outer persist() keeps
+			// them even if its payload was captured before importAccounts() ran.
 			return applyImport(transactionState.snapshot, async (storage) => {
 				const nextStorage = cloneAccountStorageForPersistence(storage);
 				await saveAccountsUnlocked(nextStorage);
@@ -2467,6 +2492,10 @@ export async function importAccounts(
 					transactionState.snapshot,
 					nextStorage,
 				);
+				transactionState.pendingImportedAccounts = deduplicateAccounts([
+					...transactionState.pendingImportedAccounts,
+					...normalized.accounts,
+				]);
 			});
 		}
 
