@@ -1713,7 +1713,9 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataListingResult> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
-		const entries = await fs.readdir(backupRoot, { withFileTypes: true });
+		const entries = await retryTransientFilesystemOperation(() =>
+			fs.readdir(backupRoot, { withFileTypes: true }),
+		);
 		const backups: NamedBackupMetadata[] = [];
 		let totalBackups = 0;
 		for (const entry of entries) {

@@ -559,6 +559,7 @@ describe("codex manager cli commands", () => {
 		getActionableNamedBackupRestoresMock.mockReset();
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
 			assessments: [],
+			allAssessments: [],
 			totalBackups: 0,
 		});
 		listNamedBackupsMock.mockResolvedValue([]);
@@ -1773,6 +1774,7 @@ describe("codex manager cli commands", () => {
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
 			assessments: [assessment],
+			allAssessments: [assessment],
 			totalBackups: 2,
 		});
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
@@ -1856,6 +1858,7 @@ describe("codex manager cli commands", () => {
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
 			assessments: [assessment, secondAssessment],
+			allAssessments: [assessment, secondAssessment],
 			totalBackups: 2,
 		});
 		confirmMock.mockResolvedValue(false);
@@ -1890,6 +1893,7 @@ describe("codex manager cli commands", () => {
 		});
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
 			assessments: [],
+			allAssessments: [],
 			totalBackups: 2,
 		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "add" });
@@ -2049,6 +2053,7 @@ describe("codex manager cli commands", () => {
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
 			assessments: [assessment],
+			allAssessments: [assessment],
 			totalBackups: 2,
 		});
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
@@ -2105,6 +2110,7 @@ describe("codex manager cli commands", () => {
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
 			assessments: [assessment],
+			allAssessments: [assessment],
 			totalBackups: 2,
 		});
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
@@ -2164,6 +2170,7 @@ describe("codex manager cli commands", () => {
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
 			assessments: [assessment],
+			allAssessments: [assessment],
 			totalBackups: 2,
 		});
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
@@ -2379,6 +2386,7 @@ describe("codex manager cli commands", () => {
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
 			assessments: [assessment],
+			allAssessments: [assessment],
 			totalBackups: 2,
 		});
 		confirmMock.mockRejectedValueOnce(
@@ -2441,6 +2449,7 @@ describe("codex manager cli commands", () => {
 		};
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
 			assessments: [assessment],
+			allAssessments: [assessment],
 			totalBackups: 2,
 		});
 		loadDashboardDisplaySettingsMock

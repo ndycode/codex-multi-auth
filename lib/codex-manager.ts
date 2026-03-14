@@ -4082,14 +4082,11 @@ async function runAuthLogin(): Promise<number> {
 					const displaySettings = await loadDashboardDisplaySettings();
 					applyUiThemeFromDashboardSettings(displaySettings);
 					const backupDir = getNamedBackupsDirectoryPath();
-					const sample = recoveryState.assessments[0];
-					if (sample === undefined) {
-						recoveryPromptAttempted = false;
-						continue loginFlow;
-					}
 					const backupLabel =
 						recoveryState.assessments.length === 1
-							? sample.backup.name
+							? recoveryState.assessments
+									.map((assessment) => assessment.backup.name)
+									.join("")
 							: `${recoveryState.assessments.length} backups`;
 					promptWasShown = true;
 					const restoreNow = await confirm(
@@ -4100,7 +4097,7 @@ async function runAuthLogin(): Promise<number> {
 					if (restoreNow) {
 						const restoreResult = await runBackupRestoreManager(
 							displaySettings,
-							recoveryState.allAssessments ?? recoveryState.assessments,
+							recoveryState.allAssessments,
 						);
 						if (restoreResult !== "restored") {
 							pendingRecoveryState = recoveryState;
