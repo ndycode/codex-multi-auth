@@ -313,6 +313,20 @@ describe("storage", () => {
 		);
 		const exportPath = join(testWorkDir, "export.json");
 		let testStoragePath: string;
+		const withIsolatedStorageModule = async <T>(
+			storagePath: string,
+			run: (storageModule: typeof import("../lib/storage.js")) => Promise<T>,
+		): Promise<T> => {
+			vi.resetModules();
+			const storageModule = await import("../lib/storage.js");
+			storageModule.setStoragePathDirect(storagePath);
+			try {
+				return await run(storageModule);
+			} finally {
+				storageModule.setStoragePathDirect(null);
+				vi.resetModules();
+			}
+		};
 
 		beforeEach(async () => {
 			await fs.mkdir(testWorkDir, { recursive: true });
@@ -351,6 +365,64 @@ describe("storage", () => {
 			}
 		});
 
+		it("warns about Windows ACL inheritance when exporting on win32", async () => {
+			const originalPlatform = process.platform;
+			const originalConsoleLog = process.env.CODEX_CONSOLE_LOG;
+			const originalDebug = process.env.DEBUG_CODEX_PLUGIN;
+			const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			try {
+				Object.defineProperty(process, "platform", { value: "win32" });
+				process.env.CODEX_CONSOLE_LOG = "1";
+				process.env.DEBUG_CODEX_PLUGIN = "1";
+				vi.resetModules();
+
+				const storageModule = await import("../lib/storage.js");
+				const win32StoragePath = join(testWorkDir, "win32-accounts.json");
+				const win32ExportPath = join(testWorkDir, "win32-export.json");
+				storageModule.setStoragePathDirect(win32StoragePath);
+				await storageModule.saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "win32-test",
+							refreshToken: "win32-refresh",
+							addedAt: 1,
+							lastUsed: 2,
+						},
+					],
+				});
+
+				consoleWarn.mockClear();
+				await storageModule.exportAccounts(win32ExportPath);
+
+				expect(consoleWarn).toHaveBeenCalledWith(
+					expect.stringContaining(
+						"Exported token file permissions rely on directory ACL inheritance on Windows",
+					),
+					expect.objectContaining({
+						path: win32ExportPath,
+					}),
+				);
+				storageModule.setStoragePathDirect(null);
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform });
+				if (originalConsoleLog === undefined) {
+					delete process.env.CODEX_CONSOLE_LOG;
+				} else {
+					process.env.CODEX_CONSOLE_LOG = originalConsoleLog;
+				}
+				if (originalDebug === undefined) {
+					delete process.env.DEBUG_CODEX_PLUGIN;
+				} else {
+					process.env.DEBUG_CODEX_PLUGIN = originalDebug;
+				}
+				vi.resetModules();
+				consoleWarn.mockRestore();
+			}
+		});
+
 		it("exports the correct transaction snapshot before and after persist without reacquiring the storage lock", async () => {
 			const prePersistExportPath = join(
 				testWorkDir,
@@ -360,72 +432,86 @@ describe("storage", () => {
 				testWorkDir,
 				"nested-export-post-persist.json",
 			);
+			const isolatedStoragePath = join(
+				testWorkDir,
+				"nested-export-transaction.json",
+			);
 			const now = Date.now();
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				activeIndexByFamily: { codex: 0 },
-				accounts: [
-					{
-						accountId: "acct-existing",
-						email: "existing@example.com",
-						refreshToken: "refresh-existing",
-						addedAt: now - 1_000,
-						lastUsed: now - 1_000,
-					},
-				],
-			});
+			await withIsolatedStorageModule(
+				isolatedStoragePath,
+				async (storageModule) => {
+					await storageModule.saveAccounts({
+						version: 3,
+						activeIndex: 0,
+						activeIndexByFamily: { codex: 0 },
+						accounts: [
+							{
+								accountId: "acct-existing",
+								email: "existing@example.com",
+								refreshToken: "refresh-existing",
+								addedAt: now - 1_000,
+								lastUsed: now - 1_000,
+							},
+						],
+					});
 
-			await new Promise<void>((resolve, reject) => {
-				// Windows antivirus can hold exclusive locks on freshly written files
-				// for several hundred milliseconds, so keep the deadlock guard generous.
-				const timer = setTimeout(() => {
-					reject(
-						new Error(
-							"exportAccounts should not deadlock inside withAccountAndFlaggedStorageTransaction",
-						),
-					);
-				}, 5_000);
+					await new Promise<void>((resolve, reject) => {
+						// Run this regression in an isolated module so a real deadlock
+						// cannot poison the shared mutex used by later tests.
+						// Windows antivirus can hold exclusive locks on freshly written
+						// files for several hundred milliseconds, so keep the guard
+						// generous.
+						const timer = setTimeout(() => {
+							reject(
+								new Error(
+									"exportAccounts should not deadlock inside withAccountAndFlaggedStorageTransaction",
+								),
+							);
+						}, 5_000);
 
-				void withAccountAndFlaggedStorageTransaction(async (current, persist) => {
-					if (!current) {
-						throw new Error("expected existing account storage");
-					}
+						void storageModule.withAccountAndFlaggedStorageTransaction(
+							async (current, persist) => {
+								if (!current) {
+									throw new Error("expected existing account storage");
+								}
 
-					await exportAccounts(prePersistExportPath);
+								await storageModule.exportAccounts(prePersistExportPath);
 
-					await persist(
-						{
-							...current,
-							accounts: [
-								...current.accounts,
-								{
-									accountId: "acct-exported",
-									email: "exported@example.com",
-									refreshToken: "refresh-exported",
-									addedAt: now,
-									lastUsed: now,
-								},
-							],
-						},
-						{
-							version: 1,
-							accounts: [],
-						},
-					);
+								await persist(
+									{
+										...current,
+										accounts: [
+											...current.accounts,
+											{
+												accountId: "acct-exported",
+												email: "exported@example.com",
+												refreshToken: "refresh-exported",
+												addedAt: now,
+												lastUsed: now,
+											},
+										],
+									},
+									{
+										version: 1,
+										accounts: [],
+									},
+								);
 
-					await exportAccounts(postPersistExportPath);
-				}).then(
-					() => {
-						clearTimeout(timer);
-						resolve();
-					},
-					(error) => {
-						clearTimeout(timer);
-						reject(error);
-					},
-				);
-			});
+								await storageModule.exportAccounts(postPersistExportPath);
+							},
+						).then(
+							() => {
+								clearTimeout(timer);
+								resolve();
+							},
+							(error) => {
+								clearTimeout(timer);
+								reject(error);
+							},
+						);
+					});
+				},
+			);
 
 			const prePersistExport = JSON.parse(
 				await fs.readFile(prePersistExportPath, "utf-8"),
@@ -507,21 +593,11 @@ describe("storage", () => {
 		it("imports accounts inside an account transaction without reacquiring the storage lock", async () => {
 			const importPath = join(testWorkDir, "nested-import.json");
 			const nestedExportPath = join(testWorkDir, "nested-import-export.json");
+			const isolatedStoragePath = join(
+				testWorkDir,
+				"nested-import-transaction.json",
+			);
 			const now = Date.now();
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				activeIndexByFamily: { codex: 0 },
-				accounts: [
-					{
-						accountId: "acct-existing",
-						email: "existing@example.com",
-						refreshToken: "refresh-existing",
-						addedAt: now - 1_000,
-						lastUsed: now - 1_000,
-					},
-				],
-			});
 			await fs.writeFile(
 				importPath,
 				JSON.stringify({
@@ -540,37 +616,62 @@ describe("storage", () => {
 				}),
 			);
 
-			await new Promise<void>((resolve, reject) => {
-				// Windows antivirus can hold exclusive locks on freshly written files
-				// for several hundred milliseconds, so keep the deadlock guard generous.
-				const timer = setTimeout(() => {
-					reject(
-						new Error(
-							"importAccounts should not deadlock inside withAccountStorageTransaction",
-						),
-					);
-				}, 5_000);
+			let loaded: Awaited<ReturnType<typeof loadAccounts>> = null;
+			await withIsolatedStorageModule(
+				isolatedStoragePath,
+				async (storageModule) => {
+					await storageModule.saveAccounts({
+						version: 3,
+						activeIndex: 0,
+						activeIndexByFamily: { codex: 0 },
+						accounts: [
+							{
+								accountId: "acct-existing",
+								email: "existing@example.com",
+								refreshToken: "refresh-existing",
+								addedAt: now - 1_000,
+								lastUsed: now - 1_000,
+							},
+						],
+					});
 
-				void withAccountStorageTransaction(async (current) => {
-					if (!current) {
-						throw new Error("expected existing account storage");
-					}
+					await new Promise<void>((resolve, reject) => {
+						// Run this regression in an isolated module so a real deadlock
+						// cannot poison the shared mutex used by later tests.
+						// Windows antivirus can hold exclusive locks on freshly written
+						// files for several hundred milliseconds, so keep the guard
+						// generous.
+						const timer = setTimeout(() => {
+							reject(
+								new Error(
+									"importAccounts should not deadlock inside withAccountStorageTransaction",
+								),
+							);
+						}, 5_000);
 
-					await importAccounts(importPath);
-					await exportAccounts(nestedExportPath);
-				}).then(
-					() => {
-						clearTimeout(timer);
-						resolve();
-					},
-					(error) => {
-						clearTimeout(timer);
-						reject(error);
-					},
-				);
-			});
+						void storageModule.withAccountStorageTransaction(async (current) => {
+							if (!current) {
+								throw new Error("expected existing account storage");
+							}
 
-			const loaded = await loadAccounts();
+							await storageModule.importAccounts(importPath);
+							await storageModule.exportAccounts(nestedExportPath);
+						}).then(
+							() => {
+								clearTimeout(timer);
+								resolve();
+							},
+							(error) => {
+								clearTimeout(timer);
+								reject(error);
+							},
+						);
+					});
+
+					loaded = await storageModule.loadAccounts();
+				},
+			);
+
 			expect(loaded?.accounts).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
@@ -601,8 +702,8 @@ describe("storage", () => {
 			);
 		}, 10_000);
 
-		it("rejects direct nested transaction entry points inside an active account transaction", async () => {
-			await withAccountStorageTransaction(async () => {
+		it("rejects direct nested transaction entry points without breaking the outer transaction", async () => {
+			await withAccountStorageTransaction(async (_current, persist) => {
 				await expect(
 					withAccountStorageTransaction(
 						async (_current, _persist, _getCurrent) => undefined,
@@ -613,7 +714,31 @@ describe("storage", () => {
 						async (_current, _persist, _getCurrent) => undefined,
 					),
 				).rejects.toThrow(/Nested account storage transactions are not supported/);
+				await persist({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-outer",
+							email: "outer@example.com",
+							refreshToken: "refresh-outer",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
 			});
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-outer",
+						refreshToken: "refresh-outer",
+					}),
+				]),
+			);
 		});
 
 		it("preserves imported accounts when the outer account transaction persists afterward", async () => {
@@ -852,6 +977,75 @@ describe("storage", () => {
 			);
 		});
 
+		it("preserves revision metadata across immutable live-snapshot copies", async () => {
+			const importPath = join(testWorkDir, "nested-import-immutable-copy.json");
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-imported",
+							email: "imported@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: now - 1_000,
+							lastUsed: now - 1_000,
+						},
+					],
+				}),
+			);
+
+			await withAccountStorageTransaction(async (_current, persist, getCurrent) => {
+				await importAccounts(importPath);
+				const liveCurrent = getCurrent();
+				if (!liveCurrent) {
+					throw new Error("expected live transaction snapshot");
+				}
+
+				await persist({
+					...liveCurrent,
+					accounts: liveCurrent.accounts.filter(
+						(account) => account.accountId !== "acct-imported",
+					),
+				});
+			});
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+				]),
+			);
+			expect(loaded?.accounts).not.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-imported",
+						refreshToken: "refresh-imported",
+					}),
+				]),
+			);
+		});
+
 		it("exposes the live snapshot after a nested import when the transaction starts from a null snapshot", async () => {
 			const importPath = join(testWorkDir, "nested-import-null-start.json");
 			const storagePath = getStoragePath();
@@ -1020,6 +1214,181 @@ describe("storage", () => {
 					refreshToken: "refresh-flagged",
 				}),
 			);
+		});
+
+		it("keeps revision aligned when an account persist fails before a later retry", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let failingRenameAttemptsRemaining = 5;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (
+						String(to) === testStoragePath &&
+						failingRenameAttemptsRemaining > 0
+					) {
+						failingRenameAttemptsRemaining -= 1;
+						const error = Object.assign(new Error("accounts busy"), {
+							code: "EBUSY",
+						});
+						throw error;
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await withAccountStorageTransaction(
+					async (_current, persist, getCurrent) => {
+						await expect(
+							persist({
+								version: 3,
+								activeIndex: 0,
+								activeIndexByFamily: { codex: 0 },
+								accounts: [
+									{
+										accountId: "acct-failed",
+										email: "failed@example.com",
+										refreshToken: "refresh-failed",
+										addedAt: now,
+										lastUsed: now,
+									},
+								],
+							}),
+						).rejects.toThrow(/accounts busy/);
+
+						const liveCurrent = getCurrent();
+						if (!liveCurrent) {
+							throw new Error("expected live transaction snapshot");
+						}
+
+						liveCurrent.accounts = [
+							{
+								accountId: "acct-retry",
+								email: "retry@example.com",
+								refreshToken: "refresh-retry",
+								addedAt: now + 1,
+								lastUsed: now + 1,
+							},
+						];
+						await persist(liveCurrent);
+					},
+				);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "acct-retry",
+					refreshToken: "refresh-retry",
+				}),
+			]);
+		});
+
+		it("keeps revision aligned when a nested import fails before a later persist", async () => {
+			const importPath = join(testWorkDir, "nested-import-failure.json");
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-imported",
+							email: "imported@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: now,
+							lastUsed: now,
+						},
+					],
+				}),
+			);
+
+			const originalRename = fs.rename.bind(fs);
+			let failingRenameAttemptsRemaining = 5;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (
+						String(to) === testStoragePath &&
+						failingRenameAttemptsRemaining > 0
+					) {
+						failingRenameAttemptsRemaining -= 1;
+						const error = Object.assign(new Error("accounts busy"), {
+							code: "EBUSY",
+						});
+						throw error;
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await withAccountStorageTransaction(
+					async (_current, persist, getCurrent) => {
+						await expect(importAccounts(importPath)).rejects.toThrow(
+							/accounts busy/,
+						);
+
+						const liveCurrent = getCurrent();
+						if (!liveCurrent) {
+							throw new Error("expected live transaction snapshot");
+						}
+
+						liveCurrent.accounts = [
+							{
+								accountId: "acct-retry",
+								email: "retry@example.com",
+								refreshToken: "refresh-retry",
+								addedAt: now + 1,
+								lastUsed: now + 1,
+							},
+						];
+						await persist(liveCurrent);
+					},
+				);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "acct-retry",
+					refreshToken: "refresh-retry",
+				}),
+			]);
 		});
 
 		it("reacquires storage after deferred async work outlives a flagged transaction", async () => {
@@ -1643,6 +2012,83 @@ describe("storage", () => {
 					refreshToken: "refresh-flagged",
 				}),
 			);
+		});
+
+		it("restores missing and intentional-reset account file states when combined rollback runs", async () => {
+			for (const startMode of ["missing-storage", "intentional-reset"] as const) {
+				setStoragePathDirect(
+					join(
+						testWorkDir,
+						`rollback-${startMode}-${Math.random().toString(36).slice(2)}.json`,
+					),
+				);
+				const storagePath = getStoragePath();
+				const resetMarkerPath = `${storagePath}.reset-intent`;
+				const flaggedStoragePath = getFlaggedAccountsPath();
+
+				await fs.mkdir(dirname(storagePath), { recursive: true });
+				await fs.rm(storagePath, { force: true });
+				await fs.rm(resetMarkerPath, { force: true });
+				await fs.rm(flaggedStoragePath, { force: true });
+				if (startMode === "intentional-reset") {
+					await clearAccounts();
+					expect(existsSync(resetMarkerPath)).toBe(true);
+				}
+
+				const originalRename = fs.rename.bind(fs);
+				const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+					async (from, to) => {
+						if (
+							String(to).endsWith("openai-codex-flagged-accounts.json")
+						) {
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+						return originalRename(from, to);
+					},
+				);
+
+				try {
+					await expect(
+						withAccountAndFlaggedStorageTransaction(
+							async (current, persist) => {
+								expect(current?.accounts ?? []).toHaveLength(0);
+								await persist(
+									{
+										version: 3,
+										activeIndex: 0,
+										activeIndexByFamily: { codex: 0 },
+										accounts: [
+											{
+												accountId: `acct-${startMode}`,
+												email: `${startMode}@example.com`,
+												refreshToken: `refresh-${startMode}`,
+												addedAt: Date.now(),
+												lastUsed: Date.now(),
+											},
+										],
+									},
+									{
+										version: 1,
+										accounts: [],
+									},
+								);
+							},
+						),
+					).rejects.toThrow(/flagged storage busy/);
+				} finally {
+					renameSpy.mockRestore();
+				}
+
+				expect(existsSync(storagePath)).toBe(false);
+				expect(existsSync(resetMarkerPath)).toBe(
+					startMode === "intentional-reset",
+				);
+				expect((await loadAccounts())?.accounts).toHaveLength(0);
+			}
 		});
 
 		it("surfaces rollback failure when flagged persistence and account rollback both fail", async () => {

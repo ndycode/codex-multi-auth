@@ -443,7 +443,13 @@ describe("Documentation Integrity", () => {
 		expect(antiSlop).toMatch(/uses:\s*peakoss\/anti-slop@[a-f0-9]{40}\b/i);
 		expect(antiSlop).toContain("pull_request_target:");
 		const pullRequestTargetStart = antiSlop.indexOf("pull_request_target:");
-		const jobsStart = antiSlop.indexOf("\njobs:", pullRequestTargetStart);
+		const jobsMatch = antiSlop
+			.slice(pullRequestTargetStart)
+			.match(/\n\s*jobs:/);
+		const jobsStart =
+			jobsMatch?.index === undefined
+				? -1
+				: pullRequestTargetStart + jobsMatch.index;
 		const pullRequestTargetSection = antiSlop.slice(
 			pullRequestTargetStart,
 			jobsStart === -1 ? undefined : jobsStart,
@@ -454,6 +460,7 @@ describe("Documentation Integrity", () => {
 			"synchronize",
 			"reopened",
 			"ready_for_review",
+			"edited",
 		]) {
 			expect(pullRequestTargetSection).toContain(triggerType);
 		}

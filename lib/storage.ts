@@ -536,6 +536,18 @@ function createEmptyStorageWithMetadata(
 	};
 }
 
+function getAccountStorageRestoreReason(
+	storage: AccountStorageV3 | null | undefined,
+): RestoreReason | undefined {
+	const restoreReason = (storage as AccountStorageWithMetadata | null | undefined)
+		?.restoreReason;
+	return restoreReason === "empty-storage" ||
+		restoreReason === "intentional-reset" ||
+		restoreReason === "missing-storage"
+		? restoreReason
+		: undefined;
+}
+
 function withRestoreMetadata(
 	storage: AccountStorageV3,
 	restoreEligible: boolean,
@@ -1947,7 +1959,10 @@ function setTransactionSnapshotRevision(
 		value: revision,
 		writable: true,
 		configurable: true,
-		enumerable: false,
+		// Keep the revision marker on common immutable copies such as object spread.
+		// Symbols are still excluded from JSON persistence, so this does not leak
+		// into on-disk storage.
+		enumerable: true,
 	});
 	return storage;
 }
@@ -2012,6 +2027,47 @@ function mergeStaleTransactionSnapshot(
 	return cloneAccountStorageForPersistence(merged ?? stale);
 }
 
+async function restoreAccountStorageAfterRollback(
+	previousAccounts: AccountStorageV3,
+	restoreReason: RestoreReason | undefined,
+): Promise<void> {
+	const path = getStoragePath();
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
+	const walPath = getAccountsWalPath(path);
+	const clearPath = async (targetPath: string): Promise<void> => {
+		try {
+			await fs.unlink(targetPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				throw error;
+			}
+		}
+	};
+
+	if (restoreReason === "missing-storage") {
+		await Promise.all([
+			clearPath(path),
+			clearPath(walPath),
+			clearPath(resetMarkerPath),
+		]);
+		return;
+	}
+
+	if (restoreReason === "intentional-reset") {
+		await fs.mkdir(dirname(path), { recursive: true });
+		await fs.writeFile(
+			resetMarkerPath,
+			JSON.stringify({ version: 1, createdAt: Date.now() }),
+			{ encoding: "utf-8", mode: 0o600 },
+		);
+		await Promise.all([clearPath(path), clearPath(walPath)]);
+		return;
+	}
+
+	await saveAccountsUnlocked(previousAccounts);
+}
+
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -2044,12 +2100,13 @@ export async function withAccountStorageTransaction<T>(
 					(payloadRevision === null || payloadRevision < state.revision)
 					? mergeStaleTransactionSnapshot(state.snapshot, storage)
 					: cloneAccountStorageForPersistence(storage);
-			state.revision += 1;
+			const nextRevision = state.revision + 1;
 			await saveAccountsUnlocked(nextStorage);
+			state.revision = nextRevision;
 			state.snapshot = syncAccountStorageSnapshot(
 				state.snapshot,
 				nextStorage,
-				state.revision,
+				nextRevision,
 			);
 		};
 		return transactionSnapshotContext.run(state, async () => {
@@ -2093,6 +2150,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		): Promise<void> => {
+			const previousRestoreReason = getAccountStorageRestoreReason(state.snapshot);
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const payloadRevision = getTransactionSnapshotRevision(accountStorage);
 			const nextAccounts =
@@ -2101,23 +2159,28 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 					(payloadRevision === null || payloadRevision < state.revision)
 					? mergeStaleTransactionSnapshot(state.snapshot, accountStorage)
 					: cloneAccountStorageForPersistence(accountStorage);
-			state.revision += 1;
+			const nextRevision = state.revision + 1;
 			await saveAccountsUnlocked(nextAccounts);
 			try {
 				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				state.revision = nextRevision;
 				state.snapshot = syncAccountStorageSnapshot(
 					state.snapshot,
 					nextAccounts,
-					state.revision,
+					nextRevision,
 				);
 			} catch (error) {
 				try {
-					await saveAccountsUnlocked(previousAccounts);
-					state.revision += 1;
+					await restoreAccountStorageAfterRollback(
+						previousAccounts,
+						previousRestoreReason,
+					);
+					const rollbackRevision = nextRevision + 1;
+					state.revision = rollbackRevision;
 					state.snapshot = syncAccountStorageSnapshot(
 						state.snapshot,
 						previousAccounts,
-						state.revision,
+						rollbackRevision,
 					);
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
@@ -2612,12 +2675,13 @@ export async function importAccounts(
 			// snapshot in place can still intentionally remove them.
 			return applyImport(transactionState.snapshot, async (storage) => {
 				const nextStorage = cloneAccountStorageForPersistence(storage);
-				transactionState.revision += 1;
+				const nextRevision = transactionState.revision + 1;
 				await saveAccountsUnlocked(nextStorage);
+				transactionState.revision = nextRevision;
 				transactionState.snapshot = syncAccountStorageSnapshot(
 					transactionState.snapshot,
 					nextStorage,
-					transactionState.revision,
+					nextRevision,
 				);
 			});
 		}
