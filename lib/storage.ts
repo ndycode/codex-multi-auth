@@ -47,12 +47,10 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
-const NAMED_BACKUP_LIST_PARALLELISM = 8;
-const NAMED_BACKUP_ASSESS_PARALLELISM = 4;
-export const NAMED_BACKUP_LIST_CONCURRENCY = NAMED_BACKUP_LIST_PARALLELISM;
+export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 // Each assessment does more I/O than a listing pass, so keep a lower ceiling to
 // reduce transient AV/file-lock pressure on Windows restore menus.
-export const NAMED_BACKUP_ASSESS_CONCURRENCY = NAMED_BACKUP_ASSESS_PARALLELISM;
+export const NAMED_BACKUP_ASSESS_CONCURRENCY = 4;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -152,15 +150,50 @@ type LoadedBackupCandidate = {
 	error?: string;
 };
 
-type NamedBackupCandidateCache = Map<string, LoadedBackupCandidate>;
+type NamedBackupCandidateCache = Map<string, unknown>;
 
 function getNamedBackupCandidateCache(
 	candidateCache: Map<string, unknown> | undefined,
 ): NamedBackupCandidateCache | undefined {
 	if (!candidateCache) return undefined;
-	// Caller contract: only reuse caches created by listNamedBackups() for the
-	// matching assessNamedBackupRestore() flow.
-	return candidateCache as NamedBackupCandidateCache;
+	return candidateCache;
+}
+
+function isLoadedBackupCandidate(
+	candidate: unknown,
+): candidate is LoadedBackupCandidate {
+	if (!candidate || typeof candidate !== "object") {
+		return false;
+	}
+	const typedCandidate = candidate as {
+		normalized?: unknown;
+		storedVersion?: unknown;
+		schemaErrors?: unknown;
+		error?: unknown;
+	};
+	return (
+		"storedVersion" in typedCandidate &&
+		Array.isArray(typedCandidate.schemaErrors) &&
+		(typedCandidate.normalized === null ||
+			typeof typedCandidate.normalized === "object") &&
+		(typedCandidate.error === undefined ||
+			typeof typedCandidate.error === "string")
+	);
+}
+
+function getCachedNamedBackupCandidate(
+	candidateCache: NamedBackupCandidateCache | undefined,
+	backupPath: string,
+): LoadedBackupCandidate | undefined {
+	const candidate = candidateCache?.get(backupPath);
+	if (candidate === undefined) {
+		return undefined;
+	}
+	if (isLoadedBackupCandidate(candidate)) {
+		return candidate;
+	}
+	candidateCache?.delete(backupPath);
+	return undefined;
 }
 
 /**
@@ -1742,7 +1775,8 @@ export async function assessNamedBackupRestore(
 	const backupPath = await resolveNamedBackupRestorePath(name);
 	const candidateCache = getNamedBackupCandidateCache(options.candidateCache);
 	const candidate =
-		candidateCache?.get(backupPath) ?? (await loadBackupCandidate(backupPath));
+		getCachedNamedBackupCandidate(candidateCache, backupPath) ??
+		(await loadBackupCandidate(backupPath));
 	candidateCache?.delete(backupPath);
 	const backup = await buildNamedBackupMetadata(
 		basename(backupPath).slice(0, -".json".length),

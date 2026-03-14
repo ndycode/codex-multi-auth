@@ -2148,6 +2148,89 @@ describe("storage", () => {
 			}
 		});
 
+		it("retries a second-chunk backup read when listing more than one chunk of backups", async () => {
+			const backups: Awaited<ReturnType<typeof createNamedBackup>>[] = [];
+			for (
+				let index = 0;
+				index <= NAMED_BACKUP_LIST_CONCURRENCY;
+				index += 1
+			) {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: `chunk-boundary-${index}`,
+							refreshToken: `ref-chunk-boundary-${index}`,
+							addedAt: index + 1,
+							lastUsed: index + 1,
+						},
+					],
+				});
+				backups.push(
+					await createNamedBackup(`chunk-boundary-${String(index).padStart(2, "0")}`),
+				);
+			}
+
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			const originalReadFile = fs.readFile.bind(fs);
+			const secondChunkBackup = backups.at(-1);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path, options] = args;
+					if (
+						String(path) === backupRoot &&
+						typeof options === "object" &&
+						options?.withFileTypes === true
+					) {
+						const entries = await originalReaddir(
+							...(args as Parameters<typeof fs.readdir>),
+						);
+						return [...entries].sort((left, right) =>
+							left.name.localeCompare(right.name),
+						) as Awaited<ReturnType<typeof fs.readdir>>;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === secondChunkBackup?.path && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("backup file busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const listedBackups = await listNamedBackups();
+				expect(listedBackups).toHaveLength(NAMED_BACKUP_LIST_CONCURRENCY + 1);
+				expect(listedBackups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							name: "chunk-boundary-08",
+							valid: true,
+						}),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+				expect(
+					readFileSpy.mock.calls.filter(
+						([path]) => String(path) === secondChunkBackup?.path,
+					),
+				).toHaveLength(2);
+			} finally {
+				readFileSpy.mockRestore();
+				readdirSpy.mockRestore();
+			}
+		});
+
 		it("retries transient EAGAIN backup directory errors while restoring backups", async () => {
 			await saveAccounts({
 				version: 3,
@@ -2397,6 +2480,51 @@ describe("storage", () => {
 					([path]) => path === backup.path,
 				);
 				expect(secondPassReads).toHaveLength(2);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("ignores invalid externally provided candidate cache entries", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "external-cache-backup",
+						refreshToken: "ref-external-cache-backup",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			const backup = await createNamedBackup("external-cache-backup");
+			const readFileSpy = vi.spyOn(fs, "readFile");
+			const candidateCache = new Map<string, unknown>([
+				[backup.path, { normalized: "invalid" }],
+			]);
+
+			try {
+				const assessment = await assessNamedBackupRestore(
+					"external-cache-backup",
+					{
+						currentStorage: null,
+						candidateCache,
+					},
+				);
+				expect(assessment).toEqual(
+					expect.objectContaining({
+						eligibleForRestore: true,
+						backup: expect.objectContaining({
+							name: "external-cache-backup",
+							path: backup.path,
+						}),
+					}),
+				);
+				expect(
+					readFileSpy.mock.calls.filter(([path]) => path === backup.path),
+				).toHaveLength(1);
+				expect(candidateCache.has(backup.path)).toBe(false);
 			} finally {
 				readFileSpy.mockRestore();
 			}

@@ -2434,6 +2434,7 @@ describe("codex manager cli commands", () => {
 		expect(importAccountsMock).toHaveBeenCalledWith(
 			mockBackupPath("named-backup"),
 		);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledOnce();
 	});
 
 	it("rejects a restore when the reassessed backup path escapes the backup directory", async () => {
@@ -2724,6 +2725,71 @@ describe("codex manager cli commands", () => {
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();
+		}
+	});
+
+	it("adds actionable guidance when a confirmed restore exceeds the account limit", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: mockBackupPath("named-backup"),
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		importAccountsMock.mockRejectedValueOnce(
+			new Error("Import would exceed maximum of 10 accounts (would have 11)"),
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(errorSpy).toHaveBeenCalledWith(
+				"Restore failed: Import would exceed maximum of 10 accounts (would have 11). Close other Codex instances and try again.",
+			);
+		} finally {
+			errorSpy.mockRestore();
 		}
 	});
 

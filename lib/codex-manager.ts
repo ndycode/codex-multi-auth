@@ -4396,8 +4396,11 @@ async function runBackupRestoreManager(
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		const collapsedMessage = collapseWhitespace(message) || "unknown error";
 		console.error(
-			`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
+			/exceed maximum/i.test(collapsedMessage)
+				? `Restore failed: ${collapsedMessage}. Close other Codex instances and try again.`
+				: `Restore failed: ${collapsedMessage}`,
 		);
 	}
 }
