@@ -2613,6 +2613,10 @@ describe("codex manager cli commands", () => {
 	it("limits concurrent backup assessments in the restore menu", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);
+		const { NAMED_BACKUP_LIST_CONCURRENCY } =
+			await vi.importActual<typeof import("../lib/storage.js")>(
+				"../lib/storage.js",
+			);
 		const backups = Array.from({ length: 9 }, (_value, index) => ({
 			name: `named-backup-${index + 1}`,
 			path: `/mock/backups/named-backup-${index + 1}.json`,
@@ -2629,22 +2633,31 @@ describe("codex manager cli commands", () => {
 		let inFlight = 0;
 		let maxInFlight = 0;
 		let pending: Array<ReturnType<typeof createDeferred<void>>> = [];
-		const finalBackupName = backups[backups.length - 1]?.name;
+		let releaseScheduled = false;
+		const releasePending = () => {
+			if (releaseScheduled) {
+				return;
+			}
+			releaseScheduled = true;
+			queueMicrotask(() => {
+				releaseScheduled = false;
+				if (pending.length === 0) {
+					return;
+				}
+				const release = pending;
+				pending = [];
+				for (const deferred of release) {
+					deferred.resolve();
+				}
+			});
+		};
 		listNamedBackupsMock.mockResolvedValue(backups);
 		assessNamedBackupRestoreMock.mockImplementation(async (name: string) => {
 			inFlight += 1;
 			maxInFlight = Math.max(maxInFlight, inFlight);
 			const gate = createDeferred<void>();
 			pending.push(gate);
-			if (pending.length === 8 || name === finalBackupName) {
-				const release = pending;
-				pending = [];
-				queueMicrotask(() => {
-					for (const deferred of release) {
-						deferred.resolve();
-					}
-				});
-			}
+			releasePending();
 			await gate.promise;
 			inFlight -= 1;
 			return {
@@ -2668,7 +2681,9 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(backups.length);
-		expect(maxInFlight).toBeLessThanOrEqual(8);
+		expect(maxInFlight).toBeLessThanOrEqual(
+			NAMED_BACKUP_LIST_CONCURRENCY,
+		);
 	});
 
 	it("reassesses a backup before confirmation so the merge summary stays current", async () => {
