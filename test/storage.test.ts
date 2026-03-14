@@ -350,6 +350,82 @@ describe("storage", () => {
 			expect(exported.accounts[0].accountId).toBe("test");
 		});
 
+		it("exports from flagged transactions without reacquiring the storage lock", async () => {
+			const nestedExportPath = join(testWorkDir, "nested-export.json");
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+				],
+			});
+
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					reject(
+						new Error(
+							"exportAccounts should not deadlock inside withAccountAndFlaggedStorageTransaction",
+						),
+					);
+				}, 1_000);
+
+				void withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+					if (!current) {
+						throw new Error("expected existing account storage");
+					}
+
+					await persist(
+						{
+							...current,
+							accounts: [
+								...current.accounts,
+								{
+									accountId: "acct-exported",
+									email: "exported@example.com",
+									refreshToken: "refresh-exported",
+									addedAt: now,
+									lastUsed: now,
+								},
+							],
+						},
+						{
+							version: 1,
+							accounts: [],
+						},
+					);
+
+					await exportAccounts(nestedExportPath);
+				}).then(
+					() => {
+						clearTimeout(timer);
+						resolve();
+					},
+					(error) => {
+						clearTimeout(timer);
+						reject(error);
+					},
+				);
+			});
+
+			const exported = JSON.parse(await fs.readFile(nestedExportPath, "utf-8"));
+			expect(exported.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-exported",
+						refreshToken: "refresh-exported",
+					}),
+				]),
+			);
+		});
+
 		it("should fail export if file exists and force is false", async () => {
 			// @ts-expect-error
 			const { exportAccounts } = await import("../lib/storage.js");
@@ -921,6 +997,7 @@ describe("storage", () => {
 		it("should fail export when no accounts exist", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
+			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);

@@ -438,7 +438,9 @@ describe("Documentation Integrity", () => {
 		).toBe(true);
 
 		const antiSlop = read(antiSlopWorkflow);
-		expect(antiSlop).toContain("peakoss/anti-slop@v0.2.1");
+		expect(antiSlop).toContain(
+			"peakoss/anti-slop@5b9bb56579545d24e488e3312108968079ef425c",
+		);
 		expect(antiSlop).toContain("pull_request_target:");
 		expect(antiSlop).toContain("types: [opened, reopened, ready_for_review]");
 		expect(antiSlop).toContain("require-pr-template: true");
