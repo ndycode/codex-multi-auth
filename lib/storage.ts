@@ -1137,7 +1137,7 @@ function findCompatibleRefreshTokenMatchIndex<T extends AccountLike>(
 ): number | undefined {
 	if (!candidateRef.refreshToken) return undefined;
 	let matchingIndex: number | undefined;
-	let matchingAccount: T | null = null;
+	let matchingAccount: T | undefined;
 
 	for (let i = 0; i < accounts.length; i += 1) {
 		const account = accounts[i];
@@ -1161,7 +1161,7 @@ function findCompatibleRefreshTokenMatchIndex<T extends AccountLike>(
 		) {
 			return undefined;
 		}
-		if (matchingIndex === undefined || matchingAccount === null) {
+		if (matchingIndex === undefined || matchingAccount === undefined) {
 			matchingIndex = i;
 			matchingAccount = account;
 			continue;
@@ -1939,6 +1939,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			active: true,
 		};
 		const current = state.snapshot;
 		const persist = async (
