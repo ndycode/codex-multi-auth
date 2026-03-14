@@ -2311,6 +2311,11 @@ export async function exportAccounts(
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
+	// Inside a transaction, reuse the in-flight snapshot instead of reacquiring
+	// the storage mutex. The snapshot only reflects writes after persist() runs,
+	// so pre-persist exports intentionally return the initial loaded state.
+	// This avoids deadlocks and redundant disk reads on Windows where antivirus
+	// may temporarily hold exclusive locks on freshly written files.
 	const storage = transactionState?.active
 		? transactionState.snapshot
 		: await withAccountStorageTransaction((current) =>

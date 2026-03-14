@@ -346,8 +346,15 @@ describe("storage", () => {
 			expect(exported.accounts[0].accountId).toBe("test");
 		});
 
-		it("exports from flagged transactions without reacquiring the storage lock", async () => {
-			const nestedExportPath = join(testWorkDir, "nested-export.json");
+		it("exports the correct transaction snapshot before and after persist without reacquiring the storage lock", async () => {
+			const prePersistExportPath = join(
+				testWorkDir,
+				"nested-export-pre-persist.json",
+			);
+			const postPersistExportPath = join(
+				testWorkDir,
+				"nested-export-post-persist.json",
+			);
 			const now = Date.now();
 			await saveAccounts({
 				version: 3,
@@ -380,6 +387,8 @@ describe("storage", () => {
 						throw new Error("expected existing account storage");
 					}
 
+					await exportAccounts(prePersistExportPath);
+
 					await persist(
 						{
 							...current,
@@ -400,7 +409,7 @@ describe("storage", () => {
 						},
 					);
 
-					await exportAccounts(nestedExportPath);
+					await exportAccounts(postPersistExportPath);
 				}).then(
 					() => {
 						clearTimeout(timer);
@@ -413,8 +422,30 @@ describe("storage", () => {
 				);
 			});
 
-			const exported = JSON.parse(await fs.readFile(nestedExportPath, "utf-8"));
-			expect(exported.accounts).toEqual(
+			const prePersistExport = JSON.parse(
+				await fs.readFile(prePersistExportPath, "utf-8"),
+			);
+			expect(prePersistExport.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+				]),
+			);
+			expect(prePersistExport.accounts).not.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-exported",
+						refreshToken: "refresh-exported",
+					}),
+				]),
+			);
+
+			const postPersistExport = JSON.parse(
+				await fs.readFile(postPersistExportPath, "utf-8"),
+			);
+			expect(postPersistExport.accounts).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
 						accountId: "acct-exported",
