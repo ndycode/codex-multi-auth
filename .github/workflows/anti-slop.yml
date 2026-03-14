@@ -1,0 +1,35 @@
+name: Anti Slop
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+jobs:
+  anti-slop:
+    name: PR Quality Screening
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run anti-slop checks
+        uses: peakoss/anti-slop@v0.2.1
+        with:
+          max-failures: 4
+          require-pr-template: true
+          strict-pr-template-sections: Validation
+          optional-pr-template-sections: Additional Notes
+          blocked-paths: ""
+          exempt-draft-prs: true
+          failure-add-pr-labels: needs-human-review
+          failure-pr-message: >-
+            This PR failed automated PR quality screening and has been flagged
+            for maintainer review. Please keep the PR template structure intact,
+            include validation evidence, and update the description before
+            requesting review again.
+          close-pr: false
+          lock-pr: false
