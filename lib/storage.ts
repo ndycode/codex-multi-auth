@@ -142,6 +142,7 @@ export interface BackupRestoreAssessment {
 
 export interface ActionableNamedBackupRecoveries {
 	assessments: BackupRestoreAssessment[];
+	allAssessments: BackupRestoreAssessment[];
 	totalBackups: number;
 }
 
@@ -172,6 +173,34 @@ function createUnloadedBackupCandidate(): LoadedBackupCandidate {
 		normalized: null,
 		storedVersion: null,
 		schemaErrors: [],
+	};
+}
+
+function getBackupRestoreAssessmentErrorLabel(error: unknown): string {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (typeof code === "string" && code.trim().length > 0) {
+		return code;
+	}
+	if (error instanceof Error && error.name && error.name !== "Error") {
+		return error.name;
+	}
+	return "UNKNOWN";
+}
+
+function buildFailedBackupRestoreAssessment(
+	backup: NamedBackupMetadata,
+	currentStorage: AccountStorageV3 | null,
+	error: unknown,
+): BackupRestoreAssessment {
+	return {
+		backup,
+		currentAccountCount: currentStorage?.accounts.length ?? 0,
+		mergedAccountCount: null,
+		imported: null,
+		skipped: null,
+		wouldExceedLimit: false,
+		eligibleForRestore: false,
+		error: getBackupRestoreAssessmentErrorLabel(error),
 	};
 }
 
@@ -1785,10 +1814,10 @@ export async function getActionableNamedBackupRestores(
 		? scannedBackupResult.totalBackups
 		: options.backups?.length ?? listedBackupResult.totalBackups;
 	if (totalBackups === 0) {
-		return { assessments: [], totalBackups: 0 };
+		return { assessments: [], allAssessments: [], totalBackups: 0 };
 	}
 	if (usesFastPath && scannedBackups.length === 0) {
-		return { assessments: [], totalBackups };
+		return { assessments: [], allAssessments: [], totalBackups };
 	}
 
 	const currentStorage =
@@ -1796,6 +1825,7 @@ export async function getActionableNamedBackupRestores(
 			? await loadAccounts()
 			: options.currentStorage;
 	const actionable: BackupRestoreAssessment[] = [];
+	const allAssessments: BackupRestoreAssessment[] = [];
 	const maybePushActionable = (assessment: BackupRestoreAssessment): void => {
 		if (
 			assessment.eligibleForRestore &&
@@ -1806,6 +1836,10 @@ export async function getActionableNamedBackupRestores(
 			actionable.push(assessment);
 		}
 	};
+	const recordAssessment = (assessment: BackupRestoreAssessment): void => {
+		allAssessments.push(assessment);
+		maybePushActionable(assessment);
+	};
 
 	if (usesFastPath) {
 		for (const entry of scannedBackups) {
@@ -1815,33 +1849,43 @@ export async function getActionableNamedBackupRestores(
 					entry.candidate,
 					currentStorage,
 				);
-				maybePushActionable(assessment);
+				recordAssessment(assessment);
 			} catch (error) {
 				log.warn("Failed to assess named backup restore candidate", {
 					name: entry.backup.name,
 					path: entry.backup.path,
 					error: String(error),
 				});
+				allAssessments.push(
+					buildFailedBackupRestoreAssessment(
+						entry.backup,
+						currentStorage,
+						error,
+					),
+				);
 			}
 		}
-		return { assessments: actionable, totalBackups };
+		return { assessments: actionable, allAssessments, totalBackups };
 	}
 
 	const assess = options.assess ?? assessNamedBackupRestore;
 	for (const backup of backups) {
 		try {
 			const assessment = await assess(backup.name, { currentStorage });
-			maybePushActionable(assessment);
+			recordAssessment(assessment);
 		} catch (error) {
 			log.warn("Failed to assess named backup restore candidate", {
 				name: backup.name,
 				path: backup.path,
 				error: String(error),
 			});
+			allAssessments.push(
+				buildFailedBackupRestoreAssessment(backup, currentStorage, error),
+			);
 		}
 	}
 
-	return { assessments: actionable, totalBackups };
+	return { assessments: actionable, allAssessments, totalBackups };
 }
 
 export async function createNamedBackup(

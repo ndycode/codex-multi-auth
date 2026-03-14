@@ -4048,8 +4048,11 @@ async function runAuthLogin(): Promise<number> {
 			pendingRecoveryState = null;
 			if (recoveryState === null) {
 				let recoveryScanFailed = false;
+				let scannedRecoveryState: Awaited<
+					ReturnType<typeof getActionableNamedBackupRestores>
+				>;
 				try {
-					recoveryState = await getActionableNamedBackupRestores({
+					scannedRecoveryState = await getActionableNamedBackupRestores({
 						currentStorage: refreshedStorage,
 					});
 				} catch (error) {
@@ -4058,15 +4061,24 @@ async function runAuthLogin(): Promise<number> {
 					console.warn(
 						`Startup recovery scan failed (${errorLabel}). Continuing with OAuth.`,
 					);
-					recoveryState = { assessments: [], totalBackups: 0 };
+					scannedRecoveryState = {
+						assessments: [],
+						allAssessments: [],
+						totalBackups: 0,
+					};
 				}
+				recoveryState = scannedRecoveryState;
 				if (
-					resolveStartupRecoveryAction(recoveryState, recoveryScanFailed) ===
+					resolveStartupRecoveryAction(scannedRecoveryState, recoveryScanFailed) ===
 					"open-empty-storage-menu"
 				) {
 					allowEmptyStorageMenu = true;
 					continue loginFlow;
 				}
+			}
+			if (recoveryState === null) {
+				recoveryPromptAttempted = false;
+				continue loginFlow;
 			}
 			if (recoveryState.assessments.length > 0) {
 				let promptWasShown = false;
@@ -4092,7 +4104,7 @@ async function runAuthLogin(): Promise<number> {
 					if (restoreNow) {
 						const restoreResult = await runBackupRestoreManager(
 							displaySettings,
-							recoveryState.assessments,
+							recoveryState.allAssessments ?? recoveryState.assessments,
 						);
 						if (restoreResult !== "restored") {
 							pendingRecoveryState = recoveryState;
@@ -4451,10 +4463,19 @@ async function runBackupRestoreManager(
 		return "dismissed";
 	}
 
-	const latestAssessment = await assessNamedBackupRestore(
-		selection.assessment.backup.name,
-		{ currentStorage: await loadAccounts() },
-	);
+	let latestAssessment: BackupRestoreAssessment;
+	try {
+		latestAssessment = await assessNamedBackupRestore(
+			selection.assessment.backup.name,
+			{ currentStorage: await loadAccounts() },
+		);
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to re-assess backup "${selection.assessment.backup.name}" before restore (${errorLabel}).`,
+		);
+		return "dismissed";
+	}
 	if (!latestAssessment.eligibleForRestore) {
 		console.log(latestAssessment.error ?? "Backup is not eligible for restore.");
 		return "dismissed";

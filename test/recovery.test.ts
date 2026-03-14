@@ -759,6 +759,17 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		expect(result.assessments.map((item) => item.backup.name)).toEqual([
 			"valid-backup",
 		]);
+		expect(
+			result.allAssessments
+				.map((item) => item.backup.name)
+				.sort((left, right) => left.localeCompare(right)),
+		).toEqual(["locked-backup", "valid-backup"]);
+		expect(
+			result.allAssessments.find((item) => item.backup.name === "locked-backup"),
+		).toMatchObject({
+			eligibleForRestore: false,
+			error: expect.stringContaining("busy"),
+		});
 		const readPaths = readFileSpy.mock.calls.map(([path]) => path);
 		expect(readPaths).toEqual(
 			expect.arrayContaining([lockedBackup?.path, validBackup?.path]),

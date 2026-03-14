@@ -1917,6 +1917,102 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("shows all startup-scanned backups in the restore manager before re-prompting", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		const assessment = {
+			backup: {
+				name: "startup-backup",
+				path: "/mock/backups/startup-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: "",
+		};
+		const invalidAssessment = {
+			backup: {
+				name: "stale-backup",
+				path: "/mock/backups/stale-backup.json",
+				createdAt: null,
+				updatedAt: now - 60_000,
+				sizeBytes: 64,
+				version: 3,
+				accountCount: 0,
+				schemaErrors: [],
+				valid: false,
+				loadError: "Backup is empty or invalid",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: null,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: false,
+			eligibleForRestore: false,
+			error: "Backup is empty or invalid",
+		};
+		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
+			assessments: [assessment],
+			allAssessments: [assessment, invalidAssessment],
+			totalBackups: 2,
+		});
+		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+		selectMock.mockResolvedValueOnce({ type: "back" });
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		await configureSuccessfulOAuthFlow(now);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).toHaveBeenCalledTimes(2);
+		const restoreManagerCall = selectMock.mock.calls.find(
+			([, options]) => options?.message === "Restore From Backup",
+		);
+		expect(restoreManagerCall).toBeDefined();
+		expect(restoreManagerCall?.[1]).toMatchObject({
+			message: "Restore From Backup",
+		});
+		expect(restoreManagerCall?.[0]).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					label: "startup-backup",
+					disabled: false,
+				}),
+				expect.objectContaining({
+					label: "stale-backup",
+					disabled: true,
+				}),
+			]),
+		);
+		expect(listNamedBackupsMock).not.toHaveBeenCalled();
+		expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("re-prompts startup recovery after backing out of the backup browser", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
@@ -2176,6 +2272,74 @@ describe("codex manager cli commands", () => {
 		expect(warnSpy).toHaveBeenCalledWith(
 			"Startup recovery scan failed (EBUSY). Continuing with OAuth.",
 		);
+		warnSpy.mockRestore();
+	});
+
+	it("falls back to OAuth when startup recovery re-assessment throws EBUSY", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		const assessment = {
+			backup: {
+				name: "startup-backup",
+				path: "/mock/backups/startup-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: "",
+		};
+		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
+			assessments: [assessment],
+			allAssessments: [assessment],
+			totalBackups: 1,
+		});
+		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		assessNamedBackupRestoreMock.mockRejectedValueOnce(
+			makeErrnoError("resource busy", "EBUSY"),
+		);
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		await configureSuccessfulOAuthFlow(now);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).toHaveBeenCalledTimes(2);
+		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
+			"startup-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({ accounts: [] }),
+			}),
+		);
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledWith(
+			'Failed to re-assess backup "startup-backup" before restore (EBUSY).',
+		);
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 		warnSpy.mockRestore();
 	});
 
