@@ -1311,6 +1311,7 @@ describe("storage", () => {
 			await expect(
 				restoreNamedBackup("deleted-after-assessment"),
 			).rejects.toThrow(/Import file not found/);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
 		it("throws when a named backup becomes invalid JSON after assessment", async () => {
@@ -1338,15 +1339,76 @@ describe("storage", () => {
 			await expect(
 				restoreNamedBackup("invalid-after-assessment"),
 			).rejects.toThrow(/Invalid JSON in import file/);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
 		it.each(["../openai-codex-accounts", String.raw`..\openai-codex-accounts`])(
 			"rejects backup names that escape the backups directory: %s",
 			async (input) => {
-				await expect(assessNamedBackupRestore(input)).rejects.toThrow();
-				await expect(restoreNamedBackup(input)).rejects.toThrow();
+				await expect(assessNamedBackupRestore(input)).rejects.toThrow(
+					/invalid|not allowed|escape|traversal|not found|path separators/i,
+				);
+				await expect(restoreNamedBackup(input)).rejects.toThrow(
+					/invalid|not allowed|escape|traversal|not found|path separators/i,
+				);
 			},
 		);
+
+		it("ignores symlink-like named backup entries that point outside the backups root", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const externalBackupPath = join(testWorkDir, "outside-backup.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.writeFile(
+				externalBackupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "outside-manual-backup",
+							refreshToken: "ref-outside-manual-backup",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalReaddir = fs.readdir.bind(fs);
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const escapedEntry = {
+				name: "escaped-link.json",
+				isFile: () => true,
+				isSymbolicLink: () => true,
+			} as unknown as Awaited<
+				ReturnType<typeof fs.readdir>
+			>[number];
+			readdirSpy.mockImplementation(async (...args) => {
+				const [path, options] = args;
+				if (
+					String(path) === backupRoot &&
+					typeof options === "object" &&
+					options?.withFileTypes === true
+				) {
+					return [escapedEntry] as Awaited<ReturnType<typeof fs.readdir>>;
+				}
+				return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual([]);
+				await expect(assessNamedBackupRestore("escaped-link")).rejects.toThrow(
+					/not a regular backup file/i,
+				);
+				await expect(restoreNamedBackup("escaped-link")).rejects.toThrow(
+					/not a regular backup file/i,
+				);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
 
 		it("rethrows unreadable backup directory errors while listing backups", async () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");

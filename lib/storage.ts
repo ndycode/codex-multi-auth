@@ -1803,15 +1803,21 @@ async function findExistingNamedBackupPath(
 			fs.readdir(backupRoot, { withFileTypes: true }),
 		);
 		for (const entry of entries) {
-			if (!entry.isFile() || entry.isSymbolicLink()) continue;
 			if (!entry.name.toLowerCase().endsWith(".json")) continue;
 			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
-			if (
+			const matchesRequestedEntry =
 				!equalsNamedBackupEntry(entry.name, requested) &&
 				!equalsNamedBackupEntry(entry.name, requestedWithExtension) &&
 				!equalsNamedBackupEntry(entryBaseName, requestedBaseName)
-			) {
+					? false
+					: true;
+			if (!matchesRequestedEntry) {
 				continue;
+			}
+			if (entry.isSymbolicLink() || !entry.isFile()) {
+				throw new Error(
+					`Named backup "${entryBaseName}" is not a regular backup file`,
+				);
 			}
 			return resolvePath(join(backupRoot, entry.name));
 		}
