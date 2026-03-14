@@ -165,11 +165,12 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 }
 
 let storageMutex: Promise<void> = Promise.resolve();
+const TRANSACTION_SNAPSHOT_REVISION = Symbol("transactionSnapshotRevision");
 type AccountTransactionState = {
 	snapshot: AccountStorageV3 | null;
 	active: boolean;
 	kind: "accounts" | "accounts-and-flagged";
-	pendingImportedAccounts: AccountStorageV3["accounts"];
+	revision: number;
 };
 const transactionSnapshotContext = new AsyncLocalStorage<AccountTransactionState>();
 
@@ -1911,12 +1912,16 @@ function cloneAccountStorageForPersistence(
 function syncAccountStorageSnapshot(
 	current: AccountStorageV3 | null,
 	next: AccountStorageV3,
+	revision: number,
 ): AccountStorageV3 {
-	const snapshot = cloneAccountStorageForPersistence(next);
+	const snapshot = setTransactionSnapshotRevision(
+		cloneAccountStorageForPersistence(next),
+		revision,
+	);
 	if (!current) {
 		// When the transaction started from empty storage, callers still hold a
 		// null `current` alias. Nested writes update transactionState.snapshot,
-		// but the handler must re-read from that snapshot (or use exportAccounts)
+		// so the handler must re-read from getCurrent() (or use exportAccounts)
 		// instead of expecting `current` to become non-null in place.
 		return snapshot;
 	}
@@ -1925,53 +1930,87 @@ function syncAccountStorageSnapshot(
 	current.accounts = snapshot.accounts;
 	current.activeIndex = snapshot.activeIndex;
 	current.activeIndexByFamily = snapshot.activeIndexByFamily;
+	setTransactionSnapshotRevision(current, revision);
 	return current;
 }
 
-function mergePendingImportedAccounts(
+function setTransactionSnapshotRevision(
 	storage: AccountStorageV3,
-	pendingImportedAccounts: AccountStorageV3["accounts"],
+	revision: number,
 ): AccountStorageV3 {
-	if (pendingImportedAccounts.length === 0) {
-		return cloneAccountStorageForPersistence(storage);
-	}
+	Object.defineProperty(storage, TRANSACTION_SNAPSHOT_REVISION, {
+		value: revision,
+		writable: true,
+		configurable: true,
+		enumerable: true,
+	});
+	return storage;
+}
 
+function getTransactionSnapshotRevision(
+	storage: AccountStorageV3 | null | undefined,
+): number | null {
+	if (!storage) {
+		return null;
+	}
+	const revision = (
+		storage as AccountStorageV3 & {
+			[TRANSACTION_SNAPSHOT_REVISION]?: unknown;
+		}
+	)[TRANSACTION_SNAPSHOT_REVISION];
+	return typeof revision === "number" ? revision : null;
+}
+
+function mergeStaleTransactionSnapshot(
+	latest: AccountStorageV3,
+	stale: AccountStorageV3,
+): AccountStorageV3 {
 	const merged = normalizeAccountStorage({
 		version: 3,
-		accounts: deduplicateAccounts([
-			...storage.accounts,
-			...pendingImportedAccounts,
-		]),
-		activeIndex: storage.activeIndex,
-		activeIndexByFamily: storage.activeIndexByFamily,
+		accounts: deduplicateAccounts([...latest.accounts, ...stale.accounts]),
+		activeIndex: stale.activeIndex,
+		activeIndexByFamily: stale.activeIndexByFamily,
 	});
-	return cloneAccountStorageForPersistence(merged ?? storage);
+	return cloneAccountStorageForPersistence(merged ?? stale);
 }
 
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
 		persist: (storage: AccountStorageV3) => Promise<void>,
+		getCurrent: () => AccountStorageV3 | null,
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
+		const loadedSnapshot = await loadAccountsInternal(saveAccountsUnlocked);
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			snapshot: loadedSnapshot
+				? setTransactionSnapshotRevision(loadedSnapshot, 0)
+				: null,
 			active: true,
 			kind: "accounts" as const,
-			pendingImportedAccounts: [],
+			revision: 0,
 		};
 		const current = state.snapshot;
+		const getCurrent = (): AccountStorageV3 | null => state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			const nextStorage = mergePendingImportedAccounts(
-				storage,
-				state.pendingImportedAccounts,
-			);
+			const payloadRevision = getTransactionSnapshotRevision(storage);
+			const nextStorage =
+				state.revision > 0 &&
+					state.snapshot &&
+					(payloadRevision === null || payloadRevision < state.revision)
+					? mergeStaleTransactionSnapshot(state.snapshot, storage)
+					: cloneAccountStorageForPersistence(storage);
+			state.revision += 1;
 			await saveAccountsUnlocked(nextStorage);
-			state.snapshot = syncAccountStorageSnapshot(state.snapshot, nextStorage);
+			state.snapshot = syncAccountStorageSnapshot(
+				state.snapshot,
+				nextStorage,
+				state.revision,
+			);
 		};
 		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
+			handler(current, persist, getCurrent),
 		);
 	});
 }
@@ -1983,32 +2022,44 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		) => Promise<void>,
+		getCurrent: () => AccountStorageV3 | null,
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
+		const loadedSnapshot = await loadAccountsInternal(saveAccountsUnlocked);
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			snapshot: loadedSnapshot
+				? setTransactionSnapshotRevision(loadedSnapshot, 0)
+				: null,
 			active: true,
 			kind: "accounts-and-flagged" as const,
-			pendingImportedAccounts: [],
+			revision: 0,
 		};
 		const current = state.snapshot;
+		const getCurrent = (): AccountStorageV3 | null => state.snapshot;
 		const persist = async (
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
+			state.revision += 1;
 			await saveAccountsUnlocked(nextAccounts);
 			try {
 				await saveFlaggedAccountsUnlocked(flaggedStorage);
-				state.snapshot = syncAccountStorageSnapshot(state.snapshot, nextAccounts);
+				state.snapshot = syncAccountStorageSnapshot(
+					state.snapshot,
+					nextAccounts,
+					state.revision,
+				);
 			} catch (error) {
 				try {
 					await saveAccountsUnlocked(previousAccounts);
+					state.revision += 1;
 					state.snapshot = syncAccountStorageSnapshot(
 						state.snapshot,
 						previousAccounts,
+						state.revision,
 					);
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
@@ -2028,7 +2079,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			}
 		};
 		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
+			handler(current, persist, getCurrent),
 		);
 	});
 }
@@ -2398,6 +2449,12 @@ export async function exportAccounts(
 	// POSIX honors 0o600 for plaintext token exports. Windows ignores mode bits
 	// here and falls back to the destination directory's inherited ACLs instead.
 	await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
+	if (process.platform === "win32") {
+		log.warn(
+			"Exported token file permissions rely on directory ACL inheritance on Windows; ensure the destination folder is not world-readable.",
+			{ path: resolvedPath },
+		);
+	}
 	log.info("Exported accounts", {
 		path: resolvedPath,
 		count: storage.accounts.length,
@@ -2483,19 +2540,19 @@ export async function importAccounts(
 
 		if (transactionState?.active) {
 			// Nested imports write immediately to avoid re-entering the storage
-			// mutex. Record the imported accounts so a later outer persist() keeps
-			// them even if its payload was captured before importAccounts() ran.
+			// mutex. Later persist() calls compare the payload's snapshot revision
+			// against the live transaction state so stale payloads keep these
+			// imported accounts, while payloads built from getCurrent() can still
+			// intentionally remove them.
 			return applyImport(transactionState.snapshot, async (storage) => {
 				const nextStorage = cloneAccountStorageForPersistence(storage);
+				transactionState.revision += 1;
 				await saveAccountsUnlocked(nextStorage);
 				transactionState.snapshot = syncAccountStorageSnapshot(
 					transactionState.snapshot,
 					nextStorage,
+					transactionState.revision,
 				);
-				transactionState.pendingImportedAccounts = deduplicateAccounts([
-					...transactionState.pendingImportedAccounts,
-					...normalized.accounts,
-				]);
 			});
 		}
 

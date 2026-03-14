@@ -753,7 +753,80 @@ describe("storage", () => {
 			);
 		});
 
-		it("preserves imported accounts when the transaction starts from a null snapshot", async () => {
+		it("allows a live transaction payload to intentionally remove imported accounts", async () => {
+			const importPath = join(testWorkDir, "nested-import-live-removal.json");
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-imported",
+							email: "imported@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: now - 1_000,
+							lastUsed: now - 1_000,
+						},
+					],
+				}),
+			);
+
+			await withAccountStorageTransaction(async (current, persist, getCurrent) => {
+				if (!current) {
+					throw new Error("expected existing account storage");
+				}
+
+				await importAccounts(importPath);
+				const liveCurrent = getCurrent();
+				if (!liveCurrent) {
+					throw new Error("expected live transaction snapshot");
+				}
+
+				await persist({
+					...liveCurrent,
+					accounts: liveCurrent.accounts.filter(
+						(account) => account.accountId !== "acct-imported",
+					),
+				});
+			});
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+				]),
+			);
+			expect(loaded?.accounts).not.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-imported",
+						refreshToken: "refresh-imported",
+					}),
+				]),
+			);
+		});
+
+		it("exposes the live snapshot after a nested import when the transaction starts from a null snapshot", async () => {
 			const importPath = join(testWorkDir, "nested-import-null-start.json");
 			const storagePath = getStoragePath();
 			const now = Date.now();
@@ -778,36 +851,29 @@ describe("storage", () => {
 				}),
 			);
 
-			await withAccountStorageTransaction(async (current, persist) => {
+			await withAccountStorageTransaction(async (current, persist, getCurrent) => {
 				expect(current).toBeNull();
 
 				await importAccounts(importPath);
+				const liveCurrent = getCurrent();
+				if (!liveCurrent) {
+					throw new Error("expected live transaction snapshot");
+				}
+
 				await persist({
-					version: 3,
-					activeIndex: 0,
-					activeIndexByFamily: { codex: 0 },
-					accounts: [
-						{
-							accountId: "acct-appended",
-							email: "appended@example.com",
-							refreshToken: "refresh-appended",
-							addedAt: now,
-							lastUsed: now,
-						},
-					],
+					...liveCurrent,
+					accounts: liveCurrent.accounts.filter(
+						(account) => account.accountId !== "acct-imported",
+					),
 				});
 			});
 
 			const loaded = await loadAccounts();
-			expect(loaded?.accounts).toEqual(
+			expect(loaded?.accounts).not.toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
 						accountId: "acct-imported",
 						refreshToken: "refresh-imported",
-					}),
-					expect.objectContaining({
-						accountId: "acct-appended",
-						refreshToken: "refresh-appended",
 					}),
 				]),
 			);
@@ -909,7 +975,7 @@ describe("storage", () => {
 						);
 					}),
 				).rejects.toThrow("flagged storage busy");
-				expect(flaggedRenameAttempts).toBe(5);
+				expect(flaggedRenameAttempts).toBe(5); // matches BACKUP_COPY_MAX_ATTEMPTS in storage.ts
 			} finally {
 				renameSpy.mockRestore();
 			}
@@ -1196,7 +1262,7 @@ describe("storage", () => {
 						);
 					}),
 				).rejects.toThrow("flagged storage busy");
-				expect(flaggedRenameAttempts).toBe(5);
+				expect(flaggedRenameAttempts).toBe(5); // matches BACKUP_COPY_MAX_ATTEMPTS in storage.ts
 			} finally {
 				renameSpy.mockRestore();
 			}
@@ -1325,7 +1391,7 @@ describe("storage", () => {
 					thrown = error;
 				}
 
-				expect(flaggedRenameAttempts).toBe(5);
+				expect(flaggedRenameAttempts).toBe(5); // matches BACKUP_COPY_MAX_ATTEMPTS in storage.ts
 				expect(accountRenameAttempts).toBe(6);
 				expect(thrown).toBeInstanceOf(AggregateError);
 				expect((thrown as AggregateError).message).toBe(
