@@ -1804,12 +1804,14 @@ async function findExistingNamedBackupPath(
 		}
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to read named backup directory", {
-				path: backupRoot,
-				error: String(error),
-			});
+		if (code === "ENOENT") {
+			return undefined;
 		}
+		log.warn("Failed to read named backup directory", {
+			path: backupRoot,
+			error: String(error),
+		});
+		throw error;
 	}
 
 	return undefined;
