@@ -442,7 +442,9 @@ describe("Documentation Integrity", () => {
 		// must stay pinned to a full SHA to avoid supply-chain drift via mutable tags.
 		expect(antiSlop).toMatch(/uses:\s*peakoss\/anti-slop@[a-f0-9]{40}\b/i);
 		expect(antiSlop).toContain("pull_request_target:");
-		expect(antiSlop).toContain("types: [opened, reopened, ready_for_review]");
+		expect(antiSlop).toContain(
+			"types: [opened, synchronize, reopened, ready_for_review]",
+		);
 		expect(antiSlop).toContain("github-token: ${{ github.token }}");
 		expect(antiSlop).toContain("require-pr-template: true");
 		expect(antiSlop).toContain("strict-pr-template-sections: Validation");

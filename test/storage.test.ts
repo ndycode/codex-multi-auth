@@ -448,6 +448,10 @@ describe("storage", () => {
 			expect(postPersistExport.accounts).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+					expect.objectContaining({
 						accountId: "acct-exported",
 						refreshToken: "refresh-exported",
 					}),
