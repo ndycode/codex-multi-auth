@@ -60,7 +60,7 @@ import {
 	importAccounts,
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
-	NAMED_BACKUP_LIST_CONCURRENCY,
+	NAMED_BACKUP_ASSESS_CONCURRENCY,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -4242,9 +4242,9 @@ async function runBackupRestoreManager(
 	for (
 		let index = 0;
 		index < backups.length;
-		index += NAMED_BACKUP_LIST_CONCURRENCY
+		index += NAMED_BACKUP_ASSESS_CONCURRENCY
 	) {
-		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
+		const chunk = backups.slice(index, index + NAMED_BACKUP_ASSESS_CONCURRENCY);
 		const settledAssessments = await Promise.allSettled(
 			chunk.map((backup) =>
 				assessNamedBackupRestore(backup.name, { currentStorage }),
@@ -4348,6 +4348,10 @@ async function runBackupRestoreManager(
 
 	try {
 		const result = await importAccounts(latestAssessment.backup.path);
+		if (result.imported === 0) {
+			console.log("All accounts in this backup already exist");
+			return;
+		}
 		console.log(
 			UI_COPY.mainMenu.restoreBackupSuccess(
 				latestAssessment.backup.name,

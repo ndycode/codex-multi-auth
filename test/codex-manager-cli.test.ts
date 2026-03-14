@@ -2618,6 +2618,79 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("treats post-confirm duplicate-only restores as a no-op", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		importAccountsMock.mockResolvedValueOnce({
+			imported: 0,
+			skipped: 1,
+			total: 1,
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(importAccountsMock).toHaveBeenCalledWith(
+				"/mock/backups/named-backup.json",
+			);
+			expect(logSpy).toHaveBeenCalledWith(
+				"All accounts in this backup already exist",
+			);
+			expect(logSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining('Restored backup "named-backup"'),
+			);
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
 	it("catches backup listing failures and returns to the login menu", async () => {
 		setInteractiveTTY(true);
 		listNamedBackupsMock.mockRejectedValueOnce(
@@ -2721,11 +2794,11 @@ describe("codex manager cli commands", () => {
 	it("limits concurrent backup assessments in the restore menu", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);
-		const { NAMED_BACKUP_LIST_CONCURRENCY } =
+		const { NAMED_BACKUP_ASSESS_CONCURRENCY } =
 			await vi.importActual<typeof import("../lib/storage.js")>(
 				"../lib/storage.js",
 			);
-		const totalBackups = NAMED_BACKUP_LIST_CONCURRENCY + 3;
+		const totalBackups = NAMED_BACKUP_ASSESS_CONCURRENCY + 3;
 		const backups = Array.from({ length: totalBackups }, (_value, index) => ({
 			name: `named-backup-${index + 1}`,
 			path: `/mock/backups/named-backup-${index + 1}.json`,
@@ -2791,7 +2864,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(backups.length);
 		expect(maxInFlight).toBeLessThanOrEqual(
-			NAMED_BACKUP_LIST_CONCURRENCY,
+			NAMED_BACKUP_ASSESS_CONCURRENCY,
 		);
 	});
 
@@ -3102,6 +3175,100 @@ describe("codex manager cli commands", () => {
 		const backupItems = selectMock.mock.calls[0]?.[0];
 		expect(backupItems?.[0]?.hint).toContain("1 account");
 		expect(backupItems?.[0]?.hint).not.toContain("updated ");
+	});
+
+	it("formats recent backup timestamps in restore hints", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const now = Date.UTC(2026, 0, 10, 12, 0, 0);
+		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+		const backups = [
+			{
+				name: "today-backup",
+				path: "/mock/backups/today-backup.json",
+				createdAt: null,
+				updatedAt: now - 1_000,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			{
+				name: "yesterday-backup",
+				path: "/mock/backups/yesterday-backup.json",
+				createdAt: null,
+				updatedAt: now - 1.5 * 86_400_000,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			{
+				name: "three-days-backup",
+				path: "/mock/backups/three-days-backup.json",
+				createdAt: null,
+				updatedAt: now - 3 * 86_400_000,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			{
+				name: "older-backup",
+				path: "/mock/backups/older-backup.json",
+				createdAt: null,
+				updatedAt: now - 8 * 86_400_000,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		];
+		const assessmentsByName = new Map(
+			backups.map((backup) => [
+				backup.name,
+				{
+					backup,
+					currentAccountCount: 0,
+					mergedAccountCount: 1,
+					imported: 1,
+					skipped: 0,
+					wouldExceedLimit: false,
+					eligibleForRestore: true,
+					error: undefined,
+				},
+			]),
+		);
+		listNamedBackupsMock.mockResolvedValue(backups);
+		assessNamedBackupRestoreMock.mockImplementation(async (name: string) => {
+			return assessmentsByName.get(name) ?? assessmentsByName.get(backups[0].name)!;
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({ type: "back" });
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			const backupItems = selectMock.mock.calls[0]?.[0];
+			expect(backupItems?.[0]?.hint).toContain("updated today");
+			expect(backupItems?.[1]?.hint).toContain("updated yesterday");
+			expect(backupItems?.[2]?.hint).toContain("updated 3d ago");
+			expect(backupItems?.[3]?.hint).toContain("updated ");
+		} finally {
+			nowSpy.mockRestore();
+		}
 	});
 
 	it("suppresses invalid backup timestamps in restore hints", async () => {

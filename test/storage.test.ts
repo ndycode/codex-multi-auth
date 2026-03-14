@@ -434,6 +434,33 @@ describe("storage", () => {
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
 		});
 
+		it("should skip persisting duplicate-only imports", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			const existing = {
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			};
+			await saveAccounts(existing);
+			await fs.writeFile(exportPath, JSON.stringify(existing));
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({ imported: 0, skipped: 1, total: 1 });
+				expect(writeFileSpy).not.toHaveBeenCalled();
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+		});
+
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			const existing = {
@@ -1844,6 +1871,57 @@ describe("storage", () => {
 					]),
 				);
 				expect(busyFailures).toBe(1);
+			} finally {
+				statSpy.mockRestore();
+			}
+		});
+
+		it("sorts backups with invalid timestamps after finite timestamps", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "valid-backup",
+						refreshToken: "ref-valid-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const validBackup = await createNamedBackup("valid-backup");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "nan-backup",
+						refreshToken: "ref-nan-backup",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			const nanBackup = await createNamedBackup("nan-backup");
+			const originalStat = fs.stat.bind(fs);
+			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+				const [path] = args;
+				const stats = await originalStat(...(args as Parameters<typeof fs.stat>));
+				if (String(path) === nanBackup.path) {
+					return {
+						...stats,
+						mtimeMs: Number.NaN,
+					} as Awaited<ReturnType<typeof fs.stat>>;
+				}
+				return stats;
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups.map((backup) => backup.name)).toEqual([
+					validBackup.name,
+					nanBackup.name,
+				]);
 			} finally {
 				statSpy.mockRestore();
 			}

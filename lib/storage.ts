@@ -47,7 +47,11 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
-export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
+const NAMED_BACKUP_PARALLELISM = 8;
+export const NAMED_BACKUP_LIST_CONCURRENCY = NAMED_BACKUP_PARALLELISM;
+// Keep assessment fan-out on the same ceiling unless both call sites are retuned
+// together, since each assessment performs multiple filesystem operations.
+export const NAMED_BACKUP_ASSESS_CONCURRENCY = NAMED_BACKUP_PARALLELISM;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -1611,7 +1615,11 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 				)),
 			);
 		}
-		return backups.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+		return backups.sort((left, right) => {
+			const leftTime = Number.isFinite(left.updatedAt) ? left.updatedAt : 0;
+			const rightTime = Number.isFinite(right.updatedAt) ? right.updatedAt : 0;
+			return rightTime - leftTime;
+		});
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
@@ -1892,6 +1900,10 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 		return assertNamedBackupRestorePath(buildNamedBackupPath(name), backupRoot);
 	} catch (error) {
 		const baseName = requestedWithExtension.slice(0, -".json".length);
+		// buildNamedBackupPath rejects names with special characters even when the
+		// requested backup name is a plain filename inside the backups directory.
+		// In that case, reporting ENOENT is clearer than surfacing the filename
+		// validator, but only when no separator/traversal token is present.
 		if (
 			requested.length > 0 &&
 			basename(requestedWithExtension) === requestedWithExtension &&
@@ -2807,6 +2819,12 @@ export async function importAccounts(
 		}
 
 		const deduplicatedAccounts = deduplicateAccounts(merged);
+		const imported = deduplicatedAccounts.length - existingAccounts.length;
+		const skipped = normalized.accounts.length - imported;
+
+		if (imported === 0) {
+			return { imported, total: deduplicatedAccounts.length, skipped };
+		}
 
 		const newStorage: AccountStorageV3 = {
 			version: 3,
@@ -2816,9 +2834,6 @@ export async function importAccounts(
 		};
 
 		await persist(newStorage);
-
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
 		return { imported, total: deduplicatedAccounts.length, skipped };
 	});
 
