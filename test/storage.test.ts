@@ -1246,6 +1246,46 @@ describe("storage", () => {
 			expect(restoreResult.total).toBe(1);
 		});
 
+		it("restores manually named backups with uppercase JSON extensions", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Manual Backup.JSON",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "manual-uppercase",
+							refreshToken: "ref-manual-uppercase",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const backups = await listNamedBackups();
+			expect(backups).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "Manual Backup", valid: true }),
+				]),
+			);
+
+			await clearAccounts();
+			const assessment = await assessNamedBackupRestore("Manual Backup");
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.backup.name).toBe("Manual Backup");
+
+			const restoreResult = await restoreNamedBackup("Manual Backup");
+			expect(restoreResult.total).toBe(1);
+		});
+
 		it("throws when a named backup is deleted after assessment", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1266,7 +1306,7 @@ describe("storage", () => {
 			const assessment = await assessNamedBackupRestore("deleted-after-assessment");
 			expect(assessment.eligibleForRestore).toBe(true);
 
-			await fs.unlink(backup.path);
+			await removeWithRetry(backup.path, { force: true });
 
 			await expect(
 				restoreNamedBackup("deleted-after-assessment"),

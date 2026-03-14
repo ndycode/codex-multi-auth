@@ -2611,6 +2611,38 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("catches backup listing failures and returns to the login menu", async () => {
+		setInteractiveTTY(true);
+		listNamedBackupsMock.mockRejectedValueOnce(
+			makeErrnoError(
+				"EPERM: operation not permitted, scandir '/mock/backups'",
+				"EPERM",
+			),
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
+			expect(selectMock).not.toHaveBeenCalled();
+			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"Could not read backup directory: EPERM: operation not permitted",
+				),
+			);
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("keeps healthy backups selectable when one assessment fails", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);

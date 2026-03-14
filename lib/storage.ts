@@ -1600,13 +1600,13 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 			backups.push(
 				...(await Promise.all(
 					chunk.map(async (entry) => {
-					const path = resolvePath(join(backupRoot, entry.name));
-					const candidate = await loadBackupCandidate(path);
-					return buildNamedBackupMetadata(
-						entry.name.slice(0, -".json".length),
-						path,
-						{ candidate },
-					);
+						const path = resolvePath(join(backupRoot, entry.name));
+						const candidate = await loadBackupCandidate(path);
+						return buildNamedBackupMetadata(
+							entry.name.slice(0, -".json".length),
+							path,
+							{ candidate },
+						);
 					}),
 				)),
 			);
@@ -1778,6 +1778,12 @@ function equalsNamedBackupEntry(left: string, right: string): boolean {
 		: left === right;
 }
 
+function stripNamedBackupJsonExtension(name: string): string {
+	return name.toLowerCase().endsWith(".json")
+		? name.slice(0, -".json".length)
+		: name;
+}
+
 async function findExistingNamedBackupPath(
 	name: string,
 ): Promise<string | undefined> {
@@ -1790,6 +1796,7 @@ async function findExistingNamedBackupPath(
 	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
 		? requested
 		: `${requested}.json`;
+	const requestedBaseName = stripNamedBackupJsonExtension(requestedWithExtension);
 
 	try {
 		const entries = await retryTransientFilesystemOperation(() =>
@@ -1798,9 +1805,11 @@ async function findExistingNamedBackupPath(
 		for (const entry of entries) {
 			if (!entry.isFile() || entry.isSymbolicLink()) continue;
 			if (!entry.name.toLowerCase().endsWith(".json")) continue;
+			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
 			if (
 				!equalsNamedBackupEntry(entry.name, requested) &&
-				!equalsNamedBackupEntry(entry.name, requestedWithExtension)
+				!equalsNamedBackupEntry(entry.name, requestedWithExtension) &&
+				!equalsNamedBackupEntry(entryBaseName, requestedBaseName)
 			) {
 				continue;
 			}

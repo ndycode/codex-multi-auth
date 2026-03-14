@@ -4207,7 +4207,18 @@ async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
 ): Promise<void> {
 	const backupDir = getNamedBackupsDirectoryPath();
-	const backups = await listNamedBackups();
+	let backups;
+	try {
+		backups = await listNamedBackups();
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(
+			`Could not read backup directory: ${
+				collapseWhitespace(message) || "unknown error"
+			}`,
+		);
+		return;
+	}
 	if (backups.length === 0) {
 		console.log(`No named backups found. Place backup files in ${backupDir}.`);
 		return;
