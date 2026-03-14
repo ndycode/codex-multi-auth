@@ -144,6 +144,15 @@ export interface BackupRestoreAssessment {
 	error?: string;
 }
 
+type LoadedBackupCandidate = {
+	normalized: AccountStorageV3 | null;
+	storedVersion: unknown;
+	schemaErrors: string[];
+	error?: string;
+};
+
+const namedBackupCandidateCache = new Map<string, LoadedBackupCandidate>();
+
 /**
  * Custom error class for storage operations with platform-aware hints.
  */
@@ -1585,6 +1594,7 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
+		namedBackupCandidateCache.clear();
 		const entries = await retryTransientFilesystemOperation(() =>
 			fs.readdir(backupRoot, { withFileTypes: true }),
 		);
@@ -1606,6 +1616,7 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 					chunk.map(async (entry) => {
 						const path = resolvePath(join(backupRoot, entry.name));
 						const candidate = await loadBackupCandidate(path);
+						namedBackupCandidateCache.set(path, candidate);
 						return buildNamedBackupMetadata(
 							entry.name.slice(0, -".json".length),
 							path,
@@ -1703,7 +1714,9 @@ export async function assessNamedBackupRestore(
 	options: { currentStorage?: AccountStorageV3 | null } = {},
 ): Promise<BackupRestoreAssessment> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
-	const candidate = await loadBackupCandidate(backupPath);
+	const candidate =
+		namedBackupCandidateCache.get(backupPath) ?? (await loadBackupCandidate(backupPath));
+	namedBackupCandidateCache.delete(backupPath);
 	const backup = await buildNamedBackupMetadata(
 		basename(backupPath).slice(0, -".json".length),
 		backupPath,
@@ -1838,12 +1851,7 @@ async function loadAccountsFromPath(path: string): Promise<{
 	return parseAndNormalizeStorage(data);
 }
 
-async function loadBackupCandidate(path: string): Promise<{
-	normalized: AccountStorageV3 | null;
-	storedVersion: unknown;
-	schemaErrors: string[];
-	error?: string;
-}> {
+async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate> {
 	try {
 		return await retryTransientFilesystemOperation(() =>
 			loadAccountsFromPath(path),

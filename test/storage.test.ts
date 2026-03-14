@@ -2153,6 +2153,42 @@ describe("storage", () => {
 			}
 		});
 
+		it("reuses freshly listed backup candidates for the first restore assessment", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "cached-backup",
+						refreshToken: "ref-cached-backup",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			const backup = await createNamedBackup("cached-backup");
+			const readFileSpy = vi.spyOn(fs, "readFile");
+
+			try {
+				await listNamedBackups();
+				await assessNamedBackupRestore("cached-backup", { currentStorage: null });
+
+				const firstPassReads = readFileSpy.mock.calls.filter(
+					([path]) => path === backup.path,
+				);
+				expect(firstPassReads).toHaveLength(1);
+
+				await assessNamedBackupRestore("cached-backup", { currentStorage: null });
+
+				const secondPassReads = readFileSpy.mock.calls.filter(
+					([path]) => path === backup.path,
+				);
+				expect(secondPassReads).toHaveLength(2);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
 		it("limits concurrent backup reads while listing backups", async () => {
 			const backupPaths: string[] = [];
 			const totalBackups = NAMED_BACKUP_LIST_CONCURRENCY + 4;
