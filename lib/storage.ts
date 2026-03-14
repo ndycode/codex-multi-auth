@@ -152,13 +152,6 @@ type LoadedBackupCandidate = {
 
 type NamedBackupCandidateCache = Map<string, unknown>;
 
-function getNamedBackupCandidateCache(
-	candidateCache: Map<string, unknown> | undefined,
-): NamedBackupCandidateCache | undefined {
-	if (!candidateCache) return undefined;
-	return candidateCache;
-}
-
 function isLoadedBackupCandidate(
 	candidate: unknown,
 ): candidate is LoadedBackupCandidate {
@@ -1638,7 +1631,7 @@ export async function listNamedBackups(
 	options: { candidateCache?: Map<string, unknown> } = {},
 ): Promise<NamedBackupMetadata[]> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
-	const candidateCache = getNamedBackupCandidateCache(options.candidateCache);
+	const candidateCache = options.candidateCache;
 	try {
 		const entries = await retryTransientFilesystemOperation(() =>
 			fs.readdir(backupRoot, { withFileTypes: true }),
@@ -1773,7 +1766,7 @@ export async function assessNamedBackupRestore(
 	} = {},
 ): Promise<BackupRestoreAssessment> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
-	const candidateCache = getNamedBackupCandidateCache(options.candidateCache);
+	const candidateCache = options.candidateCache;
 	const candidate =
 		getCachedNamedBackupCandidate(candidateCache, backupPath) ??
 		(await loadBackupCandidate(backupPath));
