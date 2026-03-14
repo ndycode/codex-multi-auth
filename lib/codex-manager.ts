@@ -134,7 +134,7 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 function formatRelativeDateShort(
 	timestamp: number | null | undefined,
 ): string | null {
-	if (timestamp == null) return null;
+	if (timestamp === null || timestamp === undefined) return null;
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
 	if (days <= 0) return "today";
 	if (days === 1) return "yesterday";
@@ -4207,7 +4207,7 @@ async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
 ): Promise<void> {
 	const backupDir = getNamedBackupsDirectoryPath();
-	let backups;
+	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
 	try {
 		backups = await listNamedBackups();
 	} catch (error) {
@@ -4304,10 +4304,19 @@ async function runBackupRestoreManager(
 		return;
 	}
 
-	const latestAssessment = await assessNamedBackupRestore(
-		selection.assessment.backup.name,
-		{ currentStorage: await loadAccounts() },
-	);
+	let latestAssessment: Awaited<ReturnType<typeof assessNamedBackupRestore>>;
+	try {
+		latestAssessment = await assessNamedBackupRestore(
+			selection.assessment.backup.name,
+			{ currentStorage: await loadAccounts() },
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(
+			`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
+		);
+		return;
+	}
 	if (!latestAssessment.eligibleForRestore) {
 		console.log(latestAssessment.error ?? "Backup is not eligible for restore.");
 		return;

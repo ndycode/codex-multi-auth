@@ -1346,10 +1346,10 @@ describe("storage", () => {
 			"rejects backup names that escape the backups directory: %s",
 			async (input) => {
 				await expect(assessNamedBackupRestore(input)).rejects.toThrow(
-					/invalid|not allowed|escape|traversal|not found|path separators/i,
+					/must not contain path separators/i,
 				);
 				await expect(restoreNamedBackup(input)).rejects.toThrow(
-					/invalid|not allowed|escape|traversal|not found|path separators/i,
+					/must not contain path separators/i,
 				);
 			},
 		);

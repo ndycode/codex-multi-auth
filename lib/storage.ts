@@ -1806,11 +1806,9 @@ async function findExistingNamedBackupPath(
 			if (!entry.name.toLowerCase().endsWith(".json")) continue;
 			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
 			const matchesRequestedEntry =
-				!equalsNamedBackupEntry(entry.name, requested) &&
-				!equalsNamedBackupEntry(entry.name, requestedWithExtension) &&
-				!equalsNamedBackupEntry(entryBaseName, requestedBaseName)
-					? false
-					: true;
+				equalsNamedBackupEntry(entry.name, requested) ||
+				equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
+				equalsNamedBackupEntry(entryBaseName, requestedBaseName);
 			if (!matchesRequestedEntry) {
 				continue;
 			}
