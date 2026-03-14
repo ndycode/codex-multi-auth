@@ -4221,13 +4221,27 @@ async function runBackupRestoreManager(
 		index += NAMED_BACKUP_LIST_CONCURRENCY
 	) {
 		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
-		assessments.push(
-			...(await Promise.all(
-				chunk.map((backup) =>
-					assessNamedBackupRestore(backup.name, { currentStorage }),
-				),
-			)),
+		const settledAssessments = await Promise.allSettled(
+			chunk.map((backup) =>
+				assessNamedBackupRestore(backup.name, { currentStorage }),
+			),
 		);
+		for (const [resultIndex, result] of settledAssessments.entries()) {
+			if (result.status === "fulfilled") {
+				assessments.push(result.value);
+				continue;
+			}
+			const backupName = chunk[resultIndex]?.name ?? "unknown";
+			const reason =
+				result.reason instanceof Error
+					? result.reason.message
+					: String(result.reason);
+			console.warn(
+				`Skipped backup assessment for "${backupName}": ${
+					collapseWhitespace(reason) || "unknown error"
+				}`,
+			);
+		}
 	}
 
 	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {

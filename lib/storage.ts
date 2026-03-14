@@ -1581,7 +1581,9 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
-		const entries = await fs.readdir(backupRoot, { withFileTypes: true });
+		const entries = await retryTransientFilesystemOperation(() =>
+			fs.readdir(backupRoot, { withFileTypes: true }),
+		);
 		const backupEntries = entries
 			.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
 			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
@@ -1790,7 +1792,9 @@ async function findExistingNamedBackupPath(
 		: `${requested}.json`;
 
 	try {
-		const entries = await fs.readdir(backupRoot, { withFileTypes: true });
+		const entries = await retryTransientFilesystemOperation(() =>
+			fs.readdir(backupRoot, { withFileTypes: true }),
+		);
 		for (const entry of entries) {
 			if (!entry.isFile() || entry.isSymbolicLink()) continue;
 			if (!entry.name.toLowerCase().endsWith(".json")) continue;

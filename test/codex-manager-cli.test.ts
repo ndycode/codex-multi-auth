@@ -2596,6 +2596,7 @@ describe("codex manager cli commands", () => {
 			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 			expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
 			const restoreFailureCalls = [
 				...errorSpy.mock.calls,
@@ -2607,6 +2608,72 @@ describe("codex manager cli commands", () => {
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();
+		}
+	});
+
+	it("keeps healthy backups selectable when one assessment fails", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const now = Date.now();
+		const healthyAssessment = {
+			backup: {
+				name: "healthy-backup",
+				path: "/mock/backups/healthy-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([
+			{
+				...healthyAssessment.backup,
+				name: "broken-backup",
+				path: "/mock/backups/broken-backup.json",
+			},
+			healthyAssessment.backup,
+		]);
+		assessNamedBackupRestoreMock.mockImplementation(async (name: string) => {
+			if (name === "broken-backup") {
+				throw new Error("backup directory busy");
+			}
+			return healthyAssessment;
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockImplementationOnce(async (items) => {
+			const labels = items.map((item) => item.label);
+			expect(labels).toContain("healthy-backup");
+			expect(labels).not.toContain("broken-backup");
+			return { type: "restore", assessment: healthyAssessment };
+		});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(restoreNamedBackupMock).toHaveBeenCalledWith("healthy-backup");
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					'Skipped backup assessment for "broken-backup": backup directory busy',
+				),
+			);
+		} finally {
+			warnSpy.mockRestore();
 		}
 	});
 

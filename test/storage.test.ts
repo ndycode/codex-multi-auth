@@ -19,6 +19,7 @@ import {
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getFlaggedAccountsPath,
+	NAMED_BACKUP_LIST_CONCURRENCY,
 	getStoragePath,
 	importAccounts,
 	listNamedBackups,
@@ -1311,7 +1312,7 @@ describe("storage", () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
-			readdirSpy.mockRejectedValueOnce(error);
+			readdirSpy.mockRejectedValue(error);
 
 			try {
 				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
@@ -1324,12 +1325,99 @@ describe("storage", () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
-			readdirSpy.mockRejectedValueOnce(error);
+			readdirSpy.mockRejectedValue(error);
 
 			try {
 				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
 					code: "EPERM",
 				});
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup directory errors while listing backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list-dir",
+						refreshToken: "ref-retry-list-dir",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-list-dir");
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory busy",
+						) as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ name: "retry-list-dir", valid: true }),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup directory errors while restoring backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-restore-dir",
+						refreshToken: "ref-retry-restore-dir",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-restore-dir");
+			await clearAccounts();
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory busy",
+						) as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const result = await restoreNamedBackup("retry-restore-dir");
+				expect(result.total).toBe(1);
+				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
 			}
@@ -1497,7 +1585,9 @@ describe("storage", () => {
 			try {
 				const backups = await listNamedBackups();
 				expect(backups).toHaveLength(12);
-				expect(peakReads).toBeLessThanOrEqual(8);
+				expect(peakReads).toBeLessThanOrEqual(
+					NAMED_BACKUP_LIST_CONCURRENCY,
+				);
 			} finally {
 				readFileSpy.mockRestore();
 			}
