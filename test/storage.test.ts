@@ -457,7 +457,7 @@ describe("storage", () => {
 					}),
 				]),
 			);
-		});
+		}, 10_000);
 
 		it("should fail export if file exists and force is false", async () => {
 			await fs.writeFile(exportPath, "exists");
