@@ -310,6 +310,8 @@ describe("codex-cli sync", () => {
 			activeIndexByFamily: { codex: 1 },
 		};
 
+		const snapshot = JSON.parse(JSON.stringify(current)) as AccountStorageV3;
+
 		const preview = await previewCodexCliSync(current, {
 			forceRefresh: true,
 			storageBackupEnabled: true,
@@ -329,7 +331,7 @@ describe("codex-cli sync", () => {
 		expect(serializedPreview).not.toContain("refresh-a");
 		expect(serializedPreview).not.toContain("access-c");
 		expect(serializedPreview).not.toContain("refresh-c");
-		expect(current.accounts).toHaveLength(2);
+		expect(current).toEqual(snapshot);
 	});
 
 	it("skips ambiguous duplicate-email source matches instead of overwriting a local account", async () => {

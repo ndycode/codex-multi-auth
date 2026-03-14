@@ -573,6 +573,50 @@ describe("settings-hub utility coverage", () => {
 		}
 	});
 
+	it("retries sync-center preview loading when loadCodexCliState returns 429 once", async () => {
+		const api = await loadSettingsHubTestApi();
+		const storageModule = await import("../lib/storage.js");
+		const codexCliState = await import("../lib/codex-cli/state.js");
+		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+		const retryAfterMs = 1;
+		let loadStateAttempts = 0;
+		const loadStateSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockImplementation(async () => {
+				loadStateAttempts += 1;
+				if (loadStateAttempts === 1) {
+					const error = new Error("rate limited") as Error & {
+						status: number;
+						retryAfterMs: number;
+					};
+					error.status = 429;
+					error.retryAfterMs = retryAfterMs;
+					throw error;
+				}
+				return {
+					path: "/tmp/source/accounts.json",
+					accounts: [],
+				};
+			});
+
+		queueSelectResults({ type: "back" });
+
+		try {
+			await api.promptSyncCenter({});
+
+			expect(loadStateSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			loadAccountsSpy.mockRestore();
+			loadStateSpy.mockRestore();
+		}
+	});
+
 	it("propagates non-retryable filesystem errors immediately", async () => {
 		const api = await loadSettingsHubTestApi();
 		let attempts = 0;

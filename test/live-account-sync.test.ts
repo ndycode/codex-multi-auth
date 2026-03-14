@@ -152,6 +152,42 @@ describe("live-account-sync", () => {
 		);
 	});
 
+	it("falls back to the still-running older watcher when a newer watcher stops", async () => {
+		const secondStoragePath = join(workDir, "openai-codex-accounts-tertiary.json");
+		await fs.writeFile(
+			secondStoragePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+		const first = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+		const second = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+
+		await first.syncToPath(storagePath);
+		await second.syncToPath(secondStoragePath);
+
+		second.stop();
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: storagePath,
+				running: true,
+			}),
+		);
+
+		first.stop();
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: secondStoragePath,
+				running: false,
+			}),
+		);
+	});
+
 	it("reloads when file changes are detected by polling", async () => {
 		const reload = vi.fn(async () => undefined);
 		const sync = new LiveAccountSync(reload, {
@@ -339,6 +375,7 @@ describe("live-account-sync", () => {
 		const firstReloadStarted = createDeferred<void>();
 		const firstReloadFinished = createDeferred<void>();
 		const secondReloadStarted = createDeferred<void>();
+		const secondReloadFinished = createDeferred<void>();
 		const seenPaths: string[] = [];
 		let reloadCall = 0;
 		let sync: LiveAccountSync;
@@ -353,6 +390,7 @@ describe("live-account-sync", () => {
 				return;
 			}
 			secondReloadStarted.resolve(undefined);
+			await secondReloadFinished.promise;
 		});
 
 		sync = new LiveAccountSync(reload, {
@@ -381,6 +419,16 @@ describe("live-account-sync", () => {
 
 		firstReloadFinished.resolve(undefined);
 		await secondReloadStarted.promise;
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: secondStoragePath,
+				running: true,
+				reloadCount: 0,
+				errorCount: 0,
+			}),
+		);
+
+		secondReloadFinished.resolve(undefined);
 		await Promise.all([first, second]);
 
 		expect(seenPaths).toEqual([storagePath, secondStoragePath]);

@@ -30,8 +30,33 @@ const EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT: LiveAccountSyncSnapshot = {
 let lastLiveAccountSyncSnapshot: LiveAccountSyncSnapshot = {
 	...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT,
 };
-let lastLiveAccountSyncSnapshotInstanceId = 0;
+const activeLiveAccountSyncSnapshots = new Map<number, LiveAccountSyncSnapshot>();
+let lastStoppedLiveAccountSyncSnapshot:
+	| { instanceId: number; snapshot: LiveAccountSyncSnapshot }
+	| null = null;
 let nextLiveAccountSyncInstanceId = 0;
+
+function refreshLastLiveAccountSyncSnapshot(): void {
+	let latestActiveInstanceId = -1;
+	let latestActiveSnapshot: LiveAccountSyncSnapshot | null = null;
+	for (const [instanceId, snapshot] of activeLiveAccountSyncSnapshots.entries()) {
+		if (instanceId > latestActiveInstanceId) {
+			latestActiveInstanceId = instanceId;
+			latestActiveSnapshot = snapshot;
+		}
+	}
+	if (latestActiveSnapshot) {
+		lastLiveAccountSyncSnapshot = { ...latestActiveSnapshot };
+		return;
+	}
+	if (lastStoppedLiveAccountSyncSnapshot) {
+		lastLiveAccountSyncSnapshot = {
+			...lastStoppedLiveAccountSyncSnapshot.snapshot,
+		};
+		return;
+	}
+	lastLiveAccountSyncSnapshot = { ...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT };
+}
 
 export function getLastLiveAccountSyncSnapshot(): LiveAccountSyncSnapshot {
 	return { ...lastLiveAccountSyncSnapshot };
@@ -39,7 +64,8 @@ export function getLastLiveAccountSyncSnapshot(): LiveAccountSyncSnapshot {
 
 export function __resetLastLiveAccountSyncSnapshotForTests(): void {
 	lastLiveAccountSyncSnapshot = { ...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT };
-	lastLiveAccountSyncSnapshotInstanceId = 0;
+	activeLiveAccountSyncSnapshots.clear();
+	lastStoppedLiveAccountSyncSnapshot = null;
 	nextLiveAccountSyncInstanceId = 0;
 }
 
@@ -205,11 +231,22 @@ export class LiveAccountSync {
 	}
 
 	private publishSnapshot(): void {
-		if (this.instanceId < lastLiveAccountSyncSnapshotInstanceId) {
-			return;
+		const snapshot = this.getSnapshot();
+		if (snapshot.running) {
+			activeLiveAccountSyncSnapshots.set(this.instanceId, snapshot);
+		} else {
+			activeLiveAccountSyncSnapshots.delete(this.instanceId);
+			if (
+				!lastStoppedLiveAccountSyncSnapshot ||
+				this.instanceId >= lastStoppedLiveAccountSyncSnapshot.instanceId
+			) {
+				lastStoppedLiveAccountSyncSnapshot = {
+					instanceId: this.instanceId,
+					snapshot,
+				};
+			}
 		}
-		lastLiveAccountSyncSnapshotInstanceId = this.instanceId;
-		lastLiveAccountSyncSnapshot = this.getSnapshot();
+		refreshLastLiveAccountSyncSnapshot();
 	}
 
 	private scheduleReload(reason: "watch" | "poll"): void {
