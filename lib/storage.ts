@@ -1912,6 +1912,10 @@ function syncAccountStorageSnapshot(
 ): AccountStorageV3 {
 	const snapshot = cloneAccountStorageForPersistence(next);
 	if (!current) {
+		// When the transaction started from empty storage, callers still hold a
+		// null `current` alias. Nested writes update transactionState.snapshot,
+		// but the handler must re-read from that snapshot (or use exportAccounts)
+		// instead of expecting `current` to become non-null in place.
 		return snapshot;
 	}
 
@@ -2451,6 +2455,11 @@ export async function importAccounts(
 		};
 
 		if (transactionState?.active) {
+			// WARNING: this is an immediate disk write, separate from the outer
+			// transaction's persist(). If the handler later persists a payload that
+			// was built before importAccounts() ran, that second write will win and
+			// can overwrite the imported accounts. Build the outer persist payload
+			// from the live `current` snapshot after importAccounts() returns.
 			return applyImport(transactionState.snapshot, async (storage) => {
 				const nextStorage = cloneAccountStorageForPersistence(storage);
 				await saveAccountsUnlocked(nextStorage);

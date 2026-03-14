@@ -676,6 +676,87 @@ describe("storage", () => {
 			);
 		});
 
+		it("documents that a stale outer persist payload can overwrite a nested import", async () => {
+			const importPath = join(testWorkDir, "nested-import-stale-payload.json");
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "acct-imported",
+							email: "imported@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: now - 1_000,
+							lastUsed: now - 1_000,
+						},
+					],
+				}),
+			);
+
+			await withAccountStorageTransaction(async (current, persist) => {
+				if (!current) {
+					throw new Error("expected existing account storage");
+				}
+
+				const stalePersistPayload = {
+					...current,
+					accounts: [
+						...current.accounts,
+						{
+							accountId: "acct-appended",
+							email: "appended@example.com",
+							refreshToken: "refresh-appended",
+							addedAt: now,
+							lastUsed: now,
+						},
+					],
+				};
+
+				await importAccounts(importPath);
+				await persist(stalePersistPayload);
+			});
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+					expect.objectContaining({
+						accountId: "acct-appended",
+						refreshToken: "refresh-appended",
+					}),
+				]),
+			);
+			expect(loaded?.accounts).not.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-imported",
+						refreshToken: "refresh-imported",
+					}),
+				]),
+			);
+		});
+
 		it("rejects importAccounts inside the flagged transaction so rollback stays atomic", async () => {
 			const importPath = join(testWorkDir, "nested-import-rejected.json");
 			const now = Date.now();
