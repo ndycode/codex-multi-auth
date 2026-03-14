@@ -4076,10 +4076,6 @@ async function runAuthLogin(): Promise<number> {
 					continue loginFlow;
 				}
 			}
-			if (recoveryState === null) {
-				recoveryPromptAttempted = false;
-				continue loginFlow;
-			}
 			if (recoveryState.assessments.length > 0) {
 				let promptWasShown = false;
 				try {
