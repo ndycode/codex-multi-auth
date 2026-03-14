@@ -258,12 +258,20 @@ describe("live-account-sync", () => {
 		sync.stop();
 	});
 
-	it("coalesces overlapping reload attempts into a single in-flight reload", async () => {
-		let resolveReload: (() => void) | undefined;
-		const reloadStarted = new Promise<void>((resolve) => {
-			resolveReload = resolve;
+	it("runs a follow-up reload when writes land during an in-flight reload", async () => {
+		const firstReloadStarted = createDeferred<void>();
+		const firstReloadFinished = createDeferred<void>();
+		const secondReloadStarted = createDeferred<void>();
+		let reloadCalls = 0;
+		const reload = vi.fn(async () => {
+			reloadCalls += 1;
+			if (reloadCalls === 1) {
+				firstReloadStarted.resolve(undefined);
+				await firstReloadFinished.promise;
+				return;
+			}
+			secondReloadStarted.resolve(undefined);
 		});
-		const reload = vi.fn(async () => reloadStarted);
 		const sync = new LiveAccountSync(reload, {
 			pollIntervalMs: 500,
 			debounceMs: 50,
@@ -280,11 +288,43 @@ describe("live-account-sync", () => {
 				[reason],
 			) as Promise<void>;
 		const first = invoke("poll");
-		const second = invoke("watch");
-		resolveReload?.();
-		await Promise.all([first, second]);
+		await firstReloadStarted.promise;
 
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "during-first-reload-a" }],
+			}),
+			"utf-8",
+		);
+		const firstBump = new Date(Date.now() + 1_000);
+		await fs.utimes(storagePath, firstBump, firstBump);
+		const second = invoke("watch");
+
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "during-first-reload-b" }],
+			}),
+			"utf-8",
+		);
+		const secondBump = new Date(Date.now() + 2_000);
+		await fs.utimes(storagePath, secondBump, secondBump);
+		const third = invoke("watch");
+
+		await vi.advanceTimersByTimeAsync(0);
 		expect(reload).toHaveBeenCalledTimes(1);
+
+		firstReloadFinished.resolve(undefined);
+		await secondReloadStarted.promise;
+		await Promise.all([first, second, third]);
+
+		expect(reload).toHaveBeenCalledTimes(2);
+		expect(sync.getSnapshot().reloadCount).toBe(2);
 		sync.stop();
 	});
 

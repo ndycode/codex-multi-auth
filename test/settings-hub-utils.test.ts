@@ -535,6 +535,44 @@ describe("settings-hub utility coverage", () => {
 		}
 	});
 
+	it("retries sync-center preview loading when loadCodexCliState hits a retryable lock", async () => {
+		const api = await loadSettingsHubTestApi();
+		const storageModule = await import("../lib/storage.js");
+		const codexCliState = await import("../lib/codex-cli/state.js");
+		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+		let loadStateAttempts = 0;
+		const loadStateSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockImplementation(async () => {
+				loadStateAttempts += 1;
+				if (loadStateAttempts === 1) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return {
+					path: "/tmp/source/accounts.json",
+					accounts: [],
+				};
+			});
+
+		queueSelectResults({ type: "back" });
+
+		try {
+			await api.promptSyncCenter({});
+			expect(loadStateSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			loadAccountsSpy.mockRestore();
+			loadStateSpy.mockRestore();
+		}
+	});
+
 	it("propagates non-retryable filesystem errors immediately", async () => {
 		const api = await loadSettingsHubTestApi();
 		let attempts = 0;

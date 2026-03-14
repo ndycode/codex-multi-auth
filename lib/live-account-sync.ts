@@ -106,6 +106,7 @@ export class LiveAccountSync {
 	private generation = 0;
 	private reloadInFlight: { generation: number; promise: Promise<void> } | null =
 		null;
+	private reloadQueued = false;
 
 	constructor(
 		reload: () => Promise<void>,
@@ -175,6 +176,7 @@ export class LiveAccountSync {
 
 	stop(): void {
 		this.generation += 1;
+		this.reloadQueued = false;
 		this.running = false;
 		if (this.watcher) {
 			this.watcher.close();
@@ -242,12 +244,14 @@ export class LiveAccountSync {
 		if (!this.running || !this.currentPath) return;
 		const targetPath = this.currentPath;
 		const generation = this.generation;
-		while (this.reloadInFlight) {
+
+		if (this.reloadInFlight) {
 			const inFlightReload = this.reloadInFlight;
-			await inFlightReload.promise;
 			if (inFlightReload.generation === generation) {
+				this.reloadQueued = true;
 				return;
 			}
+			await inFlightReload.promise;
 			if (this.reloadInFlight?.promise === inFlightReload.promise) {
 				this.reloadInFlight = null;
 			}
@@ -257,43 +261,51 @@ export class LiveAccountSync {
 			}
 		}
 
-		const promise = (async () => {
-			try {
-				await this.reload();
-				if (generation !== this.generation || targetPath !== this.currentPath) {
-					return;
+		do {
+			this.reloadQueued = false;
+			const promise = (async () => {
+				try {
+					await this.reload();
+					if (generation !== this.generation || targetPath !== this.currentPath) {
+						return;
+					}
+					this.lastSyncAt = Date.now();
+					this.reloadCount += 1;
+					this.lastKnownMtimeMs = await readMtimeMs(targetPath);
+					if (generation !== this.generation || targetPath !== this.currentPath) {
+						return;
+					}
+					log.debug("Reloaded account manager from live storage update", {
+						reason,
+						path: summarizeWatchPath(targetPath),
+					});
+				} catch (error) {
+					if (generation !== this.generation || targetPath !== this.currentPath) {
+						return;
+					}
+					this.errorCount += 1;
+					log.warn("Live account sync reload failed", {
+						reason,
+						path: summarizeWatchPath(targetPath),
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
-				this.lastSyncAt = Date.now();
-				this.reloadCount += 1;
-				this.lastKnownMtimeMs = await readMtimeMs(targetPath);
-				if (generation !== this.generation || targetPath !== this.currentPath) {
-					return;
-				}
-				log.debug("Reloaded account manager from live storage update", {
-					reason,
-					path: summarizeWatchPath(targetPath),
-				});
-			} catch (error) {
-				if (generation !== this.generation || targetPath !== this.currentPath) {
-					return;
-				}
-				this.errorCount += 1;
-				log.warn("Live account sync reload failed", {
-					reason,
-					path: summarizeWatchPath(targetPath),
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		})();
-		this.reloadInFlight = { generation, promise };
+			})();
+			this.reloadInFlight = { generation, promise };
 
-		try {
-			await promise;
-		} finally {
-			if (this.reloadInFlight?.promise === promise) {
-				this.reloadInFlight = null;
-				this.publishSnapshot();
+			try {
+				await promise;
+			} finally {
+				if (this.reloadInFlight?.promise === promise) {
+					this.reloadInFlight = null;
+					this.publishSnapshot();
+				}
 			}
-		}
+
+			if (!this.running || !this.currentPath) return;
+			if (generation !== this.generation || targetPath !== this.currentPath) {
+				return;
+			}
+		} while (this.reloadQueued);
 	}
 }

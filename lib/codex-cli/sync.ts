@@ -24,6 +24,7 @@ import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
 const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
+export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 4;
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -375,7 +376,11 @@ function applyCodexCliSelection(
 
 async function getPersistedLocalSelectionTimestamp(): Promise<number | null> {
 	let lastError: unknown;
-	for (let attempt = 0; attempt < 4; attempt += 1) {
+	for (
+		let attempt = 0;
+		attempt < SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS;
+		attempt += 1
+	) {
 		try {
 			const stats = await fs.stat(getStoragePath());
 			return Number.isFinite(stats.mtimeMs) ? stats.mtimeMs : 0;
@@ -387,17 +392,19 @@ async function getPersistedLocalSelectionTimestamp(): Promise<number | null> {
 			}
 			if (
 				typeof code !== "string" ||
-				!RETRYABLE_SELECTION_TIMESTAMP_CODES.has(code) ||
-				attempt >= 3
+				!RETRYABLE_SELECTION_TIMESTAMP_CODES.has(code)
 			) {
+				return null;
+			}
+			if (attempt >= SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS - 1) {
+				log.debug("Exhausted retries reading persisted local selection timestamp", {
+					error: lastError instanceof Error ? lastError.message : String(lastError),
+				});
 				return null;
 			}
 			await sleep(10 * 2 ** attempt);
 		}
 	}
-	log.debug("Exhausted retries reading persisted local selection timestamp", {
-		error: lastError instanceof Error ? lastError.message : String(lastError),
-	});
 	return null;
 }
 

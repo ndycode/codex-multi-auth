@@ -14,6 +14,7 @@ import {
 	getActiveSelectionForFamily,
 	getLastCodexCliSyncRun,
 	previewCodexCliSync,
+	SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS,
 	syncAccountStorageFromCodexCli,
 } from "../lib/codex-cli/sync.js";
 import * as writerModule from "../lib/codex-cli/writer.js";
@@ -827,10 +828,12 @@ describe("codex-cli sync", () => {
 			statError.code = code;
 			const nodeFs = await import("node:fs");
 			const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+			let targetStatCalls = 0;
 			const statSpy = vi
 				.spyOn(nodeFs.promises, "stat")
 				.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
 					if (args[0] === targetStoragePath) {
+						targetStatCalls += 1;
 						throw statError;
 					}
 					return originalStat(...args);
@@ -869,6 +872,7 @@ describe("codex-cli sync", () => {
 
 				expect(preview.status).toBe("noop");
 				expect(preview.summary.selectionChanged).toBe(false);
+				expect(targetStatCalls).toBe(SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS);
 			} finally {
 				statSpy.mockRestore();
 			}
@@ -906,10 +910,12 @@ describe("codex-cli sync", () => {
 			vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
 			const nodeFs = await import("node:fs");
 			const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+			let targetStatCalls = 0;
 			const statSpy = vi
 				.spyOn(nodeFs.promises, "stat")
 				.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
 					if (args[0] === targetStoragePath) {
+						targetStatCalls += 1;
 						const error = new Error(`${code.toLowerCase()} target`) as NodeJS.ErrnoException;
 						error.code = code;
 						throw error;
@@ -952,8 +958,122 @@ describe("codex-cli sync", () => {
 				expect(result.pendingRun).toBeNull();
 				expect(result.storage?.activeIndex).toBe(1);
 				expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
+				expect(targetStatCalls).toBe(SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS);
 			} finally {
 				statSpy.mockRestore();
+			}
+		},
+	);
+
+	it.each(["EBUSY", "EPERM"] as const)(
+		"logs exhausted retries when reading the persisted target timestamp fails with %s",
+		async (code) => {
+			const debugSpy = vi.fn();
+			vi.resetModules();
+			vi.doMock("../lib/logger.js", async () => {
+				const actual = await vi.importActual<typeof import("../lib/logger.js")>(
+					"../lib/logger.js",
+				);
+				return {
+					...actual,
+					createLogger: () => ({
+						debug: debugSpy,
+						info: vi.fn(),
+						warn: vi.fn(),
+						error: vi.fn(),
+						time: () => () => 0,
+						timeEnd: () => undefined,
+					}),
+				};
+			});
+
+			try {
+				const freshStorageModule = await import("../lib/storage.js");
+				const freshStateModule = await import("../lib/codex-cli/state.js");
+				const freshWriterModule = await import("../lib/codex-cli/writer.js");
+				const freshSyncModule = await import("../lib/codex-cli/sync.js");
+				freshStateModule.clearCodexCliStateCache();
+				freshSyncModule.__resetLastCodexCliSyncRunForTests();
+
+				await writeFile(
+					accountsPath,
+					JSON.stringify(
+						{
+							activeAccountId: "acc_a",
+							accounts: [
+								{
+									accountId: "acc_a",
+									email: "a@example.com",
+									auth: {
+										tokens: {
+											access_token: "access-a",
+											refresh_token: "refresh-a",
+										},
+									},
+								},
+							],
+						},
+						null,
+						2,
+					),
+					"utf-8",
+				);
+
+				vi.spyOn(freshStorageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+				vi.spyOn(
+					freshWriterModule,
+					"getLastCodexCliSelectionWriteTimestamp",
+				).mockReturnValue(0);
+				vi.spyOn(freshStorageModule, "getStoragePath").mockReturnValue(targetStoragePath);
+
+				const nodeFs = await import("node:fs");
+				const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+				const statSpy = vi
+					.spyOn(nodeFs.promises, "stat")
+					.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+						if (args[0] === targetStoragePath) {
+							const error = new Error(`${code.toLowerCase()} target`) as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return originalStat(...args);
+					});
+
+				const current: AccountStorageV3 = {
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_a",
+							accountIdSource: "token",
+							email: "a@example.com",
+							refreshToken: "refresh-a",
+							accessToken: "access-a",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				};
+
+				try {
+					const preview = await freshSyncModule.previewCodexCliSync(current, {
+						forceRefresh: true,
+					});
+
+					expect(preview.status).toBe("noop");
+					expect(debugSpy).toHaveBeenCalledWith(
+						"Exhausted retries reading persisted local selection timestamp",
+						{
+							error: `${code.toLowerCase()} target`,
+						},
+					);
+				} finally {
+					statSpy.mockRestore();
+				}
+			} finally {
+				vi.doUnmock("../lib/logger.js");
+				vi.resetModules();
 			}
 		},
 	);
