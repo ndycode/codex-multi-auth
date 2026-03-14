@@ -1394,6 +1394,39 @@ describe("storage", () => {
 			},
 		);
 
+		it("rejects matched backup entries whose resolved path escapes the backups directory", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const escapedEntry = {
+				name: "../escaped-entry.json",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+			} as unknown as Awaited<ReturnType<typeof fs.readdir>>[number];
+			readdirSpy.mockImplementation(async (...args) => {
+				const [path, options] = args;
+				if (
+					String(path) === backupRoot &&
+					typeof options === "object" &&
+					options?.withFileTypes === true
+				) {
+					return [escapedEntry] as Awaited<ReturnType<typeof fs.readdir>>;
+				}
+				return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+			});
+
+			try {
+				await expect(assessNamedBackupRestore("../escaped-entry")).rejects.toThrow(
+					/escapes backup directory/i,
+				);
+				await expect(restoreNamedBackup("../escaped-entry")).rejects.toThrow(
+					/escapes backup directory/i,
+				);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
 		it("ignores symlink-like named backup entries that point outside the backups root", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const externalBackupPath = join(testWorkDir, "outside-backup.json");

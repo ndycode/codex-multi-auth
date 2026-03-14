@@ -3104,6 +3104,46 @@ describe("codex manager cli commands", () => {
 		expect(backupItems?.[0]?.hint).not.toContain("updated ");
 	});
 
+	it("suppresses invalid backup timestamps in restore hints", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const assessment = {
+			backup: {
+				name: "nan-backup",
+				path: "/mock/backups/nan-backup.json",
+				createdAt: null,
+				updatedAt: Number.NaN,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({ type: "back" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const backupItems = selectMock.mock.calls[0]?.[0];
+		expect(backupItems?.[0]?.hint).toContain("1 account");
+		expect(backupItems?.[0]?.hint).not.toContain("updated ");
+	});
+
 	it("shows experimental settings in the settings hub", async () => {
 		const now = Date.now();
 		setupInteractiveSettingsLogin(createSettingsStorage(now));

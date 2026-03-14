@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs, type Dirent } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
@@ -1862,18 +1862,34 @@ async function findExistingNamedBackupPath(
 	return undefined;
 }
 
-async function resolveNamedBackupRestorePath(name: string): Promise<string> {
-	const existingPath = await findExistingNamedBackupPath(name);
-	if (existingPath) {
-		return existingPath;
+function assertNamedBackupRestorePath(
+	path: string,
+	backupRoot: string,
+): string {
+	const resolvedPath = resolvePath(path);
+	const relativePath = relative(resolvePath(backupRoot), resolvedPath);
+	if (
+		relativePath.length === 0 ||
+		relativePath.startsWith("..") ||
+		isAbsolute(relativePath)
+	) {
+		throw new Error(`Backup path escapes backup directory: ${resolvedPath}`);
 	}
+	return resolvedPath;
+}
+
+async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const requested = (name ?? "").trim();
 	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const existingPath = await findExistingNamedBackupPath(name);
+	if (existingPath) {
+		return assertNamedBackupRestorePath(existingPath, backupRoot);
+	}
 	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
 		? requested
 		: `${requested}.json`;
 	try {
-		return buildNamedBackupPath(name);
+		return assertNamedBackupRestorePath(buildNamedBackupPath(name), backupRoot);
 	} catch (error) {
 		const baseName = requestedWithExtension.slice(0, -".json".length);
 		if (
