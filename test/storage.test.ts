@@ -19,6 +19,7 @@ import {
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getFlaggedAccountsPath,
+	NAMED_BACKUP_LIST_CONCURRENCY,
 	getStoragePath,
 	importAccounts,
 	listNamedBackups,
@@ -1245,6 +1246,46 @@ describe("storage", () => {
 			expect(restoreResult.total).toBe(1);
 		});
 
+		it("restores manually named backups with uppercase JSON extensions", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Manual Backup.JSON",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "manual-uppercase",
+							refreshToken: "ref-manual-uppercase",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const backups = await listNamedBackups();
+			expect(backups).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "Manual Backup", valid: true }),
+				]),
+			);
+
+			await clearAccounts();
+			const assessment = await assessNamedBackupRestore("Manual Backup");
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.backup.name).toBe("Manual Backup");
+
+			const restoreResult = await restoreNamedBackup("Manual Backup");
+			expect(restoreResult.total).toBe(1);
+		});
+
 		it("throws when a named backup is deleted after assessment", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1265,11 +1306,12 @@ describe("storage", () => {
 			const assessment = await assessNamedBackupRestore("deleted-after-assessment");
 			expect(assessment.eligibleForRestore).toBe(true);
 
-			await fs.unlink(backup.path);
+			await removeWithRetry(backup.path, { force: true });
 
 			await expect(
 				restoreNamedBackup("deleted-after-assessment"),
 			).rejects.toThrow(/Import file not found/);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
 		it("throws when a named backup becomes invalid JSON after assessment", async () => {
@@ -1297,21 +1339,82 @@ describe("storage", () => {
 			await expect(
 				restoreNamedBackup("invalid-after-assessment"),
 			).rejects.toThrow(/Invalid JSON in import file/);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
 		it.each(["../openai-codex-accounts", String.raw`..\openai-codex-accounts`])(
 			"rejects backup names that escape the backups directory: %s",
 			async (input) => {
-				await expect(assessNamedBackupRestore(input)).rejects.toThrow();
-				await expect(restoreNamedBackup(input)).rejects.toThrow();
+				await expect(assessNamedBackupRestore(input)).rejects.toThrow(
+					/invalid|not allowed|escape|traversal|not found|path separators/i,
+				);
+				await expect(restoreNamedBackup(input)).rejects.toThrow(
+					/invalid|not allowed|escape|traversal|not found|path separators/i,
+				);
 			},
 		);
+
+		it("ignores symlink-like named backup entries that point outside the backups root", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const externalBackupPath = join(testWorkDir, "outside-backup.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.writeFile(
+				externalBackupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "outside-manual-backup",
+							refreshToken: "ref-outside-manual-backup",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalReaddir = fs.readdir.bind(fs);
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const escapedEntry = {
+				name: "escaped-link.json",
+				isFile: () => true,
+				isSymbolicLink: () => true,
+			} as unknown as Awaited<
+				ReturnType<typeof fs.readdir>
+			>[number];
+			readdirSpy.mockImplementation(async (...args) => {
+				const [path, options] = args;
+				if (
+					String(path) === backupRoot &&
+					typeof options === "object" &&
+					options?.withFileTypes === true
+				) {
+					return [escapedEntry] as Awaited<ReturnType<typeof fs.readdir>>;
+				}
+				return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual([]);
+				await expect(assessNamedBackupRestore("escaped-link")).rejects.toThrow(
+					/not a regular backup file/i,
+				);
+				await expect(restoreNamedBackup("escaped-link")).rejects.toThrow(
+					/not a regular backup file/i,
+				);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
 
 		it("rethrows unreadable backup directory errors while listing backups", async () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
-			readdirSpy.mockRejectedValueOnce(error);
+			readdirSpy.mockRejectedValue(error);
 
 			try {
 				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
@@ -1324,12 +1427,99 @@ describe("storage", () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
-			readdirSpy.mockRejectedValueOnce(error);
+			readdirSpy.mockRejectedValue(error);
 
 			try {
 				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
 					code: "EPERM",
 				});
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup directory errors while listing backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list-dir",
+						refreshToken: "ref-retry-list-dir",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-list-dir");
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory busy",
+						) as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ name: "retry-list-dir", valid: true }),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup directory errors while restoring backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-restore-dir",
+						refreshToken: "ref-retry-restore-dir",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-restore-dir");
+			await clearAccounts();
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory busy",
+						) as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const result = await restoreNamedBackup("retry-restore-dir");
+				expect(result.total).toBe(1);
+				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
 			}
@@ -1497,7 +1687,9 @@ describe("storage", () => {
 			try {
 				const backups = await listNamedBackups();
 				expect(backups).toHaveLength(12);
-				expect(peakReads).toBeLessThanOrEqual(8);
+				expect(peakReads).toBeLessThanOrEqual(
+					NAMED_BACKUP_LIST_CONCURRENCY,
+				);
 			} finally {
 				readFileSpy.mockRestore();
 			}

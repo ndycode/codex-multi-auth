@@ -1645,7 +1645,9 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
-		const entries = await fs.readdir(backupRoot, { withFileTypes: true });
+		const entries = await retryTransientFilesystemOperation(() =>
+			fs.readdir(backupRoot, { withFileTypes: true }),
+		);
 		const backupEntries = entries
 			.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
 			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
@@ -2016,6 +2018,12 @@ function equalsNamedBackupEntry(left: string, right: string): boolean {
 		: left === right;
 }
 
+function stripNamedBackupJsonExtension(name: string): string {
+	return name.toLowerCase().endsWith(".json")
+		? name.slice(0, -".json".length)
+		: name;
+}
+
 async function findExistingNamedBackupPath(
 	name: string,
 ): Promise<string | undefined> {
@@ -2028,17 +2036,28 @@ async function findExistingNamedBackupPath(
 	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
 		? requested
 		: `${requested}.json`;
+	const requestedBaseName = stripNamedBackupJsonExtension(requestedWithExtension);
 
 	try {
-		const entries = await fs.readdir(backupRoot, { withFileTypes: true });
+		const entries = await retryTransientFilesystemOperation(() =>
+			fs.readdir(backupRoot, { withFileTypes: true }),
+		);
 		for (const entry of entries) {
-			if (!entry.isFile() || entry.isSymbolicLink()) continue;
 			if (!entry.name.toLowerCase().endsWith(".json")) continue;
-			if (
+			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
+			const matchesRequestedEntry =
 				!equalsNamedBackupEntry(entry.name, requested) &&
-				!equalsNamedBackupEntry(entry.name, requestedWithExtension)
-			) {
+				!equalsNamedBackupEntry(entry.name, requestedWithExtension) &&
+				!equalsNamedBackupEntry(entryBaseName, requestedBaseName)
+					? false
+					: true;
+			if (!matchesRequestedEntry) {
 				continue;
+			}
+			if (entry.isSymbolicLink() || !entry.isFile()) {
+				throw new Error(
+					`Named backup "${entryBaseName}" is not a regular backup file`,
+				);
 			}
 			return resolvePath(join(backupRoot, entry.name));
 		}

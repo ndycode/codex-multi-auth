@@ -4354,7 +4354,18 @@ function getRedactedFilesystemErrorLabel(error: unknown): string {
 async function loadBackupRestoreManagerAssessments(): Promise<
 	BackupRestoreAssessment[]
 > {
-	const backups = await listNamedBackups();
+	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
+	try {
+		backups = await listNamedBackups();
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(
+			`Could not read backup directory: ${
+				collapseWhitespace(message) || "unknown error"
+			}`,
+		);
+		return [];
+	}
 	if (backups.length === 0) {
 		return [];
 	}
@@ -4367,32 +4378,27 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 		index += NAMED_BACKUP_LIST_CONCURRENCY
 	) {
 		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
-		assessments.push(
-			...(await Promise.all(
-				chunk.map(async (backup): Promise<BackupRestoreAssessment> => {
-					try {
-						return await assessNamedBackupRestore(backup.name, {
-							currentStorage,
-						});
-					} catch (error) {
-						const errorLabel = getRedactedFilesystemErrorLabel(error);
-						console.warn(
-							`Failed to assess backup "${backup.name}" in restore manager (${errorLabel}).`,
-						);
-						return {
-							backup,
-							currentAccountCount: currentStorage?.accounts.length ?? 0,
-							mergedAccountCount: null,
-							imported: null,
-							skipped: null,
-							wouldExceedLimit: false,
-							eligibleForRestore: false,
-							error: errorLabel,
-						};
-					}
-				}),
-			)),
+		const settledAssessments = await Promise.allSettled(
+			chunk.map((backup) =>
+				assessNamedBackupRestore(backup.name, { currentStorage }),
+			),
 		);
+		for (const [resultIndex, result] of settledAssessments.entries()) {
+			if (result.status === "fulfilled") {
+				assessments.push(result.value);
+				continue;
+			}
+			const backupName = chunk[resultIndex]?.name ?? "unknown";
+			const reason =
+				result.reason instanceof Error
+					? result.reason.message
+					: String(result.reason);
+			console.warn(
+				`Skipped backup assessment for "${backupName}": ${
+					collapseWhitespace(reason) || "unknown error"
+				}`,
+			);
+		}
 	}
 
 	return assessments;
