@@ -368,13 +368,15 @@ describe("storage", () => {
 		});
 
 		it("warns about Windows ACL inheritance when exporting on win32", async () => {
-			const originalPlatform = process.platform;
 			const originalConsoleLog = process.env.CODEX_CONSOLE_LOG;
 			const originalDebug = process.env.DEBUG_CODEX_PLUGIN;
 			const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const win32Process = Object.create(process) as NodeJS.Process;
+			Object.defineProperty(win32Process, "platform", { value: "win32" });
+			win32Process.env = process.env;
 
 			try {
-				Object.defineProperty(process, "platform", { value: "win32" });
+				vi.stubGlobal("process", win32Process);
 				process.env.CODEX_CONSOLE_LOG = "1";
 				process.env.DEBUG_CODEX_PLUGIN = "1";
 				vi.resetModules();
@@ -409,7 +411,7 @@ describe("storage", () => {
 				);
 				storageModule.setStoragePathDirect(null);
 			} finally {
-				Object.defineProperty(process, "platform", { value: originalPlatform });
+				vi.unstubAllGlobals();
 				if (originalConsoleLog === undefined) {
 					delete process.env.CODEX_CONSOLE_LOG;
 				} else {

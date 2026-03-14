@@ -1961,7 +1961,8 @@ function setTransactionSnapshotRevision(
 		configurable: true,
 		// Keep the revision marker on common immutable copies such as object spread.
 		// Symbols are still excluded from JSON persistence, so this does not leak
-		// into on-disk storage.
+		// into on-disk storage. structuredClone() still drops symbol keys, so any
+		// snapshot clone that needs revision metadata must be re-stamped explicitly.
 		enumerable: true,
 	});
 	return storage;
@@ -2166,6 +2167,10 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 				state.revision === 0
 					? getAccountStorageRestoreReason(state.snapshot)
 					: undefined;
+			// cloneAccountStorageForPersistence() materializes an empty v3 snapshot
+			// when the transaction started from missing/reset storage, so the first
+			// persist still has a coherent rollback payload alongside the restore
+			// reason metadata above.
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const payloadRevision = getTransactionSnapshotRevision(accountStorage);
 			const nextAccounts =
@@ -2570,7 +2575,9 @@ export async function exportAccounts(
 	// prior persist() calls, so a pre-persist export returns the initially loaded
 	// state only when no nested import has already updated the transaction.
 	// This avoids deadlocks and redundant disk reads on Windows where antivirus
-	// may temporarily hold exclusive locks on freshly written files.
+	// may temporarily hold exclusive locks on freshly written files. If deferred
+	// async work outlives the transaction, active=false forces a fresh read via
+	// withAccountStorageTransaction() so we do not reuse a stale ALS snapshot.
 	const storage = transactionState?.active
 		? transactionState.snapshot
 		: await withAccountStorageTransaction((current) =>
