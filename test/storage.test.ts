@@ -1320,6 +1320,21 @@ describe("storage", () => {
 			}
 		});
 
+		it("rethrows unreadable backup directory errors while restoring backups", async () => {
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValueOnce(error);
+
+			try {
+				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
+					code: "EPERM",
+				});
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
 		it("throws file-not-found when a manually named backup disappears after assessment", async () => {
 			const backupPath = join(
 				dirname(testStoragePath),
@@ -1348,7 +1363,7 @@ describe("storage", () => {
 			const assessment = await assessNamedBackupRestore("Manual Backup");
 			expect(assessment.eligibleForRestore).toBe(true);
 
-			await fs.rm(backupPath, { force: true });
+			await removeWithRetry(backupPath, { force: true });
 
 			await expect(restoreNamedBackup("Manual Backup")).rejects.toThrow(
 				/Import file not found/,

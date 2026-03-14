@@ -47,7 +47,7 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
-const NAMED_BACKUP_LIST_CONCURRENCY = 8;
+export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -2000,12 +2000,14 @@ async function findExistingNamedBackupPath(
 		}
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to read named backup directory", {
-				path: backupRoot,
-				error: String(error),
-			});
+		if (code === "ENOENT") {
+			return undefined;
 		}
+		log.warn("Failed to read named backup directory", {
+			path: backupRoot,
+			error: String(error),
+		});
+		throw error;
 	}
 
 	return undefined;

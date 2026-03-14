@@ -65,6 +65,7 @@ import {
 	getActionableNamedBackupRestores,
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
+	NAMED_BACKUP_LIST_CONCURRENCY,
 	restoreNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
@@ -4352,27 +4353,38 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 
 	const currentStorage = await loadAccounts();
 	const assessments: BackupRestoreAssessment[] = [];
-	for (const backup of backups) {
-		try {
-			assessments.push(
-				await assessNamedBackupRestore(backup.name, { currentStorage }),
-			);
-		} catch (error) {
-			const errorLabel = getRedactedFilesystemErrorLabel(error);
-			console.warn(
-				`Failed to assess backup "${backup.name}" in restore manager (${errorLabel}).`,
-			);
-			assessments.push({
-				backup,
-				currentAccountCount: currentStorage?.accounts.length ?? 0,
-				mergedAccountCount: null,
-				imported: null,
-				skipped: null,
-				wouldExceedLimit: false,
-				eligibleForRestore: false,
-				error: errorLabel,
-			});
-		}
+	for (
+		let index = 0;
+		index < backups.length;
+		index += NAMED_BACKUP_LIST_CONCURRENCY
+	) {
+		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
+		assessments.push(
+			...(await Promise.all(
+				chunk.map(async (backup): Promise<BackupRestoreAssessment> => {
+					try {
+						return await assessNamedBackupRestore(backup.name, {
+							currentStorage,
+						});
+					} catch (error) {
+						const errorLabel = getRedactedFilesystemErrorLabel(error);
+						console.warn(
+							`Failed to assess backup "${backup.name}" in restore manager (${errorLabel}).`,
+						);
+						return {
+							backup,
+							currentAccountCount: currentStorage?.accounts.length ?? 0,
+							mergedAccountCount: null,
+							imported: null,
+							skipped: null,
+							wouldExceedLimit: false,
+							eligibleForRestore: false,
+							error: errorLabel,
+						};
+					}
+				}),
+			)),
+		);
 	}
 
 	return assessments;
