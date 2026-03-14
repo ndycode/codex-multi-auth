@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
 	BACKUP_COPY_MAX_ATTEMPTS,
 	buildNamedBackupPath,
@@ -2154,9 +2155,9 @@ describe("storage", () => {
 				const flaggedStoragePath = getFlaggedAccountsPath();
 
 				await fs.mkdir(dirname(storagePath), { recursive: true });
-				await fs.rm(storagePath, { force: true });
-				await fs.rm(resetMarkerPath, { force: true });
-				await fs.rm(flaggedStoragePath, { force: true });
+				await removeWithRetry(storagePath, { force: true });
+				await removeWithRetry(resetMarkerPath, { force: true });
+				await removeWithRetry(flaggedStoragePath, { force: true });
 				if (startMode === "intentional-reset") {
 					await clearAccounts();
 					expect(existsSync(resetMarkerPath)).toBe(true);
@@ -2215,6 +2216,122 @@ describe("storage", () => {
 					startMode === "intentional-reset",
 				);
 				expect((await loadAccounts())?.accounts).toHaveLength(0);
+			}
+		});
+
+		it("restores the last persisted accounts file after a later rollback from synthetic startup states", async () => {
+			for (const startMode of ["missing-storage", "intentional-reset"] as const) {
+				setStoragePathDirect(
+					join(
+						testWorkDir,
+						`post-persist-rollback-${startMode}-${Math.random()
+							.toString(36)
+							.slice(2)}.json`,
+					),
+				);
+				const storagePath = getStoragePath();
+				const resetMarkerPath = `${storagePath}.reset-intent`;
+				const flaggedStoragePath = getFlaggedAccountsPath();
+
+				await fs.mkdir(dirname(storagePath), { recursive: true });
+				await removeWithRetry(storagePath, { force: true });
+				await removeWithRetry(resetMarkerPath, { force: true });
+				await removeWithRetry(flaggedStoragePath, { force: true });
+				if (startMode === "intentional-reset") {
+					await clearAccounts();
+					expect(existsSync(resetMarkerPath)).toBe(true);
+				}
+
+				const originalRename = fs.rename.bind(fs);
+				let failFlaggedPersist = false;
+				const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+					async (from, to) => {
+						if (
+							failFlaggedPersist &&
+							String(to).endsWith("openai-codex-flagged-accounts.json")
+						) {
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+						return originalRename(from, to);
+					},
+				);
+
+				const initialAccount = {
+					accountId: `acct-initial-${startMode}`,
+					email: `${startMode}-initial@example.com`,
+					refreshToken: `refresh-initial-${startMode}`,
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				};
+				const replacementAccount = {
+					accountId: `acct-replacement-${startMode}`,
+					email: `${startMode}-replacement@example.com`,
+					refreshToken: `refresh-replacement-${startMode}`,
+					addedAt: Date.now() + 1,
+					lastUsed: Date.now() + 1,
+				};
+
+				try {
+					await withAccountAndFlaggedStorageTransaction(
+						async (current, persist, getCurrent) => {
+							expect(current?.accounts ?? []).toHaveLength(0);
+
+							await persist(
+								{
+									version: 3,
+									activeIndex: 0,
+									activeIndexByFamily: { codex: 0 },
+									accounts: [initialAccount],
+								},
+								{
+									version: 1,
+									accounts: [],
+								},
+							);
+							expect(existsSync(storagePath)).toBe(true);
+							expect(existsSync(resetMarkerPath)).toBe(false);
+
+							failFlaggedPersist = true;
+							await expect(
+								persist(
+									{
+										version: 3,
+										activeIndex: 0,
+										activeIndexByFamily: { codex: 0 },
+										accounts: [replacementAccount],
+									},
+									{
+										version: 1,
+										accounts: [],
+									},
+								),
+							).rejects.toThrow(/flagged storage busy/);
+
+							expect(getCurrent()?.accounts).toEqual([
+								expect.objectContaining({
+									accountId: initialAccount.accountId,
+									refreshToken: initialAccount.refreshToken,
+								}),
+							]);
+						},
+					);
+				} finally {
+					renameSpy.mockRestore();
+				}
+
+				expect(existsSync(storagePath)).toBe(true);
+				expect(existsSync(resetMarkerPath)).toBe(false);
+				expect((await loadAccounts())?.accounts).toEqual([
+					expect.objectContaining({
+						accountId: initialAccount.accountId,
+						refreshToken: initialAccount.refreshToken,
+					}),
+				]);
+				expect((await loadFlaggedAccounts()).accounts).toHaveLength(0);
 			}
 		});
 

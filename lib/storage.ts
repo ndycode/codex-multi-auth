@@ -2150,7 +2150,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		): Promise<void> => {
-			const previousRestoreReason = getAccountStorageRestoreReason(state.snapshot);
+			// Only the initial synthetic empty snapshot should restore missing/reset
+			// filesystem state. Once a persist succeeds, rollbacks must restore the
+			// last real accounts file instead of deleting it again.
+			const previousRestoreReason =
+				state.revision === 0
+					? getAccountStorageRestoreReason(state.snapshot)
+					: undefined;
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const payloadRevision = getTransactionSnapshotRevision(accountStorage);
 			const nextAccounts =
