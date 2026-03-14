@@ -55,6 +55,25 @@ describe("AccountManager loadFromDisk", () => {
 
   it("persists Codex CLI source-of-truth storage when sync reports change", async () => {
     const now = Date.now();
+    const pendingRun = {
+      revision: 1,
+      run: {
+        outcome: "changed" as const,
+        runAt: now,
+        sourcePath: "source.json",
+        targetPath: "target.json",
+        summary: {
+          sourceAccountCount: 1,
+          targetAccountCountBefore: 1,
+          targetAccountCountAfter: 2,
+          addedAccountCount: 1,
+          updatedAccountCount: 0,
+          unchangedAccountCount: 0,
+          destinationOnlyPreservedCount: 1,
+          selectionChanged: false,
+        },
+      },
+    };
     const stored = {
       version: 3 as const,
       activeIndex: 0,
@@ -73,18 +92,39 @@ describe("AccountManager loadFromDisk", () => {
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: true,
       storage: synced,
-      pendingRun: null,
+      pendingRun,
     });
 
     const manager = await AccountManager.loadFromDisk();
 
     expect(saveAccounts).toHaveBeenCalledWith(synced);
+    expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledWith(pendingRun);
+    expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
     expect(manager.getAccountCount()).toBe(2);
     expect(manager.getCurrentAccount()?.refreshToken).toBe("stored-refresh");
   });
 
   it("swallows source-of-truth persist failures and still returns a manager", async () => {
     const now = Date.now();
+    const pendingRun = {
+      revision: 2,
+      run: {
+        outcome: "changed" as const,
+        runAt: now,
+        sourcePath: "source.json",
+        targetPath: "target.json",
+        summary: {
+          sourceAccountCount: 1,
+          targetAccountCountBefore: 0,
+          targetAccountCountAfter: 1,
+          addedAccountCount: 1,
+          updatedAccountCount: 0,
+          unchangedAccountCount: 0,
+          destinationOnlyPreservedCount: 0,
+          selectionChanged: false,
+        },
+      },
+    };
     const synced = {
       version: 3 as const,
       activeIndex: 0,
@@ -94,12 +134,18 @@ describe("AccountManager loadFromDisk", () => {
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: true,
       storage: synced,
-      pendingRun: null,
+      pendingRun,
     });
-    vi.mocked(saveAccounts).mockRejectedValueOnce(new Error("forced persist failure"));
+    const saveError = new Error("forced persist failure");
+    vi.mocked(saveAccounts).mockRejectedValueOnce(saveError);
 
     const manager = await AccountManager.loadFromDisk();
 
+    expect(commitPendingCodexCliSyncRunMock).not.toHaveBeenCalled();
+    expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledWith(
+      pendingRun,
+      saveError,
+    );
     expect(manager.getAccountCount()).toBe(1);
     expect(manager.getCurrentAccount()?.refreshToken).toBe("synced-refresh");
   });
