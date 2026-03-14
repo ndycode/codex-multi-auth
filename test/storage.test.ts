@@ -1539,6 +1539,61 @@ describe("storage", () => {
 			);
 		});
 
+		it("treats identical accounts in a different backup order as a no-op restore", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "first-account",
+						email: "first@example.com",
+						refreshToken: "ref-first-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "second-account",
+						email: "second@example.com",
+						refreshToken: "ref-second-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			await createNamedBackup("reversed-order");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "second-account",
+						email: "second@example.com",
+						refreshToken: "ref-second-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+					{
+						accountId: "first-account",
+						email: "first@example.com",
+						refreshToken: "ref-first-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("reversed-order");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(2);
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+
+			await expect(restoreNamedBackup("reversed-order")).rejects.toThrow(
+				"All accounts in this backup already exist",
+			);
+		});
+
 		it("keeps metadata-only backups eligible for restore", async () => {
 			await saveAccounts({
 				version: 3,

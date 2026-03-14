@@ -57,6 +57,7 @@ import {
 } from "./quota-cache.js";
 import {
 	assessNamedBackupRestore,
+	assertNamedBackupRestorePath,
 	importAccounts,
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
@@ -4220,6 +4221,8 @@ async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
 ): Promise<void> {
 	const backupDir = getNamedBackupsDirectoryPath();
+	// Reuse only within this list -> assess flow so storage.ts can safely treat
+	// the cache contents as LoadedBackupCandidate entries.
 	const candidateCache = new Map<string, unknown>();
 	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
 	try {
@@ -4351,7 +4354,11 @@ async function runBackupRestoreManager(
 	if (!confirmed) return;
 
 	try {
-		const result = await importAccounts(latestAssessment.backup.path);
+		const validatedBackupPath = assertNamedBackupRestorePath(
+			latestAssessment.backup.path,
+			getNamedBackupsDirectoryPath(),
+		);
+		const result = await importAccounts(validatedBackupPath);
 		if (!result.changed) {
 			console.log("All accounts in this backup already exist");
 			return;

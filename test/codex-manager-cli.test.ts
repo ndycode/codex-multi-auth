@@ -1,4 +1,9 @@
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const MOCK_BACKUP_DIR = resolve(process.cwd(), ".vitest-mock-backups");
+const mockBackupPath = (name: string): string =>
+	resolve(MOCK_BACKUP_DIR, `${name}.json`);
 
 const loadAccountsMock = vi.fn();
 const loadFlaggedAccountsMock = vi.fn();
@@ -513,7 +518,7 @@ describe("codex manager cli commands", () => {
 		assessNamedBackupRestoreMock.mockResolvedValue({
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: null,
 				sizeBytes: null,
@@ -531,7 +536,7 @@ describe("codex manager cli commands", () => {
 			eligibleForRestore: true,
 			error: undefined,
 		});
-		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
+		getNamedBackupsDirectoryPathMock.mockReturnValue(MOCK_BACKUP_DIR);
 		importAccountsMock.mockResolvedValue({
 			imported: 1,
 			skipped: 0,
@@ -2387,7 +2392,7 @@ describe("codex manager cli commands", () => {
 		const assessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -2427,8 +2432,82 @@ describe("codex manager cli commands", () => {
 		);
 		expect(confirmMock).toHaveBeenCalledOnce();
 		expect(importAccountsMock).toHaveBeenCalledWith(
-			"/mock/backups/named-backup.json",
+			mockBackupPath("named-backup"),
 		);
+	});
+
+	it("rejects a restore when the reassessed backup path escapes the backup directory", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: mockBackupPath("named-backup"),
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		const escapedAssessment = {
+			...assessment,
+			backup: {
+				...assessment.backup,
+				path: resolve(MOCK_BACKUP_DIR, "../outside.json"),
+			},
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock
+			.mockResolvedValueOnce(assessment)
+			.mockResolvedValueOnce(escapedAssessment);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(confirmMock).toHaveBeenCalledOnce();
+			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(errorSpy).toHaveBeenCalledWith(
+				"Restore failed: Backup path escapes backup directory",
+			);
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 
 	it("offers backup restore from the login menu when no accounts are saved", async () => {
@@ -2458,7 +2537,7 @@ describe("codex manager cli commands", () => {
 		const assessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -2494,7 +2573,7 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({ currentStorage: null }),
 		);
 		expect(importAccountsMock).toHaveBeenCalledWith(
-			"/mock/backups/named-backup.json",
+			mockBackupPath("named-backup"),
 		);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -2529,7 +2608,7 @@ describe("codex manager cli commands", () => {
 		const assessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -2596,7 +2675,7 @@ describe("codex manager cli commands", () => {
 		const assessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -2617,7 +2696,7 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		importAccountsMock.mockRejectedValueOnce(
-			new Error("Import file not found: /mock/backups/named-backup.json"),
+			new Error(`Import file not found: ${mockBackupPath("named-backup")}`),
 		);
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
@@ -2633,7 +2712,7 @@ describe("codex manager cli commands", () => {
 			expect(exitCode).toBe(0);
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 			expect(importAccountsMock).toHaveBeenCalledWith(
-				"/mock/backups/named-backup.json",
+				mockBackupPath("named-backup"),
 			);
 			const restoreFailureCalls = [
 				...errorSpy.mock.calls,
@@ -2671,7 +2750,7 @@ describe("codex manager cli commands", () => {
 		const assessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -2709,7 +2788,7 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(importAccountsMock).toHaveBeenCalledWith(
-				"/mock/backups/named-backup.json",
+				mockBackupPath("named-backup"),
 			);
 			expect(logSpy).toHaveBeenCalledWith(
 				"All accounts in this backup already exist",
@@ -2761,7 +2840,7 @@ describe("codex manager cli commands", () => {
 		const healthyAssessment = {
 			backup: {
 				name: "healthy-backup",
-				path: "/mock/backups/healthy-backup.json",
+				path: mockBackupPath("healthy-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -2783,7 +2862,7 @@ describe("codex manager cli commands", () => {
 			{
 				...healthyAssessment.backup,
 				name: "broken-backup",
-				path: "/mock/backups/broken-backup.json",
+				path: mockBackupPath("broken-backup"),
 			},
 			healthyAssessment.backup,
 		]);
@@ -2810,7 +2889,7 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(importAccountsMock).toHaveBeenCalledWith(
-				"/mock/backups/healthy-backup.json",
+				mockBackupPath("healthy-backup"),
 			);
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining(
@@ -2832,7 +2911,7 @@ describe("codex manager cli commands", () => {
 		const totalBackups = NAMED_BACKUP_ASSESS_CONCURRENCY + 3;
 		const backups = Array.from({ length: totalBackups }, (_value, index) => ({
 			name: `named-backup-${index + 1}`,
-			path: `/mock/backups/named-backup-${index + 1}.json`,
+			path: mockBackupPath(`named-backup-${index + 1}`),
 			createdAt: null,
 			updatedAt: Date.now() + index,
 			sizeBytes: 128,
@@ -2922,7 +3001,7 @@ describe("codex manager cli commands", () => {
 		const initialAssessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -2983,7 +3062,7 @@ describe("codex manager cli commands", () => {
 			expect.stringContaining("add 1 new account(s)"),
 		);
 		expect(importAccountsMock).toHaveBeenCalledWith(
-			"/mock/backups/named-backup.json",
+			mockBackupPath("named-backup"),
 		);
 	});
 
@@ -3020,7 +3099,7 @@ describe("codex manager cli commands", () => {
 		const assessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -3069,7 +3148,7 @@ describe("codex manager cli commands", () => {
 				expect.stringContaining("for 2 existing account(s)"),
 			);
 			expect(importAccountsMock).toHaveBeenCalledWith(
-				"/mock/backups/named-backup.json",
+				mockBackupPath("named-backup"),
 			);
 			expect(logSpy).toHaveBeenCalledWith(
 				'Restored backup "named-backup". Refreshed stored metadata for matching existing account(s).',
@@ -3105,7 +3184,7 @@ describe("codex manager cli commands", () => {
 		const initialAssessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -3202,7 +3281,7 @@ describe("codex manager cli commands", () => {
 		const initialAssessment = {
 			backup: {
 				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
+				path: mockBackupPath("named-backup"),
 				createdAt: null,
 				updatedAt: now,
 				sizeBytes: 128,
@@ -3273,7 +3352,7 @@ describe("codex manager cli commands", () => {
 		const assessment = {
 			backup: {
 				name: "epoch-backup",
-				path: "/mock/backups/epoch-backup.json",
+				path: mockBackupPath("epoch-backup"),
 				createdAt: null,
 				updatedAt: 0,
 				sizeBytes: 128,
@@ -3315,7 +3394,7 @@ describe("codex manager cli commands", () => {
 		const backups = [
 			{
 				name: "today-backup",
-				path: "/mock/backups/today-backup.json",
+				path: mockBackupPath("today-backup"),
 				createdAt: null,
 				updatedAt: now - 1_000,
 				sizeBytes: 128,
@@ -3327,7 +3406,7 @@ describe("codex manager cli commands", () => {
 			},
 			{
 				name: "yesterday-backup",
-				path: "/mock/backups/yesterday-backup.json",
+				path: mockBackupPath("yesterday-backup"),
 				createdAt: null,
 				updatedAt: now - 1.5 * 86_400_000,
 				sizeBytes: 128,
@@ -3339,7 +3418,7 @@ describe("codex manager cli commands", () => {
 			},
 			{
 				name: "three-days-backup",
-				path: "/mock/backups/three-days-backup.json",
+				path: mockBackupPath("three-days-backup"),
 				createdAt: null,
 				updatedAt: now - 3 * 86_400_000,
 				sizeBytes: 128,
@@ -3351,7 +3430,7 @@ describe("codex manager cli commands", () => {
 			},
 			{
 				name: "older-backup",
-				path: "/mock/backups/older-backup.json",
+				path: mockBackupPath("older-backup"),
 				createdAt: null,
 				updatedAt: now - 8 * 86_400_000,
 				sizeBytes: 128,
@@ -3407,7 +3486,7 @@ describe("codex manager cli commands", () => {
 		const assessment = {
 			backup: {
 				name: "nan-backup",
-				path: "/mock/backups/nan-backup.json",
+				path: mockBackupPath("nan-backup"),
 				createdAt: null,
 				updatedAt: Number.NaN,
 				sizeBytes: 128,

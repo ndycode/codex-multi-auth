@@ -47,11 +47,12 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
-const NAMED_BACKUP_PARALLELISM = 8;
-export const NAMED_BACKUP_LIST_CONCURRENCY = NAMED_BACKUP_PARALLELISM;
-// Keep assessment fan-out on the same ceiling unless both call sites are retuned
-// together, since each assessment performs multiple filesystem operations.
-export const NAMED_BACKUP_ASSESS_CONCURRENCY = NAMED_BACKUP_PARALLELISM;
+const NAMED_BACKUP_LIST_PARALLELISM = 8;
+const NAMED_BACKUP_ASSESS_PARALLELISM = 4;
+export const NAMED_BACKUP_LIST_CONCURRENCY = NAMED_BACKUP_LIST_PARALLELISM;
+// Each assessment does more I/O than a listing pass, so keep a lower ceiling to
+// reduce transient AV/file-lock pressure on Windows restore menus.
+export const NAMED_BACKUP_ASSESS_CONCURRENCY = NAMED_BACKUP_ASSESS_PARALLELISM;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -156,7 +157,10 @@ type NamedBackupCandidateCache = Map<string, LoadedBackupCandidate>;
 function getNamedBackupCandidateCache(
 	candidateCache: Map<string, unknown> | undefined,
 ): NamedBackupCandidateCache | undefined {
-	return candidateCache as NamedBackupCandidateCache | undefined;
+	if (!candidateCache) return undefined;
+	// Caller contract: only reuse caches created by listNamedBackups() for the
+	// matching assessNamedBackupRestore() flow.
+	return candidateCache as NamedBackupCandidateCache;
 }
 
 /**
@@ -1855,6 +1859,9 @@ function haveEquivalentAccountRows(
 	left: readonly unknown[],
 	right: readonly unknown[],
 ): boolean {
+	// deduplicateAccounts() preserves the existing-first ordering from
+	// [...currentAccounts, ...incomingAccounts], so index-aligned comparison is
+	// the correct no-op check for restore assessment/import.
 	if (left.length !== right.length) {
 		return false;
 	}
@@ -1966,7 +1973,7 @@ async function findExistingNamedBackupPath(
 	return undefined;
 }
 
-function assertNamedBackupRestorePath(
+export function assertNamedBackupRestorePath(
 	path: string,
 	backupRoot: string,
 ): string {
@@ -1978,7 +1985,7 @@ function assertNamedBackupRestorePath(
 		firstSegment === ".." ||
 		isAbsolute(relativePath)
 	) {
-		throw new Error(`Backup path escapes backup directory: ${resolvedPath}`);
+		throw new Error("Backup path escapes backup directory");
 	}
 	return resolvedPath;
 }
