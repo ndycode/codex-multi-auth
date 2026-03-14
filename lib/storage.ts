@@ -1741,8 +1741,7 @@ export async function restoreNamedBackup(
 			assessment.error ?? "Backup is not eligible for restore.",
 		);
 	}
-	const backupPath = await resolveNamedBackupRestorePath(name);
-	return importAccounts(backupPath);
+	return importAccounts(assessment.backup.path);
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -1873,9 +1872,7 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	try {
 		return buildNamedBackupPath(name);
 	} catch (error) {
-		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
-			? requestedWithExtension.slice(0, -".json".length)
-			: requestedWithExtension;
+		const baseName = requestedWithExtension.slice(0, -".json".length);
 		if (
 			requested.length > 0 &&
 			basename(requestedWithExtension) === requestedWithExtension &&
