@@ -1,0 +1,38 @@
+name: Anti Slop
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+jobs:
+  anti-slop:
+    name: PR Quality Screening
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run anti-slop checks
+        uses: peakoss/anti-slop@85daca1880e9e1af197fc06ea03349daf08f4202 # v0.2.1
+        with:
+          github-token: ${{ github.token }}
+          max-failures: 4
+          require-pr-template: true
+          strict-pr-template-sections: Validation
+          optional-pr-template-sections: Additional Notes
+          blocked-terms: |
+            WORKTREE_LANTERN_1455
+          blocked-paths: ""
+          exempt-draft-prs: true
+          failure-add-pr-labels: needs-human-review
+          failure-pr-message: >-
+            This PR failed automated PR quality screening and was flagged for
+            maintainer review. Keep the PR template intact, include real
+            validation evidence, and remove any hidden template trap text before
+            requesting review again.
+          close-pr: false
+          lock-pr: false
