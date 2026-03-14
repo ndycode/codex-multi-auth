@@ -1942,7 +1942,7 @@ function setTransactionSnapshotRevision(
 		value: revision,
 		writable: true,
 		configurable: true,
-		enumerable: true,
+		enumerable: false,
 	});
 	return storage;
 }
@@ -1965,11 +1965,44 @@ function mergeStaleTransactionSnapshot(
 	latest: AccountStorageV3,
 	stale: AccountStorageV3,
 ): AccountStorageV3 {
+	const mergedAccounts = deduplicateAccounts([...latest.accounts, ...stale.accounts]);
+	const staleActiveIndex = clampIndex(stale.activeIndex, stale.accounts.length);
+	const staleActiveRef = extractActiveAccountRef(stale.accounts, staleActiveIndex);
+	const activeIndex = resolveAccountSelectionIndex(
+		mergedAccounts,
+		{
+			accountId: staleActiveRef.accountId,
+			email: staleActiveRef.emailKey,
+			refreshToken: staleActiveRef.refreshToken,
+		},
+		staleActiveIndex,
+	);
+	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+	for (const family of MODEL_FAMILIES) {
+		const rawFamilyIndex = stale.activeIndexByFamily?.[family];
+		const staleFamilyIndex =
+			typeof rawFamilyIndex === "number" && Number.isFinite(rawFamilyIndex)
+				? clampIndex(rawFamilyIndex, stale.accounts.length)
+				: staleActiveIndex;
+		const staleFamilyRef = extractActiveAccountRef(
+			stale.accounts,
+			staleFamilyIndex,
+		);
+		activeIndexByFamily[family] = resolveAccountSelectionIndex(
+			mergedAccounts,
+			{
+				accountId: staleFamilyRef.accountId,
+				email: staleFamilyRef.emailKey,
+				refreshToken: staleFamilyRef.refreshToken,
+			},
+			staleFamilyIndex,
+		);
+	}
 	const merged = normalizeAccountStorage({
 		version: 3,
-		accounts: deduplicateAccounts([...latest.accounts, ...stale.accounts]),
-		activeIndex: stale.activeIndex,
-		activeIndexByFamily: stale.activeIndexByFamily,
+		accounts: mergedAccounts,
+		activeIndex,
+		activeIndexByFamily,
 	});
 	return cloneAccountStorageForPersistence(merged ?? stale);
 }
@@ -2542,8 +2575,8 @@ export async function importAccounts(
 			// Nested imports write immediately to avoid re-entering the storage
 			// mutex. Later persist() calls compare the payload's snapshot revision
 			// against the live transaction state so stale payloads keep these
-			// imported accounts, while payloads built from getCurrent() can still
-			// intentionally remove them.
+			// imported accounts, while handlers that mutate the live getCurrent()
+			// snapshot in place can still intentionally remove them.
 			return applyImport(transactionState.snapshot, async (storage) => {
 				const nextStorage = cloneAccountStorageForPersistence(storage);
 				transactionState.revision += 1;

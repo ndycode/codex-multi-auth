@@ -718,6 +718,8 @@ describe("storage", () => {
 
 				const stalePersistPayload = {
 					...current,
+					activeIndex: 1,
+					activeIndexByFamily: { codex: 1 },
 					accounts: [
 						...current.accounts,
 						{
@@ -750,6 +752,18 @@ describe("storage", () => {
 						refreshToken: "refresh-appended",
 					}),
 				]),
+			);
+			expect(loaded?.accounts[loaded.activeIndex]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-appended",
+					refreshToken: "refresh-appended",
+				}),
+			);
+			expect(loaded?.accounts[loaded.activeIndexByFamily?.codex ?? -1]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-appended",
+					refreshToken: "refresh-appended",
+				}),
 			);
 		});
 
@@ -798,13 +812,10 @@ describe("storage", () => {
 				if (!liveCurrent) {
 					throw new Error("expected live transaction snapshot");
 				}
-
-				await persist({
-					...liveCurrent,
-					accounts: liveCurrent.accounts.filter(
-						(account) => account.accountId !== "acct-imported",
-					),
-				});
+				liveCurrent.accounts = liveCurrent.accounts.filter(
+					(account) => account.accountId !== "acct-imported",
+				);
+				await persist(liveCurrent);
 			});
 
 			const loaded = await loadAccounts();
@@ -859,13 +870,10 @@ describe("storage", () => {
 				if (!liveCurrent) {
 					throw new Error("expected live transaction snapshot");
 				}
-
-				await persist({
-					...liveCurrent,
-					accounts: liveCurrent.accounts.filter(
-						(account) => account.accountId !== "acct-imported",
-					),
-				});
+				liveCurrent.accounts = liveCurrent.accounts.filter(
+					(account) => account.accountId !== "acct-imported",
+				);
+				await persist(liveCurrent);
 			});
 
 			const loaded = await loadAccounts();
@@ -996,6 +1004,118 @@ describe("storage", () => {
 					accountId: "acct-flagged",
 					refreshToken: "refresh-flagged",
 				}),
+			);
+		});
+
+		it("getCurrent exposes the live snapshot after persist inside a flagged transaction", async () => {
+			const now = Date.now();
+			let liveSnapshot: Awaited<ReturnType<typeof loadAccounts>> = null;
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+				],
+			});
+
+			await withAccountAndFlaggedStorageTransaction(
+				async (current, persist, getCurrent) => {
+					if (!current) {
+						throw new Error("expected existing account storage");
+					}
+					expect(getCurrent()).toBe(current);
+
+					await persist(
+						{
+							...current,
+							accounts: [
+								...current.accounts,
+								{
+									accountId: "acct-added",
+									email: "added@example.com",
+									refreshToken: "refresh-added",
+									addedAt: now,
+									lastUsed: now,
+								},
+							],
+						},
+						{
+							version: 1,
+							accounts: [],
+						},
+					);
+
+					liveSnapshot = getCurrent();
+				},
+			);
+
+			expect(liveSnapshot?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-existing",
+						refreshToken: "refresh-existing",
+					}),
+					expect.objectContaining({
+						accountId: "acct-added",
+						refreshToken: "refresh-added",
+					}),
+				]),
+			);
+		});
+
+		it("getCurrent starts null and becomes live after persist inside a flagged transaction", async () => {
+			const storagePath = getStoragePath();
+			const now = Date.now();
+			let liveSnapshot: Awaited<ReturnType<typeof loadAccounts>> = null;
+
+			await fs.mkdir(dirname(storagePath), { recursive: true });
+			await fs.writeFile(storagePath, "{invalid-json", "utf-8");
+
+			await withAccountAndFlaggedStorageTransaction(
+				async (current, persist, getCurrent) => {
+					expect(current).toBeNull();
+					expect(getCurrent()).toBeNull();
+
+					await persist(
+						{
+							version: 3,
+							activeIndex: 0,
+							activeIndexByFamily: { codex: 0 },
+							accounts: [
+								{
+									accountId: "acct-created",
+									email: "created@example.com",
+									refreshToken: "refresh-created",
+									addedAt: now,
+									lastUsed: now,
+								},
+							],
+						},
+						{
+							version: 1,
+							accounts: [],
+						},
+					);
+
+					liveSnapshot = getCurrent();
+				},
+			);
+
+			expect(liveSnapshot?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "acct-created",
+						refreshToken: "refresh-created",
+					}),
+				]),
 			);
 		});
 
