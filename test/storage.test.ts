@@ -1,6 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import {
@@ -434,6 +434,243 @@ describe("storage", () => {
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
 		});
 
+		it("should skip persisting duplicate-only imports", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			const existing = {
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			};
+			await saveAccounts(existing);
+			await fs.writeFile(exportPath, JSON.stringify(existing));
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+		});
+
+		it("should treat deduplicated current snapshots as a no-op import", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "existing",
+							email: "existing@example.com",
+							refreshToken: "ref-existing",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+		});
+
+		it("should deduplicate incoming backup rows before reporting skipped imports", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await clearAccounts();
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "duplicate-import",
+							email: "duplicate-import@example.com",
+							refreshToken: "ref-duplicate-import-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+						{
+							accountId: "duplicate-import",
+							email: "duplicate-import@example.com",
+							refreshToken: "ref-duplicate-import-new",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 1,
+				changed: true,
+			});
+			expect(loaded?.accounts).toHaveLength(1);
+			expect(loaded?.accounts[0]).toMatchObject({
+				accountId: "duplicate-import",
+				email: "duplicate-import@example.com",
+				refreshToken: "ref-duplicate-import-new",
+				lastUsed: 2,
+			});
+		});
+
+		it("should persist duplicate-only imports when they refresh stored metadata", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						accessToken: "stale-access",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "existing",
+							email: "existing@example.com",
+							refreshToken: "ref-existing",
+							accessToken: "fresh-access",
+							addedAt: 1,
+							lastUsed: 10,
+						},
+					],
+				}),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({
+				imported: 0,
+				skipped: 1,
+				total: 1,
+				changed: true,
+			});
+			expect(loaded?.accounts).toHaveLength(1);
+			expect(loaded?.accounts[0]).toMatchObject({
+				accountId: "existing",
+				accessToken: "fresh-access",
+				lastUsed: 10,
+			});
+		});
+
+		it("should skip semantically identical duplicate-only imports even when key order differs", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				'{"version":3,"activeIndex":0,"accounts":[{"lastUsed":2,"addedAt":1,"refreshToken":"ref-existing","accountId":"existing"}]}',
+			);
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+		});
+
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
 			const existing = {
 				version: 3,
@@ -478,7 +715,12 @@ describe("storage", () => {
 			const imported = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(imported).toEqual({ imported: 1, total: 3, skipped: 0 });
+			expect(imported).toEqual({
+				imported: 1,
+				total: 3,
+				skipped: 0,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(3);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual(
 				expect.arrayContaining([
@@ -528,7 +770,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
@@ -573,7 +820,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
@@ -1107,6 +1359,73 @@ describe("storage", () => {
 			);
 		});
 
+		it("rejects a second import that would exceed MAX_ACCOUNTS", async () => {
+			const nearLimitAccounts = Array.from(
+				{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
+				(_, index) => ({
+					accountId: `existing-${index}`,
+					refreshToken: `ref-existing-${index}`,
+					addedAt: index + 1,
+					lastUsed: index + 1,
+				}),
+			);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: nearLimitAccounts,
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "extra-one",
+							refreshToken: "ref-extra-one",
+							addedAt: 10_000,
+							lastUsed: 10_000,
+						},
+					],
+				}),
+			);
+
+			const first = await importAccounts(exportPath);
+			expect(first).toMatchObject({
+				imported: 1,
+				skipped: 0,
+				total: ACCOUNT_LIMITS.MAX_ACCOUNTS,
+				changed: true,
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "extra-two",
+							refreshToken: "ref-extra-two",
+							addedAt: 20_000,
+							lastUsed: 20_000,
+						},
+					],
+				}),
+			);
+
+			await expect(importAccounts(exportPath)).rejects.toThrow(
+				/exceed maximum/,
+			);
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toHaveLength(ACCOUNT_LIMITS.MAX_ACCOUNTS);
+			expect(
+				loaded?.accounts.some((account) => account.accountId === "extra-two"),
+			).toBe(false);
+		});
+
 		it("should fail export when no accounts exist", async () => {
 			const isolatedStorageDir = join(
 				testWorkDir,
@@ -1142,6 +1461,51 @@ describe("storage", () => {
 			await expect(importAccounts(nonexistentPath)).rejects.toThrow(
 				/Import file not found/,
 			);
+		});
+
+		it("retries transient import read errors before parsing the backup", async () => {
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "retry-import-read",
+							refreshToken: "ref-retry-import-read",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			const originalReadFile = fs.readFile.bind(fs);
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === exportPath && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("import file busy") as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toMatchObject({
+					imported: 1,
+					skipped: 0,
+					total: 1,
+					changed: true,
+				});
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
 		});
 
 		it("should fail import when file contains invalid JSON", async () => {
