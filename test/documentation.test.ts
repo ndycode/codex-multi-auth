@@ -517,6 +517,7 @@ describe("Documentation Integrity", () => {
 		expect(antiSlopStep?.with?.["close-pr"]).toBe(false);
 		expect(antiSlopStep?.with?.["lock-pr"]).toBe(false);
 		expect(antiSlop).toContain("must stay metadata-only");
+		expect(antiSlop).toContain("strips HTML comments before blocked-term matching");
 
 		const prBody = read(prTemplate);
 		expect(prBody).toContain("WORKTREE_LANTERN_1455");

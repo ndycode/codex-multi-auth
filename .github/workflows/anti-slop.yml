@@ -26,6 +26,8 @@ jobs:
           require-pr-template: true
           strict-pr-template-sections: Validation
           optional-pr-template-sections: Additional Notes
+          # anti-slop strips HTML comments before blocked-term matching, so the
+          # hidden template comment only trips if copied into visible PR text.
           blocked-terms: |
             WORKTREE_LANTERN_1455
           blocked-paths: ""
@@ -34,7 +36,7 @@ jobs:
           failure-pr-message: >-
             This PR failed automated PR quality screening and was flagged for
             maintainer review. Keep the PR template intact, include real
-            validation evidence, and remove any hidden template trap text before
-            requesting review again.
+            validation evidence, and remove any copied hidden template trap text
+            from the visible PR body before requesting review again.
           close-pr: false
           lock-pr: false
