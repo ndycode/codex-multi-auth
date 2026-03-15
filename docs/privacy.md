@@ -83,12 +83,23 @@ Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction Silen
 Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
 # Override-root cleanup examples (if overrides are set):
-if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\settings.json" -Force -ErrorAction SilentlyContinue }
-if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue }
-if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue }
-if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\quota-cache.json" -Force -ErrorAction SilentlyContinue }
-if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue }
-if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\cache" -Recurse -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_DIR) {
+  foreach ($relativePath in @(
+    "settings.json",
+    "openai-codex-accounts.json",
+    "openai-codex-flagged-accounts.json",
+    "quota-cache.json"
+  )) {
+    Remove-Item (Join-Path $env:CODEX_MULTI_AUTH_DIR $relativePath) -Force -ErrorAction SilentlyContinue
+  }
+
+  foreach ($relativePath in @(
+    "logs\\codex-plugin",
+    "cache"
+  )) {
+    Remove-Item (Join-Path $env:CODEX_MULTI_AUTH_DIR $relativePath) -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
 if ($env:CODEX_MULTI_AUTH_CONFIG_PATH) { Remove-Item "$env:CODEX_MULTI_AUTH_CONFIG_PATH" -Force -ErrorAction SilentlyContinue }
 ```
 

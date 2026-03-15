@@ -26,14 +26,24 @@ codex auth login
 
 Check which `codex` executable is running:
 
+PowerShell:
+
+```powershell
+Get-Command codex
+```
+
+POSIX shells:
+
 ```bash
-where codex
-which codex
+command -v codex
+```
+
+Then confirm the wrapper status:
+
+```bash
 codex auth status
 npm ls -g codex-multi-auth
 ```
-
-Use the command lookup tool that exists on your shell.
 
 If you also installed the official Codex host/runtime, run `codex --version` as an extra routing check.
 

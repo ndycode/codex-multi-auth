@@ -94,7 +94,7 @@ If you also installed the official Codex host/runtime, you can additionally veri
 3. Ask before starting browser-driven login with `codex auth login`
 4. Ask before running repair/reset commands or the advanced plugin installer
 
-If the user explicitly needs forwarded non-auth `codex` commands or plugin-host setup, send them to [docs/advanced-plugin-install.md](docs/advanced-plugin-install.md) instead of assuming the extra install/config steps.
+If the user explicitly needs non-auth `codex` commands to be forwarded or needs plugin-host setup, send them to [docs/advanced-plugin-install.md](docs/advanced-plugin-install.md) instead of assuming the extra install/config steps.
 
 ### Verification
 
@@ -249,7 +249,7 @@ codex auth login
 <details>
 <summary><b>Common symptoms</b></summary>
 
-- `codex auth` unrecognized: run `where codex` or `which codex`, then follow `docs/troubleshooting.md` for routing fallback commands
+- `codex auth` unrecognized: run `Get-Command codex` (PowerShell) or `command -v codex` (POSIX), then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account

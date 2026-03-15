@@ -237,6 +237,8 @@ describe("Documentation Integrity", () => {
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/openai-codex-flagged-accounts.json');
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/quota-cache.json');
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/cache');
+		expect(privacy).toContain("foreach ($relativePath in @(");
+		expect(privacy).toContain("Join-Path $env:CODEX_MULTI_AUTH_DIR $relativePath");
 
 		expect(advancedInstall).toContain("%APPDATA%\\Codex\\Codex.json");
 		expect(troubleshooting).toContain(
@@ -247,6 +249,26 @@ describe("Documentation Integrity", () => {
 		);
 		expect(contributing).toContain(
 			"`codex --version` if the official Codex host/runtime is installed or part of the failing path",
+		);
+	});
+
+	it("uses platform-specific command lookup guidance in onboarding and troubleshooting docs", () => {
+		const readme = read("README.md");
+		const gettingStarted = read("docs/getting-started.md");
+		const troubleshooting = read("docs/troubleshooting.md");
+		const advancedInstall = read("docs/advanced-plugin-install.md");
+
+		for (const content of [gettingStarted, troubleshooting, advancedInstall]) {
+			expect(content).toContain("Get-Command codex");
+			expect(content).toContain("command -v codex");
+			expect(content).not.toContain("```bash\nwhere codex\nwhich codex");
+		}
+
+		expect(readme).toContain("Get-Command codex` (PowerShell) or `command -v codex` (POSIX)");
+		expect(readme).toContain("needs non-auth `codex` commands to be forwarded");
+		expect(advancedInstall).toContain("`scripts/install-codex-auth.js` does the following:");
+		expect(advancedInstall).not.toContain(
+			"> It should be treated as an operator action, not something an LLM agent runs automatically.\n\n> [!NOTE]",
 		);
 	});
 

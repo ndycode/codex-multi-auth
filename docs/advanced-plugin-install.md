@@ -21,7 +21,6 @@ If you only need account login, switching, checks, and diagnostics, stop at [get
 > [!CAUTION]
 > This installer edits global Codex config, creates a backup, and clears the Codex plugin cache.
 > It should be treated as an operator action, not something an LLM agent runs automatically.
-
 > [!NOTE]
 > Browser-driven auth commands such as `codex auth login` still require a human to complete the OAuth step.
 
@@ -29,7 +28,7 @@ If you only need account login, switching, checks, and diagnostics, stop at [get
 
 ## What The Installer Changes
 
-`scripts/install-codex-auth.js` does all of the following:
+`scripts/install-codex-auth.js` does the following:
 
 - writes or updates the global Codex config
 - ensures `plugin: ["codex-multi-auth"]` is present
@@ -97,12 +96,17 @@ codex auth forecast --live
 
 If you are debugging command routing, use the shell-appropriate lookup command:
 
-```bash
-where codex
-which codex
+PowerShell:
+
+```powershell
+Get-Command codex
 ```
 
-Use whichever one exists on your shell.
+POSIX shells:
+
+```bash
+command -v codex
+```
 
 ---
 

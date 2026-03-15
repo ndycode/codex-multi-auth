@@ -112,12 +112,19 @@ Linked Git worktrees share the same repo identity so you do not need separate ac
 
 If `codex auth` is not recognized:
 
-```bash
-where codex
-which codex
+PowerShell:
+
+```powershell
+Get-Command codex
 ```
 
-Use the command that exists on your shell, then continue with [troubleshooting.md](troubleshooting.md#verify-install-and-routing).
+POSIX shells:
+
+```bash
+command -v codex
+```
+
+Then continue with [troubleshooting.md](troubleshooting.md#verify-install-and-routing).
 
 If you also need forwarded non-auth Codex commands or plugin-host runtime setup, continue with [advanced-plugin-install.md](advanced-plugin-install.md).
 
