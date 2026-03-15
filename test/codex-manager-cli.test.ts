@@ -3497,6 +3497,7 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
 			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -3512,8 +3513,64 @@ describe("codex manager cli commands", () => {
 					"Could not read backup directory: EPERM: operation not permitted",
 				),
 			);
+			expect(logSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining("No named backups found."),
+			);
 		} finally {
+			logSpy.mockRestore();
 			errorSpy.mockRestore();
+		}
+	});
+
+	it("does not claim backups are missing when every assessment fails", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue(null);
+		listNamedBackupsMock.mockResolvedValue([
+			{
+				name: "busy-backup",
+				path: "/mock/backups/busy-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		]);
+		assessNamedBackupRestoreMock.mockRejectedValueOnce(
+			makeErrnoError("backup directory busy", "EBUSY"),
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(selectMock).not.toHaveBeenCalled();
+			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					'Skipped backup assessment for "busy-backup": backup directory busy',
+				),
+			);
+			expect(warnSpy).toHaveBeenCalledWith(
+				"Could not inspect any named backups. Resolve the backup read errors and try again.",
+			);
+			expect(logSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining("No named backups found."),
+			);
+		} finally {
+			logSpy.mockRestore();
+			warnSpy.mockRestore();
 		}
 	});
 

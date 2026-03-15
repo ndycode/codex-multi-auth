@@ -4348,8 +4348,15 @@ function getRedactedFilesystemErrorLabel(error: unknown): string {
 	return "UNKNOWN";
 }
 
+type BackupRestoreManagerAssessmentLoadResult = {
+	assessments: BackupRestoreAssessment[];
+	backupCount: number;
+	readFailed: boolean;
+	assessmentFailures: number;
+};
+
 async function loadBackupRestoreManagerAssessments(): Promise<
-	BackupRestoreAssessment[]
+	BackupRestoreManagerAssessmentLoadResult
 > {
 	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
 	try {
@@ -4361,14 +4368,25 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 				collapseWhitespace(message) || "unknown error"
 			}`,
 		);
-		return [];
+		return {
+			assessments: [],
+			backupCount: 0,
+			readFailed: true,
+			assessmentFailures: 0,
+		};
 	}
 	if (backups.length === 0) {
-		return [];
+		return {
+			assessments: [],
+			backupCount: 0,
+			readFailed: false,
+			assessmentFailures: 0,
+		};
 	}
 
 	const currentStorage = await loadAccounts();
 	const assessments: BackupRestoreAssessment[] = [];
+	let assessmentFailures = 0;
 	for (
 		let index = 0;
 		index < backups.length;
@@ -4395,10 +4413,16 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 					collapseWhitespace(reason) || "unknown error"
 				}`,
 			);
+			assessmentFailures += 1;
 		}
 	}
 
-	return assessments;
+	return {
+		assessments,
+		backupCount: backups.length,
+		readFailed: false,
+		assessmentFailures,
+	};
 }
 
 async function runBackupRestoreManager(
@@ -4406,9 +4430,26 @@ async function runBackupRestoreManager(
 	assessmentsOverride?: BackupRestoreAssessment[],
 ): Promise<BackupRestoreManagerResult> {
 	const backupDir = getNamedBackupsDirectoryPath();
-	const assessments =
-		assessmentsOverride ?? (await loadBackupRestoreManagerAssessments());
+	const assessmentLoad =
+		assessmentsOverride === undefined
+			? await loadBackupRestoreManagerAssessments()
+			: {
+					assessments: assessmentsOverride,
+					backupCount: assessmentsOverride.length,
+					readFailed: false,
+					assessmentFailures: 0,
+				};
+	const { assessments } = assessmentLoad;
 	if (assessments.length === 0) {
+		if (assessmentLoad.readFailed) {
+			return "dismissed";
+		}
+		if (assessmentLoad.assessmentFailures > 0) {
+			console.warn(
+				"Could not inspect any named backups. Resolve the backup read errors and try again.",
+			);
+			return "dismissed";
+		}
 		console.log(`No named backups found. Place backup files in ${backupDir}.`);
 		return "dismissed";
 	}
