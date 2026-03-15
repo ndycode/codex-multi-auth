@@ -263,6 +263,25 @@ describe("Documentation Integrity", () => {
 		expect(manager).not.toContain("codex-multi-auth auth switch <index>");
 	});
 
+	it("ships the official Codex plugin shell and marketplace metadata", () => {
+		const pluginManifestPath = "codex-plugin/.codex-plugin/plugin.json";
+		const pluginSkillPath = "codex-plugin/skills/account-manager/SKILL.md";
+		const marketplacePath = ".agents/plugins/marketplace.json";
+		const packageJson = read("package.json");
+		const pluginManifest = read(pluginManifestPath);
+		const pluginSkill = read(pluginSkillPath);
+		const marketplace = read(marketplacePath);
+
+		expect(packageJson).toContain('"codex-plugin/"');
+		expect(packageJson).toContain('".agents/"');
+		expect(pluginManifest).toContain('"name": "codex-multi-auth"');
+		expect(pluginManifest).toContain('"skills": "./skills"');
+		expect(pluginSkill).toContain("codex auth status");
+		expect(pluginSkill).toContain("codex auth login");
+		expect(marketplace).toContain('"name": "ndycode"');
+		expect(marketplace).toContain('"path": "../../codex-plugin"');
+	});
+
 	it("documents stable overrides separately from advanced and internal overrides", () => {
 		const configGuide = read("docs/configuration.md").toLowerCase();
 		const settingsRef = read("docs/reference/settings.md").toLowerCase();

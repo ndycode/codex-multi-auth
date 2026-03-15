@@ -92,6 +92,26 @@ describe("install-codex-auth script", () => {
 		expect(merged).toContain("enabled = true");
 	});
 
+	it("preserves unrelated plugin entries while enabling codex-multi-auth", () => {
+		const merged = mergePluginConfigToml(
+			[
+				"model = \"gpt-5-codex\"",
+				"",
+				"[features]",
+				"mcp = true",
+				"",
+				"[plugins.\"other-plugin@openai-curated\"]",
+				"enabled = false",
+				"",
+			].join("\n"),
+			makePluginKey(),
+		);
+		expect(merged).toContain('model = "gpt-5-codex"');
+		expect(merged).toContain("mcp = true");
+		expect(merged).toContain('[plugins."other-plugin@openai-curated"]');
+		expect(merged).toContain('[plugins."codex-multi-auth@ndycode"]');
+	});
+
 	it("dry-run does not create config or plugin cache", () => {
 		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-dryrun-"));
 		tempRoots.push(home);
@@ -164,6 +184,80 @@ describe("install-codex-auth script", () => {
 
 		const backups = readdirSync(codexHome).filter((entry) =>
 			entry.startsWith("config.toml.bak-")
+		);
+		expect(backups.length).toBe(1);
+	});
+
+	it("replaces an existing plugin cache entry with the current plugin shell", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-reinstall-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const pluginRoot = path.join(
+			codexHome,
+			"plugins",
+			"cache",
+			PLUGIN_MARKETPLACE,
+			PLUGIN_NAME,
+			PLUGIN_VERSION,
+		);
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+		};
+
+		mkdirSync(path.join(pluginRoot, ".codex-plugin"), { recursive: true });
+		writeFileSync(
+			path.join(pluginRoot, ".codex-plugin", "plugin.json"),
+			'{"name":"stale-plugin"}\n',
+			"utf8",
+		);
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(configPath, "", "utf8");
+
+		await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		});
+
+		const manifest = readFileSync(
+			path.join(pluginRoot, ".codex-plugin", "plugin.json"),
+			"utf8",
+		);
+		expect(manifest).toContain('"name": "codex-multi-auth"');
+		expect(manifest).not.toContain("stale-plugin");
+	});
+
+	it("backs up and updates an overridden CODEX_CLI_CONFIG_PATH", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-config-override-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const customConfigPath = path.join(home, "configs", "custom-config.toml");
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+			CODEX_CLI_CONFIG_PATH: customConfigPath,
+		};
+
+		mkdirSync(path.dirname(customConfigPath), { recursive: true });
+		writeFileSync(customConfigPath, '[plugins."other-plugin@debug"]\nenabled = true\n', "utf8");
+
+		const result = await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		});
+
+		expect(result.stdout).toContain(`Wrote ${customConfigPath}`);
+		const config = readFileSync(customConfigPath, "utf8");
+		expect(config).toContain('[plugins."other-plugin@debug"]');
+		expect(config).toContain('[plugins."codex-multi-auth@ndycode"]');
+
+		const backups = readdirSync(path.dirname(customConfigPath)).filter((entry) =>
+			entry.startsWith("custom-config.toml.bak-")
 		);
 		expect(backups.length).toBe(1);
 	});
