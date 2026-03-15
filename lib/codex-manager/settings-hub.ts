@@ -3294,25 +3294,28 @@ async function promptSettingsHub(
 		},
 		{
 			label: UI_COPY.settings.accountList,
+			hint: UI_COPY.settings.accountListHint,
 			value: { type: "account-list" },
 			color: "green",
 		},
 		{
-			label: UI_COPY.settings.syncCenter,
-			value: { type: "sync-center" },
-			color: "green",
-		},
-		{
 			label: UI_COPY.settings.summaryFields,
+			hint: UI_COPY.settings.summaryFieldsHint,
 			value: { type: "summary-fields" },
 			color: "green",
 		},
 		{
 			label: UI_COPY.settings.behavior,
+			hint: UI_COPY.settings.behaviorHint,
 			value: { type: "behavior" },
 			color: "green",
 		},
-		{ label: UI_COPY.settings.theme, value: { type: "theme" }, color: "green" },
+		{
+			label: UI_COPY.settings.theme,
+			hint: UI_COPY.settings.themeHint,
+			value: { type: "theme" },
+			color: "green",
+		},
 		{ label: "", value: { type: "back" }, separator: true },
 		{
 			label: UI_COPY.settings.advancedTitle,
@@ -3320,14 +3323,22 @@ async function promptSettingsHub(
 			kind: "heading",
 		},
 		{
+			label: UI_COPY.settings.syncCenter,
+			hint: UI_COPY.settings.syncCenterHint,
+			value: { type: "sync-center" },
+			color: "yellow",
+		},
+		{
 			label: UI_COPY.settings.experimental,
+			hint: UI_COPY.settings.experimentalHint,
 			value: { type: "experimental" },
 			color: "yellow",
 		},
 		{
 			label: UI_COPY.settings.backend,
+			hint: UI_COPY.settings.backendHint,
 			value: { type: "backend" },
-			color: "green",
+			color: "yellow",
 		},
 		{ label: "", value: { type: "back" }, separator: true },
 		{
