@@ -333,7 +333,7 @@ describe("handleSessionRecovery", () => {
 	});
 
 	afterEach(() => {
-		vi.restoreAllMocks();
+		vi.resetAllMocks();
 	});
 
 	it("returns false when info is null", async () => {
