@@ -7364,6 +7364,31 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
 			.mockResolvedValueOnce({ mode: "cancel" });
+		deleteAccountAtIndexMock.mockResolvedValueOnce({
+			storage: {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "first@example.com",
+						refreshToken: "refresh-first",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+				],
+			},
+			flagged: { version: 1, accounts: [] },
+			removedAccount: {
+				refreshToken: "refresh-second",
+				addedAt: now - 1_000,
+				lastUsed: now - 1_000,
+				accountIdSource: undefined,
+				enabled: true,
+			},
+			removedFlaggedCount: 0,
+		});
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
