@@ -7,9 +7,10 @@ Public documentation for `codex-multi-auth`.
 ## Start Here
 
 1. [Getting Started](getting-started.md)
-2. [FAQ](faq.md)
-3. [Architecture](architecture.md)
-4. [Troubleshooting](troubleshooting.md)
+2. [Advanced Plugin Install](advanced-plugin-install.md)
+3. [FAQ](faq.md)
+4. [Architecture](architecture.md)
+5. [Troubleshooting](troubleshooting.md)
 
 ---
 
@@ -19,6 +20,7 @@ Public documentation for `codex-multi-auth`.
 | --- | --- |
 | [index.md](index.md) | Daily-use landing page for common `codex auth ...` workflows |
 | [getting-started.md](getting-started.md) | Install, first login, and first health check |
+| [advanced-plugin-install.md](advanced-plugin-install.md) | Advanced Codex host/plugin setup and safety notes |
 | [faq.md](faq.md) | Short answers to common adoption questions |
 | [architecture.md](architecture.md) | Public system overview of the wrapper, storage, and optional plugin runtime |
 | [features.md](features.md) | User-facing capability map |

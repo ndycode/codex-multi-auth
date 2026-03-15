@@ -55,6 +55,8 @@ If you use the plugin-host path, `index.ts` can use the same account pool for:
 - live account sync
 - quota-aware selection
 
+That advanced path is configured separately from the default account-manager install. See [advanced-plugin-install.md](advanced-plugin-install.md).
+
 ---
 
 ## Request Flow
@@ -91,12 +93,14 @@ Codex or ChatGPT-backed request flow with refresh, retry, and failover
 - The canonical command family is `codex auth ...`
 - The OAuth callback port remains `1455`
 - Local storage and repair tooling are designed for predictable operator workflows, not multi-tenant services
+- Browser login, repair, and plugin-install steps are operator actions and should not be auto-run by agents without user approval
 
 ---
 
 ## Related
 
 - [getting-started.md](getting-started.md)
+- [advanced-plugin-install.md](advanced-plugin-install.md)
 - [features.md](features.md)
 - [reference/commands.md](reference/commands.md)
 - [development/ARCHITECTURE.md](development/ARCHITECTURE.md)

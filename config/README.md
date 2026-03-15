@@ -14,6 +14,7 @@ These files are example model/provider templates for `codex-multi-auth`.
 
 - These templates are optional for the OAuth account manager flow.
 - Core auth commands use `codex auth login`.
+- They become relevant when you are setting up the optional plugin-host runtime via [../docs/advanced-plugin-install.md](../docs/advanced-plugin-install.md).
 
 ## Defaults Included
 
@@ -25,6 +26,7 @@ These files are example model/provider templates for `codex-multi-auth`.
 ## Related Docs
 
 - [`../docs/configuration.md`](../docs/configuration.md)
+- [`../docs/advanced-plugin-install.md`](../docs/advanced-plugin-install.md)
 - [`../docs/getting-started.md`](../docs/getting-started.md)
 - [`../docs/reference/settings.md`](../docs/reference/settings.md)
 
