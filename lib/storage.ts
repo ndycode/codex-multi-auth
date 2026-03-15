@@ -165,6 +165,20 @@ type LoadedBackupCandidate = {
 
 type NamedBackupCandidateCache = Map<string, unknown>;
 
+class BackupContainmentError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "BackupContainmentError";
+	}
+}
+
+class BackupPathValidationTransientError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "BackupPathValidationTransientError";
+	}
+}
+
 function isLoadedBackupCandidate(
 	candidate: unknown,
 ): candidate is LoadedBackupCandidate {
@@ -1653,9 +1667,10 @@ export async function listNamedBackups(
 			fs.readdir(backupRoot, { withFileTypes: true }),
 		);
 		const backupEntries = entries
-			.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
+			.filter((entry) => entry.isFile())
 			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
 		const backups: NamedBackupMetadata[] = [];
+		let transientValidationError: BackupPathValidationTransientError | undefined;
 		for (
 			let index = 0;
 			index < backupEntries.length;
@@ -1688,11 +1703,20 @@ export async function listNamedBackups(
 				if (isNamedBackupContainmentError(result.reason)) {
 					throw result.reason;
 				}
+				if (
+					!transientValidationError &&
+					isNamedBackupPathValidationTransientError(result.reason)
+				) {
+					transientValidationError = result.reason;
+				}
 				log.warn("Skipped named backup during listing", {
 					path: join(backupRoot, chunk[chunkIndex]?.name ?? "<unknown>"),
 					error: String(result.reason),
 				});
 			}
+		}
+		if (backups.length === 0 && transientValidationError) {
+			throw transientValidationError;
 		}
 		return backups.sort((left, right) => {
 			// Treat epoch (0), null, and non-finite mtimes as "unknown" so the
@@ -1838,7 +1862,6 @@ export async function assessNamedBackupRestore(
 		mergedAccounts,
 		currentDeduplicatedAccounts,
 	);
-	const nothingToImport = !wouldExceedLimit && !changed;
 
 	return {
 		backup,
@@ -1847,10 +1870,10 @@ export async function assessNamedBackupRestore(
 		imported,
 		skipped,
 		wouldExceedLimit,
-		eligibleForRestore: !wouldExceedLimit && !nothingToImport,
+		eligibleForRestore: !wouldExceedLimit && changed,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
-			: nothingToImport
+			: !changed
 				? "All accounts in this backup already exist"
 				: undefined,
 	};
@@ -2071,9 +2094,10 @@ function resolvePathForNamedBackupContainment(path: string): string {
 				continue;
 			}
 			if (isRetryableFilesystemErrorCode(code)) {
-				throw new Error("Backup path validation failed. Try again.", {
-					cause: error instanceof Error ? error : undefined,
-				});
+				throw new BackupPathValidationTransientError(
+					"Backup path validation failed. Try again.",
+					{ cause: error instanceof Error ? error : undefined },
+				);
 			}
 			throw error;
 		}
@@ -2090,9 +2114,10 @@ function resolvePathForNamedBackupContainment(path: string): string {
 			return resolvedPath;
 		}
 		if (isRetryableFilesystemErrorCode(code)) {
-			throw new Error("Backup path validation failed. Try again.", {
-				cause: error instanceof Error ? error : undefined,
-			});
+			throw new BackupPathValidationTransientError(
+				"Backup path validation failed. Try again.",
+				{ cause: error instanceof Error ? error : undefined },
+			);
 		}
 		throw error;
 	}
@@ -2113,15 +2138,16 @@ export function assertNamedBackupRestorePath(
 		if (code === "ENOENT") {
 			backupRootIsSymlink = false;
 		} else if (isRetryableFilesystemErrorCode(code)) {
-			throw new Error("Backup path validation failed. Try again.", {
-				cause: error instanceof Error ? error : undefined,
-			});
+			throw new BackupPathValidationTransientError(
+				"Backup path validation failed. Try again.",
+				{ cause: error instanceof Error ? error : undefined },
+			);
 		} else {
 			throw error;
 		}
 	}
 	if (backupRootIsSymlink) {
-		throw new Error("Backup path escapes backup directory");
+		throw new BackupContainmentError("Backup path escapes backup directory");
 	}
 	const canonicalBackupRoot =
 		resolvePathForNamedBackupContainment(resolvedBackupRoot);
@@ -2133,15 +2159,25 @@ export function assertNamedBackupRestorePath(
 		firstSegment === ".." ||
 		isAbsolute(relativePath)
 	) {
-		throw new Error("Backup path escapes backup directory");
+		throw new BackupContainmentError("Backup path escapes backup directory");
 	}
 	return containedPath;
 }
 
 export function isNamedBackupContainmentError(error: unknown): boolean {
 	return (
-		error instanceof Error &&
-		/(escapes backup directory|path validation failed)/i.test(error.message)
+		error instanceof BackupContainmentError ||
+		(error instanceof Error && /escapes backup directory/i.test(error.message))
+	);
+}
+
+export function isNamedBackupPathValidationTransientError(
+	error: unknown,
+): error is BackupPathValidationTransientError {
+	return (
+		error instanceof BackupPathValidationTransientError ||
+		(error instanceof Error &&
+			/^Backup path validation failed(\.|:|\b)/i.test(error.message))
 	);
 }
 

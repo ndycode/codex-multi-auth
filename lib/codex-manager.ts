@@ -59,6 +59,7 @@ import {
 	assessNamedBackupRestore,
 	getNamedBackupsDirectoryPath,
 	isNamedBackupContainmentError,
+	isNamedBackupPathValidationTransientError,
 	listNamedBackups,
 	NAMED_BACKUP_ASSESS_CONCURRENCY,
 	restoreAssessedNamedBackup,
@@ -4235,6 +4236,8 @@ async function runBackupRestoreManager(
 			console.error(
 				`Backup validation failed: ${collapseWhitespace(message) || "unknown error"}`,
 			);
+		} else if (isNamedBackupPathValidationTransientError(error)) {
+			console.error(collapseWhitespace(message) || "unknown error");
 		} else {
 			console.error(
 				`Could not read backup directory: ${

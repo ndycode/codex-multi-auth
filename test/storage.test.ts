@@ -24,6 +24,8 @@ import {
 	NAMED_BACKUP_LIST_CONCURRENCY,
 	getStoragePath,
 	importAccounts,
+	isNamedBackupContainmentError,
+	isNamedBackupPathValidationTransientError,
 	listNamedBackups,
 	loadAccounts,
 	loadFlaggedAccounts,
@@ -2333,6 +2335,40 @@ describe("storage", () => {
 			}
 		});
 
+		it("classifies transient backup path validation errors separately from containment escapes", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "pending", "locked.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			const transientCode = process.platform === "win32" ? "EPERM" : "EAGAIN";
+			const originalRealpath = __testOnly.namedBackupContainmentFs.realpath;
+			const realpathSpy = vi
+				.spyOn(__testOnly.namedBackupContainmentFs, "realpath")
+				.mockImplementation((path) => {
+					if (String(path) === resolve(backupRoot)) {
+						const error = new Error(
+							"backup root locked",
+						) as NodeJS.ErrnoException;
+						error.code = transientCode;
+						throw error;
+					}
+					return originalRealpath(path);
+				});
+
+			try {
+				let thrown: unknown;
+				try {
+					assertNamedBackupRestorePath(backupPath, backupRoot);
+				} catch (error) {
+					thrown = error;
+				}
+				expect(thrown).toBeInstanceOf(Error);
+				expect(isNamedBackupPathValidationTransientError(thrown)).toBe(true);
+				expect(isNamedBackupContainmentError(thrown)).toBe(false);
+			} finally {
+				realpathSpy.mockRestore();
+			}
+		});
+
 		it("rejects named backup listings whose resolved paths escape the backups directory", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const originalReaddir = fs.readdir.bind(fs);
@@ -2389,7 +2425,7 @@ describe("storage", () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const escapedEntry = {
 				name: "escaped-link.json",
-				isFile: () => true,
+				isFile: () => false,
 				isSymbolicLink: () => true,
 			} as unknown as Awaited<
 				ReturnType<typeof fs.readdir>
