@@ -86,10 +86,7 @@ async function writeTextAtomic(filePath, content, options = {}) {
 		.slice(2, 8)}`;
 	try {
 		await withFileOperationRetry(() => writeFile(tempPath, content, "utf-8"));
-		if (beforeRename) {
-			await beforeRename();
-		}
-		await renameWithRetry(tempPath, filePath, { log });
+		await renameWithRetry(tempPath, filePath, { beforeEachAttempt: beforeRename, log });
 	} finally {
 		try {
 			await withFileOperationRetry(() => rm(tempPath, { force: true }));

@@ -201,6 +201,7 @@ export async function withFileOperationRetry(operation) {
 export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 	const {
 		rename = fsRename,
+		beforeEachAttempt,
 		log = () => {},
 		maxRetries = FILE_RETRY_MAX_ATTEMPTS,
 		baseDelayMs = FILE_RETRY_BASE_DELAY_MS,
@@ -214,6 +215,9 @@ export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 	}
 
 	for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+		if (beforeEachAttempt) {
+			await beforeEachAttempt();
+		}
 		try {
 			await rename(sourcePath, targetPath);
 			return;

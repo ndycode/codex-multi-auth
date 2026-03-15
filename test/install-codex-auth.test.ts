@@ -436,6 +436,75 @@ describe("install-codex-auth script", () => {
 		expect(backups.length).toBe(0);
 	});
 
+	it("preserves external config changes made between atomic rename retries", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-config-rename-retry-race-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const preloadPath = path.join(home, "mutate-config-between-rename-retries.mjs");
+		const externalConfig = '[features]\nplugins = false\n[plugins."external@tool"]\nenabled = true\n';
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_TEST_MUTATE_CONFIG_PATH: configPath,
+		};
+
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(configPath, "[features]\nshell_tool = true\n", "utf8");
+		writeFileSync(
+			preloadPath,
+			[
+				'import { promises as fs } from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				"",
+				"const originalRename = fs.rename.bind(fs);",
+				"const originalWriteFile = fs.writeFile.bind(fs);",
+				"const targetPath = process.env.CODEX_MULTI_AUTH_TEST_MUTATE_CONFIG_PATH;",
+				"const externalConfig = '[features]\\nplugins = false\\n[plugins.\"external@tool\"]\\nenabled = true\\n';",
+				"let injected = false;",
+				"",
+				"fs.rename = async (...args) => {",
+				"\tconst [sourcePath, destinationPath] = args;",
+				"\tif (!injected && targetPath && typeof sourcePath === \"string\" && typeof destinationPath === \"string\" && destinationPath === targetPath && sourcePath.startsWith(`${targetPath}.tmp-`)) {",
+				"\t\tinjected = true;",
+				"\t\tawait originalWriteFile(targetPath, externalConfig, \"utf8\");",
+				"\t\tconst error = new Error(`retry rename for ${targetPath}`);",
+				"\t\terror.code = \"EPERM\";",
+				"\t\tthrow error;",
+				"\t}",
+				"\treturn originalRename(...args);",
+				"};",
+				"",
+				"syncBuiltinESMExports();",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		env.NODE_OPTIONS = `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--import=${pathToFileURL(preloadPath).href}`;
+
+		const failure = await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		}).then(
+			() => null,
+			(error) => error as Error & { code?: number; stderr?: string; stdout?: string },
+		);
+
+		expect(failure).not.toBeNull();
+		expect(failure?.code).toBe(1);
+		expect(failure?.stderr).toContain(
+			`${configPath} changed while preparing the install. Rerun the installer to merge the latest changes.`,
+		);
+		expect(readFileSync(configPath, "utf8")).toBe(externalConfig);
+
+		const backups = readdirSync(codexHome).filter((entry) =>
+			entry.startsWith("config.toml.bak-")
+		);
+		expect(backups.length).toBe(0);
+	});
+
 	it("reports a friendly error when the plugin source disappears mid-install", async () => {
 		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-source-missing-"));
 		tempRoots.push(home);
