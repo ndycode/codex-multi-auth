@@ -1288,4 +1288,110 @@ describe("getActionableNamedBackupRestores", () => {
 		]);
 		expect(assess).toHaveBeenCalledTimes(2);
 	});
+
+	it("skips rejected and non-importing assessments while preserving total backup count", async () => {
+		const mockBackups = [
+			{
+				name: "rejected-backup",
+				path: "/mock/backups/rejected.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			{
+				name: "zero-import-backup",
+				path: "/mock/backups/zero.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			{
+				name: "limit-backup",
+				path: "/mock/backups/limit.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			{
+				name: "actionable-backup",
+				path: "/mock/backups/actionable.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		];
+
+		const storage = await import("../lib/storage.js");
+		const assess = vi.fn().mockImplementation(async (name: string) => {
+			switch (name) {
+				case "rejected-backup":
+					throw new Error("locked");
+				case "zero-import-backup":
+					return {
+						backup: mockBackups[1],
+						currentAccountCount: 0,
+						mergedAccountCount: 1,
+						imported: 0,
+						skipped: 1,
+						wouldExceedLimit: false,
+						valid: true,
+						error: undefined,
+					};
+				case "limit-backup":
+					return {
+						backup: mockBackups[2],
+						currentAccountCount: 0,
+						mergedAccountCount: 2,
+						imported: 1,
+						skipped: 0,
+						wouldExceedLimit: true,
+						valid: true,
+						error: undefined,
+					};
+				default:
+					return {
+						backup: mockBackups[3],
+						currentAccountCount: 0,
+						mergedAccountCount: 1,
+						imported: 1,
+						skipped: 0,
+						wouldExceedLimit: false,
+						valid: true,
+						error: undefined,
+					};
+			}
+		});
+
+		const result = await storage.getActionableNamedBackupRestores({
+			backups: mockBackups,
+			assess,
+			currentStorage: null,
+		});
+
+		expect(result.totalBackups).toBe(mockBackups.length);
+		expect(result.assessments.map((item) => item.backup.name)).toEqual([
+			"actionable-backup",
+		]);
+		expect(assess).toHaveBeenCalledTimes(4);
+	});
 });

@@ -1213,10 +1213,10 @@ describe("codex manager cli commands", () => {
 		promptAddAnotherAccountMock.mockResolvedValue(false);
 
 		const authModule = await import("../lib/auth/auth.js");
-		const createAuthorizationFlowMock = vi.mocked(
+		const createAuthorizationFlowSpy = vi.mocked(
 			authModule.createAuthorizationFlow,
 		);
-		const exchangeAuthorizationCodeMock = vi.mocked(
+		const exchangeAuthorizationCodeSpy = vi.mocked(
 			authModule.exchangeAuthorizationCode,
 		);
 		const browserModule = await import("../lib/auth/browser.js");
@@ -1232,7 +1232,7 @@ describe("codex manager cli commands", () => {
 				state: "oauth-state",
 				url: "https://auth.openai.com/mock",
 			};
-		createAuthorizationFlowMock.mockResolvedValue(flow);
+		createAuthorizationFlowSpy.mockResolvedValue(flow);
 		const oauthResult: Awaited<
 			ReturnType<typeof authModule.exchangeAuthorizationCode>
 		> = {
@@ -1243,11 +1243,12 @@ describe("codex manager cli commands", () => {
 			idToken: "id-token-new",
 			multiAccount: true,
 		};
-		exchangeAuthorizationCodeMock.mockResolvedValue(oauthResult);
+		exchangeAuthorizationCodeSpy.mockResolvedValue(oauthResult);
 		openBrowserUrlMock.mockReturnValue(true);
 		const oauthServer: Awaited<
 			ReturnType<typeof serverModule.startLocalOAuthServer>
 		> = {
+			port: 1455,
 			ready: true,
 			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
 			close: vi.fn(),
@@ -1445,10 +1446,10 @@ describe("codex manager cli commands", () => {
 		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		const authModule = await import("../lib/auth/auth.js");
-		const createAuthorizationFlowMock = vi.mocked(
+		const createAuthorizationFlowSpy = vi.mocked(
 			authModule.createAuthorizationFlow,
 		);
-		createAuthorizationFlowMock.mockRejectedValue(
+		createAuthorizationFlowSpy.mockRejectedValue(
 			new Error("oauth flow should be skipped when restoring backup"),
 		);
 
@@ -1459,7 +1460,7 @@ describe("codex manager cli commands", () => {
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalled();
 		expect(confirmMock).toHaveBeenCalledTimes(2);
 		expect(selectMock).toHaveBeenCalled();
-		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowSpy).not.toHaveBeenCalled();
 	});
 
 	it("keeps login loop running when settings action is selected", async () => {
