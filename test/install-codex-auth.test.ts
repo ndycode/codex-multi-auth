@@ -176,6 +176,16 @@ describe("install-codex-auth script", () => {
 		expect(merged).toContain("shell.tool = false");
 	});
 
+	it("preserves CRLF line endings when updating config.toml", () => {
+		const merged = mergePluginConfigToml(
+			"[features]\r\nplugins = false\r\n",
+			makePluginKey(),
+		);
+		expect(merged).toContain("[features]\r\nplugins = true\r\n");
+		expect(merged).toContain('[plugins."codex-multi-auth@ndycode"]\r\nenabled = true\r\n');
+		expect(merged).not.toContain("\nplugins = true\n[plugins.");
+	});
+
 	it("dry-run does not create config or plugin cache", () => {
 		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-dryrun-"));
 		tempRoots.push(home);
@@ -324,6 +334,53 @@ describe("install-codex-auth script", () => {
 			entry.startsWith("custom-config.toml.bak-")
 		);
 		expect(backups.length).toBe(1);
+	});
+
+	it("concurrent installs produce distinct backups and a valid final config.toml", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-concurrent-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+		};
+
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(
+			configPath,
+			["model = \"gpt-5-codex\"", "", "[features]", "shell_tool = true", ""].join("\n"),
+			"utf8",
+		);
+
+		const [first, second] = await Promise.all([
+			execFileAsync(process.execPath, [scriptPath], {
+				env,
+				windowsHide: true,
+			}),
+			execFileAsync(process.execPath, [scriptPath], {
+				env,
+				windowsHide: true,
+			}),
+		]);
+
+		expect(first.stderr).toBe("");
+		expect(second.stderr).toBe("");
+
+		const config = readFileSync(configPath, "utf8");
+		expect(config).toContain('model = "gpt-5-codex"');
+		expect(config).toContain("[features]");
+		expect(config).toContain("plugins = true");
+		expect(config).toContain('[plugins."codex-multi-auth@ndycode"]');
+		expect(config).toContain("enabled = true");
+
+		const backups = readdirSync(codexHome).filter((entry) =>
+			entry.startsWith("config.toml.bak-")
+		);
+		expect(backups.length).toBeGreaterThanOrEqual(2);
+		expect(new Set(backups).size).toBe(backups.length);
 	});
 
 	it("retries transient file-operation errors and eventually succeeds", async () => {
