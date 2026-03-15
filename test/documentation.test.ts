@@ -237,9 +237,14 @@ describe("Documentation Integrity", () => {
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/openai-codex-accounts.json');
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/openai-codex-flagged-accounts.json');
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/quota-cache.json');
+		expect(privacy).toContain('~/.codex/multi-auth/logs/audit.log');
+		expect(privacy).toContain('~/.codex/multi-auth/logs/audit.*.log');
+		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/logs/audit.log');
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/cache');
 		expect(privacy).toContain("foreach ($relativePath in @(");
 		expect(privacy).toContain("Join-Path $env:CODEX_MULTI_AUTH_DIR $relativePath");
+		expect(privacy).toContain('Get-ChildItem "$HOME\\.codex\\multi-auth\\logs" -Filter "audit.*.log"');
+		expect(privacy).toContain('Get-ChildItem (Join-Path $env:CODEX_MULTI_AUTH_DIR "logs") -Filter "audit.*.log"');
 
 		expect(advancedInstall).toContain("%APPDATA%\\Codex\\Codex.json");
 		expect(advancedInstall).toContain(

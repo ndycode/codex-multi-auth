@@ -62,6 +62,7 @@ rm -f ~/.codex/multi-auth/openai-codex-accounts.json
 rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/quota-cache.json
 rm -rf ~/.codex/multi-auth/logs/codex-plugin
+rm -f ~/.codex/multi-auth/logs/audit.log ~/.codex/multi-auth/logs/audit.*.log
 rm -rf ~/.codex/multi-auth/cache
 # Override-root cleanup examples (if overrides are set):
 [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/settings.json"
@@ -69,6 +70,7 @@ rm -rf ~/.codex/multi-auth/cache
 [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/openai-codex-flagged-accounts.json"
 [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/quota-cache.json"
 [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin"
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/logs/audit.log" "$CODEX_MULTI_AUTH_DIR/logs/audit."*.log
 [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/cache"
 [ -n "${CODEX_MULTI_AUTH_CONFIG_PATH:-}" ] && [ -f "$CODEX_MULTI_AUTH_CONFIG_PATH" ] && rm -f "$CODEX_MULTI_AUTH_CONFIG_PATH"
 ```
@@ -81,6 +83,8 @@ Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAc
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\logs\audit.log" -Force -ErrorAction SilentlyContinue
+Get-ChildItem "$HOME\.codex\multi-auth\logs" -Filter "audit.*.log" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
 # Override-root cleanup examples (if overrides are set):
 if ($env:CODEX_MULTI_AUTH_DIR) {
@@ -99,6 +103,9 @@ if ($env:CODEX_MULTI_AUTH_DIR) {
   )) {
     Remove-Item (Join-Path $env:CODEX_MULTI_AUTH_DIR $relativePath) -Recurse -Force -ErrorAction SilentlyContinue
   }
+
+  Remove-Item (Join-Path $env:CODEX_MULTI_AUTH_DIR "logs\audit.log") -Force -ErrorAction SilentlyContinue
+  Get-ChildItem (Join-Path $env:CODEX_MULTI_AUTH_DIR "logs") -Filter "audit.*.log" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 }
 if ($env:CODEX_MULTI_AUTH_CONFIG_PATH) { Remove-Item "$env:CODEX_MULTI_AUTH_CONFIG_PATH" -Force -ErrorAction SilentlyContinue }
 ```
