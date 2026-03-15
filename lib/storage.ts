@@ -1824,7 +1824,10 @@ export async function assessNamedBackupRestore(
 	const skipped = wouldExceedLimit
 		? null
 		: Math.max(0, incomingDeduplicatedAccounts.length - (imported ?? 0));
-	const changed = !haveEquivalentAccountRows(mergedAccounts, currentAccounts);
+	const changed = !haveEquivalentAccountRows(
+		mergedAccounts,
+		currentDeduplicatedAccounts,
+	);
 	const nothingToImport = !wouldExceedLimit && !changed;
 
 	return {
@@ -2022,7 +2025,10 @@ async function findExistingNamedBackupPath(
 	return undefined;
 }
 
-function resolvePathForNamedBackupContainment(path: string): string {
+function resolvePathForNamedBackupContainment(
+	path: string,
+	options?: { allowRetryableFallbackForExistingPath?: boolean },
+): string {
 	const resolvedPath = resolvePath(path);
 	let existingPrefix = resolvedPath;
 	const unresolvedSegments: string[] = [];
@@ -2041,7 +2047,13 @@ function resolvePathForNamedBackupContainment(path: string): string {
 			canonicalPrefix,
 		);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (
+			code === "ENOENT" ||
+			((unresolvedSegments.length > 0 ||
+				options?.allowRetryableFallbackForExistingPath === true) &&
+				isRetryableFilesystemErrorCode(code))
+		) {
 			return resolvedPath;
 		}
 		throw error;
@@ -2054,11 +2066,22 @@ export function assertNamedBackupRestorePath(
 ): string {
 	const resolvedPath = resolvePath(path);
 	const resolvedBackupRoot = resolvePath(backupRoot);
-	if (existsSync(resolvedBackupRoot) && lstatSync(resolvedBackupRoot).isSymbolicLink()) {
+	let backupRootIsSymlink = false;
+	try {
+		backupRootIsSymlink = lstatSync(resolvedBackupRoot).isSymbolicLink();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			throw error;
+		}
+	}
+	if (backupRootIsSymlink) {
 		throw new Error("Backup path escapes backup directory");
 	}
 	const canonicalBackupRoot =
-		resolvePathForNamedBackupContainment(resolvedBackupRoot);
+		resolvePathForNamedBackupContainment(resolvedBackupRoot, {
+			allowRetryableFallbackForExistingPath: true,
+		});
 	const containedPath = resolvePathForNamedBackupContainment(resolvedPath);
 	const relativePath = relative(canonicalBackupRoot, containedPath);
 	const firstSegment = relativePath.split(/[\\/]/)[0];
@@ -3030,7 +3053,7 @@ export async function importAccounts(
 		);
 		const changed = !haveEquivalentAccountRows(
 			deduplicatedAccounts,
-			existingAccounts,
+			existingDeduplicatedAccounts,
 		);
 
 		if (!changed) {

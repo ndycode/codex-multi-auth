@@ -509,6 +509,67 @@ describe("storage", () => {
 			}
 		});
 
+		it("should treat deduplicated current snapshots as a no-op import", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "existing",
+							email: "existing@example.com",
+							refreshToken: "ref-existing",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+		});
+
 		it("should deduplicate incoming backup rows before reporting skipped imports", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			await clearAccounts();
@@ -1626,7 +1687,7 @@ describe("storage", () => {
 			);
 		});
 
-		it("baselines restore counts on a deduplicated current snapshot", async () => {
+		it("treats deduplicated current snapshots as a no-op restore", async () => {
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -1671,7 +1732,12 @@ describe("storage", () => {
 			expect(assessment.mergedAccountCount).toBe(1);
 			expect(assessment.imported).toBe(0);
 			expect(assessment.skipped).toBe(1);
-			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+
+			await expect(
+				restoreNamedBackup("repair-current-duplicates"),
+			).rejects.toThrow("All accounts in this backup already exist");
 		});
 
 		it("treats identical accounts in a different backup order as a no-op restore", async () => {
@@ -2124,6 +2190,35 @@ describe("storage", () => {
 				expect(() =>
 					assertNamedBackupRestorePath(backupPath, backupRoot),
 				).toThrow(/backup path locked/);
+			} finally {
+				realpathSpy.mockRestore();
+			}
+		});
+
+		it("falls back to the lexical path when realpath transiently fails for the backup root", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "pending", "locked.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			const transientCode = process.platform === "win32" ? "EPERM" : "EAGAIN";
+
+			const originalRealpathNative = realpathSync.native.bind(realpathSync);
+			const realpathSpy = vi
+				.spyOn(realpathSync, "native")
+				.mockImplementation((path) => {
+					if (String(path) === resolve(backupRoot)) {
+						const error = new Error(
+							"backup root busy",
+						) as NodeJS.ErrnoException;
+						error.code = transientCode;
+						throw error;
+					}
+					return originalRealpathNative(path);
+				});
+
+			try {
+				expect(
+					assertNamedBackupRestorePath(backupPath, backupRoot),
+				).toBe(resolve(backupPath));
 			} finally {
 				realpathSpy.mockRestore();
 			}
