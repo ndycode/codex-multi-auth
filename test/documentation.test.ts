@@ -502,7 +502,7 @@ describe("Documentation Integrity", () => {
 		expect(antiSlopStep?.with?.["github-token"]).toBe("${{ github.token }}");
 		expect(antiSlopStep?.with?.["require-pr-template"]).toBe(true);
 		expect(antiSlopStep?.with?.["strict-pr-template-sections"]).toBe(
-			"Validation,Docs Impact,Governance Review",
+			"Validation",
 		);
 		expect(antiSlopStep?.with?.["blocked-terms"]).toContain(
 			"WORKTREE_LANTERN_1455",
