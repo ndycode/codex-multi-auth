@@ -1339,7 +1339,7 @@ export async function getActionableNamedBackupRestores(
 
 	const currentStorage =
 		options.currentStorage === undefined
-			? await loadAccounts()
+			? await loadAccounts() // undefined = auto-load, null = explicitly no current storage
 			: options.currentStorage;
 	const assess = options.assess ?? assessNamedBackupRestore;
 	const settled = await Promise.allSettled(

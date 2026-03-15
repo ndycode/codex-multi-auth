@@ -4386,8 +4386,18 @@ async function runAuthLogin(): Promise<number> {
 				recoveryState = await getActionableNamedBackupRestores({
 					currentStorage: refreshedStorage,
 				});
-			} catch {
-				// Filesystem error (e.g. Windows EPERM/EBUSY) – skip recovery prompt
+			} catch (error) {
+				const code =
+					error instanceof Error && "code" in error
+						? String(error.code)
+						: undefined;
+				if (code !== "EPERM" && code !== "EBUSY") {
+					throw error;
+				}
+				console.debug(
+					`[recovery-prompt] backup assessment skipped (${code}); falling through to OAuth`,
+				);
+				// Filesystem lock error (e.g. Windows EPERM/EBUSY) – skip recovery prompt.
 				recoveryState = { assessments: [], totalBackups: 0 };
 			}
 			if (recoveryState.assessments.length > 0) {

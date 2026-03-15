@@ -590,6 +590,50 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("falls through to OAuth when backup assessment throws EPERM", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		const eperm = Object.assign(new Error("EPERM: operation not permitted"), {
+			code: "EPERM",
+		});
+		getActionableNamedBackupRestoresMock.mockRejectedValueOnce(eperm);
+		selectMock.mockResolvedValueOnce("cancel");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("rethrows non-filesystem backup assessment failures", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		getActionableNamedBackupRestoresMock.mockRejectedValueOnce(
+			new Error("boom"),
+		);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(runCodexMultiAuthCli(["auth", "login"])).rejects.toThrow(
+			"boom",
+		);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
 	it("skips startup restore prompt in fallback login mode", async () => {
 		setInteractiveTTY(true);
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(false);
