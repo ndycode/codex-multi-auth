@@ -14,6 +14,27 @@ export const UI_COPY = {
 		accounts: "Saved Accounts",
 		loadingLimits: "Fetching account limits...",
 		noSearchMatches: "No accounts match your search",
+		recovery: "Recovery",
+		restoreBackup: "Restore From Backup",
+		restoreBackupConfirm: (
+			name: string,
+			netNewAccounts: number,
+			backupAccountCount: number,
+			currentAccountCount: number,
+			mergedAccountCount: number,
+		) =>
+			netNewAccounts === 0
+				? `Restore backup "${name}"? This will refresh stored metadata for matching existing account(s) in this backup.`
+				: `Restore backup "${name}"? This will add ${netNewAccounts} new account(s) (${backupAccountCount} in backup, ${currentAccountCount} current -> ${mergedAccountCount} after dedupe).`,
+		restoreBackupSuccess: (
+			name: string,
+			imported: number,
+			skipped: number,
+			total: number,
+		) =>
+			`Restored backup "${name}". Imported ${imported}, skipped ${skipped}, total ${total}.`,
+		restoreBackupRefreshSuccess: (name: string) =>
+			`Restored backup "${name}". Refreshed stored metadata for matching existing account(s).`,
 		dangerZone: "Danger Zone",
 		removeAllAccounts: "Delete Saved Accounts",
 		resetLocalState: "Reset Local State",
@@ -131,8 +152,8 @@ export const UI_COPY = {
 		addAnotherQuestion: (count: number) =>
 			`Add another account? (${count} added) (y/n): `,
 		selectModePrompt:
-			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (r) reset, (q) back [a/c/b/x/s/d/g/f/r/q]: ",
-		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, f, r, q.",
+			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (u) restore backup, (f) fresh, (r) reset, (q) back [a/c/b/x/s/d/g/u/f/r/q]: ",
+		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, u, f, r, q.",
 	},
 } as const;
 

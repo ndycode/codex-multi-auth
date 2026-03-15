@@ -22,6 +22,7 @@ Override root:
 | --- | --- |
 | Unified settings | `~/.codex/multi-auth/settings.json` |
 | Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` |
+| Named backups | `~/.codex/multi-auth/backups/<name>.json` |
 | Accounts backup | `~/.codex/multi-auth/openai-codex-accounts.json.bak` |
 | Accounts WAL | `~/.codex/multi-auth/openai-codex-accounts.json.wal` |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
@@ -56,6 +57,7 @@ Backup metadata:
 When project-scoped behavior is enabled:
 
 - `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`
+- `~/.codex/multi-auth/projects/<project-key>/backups/<name>.json`
 
 `<project-key>` is derived as:
 
@@ -100,6 +102,17 @@ Rules:
 - `.rotate.`, `.tmp`, and `.wal` names are rejected
 - existing files are not overwritten unless a lower-level force path is used explicitly
 
+Restore workflow:
+
+1. Run `codex auth login`.
+2. Open the `Recovery` section.
+3. Choose `Restore From Backup`.
+4. Pick a backup and confirm the merge summary before import.
+
+Direct entrypoint:
+
+- Run `codex auth restore-backup` to open the same picker without entering the full login dashboard first.
+
 ---
 
 ## oc-chatgpt Target Paths
@@ -115,6 +128,7 @@ Experimental sync targets the companion `oc-chatgpt-multi-auth` storage layout:
 ## Verification Commands
 
 ```bash
+codex auth login
 codex auth status
 codex auth list
 ```
