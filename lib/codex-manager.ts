@@ -4406,6 +4406,8 @@ type BackupMenuAction =
 	  }
 	| { type: "back" };
 
+type BackupDetailAction = "back" | "preview-restore" | "restore";
+
 type LegacyBackupRestoreSelection = {
 	type: "restore";
 	assessment: NamedBackupAssessment;
@@ -4483,10 +4485,120 @@ function buildBackupStatusSummary(entry: BackupBrowserEntry): string {
 	return stylePromptText("Valid backup", "success");
 }
 
+function formatPreviewAccountLabel(
+	email: string | undefined,
+	accountId: string | undefined,
+	index: number | null | undefined,
+): string {
+	const label = email?.trim() || accountId?.trim() || "none";
+	if (index === null || index === undefined) {
+		return label;
+	}
+	return `${label} (#${index + 1})`;
+}
+
+function formatActiveAccountOutcome(
+	assessment: NamedBackupAssessment,
+): string {
+	const nextLabel = formatPreviewAccountLabel(
+		assessment.nextActiveEmail,
+		assessment.nextActiveAccountId,
+		assessment.nextActiveIndex,
+	);
+	const currentLabel = formatPreviewAccountLabel(
+		assessment.currentActiveEmail,
+		assessment.currentActiveAccountId,
+		assessment.currentActiveIndex,
+	);
+	const outcome = assessment.activeAccountOutcome ?? "unchanged";
+	if (outcome === "blocked") {
+		return "Blocked until restore becomes eligible";
+	}
+	if (outcome === "cleared") {
+		return `Would clear active account (currently ${currentLabel})`;
+	}
+	if (outcome === "changed") {
+		return `${nextLabel} (currently ${currentLabel})`;
+	}
+	const changeNote = assessment.activeAccountChanged ? " (would change)" : "";
+	return `${nextLabel}${changeNote}`;
+}
+
+function buildRestoreAssessmentLines(
+	assessment: NamedBackupAssessment,
+): string[] {
+	const backupAccountLabel = (() => {
+		if (
+			assessment.backupAccountCount === null ||
+			assessment.backupAccountCount === undefined
+		) {
+			return "unknown";
+		}
+		if (
+			assessment.dedupedBackupAccountCount !== null &&
+			assessment.dedupedBackupAccountCount !== undefined &&
+			assessment.dedupedBackupAccountCount !== assessment.backupAccountCount
+		) {
+			return `${assessment.backupAccountCount} (deduped ${assessment.dedupedBackupAccountCount})`;
+		}
+		return `${assessment.backupAccountCount}`;
+	})();
+
+	const conflictSummary = (() => {
+		const replacements = assessment.replacedExistingCount ?? 0;
+		const withExisting = assessment.conflictsWithExisting ?? 0;
+		const withinBackup = assessment.conflictsWithinBackup ?? 0;
+		const parts: string[] = [];
+		if (replacements > 0) {
+			parts.push(
+				`${replacements} replace current${replacements === 1 ? "" : " accounts"}`,
+			);
+		}
+		if (withExisting > 0) {
+			parts.push(
+				`${withExisting} duplicate${withExisting === 1 ? "" : "s"} against current`,
+			);
+		}
+		if (withinBackup > 0) {
+			parts.push(
+				`${withinBackup} duplicate${withinBackup === 1 ? "" : "s"} inside backup`,
+			);
+		}
+		return parts.length > 0 ? parts.join(" | ") : "No conflicts detected";
+	})();
+
+	return [
+		`${stylePromptText("Backup accounts:", "muted")} ${backupAccountLabel}`,
+		`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
+		`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
+		`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
+		`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
+		`${stylePromptText("Conflicts:", "muted")} ${conflictSummary}`,
+		`${stylePromptText("Current active:", "muted")} ${formatPreviewAccountLabel(
+			assessment.currentActiveEmail,
+			assessment.currentActiveAccountId,
+			assessment.currentActiveIndex,
+		)}`,
+		`${stylePromptText("Active after restore:", "muted")} ${formatActiveAccountOutcome(assessment)}`,
+		`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.eligibleForRestore ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
+	];
+}
+
+function canRestoreFromAssessment(
+	assessment: NamedBackupAssessment,
+): boolean {
+	return (
+		!assessment.wouldExceedLimit &&
+		assessment.eligibleForRestore &&
+		((assessment.imported ?? 0) > 0 ||
+			(assessment.replacedExistingCount ?? 0) > 0)
+	);
+}
+
 async function showBackupBrowserDetails(
 	entry: BackupBrowserEntry,
 	displaySettings: DashboardDisplaySettings,
-): Promise<"back" | "restore"> {
+): Promise<BackupDetailAction> {
 	const backup = entry.backup;
 	const typeLabel =
 		entry.kind === "named"
@@ -4513,14 +4625,7 @@ async function showBackupBrowserDetails(
 				`${stylePromptText("Reason:", "muted")} ${entry.assessmentError}`,
 			);
 		} else {
-			const assessment = entry.assessment;
-			lines.push(
-				`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
-				`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
-				`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
-				`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
-				`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.eligibleForRestore ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
-			);
+			lines.push(...buildRestoreAssessmentLines(entry.assessment));
 		}
 	}
 
@@ -4546,31 +4651,96 @@ async function showBackupBrowserDetails(
 		console.log(line);
 	}
 	console.log("");
-	if (
-		entry.kind !== "named" ||
-		entry.assessment === null ||
-		!entry.assessment.eligibleForRestore ||
-		entry.assessment.wouldExceedLimit
-	) {
+	if (entry.kind !== "named") {
 		await waitForMenuReturn();
 		return "back";
 	}
-	const action = await select<"restore" | "back">(
+	if (entry.assessment === null || !canRestoreFromAssessment(entry.assessment)) {
+		await waitForMenuReturn();
+		return "back";
+	}
+	const action = await select<BackupDetailAction>(
 		[
-			{ label: "Restore This Backup", value: "restore", color: "green" },
 			{ label: "Back", value: "back" },
+			{ label: "Preview Restore", value: "preview-restore", color: "green" },
 		],
 		{
-			message: "Backup Browser",
+			message: "Backup Actions",
 			subtitle: entry.label,
-			help: "Enter Select | Q Back",
+			help: "Enter Preview | Q Back",
 			clearScreen: false,
 			selectedEmphasis: "minimal",
 			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
 			theme: getUiRuntimeOptions().theme,
 		},
 	);
-	return action === "restore" ? "restore" : "back";
+	return action ?? "back";
+}
+
+async function runBackupRestorePreview(
+	entry: Extract<BackupBrowserEntry, { kind: "named" }>,
+	displaySettings: DashboardDisplaySettings,
+): Promise<BackupRestoreManagerResult> {
+	const backupName = entry.backup.name;
+	let assessment: NamedBackupAssessment;
+	try {
+		assessment = await assessNamedBackupRestore(backupName, {
+			currentStorage: await loadAccounts(),
+		});
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to re-assess backup "${backupName}" before restore (${errorLabel}).`,
+		);
+		return "dismissed";
+	}
+
+	if (output.isTTY) {
+		output.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
+	}
+	console.log(stylePromptText(`Restore Preview: ${entry.label}`, "accent"));
+	for (const line of buildRestoreAssessmentLines(assessment)) {
+		console.log(line);
+	}
+	console.log("");
+
+	if (!canRestoreFromAssessment(assessment)) {
+		await waitForMenuReturn();
+		return "dismissed";
+	}
+
+	const replacementNote =
+		(assessment.replacedExistingCount ?? 0) > 0
+			? ` Replacing ${assessment.replacedExistingCount} current account${assessment.replacedExistingCount === 1 ? "" : "s"}.`
+			: "";
+	const activeNote = assessment.activeAccountChanged
+		? " Active account would change."
+		: "";
+	const confirmed = await confirm(
+		`Restore ${entry.label}? Import ${assessment.imported ?? 0} new account${assessment.imported === 1 ? "" : "s"} for ${assessment.mergedAccountCount ?? "?"} total.${replacementNote}${activeNote}`,
+	);
+	if (!confirmed) {
+		return "dismissed";
+	}
+
+	try {
+		await runActionPanel(
+			"Restore Backup",
+			`Restoring ${entry.label}`,
+			async () => {
+				const result = await restoreNamedBackup(backupName);
+				console.log(
+					`Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`,
+				);
+			},
+			displaySettings,
+		);
+		return "restored";
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(`Failed to restore backup "${backupName}" (${errorLabel}).`);
+		return "dismissed";
+	}
 }
 
 async function loadBackupBrowserEntries(options: {
@@ -4741,7 +4911,7 @@ async function runBackupBrowserManager(
 		}
 
 		let entry: BackupBrowserEntry | null = null;
-		let action: "back" | "restore" = "back";
+		let action: BackupDetailAction = "back";
 		const legacySelection = selection as unknown as LegacyBackupRestoreSelection;
 		if (legacySelection.type === "restore" && legacySelection.assessment) {
 			entry = {
@@ -4754,6 +4924,14 @@ async function runBackupBrowserManager(
 		} else if (selection.type === "inspect") {
 			entry = selection.entry;
 			action = await showBackupBrowserDetails(entry, displaySettings);
+		}
+
+		if (action === "preview-restore" && entry?.kind === "named") {
+			const previewResult = await runBackupRestorePreview(entry, displaySettings);
+			if (previewResult === "restored") {
+				return "restored";
+			}
+			continue;
 		}
 
 		if (action === "restore" && entry?.kind === "named") {
@@ -4770,7 +4948,7 @@ async function runBackupBrowserManager(
 				);
 				return "failed";
 			}
-			if (!latestAssessment.eligibleForRestore) {
+			if (!canRestoreFromAssessment(latestAssessment)) {
 				console.log(
 					latestAssessment.error ?? "Backup is not eligible for restore.",
 				);

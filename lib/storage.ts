@@ -135,14 +135,67 @@ export interface RotatingBackupMetadata
 	slot: number;
 }
 
+export interface BackupRestoreAccountPreview {
+	index: number;
+	email?: string;
+	accountId?: string;
+}
+
+export interface BackupRestoreConflictDetail {
+	backupIndex: number;
+	backupEmail?: string;
+	backupAccountId?: string;
+	currentIndex: number;
+	currentEmail?: string;
+	currentAccountId?: string;
+	reasons: Array<"accountId" | "refreshToken" | "email">;
+	resolution: "backup-kept" | "current-kept";
+}
+
+export interface BackupRestoreActiveAccountPreview {
+	current: BackupRestoreAccountPreview | null;
+	next: BackupRestoreAccountPreview | null;
+	outcome: "unchanged" | "changed" | "cleared" | "blocked";
+	changed: boolean;
+}
+
+export interface BackupRestoreConflictPreview {
+	conflict: BackupRestoreConflictDetail;
+	backup: BackupRestoreAccountPreview | null;
+	current: BackupRestoreAccountPreview | null;
+}
+
+export interface NamedBackupRestorePreview {
+	conflicts: BackupRestoreConflictPreview[];
+	activeAccount: BackupRestoreActiveAccountPreview;
+}
+
 export interface BackupRestoreAssessment {
 	backup: NamedBackupMetadata;
+	backupAccountCount?: number | null;
+	dedupedBackupAccountCount?: number | null;
+	conflictsWithinBackup?: number | null;
+	conflictsWithExisting?: number | null;
+	overlappingAccountConflicts?: BackupRestoreConflictDetail[] | null;
+	replacedExistingCount?: number | null;
+	keptExistingCount?: number | null;
+	keptBackupCount?: number | null;
 	currentAccountCount: number;
 	mergedAccountCount: number | null;
 	imported: number | null;
 	skipped: number | null;
 	wouldExceedLimit: boolean;
 	eligibleForRestore: boolean;
+	nextActiveIndex?: number | null;
+	nextActiveEmail?: string;
+	nextActiveAccountId?: string;
+	currentActiveIndex?: number | null;
+	currentActiveEmail?: string;
+	currentActiveAccountId?: string;
+	activeAccountOutcome?: "unchanged" | "changed" | "cleared" | "blocked";
+	activeAccountChanged?: boolean;
+	activeAccountPreview?: BackupRestoreActiveAccountPreview;
+	namedBackupRestorePreview?: NamedBackupRestorePreview | null;
 	error?: string;
 }
 
@@ -222,19 +275,122 @@ function normalizeBackupLookupName(rawName: string): string {
 	return trimmed;
 }
 
+function clampActiveIndexForPreview(
+	currentIndex: number,
+	accounts: AccountLike[],
+): number | null {
+	if (accounts.length === 0) return null;
+	if (!Number.isFinite(currentIndex)) return null;
+	return Math.max(0, Math.min(currentIndex, accounts.length - 1));
+}
+
+function toBackupRestoreAccountPreview(
+	account: AccountLike | null | undefined,
+	index: number | null,
+): BackupRestoreAccountPreview | null {
+	if (!account || index === null) return null;
+	return {
+		index,
+		email: account.email,
+		accountId: account.accountId,
+	};
+}
+
+function getAccountConflictReasons(
+	left: AccountLike,
+	right: AccountLike,
+): BackupRestoreConflictDetail["reasons"] {
+	const reasons = new Set<BackupRestoreConflictDetail["reasons"][number]>();
+	if (left.accountId && right.accountId && left.accountId === right.accountId) {
+		reasons.add("accountId");
+	}
+	if (
+		left.refreshToken &&
+		right.refreshToken &&
+		left.refreshToken === right.refreshToken
+	) {
+		reasons.add("refreshToken");
+	}
+	const leftEmail = normalizeEmailKey(left.email);
+	if (leftEmail && leftEmail === normalizeEmailKey(right.email)) {
+		reasons.add("email");
+	}
+	return [...reasons];
+}
+
+function assessmentHasRestorableChanges(
+	assessment: Pick<
+		BackupRestoreAssessment,
+		"imported" | "replacedExistingCount"
+	>,
+): boolean {
+	return (
+		(assessment.imported ?? 0) > 0 ||
+		(assessment.replacedExistingCount ?? 0) > 0
+	);
+}
+
 function buildFailedBackupRestoreAssessment(
 	backup: NamedBackupMetadata,
 	currentStorage: AccountStorageV3 | null,
 	error: unknown,
 ): BackupRestoreAssessment {
+	const currentAccounts = currentStorage?.accounts ?? [];
+	const currentActiveIndex = clampActiveIndexForPreview(
+		currentStorage?.activeIndex ?? 0,
+		currentAccounts,
+	);
 	return {
 		backup,
-		currentAccountCount: currentStorage?.accounts.length ?? 0,
+		backupAccountCount: backup.accountCount,
+		dedupedBackupAccountCount: backup.accountCount,
+		conflictsWithinBackup: null,
+		conflictsWithExisting: null,
+		overlappingAccountConflicts: null,
+		replacedExistingCount: null,
+		keptExistingCount: null,
+		keptBackupCount: null,
+		currentAccountCount: currentAccounts.length,
 		mergedAccountCount: null,
 		imported: null,
 		skipped: null,
 		wouldExceedLimit: false,
 		eligibleForRestore: false,
+		nextActiveIndex: null,
+		currentActiveIndex,
+		currentActiveEmail:
+			currentActiveIndex === null
+				? undefined
+				: currentAccounts[currentActiveIndex]?.email,
+		currentActiveAccountId:
+			currentActiveIndex === null
+				? undefined
+				: currentAccounts[currentActiveIndex]?.accountId,
+		activeAccountOutcome: "blocked",
+		activeAccountChanged: false,
+		activeAccountPreview: {
+			current: toBackupRestoreAccountPreview(
+				currentActiveIndex === null ? null : currentAccounts[currentActiveIndex],
+				currentActiveIndex,
+			),
+			next: null,
+			outcome: "blocked",
+			changed: false,
+		},
+		namedBackupRestorePreview: {
+			conflicts: [],
+			activeAccount: {
+				current: toBackupRestoreAccountPreview(
+					currentActiveIndex === null
+						? null
+						: currentAccounts[currentActiveIndex],
+					currentActiveIndex,
+				),
+				next: null,
+				outcome: "blocked",
+				changed: false,
+			},
+		},
 		error: getRedactedFilesystemErrorLabel(error),
 	};
 }
@@ -1927,8 +2083,7 @@ export async function getActionableNamedBackupRestores(
 		if (
 			assessment.eligibleForRestore &&
 			!assessment.wouldExceedLimit &&
-			assessment.imported !== null &&
-			assessment.imported > 0
+			assessmentHasRestorableChanges(assessment)
 		) {
 			actionable.push(assessment);
 		}
@@ -2013,52 +2168,295 @@ export async function assessNamedBackupRestore(
 		options.currentStorage !== undefined
 			? options.currentStorage
 			: await loadAccounts();
-	return assessNamedBackupRestoreCandidate(backup, candidate, currentStorage);
+	let previewAccounts: AccountLike[] = [];
+	try {
+		const rawContent = await fs.readFile(backupPath, "utf-8");
+		const parsed = JSON.parse(rawContent) as unknown;
+		if (isRecord(parsed) && Array.isArray(parsed.accounts)) {
+			previewAccounts = (parsed.accounts as unknown[]).filter(
+				(account): account is AccountLike =>
+					isRecord(account) &&
+					typeof account.refreshToken === "string" &&
+					account.refreshToken.trim().length > 0,
+			);
+		}
+	} catch (error) {
+		if (!candidate.normalized) {
+			log.debug("Failed to parse backup for restore preview", {
+				path: backupPath,
+				error: String(error),
+			});
+		}
+	}
+	return assessNamedBackupRestoreCandidate(
+		backup,
+		candidate,
+		currentStorage,
+		previewAccounts,
+	);
 }
 
 function assessNamedBackupRestoreCandidate(
 	backup: NamedBackupMetadata,
 	candidate: LoadedBackupCandidate,
 	currentStorage: AccountStorageV3 | null,
+	rawBackupAccounts: AccountLike[] = [],
 ): BackupRestoreAssessment {
 	const currentAccounts = currentStorage?.accounts ?? [];
+	const currentActiveIndex = clampActiveIndexForPreview(
+		currentStorage?.activeIndex ?? 0,
+		currentAccounts,
+	);
+	const backupAccounts =
+		rawBackupAccounts.length > 0
+			? rawBackupAccounts
+			: (candidate.normalized?.accounts ?? []);
+	const backupAccountCount = backupAccounts.length;
 
-	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {
+	if (!candidate.normalized || backupAccountCount <= 0) {
 		return {
 			backup,
+			backupAccountCount,
+			dedupedBackupAccountCount: null,
+			conflictsWithinBackup: null,
+			conflictsWithExisting: null,
+			overlappingAccountConflicts: null,
+			replacedExistingCount: null,
+			keptExistingCount: null,
+			keptBackupCount: null,
 			currentAccountCount: currentAccounts.length,
 			mergedAccountCount: null,
 			imported: null,
 			skipped: null,
 			wouldExceedLimit: false,
 			eligibleForRestore: false,
+			nextActiveIndex: null,
+			currentActiveIndex,
+			currentActiveEmail:
+				currentActiveIndex === null
+					? undefined
+					: currentAccounts[currentActiveIndex]?.email,
+			currentActiveAccountId:
+				currentActiveIndex === null
+					? undefined
+					: currentAccounts[currentActiveIndex]?.accountId,
+			activeAccountOutcome: "blocked",
+			activeAccountChanged: false,
+			activeAccountPreview: {
+				current: toBackupRestoreAccountPreview(
+					currentActiveIndex === null ? null : currentAccounts[currentActiveIndex],
+					currentActiveIndex,
+				),
+				next: null,
+				outcome: "blocked",
+				changed: false,
+			},
+			namedBackupRestorePreview: {
+				conflicts: [],
+				activeAccount: {
+					current: toBackupRestoreAccountPreview(
+						currentActiveIndex === null
+							? null
+							: currentAccounts[currentActiveIndex],
+						currentActiveIndex,
+					),
+					next: null,
+					outcome: "blocked",
+					changed: false,
+				},
+			},
 			error: backup.loadError ?? "Backup is empty or invalid",
 		};
 	}
 
-	const mergedAccounts = deduplicateAccounts([
-		...currentAccounts,
-		...candidate.normalized.accounts,
-	]);
-	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
+	const dedupedBackupAccounts = deduplicateAccountsByEmail(
+		deduplicateAccounts(backupAccounts),
+	);
+	const dedupedBackupAccountCount = dedupedBackupAccounts.length;
+	const conflictsWithinBackup = Math.max(
+		0,
+		backupAccountCount - dedupedBackupAccountCount,
+	);
+
+	type TaggedAccount = AccountLike & {
+		__source: "current" | "backup";
+		__index: number;
+	};
+
+	const taggedCurrent: TaggedAccount[] = currentAccounts.map((account, index) => ({
+		...account,
+		__source: "current",
+		__index: index,
+	}));
+	const taggedBackup: TaggedAccount[] = backupAccounts.map((account, index) => ({
+		...account,
+		__source: "backup",
+		__index: index,
+	}));
+
+	const mergedTagged = deduplicateAccountsByEmail(
+		deduplicateAccounts([...taggedCurrent, ...taggedBackup]),
+	);
+	const mergedAccounts = mergedTagged.map(
+		({ __source: _source, __index: _index, ...account }) => account,
+	);
+	const mergedAccountCount = mergedAccounts.length;
+	const keptBackupCount = mergedTagged.filter(
+		(account) => account.__source === "backup",
+	).length;
+	const keptExistingCount = mergedTagged.length - keptBackupCount;
+	const replacedExistingCount = Math.max(
+		0,
+		currentAccounts.length - keptExistingCount,
+	);
+	const conflictsWithExisting = Math.max(
+		0,
+		dedupedBackupAccountCount - keptBackupCount,
+	);
+	const wouldExceedLimit = mergedAccountCount > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
 		? null
-		: mergedAccounts.length - currentAccounts.length;
+		: Math.max(0, keptBackupCount - replacedExistingCount);
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
+		: Math.max(
+				0,
+				backupAccountCount -
+					(imported ?? 0) -
+					replacedExistingCount,
+			);
+
+	const currentActiveAccount =
+		currentActiveIndex === null ? null : currentAccounts[currentActiveIndex];
+	const nextActiveIndex = wouldExceedLimit
+		? null
+		: clampActiveIndexForPreview(
+				currentStorage?.activeIndex ?? 0,
+				mergedAccounts,
+			);
+	const nextActiveAccount =
+		nextActiveIndex === null ? null : mergedAccounts[nextActiveIndex];
+
+	const keptBackupIndices = new Set(
+		mergedTagged
+			.filter((account) => account.__source === "backup")
+			.map((account) => account.__index),
+	);
+	const dedupedBackupIndexByAccount = new Map(
+		dedupedBackupAccounts.map((account) => [
+			account,
+			backupAccounts.indexOf(account),
+		]),
+	);
+	const overlappingAccountConflicts = dedupedBackupAccounts.flatMap(
+		(account) => {
+			const backupIndex = dedupedBackupIndexByAccount.get(account);
+			if (backupIndex === undefined || backupIndex < 0) return [];
+			const resolution: BackupRestoreConflictDetail["resolution"] =
+				keptBackupIndices.has(backupIndex) ? "backup-kept" : "current-kept";
+			return currentAccounts.flatMap((currentAccount, currentIndex) => {
+				const reasons = getAccountConflictReasons(account, currentAccount);
+				if (reasons.length === 0) return [];
+				return [
+					{
+						backupIndex,
+						backupEmail: account.email,
+						backupAccountId: account.accountId,
+						currentIndex,
+						currentEmail: currentAccount.email,
+						currentAccountId: currentAccount.accountId,
+						reasons,
+						resolution,
+					},
+				];
+			});
+		},
+	);
+	const conflictPreviews: BackupRestoreConflictPreview[] =
+		overlappingAccountConflicts.map((conflict) => ({
+			conflict,
+			backup: toBackupRestoreAccountPreview(
+				backupAccounts[conflict.backupIndex],
+				conflict.backupIndex,
+			),
+			current: toBackupRestoreAccountPreview(
+				currentAccounts[conflict.currentIndex],
+				conflict.currentIndex,
+			),
+		}));
+
+	let activeAccountOutcome: BackupRestoreAssessment["activeAccountOutcome"] =
+		wouldExceedLimit ? "blocked" : "unchanged";
+	let activeAccountChanged = false;
+	if (!wouldExceedLimit) {
+		if (currentActiveAccount && !nextActiveAccount) {
+			activeAccountOutcome = "cleared";
+			activeAccountChanged = true;
+		} else if (nextActiveAccount && !currentActiveAccount) {
+			activeAccountOutcome = "changed";
+			activeAccountChanged = true;
+		} else if (nextActiveAccount && currentActiveAccount) {
+			const sameAccount =
+				nextActiveAccount.refreshToken === currentActiveAccount.refreshToken ||
+				(nextActiveAccount.accountId &&
+					nextActiveAccount.accountId === currentActiveAccount.accountId) ||
+				(normalizeEmailKey(nextActiveAccount.email) &&
+					normalizeEmailKey(nextActiveAccount.email) ===
+						normalizeEmailKey(currentActiveAccount.email));
+			activeAccountOutcome = sameAccount ? "unchanged" : "changed";
+			activeAccountChanged = !sameAccount;
+		}
+	}
+
+	const activeAccountPreview: BackupRestoreActiveAccountPreview = {
+		current: toBackupRestoreAccountPreview(
+			currentActiveAccount,
+			currentActiveIndex,
+		),
+		next: toBackupRestoreAccountPreview(nextActiveAccount, nextActiveIndex),
+		outcome: activeAccountOutcome ?? "blocked",
+		changed: activeAccountChanged,
+	};
+	const hasRestorableChanges =
+		!wouldExceedLimit &&
+		((imported ?? 0) > 0 || replacedExistingCount > 0);
+	const error =
+		wouldExceedLimit
+			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
+			: hasRestorableChanges
+				? undefined
+				: "Backup would not change any accounts";
 
 	return {
 		backup,
+		backupAccountCount,
+		dedupedBackupAccountCount,
+		conflictsWithinBackup,
+		conflictsWithExisting,
+		overlappingAccountConflicts,
+		replacedExistingCount,
+		keptExistingCount,
+		keptBackupCount,
 		currentAccountCount: currentAccounts.length,
-		mergedAccountCount: mergedAccounts.length,
+		mergedAccountCount,
 		imported,
 		skipped,
 		wouldExceedLimit,
-		eligibleForRestore: !wouldExceedLimit,
-		error: wouldExceedLimit
-			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
-			: undefined,
+		eligibleForRestore: hasRestorableChanges,
+		nextActiveIndex,
+		nextActiveEmail: nextActiveAccount?.email,
+		nextActiveAccountId: nextActiveAccount?.accountId,
+		currentActiveIndex,
+		currentActiveEmail: currentActiveAccount?.email,
+		currentActiveAccountId: currentActiveAccount?.accountId,
+		activeAccountOutcome: activeAccountOutcome ?? "blocked",
+		activeAccountChanged,
+		activeAccountPreview,
+		namedBackupRestorePreview: {
+			conflicts: conflictPreviews,
+			activeAccount: activeAccountPreview,
+		},
+		error,
 	};
 }
 
@@ -2066,6 +2464,10 @@ export async function restoreNamedBackup(
 	name: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
+	const assessment = await assessNamedBackupRestore(name);
+	if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
+		throw new Error(assessment.error ?? "Backup is not eligible for restore");
+	}
 	return importAccounts(backupPath);
 }
 
