@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import {
 	FILE_RETRY_BASE_DELAY_MS,
 	FILE_RETRY_MAX_ATTEMPTS,
+	INSTALL_LOCK_STALE_MS,
 	withInstallerLock,
 	installPluginIntoCache,
 	PLUGIN_MARKETPLACE,
@@ -176,6 +177,42 @@ describe("install-codex-auth script", () => {
 		expect(merged).toContain("enabled = true");
 	});
 
+	it("matches section headers with surrounding whitespace", () => {
+		const merged = mergePluginConfigToml(
+			[
+				"[ features ] # existing feature flags",
+				"plugins = false",
+				"",
+				'[ plugins."codex-multi-auth@ndycode" ]',
+				"enabled = false",
+				"",
+			].join("\n"),
+			makePluginKey(),
+		);
+		expect(merged.match(/\[\s*features\s*\]/g)?.length ?? 0).toBe(1);
+		expect(merged.match(/\[\s*plugins\."codex-multi-auth@ndycode"\s*\]/g)?.length ?? 0).toBe(1);
+		expect(merged).toContain("plugins = true");
+		expect(merged).toContain("enabled = true");
+	});
+
+	it("ignores bracketed lines inside multiline TOML strings when scanning sections", () => {
+		const merged = mergePluginConfigToml(
+			[
+				'notes = """',
+				"[not-a-section]",
+				'"""',
+				"",
+				"[features]",
+				"mcp = true",
+				"",
+			].join("\n"),
+			makePluginKey(),
+		);
+		expect(merged).toContain('notes = """\n[not-a-section]\n"""');
+		expect(merged).toContain("[features]\nmcp = true\n\nplugins = true");
+		expect(merged).not.toContain("[not-a-section]\nplugins = true");
+	});
+
 	it("escapes regex metacharacters in TOML keys", () => {
 		const merged = mergePluginConfigToml(
 			["[features]", "plugins = false", "shell_tool = false", "shell.tool = false", ""].join("\n"),
@@ -212,7 +249,7 @@ describe("install-codex-auth script", () => {
 			CODEX_HOME: codexHome,
 		};
 
-		const result = spawnSync(process.execPath, [scriptPath, "--dry-run", "--modern"], {
+		const result = spawnSync(process.execPath, [scriptPath, "--dry-run", "--modern", "--legacy"], {
 			env,
 			encoding: "utf8",
 			windowsHide: true,
@@ -220,6 +257,7 @@ describe("install-codex-auth script", () => {
 
 		expect(result.status).toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toContain("[dry-run]");
+		expect(result.stdout).toContain("Compatibility note: --modern, --legacy are ignored.");
 		expect(existsSync(path.join(codexHome, "config.toml"))).toBe(false);
 		expect(existsSync(path.join(codexHome, "plugins", "cache"))).toBe(false);
 	});
@@ -249,6 +287,7 @@ describe("install-codex-auth script", () => {
 		});
 
 		expect(result.stderr).toBe("");
+		expect(result.stdout).toContain("Compatibility note: --no-cache-clear is ignored.");
 		expect(result.stdout).toContain("Installed plugin cache");
 		expect(result.stdout).toContain("Backup created");
 
@@ -766,7 +805,6 @@ describe("install-codex-auth script", () => {
 			entry.startsWith("config.toml.bak-")
 		);
 		expect(backups.length).toBe(1);
-		expect(new Set(backups).size).toBe(backups.length);
 		expect(existsSync(
 			path.join(codexHome, "plugins", "cache", PLUGIN_MARKETPLACE, `${PLUGIN_NAME}.install.lock`),
 		)).toBe(false);
@@ -816,6 +854,7 @@ describe("install-codex-auth script", () => {
 		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
 		const lockDir = path.join(tmpdir(), "codex-plugin-lock-parent", `${PLUGIN_NAME}.install.lock`);
 		let parentAttempts = 0;
+		let ownerToken: string | null = null;
 		const mkdirImpl = vi.fn(async (target: string) => {
 			if (target === path.dirname(lockDir)) {
 				parentAttempts += 1;
@@ -825,9 +864,23 @@ describe("install-codex-auth script", () => {
 			}
 		});
 		const rmImpl = vi.fn(async () => undefined);
+		const readFileImpl = vi.fn(async () => {
+			if (ownerToken === null) {
+				throw retryableError("ENOENT");
+			}
+			return ownerToken;
+		});
+		const writeFileImpl = vi.fn(async (_target: string, content: string) => {
+			ownerToken = content;
+		});
 		const operation = vi.fn(async () => "ok");
 
-		const pending = withInstallerLock(lockDir, operation, { mkdirImpl, rmImpl });
+		const pending = withInstallerLock(lockDir, operation, {
+			mkdirImpl,
+			readFileImpl,
+			rmImpl,
+			writeFileImpl,
+		});
 		await Promise.resolve();
 		expect(mkdirImpl).toHaveBeenCalledTimes(1);
 
@@ -845,7 +898,17 @@ describe("install-codex-auth script", () => {
 		const lockDir = path.join(tmpdir(), "codex-plugin-lock-heartbeat", `${PLUGIN_NAME}.install.lock`);
 		const mkdirImpl = vi.fn(async () => undefined);
 		const rmImpl = vi.fn(async () => undefined);
+		let ownerToken: string | null = null;
+		const readFileImpl = vi.fn(async () => {
+			if (ownerToken === null) {
+				throw retryableError("ENOENT");
+			}
+			return ownerToken;
+		});
 		const utimesImpl = vi.fn(async () => undefined);
+		const writeFileImpl = vi.fn(async (_target: string, content: string) => {
+			ownerToken = content;
+		});
 		const operation = vi.fn(async () => {
 			await new Promise((resolve) => {
 				setTimeout(resolve, 2500);
@@ -855,9 +918,11 @@ describe("install-codex-auth script", () => {
 
 		const pending = withInstallerLock(lockDir, operation, {
 			mkdirImpl,
+			readFileImpl,
 			rmImpl,
 			utimesImpl,
 			heartbeatIntervalMs: 1000,
+			writeFileImpl,
 		});
 		await Promise.resolve();
 		await vi.advanceTimersByTimeAsync(2500);
@@ -868,6 +933,117 @@ describe("install-codex-auth script", () => {
 		expect(utimesImpl).toHaveBeenNthCalledWith(1, lockDir, expect.any(Date), expect.any(Date));
 		expect(utimesImpl).toHaveBeenNthCalledWith(2, lockDir, expect.any(Date), expect.any(Date));
 		expect(rmImpl).toHaveBeenCalledWith(lockDir, { recursive: true, force: true });
+	});
+
+	it("waits long enough to reclaim a lock that becomes stale while waiting", async () => {
+		const lockDir = path.join(tmpdir(), "codex-plugin-lock-eventually-stale", `${PLUGIN_NAME}.install.lock`);
+		let currentTime = 0;
+		let lockExists = true;
+		let ownerToken = "other-owner";
+		let staleReapedAt: number | null = null;
+		const mkdirImpl = vi.fn(async (target: string) => {
+			if (target === path.dirname(lockDir)) {
+				return;
+			}
+			if (lockExists) {
+				throw retryableError("EEXIST");
+			}
+			lockExists = true;
+		});
+		const rmImpl = vi.fn(async (target: string) => {
+			if (target === lockDir) {
+				if (staleReapedAt === null) {
+					staleReapedAt = currentTime;
+				}
+				lockExists = false;
+				ownerToken = null;
+			}
+		});
+		const statImpl = vi.fn(async () => ({ mtimeMs: 0 }));
+		const sleepImpl = vi.fn(async (ms: number) => {
+			currentTime += ms;
+		});
+		const readFileImpl = vi.fn(async () => {
+			if (ownerToken === null) {
+				throw retryableError("ENOENT");
+			}
+			return ownerToken;
+		});
+		const writeFileImpl = vi.fn(async (_target: string, content: string) => {
+			ownerToken = content;
+		});
+		const operation = vi.fn(async () => "ok");
+
+		await expect(
+			withInstallerLock(lockDir, operation, {
+				mkdirImpl,
+				now: () => currentTime,
+				readFileImpl,
+				rmImpl,
+				statImpl,
+				sleep: sleepImpl,
+				writeFileImpl,
+				heartbeatIntervalMs: 0,
+			}),
+		).resolves.toBe("ok");
+
+		expect(operation).toHaveBeenCalledTimes(1);
+		expect(staleReapedAt).not.toBeNull();
+		expect(staleReapedAt ?? 0).toBeGreaterThanOrEqual(INSTALL_LOCK_STALE_MS);
+	});
+
+	it("does not remove an installer lock after ownership changes", async () => {
+		const lockDir = path.join(tmpdir(), "codex-plugin-lock-ownership", `${PLUGIN_NAME}.install.lock`);
+		let lockExists = false;
+		let ownerToken: string | null = null;
+		const mkdirImpl = vi.fn(async (target: string) => {
+			if (target === path.dirname(lockDir)) {
+				return;
+			}
+			if (lockExists) {
+				throw retryableError("EEXIST");
+			}
+			lockExists = true;
+		});
+		const log = vi.fn();
+		const readFileImpl = vi.fn(async () => {
+			if (ownerToken === null) {
+				throw retryableError("ENOENT");
+			}
+			return ownerToken;
+		});
+		const rmImpl = vi.fn(async (target: string) => {
+			if (target === lockDir) {
+				lockExists = false;
+				ownerToken = null;
+			}
+		});
+		const writeFileImpl = vi.fn(async (_target: string, content: string) => {
+			ownerToken = content;
+		});
+		const operation = vi.fn(async () => {
+			lockExists = true;
+			ownerToken = "replacement-owner";
+			return "ok";
+		});
+
+		await expect(
+			withInstallerLock(lockDir, operation, {
+				mkdirImpl,
+				log,
+				readFileImpl,
+				rmImpl,
+				writeFileImpl,
+				heartbeatIntervalMs: 0,
+			}),
+		).resolves.toBe("ok");
+
+		expect(lockExists).toBe(true);
+		expect(ownerToken).toBe("replacement-owner");
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("skipping cleanup"),
+		);
+		expect(rmImpl).not.toHaveBeenCalledWith(lockDir, { recursive: true, force: true });
 	});
 
 	it("restores the existing plugin cache when final rename fails", async () => {

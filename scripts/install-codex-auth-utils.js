@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, rename as fsRename, rm, stat, utimes } from "node:fs/promises";
+import { cp, mkdir, readFile, rename as fsRename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join, relative } from "node:path";
 import { homedir } from "node:os";
@@ -20,6 +20,7 @@ export const INSTALL_LOCK_BASE_DELAY_MS = 25;
 export const INSTALL_LOCK_MAX_DELAY_MS = 500;
 export const INSTALL_LOCK_STALE_MS = 60_000;
 export const INSTALL_LOCK_HEARTBEAT_INTERVAL_MS = 15_000;
+const INSTALL_LOCK_OWNER_FILE = ".owner";
 
 function firstNonEmpty(values) {
 	for (const value of values) {
@@ -109,24 +110,67 @@ function formatTomlOutput(lines, newline) {
 	return normalized.length === 0 ? "" : `${normalized.join(newline)}${newline}`;
 }
 
+function countMatches(value, pattern) {
+	return value.match(pattern)?.length ?? 0;
+}
+
+function advanceMultilineTomlState(line, state) {
+	if (state === "'''") {
+		return countMatches(line, /'''/g) % 2 === 1 ? null : state;
+	}
+	if (state === "\"\"\"") {
+		return countMatches(line, /(?<!\\)"""/g) % 2 === 1 ? null : state;
+	}
+	if (countMatches(line, /'''/g) % 2 === 1) {
+		return "'''";
+	}
+	if (countMatches(line, /(?<!\\)"""/g) % 2 === 1) {
+		return "\"\"\"";
+	}
+	return null;
+}
+
+function normalizeSectionHeader(line) {
+	const match = line.trim().match(/^(\[\[?)(.*?)(\]?\])\s*(?:#.*)?$/);
+	if (!match) {
+		return null;
+	}
+	const [, opener, body, closer] = match;
+	const expectedCloser = opener === "[[" ? "]]" : "]";
+	if (closer !== expectedCloser) {
+		return null;
+	}
+	return `${opener}${body.trim()}${closer}`;
+}
+
 function escapeRegExp(value) {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function findSectionRange(lines, sectionHeader) {
-	const headerPattern = new RegExp(`^\\s*${escapeRegExp(sectionHeader)}\\s*(?:#.*)?$`);
-	const headerIndex = lines.findIndex((line) => headerPattern.test(line));
-	if (headerIndex === -1) {
+	const normalizedHeader = normalizeSectionHeader(sectionHeader);
+	if (normalizedHeader === null) {
 		return null;
 	}
-	let endIndex = lines.length;
-	for (let index = headerIndex + 1; index < lines.length; index += 1) {
-		if (/^\s*\[\[?[^\]]+\]?\]\s*(?:#.*)?$/.test(lines[index])) {
-			endIndex = index;
-			break;
+
+	let headerIndex = -1;
+	let multilineState = null;
+	for (let index = 0; index < lines.length; index += 1) {
+		if (multilineState === null) {
+			const candidateHeader = normalizeSectionHeader(lines[index]);
+			if (candidateHeader !== null) {
+				if (headerIndex === -1) {
+					if (candidateHeader === normalizedHeader) {
+						headerIndex = index;
+					}
+				} else {
+					return { headerIndex, endIndex: index };
+				}
+			}
 		}
+		multilineState = advanceMultilineTomlState(lines[index], multilineState);
 	}
-	return { headerIndex, endIndex };
+	return headerIndex === -1 ? null : { headerIndex, endIndex: lines.length };
 }
 
 function upsertTomlBoolean(content, sectionHeader, key, enabled) {
@@ -196,6 +240,21 @@ export async function withFileOperationRetry(operation) {
 			await sleep(delayMs);
 		}
 	}
+}
+
+async function readInstallerLockOwner(lockOwnerPath, readFileImpl = readFile) {
+	try {
+		return await withFileOperationRetry(() => readFileImpl(lockOwnerPath, "utf-8"));
+	} catch (error) {
+		if (hasErrorCode(error, "ENOENT")) {
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function writeInstallerLockOwner(lockOwnerPath, lockOwnerToken, writeFileImpl = writeFile) {
+	await withFileOperationRetry(() => writeFileImpl(lockOwnerPath, lockOwnerToken, "utf-8"));
 }
 
 export async function renameWithRetry(sourcePath, targetPath, options = {}) {
@@ -327,9 +386,11 @@ export async function withInstallerLock(installerLockDir, operation, options = {
 		dryRun = false,
 		log = () => {},
 		mkdirImpl = mkdir,
+		readFileImpl = readFile,
 		rmImpl = rm,
 		statImpl = stat,
 		utimesImpl = utimes,
+		writeFileImpl = writeFile,
 		sleep: sleepImpl = sleep,
 		heartbeatIntervalMs = INSTALL_LOCK_HEARTBEAT_INTERVAL_MS,
 		now = Date.now,
@@ -339,18 +400,46 @@ export async function withInstallerLock(installerLockDir, operation, options = {
 		return operation();
 	}
 
+	const lockOwnerPath = join(installerLockDir, INSTALL_LOCK_OWNER_FILE);
+	const lockOwnerToken = `${process.pid}-${now()}-${Math.random().toString(36).slice(2, 8)}`;
+	const lockWaitStartedAt = now();
+	let lockOwnershipLost = false;
+	const ensureLockOwnership = async (context) => {
+		const currentOwner = await readInstallerLockOwner(lockOwnerPath, readFileImpl);
+		if (currentOwner === lockOwnerToken) {
+			return true;
+		}
+		if (!lockOwnershipLost) {
+			lockOwnershipLost = true;
+			log(`Warning: installer lock ownership changed for ${installerLockDir}; skipping ${context}.`);
+		}
+		return false;
+	};
+
 	await withFileOperationRetry(() => mkdirImpl(dirname(installerLockDir), { recursive: true }));
 
 	for (let attempt = 0; ; attempt += 1) {
 		try {
 			await mkdirImpl(installerLockDir, { recursive: false });
+			try {
+				await writeInstallerLockOwner(lockOwnerPath, lockOwnerToken, writeFileImpl);
+			} catch (writeError) {
+				try {
+					await withFileOperationRetry(() => rmImpl(installerLockDir, { recursive: true, force: true }));
+				} catch (cleanupError) {
+					log(`Warning: Could not remove partially acquired installer lock ${installerLockDir} (${cleanupError}).`);
+				}
+				throw writeError;
+			}
 			break;
 		} catch (error) {
 			const code = error && typeof error === "object" && "code" in error
 				? error.code
 				: undefined;
 			const isRetryable = typeof code === "string" && INSTALL_LOCK_RETRY_CODES.has(code);
-			if (!isRetryable || attempt >= INSTALL_LOCK_MAX_ATTEMPTS - 1) {
+			const waitedLongEnoughToReapStaleLock =
+				now() - lockWaitStartedAt >= INSTALL_LOCK_STALE_MS + INSTALL_LOCK_MAX_DELAY_MS;
+			if (!isRetryable || (attempt >= INSTALL_LOCK_MAX_ATTEMPTS - 1 && waitedLongEnoughToReapStaleLock)) {
 				throw error;
 			}
 			if (code === "EEXIST") {
@@ -376,6 +465,9 @@ export async function withInstallerLock(installerLockDir, operation, options = {
 
 	let heartbeat = Promise.resolve();
 	const refreshLockHeartbeat = async () => {
+		if (!(await ensureLockOwnership("heartbeat"))) {
+			return;
+		}
 		const touchedAt = new Date(now());
 		try {
 			await withFileOperationRetry(() => utimesImpl(installerLockDir, touchedAt, touchedAt));
@@ -398,7 +490,9 @@ export async function withInstallerLock(installerLockDir, operation, options = {
 			await heartbeat;
 		}
 		try {
-			await withFileOperationRetry(() => rmImpl(installerLockDir, { recursive: true, force: true }));
+			if (await ensureLockOwnership("cleanup")) {
+				await withFileOperationRetry(() => rmImpl(installerLockDir, { recursive: true, force: true }));
+			}
 		} catch (error) {
 			log(`Warning: Could not remove installer lock ${installerLockDir} (${error}).`);
 		}

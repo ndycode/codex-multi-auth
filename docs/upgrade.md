@@ -61,6 +61,7 @@ After source selection, environment variables still override individual setting 
 
 For day-to-day operator use, prefer stable overrides documented in [configuration.md](configuration.md).
 For maintainer/debug flows, see advanced/internal controls in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).
+The installer still accepts `--modern`, `--legacy`, and `--no-cache-clear` for backward compatibility, but they now log a compatibility note and behave as no-ops because official Codex uses `config.toml` plus the plugin cache.
 
 ---
 
