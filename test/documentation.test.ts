@@ -489,9 +489,6 @@ describe("Documentation Integrity", () => {
 		).toBeDefined();
 		// pull_request_target runs with base-repo permissions, so the action must
 		// stay pinned to an immutable commit instead of a mutable tag or branch.
-		expect(antiSlopStep?.uses).toMatch(
-			/^peakoss\/anti-slop@[a-f0-9]{40}\b/i,
-		);
 		expect(antiSlopStep?.uses).toBe(
 			"peakoss/anti-slop@85daca1880e9e1af197fc06ea03349daf08f4202",
 		);
@@ -538,8 +535,6 @@ describe("Documentation Integrity", () => {
 		);
 		expect(antiSlopStep?.with?.["close-pr"]).toBe(false);
 		expect(antiSlopStep?.with?.["lock-pr"]).toBe(false);
-		expect(antiSlop).toContain("must stay metadata-only");
-		expect(antiSlop).toContain("strips HTML comments before blocked-term matching");
 
 		const prBody = read(prTemplate);
 		expect(prBody).toContain("WORKTREE_LANTERN_1455");

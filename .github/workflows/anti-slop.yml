@@ -13,7 +13,7 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write
+  issues: write # required for GitHub's label API, which routes through Issues API even on PRs
   pull-requests: write
 
 jobs:
