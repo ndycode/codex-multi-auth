@@ -68,6 +68,10 @@ interface AntiSlopWorkflowConfig {
 			types?: string[];
 		};
 	};
+	concurrency?: {
+		group?: string;
+		"cancel-in-progress"?: boolean;
+	};
 	permissions?: {
 		contents?: string;
 		issues?: string;
@@ -503,6 +507,10 @@ describe("Documentation Integrity", () => {
 				"edited",
 			],
 		);
+		expect(antiSlopConfig.concurrency).toEqual({
+			group: "anti-slop-${{ github.event.pull_request.number }}",
+			"cancel-in-progress": true,
+		});
 		expect(antiSlopConfig.permissions).toEqual({
 			contents: "read",
 			issues: "write",
