@@ -127,7 +127,23 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rm(testWorkDir, { recursive: true, force: true });
+					break;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (
+						(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
+						attempt === 4
+					) {
+						throw error;
+					}
+					await new Promise((resolve) =>
+						setTimeout(resolve, 25 * 2 ** attempt),
+					);
+				}
+			}
 		});
 
 		it("should export accounts to a file", async () => {
@@ -380,7 +396,9 @@ describe("storage", () => {
 					},
 				],
 			});
-			await expect(createNamedBackup("   ")).rejects.toThrow(/Invalid backup name/);
+			await expect(createNamedBackup("   ")).rejects.toThrow(
+				/Invalid backup name/,
+			);
 		});
 	});
 
