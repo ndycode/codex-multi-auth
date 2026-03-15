@@ -1,13 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, readdirSync, mkdirSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+	readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync, execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import {
 	FILE_RETRY_BASE_DELAY_MS,
 	FILE_RETRY_MAX_ATTEMPTS,
-	normalizePluginList,
+	PLUGIN_MARKETPLACE,
+	PLUGIN_NAME,
+	PLUGIN_VERSION,
+	makePluginKey,
+	mergePluginConfigToml,
 	resolveInstallPaths,
 	withFileOperationRetry,
 } from "../scripts/install-codex-auth-utils.js";
@@ -34,101 +46,61 @@ function retryableError(code: string): Error & { code: string } {
 }
 
 describe("install-codex-auth script", () => {
-  it("uses lowercase config template filenames", () => {
-    const content = readFileSync(scriptPath, "utf8");
-    expect(content).toContain('"codex-legacy.json"');
-    expect(content).toContain('"codex-modern.json"');
-    expect(content).not.toContain('"Codex-legacy.json"');
-    expect(content).not.toContain('"Codex-modern.json"');
-  });
-
-	it("normalizes plugin list with empty, duplicate, and non-string entries", () => {
-		expect(normalizePluginList(undefined)).toEqual(["codex-multi-auth"]);
-		expect(normalizePluginList(["codex-multi-auth", "a", "a", 123, null])).toEqual([
-			"a",
-			123,
-			"codex-multi-auth",
-		]);
-		expect(normalizePluginList(["codex-multi-auth@1.0.0", "b"])).toEqual([
-			"b",
-			"codex-multi-auth",
-		]);
-	});
-
-	it("uses APPDATA/LOCALAPPDATA on windows path resolution", () => {
+	it("resolves official Codex paths from CODEX_HOME", () => {
 		const paths = resolveInstallPaths(
-			"win32",
+			"linux",
 			{
-				APPDATA: "C:\\Users\\test\\AppData\\Roaming",
-				LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local",
+				CODEX_HOME: "/tmp/codex-home",
 			},
-			"C:\\Users\\test",
+			"/home/test",
 		);
-		expect(paths.configPath).toBe(
-			path.join("C:\\Users\\test\\AppData\\Roaming", "Codex", "Codex.json"),
-		);
-		expect(paths.cacheNodeModules).toBe(
+		expect(paths.codexHomeDir).toBe("/tmp/codex-home");
+		expect(paths.configPath).toBe(path.join("/tmp/codex-home", "config.toml"));
+		expect(paths.pluginInstallDir).toBe(
 			path.join(
-				"C:\\Users\\test\\AppData\\Local",
-				"Codex",
-				"node_modules",
-				"codex-multi-auth",
+				"/tmp/codex-home",
+				"plugins",
+				"cache",
+				PLUGIN_MARKETPLACE,
+				PLUGIN_NAME,
+				PLUGIN_VERSION,
 			),
 		);
 	});
 
-	it("creates distinct backup files when installer runs concurrently", async () => {
-		const home = mkdtempSync(path.join(tmpdir(), "codex-install-race-"));
-		tempRoots.push(home);
-		const appData = path.join(home, "AppData", "Roaming");
-		const localAppData = path.join(home, "AppData", "Local");
-		const env = {
-			...process.env,
-			HOME: home,
-			USERPROFILE: home,
-			APPDATA: appData,
-			LOCALAPPDATA: localAppData,
-		};
-		const configDir = path.join(appData, "Codex");
-		const configPath = path.join(configDir, "Codex.json");
-		const initialConfig = JSON.stringify({ plugin: ["existing-plugin"] }, null, 2);
-
-		mkdirSync(configDir, { recursive: true });
-		writeFileSync(configPath, `${initialConfig}\n`, "utf8");
-
-		const [first, second] = await Promise.all([
-			execFileAsync(process.execPath, [scriptPath, "--modern", "--no-cache-clear"], {
-				env,
-				windowsHide: true,
-			}),
-			execFileAsync(process.execPath, [scriptPath, "--legacy", "--no-cache-clear"], {
-				env,
-				windowsHide: true,
-			}),
-		]);
-
-		expect(first.stderr).toBe("");
-		expect(second.stderr).toBe("");
-		expect(first.stdout).toContain("Backup created");
-		expect(second.stdout).toContain("Backup created");
-		const backups = readdirSync(configDir).filter((entry) =>
-			entry.startsWith("Codex.json.bak-"),
+	it("respects CODEX_CLI_CONFIG_PATH override", () => {
+		const paths = resolveInstallPaths(
+			"linux",
+			{
+				CODEX_HOME: "/tmp/codex-home",
+				CODEX_CLI_CONFIG_PATH: "/tmp/custom/config.toml",
+			},
+			"/home/test",
 		);
-		expect(new Set(backups).size).toBe(backups.length);
-		expect(backups.length).toBeGreaterThanOrEqual(2);
+		expect(paths.configPath).toBe("/tmp/custom/config.toml");
+		expect(paths.configDir).toBe(path.dirname("/tmp/custom/config.toml"));
 	});
 
-	it("dry-run does not create global config on disk", () => {
-		const home = mkdtempSync(path.join(tmpdir(), "codex-install-dryrun-"));
+	it("merges plugin settings into config.toml", () => {
+		const merged = mergePluginConfigToml(
+			["[features]", "plugins = false", "", "[plugins.\"codex-multi-auth@ndycode\"]", "enabled = false", ""].join("\n"),
+			makePluginKey(),
+		);
+		expect(merged).toContain("[features]");
+		expect(merged).toContain("plugins = true");
+		expect(merged).toContain('[plugins."codex-multi-auth@ndycode"]');
+		expect(merged).toContain("enabled = true");
+	});
+
+	it("dry-run does not create config or plugin cache", () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-dryrun-"));
 		tempRoots.push(home);
-		const appData = path.join(home, "AppData", "Roaming");
-		const localAppData = path.join(home, "AppData", "Local");
+		const codexHome = path.join(home, ".codex");
 		const env = {
 			...process.env,
 			HOME: home,
 			USERPROFILE: home,
-			APPDATA: appData,
-			LOCALAPPDATA: localAppData,
+			CODEX_HOME: codexHome,
 		};
 
 		const result = spawnSync(process.execPath, [scriptPath, "--dry-run", "--modern"], {
@@ -139,8 +111,61 @@ describe("install-codex-auth script", () => {
 
 		expect(result.status).toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toContain("[dry-run]");
-		const configPath = path.join(appData, "Codex", "Codex.json");
-		expect(existsSync(configPath)).toBe(false);
+		expect(existsSync(path.join(codexHome, "config.toml"))).toBe(false);
+		expect(existsSync(path.join(codexHome, "plugins", "cache"))).toBe(false);
+	});
+
+	it("installs plugin cache and updates config.toml", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-install-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+		};
+
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(
+			configPath,
+			["model = \"gpt-5-codex\"", "", "[features]", "shell_tool = true", ""].join("\n"),
+			"utf8",
+		);
+
+		const result = await execFileAsync(process.execPath, [scriptPath, "--no-cache-clear"], {
+			env,
+			windowsHide: true,
+		});
+
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toContain("Installed plugin cache");
+		expect(result.stdout).toContain("Backup created");
+
+		const config = readFileSync(configPath, "utf8");
+		expect(config).toContain("model = \"gpt-5-codex\"");
+		expect(config).toContain("[features]");
+		expect(config).toContain("plugins = true");
+		expect(config).toContain('[plugins."codex-multi-auth@ndycode"]');
+		expect(config).toContain("enabled = true");
+
+		const pluginManifestPath = path.join(
+			codexHome,
+			"plugins",
+			"cache",
+			PLUGIN_MARKETPLACE,
+			PLUGIN_NAME,
+			PLUGIN_VERSION,
+			".codex-plugin",
+			"plugin.json",
+		);
+		expect(existsSync(pluginManifestPath)).toBe(true);
+
+		const backups = readdirSync(codexHome).filter((entry) =>
+			entry.startsWith("config.toml.bak-")
+		);
+		expect(backups.length).toBe(1);
 	});
 
 	it("retries transient file-operation errors and eventually succeeds", async () => {
