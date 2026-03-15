@@ -47,11 +47,13 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 <details open>
 <summary><b>For Humans</b></summary>
 
-### Option A: Standard install
+### Option A: Account-manager install
 
 ```bash
 npm i -g codex-multi-auth
 ```
+
+Use this when you only need the local `codex auth ...` account-management flow.
 
 ### Option B: Migrate from legacy scoped prerelease
 
@@ -60,7 +62,14 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-### Option C: Verify wiring
+### Option C: Advanced plugin-host / forwarded Codex setup
+
+Only use this path when you also need the official Codex host/runtime.
+
+- Install or update the official CLI/host separately.
+- Then follow [docs/advanced-plugin-install.md](docs/advanced-plugin-install.md).
+
+### Option D: Verify account-manager wiring
 
 ```bash
 codex --version
@@ -72,13 +81,19 @@ codex auth status
 <details>
 <summary><b>For LLM Agents</b></summary>
 
+> [!CAUTION]
+> Do not auto-run browser login, repair, reset, or plugin-install commands unless the user explicitly asked for them.
+> `codex auth login`, `codex auth doctor --fix`, cleanup commands, and `scripts/install-codex-auth.js` all mutate local auth or Codex config state.
+
 ### Step-by-step
 
 1. Install global package:
    - `npm i -g codex-multi-auth`
-2. Run first login flow with `codex auth login`
-3. Validate state with `codex auth status` and `codex auth check`
-4. Confirm routing with `codex auth forecast --live`
+2. Validate the local account-manager wiring with `codex auth status`
+3. Ask before starting browser-driven login with `codex auth login`
+4. Ask before running repair/reset commands or the advanced plugin installer
+
+If the user explicitly needs forwarded non-auth `codex` commands or plugin-host setup, send them to [docs/advanced-plugin-install.md](docs/advanced-plugin-install.md) instead of assuming the extra install/config steps.
 
 ### Verification
 
@@ -99,6 +114,8 @@ codex auth status
 codex auth check
 codex auth forecast --live
 ```
+
+`codex auth login` opens a browser-based OAuth flow and changes local account state. For unattended or agent-driven environments, confirm before running it.
 
 Day-1 command set:
 
@@ -231,10 +248,12 @@ codex auth login
 <details>
 <summary><b>Common symptoms</b></summary>
 
-- `codex auth` unrecognized: run `where codex`, then follow `docs/troubleshooting.md` for routing fallback commands
+- `codex auth` unrecognized: run `where codex` or `which codex`, then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account
+
+If you need advanced plugin-host setup or forwarded non-auth Codex commands, use [docs/advanced-plugin-install.md](docs/advanced-plugin-install.md).
 
 </details>
 
@@ -262,6 +281,7 @@ codex auth doctor --json
 - Getting started: [docs/getting-started.md](docs/getting-started.md)
 - Features: [docs/features.md](docs/features.md)
 - Configuration: [docs/configuration.md](docs/configuration.md)
+- Advanced plugin install: [docs/advanced-plugin-install.md](docs/advanced-plugin-install.md)
 - Troubleshooting: [docs/troubleshooting.md](docs/troubleshooting.md)
 - Commands reference: [docs/reference/commands.md](docs/reference/commands.md)
 - Public API contract: [docs/reference/public-api.md](docs/reference/public-api.md)

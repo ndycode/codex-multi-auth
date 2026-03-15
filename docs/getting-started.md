@@ -7,17 +7,25 @@ Install `codex-multi-auth`, add an account, and confirm that `codex auth ...` is
 ## Prerequisites
 
 - Node.js `18+`
-- The official `@openai/codex` CLI
 - A ChatGPT plan with access to the models you want to use
+
+Optional for advanced setups only:
+
+- The official `@openai/codex` host/CLI when you also need forwarded non-auth `codex` commands or plugin-host runtime setup
 
 ---
 
 ## Install
 
 ```bash
-npm i -g @openai/codex
 npm i -g codex-multi-auth
 ```
+
+This installs the local account manager for `codex auth ...`.
+
+If you also need the official Codex host/runtime, follow the separate advanced setup guide:
+
+- [advanced-plugin-install.md](advanced-plugin-install.md)
 
 If you previously installed the old scoped prerelease package:
 
@@ -36,6 +44,8 @@ codex auth status
 ---
 
 ## First Login
+
+This command opens a browser-driven OAuth flow and changes local account state. Agents should only run it with explicit user approval.
 
 ```bash
 codex auth login
@@ -103,9 +113,12 @@ If `codex auth` is not recognized:
 
 ```bash
 where codex
+which codex
 ```
 
-Then continue with [troubleshooting.md](troubleshooting.md#verify-install-and-routing).
+Use the command that exists on your shell, then continue with [troubleshooting.md](troubleshooting.md#verify-install-and-routing).
+
+If you also need forwarded non-auth Codex commands or plugin-host runtime setup, continue with [advanced-plugin-install.md](advanced-plugin-install.md).
 
 If the OAuth callback on port `1455` fails:
 
@@ -127,5 +140,6 @@ codex auth check
 - [architecture.md](architecture.md)
 - [features.md](features.md)
 - [configuration.md](configuration.md)
+- [advanced-plugin-install.md](advanced-plugin-install.md)
 - [troubleshooting.md](troubleshooting.md)
 - [reference/commands.md](reference/commands.md)

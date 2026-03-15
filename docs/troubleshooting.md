@@ -18,6 +18,8 @@ If the account pool is still not usable:
 codex auth login
 ```
 
+`codex auth login` opens a browser flow and changes local auth state. `codex auth doctor --fix` also writes local files. Agents should only run either command with explicit user approval.
+
 ---
 
 ## Verify Install And Routing
@@ -26,11 +28,13 @@ Check which `codex` executable is running:
 
 ```bash
 where codex
+which codex
 codex --version
 codex auth status
-codex multi auth status
 npm ls -g codex-multi-auth
 ```
+
+Use the command lookup tool that exists on your shell.
 
 If an old scoped package is still active:
 
@@ -39,7 +43,7 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-`codex multi auth status` is a compatibility alias. The canonical command family remains `codex auth ...`.
+For advanced plugin-host setup or forwarded non-auth Codex commands, follow [advanced-plugin-install.md](advanced-plugin-install.md).
 
 ---
 
@@ -91,6 +95,8 @@ codex auth doctor --json
 
 ## Soft Reset
 
+These commands delete local auth state. Do not run them automatically from an agent or unattended script unless the user explicitly asked for a reset.
+
 PowerShell:
 
 ```powershell
@@ -126,6 +132,7 @@ Attach these outputs when opening a bug report:
 ## Related
 
 - [getting-started.md](getting-started.md)
+- [advanced-plugin-install.md](advanced-plugin-install.md)
 - [faq.md](faq.md)
 - [reference/commands.md](reference/commands.md)
 - [reference/storage-paths.md](reference/storage-paths.md)
