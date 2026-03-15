@@ -16,8 +16,8 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 - Canonical `codex auth ...` workflow for account login, switching, checks, and diagnostics
 - Multi-account OAuth pool with health-aware selection and automatic failover
 - Project-scoped account storage under `~/.codex/multi-auth/projects/<project-key>/...`
-- Interactive dashboard for account actions and settings
-- Experimental settings tab for staged sync, backup, and refresh-guard controls
+- Interactive dashboard for login, restore, switching, sync preview, and settings
+- Productized settings split across `Everyday Settings`, `Codex CLI Sync`, `Experimental`, and `Advanced & Operator`
 - Forecast, report, fix, and doctor commands for operational safety
 - Flagged account verification and restore flow
 - Session affinity and live account sync controls
@@ -111,6 +111,12 @@ codex auth report --live --json
 codex auth fix --dry-run
 codex auth doctor --fix
 ```
+
+Interactive dashboard paths:
+
+- restore named backups: `codex auth login` -> `Restore From Backup`
+- preview Codex CLI sync: `codex auth login` -> `Settings` -> `Codex CLI Sync`
+- adjust stable dashboard preferences: `codex auth login` -> `Settings` -> `Everyday Settings`
 
 ---
 
@@ -237,6 +243,7 @@ codex auth login
 - `codex auth` unrecognized: run `where codex`, then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
+- Interactive login skipped restore and went straight to OAuth: place named backups in `~/.codex/multi-auth/backups/`, then rerun `codex auth login` in a normal TTY
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account
 
 </details>
