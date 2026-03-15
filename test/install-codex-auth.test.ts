@@ -81,6 +81,26 @@ describe("install-codex-auth script", () => {
 		expect(paths.configDir).toBe(path.dirname("/tmp/custom/config.toml"));
 	});
 
+	it("resolves codex home dir on windows using USERPROFILE", () => {
+		const paths = resolveInstallPaths(
+			"win32",
+			{ USERPROFILE: "C:\\Users\\alice" },
+			"C:\\Users\\fallback",
+		);
+		expect(paths.codexHomeDir).toBe(path.join("C:\\Users\\alice", ".codex"));
+		expect(paths.configPath).toBe(path.join("C:\\Users\\alice", ".codex", "config.toml"));
+	});
+
+	it("resolves codex home dir on windows using HOMEDRIVE and HOMEPATH fallback", () => {
+		const paths = resolveInstallPaths(
+			"win32",
+			{ HOMEDRIVE: "C:", HOMEPATH: "\\Users\\bob" },
+			"C:\\Users\\fallback",
+		);
+		expect(paths.codexHomeDir).toBe(path.join("C:\\Users\\bob", ".codex"));
+		expect(paths.configPath).toBe(path.join("C:\\Users\\bob", ".codex", "config.toml"));
+	});
+
 	it("merges plugin settings into config.toml", () => {
 		const merged = mergePluginConfigToml(
 			["[features]", "plugins = false", "", "[plugins.\"codex-multi-auth@ndycode\"]", "enabled = false", ""].join("\n"),
@@ -108,8 +128,52 @@ describe("install-codex-auth script", () => {
 		);
 		expect(merged).toContain('model = "gpt-5-codex"');
 		expect(merged).toContain("mcp = true");
-		expect(merged).toContain('[plugins."other-plugin@openai-curated"]');
+		expect(merged).toContain('[plugins."other-plugin@openai-curated"]\nenabled = false');
 		expect(merged).toContain('[plugins."codex-multi-auth@ndycode"]');
+	});
+
+	it("treats TOML array-of-table headers as section boundaries", () => {
+		const merged = mergePluginConfigToml(
+			[
+				"[features]",
+				"mcp = true",
+				"",
+				"[[model]]",
+				'name = "gpt-5-codex"',
+				"",
+			].join("\n"),
+			makePluginKey(),
+		);
+		expect(merged).toContain("[features]\nmcp = true\n\nplugins = true\n[[model]]");
+		expect(merged).toContain('[plugins."codex-multi-auth@ndycode"]');
+		expect(merged).not.toContain("[[model]]\nplugins = true");
+	});
+
+	it("matches section headers with inline comments", () => {
+		const merged = mergePluginConfigToml(
+			[
+				"[features] # existing feature flags",
+				"plugins = false",
+				"",
+				'[plugins."codex-multi-auth@ndycode"] # plugin toggle',
+				"enabled = false",
+				"",
+			].join("\n"),
+			makePluginKey(),
+		);
+		expect(merged.match(/\[features\]/g)?.length ?? 0).toBe(1);
+		expect(merged.match(/\[plugins\."codex-multi-auth@ndycode"\]/g)?.length ?? 0).toBe(1);
+		expect(merged).toContain("plugins = true");
+		expect(merged).toContain("enabled = true");
+	});
+
+	it("escapes regex metacharacters in TOML keys", () => {
+		const merged = mergePluginConfigToml(
+			["[features]", "plugins = false", "shell_tool = false", "shell.tool = false", ""].join("\n"),
+			makePluginKey(),
+		);
+		expect(merged).toContain("shell_tool = false");
+		expect(merged).toContain("shell.tool = false");
 	});
 
 	it("dry-run does not create config or plugin cache", () => {
