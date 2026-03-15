@@ -148,6 +148,8 @@ export interface BackupRestoreAssessment {
 	currentAccountCount: number;
 	mergedAccountCount: number | null;
 	imported: number | null;
+	// Accounts already present in current storage. Metadata-only refreshes can
+	// still report them here because they are merged rather than newly imported.
 	skipped: number | null;
 	wouldExceedLimit: boolean;
 	eligibleForRestore: boolean;
@@ -1801,6 +1803,8 @@ export async function assessNamedBackupRestore(
 			? options.currentStorage
 			: await loadAccounts();
 	const currentAccounts = currentStorage?.accounts ?? [];
+	// Baseline merge math on a deduplicated current snapshot so pre-existing
+	// duplicate rows in storage cannot produce negative import counts.
 	const currentDeduplicatedAccounts = deduplicateAccounts([...currentAccounts]);
 
 	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {
@@ -1829,7 +1833,7 @@ export async function assessNamedBackupRestore(
 		: mergedAccounts.length - currentDeduplicatedAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, incomingDeduplicatedAccounts.length - imported);
+		: Math.max(0, incomingDeduplicatedAccounts.length - (imported ?? 0));
 	const changed = !haveEquivalentAccountRows(
 		mergedAccounts,
 		currentDeduplicatedAccounts,
@@ -3066,6 +3070,8 @@ export async function importAccounts(
 		changed,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
+		// Keep import counts anchored to a deduplicated current snapshot for the
+		// same reason as assessNamedBackupRestore.
 		const existingDeduplicatedAccounts = deduplicateAccounts([
 			...existingAccounts,
 		]);
