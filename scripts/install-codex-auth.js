@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, rm, writeFile, copyFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, stat, writeFile, copyFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -52,6 +52,8 @@ const installerLockDir = join(dirname(pluginBaseDir), `${PLUGIN_NAME}.install.lo
 const INSTALL_LOCK_RETRY_CODES = new Set(["EEXIST", "EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
 const INSTALL_LOCK_MAX_ATTEMPTS = 40;
 const INSTALL_LOCK_BASE_DELAY_MS = 25;
+const INSTALL_LOCK_MAX_DELAY_MS = 500;
+const INSTALL_LOCK_STALE_MS = 60_000;
 
 function log(message) {
 	console.log(message);
@@ -82,7 +84,22 @@ async function withInstallerLock(operation) {
 			if (!isRetryable || attempt >= INSTALL_LOCK_MAX_ATTEMPTS - 1) {
 				throw error;
 			}
-			const delayMs = INSTALL_LOCK_BASE_DELAY_MS * (attempt + 1);
+			if (code === "EEXIST") {
+				if (attempt === 0) {
+					log(`Waiting for installer lock ${installerLockDir}`);
+				}
+				try {
+					const { mtimeMs } = await stat(installerLockDir);
+					if (Date.now() - mtimeMs > INSTALL_LOCK_STALE_MS) {
+						log(`Warning: removing stale installer lock ${installerLockDir}`);
+						await withFileOperationRetry(() => rm(installerLockDir, { recursive: true, force: true }));
+						continue;
+					}
+				} catch {
+					continue;
+				}
+			}
+			const delayMs = Math.min(INSTALL_LOCK_BASE_DELAY_MS * 2 ** attempt, INSTALL_LOCK_MAX_DELAY_MS);
 			await sleep(delayMs);
 		}
 	}
@@ -106,12 +123,10 @@ async function writeTextAtomic(filePath, content) {
 		await withFileOperationRetry(() => writeFile(tempPath, content, "utf-8"));
 		await renameWithRetry(tempPath, filePath, { log });
 	} finally {
-		if (existsSync(tempPath)) {
-			try {
-				await withFileOperationRetry(() => rm(tempPath, { force: true }));
-			} catch (error) {
-				log(`Warning: Could not remove temporary file ${tempPath} (${error}).`);
-			}
+		try {
+			await withFileOperationRetry(() => rm(tempPath, { force: true }));
+		} catch (error) {
+			log(`Warning: Could not remove temporary file ${tempPath} (${error}).`);
 		}
 	}
 }
@@ -152,28 +167,34 @@ async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDi
 		await withFileOperationRetry(() => rm(targetBaseDir, { recursive: true, force: true }));
 		await renameWithRetry(stagedBaseDir, targetBaseDir, { log });
 	} finally {
-		if (existsSync(stagedRoot)) {
-			try {
-				await withFileOperationRetry(() => rm(stagedRoot, { recursive: true, force: true }));
-			} catch (cleanupError) {
-				log(`Warning: Could not remove staged temp dir ${stagedRoot} (${cleanupError}).`);
-			}
+		try {
+			await withFileOperationRetry(() => rm(stagedRoot, { recursive: true, force: true }));
+		} catch (cleanupError) {
+			log(`Warning: Could not remove staged temp dir ${stagedRoot} (${cleanupError}).`);
 		}
 	}
 	log(`Installed plugin cache at ${targetInstallDir}`);
 }
 
 async function updateConfigToml() {
-	let nextConfig = "";
+	let originalConfig = "";
 	if (existsSync(configPath)) {
-		const backupPath = await backupFile(configPath);
-		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
-		nextConfig = await withFileOperationRetry(() => readFile(configPath, "utf-8"));
+		originalConfig = await withFileOperationRetry(() => readFile(configPath, "utf-8"));
 	} else {
 		log("No existing config.toml found. Creating new user config.");
 	}
 
-	nextConfig = mergePluginConfigToml(nextConfig, pluginKey);
+	const nextConfig = mergePluginConfigToml(originalConfig, pluginKey);
+	if (nextConfig === originalConfig) {
+		log(`${configPath} is already up to date.`);
+		return;
+	}
+
+	if (existsSync(configPath)) {
+		const backupPath = await backupFile(configPath);
+		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
+	}
+
 	if (dryRun) {
 		log(`[dry-run] Would write ${configPath}`);
 		return;

@@ -90,6 +90,14 @@ function splitLines(content) {
 	};
 }
 
+function formatTomlOutput(lines, newline) {
+	const normalized = [...lines];
+	while (normalized.length > 0 && normalized[normalized.length - 1] === "") {
+		normalized.pop();
+	}
+	return normalized.length === 0 ? "" : `${normalized.join(newline)}${newline}`;
+}
+
 function escapeRegExp(value) {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -122,18 +130,21 @@ function upsertTomlBoolean(content, sectionHeader, key, enabled) {
 			normalized.push("");
 		}
 		normalized.push(sectionHeader, keyLine);
-		return `${normalized.join(newline)}${newline}`;
+		return formatTomlOutput(normalized, newline);
 	}
 
 	for (let index = range.headerIndex + 1; index < range.endIndex; index += 1) {
 		if (keyPattern.test(normalized[index])) {
+			if (normalized[index] === keyLine) {
+				return content;
+			}
 			normalized[index] = keyLine;
-			return `${normalized.join(newline)}${newline}`;
+			return formatTomlOutput(normalized, newline);
 		}
 	}
 
 	normalized.splice(range.endIndex, 0, keyLine);
-	return `${normalized.join(newline)}${newline}`;
+	return formatTomlOutput(normalized, newline);
 }
 
 export function mergePluginConfigToml(content, pluginKey) {
