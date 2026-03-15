@@ -67,6 +67,7 @@ import {
 	getActionableNamedBackupRestores,
 	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
+	listAccountSnapshots,
 	listNamedBackups,
 	listRotatingBackups,
 	NAMED_BACKUP_LIST_CONCURRENCY,
@@ -90,6 +91,7 @@ import {
 	getCodexCliConfigPath,
 	loadCodexCliState,
 } from "./codex-cli/state.js";
+import { getLatestCodexCliSyncRollbackPlan } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { ANSI } from "./ui/ansi.js";
 import { confirm } from "./ui/confirm.js";
@@ -3489,6 +3491,9 @@ async function runDoctor(args: string[]): Promise<number> {
 
 	setStoragePath(null);
 	const storagePath = getStoragePath();
+	const walPath = `${storagePath}.wal`;
+	const storageExists = existsSync(storagePath);
+	const walExists = existsSync(walPath);
 	const checks: DoctorCheck[] = [];
 	const addCheck = (check: DoctorCheck): void => {
 		checks.push(check);
@@ -3496,14 +3501,14 @@ async function runDoctor(args: string[]): Promise<number> {
 
 	addCheck({
 		key: "storage-file",
-		severity: existsSync(storagePath) ? "ok" : "warn",
-		message: existsSync(storagePath)
+		severity: storageExists ? "ok" : "warn",
+		message: storageExists
 			? "Account storage file found"
 			: "Account storage file does not exist yet (first login pending)",
 		details: storagePath,
 	});
 
-	if (existsSync(storagePath)) {
+	if (storageExists) {
 		try {
 			const stat = await fs.stat(storagePath);
 			addCheck({
@@ -3521,6 +3526,82 @@ async function runDoctor(args: string[]): Promise<number> {
 			});
 		}
 	}
+
+	addCheck({
+		key: "storage-journal",
+		severity: walExists ? "ok" : "warn",
+		message: walExists
+			? "Write-ahead journal found"
+			: "Write-ahead journal missing; recovery will rely on backups",
+		details: walPath,
+	});
+
+	const rotatingBackups = await listRotatingBackups();
+	const validRotatingBackups = rotatingBackups.filter((backup) => backup.valid);
+	const invalidRotatingBackups = rotatingBackups.filter(
+		(backup) => !backup.valid,
+	);
+	addCheck({
+		key: "rotating-backups",
+		severity:
+			validRotatingBackups.length > 0
+				? "ok"
+				: rotatingBackups.length > 0
+					? "error"
+					: "warn",
+		message:
+			validRotatingBackups.length > 0
+				? `${validRotatingBackups.length} rotating backup(s) available`
+				: rotatingBackups.length > 0
+					? "Rotating backups are unreadable"
+					: "No rotating backups found yet",
+		details:
+			invalidRotatingBackups.length > 0
+				? `${invalidRotatingBackups.length} invalid backup(s); recreate by saving accounts`
+				: dirname(storagePath),
+	});
+
+	const snapshotBackups = await listAccountSnapshots();
+	const validSnapshots = snapshotBackups.filter((snapshot) => snapshot.valid);
+	const invalidSnapshots = snapshotBackups.filter((snapshot) => !snapshot.valid);
+	addCheck({
+		key: "snapshot-backups",
+		severity:
+			validSnapshots.length > 0
+				? "ok"
+				: snapshotBackups.length > 0
+					? "error"
+					: "warn",
+		message:
+			validSnapshots.length > 0
+				? `${validSnapshots.length} recovery snapshot(s) available`
+				: snapshotBackups.length > 0
+					? "Snapshot backups are unreadable"
+					: "No recovery snapshots found",
+		details:
+			invalidSnapshots.length > 0
+				? `${invalidSnapshots.length} invalid snapshot(s); create a fresh snapshot before destructive actions`
+				: getNamedBackupsDirectoryPath(),
+	});
+
+	addCheck({
+		key: "recovery-chain",
+		severity:
+			storageExists ||
+			walExists ||
+			validRotatingBackups.length > 0 ||
+			validSnapshots.length > 0
+				? "ok"
+				: "warn",
+		message:
+			storageExists ||
+			walExists ||
+			validRotatingBackups.length > 0 ||
+			validSnapshots.length > 0
+				? "Recovery artifacts present"
+				: "No recovery artifacts found; create a snapshot or backup before destructive actions",
+		details: `storage=${storageExists}, wal=${walExists}, rotating=${validRotatingBackups.length}, snapshots=${validSnapshots.length}`,
+	});
 
 	const codexAuthPath = getCodexCliAuthPath();
 	const codexConfigPath = getCodexCliConfigPath();
@@ -3626,6 +3707,56 @@ async function runDoctor(args: string[]): Promise<number> {
 	});
 
 	const storage = await loadAccounts();
+	const rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+	if (rollbackPlan.status === "ready") {
+		const accountCount =
+			rollbackPlan.accountCount ?? rollbackPlan.storage?.accounts.length;
+		addCheck({
+			key: "codex-cli-rollback-checkpoint",
+			severity: "ok",
+			message: `Latest manual Codex CLI rollback checkpoint ready (${accountCount ?? "?"} account${accountCount === 1 ? "" : "s"})`,
+			details: rollbackPlan.snapshot?.path,
+		});
+	} else {
+		const isBlocked = Boolean(rollbackPlan.snapshot);
+		addCheck({
+			key: "codex-cli-rollback-checkpoint",
+			severity: isBlocked ? "error" : "warn",
+			message: isBlocked
+				? "Latest manual Codex CLI rollback checkpoint cannot be restored"
+				: "No manual Codex CLI rollback checkpoint has been recorded yet",
+			details: [
+				rollbackPlan.snapshot?.path ?? rollbackPlan.snapshot?.name,
+				rollbackPlan.reason,
+				isBlocked
+					? "Action: Recreate the rollback checkpoint with a fresh manual Codex CLI sync before attempting rollback."
+					: "Action: Run a manual Codex CLI sync with backups enabled to capture a rollback checkpoint before applying changes.",
+			]
+				.filter(Boolean)
+				.join(" | "),
+		});
+	}
+
+	const actionableNamedBackupRestores = await getActionableNamedBackupRestores({
+		currentStorage: storage,
+	});
+	const actionableBackupCount = actionableNamedBackupRestores.assessments.length;
+	addCheck({
+		key: "named-backup-restores",
+		severity: actionableBackupCount > 0 ? "ok" : "warn",
+		message:
+			actionableBackupCount > 0
+				? `Found ${actionableBackupCount} actionable named backup restore${actionableBackupCount === 1 ? "" : "s"}`
+				: "No actionable named backup restores available",
+		details: [
+			`total backups: ${actionableNamedBackupRestores.totalBackups}`,
+			actionableBackupCount > 0
+				? undefined
+				: `Action: Add or copy a named backup into ${getNamedBackupsDirectoryPath()} before attempting recovery.`,
+		]
+			.filter(Boolean)
+			.join(" | "),
+	});
 	let fixChanged = false;
 	let fixActions: DoctorFixAction[] = [];
 	if (options.fix && storage && storage.accounts.length > 0) {
