@@ -1,4 +1,4 @@
-import { promises as fs, watch as fsWatch, type FSWatcher } from "node:fs";
+import { type FSWatcher, promises as fs, watch as fsWatch } from "node:fs";
 import { basename, dirname } from "node:path";
 import { createLogger } from "./logger.js";
 
@@ -18,13 +18,66 @@ export interface LiveAccountSyncSnapshot {
 	errorCount: number;
 }
 
+const EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT: LiveAccountSyncSnapshot = {
+	path: null,
+	running: false,
+	lastKnownMtimeMs: null,
+	lastSyncAt: null,
+	reloadCount: 0,
+	errorCount: 0,
+};
+
+let lastLiveAccountSyncSnapshot: LiveAccountSyncSnapshot = {
+	...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT,
+};
+const activeLiveAccountSyncSnapshots = new Map<number, LiveAccountSyncSnapshot>();
+let lastStoppedLiveAccountSyncSnapshot:
+	| { instanceId: number; snapshot: LiveAccountSyncSnapshot }
+	| null = null;
+let nextLiveAccountSyncInstanceId = 0;
+
+function refreshLastLiveAccountSyncSnapshot(): void {
+	let latestActiveInstanceId = -1;
+	let latestActiveSnapshot: LiveAccountSyncSnapshot | null = null;
+	for (const [instanceId, snapshot] of activeLiveAccountSyncSnapshots.entries()) {
+		if (instanceId > latestActiveInstanceId) {
+			latestActiveInstanceId = instanceId;
+			latestActiveSnapshot = snapshot;
+		}
+	}
+	if (latestActiveSnapshot) {
+		lastLiveAccountSyncSnapshot = { ...latestActiveSnapshot };
+		return;
+	}
+	if (lastStoppedLiveAccountSyncSnapshot) {
+		lastLiveAccountSyncSnapshot = {
+			...lastStoppedLiveAccountSyncSnapshot.snapshot,
+		};
+		return;
+	}
+	lastLiveAccountSyncSnapshot = { ...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT };
+}
+
+export function getLastLiveAccountSyncSnapshot(): LiveAccountSyncSnapshot {
+	return { ...lastLiveAccountSyncSnapshot };
+}
+
+export function __resetLastLiveAccountSyncSnapshotForTests(): void {
+	lastLiveAccountSyncSnapshot = { ...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT };
+	activeLiveAccountSyncSnapshots.clear();
+	lastStoppedLiveAccountSyncSnapshot = null;
+	nextLiveAccountSyncInstanceId = 0;
+}
+
 /**
  * Convert an fs.watch filename value to a UTF-8 string or null.
  *
  * @param filename - The value supplied by fs.watch listeners; may be a `string`, `Buffer`, or `null`. Buffers are decoded as UTF-8.
  * @returns `filename` as a UTF-8 string, or `null` when the input is `null`.
  */
-function normalizeFsWatchFilename(filename: string | Buffer | null): string | null {
+function normalizeFsWatchFilename(
+	filename: string | Buffer | null,
+): string | null {
 	if (filename === null) return null;
 	if (typeof filename === "string") return filename;
 	return filename.toString("utf-8");
@@ -63,6 +116,7 @@ function summarizeWatchPath(path: string | null): string {
  * changes. Uses fs.watch + polling fallback for Windows reliability.
  */
 export class LiveAccountSync {
+	private readonly instanceId: number;
 	private readonly reload: () => Promise<void>;
 	private readonly debounceMs: number;
 	private readonly pollIntervalMs: number;
@@ -75,36 +129,54 @@ export class LiveAccountSync {
 	private lastSyncAt: number | null = null;
 	private reloadCount = 0;
 	private errorCount = 0;
-	private reloadInFlight: Promise<void> | null = null;
+	private generation = 0;
+	private reloadInFlight: { generation: number; promise: Promise<void> } | null =
+		null;
+	private reloadQueued = false;
 
-	constructor(reload: () => Promise<void>, options: LiveAccountSyncOptions = {}) {
+	constructor(
+		reload: () => Promise<void>,
+		options: LiveAccountSyncOptions = {},
+	) {
+		this.instanceId = ++nextLiveAccountSyncInstanceId;
 		this.reload = reload;
 		this.debounceMs = Math.max(50, Math.floor(options.debounceMs ?? 250));
-		this.pollIntervalMs = Math.max(500, Math.floor(options.pollIntervalMs ?? 2_000));
+		this.pollIntervalMs = Math.max(
+			500,
+			Math.floor(options.pollIntervalMs ?? 2_000),
+		);
 	}
 
 	async syncToPath(path: string): Promise<void> {
 		if (!path) return;
 		if (this.currentPath === path && this.running) return;
 		this.stop();
-
+		const generation = this.generation;
+		const nextMtimeMs = await readMtimeMs(path);
+		if (generation !== this.generation) {
+			return;
+		}
 		this.currentPath = path;
-		this.lastKnownMtimeMs = await readMtimeMs(path);
+		this.lastKnownMtimeMs = nextMtimeMs;
 		const targetDir = dirname(path);
 		const targetName = basename(path);
 
 		try {
-			this.watcher = fsWatch(targetDir, { persistent: false }, (_eventType, filename) => {
-				const name = normalizeFsWatchFilename(filename);
-				if (!name) {
-					this.scheduleReload("watch");
-					return;
-				}
+			this.watcher = fsWatch(
+				targetDir,
+				{ persistent: false },
+				(_eventType, filename) => {
+					const name = normalizeFsWatchFilename(filename);
+					if (!name) {
+						this.scheduleReload("watch");
+						return;
+					}
 
-				if (name === targetName || name.startsWith(`${targetName}.`)) {
-					this.scheduleReload("watch");
-				}
-			});
+					if (name === targetName || name.startsWith(`${targetName}.`)) {
+						this.scheduleReload("watch");
+					}
+				},
+			);
 		} catch (error) {
 			this.errorCount += 1;
 			log.warn("Failed to start fs.watch for account storage", {
@@ -116,14 +188,21 @@ export class LiveAccountSync {
 		this.pollTimer = setInterval(() => {
 			void this.pollOnce();
 		}, this.pollIntervalMs);
-		if (typeof this.pollTimer === "object" && "unref" in this.pollTimer && typeof this.pollTimer.unref === "function") {
+		if (
+			typeof this.pollTimer === "object" &&
+			"unref" in this.pollTimer &&
+			typeof this.pollTimer.unref === "function"
+		) {
 			this.pollTimer.unref();
 		}
 
 		this.running = true;
+		this.publishSnapshot();
 	}
 
 	stop(): void {
+		this.generation += 1;
+		this.reloadQueued = false;
 		this.running = false;
 		if (this.watcher) {
 			this.watcher.close();
@@ -137,6 +216,7 @@ export class LiveAccountSync {
 			clearTimeout(this.debounceTimer);
 			this.debounceTimer = null;
 		}
+		this.publishSnapshot();
 	}
 
 	getSnapshot(): LiveAccountSyncSnapshot {
@@ -148,6 +228,25 @@ export class LiveAccountSync {
 			reloadCount: this.reloadCount,
 			errorCount: this.errorCount,
 		};
+	}
+
+	private publishSnapshot(): void {
+		const snapshot = this.getSnapshot();
+		if (snapshot.running) {
+			activeLiveAccountSyncSnapshots.set(this.instanceId, snapshot);
+		} else {
+			activeLiveAccountSyncSnapshots.delete(this.instanceId);
+			if (
+				!lastStoppedLiveAccountSyncSnapshot ||
+				this.instanceId >= lastStoppedLiveAccountSyncSnapshot.instanceId
+			) {
+				lastStoppedLiveAccountSyncSnapshot = {
+					instanceId: this.instanceId,
+					snapshot,
+				};
+			}
+		}
+		refreshLastLiveAccountSyncSnapshot();
 	}
 
 	private scheduleReload(reason: "watch" | "poll"): void {
@@ -174,41 +273,76 @@ export class LiveAccountSync {
 				path: summarizeWatchPath(this.currentPath),
 				error: error instanceof Error ? error.message : String(error),
 			});
+			this.publishSnapshot();
 		}
 	}
 
 	private async runReload(reason: "watch" | "poll"): Promise<void> {
 		if (!this.running || !this.currentPath) return;
 		const targetPath = this.currentPath;
+		const generation = this.generation;
+
 		if (this.reloadInFlight) {
-			await this.reloadInFlight;
-			return;
-		}
-
-		this.reloadInFlight = (async () => {
-			try {
-				await this.reload();
-				this.lastSyncAt = Date.now();
-				this.reloadCount += 1;
-				this.lastKnownMtimeMs = await readMtimeMs(targetPath);
-				log.debug("Reloaded account manager from live storage update", {
-					reason,
-					path: summarizeWatchPath(targetPath),
-				});
-			} catch (error) {
-				this.errorCount += 1;
-				log.warn("Live account sync reload failed", {
-					reason,
-					path: summarizeWatchPath(targetPath),
-					error: error instanceof Error ? error.message : String(error),
-				});
+			const inFlightReload = this.reloadInFlight;
+			if (inFlightReload.generation === generation) {
+				this.reloadQueued = true;
+				return;
 			}
-		})();
-
-		try {
-			await this.reloadInFlight;
-		} finally {
-			this.reloadInFlight = null;
+			await inFlightReload.promise;
+			if (this.reloadInFlight?.promise === inFlightReload.promise) {
+				this.reloadInFlight = null;
+			}
+			if (!this.running || !this.currentPath) return;
+			if (generation !== this.generation || targetPath !== this.currentPath) {
+				return;
+			}
 		}
+
+		do {
+			this.reloadQueued = false;
+			const promise = (async () => {
+				try {
+					await this.reload();
+					if (generation !== this.generation || targetPath !== this.currentPath) {
+						return;
+					}
+					this.lastSyncAt = Date.now();
+					this.reloadCount += 1;
+					this.lastKnownMtimeMs = await readMtimeMs(targetPath);
+					if (generation !== this.generation || targetPath !== this.currentPath) {
+						return;
+					}
+					log.debug("Reloaded account manager from live storage update", {
+						reason,
+						path: summarizeWatchPath(targetPath),
+					});
+				} catch (error) {
+					if (generation !== this.generation || targetPath !== this.currentPath) {
+						return;
+					}
+					this.errorCount += 1;
+					log.warn("Live account sync reload failed", {
+						reason,
+						path: summarizeWatchPath(targetPath),
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			})();
+			this.reloadInFlight = { generation, promise };
+
+			try {
+				await promise;
+			} finally {
+				if (this.reloadInFlight?.promise === promise) {
+					this.reloadInFlight = null;
+					this.publishSnapshot();
+				}
+			}
+
+			if (!this.running || !this.currentPath) return;
+			if (generation !== this.generation || targetPath !== this.currentPath) {
+				return;
+			}
+		} while (this.reloadQueued);
 	}
 }
