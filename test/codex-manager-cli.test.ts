@@ -3403,6 +3403,72 @@ describe("codex manager cli commands", () => {
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledOnce();
 	});
 
+	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: mockBackupPath("named-backup"),
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		importAccountsMock.mockRejectedValueOnce(new Error("backup locked"));
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+			expect(exitCode).toBe(1);
+			expect(promptLoginModeMock).not.toHaveBeenCalled();
+			expect(confirmMock).toHaveBeenCalledOnce();
+			expect(importAccountsMock).toHaveBeenCalledWith(
+				mockBackupPath("named-backup"),
+			);
+			expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				'Failed to restore backup "named-backup" (UNKNOWN).',
+			);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
 	it("rejects a restore when the backup root changes before the final import path check", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
@@ -3940,6 +4006,33 @@ describe("codex manager cli commands", () => {
 		} finally {
 			logSpy.mockRestore();
 			warnSpy.mockRestore();
+		}
+	});
+
+	it("surfaces transient backup path validation failures with retry guidance", async () => {
+		setInteractiveTTY(true);
+		listNamedBackupsMock.mockRejectedValueOnce(
+			new Error("Backup path validation failed. Try again."),
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
+			expect(selectMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				"Backup path validation failed. Try again.",
+			);
+		} finally {
+			errorSpy.mockRestore();
 		}
 	});
 

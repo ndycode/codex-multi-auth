@@ -65,6 +65,7 @@ import {
 	getActionableNamedBackupRestores,
 	getNamedBackupsDirectoryPath,
 	isNamedBackupContainmentError,
+	isNamedBackupPathValidationTransientError,
 	listNamedBackups,
 	NAMED_BACKUP_ASSESS_CONCURRENCY,
 	restoreAssessedNamedBackup,
@@ -4351,7 +4352,7 @@ type BackupRestoreAssessment = Awaited<
 	ReturnType<typeof assessNamedBackupRestore>
 >;
 
-type BackupRestoreManagerResult = "restored" | "dismissed";
+type BackupRestoreManagerResult = "restored" | "dismissed" | "failed";
 
 function getRedactedFilesystemErrorLabel(error: unknown): string {
 	const code = (error as NodeJS.ErrnoException).code;
@@ -4385,6 +4386,8 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 			console.error(
 				`Backup validation failed: ${collapseWhitespace(message) || "unknown error"}`,
 			);
+		} else if (isNamedBackupPathValidationTransientError(error)) {
+			console.error("Backup path validation failed. Try again.");
 		} else {
 			console.error(
 				`Could not read backup directory: ${
@@ -4468,13 +4471,13 @@ async function runBackupRestoreManager(
 	const { assessments } = assessmentLoad;
 	if (assessments.length === 0) {
 		if (assessmentLoad.readFailed) {
-			return "dismissed";
+			return "failed";
 		}
 		if (assessmentLoad.assessmentFailures > 0) {
 			console.warn(
 				"Could not inspect any named backups. Resolve the backup read errors and try again.",
 			);
-			return "dismissed";
+			return "failed";
 		}
 		console.log(`No named backups found. Place backup files in ${backupDir}.`);
 		return "dismissed";
@@ -4540,11 +4543,11 @@ async function runBackupRestoreManager(
 		console.warn(
 			`Failed to re-assess backup "${selection.assessment.backup.name}" before restore (${errorLabel}).`,
 		);
-		return "dismissed";
+		return "failed";
 	}
 	if (!latestAssessment.eligibleForRestore) {
 		console.log(latestAssessment.error ?? "Backup is not eligible for restore.");
-		return "dismissed";
+		return "failed";
 	}
 
 	const netNewAccounts = latestAssessment.imported ?? 0;
@@ -4610,7 +4613,7 @@ async function runBackupRestoreManager(
 				`Failed to restore backup "${latestAssessment.backup.name}" (${errorLabel}).`,
 			);
 		}
-		return "dismissed";
+		return "failed";
 	}
 }
 
@@ -4673,8 +4676,10 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "restore-backup") {
 		try {
-			await runBackupRestoreManager(startupDisplaySettings);
-			return 0;
+			const restoreResult = await runBackupRestoreManager(
+				startupDisplaySettings,
+			);
+			return restoreResult === "failed" ? 1 : 0;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(
