@@ -1,70 +1,62 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir, copyFile, rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { cp, mkdir, readFile, rm, writeFile, copyFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
-	normalizePluginList,
-	renameWithRetry,
+	PLUGIN_MARKETPLACE,
+	PLUGIN_NAME,
+	PLUGIN_VERSION,
+	mergePluginConfigToml,
 	resolveInstallPaths,
+	renameWithRetry,
 	withFileOperationRetry,
 } from "./install-codex-auth-utils.js";
 
-const PLUGIN_NAME = "codex-multi-auth";
+const args = process.argv.slice(2);
+const flags = new Set(args.filter((arg) => arg.startsWith("-")));
+const dryRun = flags.has("--dry-run");
+const compatibilityFlags = ["--modern", "--legacy", "--no-cache-clear"].filter((flag) =>
+	flags.has(flag)
+);
 
-const args = new Set(process.argv.slice(2));
-
-if (args.has("--help") || args.has("-h")) {
-	console.log(`Usage: ${PLUGIN_NAME} [--modern|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
+if (flags.has("--help") || flags.has("-h")) {
+	console.log(
+		`${PLUGIN_NAME} plugin installer\n\n` +
+		"Usage: node scripts/install-codex-auth.js [--dry-run] [--modern] [--legacy] [--no-cache-clear]\n\n" +
 		"Default behavior:\n" +
-		"  - Installs/updates global config at ~/.config/Codex/Codex.json\n" +
-		"  - Uses modern config (variants) by default\n" +
-		"  - Ensures plugin is unpinned (latest)\n" +
-		"  - Clears Codex plugin cache\n\n" +
-		"Options:\n" +
-		"  --modern           Force modern config (default)\n" +
-		"  --legacy           Use legacy config (older Codex versions)\n" +
-		"  --dry-run          Show actions without writing\n" +
-		"  --no-cache-clear   Skip clearing Codex cache\n"
+		"  - Installs the official Codex plugin shell into CODEX_HOME/plugins/cache\n" +
+		"  - Ensures ~/.codex/config.toml (or CODEX_CLI_CONFIG_PATH) has [features] plugins = true\n" +
+		"  - Enables [plugins.\"codex-multi-auth@ndycode\"]\n" +
+		"  - Creates a backup of config.toml before changing it\n\n" +
+		"Compatibility flags accepted for older docs/scripts:\n" +
+		"  --modern, --legacy, --no-cache-clear\n" +
+		"    These are now no-ops because official Codex uses config.toml + plugin cache, not Codex.json.\n"
 	);
 	process.exit(0);
 }
 
-const useLegacy = args.has("--legacy");
-const useModern = args.has("--modern") || !useLegacy;
-const dryRun = args.has("--dry-run");
-const skipCacheClear = args.has("--no-cache-clear");
-
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
-const templatePath = join(
-	repoRoot,
-	"config",
-	useLegacy ? "codex-legacy.json" : "codex-modern.json"
-);
-
+const pluginSourcePath = join(repoRoot, "codex-plugin");
 const installPaths = resolveInstallPaths();
-const { configDir, configPath, cacheNodeModules, cacheBunLock, cachePackageJson } = installPaths;
+const {
+	configDir,
+	configPath,
+	pluginBaseDir,
+	pluginInstallDir,
+	pluginKey,
+} = installPaths;
 
 function log(message) {
 	console.log(message);
 }
 
-function formatJson(obj) {
-	return `${JSON.stringify(obj, null, 2)}\n`;
-}
-
-async function readJson(filePath) {
-	const content = await readFile(filePath, "utf-8");
-	return JSON.parse(content);
-}
-
-async function writeJsonAtomic(filePath, value) {
+async function writeTextAtomic(filePath, content) {
 	const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random()
 		.toString(36)
 		.slice(2, 8)}`;
-	const content = formatJson(value);
 	try {
 		await withFileOperationRetry(() => writeFile(tempPath, content, "utf-8"));
 		await renameWithRetry(tempPath, filePath, { log });
@@ -79,7 +71,7 @@ async function writeJsonAtomic(filePath, value) {
 	}
 }
 
-async function backupConfig(sourcePath) {
+async function backupFile(sourcePath) {
 	const timestamp = new Date()
 		.toISOString()
 		.replace(/[:.]/g, "-")
@@ -88,128 +80,80 @@ async function backupConfig(sourcePath) {
 	const nonce = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 	const backupPath = `${sourcePath}.bak-${timestamp}-${nonce}`;
 	if (!dryRun) {
-		await copyFile(sourcePath, backupPath);
+		await withFileOperationRetry(() => copyFile(sourcePath, backupPath));
 	}
 	return backupPath;
 }
 
-async function removePluginFromCachePackage() {
-	if (!existsSync(cachePackageJson)) {
-		return;
-	}
-
-	let cacheData;
-	try {
-		cacheData = await readJson(cachePackageJson);
-	} catch (error) {
-		log(`Warning: Could not parse ${cachePackageJson} (${error}). Skipping.`);
-		return;
-	}
-
-	const sections = [
-		"dependencies",
-		"devDependencies",
-		"peerDependencies",
-		"optionalDependencies",
-	];
-
-	let changed = false;
-	for (const section of sections) {
-		const deps = cacheData?.[section];
-		if (deps && typeof deps === "object" && PLUGIN_NAME in deps) {
-			delete deps[PLUGIN_NAME];
-			changed = true;
-		}
-	}
-
-	if (!changed) {
-		return;
-	}
+async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDir) {
+	const parentDir = dirname(targetBaseDir);
+	const stagedRoot = join(
+		parentDir,
+		`.plugin-install-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+	);
+	const stagedBaseDir = join(stagedRoot, PLUGIN_NAME);
+	const stagedInstallDir = join(stagedBaseDir, PLUGIN_VERSION);
 
 	if (dryRun) {
-		log(`[dry-run] Would update ${cachePackageJson} to remove ${PLUGIN_NAME}`);
+		log(`[dry-run] Would install plugin files from ${sourcePath}`);
+		log(`[dry-run] Would replace ${targetBaseDir}`);
 		return;
 	}
 
-	await writeJsonAtomic(cachePackageJson, cacheData);
+	await withFileOperationRetry(() => mkdir(parentDir, { recursive: true }));
+	await withFileOperationRetry(() => mkdir(stagedInstallDir, { recursive: true }));
+	await withFileOperationRetry(() => cp(sourcePath, stagedInstallDir, { recursive: true }));
+	if (existsSync(targetBaseDir)) {
+		await withFileOperationRetry(() => rm(targetBaseDir, { recursive: true, force: true }));
+	}
+	await renameWithRetry(stagedBaseDir, targetBaseDir, { log });
+	if (existsSync(stagedRoot)) {
+		await withFileOperationRetry(() => rm(stagedRoot, { recursive: true, force: true }));
+	}
+	log(`Installed plugin cache at ${targetInstallDir}`);
 }
 
-async function clearCache() {
-	if (skipCacheClear) {
-		log("Skipping cache clear (--no-cache-clear).");
+async function updateConfigToml() {
+	let nextConfig = "";
+	if (existsSync(configPath)) {
+		const backupPath = await backupFile(configPath);
+		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
+		nextConfig = await readFile(configPath, "utf-8");
+	} else {
+		log("No existing config.toml found. Creating new user config.");
+	}
+
+	nextConfig = mergePluginConfigToml(nextConfig, pluginKey);
+	if (dryRun) {
+		log(`[dry-run] Would write ${configPath}`);
 		return;
 	}
 
-	if (dryRun) {
-		log(`[dry-run] Would remove ${cacheNodeModules}`);
-		log(`[dry-run] Would remove ${cacheBunLock}`);
-	} else {
-		try {
-			await withFileOperationRetry(() => rm(cacheNodeModules, { recursive: true, force: true }));
-			await withFileOperationRetry(() => rm(cacheBunLock, { force: true }));
-		} catch (error) {
-			log(
-				`Warning: Could not fully clear cache (${error instanceof Error ? error.message : String(error)}). You may need to restart Codex.`,
-			);
-		}
-	}
-
-	await removePluginFromCachePackage();
+	await withFileOperationRetry(() => mkdir(configDir, { recursive: true }));
+	await writeTextAtomic(configPath, nextConfig);
+	log(`Wrote ${configPath}`);
 }
 
 async function main() {
-	if (!existsSync(templatePath)) {
-		throw new Error(`Config template not found at ${templatePath}`);
+	if (compatibilityFlags.length > 0) {
+		log(
+			`Compatibility note: ${compatibilityFlags.join(", ")} ${compatibilityFlags.length === 1 ? "is" : "are"} ignored. Official Codex plugin install now targets config.toml + plugin cache.`,
+		);
 	}
 
-	const template = await readJson(templatePath);
-	template.plugin = [PLUGIN_NAME];
-
-	let nextConfig = template;
-	if (existsSync(configPath)) {
-		const backupPath = await backupConfig(configPath);
-		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
-
-		try {
-			const existing = await readJson(configPath);
-			const merged = { ...existing };
-			merged.plugin = normalizePluginList(existing.plugin);
-			const provider = (existing.provider && typeof existing.provider === "object")
-				? { ...existing.provider }
-				: {};
-			const existingOpenAi = provider.openai && typeof provider.openai === "object"
-				? provider.openai
-				: {};
-			const templateOpenAi = template.provider && typeof template.provider === "object" &&
-				template.provider.openai && typeof template.provider.openai === "object"
-				? template.provider.openai
-				: {};
-			provider.openai = { ...templateOpenAi, ...existingOpenAi };
-			merged.provider = provider;
-			nextConfig = merged;
-		} catch (error) {
-			log(`Warning: Could not parse existing config (${error}). Replacing with template.`);
-			nextConfig = template;
-		}
-	} else {
-		log("No existing config found. Creating new global config.");
+	if (!existsSync(pluginSourcePath)) {
+		throw new Error(`Official plugin source not found at ${pluginSourcePath}`);
 	}
 
-	if (dryRun) {
-		log(`[dry-run] Would write ${configPath} using ${useLegacy ? "legacy" : "modern"} config`);
-	} else {
-		await mkdir(configDir, { recursive: true });
-		await writeJsonAtomic(configPath, nextConfig);
-		log(`Wrote ${configPath} (${useLegacy ? "legacy" : "modern"} config)`);
-	}
+	await installPluginIntoCache(pluginSourcePath, pluginBaseDir, pluginInstallDir);
+	await updateConfigToml();
 
-	await clearCache();
-
-	log("\nDone. Restart Codex to (re)install the plugin.");
-	log("Example: Codex");
-	if (useLegacy) {
-		log("Note: Legacy config requires Codex v1.0.209 or older.");
-	}
+	log("");
+	log(`Done. ${PLUGIN_NAME}@${PLUGIN_MARKETPLACE} is enabled for official Codex plugin loading.`);
+	log("Example next steps:");
+	log("  codex auth status");
+	log("  codex auth login");
+	log("  codex auth forecast --live");
 }
 
 const isDirectRun = (() => {
@@ -226,4 +170,3 @@ if (isDirectRun) {
 		process.exit(1);
 	});
 }
-

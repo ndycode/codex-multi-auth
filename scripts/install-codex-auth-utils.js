@@ -1,59 +1,137 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { rename as fsRename } from "node:fs/promises";
 
-const PLUGIN_NAME = "codex-multi-auth";
+export const PLUGIN_NAME = "codex-multi-auth";
+export const PLUGIN_MARKETPLACE = "ndycode";
+export const PLUGIN_VERSION = "local";
 export const FILE_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
 export const FILE_RETRY_MAX_ATTEMPTS = 6;
 export const FILE_RETRY_BASE_DELAY_MS = 25;
 export const FILE_RETRY_JITTER_MS = 20;
 
-export function resolveInstallPaths(
+function firstNonEmpty(values) {
+	for (const value of values) {
+		const trimmed = (value ?? "").trim();
+		if (trimmed.length > 0) {
+			return trimmed;
+		}
+	}
+	return null;
+}
+
+export function resolveCodexHomeDir(
 	platform = process.platform,
 	env = process.env,
 	home = homedir(),
 ) {
-	const isWindows = platform === "win32";
-	const appData = (env.APPDATA ?? "").trim();
-	const localAppData = (env.LOCALAPPDATA ?? appData).trim();
-	const configBase = isWindows
-		? appData || join(home, "AppData", "Roaming")
-		: join(home, ".config");
-	const cacheBase = isWindows
-		? localAppData || join(home, "AppData", "Local")
-		: join(home, ".cache");
-	const configDir = join(configBase, "Codex");
-	const configPath = join(configDir, "Codex.json");
-	const cacheDir = join(cacheBase, "Codex");
+	const override = (env.CODEX_HOME ?? "").trim();
+	if (override.length > 0) {
+		return override;
+	}
+	if (platform === "win32") {
+		const homeDrive = (env.HOMEDRIVE ?? "").trim();
+		const homePath = (env.HOMEPATH ?? "").trim();
+		const drivePathHome =
+			homeDrive.length > 0 && homePath.length > 0
+				? `${homeDrive}${homePath}`
+				: undefined;
+		return join(
+			firstNonEmpty([env.USERPROFILE, env.HOME, drivePathHome, home]) ?? home,
+			".codex",
+		);
+	}
+	return join(firstNonEmpty([env.HOME, home]) ?? home, ".codex");
+}
+
+export function makePluginKey(
+	pluginName = PLUGIN_NAME,
+	marketplaceName = PLUGIN_MARKETPLACE,
+) {
+	return `${pluginName}@${marketplaceName}`;
+}
+
+export function resolveInstallPaths(
+	platform = process.platform,
+	env = process.env,
+	home = homedir(),
+	pluginName = PLUGIN_NAME,
+	marketplaceName = PLUGIN_MARKETPLACE,
+	pluginVersion = PLUGIN_VERSION,
+) {
+	const codexHomeDir = resolveCodexHomeDir(platform, env, home);
+	const configPathOverride = (env.CODEX_CLI_CONFIG_PATH ?? "").trim();
+	const configPath = configPathOverride.length > 0
+		? configPathOverride
+		: join(codexHomeDir, "config.toml");
+	const configDir = dirname(configPath);
+	const pluginsCacheDir = join(codexHomeDir, "plugins", "cache");
+	const pluginBaseDir = join(pluginsCacheDir, marketplaceName, pluginName);
+	const pluginInstallDir = join(pluginBaseDir, pluginVersion);
 	return {
+		codexHomeDir,
 		configDir,
 		configPath,
-		cacheDir,
-		cacheNodeModules: join(cacheDir, "node_modules", PLUGIN_NAME),
-		cacheBunLock: join(cacheDir, "bun.lock"),
-		cachePackageJson: join(cacheDir, "package.json"),
+		pluginsCacheDir,
+		pluginBaseDir,
+		pluginInstallDir,
+		pluginKey: makePluginKey(pluginName, marketplaceName),
+		pluginName,
+		marketplaceName,
+		pluginVersion,
 	};
 }
 
-export function normalizePluginList(list) {
-	const entries = Array.isArray(list) ? list.filter(Boolean) : [];
-	const filtered = entries.filter((entry) => {
-		if (typeof entry !== "string") return true;
-		return entry !== PLUGIN_NAME && !entry.startsWith(`${PLUGIN_NAME}@`);
-	});
-	const deduped = [];
-	const seen = new Set();
-	for (const entry of filtered) {
-		const key = typeof entry === "string" ? `s:${entry}` : `j:${JSON.stringify(entry)}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		deduped.push(entry);
+function splitLines(content) {
+	return content.replace(/\r\n/g, "\n").split("\n");
+}
+
+function findSectionRange(lines, sectionHeader) {
+	const headerIndex = lines.findIndex((line) => line.trim() === sectionHeader);
+	if (headerIndex === -1) {
+		return null;
 	}
-	return [...deduped, PLUGIN_NAME];
+	let endIndex = lines.length;
+	for (let index = headerIndex + 1; index < lines.length; index += 1) {
+		if (/^\s*\[[^\]]+\]\s*$/.test(lines[index])) {
+			endIndex = index;
+			break;
+		}
+	}
+	return { headerIndex, endIndex };
+}
+
+function upsertTomlBoolean(content, sectionHeader, key, enabled) {
+	const lines = splitLines(content.trim());
+	const normalized = lines.length === 1 && lines[0] === "" ? [] : lines;
+	const keyLine = `${key} = ${enabled ? "true" : "false"}`;
+	const range = findSectionRange(normalized, sectionHeader);
+
+	if (!range) {
+		if (normalized.length > 0 && normalized[normalized.length - 1] !== "") {
+			normalized.push("");
+		}
+		normalized.push(sectionHeader, keyLine);
+		return `${normalized.join("\n")}\n`;
+	}
+
+	for (let index = range.headerIndex + 1; index < range.endIndex; index += 1) {
+		if (new RegExp(`^\\s*${key}\\s*=`).test(normalized[index])) {
+			normalized[index] = keyLine;
+			return `${normalized.join("\n")}\n`;
+		}
+	}
+
+	normalized.splice(range.endIndex, 0, keyLine);
+	return `${normalized.join("\n")}\n`;
+}
+
+export function mergePluginConfigToml(content, pluginKey) {
+	const withFeatures = upsertTomlBoolean(content, "[features]", "plugins", true);
+	return upsertTomlBoolean(withFeatures, `[plugins."${pluginKey}"]`, "enabled", true);
 }
 
 function sleep(ms) {
-	// Keep this helper local so installer scripts remain standalone and do not depend on lib/.
 	return new Promise((resolve) => {
 		setTimeout(resolve, ms);
 	});
