@@ -559,6 +559,43 @@ describe("install-codex-auth script", () => {
 		expect(readFileSync(preservedManifestPath, "utf8")).toContain("existing-plugin");
 	});
 
+	it("preserves rollback contents when restore is skipped after staged rename failure", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-rollback-skipped-"));
+		tempRoots.push(home);
+		const sourcePath = path.join(process.cwd(), "codex-plugin");
+		const targetBaseDir = path.join(home, "plugins", "cache", "ndycode", "codex-multi-auth");
+		const targetInstallDir = path.join(targetBaseDir, "local");
+		const existingManifestPath = path.join(targetInstallDir, ".codex-plugin", "plugin.json");
+		const unexpectedManifestPath = path.join(targetBaseDir, "unexpected", ".codex-plugin", "plugin.json");
+
+		mkdirSync(path.dirname(existingManifestPath), { recursive: true });
+		writeFileSync(existingManifestPath, '{"name":"existing-plugin"}\n', "utf8");
+
+		let rollbackDir = "";
+		let renameCount = 0;
+		const renameImpl = vi.fn(async (source: string, target: string) => {
+			renameCount += 1;
+			if (renameCount === 1) {
+				rollbackDir = target;
+				await import("node:fs/promises").then(({ rename }) => rename(source, target));
+				mkdirSync(path.dirname(unexpectedManifestPath), { recursive: true });
+				writeFileSync(unexpectedManifestPath, '{"name":"unexpected-plugin"}\n', "utf8");
+				return;
+			}
+			throw retryableError("EPERM");
+		});
+
+		await expect(
+			installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDir, { renameImpl }),
+		).rejects.toMatchObject({ code: "EPERM" });
+
+		expect(rollbackDir).not.toBe("");
+		expect(existsSync(rollbackDir)).toBe(true);
+		const preservedManifestPath = path.join(rollbackDir, "local", ".codex-plugin", "plugin.json");
+		expect(readFileSync(preservedManifestPath, "utf8")).toContain("existing-plugin");
+		expect(readFileSync(unexpectedManifestPath, "utf8")).toContain("unexpected-plugin");
+	});
+
 	it("retries transient file-operation errors and eventually succeeds", async () => {
 		vi.useFakeTimers();
 		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);

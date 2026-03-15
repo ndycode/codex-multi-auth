@@ -275,6 +275,9 @@ export async function installPluginIntoCache(sourcePath, targetBaseDir, targetIn
 					throw restoreError;
 				}
 			}
+			if (movedExistingPlugin && existsSync(rollbackDir)) {
+				preserveRollbackDir = true;
+			}
 			throw error;
 		}
 		if (movedExistingPlugin) {
