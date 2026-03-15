@@ -3521,7 +3521,7 @@ describe("codex manager cli commands", () => {
 				expect.stringContaining("Could not assess any named backups in"),
 			);
 			expect(errorSpy).toHaveBeenCalledWith(
-				expect.stringContaining("named-backup: backup busy"),
+				expect.stringContaining("named-backup (EBUSY)"),
 			);
 		} finally {
 			errorSpy.mockRestore();
@@ -3869,7 +3869,7 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(errorSpy).toHaveBeenCalledWith(
-				"Restore failed: Import would exceed maximum of 10 accounts (would have 11). Close other Codex instances and try again.",
+				"Restore failed (UNKNOWN): account storage limit exceeded. Close other Codex instances and try again.",
 			);
 		} finally {
 			errorSpy.mockRestore();
@@ -4054,14 +4054,14 @@ describe("codex manager cli commands", () => {
 			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining(
-					'Skipped backup assessment for "busy-backup": backup directory busy',
+					'Skipped backup assessment for "busy-backup" (EBUSY).',
 				),
 			);
 			expect(errorSpy).toHaveBeenCalledWith(
 				expect.stringContaining("Could not assess any named backups in"),
 			);
 			expect(errorSpy).toHaveBeenCalledWith(
-				expect.stringContaining("busy-backup: backup directory busy"),
+				expect.stringContaining("busy-backup (EBUSY)"),
 			);
 			expect(logSpy).not.toHaveBeenCalledWith(
 				expect.stringContaining("No named backups found."),

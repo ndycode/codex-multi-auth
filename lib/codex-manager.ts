@@ -4439,15 +4439,10 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 				throw result.reason;
 			}
 			const backupName = chunk[resultIndex]?.name ?? "unknown";
-			const reason =
-				result.reason instanceof Error
-					? result.reason.message
-					: String(result.reason);
-			const normalizedReason =
-				collapseWhitespace(reason) || "unknown error";
-			assessmentFailureDetails.push(`${backupName}: ${normalizedReason}`);
+			const errorLabel = getRedactedFilesystemErrorLabel(result.reason);
+			assessmentFailureDetails.push(`${backupName} (${errorLabel})`);
 			console.warn(
-				`Skipped backup assessment for "${backupName}": ${normalizedReason}`,
+				`Skipped backup assessment for "${backupName}" (${errorLabel}).`,
 			);
 			assessmentFailures += 1;
 		}
@@ -4614,8 +4609,9 @@ async function runBackupRestoreManager(
 		const message = error instanceof Error ? error.message : String(error);
 		const collapsedMessage = collapseWhitespace(message) || "unknown error";
 		if (/exceed maximum/i.test(collapsedMessage)) {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
 			console.error(
-				`Restore failed: ${collapsedMessage}. Close other Codex instances and try again.`,
+				`Restore failed (${errorLabel}): account storage limit exceeded. Close other Codex instances and try again.`,
 			);
 		} else {
 			const errorLabel = getRedactedFilesystemErrorLabel(error);
