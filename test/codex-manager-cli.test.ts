@@ -396,10 +396,10 @@ type SettingsHubMenuItem = {
 
 const SETTINGS_HUB_MENU_ORDER = [
 	"account-list",
-	"sync-center",
 	"summary-fields",
 	"behavior",
 	"theme",
+	"sync-center",
 	"experimental",
 	"backend",
 ] as const;
@@ -4104,7 +4104,7 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("shows experimental settings in the settings hub", async () => {
+	it("shows productized everyday and advanced settings in the hub", async () => {
 		const now = Date.now();
 		setupInteractiveSettingsLogin(createSettingsStorage(now));
 		queueSettingsSelectSequence([{ type: "back" }]);
@@ -4114,6 +4114,44 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(readSettingsHubPanelContract()).toEqual(SETTINGS_HUB_MENU_ORDER);
+		const firstMenuItems = (selectMock.mock.calls[0]?.[0] ?? []) as Array<{
+			label?: string;
+			hint?: string;
+		}>;
+		const firstMenuOptions = selectMock.mock.calls[0]?.[1] as
+			| {
+					message?: string;
+					subtitle?: string;
+			  }
+			| undefined;
+		expect(firstMenuOptions?.message).toBe("Settings");
+		expect(firstMenuOptions?.subtitle).toContain(
+			"everyday dashboard settings",
+		);
+		const menuText = firstMenuItems
+			.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
+			.join("\n");
+		expect(menuText).toContain("Everyday Settings");
+		expect(menuText).toContain("List Appearance");
+		expect(menuText).toContain("Details Line");
+		expect(menuText).toContain("Results & Refresh");
+		expect(menuText).toContain("Colors");
+		expect(menuText).toContain("Advanced & Operator");
+		expect(menuText).toContain("Codex CLI Sync");
+		expect(menuText).toContain("Experimental");
+		expect(menuText).toContain("Advanced Backend Controls");
+		expect(menuText).toContain(
+			"Show badges, sorting, and how much detail each account row shows.",
+		);
+		expect(menuText).toContain(
+			"Preview and apply one-way sync from Codex CLI account files.",
+		);
+		expect(menuText).toContain(
+			"Preview sync and backup actions before they become stable.",
+		);
+		expect(menuText).toContain(
+			"Tune retry, quota, sync, recovery, and timeout internals.",
+		);
 	});
 
 	it("runs experimental oc sync with mandatory preview before apply", async () => {
