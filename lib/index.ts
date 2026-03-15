@@ -17,6 +17,7 @@ export * from "./table-formatter.js";
 export * from "./parallel-probe.js";
 export * from "./session-affinity.js";
 export * from "./live-account-sync.js";
+export * from "./sync-history.js";
 export * from "./refresh-guardian.js";
 export * from "./refresh-lease.js";
 export * from "./request/failure-policy.js";

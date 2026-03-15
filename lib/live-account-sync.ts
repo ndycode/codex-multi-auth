@@ -1,6 +1,7 @@
 import { type FSWatcher, promises as fs, watch as fsWatch } from "node:fs";
 import { basename, dirname } from "node:path";
 import { createLogger } from "./logger.js";
+import { appendSyncHistoryEntry } from "./sync-history.js";
 
 const log = createLogger("live-account-sync");
 
@@ -109,6 +110,15 @@ async function readMtimeMs(path: string): Promise<number | null> {
 function summarizeWatchPath(path: string | null): string {
 	if (!path) return "<unknown>";
 	return basename(path);
+}
+
+function toHistorySnapshot(
+	snapshot: LiveAccountSyncSnapshot,
+): LiveAccountSyncSnapshot {
+	return {
+		...snapshot,
+		path: snapshot.path ? summarizeWatchPath(snapshot.path) : null,
+	};
 }
 
 /**
@@ -230,6 +240,29 @@ export class LiveAccountSync {
 		};
 	}
 
+	private async recordHistory(
+		reason: "watch" | "poll" | "manual",
+		outcome: "success" | "error",
+		message?: string,
+	): Promise<void> {
+		const snapshot = toHistorySnapshot(this.getSnapshot());
+		try {
+			await appendSyncHistoryEntry({
+				kind: "live-account-sync",
+				recordedAt: Date.now(),
+				reason,
+				outcome,
+				path: snapshot.path,
+				message,
+				snapshot,
+			});
+		} catch (error) {
+			log.debug("Failed to record live account sync history", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
 	private publishSnapshot(): void {
 		const snapshot = this.getSnapshot();
 		if (snapshot.running) {
@@ -312,6 +345,7 @@ export class LiveAccountSync {
 					if (generation !== this.generation || targetPath !== this.currentPath) {
 						return;
 					}
+					void this.recordHistory(reason, "success");
 					log.debug("Reloaded account manager from live storage update", {
 						reason,
 						path: summarizeWatchPath(targetPath),
@@ -321,6 +355,11 @@ export class LiveAccountSync {
 						return;
 					}
 					this.errorCount += 1;
+					void this.recordHistory(
+						reason,
+						"error",
+						error instanceof Error ? error.message : String(error),
+					);
 					log.warn("Live account sync reload failed", {
 						reason,
 						path: summarizeWatchPath(targetPath),

@@ -17,6 +17,11 @@ import {
 	SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS,
 	syncAccountStorageFromCodexCli,
 } from "../lib/codex-cli/sync.js";
+import {
+	__resetSyncHistoryForTests,
+	configureSyncHistoryForTests,
+	readSyncHistory,
+} from "../lib/sync-history.js";
 import * as writerModule from "../lib/codex-cli/writer.js";
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
@@ -68,6 +73,8 @@ describe("codex-cli sync", () => {
 		authPath = join(tempDir, "auth.json");
 		configPath = join(tempDir, "config.toml");
 		targetStoragePath = join(tempDir, "openai-codex-accounts.json");
+		configureSyncHistoryForTests(join(tempDir, "logs"));
+		await __resetSyncHistoryForTests();
 		process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
 		process.env.CODEX_CLI_AUTH_PATH = authPath;
 		process.env.CODEX_CLI_CONFIG_PATH = configPath;
@@ -100,6 +107,8 @@ describe("codex-cli sync", () => {
 			process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE =
 				previousEnforceFileStore;
 		}
+		await __resetSyncHistoryForTests();
+		configureSyncHistoryForTests(null);
 		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
@@ -1319,6 +1328,17 @@ describe("codex-cli sync", () => {
 		expect(lastRun?.sourcePath).toBe(accountsPath);
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
 		expect(lastRun?.summary.destinationOnlyPreservedCount).toBe(1);
+		const history = await readSyncHistory({ kind: "codex-cli-sync" });
+		const lastHistory = history.at(-1);
+		expect(lastHistory?.kind).toBe("codex-cli-sync");
+		if (lastHistory?.kind === "codex-cli-sync") {
+			expect(lastHistory.run.outcome).toBe("changed");
+			expect(lastHistory.run.summary.addedAccountCount).toBe(1);
+		}
+		__resetLastCodexCliSyncRunForTests();
+		const persisted = getLastCodexCliSyncRun();
+		expect(persisted?.outcome).toBe("changed");
+		expect(persisted?.summary.addedAccountCount).toBe(1);
 	});
 
 	it("re-reads Codex CLI state on apply when forceRefresh is requested", async () => {

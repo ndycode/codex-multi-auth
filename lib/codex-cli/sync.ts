@@ -21,6 +21,12 @@ import {
 	loadCodexCliState,
 } from "./state.js";
 import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
+import {
+	appendSyncHistoryEntry,
+	cloneSyncHistoryEntry,
+	readLatestSyncHistorySync,
+	readSyncHistory,
+} from "../sync-history.js";
 
 const log = createLogger("codex-cli-sync");
 const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
@@ -114,6 +120,7 @@ let lastCodexCliSyncRun: CodexCliSyncRun | null = null;
 let lastCodexCliSyncRunRevision = 0;
 let nextCodexCliSyncRunRevision = 0;
 const activePendingCodexCliSyncRunRevisions = new Set<number>();
+let lastCodexCliSyncHistoryLoadAttempted = false;
 
 function createEmptySyncSummary(): CodexCliSyncSummary {
 	return {
@@ -166,7 +173,23 @@ function publishCodexCliSyncRun(
 	}
 	lastCodexCliSyncRunRevision = revision;
 	lastCodexCliSyncRun = cloneCodexCliSyncRun(run);
+	void appendSyncHistoryEntry({
+		kind: "codex-cli-sync",
+		recordedAt: run.runAt,
+		run: cloneCodexCliSyncRun(run),
+	}).catch((error) => {
+		log.debug("Failed to record codex-cli sync history", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	});
 	return true;
+}
+
+function hydrateLastCodexCliSyncRunFromHistory(
+	run: CodexCliSyncRun,
+): CodexCliSyncRun {
+	lastCodexCliSyncRun = cloneCodexCliSyncRun(run);
+	return cloneCodexCliSyncRun(run);
 }
 
 function buildSyncRunError(
@@ -208,7 +231,26 @@ async function resolveCodexCliSyncState(options: {
 }
 
 export function getLastCodexCliSyncRun(): CodexCliSyncRun | null {
-	return lastCodexCliSyncRun ? cloneCodexCliSyncRun(lastCodexCliSyncRun) : null;
+	if (lastCodexCliSyncRun) {
+		return cloneCodexCliSyncRun(lastCodexCliSyncRun);
+	}
+	if (!lastCodexCliSyncHistoryLoadAttempted) {
+		lastCodexCliSyncHistoryLoadAttempted = true;
+		const latest = cloneSyncHistoryEntry(readLatestSyncHistorySync());
+		if (latest?.kind === "codex-cli-sync") {
+			return hydrateLastCodexCliSyncRunFromHistory(latest.run);
+		}
+		void readSyncHistory({ kind: "codex-cli-sync", limit: 1 })
+			.then((entries) => {
+				if (lastCodexCliSyncRun) return;
+				const lastEntry = entries.at(-1);
+				if (lastEntry?.kind === "codex-cli-sync") {
+					lastCodexCliSyncRun = cloneCodexCliSyncRun(lastEntry.run);
+				}
+			})
+			.catch(() => undefined);
+	}
+	return null;
 }
 
 export function commitPendingCodexCliSyncRun(
@@ -252,6 +294,7 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	lastCodexCliSyncRunRevision = 0;
 	nextCodexCliSyncRunRevision = 0;
 	activePendingCodexCliSyncRunRevisions.clear();
+	lastCodexCliSyncHistoryLoadAttempted = false;
 }
 
 function hasConflictingIdentity(
