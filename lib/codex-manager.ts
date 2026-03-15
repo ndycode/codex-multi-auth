@@ -30,6 +30,12 @@ import {
 	type DashboardAccountSortMode,
 } from "./dashboard-settings.js";
 import {
+	DESTRUCTIVE_ACTION_COPY,
+	deleteAccountAtIndex,
+	deleteSavedAccounts,
+	resetLocalState,
+} from "./destructive-actions.js";
+import {
 	evaluateForecastAccounts,
 	isHardRefreshFailure,
 	recommendForecastAccount,
@@ -50,7 +56,6 @@ import {
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
 import {
-	clearAccounts,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -85,6 +90,8 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
+
+let destructiveActionInFlight = false;
 
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
@@ -3732,10 +3739,6 @@ async function runDoctor(args: string[]): Promise<number> {
 	return summary.error > 0 ? 1 : 0;
 }
 
-async function clearAccountsAndReset(): Promise<void> {
-	await clearAccounts();
-}
-
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
@@ -3749,14 +3752,18 @@ async function handleManageAction(
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
-			storage.accounts.splice(idx, 1);
-			storage.activeIndex = 0;
-			storage.activeIndexByFamily = {};
-			for (const family of MODEL_FAMILIES) {
-				storage.activeIndexByFamily[family] = 0;
+			const deleted = await deleteAccountAtIndex({
+				storage,
+				index: idx,
+			});
+			if (deleted) {
+				const label = `Account ${idx + 1}`;
+				const flaggedNote =
+					deleted.removedFlaggedCount > 0
+						? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
+						: "";
+				console.log(`Deleted ${label}.${flaggedNote}`);
 			}
-			await saveAccounts(storage);
-			console.log(`Deleted account ${idx + 1}.`);
 		}
 		return;
 	}
@@ -3884,10 +3891,59 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
-					await runActionPanel("Reset Accounts", "Deleting all saved accounts", async () => {
-						await clearAccountsAndReset();
-						console.log("Cleared saved accounts from active storage. Recovery snapshots remain available.");
-					}, displaySettings);
+					if (destructiveActionInFlight) {
+						console.log("Another destructive action is already running. Wait for it to finish.");
+						continue;
+					}
+					destructiveActionInFlight = true;
+					try {
+						await runActionPanel(
+							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
+							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
+							async () => {
+								const result = await deleteSavedAccounts();
+								console.log(
+									result.accountsCleared
+										? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed
+										: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs.",
+								);
+							},
+							displaySettings,
+						);
+					} finally {
+						destructiveActionInFlight = false;
+					}
+					continue;
+				}
+				if (menuResult.mode === "reset") {
+					if (destructiveActionInFlight) {
+						console.log("Another destructive action is already running. Wait for it to finish.");
+						continue;
+					}
+					destructiveActionInFlight = true;
+					try {
+						await runActionPanel(
+							DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
+							DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
+							async () => {
+								const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+								if (pendingQuotaRefresh) {
+									await pendingQuotaRefresh;
+								}
+								const result = await resetLocalState();
+								console.log(
+									result.accountsCleared &&
+										result.flaggedCleared &&
+										result.quotaCacheCleared
+										? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
+										: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs.",
+								);
+							},
+							displaySettings,
+						);
+					} finally {
+						destructiveActionInFlight = false;
+					}
 					continue;
 				}
 				if (menuResult.mode === "manage") {

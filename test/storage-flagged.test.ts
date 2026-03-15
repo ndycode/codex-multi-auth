@@ -188,8 +188,8 @@ describe("flagged account storage", () => {
 		expect(existsSync(getFlaggedAccountsPath())).toBe(true);
 		expect(existsSync(`${getFlaggedAccountsPath()}.bak`)).toBe(true);
 
-		await clearFlaggedAccounts();
-		await clearFlaggedAccounts();
+		await expect(clearFlaggedAccounts()).resolves.toBe(true);
+		await expect(clearFlaggedAccounts()).resolves.toBe(true);
 
 		expect(existsSync(getFlaggedAccountsPath())).toBe(false);
 		expect(existsSync(`${getFlaggedAccountsPath()}.bak`)).toBe(false);
@@ -226,50 +226,100 @@ describe("flagged account storage", () => {
 			],
 		});
 
-		await clearFlaggedAccounts();
+		await expect(clearFlaggedAccounts()).resolves.toBe(true);
 
 		const flagged = await loadFlaggedAccounts();
 		expect(flagged.accounts).toHaveLength(0);
 	});
 
-	it("suppresses flagged accounts when clear cannot delete the primary file after writing the reset marker", async () => {
-		await saveFlaggedAccounts({
-			version: 1,
-			accounts: [
-				{
-					refreshToken: "stale-primary",
-					flaggedAt: 1,
-					addedAt: 1,
-					lastUsed: 1,
-				},
-			],
-		});
-
-		const flaggedPath = getFlaggedAccountsPath();
-		const originalUnlink = fs.unlink.bind(fs);
-		const unlinkSpy = vi
-			.spyOn(fs, "unlink")
-			.mockImplementation(async (targetPath) => {
-				if (targetPath === flaggedPath) {
-					const error = new Error(
-						"EPERM primary delete",
-					) as NodeJS.ErrnoException;
-					error.code = "EPERM";
-					throw error;
-				}
-				return originalUnlink(targetPath);
+	it.each(["EPERM", "EBUSY"] as const)(
+		"retries transient %s when clearing flagged storage",
+		async (code) => {
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "stale-primary",
+						flaggedAt: 1,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
 			});
 
-		await expect(clearFlaggedAccounts()).rejects.toThrow(
-			"EPERM primary delete",
-		);
+			const flaggedPath = getFlaggedAccountsPath();
+			const realUnlink = fs.unlink.bind(fs);
+			let failedOnce = false;
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (targetPath === flaggedPath && !failedOnce) {
+						failedOnce = true;
+						const error = new Error("locked") as NodeJS.ErrnoException;
+						error.code = code;
+						throw error;
+					}
+					return realUnlink(targetPath);
+				});
 
-		const flagged = await loadFlaggedAccounts();
-		expect(existsSync(flaggedPath)).toBe(true);
-		expect(flagged.accounts).toHaveLength(0);
+			try {
+				await expect(clearFlaggedAccounts()).resolves.toBe(true);
+				expect(existsSync(flaggedPath)).toBe(false);
+				expect(
+					unlinkSpy.mock.calls.filter(
+						([targetPath]) => targetPath === flaggedPath,
+					),
+				).toHaveLength(2);
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+		},
+	);
 
-		unlinkSpy.mockRestore();
-	});
+	it.each(["EPERM", "EBUSY"] as const)(
+		"returns false when clearing flagged storage exhausts retryable %s failures",
+		async (code) => {
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "stuck-flagged",
+						flaggedAt: 1,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const flaggedPath = getFlaggedAccountsPath();
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (targetPath === flaggedPath) {
+						const error = new Error(
+							"still locked",
+						) as NodeJS.ErrnoException;
+						error.code = code;
+						throw error;
+					}
+					const error = new Error("missing") as NodeJS.ErrnoException;
+					error.code = "ENOENT";
+					throw error;
+				});
+
+			try {
+				await expect(clearFlaggedAccounts()).resolves.toBe(false);
+				expect(existsSync(flaggedPath)).toBe(true);
+				expect(
+					unlinkSpy.mock.calls.filter(
+						([targetPath]) => targetPath === flaggedPath,
+					),
+				).toHaveLength(5);
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+		},
+	);
 
 	it("does not recover flagged backups when the primary file exists but read fails", async () => {
 		await saveFlaggedAccounts({
@@ -335,7 +385,7 @@ describe("flagged account storage", () => {
 		const manualBackupPath = `${getFlaggedAccountsPath()}.manual-checkpoint`;
 		await fs.copyFile(getFlaggedAccountsPath(), manualBackupPath);
 
-		await clearFlaggedAccounts();
+		await expect(clearFlaggedAccounts()).resolves.toBe(true);
 
 		const flagged = await loadFlaggedAccounts();
 		expect(existsSync(manualBackupPath)).toBe(false);
@@ -383,49 +433,10 @@ describe("flagged account storage", () => {
 				return originalUnlink(targetPath);
 			});
 
-		await clearFlaggedAccounts();
+		await expect(clearFlaggedAccounts()).resolves.toBe(false);
 
 		const flagged = await loadFlaggedAccounts();
 		expect(existsSync(backupPath)).toBe(true);
-		expect(flagged.accounts).toHaveLength(0);
-
-		unlinkSpy.mockRestore();
-	});
-
-	it("suppresses flagged accounts when clear cannot delete the primary file after writing the reset marker", async () => {
-		await saveFlaggedAccounts({
-			version: 1,
-			accounts: [
-				{
-					refreshToken: "stale-primary",
-					flaggedAt: 1,
-					addedAt: 1,
-					lastUsed: 1,
-				},
-			],
-		});
-
-		const flaggedPath = getFlaggedAccountsPath();
-		const originalUnlink = fs.unlink.bind(fs);
-		const unlinkSpy = vi
-			.spyOn(fs, "unlink")
-			.mockImplementation(async (targetPath) => {
-				if (targetPath === flaggedPath) {
-					const error = new Error(
-						"EPERM primary delete",
-					) as NodeJS.ErrnoException;
-					error.code = "EPERM";
-					throw error;
-				}
-				return originalUnlink(targetPath);
-			});
-
-		await expect(clearFlaggedAccounts()).rejects.toThrow(
-			"EPERM primary delete",
-		);
-
-		const flagged = await loadFlaggedAccounts();
-		expect(existsSync(flaggedPath)).toBe(true);
 		expect(flagged.accounts).toHaveLength(0);
 
 		unlinkSpy.mockRestore();
