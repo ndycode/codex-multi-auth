@@ -86,7 +86,9 @@ interface AntiSlopWorkflowConfig {
 					"max-failures"?: number;
 					"exempt-draft-prs"?: boolean;
 					"blocked-terms"?: string;
+					"blocked-paths"?: string;
 					"failure-add-pr-labels"?: string;
+					"failure-pr-message"?: string;
 					"close-pr"?: boolean;
 					"lock-pr"?: boolean;
 				};
@@ -519,7 +521,11 @@ describe("Documentation Integrity", () => {
 		expect(antiSlopStep?.with?.["blocked-terms"]).toContain(
 			"WORKTREE_LANTERN_1455",
 		);
+		expect(antiSlopStep?.with?.["blocked-paths"]).toBe("");
 		expect(antiSlopStep?.with?.["failure-add-pr-labels"]).toBe(
+			"needs-human-review",
+		);
+		expect(antiSlopStep?.with?.["failure-pr-message"]).toContain(
 			"needs-human-review",
 		);
 		expect(antiSlopStep?.with?.["close-pr"]).toBe(false);

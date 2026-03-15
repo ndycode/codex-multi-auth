@@ -34,9 +34,10 @@ jobs:
           exempt-draft-prs: true
           failure-add-pr-labels: needs-human-review
           failure-pr-message: >-
-            This PR failed automated PR quality screening and was flagged for
-            maintainer review. Keep the PR template intact, include real
-            validation evidence, and remove any copied hidden template trap text
-            from the visible PR body before requesting review again.
+            This PR failed automated PR quality screening and was labelled
+            needs-human-review for maintainer review. Keep the PR template
+            intact, include real validation evidence, and remove any copied
+            hidden template trap text from the visible PR body before requesting
+            review again.
           close-pr: false
           lock-pr: false
