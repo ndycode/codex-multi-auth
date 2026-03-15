@@ -382,6 +382,10 @@ export function setStorageBackupEnabled(enabled: boolean): void {
 	storageBackupEnabled = enabled;
 }
 
+export function isStorageBackupEnabled(): boolean {
+	return storageBackupEnabled;
+}
+
 function getAccountsBackupPath(path: string): string {
 	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
 }
@@ -2358,12 +2362,24 @@ async function buildNamedBackupMetadata(
 	};
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
+/**
+ * Optional per-call overrides for account storage persistence.
+ * When omitted, `saveAccounts` uses the module-level backup policy.
+ */
+export interface SaveAccountsOptions {
+	backupEnabled?: boolean;
+}
+
+async function saveAccountsUnlocked(
+	storage: AccountStorageV3,
+	options: SaveAccountsOptions = {},
+): Promise<void> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
 	const walPath = getAccountsWalPath(path);
+	const backupEnabled = options.backupEnabled ?? storageBackupEnabled;
 
 	try {
 		await fs.mkdir(dirname(path), { recursive: true });
@@ -2395,7 +2411,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			}
 		}
 
-		if (storageBackupEnabled && existsSync(path)) {
+		if (backupEnabled && existsSync(path)) {
 			try {
 				await createRotatingAccountsBackup(path);
 			} catch (backupError) {
@@ -2569,11 +2585,16 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
  * Creates the Codex multi-auth storage directory if it doesn't exist.
  * Verifies file was written correctly and provides detailed error messages.
  * @param storage - Account storage data to save
+ * @param options - Optional per-call persistence overrides. Set `backupEnabled`
+ * to override the module-level backup policy for this save only.
  * @throws StorageError with platform-aware hints on failure
  */
-export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
+export async function saveAccounts(
+	storage: AccountStorageV3,
+	options: SaveAccountsOptions = {},
+): Promise<void> {
 	return withStorageLock(async () => {
-		await saveAccountsUnlocked(storage);
+		await saveAccountsUnlocked(storage, options);
 	});
 }
 
