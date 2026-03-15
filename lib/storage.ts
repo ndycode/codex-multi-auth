@@ -1,13 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import {
-	existsSync,
-	lstatSync,
-	promises as fs,
-	realpathSync,
-	type Dirent,
-} from "node:fs";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { existsSync, promises as fs } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
@@ -2913,19 +2907,11 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 			loadAccountsFromPath(path),
 		);
 	} catch (error) {
-		const errorMessage =
-			error instanceof SyntaxError
-				? `Invalid JSON in import file: ${path}`
-				: (error as NodeJS.ErrnoException).code === "ENOENT"
-					? `Import file not found: ${path}`
-					: error instanceof Error
-						? error.message
-						: String(error);
 		return {
 			normalized: null,
 			storedVersion: undefined,
 			schemaErrors: [],
-			error: errorMessage,
+			error: String(error),
 		};
 	}
 }
@@ -2955,12 +2941,28 @@ async function findExistingNamedBackupPath(
 		? requested
 		: `${requested}.json`;
 	const requestedBaseName = stripNamedBackupJsonExtension(requestedWithExtension);
-	let entries: Dirent[];
 
 	try {
-		entries = await retryTransientFilesystemOperation(() =>
+		const entries = await retryTransientFilesystemOperation(() =>
 			fs.readdir(backupRoot, { withFileTypes: true }),
 		);
+		for (const entry of entries) {
+			if (!entry.name.toLowerCase().endsWith(".json")) continue;
+			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
+			const matchesRequestedEntry =
+				equalsNamedBackupEntry(entry.name, requested) ||
+				equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
+				equalsNamedBackupEntry(entryBaseName, requestedBaseName);
+			if (!matchesRequestedEntry) {
+				continue;
+			}
+			if (entry.isSymbolicLink() || !entry.isFile()) {
+				throw new Error(
+					`Named backup "${entryBaseName}" is not a regular backup file`,
+				);
+			}
+			return resolvePath(join(backupRoot, entry.name));
+		}
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
@@ -2973,153 +2975,25 @@ async function findExistingNamedBackupPath(
 		throw error;
 	}
 
-	for (const entry of entries) {
-		if (!entry.name.toLowerCase().endsWith(".json")) continue;
-		const entryBaseName = stripNamedBackupJsonExtension(entry.name);
-		const matchesRequestedEntry =
-			equalsNamedBackupEntry(entry.name, requested) ||
-			equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
-			equalsNamedBackupEntry(entryBaseName, requestedBaseName);
-		if (!matchesRequestedEntry) {
-			continue;
-		}
-		if (entry.isSymbolicLink() || !entry.isFile()) {
-			throw new Error(
-				`Named backup "${entryBaseName}" is not a regular backup file`,
-			);
-		}
-		return resolvePath(join(backupRoot, entry.name));
-	}
-
 	return undefined;
 }
 
-function resolvePathForNamedBackupContainment(path: string): string {
-	const resolvedPath = resolvePath(path);
-	let existingPrefix = resolvedPath;
-	const unresolvedSegments: string[] = [];
-	while (true) {
-		try {
-			namedBackupContainmentFs.lstat(existingPrefix);
-			break;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				const parentPath = dirname(existingPrefix);
-				if (parentPath === existingPrefix) {
-					return resolvedPath;
-				}
-				unresolvedSegments.unshift(basename(existingPrefix));
-				existingPrefix = parentPath;
-				continue;
-			}
-			if (isRetryableFilesystemErrorCode(code)) {
-				throw new BackupPathValidationTransientError(
-					"Backup path validation failed. Try again.",
-					{ cause: error instanceof Error ? error : undefined },
-				);
-			}
-			throw error;
-		}
-	}
-	try {
-		const canonicalPrefix = namedBackupContainmentFs.realpath(existingPrefix);
-		return unresolvedSegments.reduce(
-			(currentPath, segment) => join(currentPath, segment),
-			canonicalPrefix,
-		);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return resolvedPath;
-		}
-		if (isRetryableFilesystemErrorCode(code)) {
-			throw new BackupPathValidationTransientError(
-				"Backup path validation failed. Try again.",
-				{ cause: error instanceof Error ? error : undefined },
-			);
-		}
-		throw error;
-	}
-}
-
-export function assertNamedBackupRestorePath(
-	path: string,
-	backupRoot: string,
-): string {
-	const resolvedPath = resolvePath(path);
-	const resolvedBackupRoot = resolvePath(backupRoot);
-	let backupRootIsSymlink = false;
-	try {
-		backupRootIsSymlink =
-			namedBackupContainmentFs.lstat(resolvedBackupRoot).isSymbolicLink();
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			backupRootIsSymlink = false;
-		} else if (isRetryableFilesystemErrorCode(code)) {
-			throw new BackupPathValidationTransientError(
-				"Backup path validation failed. Try again.",
-				{ cause: error instanceof Error ? error : undefined },
-			);
-		} else {
-			throw error;
-		}
-	}
-	if (backupRootIsSymlink) {
-		throw new BackupContainmentError("Backup path escapes backup directory");
-	}
-	const canonicalBackupRoot =
-		resolvePathForNamedBackupContainment(resolvedBackupRoot);
-	const containedPath = resolvePathForNamedBackupContainment(resolvedPath);
-	const relativePath = relative(canonicalBackupRoot, containedPath);
-	const firstSegment = relativePath.split(/[\\/]/)[0];
-	if (
-		relativePath.length === 0 ||
-		firstSegment === ".." ||
-		isAbsolute(relativePath)
-	) {
-		throw new BackupContainmentError("Backup path escapes backup directory");
-	}
-	return containedPath;
-}
-
-export function isNamedBackupContainmentError(error: unknown): boolean {
-	return (
-		error instanceof BackupContainmentError ||
-		(error instanceof Error && /escapes backup directory/i.test(error.message))
-	);
-}
-
-export function isNamedBackupPathValidationTransientError(
-	error: unknown,
-): error is BackupPathValidationTransientError {
-	return (
-		error instanceof BackupPathValidationTransientError ||
-		(error instanceof Error &&
-			/^Backup path validation failed(\.|:|\b)/i.test(error.message))
-	);
-}
-
-export async function resolveNamedBackupRestorePath(name: string): Promise<string> {
-	const requested = (name ?? "").trim();
-	const backupRoot = getNamedBackupRoot(getStoragePath());
+async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const existingPath = await findExistingNamedBackupPath(name);
 	if (existingPath) {
-		return assertNamedBackupRestorePath(existingPath, backupRoot);
+		return existingPath;
 	}
+	const requested = (name ?? "").trim();
+	const backupRoot = getNamedBackupRoot(getStoragePath());
 	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
 		? requested
 		: `${requested}.json`;
-	const baseName = requestedWithExtension.slice(0, -".json".length);
-	let builtPath: string;
 	try {
-		builtPath = buildNamedBackupPath(requested);
+		return buildNamedBackupPath(name);
 	} catch (error) {
-		// buildNamedBackupPath rejects names with special characters even when the
-		// requested backup name is a plain filename inside the backups directory.
-		// In that case, reporting ENOENT is clearer than surfacing the filename
-		// validator, but only when no separator/traversal token is present.
+		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
+			? requestedWithExtension.slice(0, -".json".length)
+			: requestedWithExtension;
 		if (
 			requested.length > 0 &&
 			basename(requestedWithExtension) === requestedWithExtension &&
@@ -3132,7 +3006,6 @@ export async function resolveNamedBackupRestorePath(name: string): Promise<strin
 		}
 		throw error;
 	}
-	return assertNamedBackupRestorePath(builtPath, backupRoot);
 }
 
 async function loadAccountsFromJournal(
@@ -4095,7 +3968,7 @@ export async function exportAccounts(
  */
 export async function importAccounts(
 	filePath: string,
-): Promise<ImportAccountsResult> {
+): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
 	const candidate = await loadImportableBackupCandidate(resolvedPath);
 	return importNormalizedAccounts(candidate.normalized, resolvedPath, {
@@ -4103,7 +3976,3 @@ export async function importAccounts(
 		snapshotFailurePolicy: "error",
 	});
 }
-
-export const __testOnly = {
-	namedBackupContainmentFs,
-};

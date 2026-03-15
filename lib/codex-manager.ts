@@ -362,7 +362,6 @@ function printUsage(): void {
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
 			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
-			"  codex auth restore-backup",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
@@ -4063,21 +4062,6 @@ async function runAuthLogin(): Promise<number> {
 								pendingMenuQuotaRefresh = null;
 							});
 					}
-					pendingMenuQuotaRefresh = refreshQuotaCacheForMenu(
-						currentStorage,
-						quotaCache,
-						quotaTtlMs,
-						(current, total) => {
-							if (!showFetchStatus) return;
-							menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [${current}/${total}]`;
-						},
-					)
-						.then(() => undefined)
-						.catch(() => undefined)
-						.finally(() => {
-							menuQuotaRefreshStatus = undefined;
-							pendingMenuQuotaRefresh = null;
-						});
 				}
 			const flaggedStorage = await loadFlaggedAccounts();
 
@@ -5468,20 +5452,6 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "doctor") {
 		return runDoctor(rest);
-	}
-	if (command === "restore-backup") {
-		setStoragePath(null);
-		try {
-			const completedWithoutFailure =
-				await runBackupRestoreManager(startupDisplaySettings);
-			return completedWithoutFailure ? 0 : 1;
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			console.error(
-				`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
-			);
-			return 1;
-		}
 	}
 
 	console.error(`Unknown command: ${command}`);
