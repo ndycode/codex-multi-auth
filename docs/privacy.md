@@ -52,6 +52,8 @@ Raw body logs may contain sensitive payload text. Treat logs as sensitive data a
 
 ## Data Cleanup
 
+These commands delete local state. Review the resolved paths before running them, and do not run them automatically from an agent unless the user explicitly asked for cleanup.
+
 Bash:
 
 ```bash
@@ -76,7 +78,12 @@ Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction Silen
 Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
 # Override-root cleanup examples (if overrides are set):
-if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\\*" -Recurse -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\settings.json" -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\quota-cache.json" -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue }
+if ($env:CODEX_MULTI_AUTH_DIR) { Remove-Item "$env:CODEX_MULTI_AUTH_DIR\cache" -Recurse -Force -ErrorAction SilentlyContinue }
 if ($env:CODEX_MULTI_AUTH_CONFIG_PATH) { Remove-Item "$env:CODEX_MULTI_AUTH_CONFIG_PATH" -Force -ErrorAction SilentlyContinue }
 ```
 
