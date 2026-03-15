@@ -10,7 +10,12 @@ import {
 } from "./auth/auth.js";
 import { startLocalOAuthServer } from "./auth/server.js";
 import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
-import { promptAddAnotherAccount, promptLoginMode, type ExistingAccountInfo } from "./cli.js";
+import {
+	isInteractiveLoginMenuAvailable,
+	promptAddAnotherAccount,
+	promptLoginMode,
+	type ExistingAccountInfo,
+} from "./cli.js";
 import {
 	extractAccountEmail,
 	extractAccountId,
@@ -58,12 +63,11 @@ import {
 } from "./quota-cache.js";
 import {
 	assessNamedBackupRestore,
+	getActionableNamedBackupRestores,
 	getNamedBackupsDirectoryPath,
-	isNamedBackupContainmentError,
-	isNamedBackupPathValidationTransientError,
 	listNamedBackups,
-	NAMED_BACKUP_ASSESS_CONCURRENCY,
-	restoreAssessedNamedBackup,
+	NAMED_BACKUP_LIST_CONCURRENCY,
+	restoreNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -137,9 +141,7 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 function formatRelativeDateShort(
 	timestamp: number | null | undefined,
 ): string | null {
-	if (timestamp === null || timestamp === undefined || timestamp === 0)
-		return null;
-	if (!Number.isFinite(timestamp)) return null;
+	if (timestamp === null || timestamp === undefined) return null;
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
 	if (days <= 0) return "today";
 	if (days === 1) return "yesterday";
@@ -331,7 +333,6 @@ function printUsage(): void {
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
 			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
-			"  codex auth restore-backup",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
@@ -3957,44 +3958,82 @@ async function handleManageAction(
 	}
 }
 
+type StartupRecoveryAction =
+	| "continue-with-oauth"
+	| "open-empty-storage-menu"
+	| "show-recovery-prompt";
+
+export function resolveStartupRecoveryAction(
+	recoveryState: Awaited<ReturnType<typeof getActionableNamedBackupRestores>>,
+	recoveryScanFailed: boolean,
+): StartupRecoveryAction {
+	if (recoveryState.assessments.length > 0) {
+		return "show-recovery-prompt";
+	}
+	return recoveryScanFailed
+		? "continue-with-oauth"
+		: "open-empty-storage-menu";
+}
+
 async function runAuthLogin(): Promise<number> {
 	setStoragePath(null);
+	let suppressRecoveryPrompt = false;
+	let recoveryPromptAttempted = false;
+	let allowEmptyStorageMenu = false;
+	let pendingRecoveryState: Awaited<
+		ReturnType<typeof getActionableNamedBackupRestores>
+	> | null = null;
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
 	loginFlow:
 	while (true) {
-		while (true) {
-			const existingStorage = await loadAccounts();
-			const currentStorage = existingStorage ?? createEmptyAccountStorage();
-			const displaySettings = await loadDashboardDisplaySettings();
-			applyUiThemeFromDashboardSettings(displaySettings);
-			const quotaCache = await loadQuotaCache();
-			const shouldAutoFetchLimits = displaySettings.menuAutoFetchLimits ?? true;
-			const showFetchStatus = displaySettings.menuShowFetchStatus ?? true;
-			const quotaTtlMs = displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
-			if (shouldAutoFetchLimits && !pendingMenuQuotaRefresh) {
-				const staleCount = countMenuQuotaRefreshTargets(currentStorage, quotaCache, quotaTtlMs);
-				if (staleCount > 0) {
-					if (showFetchStatus) {
-						menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [0/${staleCount}]`;
+		let existingStorage = await loadAccounts();
+		const canOpenEmptyStorageMenu =
+			allowEmptyStorageMenu && isInteractiveLoginMenuAvailable();
+		if (
+			(existingStorage && existingStorage.accounts.length > 0) ||
+			canOpenEmptyStorageMenu
+		) {
+			const menuAllowsEmptyStorage = canOpenEmptyStorageMenu;
+			allowEmptyStorageMenu = false;
+			pendingRecoveryState = null;
+			while (true) {
+				existingStorage = await loadAccounts();
+				if (!existingStorage || existingStorage.accounts.length === 0) {
+					if (!menuAllowsEmptyStorage) {
+						break;
 					}
-					pendingMenuQuotaRefresh = refreshQuotaCacheForMenu(
-						currentStorage,
-						quotaCache,
-						quotaTtlMs,
-						(current, total) => {
-							if (!showFetchStatus) return;
-							menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [${current}/${total}]`;
-						},
-					)
-						.then(() => undefined)
-						.catch(() => undefined)
-						.finally(() => {
-							menuQuotaRefreshStatus = undefined;
-							pendingMenuQuotaRefresh = null;
-						});
 				}
-			}
+				const currentStorage = existingStorage ?? createEmptyAccountStorage();
+				const displaySettings = await loadDashboardDisplaySettings();
+				applyUiThemeFromDashboardSettings(displaySettings);
+				const quotaCache = await loadQuotaCache();
+				const shouldAutoFetchLimits = displaySettings.menuAutoFetchLimits ?? true;
+				const showFetchStatus = displaySettings.menuShowFetchStatus ?? true;
+				const quotaTtlMs = displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
+				if (shouldAutoFetchLimits && !pendingMenuQuotaRefresh) {
+					const staleCount = countMenuQuotaRefreshTargets(currentStorage, quotaCache, quotaTtlMs);
+					if (staleCount > 0) {
+						if (showFetchStatus) {
+							menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [0/${staleCount}]`;
+						}
+						pendingMenuQuotaRefresh = refreshQuotaCacheForMenu(
+							currentStorage,
+							quotaCache,
+							quotaTtlMs,
+							(current, total) => {
+								if (!showFetchStatus) return;
+								menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [${current}/${total}]`;
+							},
+						)
+							.then(() => undefined)
+							.catch(() => undefined)
+							.finally(() => {
+								menuQuotaRefreshStatus = undefined;
+								pendingMenuQuotaRefresh = null;
+							});
+					}
+				}
 			const flaggedStorage = await loadFlaggedAccounts();
 
 			const menuResult = await promptLoginMode(
@@ -4008,18 +4047,6 @@ async function runAuthLogin(): Promise<number> {
 			if (menuResult.mode === "cancel") {
 				console.log("Cancelled.");
 				return 0;
-			}
-			const modeRequiresDrainedQuotaRefresh =
-				menuResult.mode === "check" ||
-				menuResult.mode === "deep-check" ||
-				menuResult.mode === "forecast" ||
-				menuResult.mode === "fix" ||
-				menuResult.mode === "restore-backup";
-			if (modeRequiresDrainedQuotaRefresh) {
-				const pendingQuotaRefresh = pendingMenuQuotaRefresh;
-				if (pendingQuotaRefresh) {
-					await pendingQuotaRefresh;
-				}
 			}
 			if (menuResult.mode === "check") {
 				await runActionPanel("Quick Check", "Checking local session + live status", async () => {
@@ -4057,6 +4084,10 @@ async function runAuthLogin(): Promise<number> {
 			}
 			if (menuResult.mode === "restore-backup") {
 				try {
+					const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+					if (pendingQuotaRefresh) {
+						await pendingQuotaRefresh;
+					}
 					await runBackupRestoreManager(displaySettings);
 				} catch (error) {
 					const message =
@@ -4090,6 +4121,7 @@ async function runAuthLogin(): Promise<number> {
 				} finally {
 					destructiveActionInFlight = false;
 				}
+				suppressRecoveryPrompt = true;
 				continue;
 			}
 			if (menuResult.mode === "reset") {
@@ -4121,6 +4153,7 @@ async function runAuthLogin(): Promise<number> {
 				} finally {
 					destructiveActionInFlight = false;
 				}
+				suppressRecoveryPrompt = true;
 				continue;
 			}
 			if (menuResult.mode === "manage") {
@@ -4138,9 +4171,91 @@ async function runAuthLogin(): Promise<number> {
 				break;
 			}
 		}
+	}
 
 		const refreshedStorage = await loadAccounts();
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
+		const canPromptForRecovery =
+			!suppressRecoveryPrompt &&
+			!recoveryPromptAttempted &&
+			existingCount === 0 &&
+			isInteractiveLoginMenuAvailable();
+		if (canPromptForRecovery) {
+			recoveryPromptAttempted = true;
+			let recoveryState: Awaited<
+				ReturnType<typeof getActionableNamedBackupRestores>
+			> | null = pendingRecoveryState;
+			pendingRecoveryState = null;
+			if (recoveryState === null) {
+				let recoveryScanFailed = false;
+				let scannedRecoveryState: Awaited<
+					ReturnType<typeof getActionableNamedBackupRestores>
+				>;
+				try {
+					scannedRecoveryState = await getActionableNamedBackupRestores({
+						currentStorage: refreshedStorage,
+					});
+				} catch (error) {
+					recoveryScanFailed = true;
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Startup recovery scan failed (${errorLabel}). Continuing with OAuth.`,
+					);
+					scannedRecoveryState = {
+						assessments: [],
+						allAssessments: [],
+						totalBackups: 0,
+					};
+				}
+				recoveryState = scannedRecoveryState;
+				if (
+					resolveStartupRecoveryAction(scannedRecoveryState, recoveryScanFailed) ===
+					"open-empty-storage-menu"
+				) {
+					allowEmptyStorageMenu = true;
+					continue loginFlow;
+				}
+			}
+			if (recoveryState.assessments.length > 0) {
+				let promptWasShown = false;
+				try {
+					const displaySettings = await loadDashboardDisplaySettings();
+					applyUiThemeFromDashboardSettings(displaySettings);
+					const backupDir = getNamedBackupsDirectoryPath();
+					const backupLabel =
+						recoveryState.assessments.length === 1
+							? recoveryState.assessments
+									.map((assessment) => assessment.backup.name)
+									.join("")
+							: `${recoveryState.assessments.length} backups`;
+					promptWasShown = true;
+					const restoreNow = await confirm(
+						`Found ${recoveryState.assessments.length} recoverable backup${
+							recoveryState.assessments.length === 1 ? "" : "s"
+						} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Restore now?`,
+					);
+					if (restoreNow) {
+						const restoreResult = await runBackupRestoreManager(
+							displaySettings,
+							recoveryState.allAssessments,
+						);
+						if (restoreResult !== "restored") {
+							pendingRecoveryState = recoveryState;
+							recoveryPromptAttempted = false;
+						}
+						continue;
+					}
+				} catch (error) {
+					if (!promptWasShown) {
+						recoveryPromptAttempted = false;
+					}
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Startup recovery prompt failed (${errorLabel}). Continuing with OAuth.`,
+					);
+				}
+			}
+		}
 		let forceNewLogin = existingCount > 0;
 		while (true) {
 			const tokenResult = await runOAuthFlow(forceNewLogin);
@@ -4608,57 +4723,57 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 type BackupMenuAction =
 	| {
 			type: "restore";
-			assessment: Awaited<ReturnType<typeof assessNamedBackupRestore>>;
+			assessment: BackupRestoreAssessment;
 	  }
 	| { type: "back" };
 
-async function runBackupRestoreManager(
-	displaySettings: DashboardDisplaySettings,
-): Promise<boolean> {
-	const backupDir = getNamedBackupsDirectoryPath();
-	// Reuse only within this list -> assess flow so storage.ts can safely treat
-	// the cache contents as LoadedBackupCandidate entries.
-	const candidateCache = new Map<string, unknown>();
+type BackupRestoreAssessment = Awaited<
+	ReturnType<typeof assessNamedBackupRestore>
+>;
+
+type BackupRestoreManagerResult = "restored" | "dismissed";
+
+function getRedactedFilesystemErrorLabel(error: unknown): string {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (typeof code === "string" && code.trim().length > 0) {
+		return code;
+	}
+	if (error instanceof Error && error.name && error.name !== "Error") {
+		return error.name;
+	}
+	return "UNKNOWN";
+}
+
+async function loadBackupRestoreManagerAssessments(): Promise<
+	BackupRestoreAssessment[]
+> {
 	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
 	try {
-		backups = await listNamedBackups({ candidateCache });
+		backups = await listNamedBackups();
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (isNamedBackupContainmentError(error)) {
-			console.error(
-				`Backup validation failed: ${collapseWhitespace(message) || "unknown error"}`,
-			);
-		} else if (isNamedBackupPathValidationTransientError(error)) {
-			console.error(collapseWhitespace(message) || "unknown error");
-		} else {
-			console.error(
-				`Could not read backup directory: ${
-					collapseWhitespace(message) || "unknown error"
-				}`,
-			);
-		}
-		return false;
+		console.error(
+			`Could not read backup directory: ${
+				collapseWhitespace(message) || "unknown error"
+			}`,
+		);
+		return [];
 	}
 	if (backups.length === 0) {
-		console.log(`No named backups found. Place backup files in ${backupDir}.`);
-		return true;
+		return [];
 	}
 
 	const currentStorage = await loadAccounts();
-	const assessments: Awaited<ReturnType<typeof assessNamedBackupRestore>>[] = [];
-	const assessmentFailures: string[] = [];
+	const assessments: BackupRestoreAssessment[] = [];
 	for (
 		let index = 0;
 		index < backups.length;
-		index += NAMED_BACKUP_ASSESS_CONCURRENCY
+		index += NAMED_BACKUP_LIST_CONCURRENCY
 	) {
-		const chunk = backups.slice(index, index + NAMED_BACKUP_ASSESS_CONCURRENCY);
+		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
 		const settledAssessments = await Promise.allSettled(
 			chunk.map((backup) =>
-				assessNamedBackupRestore(backup.name, {
-					currentStorage,
-					candidateCache,
-				}),
+				assessNamedBackupRestore(backup.name, { currentStorage }),
 			),
 		);
 		for (const [resultIndex, result] of settledAssessments.entries()) {
@@ -4666,29 +4781,32 @@ async function runBackupRestoreManager(
 				assessments.push(result.value);
 				continue;
 			}
-			if (isNamedBackupContainmentError(result.reason)) {
-				throw result.reason;
-			}
 			const backupName = chunk[resultIndex]?.name ?? "unknown";
 			const reason =
 				result.reason instanceof Error
 					? result.reason.message
 					: String(result.reason);
-			const normalizedReason =
-				collapseWhitespace(reason) || "unknown error";
-			assessmentFailures.push(`${backupName}: ${normalizedReason}`);
 			console.warn(
-				`Skipped backup assessment for "${backupName}": ${normalizedReason}`,
+				`Skipped backup assessment for "${backupName}": ${
+					collapseWhitespace(reason) || "unknown error"
+				}`,
 			);
 		}
 	}
+
+	return assessments;
+}
+
+async function runBackupRestoreManager(
+	displaySettings: DashboardDisplaySettings,
+	assessmentsOverride?: BackupRestoreAssessment[],
+): Promise<BackupRestoreManagerResult> {
+	const backupDir = getNamedBackupsDirectoryPath();
+	const assessments =
+		assessmentsOverride ?? (await loadBackupRestoreManagerAssessments());
 	if (assessments.length === 0) {
-		console.error(
-			`Could not assess any named backups in ${backupDir}: ${
-				assessmentFailures.join("; ") || "all assessments failed"
-			}`,
-		);
-		return false;
+		console.log(`No named backups found. Place backup files in ${backupDir}.`);
+		return "dismissed";
 	}
 
 	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
@@ -4737,85 +4855,43 @@ async function runBackupRestoreManager(
 	});
 
 	if (!selection || selection.type === "back") {
-		return true;
+		return "dismissed";
 	}
 
-	let latestAssessment: Awaited<ReturnType<typeof assessNamedBackupRestore>>;
+	let latestAssessment: BackupRestoreAssessment;
 	try {
 		latestAssessment = await assessNamedBackupRestore(
 			selection.assessment.backup.name,
 			{ currentStorage: await loadAccounts() },
 		);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.error(
-			`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to re-assess backup "${selection.assessment.backup.name}" before restore (${errorLabel}).`,
 		);
-		return false;
+		return "dismissed";
 	}
 	if (!latestAssessment.eligibleForRestore) {
 		console.log(latestAssessment.error ?? "Backup is not eligible for restore.");
-		return false;
+		return "dismissed";
 	}
 
-	const netNewAccounts = latestAssessment.imported ?? 0;
-	const confirmMessage = UI_COPY.mainMenu.restoreBackupConfirm(
-		latestAssessment.backup.name,
-		netNewAccounts,
-		latestAssessment.backup.accountCount ?? 0,
-		latestAssessment.currentAccountCount,
-		latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount,
-	);
+	const confirmMessage = `Restore backup "${latestAssessment.backup.name}"? This will merge ${latestAssessment.backup.accountCount ?? 0} account(s) into ${latestAssessment.currentAccountCount} current (${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`;
 	const confirmed = await confirm(confirmMessage);
-	if (!confirmed) return true;
+	if (!confirmed) return "dismissed";
 
 	try {
-		const result = await restoreAssessedNamedBackup(latestAssessment);
-		if (!result.changed) {
-			console.log("All accounts in this backup already exist");
-			return true;
-		}
-		if (result.imported === 0) {
-			console.log(
-				UI_COPY.mainMenu.restoreBackupRefreshSuccess(
-					latestAssessment.backup.name,
-				),
-			);
-		} else {
-			console.log(
-				UI_COPY.mainMenu.restoreBackupSuccess(
-					latestAssessment.backup.name,
-					result.imported,
-					result.skipped,
-					result.total,
-				),
-			);
-		}
-		try {
-			const synced = await autoSyncActiveAccountToCodex();
-			if (!synced) {
-				console.warn(
-					"Backup restored, but Codex CLI auth state could not be synced.",
-				);
-			}
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			console.warn(
-				`Backup restored, but Codex CLI auth sync failed: ${
-					collapseWhitespace(message) || "unknown error"
-				}`,
-			);
-		}
-		return true;
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		const collapsedMessage = collapseWhitespace(message) || "unknown error";
-		console.error(
-			/exceed maximum/i.test(collapsedMessage)
-				? `Restore failed: ${collapsedMessage}. Close other Codex instances and try again.`
-				: `Restore failed: ${collapsedMessage}`,
+		const result = await restoreNamedBackup(latestAssessment.backup.name);
+		console.log(
+			`Restored backup "${latestAssessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
 		);
-		return false;
+		return "restored";
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to restore backup "${latestAssessment.backup.name}" (${errorLabel}).`,
+		);
+		return "dismissed";
 	}
 }
 
@@ -4846,6 +4922,10 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "login") {
 		return runAuthLogin();
+	}
+	if (command === "restore-backup") {
+		await runBackupRestoreManager(startupDisplaySettings);
+		return 0;
 	}
 	if (command === "list" || command === "status") {
 		await showAccountStatus();
@@ -4878,20 +4958,6 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "doctor") {
 		return runDoctor(rest);
-	}
-	if (command === "restore-backup") {
-		setStoragePath(null);
-		try {
-			const completedWithoutFailure =
-				await runBackupRestoreManager(startupDisplaySettings);
-			return completedWithoutFailure ? 0 : 1;
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			console.error(
-				`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
-			);
-			return 1;
-		}
 	}
 
 	console.error(`Unknown command: ${command}`);

@@ -62,6 +62,12 @@ After source selection, environment variables still override individual setting 
 For day-to-day operator use, prefer stable overrides documented in [configuration.md](configuration.md).
 For maintainer/debug flows, see advanced/internal controls in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).
 
+### Startup Recovery Prompt
+
+Interactive `codex auth login` now offers named-backup recovery before OAuth only when the session starts with zero saved accounts and at least one recoverable named backup.
+
+The prompt is intentionally skipped in fallback/non-interactive login paths and after same-session `fresh` or `reset` actions so an intentional wipe does not immediately re-offer restore state.
+
 ---
 
 ## Legacy Compatibility
