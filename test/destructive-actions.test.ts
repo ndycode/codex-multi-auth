@@ -7,6 +7,7 @@ const clearCodexCliStateCacheMock = vi.fn();
 const loadFlaggedAccountsMock = vi.fn();
 const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
+const snapshotAccountStorageMock = vi.fn();
 
 vi.mock("../lib/codex-cli/state.js", () => ({
 	clearCodexCliStateCache: clearCodexCliStateCacheMock,
@@ -26,6 +27,7 @@ vi.mock("../lib/storage.js", () => ({
 	loadFlaggedAccounts: loadFlaggedAccountsMock,
 	saveAccounts: saveAccountsMock,
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
+	snapshotAccountStorage: snapshotAccountStorageMock,
 }));
 
 describe("destructive actions", () => {
@@ -38,6 +40,7 @@ describe("destructive actions", () => {
 		loadFlaggedAccountsMock.mockResolvedValue({ version: 1, accounts: [] });
 		saveAccountsMock.mockResolvedValue(undefined);
 		saveFlaggedAccountsMock.mockResolvedValue(undefined);
+		snapshotAccountStorageMock.mockResolvedValue(null);
 	});
 
 	it("returns delete-only results without pretending kept data was cleared", async () => {
@@ -50,7 +53,15 @@ describe("destructive actions", () => {
 			flaggedCleared: false,
 			quotaCacheCleared: false,
 		});
+		expect(snapshotAccountStorageMock).toHaveBeenCalledWith({
+			reason: "delete-saved-accounts",
+		});
 		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+		expect(
+			snapshotAccountStorageMock.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			clearAccountsMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
 		expect(clearFlaggedAccountsMock).not.toHaveBeenCalled();
 		expect(clearQuotaCacheMock).not.toHaveBeenCalled();
 		expect(clearCodexCliStateCacheMock).not.toHaveBeenCalled();
@@ -68,7 +79,15 @@ describe("destructive actions", () => {
 			flaggedCleared: false,
 			quotaCacheCleared: true,
 		});
+		expect(snapshotAccountStorageMock).toHaveBeenCalledWith({
+			reason: "reset-local-state",
+		});
 		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+		expect(
+			snapshotAccountStorageMock.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			clearAccountsMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
 		expect(clearFlaggedAccountsMock).toHaveBeenCalledTimes(1);
 		expect(clearQuotaCacheMock).toHaveBeenCalledTimes(1);
 		expect(clearCodexCliStateCacheMock).toHaveBeenCalledTimes(1);
@@ -120,6 +139,14 @@ describe("destructive actions", () => {
 		const deleted = await deleteAccountAtIndex({ storage, index: 0 });
 
 		expect(deleted).not.toBeNull();
+		expect(snapshotAccountStorageMock).toHaveBeenCalledWith({
+			reason: "delete-account",
+		});
+		expect(
+			snapshotAccountStorageMock.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			saveAccountsMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
 		expect(deleted?.storage.accounts.map((account) => account.refreshToken)).toEqual([
 			"refresh-active",
 			"refresh-other",

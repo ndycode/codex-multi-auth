@@ -10,6 +10,7 @@ import {
 	loadFlaggedAccounts,
 	saveAccounts,
 	saveFlaggedAccounts,
+	snapshotAccountStorage,
 } from "./storage.js";
 
 export const DESTRUCTIVE_ACTION_COPY = {
@@ -111,6 +112,7 @@ export async function deleteAccountAtIndex(options: {
 	const target = options.storage.accounts.at(options.index);
 	if (!target) return null;
 	const flagged = await loadFlaggedAccounts();
+	await snapshotAccountStorage({ reason: "delete-account" });
 	const nextStorage: AccountStorageV3 = {
 		...options.storage,
 		accounts: options.storage.accounts.map((account) => ({ ...account })),
@@ -172,6 +174,7 @@ export async function deleteAccountAtIndex(options: {
  * Removes the accounts WAL and backups via the underlying storage helper.
  */
 export async function deleteSavedAccounts(): Promise<DestructiveActionResult> {
+	await snapshotAccountStorage({ reason: "delete-saved-accounts" });
 	return {
 		accountsCleared: await clearAccounts(),
 		flaggedCleared: false,
@@ -184,6 +187,7 @@ export async function deleteSavedAccounts(): Promise<DestructiveActionResult> {
  * Keeps unified settings and on-disk Codex CLI sync state; only the in-memory Codex CLI cache is cleared.
  */
 export async function resetLocalState(): Promise<DestructiveActionResult> {
+	await snapshotAccountStorage({ reason: "reset-local-state" });
 	const accountsCleared = await clearAccounts();
 	const flaggedCleared = await clearFlaggedAccounts();
 	const quotaCacheCleared = await clearQuotaCache();

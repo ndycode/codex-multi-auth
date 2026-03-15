@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
+import {
+	deleteSavedAccounts,
+	resetLocalState,
+} from "../lib/destructive-actions.js";
 import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
@@ -19,6 +23,7 @@ import {
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getFlaggedAccountsPath,
+	getNamedBackupsDirectoryPath,
 	NAMED_BACKUP_LIST_CONCURRENCY,
 	getStoragePath,
 	importAccounts,
@@ -30,6 +35,7 @@ import {
 	restoreNamedBackup,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
+	snapshotAccountStorage,
 	StorageError,
 	saveAccounts,
 	setStoragePath,
@@ -2316,6 +2322,359 @@ describe("storage", () => {
 
 			const restored = await loadAccounts();
 			expect(restored?.accounts).toHaveLength(ACCOUNT_LIMITS.MAX_ACCOUNTS);
+		});
+	});
+
+	describe("account storage snapshots", () => {
+		const testWorkDir = join(
+			tmpdir(),
+			`codex-snapshot-${Math.random().toString(36).slice(2)}`,
+		);
+		let testStoragePath = "";
+
+		beforeEach(async () => {
+			await fs.mkdir(testWorkDir, { recursive: true });
+			testStoragePath = join(testWorkDir, "openai-codex-accounts.json");
+			setStoragePathDirect(testStoragePath);
+		});
+
+		afterEach(async () => {
+			setStoragePathDirect(null);
+			vi.restoreAllMocks();
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
+		});
+
+		it("creates deterministic named snapshots with millisecond precision", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const fixedNow = Date.UTC(2024, 0, 2, 3, 4, 5, 123);
+			const snapshot = await snapshotAccountStorage({
+				reason: "delete-saved-accounts",
+				now: fixedNow,
+			});
+
+			expect(snapshot?.name).toBe(
+				"accounts-delete-saved-accounts-snapshot-2024-01-02_03-04-05_123",
+			);
+			expect(snapshot?.path && existsSync(snapshot.path)).toBe(true);
+		});
+
+		it("keeps snapshots unique for two destructive actions in the same second", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const first = await snapshotAccountStorage({
+				reason: "reset-local-state",
+				now: Date.UTC(2024, 0, 2, 3, 4, 5, 7),
+			});
+			const second = await snapshotAccountStorage({
+				reason: "reset-local-state",
+				now: Date.UTC(2024, 0, 2, 3, 4, 5, 8),
+			});
+
+			expect(first?.name).not.toBe(second?.name);
+			const backups = await listNamedBackups();
+			expect(
+				backups.filter((backup) =>
+					backup.name.startsWith("accounts-reset-local-state-snapshot-"),
+				),
+			).toHaveLength(2);
+		});
+
+		it("skips snapshot when no accounts exist", async () => {
+			const snapshot = await snapshotAccountStorage({
+				reason: "delete-saved-accounts",
+			});
+
+			expect(snapshot).toBeNull();
+			expect(existsSync(getNamedBackupsDirectoryPath())).toBe(false);
+		});
+
+		it("returns null on warn policy when snapshot creation fails", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const failingBackup = vi
+				.fn()
+				.mockRejectedValue(new Error("snapshot failed"));
+
+			await expect(
+				snapshotAccountStorage({
+					reason: "reset-local-state",
+					createBackup: failingBackup,
+				}),
+			).resolves.toBeNull();
+		});
+
+		it("redacts filesystem paths from snapshot warning logs", async () => {
+			const warnMock = vi.fn();
+			vi.resetModules();
+			vi.doMock("../lib/logger.js", () => ({
+				createLogger: vi.fn(() => ({
+					debug: vi.fn(),
+					info: vi.fn(),
+					warn: warnMock,
+					error: vi.fn(),
+				})),
+				logWarn: vi.fn(),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(testStoragePath);
+				await isolatedStorageModule.saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "primary",
+							refreshToken: "ref-primary",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
+
+				const leakingPath = join(
+					testWorkDir,
+					"backups",
+					"accounts-reset-local-state-snapshot-2024-01-02_03-04-05_123.json",
+				);
+				const failingBackup = vi.fn().mockRejectedValue(
+					Object.assign(
+						new Error(
+							`EPERM: operation not permitted, open '${leakingPath}'`,
+						),
+						{ code: "EPERM" },
+					),
+				);
+
+				await expect(
+					isolatedStorageModule.snapshotAccountStorage({
+						reason: "reset-local-state",
+						createBackup: failingBackup,
+					}),
+				).resolves.toBeNull();
+
+				const payload = warnMock.mock.calls[0]?.[1] as
+					| { error?: string; backupName?: string }
+					| undefined;
+				expect(payload?.backupName).toContain(
+					"accounts-reset-local-state-snapshot-",
+				);
+				expect(payload?.error).toContain(
+					"accounts-reset-local-state-snapshot-2024-01-02_03-04-05_123.json",
+				);
+				expect(payload?.error).not.toContain(testWorkDir);
+			} finally {
+				vi.doUnmock("../lib/logger.js");
+				vi.resetModules();
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
+		it("propagates snapshot failure when policy is error", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const failingBackup = vi
+				.fn()
+				.mockRejectedValue(new Error("snapshot failed"));
+
+			await expect(
+				snapshotAccountStorage({
+					reason: "reset-local-state",
+					failurePolicy: "error",
+					createBackup: failingBackup,
+				}),
+			).rejects.toThrow(/snapshot failed/);
+		});
+
+		it("creates a named snapshot before deleteSavedAccounts", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await deleteSavedAccounts();
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-delete-saved-accounts-snapshot-"),
+				),
+			).toBe(true);
+			expect(await loadAccounts()).toMatchObject({
+				accounts: [],
+				restoreReason: "intentional-reset",
+			});
+		});
+
+		it("creates a named snapshot before resetLocalState", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await resetLocalState();
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-reset-local-state-snapshot-"),
+				),
+			).toBe(true);
+			expect(await loadAccounts()).toMatchObject({
+				accounts: [],
+				restoreReason: "intentional-reset",
+			});
+		});
+
+		it("creates a snapshot before importing into an existing account pool", async () => {
+			const importPath = join(testWorkDir, "import.json");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "imported",
+							refreshToken: "ref-imported",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await importAccounts(importPath);
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-import-accounts-snapshot-"),
+				),
+			).toBe(true);
+			expect((await loadAccounts())?.accounts).toHaveLength(2);
+		});
+
+		it("keeps the pre-import snapshot when the import later exceeds the limit", async () => {
+			const importPath = join(testWorkDir, "over-limit-import.json");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS },
+					(_value, index) => ({
+						accountId: `existing-${index}`,
+						refreshToken: `ref-existing-${index}`,
+						addedAt: index + 1,
+						lastUsed: index + 1,
+					}),
+				),
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "overflow",
+							refreshToken: "ref-overflow",
+							addedAt: 999,
+							lastUsed: 999,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await expect(importAccounts(importPath)).rejects.toThrow(
+				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+			);
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-import-accounts-snapshot-"),
+				),
+			).toBe(true);
+			expect((await loadAccounts())?.accounts).toHaveLength(
+				ACCOUNT_LIMITS.MAX_ACCOUNTS,
+			);
 		});
 	});
 

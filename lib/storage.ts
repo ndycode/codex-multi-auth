@@ -205,6 +205,22 @@ export interface ActionableNamedBackupRecoveries {
 	totalBackups: number;
 }
 
+export type AccountSnapshotReason =
+	| "delete-account"
+	| "delete-saved-accounts"
+	| "reset-local-state"
+	| "import-accounts";
+
+export type AccountSnapshotFailurePolicy = "warn" | "error";
+
+export interface AccountSnapshotOptions {
+	reason: AccountSnapshotReason;
+	now?: number;
+	force?: boolean;
+	failurePolicy?: AccountSnapshotFailurePolicy;
+	createBackup?: typeof createNamedBackup;
+}
+
 interface LoadedBackupCandidate {
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
@@ -2143,6 +2159,83 @@ export async function createNamedBackup(
 	);
 }
 
+function formatTimestampForSnapshot(timestamp: number): string {
+	const date = new Date(timestamp);
+	const pad = (value: number): string => value.toString().padStart(2, "0");
+	const milliseconds = date.getUTCMilliseconds().toString().padStart(3, "0");
+	const year = date.getUTCFullYear();
+	const month = pad(date.getUTCMonth() + 1);
+	const day = pad(date.getUTCDate());
+	const hours = pad(date.getUTCHours());
+	const minutes = pad(date.getUTCMinutes());
+	const seconds = pad(date.getUTCSeconds());
+	return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}_${milliseconds}`;
+}
+
+function buildAccountSnapshotName(
+	reason: AccountSnapshotReason,
+	timestamp: number,
+): string {
+	return `accounts-${reason}-snapshot-${formatTimestampForSnapshot(timestamp)}`;
+}
+
+function extractPathTail(pathValue: string): string {
+	const segments = pathValue.split(/[\\/]+/).filter(Boolean);
+	return segments.at(-1) ?? pathValue;
+}
+
+function redactFilesystemDetails(value: string): string {
+	return value.replace(
+		/(?:[A-Za-z]:)?[\\/][^"'`\r\n]+(?:[\\/][^"'`\r\n]+)+/g,
+		(pathValue) => extractPathTail(pathValue),
+	);
+}
+
+function formatSnapshotErrorForLog(error: unknown): string {
+	const code =
+		typeof (error as NodeJS.ErrnoException | undefined)?.code === "string"
+			? (error as NodeJS.ErrnoException).code
+			: undefined;
+	const rawMessage =
+		error instanceof Error ? error.message : String(error ?? "unknown error");
+	const redactedMessage = redactFilesystemDetails(rawMessage);
+	if (code && !redactedMessage.includes(code)) {
+		return `${code}: ${redactedMessage}`;
+	}
+	return redactedMessage;
+}
+
+export async function snapshotAccountStorage(
+	options: AccountSnapshotOptions,
+): Promise<NamedBackupMetadata | null> {
+	const {
+		reason,
+		now = Date.now(),
+		force = true,
+		failurePolicy = "warn",
+		createBackup = createNamedBackup,
+	} = options;
+	const currentStorage = await loadAccounts();
+	if (!currentStorage || currentStorage.accounts.length === 0) {
+		return null;
+	}
+
+	const backupName = buildAccountSnapshotName(reason, now);
+	try {
+		return await createBackup(backupName, { force });
+	} catch (error) {
+		if (failurePolicy === "error") {
+			throw error;
+		}
+		log.warn("Failed to create account storage snapshot", {
+			reason,
+			backupName,
+			error: formatSnapshotErrorForLog(error),
+		});
+		return null;
+	}
+}
+
 export async function assessNamedBackupRestore(
 	name: string,
 	options: { currentStorage?: AccountStorageV3 | null } = {},
@@ -3630,6 +3723,8 @@ export async function importAccounts(
 	filePath: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
+
 	const candidate = await loadImportableBackupCandidate(resolvedPath);
+	await snapshotAccountStorage({ reason: "import-accounts" });
 	return importNormalizedAccounts(candidate.normalized, resolvedPath);
 }
