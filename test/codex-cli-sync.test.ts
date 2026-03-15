@@ -80,6 +80,7 @@ describe("codex-cli sync", () => {
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
+		vi.resetModules();
 		clearCodexCliStateCache();
 		__resetLastCodexCliSyncRunForTests();
 		if (previousPath === undefined) delete process.env.CODEX_CLI_ACCOUNTS_PATH;
