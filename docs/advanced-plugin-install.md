@@ -40,6 +40,8 @@ The default target is platform-specific:
 - macOS/Linux: `~/.config/Codex/Codex.json`
 - Windows: `%APPDATA%\Codex\Codex.json`
 
+On Windows, antivirus or a running Codex process may briefly lock the config file. The installer retries automatically. If you see a transient permission error, wait a few seconds and re-run instead of launching a second installer concurrently. Backup files such as `Codex.json.bak-<timestamp>` contain the same plugin/config state as the primary file, so treat them as sensitive and do not commit or share them.
+
 ---
 
 ## Prerequisites

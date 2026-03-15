@@ -41,6 +41,8 @@ codex --version
 
 1. Rebuild account health baseline:
 
+Agents should confirm with the user before running `codex auth login` because it opens a browser OAuth flow and mutates local auth state.
+
 ```bash
 codex auth login
 codex auth check

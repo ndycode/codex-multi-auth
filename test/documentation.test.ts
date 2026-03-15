@@ -18,6 +18,7 @@ const userDocs = [
 	"docs/index.md",
 	"docs/README.md",
 	"docs/getting-started.md",
+	"docs/advanced-plugin-install.md",
 	"docs/faq.md",
 	"docs/architecture.md",
 	"docs/features.md",
@@ -241,11 +242,17 @@ describe("Documentation Integrity", () => {
 		expect(privacy).toContain("Join-Path $env:CODEX_MULTI_AUTH_DIR $relativePath");
 
 		expect(advancedInstall).toContain("%APPDATA%\\Codex\\Codex.json");
+		expect(advancedInstall).toContain(
+			"On Windows, antivirus or a running Codex process may briefly lock the config file.",
+		);
 		expect(troubleshooting).toContain(
 			"If you also installed the official Codex host/runtime, run `codex --version` as an extra routing check.",
 		);
 		expect(upgrade).toContain(
 			"If you also need the official Codex host/runtime for forwarded non-auth commands or plugin-host setup",
+		);
+		expect(upgrade).toContain(
+			"Agents should confirm with the user before running `codex auth login` because it opens a browser OAuth flow and mutates local auth state.",
 		);
 		expect(contributing).toContain(
 			"`codex --version` if the official Codex host/runtime is installed or part of the failing path",
