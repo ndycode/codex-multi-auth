@@ -2025,10 +2025,7 @@ async function findExistingNamedBackupPath(
 	return undefined;
 }
 
-function resolvePathForNamedBackupContainment(
-	path: string,
-	options?: { allowRetryableFallbackForExistingPath?: boolean },
-): string {
+function resolvePathForNamedBackupContainment(path: string): string {
 	const resolvedPath = resolvePath(path);
 	let existingPrefix = resolvedPath;
 	const unresolvedSegments: string[] = [];
@@ -2048,12 +2045,7 @@ function resolvePathForNamedBackupContainment(
 		);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (
-			code === "ENOENT" ||
-			((unresolvedSegments.length > 0 ||
-				options?.allowRetryableFallbackForExistingPath === true) &&
-				isRetryableFilesystemErrorCode(code))
-		) {
+		if (code === "ENOENT") {
 			return resolvedPath;
 		}
 		throw error;
@@ -2079,9 +2071,7 @@ export function assertNamedBackupRestorePath(
 		throw new Error("Backup path escapes backup directory");
 	}
 	const canonicalBackupRoot =
-		resolvePathForNamedBackupContainment(resolvedBackupRoot, {
-			allowRetryableFallbackForExistingPath: true,
-		});
+		resolvePathForNamedBackupContainment(resolvedBackupRoot);
 	const containedPath = resolvePathForNamedBackupContainment(resolvedPath);
 	const relativePath = relative(canonicalBackupRoot, containedPath);
 	const firstSegment = relativePath.split(/[\\/]/)[0];
@@ -3086,6 +3076,7 @@ export async function importAccounts(
 		imported: importedCount,
 		skipped: skippedCount,
 		total,
+		changed,
 	});
 
 	return {

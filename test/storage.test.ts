@@ -1539,6 +1539,46 @@ describe("storage", () => {
 			);
 		});
 
+		it("lists named backups across the chunk boundary", async () => {
+			const expectedNames: string[] = [];
+			for (
+				let index = 0;
+				index <= NAMED_BACKUP_LIST_CONCURRENCY;
+				index += 1
+			) {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: `basic-chunk-${index}`,
+							refreshToken: `ref-basic-chunk-${index}`,
+							addedAt: index + 1,
+							lastUsed: index + 1,
+						},
+					],
+				});
+				const name = `basic-chunk-${String(index).padStart(2, "0")}`;
+				expectedNames.push(name);
+				await createNamedBackup(name);
+			}
+
+			const backups = await listNamedBackups();
+
+			expect(backups).toHaveLength(NAMED_BACKUP_LIST_CONCURRENCY + 1);
+			expect(backups).toEqual(
+				expect.arrayContaining(
+					expectedNames.map((name) =>
+						expect.objectContaining({
+							name,
+							accountCount: 1,
+							valid: true,
+						}),
+					),
+				),
+			);
+		});
+
 		it("assesses eligibility and restores a named backup", async () => {
 			await saveAccounts({
 				version: 3,
@@ -2195,7 +2235,7 @@ describe("storage", () => {
 			}
 		});
 
-		it("falls back to the lexical path when realpath transiently fails for the backup root", async () => {
+		it("rethrows transient realpath errors for the backup root", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const backupPath = join(backupRoot, "pending", "locked.json");
 			await fs.mkdir(backupRoot, { recursive: true });
@@ -2216,9 +2256,9 @@ describe("storage", () => {
 				});
 
 			try {
-				expect(
+				expect(() =>
 					assertNamedBackupRestorePath(backupPath, backupRoot),
-				).toBe(resolve(backupPath));
+				).toThrow(/backup root busy/);
 			} finally {
 				realpathSpy.mockRestore();
 			}
