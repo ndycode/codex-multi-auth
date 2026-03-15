@@ -1,6 +1,7 @@
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { cp, mkdir, rename as fsRename, rm } from "node:fs/promises";
+import { basename, dirname, join, relative } from "node:path";
 import { homedir } from "node:os";
-import { rename as fsRename } from "node:fs/promises";
 
 export const PLUGIN_NAME = "codex-multi-auth";
 export const PLUGIN_MARKETPLACE = "ndycode";
@@ -214,4 +215,78 @@ export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 			await sleepImpl(delayMs);
 		}
 	}
+}
+
+export async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDir, options = {}) {
+	const {
+		mkdirImpl = mkdir,
+		cpImpl = cp,
+		rmImpl = rm,
+		renameImpl = renameWithRetry,
+		log = () => {},
+		dryRun = false,
+	} = options;
+	const parentDir = dirname(targetBaseDir);
+	const stagedRoot = join(
+		parentDir,
+		`.plugin-install-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+	);
+	const stagedBaseDir = join(stagedRoot, basename(targetBaseDir));
+	const stagedInstallDir = join(stagedBaseDir, relative(targetBaseDir, targetInstallDir));
+	const rollbackDir = join(
+		parentDir,
+		`.plugin-rollback-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+	);
+	let movedExistingPlugin = false;
+	let preserveRollbackDir = false;
+
+	if (dryRun) {
+		log(`[dry-run] Would install plugin files from ${sourcePath}`);
+		log(`[dry-run] Would replace ${targetBaseDir}`);
+		return;
+	}
+
+	try {
+		await withFileOperationRetry(() => mkdirImpl(parentDir, { recursive: true }));
+		await withFileOperationRetry(() => mkdirImpl(stagedInstallDir, { recursive: true }));
+		await withFileOperationRetry(() => cpImpl(sourcePath, stagedInstallDir, { recursive: true }));
+		if (existsSync(targetBaseDir)) {
+			await renameImpl(targetBaseDir, rollbackDir, { log });
+			movedExistingPlugin = true;
+		}
+		try {
+			await renameImpl(stagedBaseDir, targetBaseDir, { log });
+		} catch (error) {
+			if (movedExistingPlugin && !existsSync(targetBaseDir) && existsSync(rollbackDir)) {
+				try {
+					await renameImpl(rollbackDir, targetBaseDir, { log });
+					movedExistingPlugin = false;
+				} catch (restoreError) {
+					preserveRollbackDir = true;
+					throw restoreError;
+				}
+			}
+			throw error;
+		}
+		if (movedExistingPlugin) {
+			await withFileOperationRetry(() => rmImpl(rollbackDir, { recursive: true, force: true }));
+			movedExistingPlugin = false;
+		}
+	} finally {
+		try {
+			await withFileOperationRetry(() => rmImpl(stagedRoot, { recursive: true, force: true }));
+		} catch (cleanupError) {
+			log(`Warning: Could not remove staged temp dir ${stagedRoot} (${cleanupError}).`);
+		}
+		if (preserveRollbackDir) {
+			log(`Warning: Preserving rollback temp dir ${rollbackDir} because restore did not complete.`);
+		} else {
+			try {
+				await withFileOperationRetry(() => rmImpl(rollbackDir, { recursive: true, force: true }));
+			} catch (cleanupError) {
+				log(`Warning: Could not remove rollback temp dir ${rollbackDir} (${cleanupError}).`);
+			}
+		}
+	}
+	log(`Installed plugin cache at ${targetInstallDir}`);
 }

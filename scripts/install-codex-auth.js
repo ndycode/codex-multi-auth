@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, rm, stat, writeFile, copyFile } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { mkdir, readFile, rm, stat, writeFile, copyFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	installPluginIntoCache,
 	PLUGIN_MARKETPLACE,
 	PLUGIN_NAME,
 	PLUGIN_VERSION,
@@ -145,68 +146,6 @@ async function backupFile(sourcePath) {
 	return backupPath;
 }
 
-export async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDir, options = {}) {
-	const {
-		mkdirImpl = mkdir,
-		cpImpl = cp,
-		rmImpl = rm,
-		renameImpl = renameWithRetry,
-	} = options;
-	const parentDir = dirname(targetBaseDir);
-	const stagedRoot = join(
-		parentDir,
-		`.plugin-install-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-	);
-	const stagedBaseDir = join(stagedRoot, basename(targetBaseDir));
-	const stagedInstallDir = join(stagedBaseDir, relative(targetBaseDir, targetInstallDir));
-	const rollbackDir = join(
-		parentDir,
-		`.plugin-rollback-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-	);
-	let movedExistingPlugin = false;
-
-	if (dryRun) {
-		log(`[dry-run] Would install plugin files from ${sourcePath}`);
-		log(`[dry-run] Would replace ${targetBaseDir}`);
-		return;
-	}
-
-	try {
-		await withFileOperationRetry(() => mkdirImpl(parentDir, { recursive: true }));
-		await withFileOperationRetry(() => mkdirImpl(stagedInstallDir, { recursive: true }));
-		await withFileOperationRetry(() => cpImpl(sourcePath, stagedInstallDir, { recursive: true }));
-		if (existsSync(targetBaseDir)) {
-			await renameImpl(targetBaseDir, rollbackDir, { log });
-			movedExistingPlugin = true;
-		}
-		try {
-			await renameImpl(stagedBaseDir, targetBaseDir, { log });
-		} catch (error) {
-			if (movedExistingPlugin && !existsSync(targetBaseDir) && existsSync(rollbackDir)) {
-				await renameImpl(rollbackDir, targetBaseDir, { log });
-				movedExistingPlugin = false;
-			}
-			throw error;
-		}
-		if (movedExistingPlugin) {
-			await withFileOperationRetry(() => rmImpl(rollbackDir, { recursive: true, force: true }));
-			movedExistingPlugin = false;
-		}
-	} finally {
-		try {
-			await withFileOperationRetry(() => rmImpl(stagedRoot, { recursive: true, force: true }));
-		} catch (cleanupError) {
-			log(`Warning: Could not remove staged temp dir ${stagedRoot} (${cleanupError}).`);
-		}
-		try {
-			await withFileOperationRetry(() => rmImpl(rollbackDir, { recursive: true, force: true }));
-		} catch (cleanupError) {
-			log(`Warning: Could not remove rollback temp dir ${rollbackDir} (${cleanupError}).`);
-		}
-	}
-	log(`Installed plugin cache at ${targetInstallDir}`);
-}
-
 async function updateConfigToml() {
 	let originalConfig = "";
 	if (existsSync(configPath)) {
@@ -248,7 +187,7 @@ async function main() {
 	}
 
 	await withInstallerLock(async () => {
-		await installPluginIntoCache(pluginSourcePath, pluginBaseDir, pluginInstallDir);
+		await installPluginIntoCache(pluginSourcePath, pluginBaseDir, pluginInstallDir, { dryRun, log });
 		await updateConfigToml();
 	});
 

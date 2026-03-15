@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import {
 	FILE_RETRY_BASE_DELAY_MS,
 	FILE_RETRY_MAX_ATTEMPTS,
+	installPluginIntoCache,
 	PLUGIN_MARKETPLACE,
 	PLUGIN_NAME,
 	PLUGIN_VERSION,
@@ -24,7 +25,6 @@ import {
 	resolveInstallPaths,
 	withFileOperationRetry,
 } from "../scripts/install-codex-auth-utils.js";
-import { installPluginIntoCache } from "../scripts/install-codex-auth.js";
 
 const scriptPath = "scripts/install-codex-auth.js";
 const tempRoots: string[] = [];
@@ -473,6 +473,40 @@ describe("install-codex-auth script", () => {
 
 		const restoredManifest = readFileSync(existingManifestPath, "utf8");
 		expect(restoredManifest).toContain("existing-plugin");
+	});
+
+	it("preserves rollback contents when restore rename also fails", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-rollback-preserve-"));
+		tempRoots.push(home);
+		const sourcePath = path.join(process.cwd(), "codex-plugin");
+		const targetBaseDir = path.join(home, "plugins", "cache", "ndycode", "codex-multi-auth");
+		const targetInstallDir = path.join(targetBaseDir, "local");
+		const existingManifestPath = path.join(targetInstallDir, ".codex-plugin", "plugin.json");
+
+		mkdirSync(path.dirname(existingManifestPath), { recursive: true });
+		writeFileSync(existingManifestPath, '{"name":"existing-plugin"}\n', "utf8");
+
+		let renameCount = 0;
+		let rollbackDir = "";
+		const renameImpl = vi.fn(async (source: string, target: string) => {
+			renameCount += 1;
+			if (renameCount === 1) {
+				rollbackDir = target;
+				await import("node:fs/promises").then(({ rename }) => rename(source, target));
+				return;
+			}
+			throw retryableError(renameCount === 2 ? "EPERM" : "EBUSY");
+		});
+
+		await expect(
+			installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDir, { renameImpl }),
+		).rejects.toMatchObject({ code: "EBUSY" });
+
+		expect(existsSync(targetBaseDir)).toBe(false);
+		expect(rollbackDir).not.toBe("");
+		expect(existsSync(rollbackDir)).toBe(true);
+		const preservedManifestPath = path.join(rollbackDir, "local", ".codex-plugin", "plugin.json");
+		expect(readFileSync(preservedManifestPath, "utf8")).toContain("existing-plugin");
 	});
 
 	it("retries transient file-operation errors and eventually succeeds", async () => {
