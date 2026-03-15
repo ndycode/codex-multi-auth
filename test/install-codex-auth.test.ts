@@ -48,6 +48,7 @@ describe("install-codex-auth script", () => {
 			windowsHide: true,
 		});
 
+		expect(result.error).toBeUndefined();
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("~/.config/Codex/Codex.json");
 		expect(result.stdout).toContain("%APPDATA%\\Codex\\Codex.json");

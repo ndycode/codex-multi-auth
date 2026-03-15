@@ -65,7 +65,7 @@ rm -rf -- ~/.codex/multi-auth/logs/codex-plugin
 rm -f -- ~/.codex/multi-auth/logs/audit.log ~/.codex/multi-auth/logs/audit.*.log
 rm -rf -- ~/.codex/multi-auth/cache
 # Override-root cleanup examples (if overrides are set):
-if [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && [ -f "$CODEX_MULTI_AUTH_DIR/settings.json" ]; then
+if [ -n "${CODEX_MULTI_AUTH_DIR:-}" ]; then
   rm -f -- "$CODEX_MULTI_AUTH_DIR/settings.json"
   rm -f -- "$CODEX_MULTI_AUTH_DIR/openai-codex-accounts.json"
   rm -f -- "$CODEX_MULTI_AUTH_DIR/openai-codex-flagged-accounts.json"
@@ -74,7 +74,7 @@ if [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && [ -f "$CODEX_MULTI_AUTH_DIR/settings.js
   rm -f -- "$CODEX_MULTI_AUTH_DIR/logs/audit.log" "$CODEX_MULTI_AUTH_DIR/logs"/audit.*.log
   rm -rf -- "$CODEX_MULTI_AUTH_DIR/cache"
 fi
-[ -n "${CODEX_MULTI_AUTH_CONFIG_PATH:-}" ] && [ -f "$CODEX_MULTI_AUTH_CONFIG_PATH" ] && rm -f "$CODEX_MULTI_AUTH_CONFIG_PATH"
+[ -n "${CODEX_MULTI_AUTH_CONFIG_PATH:-}" ] && [ -f "$CODEX_MULTI_AUTH_CONFIG_PATH" ] && rm -f -- "$CODEX_MULTI_AUTH_CONFIG_PATH"
 ```
 
 PowerShell:
@@ -89,7 +89,7 @@ Remove-Item "$HOME\.codex\multi-auth\logs\audit.log" -Force -ErrorAction Silentl
 Get-ChildItem "$HOME\.codex\multi-auth\logs" -Filter "audit.*.log" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
 # Override-root cleanup examples (if overrides are set):
-if ($env:CODEX_MULTI_AUTH_DIR -and (Test-Path (Join-Path $env:CODEX_MULTI_AUTH_DIR "settings.json"))) {
+if ($env:CODEX_MULTI_AUTH_DIR) {
   foreach ($relativePath in @(
     "settings.json",
     "openai-codex-accounts.json",

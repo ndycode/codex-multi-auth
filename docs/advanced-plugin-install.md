@@ -54,7 +54,7 @@ Remove-Item "$env:APPDATA\Codex\Codex.json.bak-*" -Force -ErrorAction SilentlyCo
 POSIX shells:
 
 ```bash
-rm -f ~/.config/Codex/Codex.json.bak-*
+rm -f -- ~/.config/Codex/Codex.json.bak-*
 ```
 
 For broader local-state cleanup and log-handling guidance, see [privacy.md](privacy.md).
