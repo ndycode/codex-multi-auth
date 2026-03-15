@@ -262,6 +262,33 @@ describe("install-codex-auth script", () => {
 		expect(backups.length).toBe(1);
 	});
 
+	it("does not create extra backups when config.toml is already up to date", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-idempotent-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+		};
+
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(configPath, mergePluginConfigToml("[features]\nplugins = true\n", makePluginKey()), "utf8");
+
+		const result = await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		});
+
+		expect(result.stdout).toContain(`${configPath} is already up to date.`);
+		const backups = readdirSync(codexHome).filter((entry) =>
+			entry.startsWith("config.toml.bak-")
+		);
+		expect(backups.length).toBe(0);
+	});
+
 	it("replaces an existing plugin cache entry with the current plugin shell", async () => {
 		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-reinstall-"));
 		tempRoots.push(home);
@@ -379,8 +406,42 @@ describe("install-codex-auth script", () => {
 		const backups = readdirSync(codexHome).filter((entry) =>
 			entry.startsWith("config.toml.bak-")
 		);
-		expect(backups.length).toBeGreaterThanOrEqual(2);
+		expect(backups.length).toBe(1);
 		expect(new Set(backups).size).toBe(backups.length);
+	});
+
+	it("reclaims a stale installer lock before installing", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-stale-lock-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const lockDir = path.join(codexHome, "plugins", "cache", PLUGIN_MARKETPLACE, `${PLUGIN_NAME}.install.lock`);
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+		};
+
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(configPath, '[features]\nplugins = false\n', "utf8");
+		mkdirSync(lockDir, { recursive: true });
+		const staleTime = (Date.now() - 120_000) / 1000;
+		const escapedLockDir = lockDir.replace(/'/g, "''");
+		const touch = spawnSync("powershell.exe", ["-NoProfile", "-Command", `(Get-Item -LiteralPath '${escapedLockDir}').LastWriteTimeUtc = [DateTimeOffset]::FromUnixTimeSeconds(${Math.floor(staleTime)}).UtcDateTime`], {
+			encoding: "utf8",
+			windowsHide: true,
+		});
+		expect(touch.status).toBe(0);
+
+		const result = await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		});
+
+		expect(result.stdout).toContain("Warning: removing stale installer lock");
+		expect(result.stdout).toContain("Installed plugin cache");
+		expect(existsSync(lockDir)).toBe(false);
 	});
 
 	it("retries transient file-operation errors and eventually succeeds", async () => {
