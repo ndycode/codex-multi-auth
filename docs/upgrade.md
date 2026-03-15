@@ -41,13 +41,13 @@ codex --version
 
 1. Rebuild account health baseline:
 
-Agents should confirm with the user before running `codex auth login` because it opens a browser OAuth flow and mutates local auth state.
+   > Agents should confirm with the user before running `codex auth login` because it opens a browser OAuth flow and mutates local auth state.
 
-```bash
-codex auth login
-codex auth check
-codex auth forecast --live --model gpt-5-codex
-```
+   ```bash
+   codex auth login
+   codex auth check
+   codex auth forecast --live --model gpt-5-codex
+   ```
 
 ---
 
@@ -87,7 +87,7 @@ If you used `perProjectAccounts=true` before worktree identity sharing was added
 
 | Problem | Action |
 | --- | --- |
-| `codex auth` not found | Run `where codex` (Windows) or `which codex` (macOS/Linux) |
+| `codex auth` not found | Run `Get-Command codex` (PowerShell) or `command -v codex` (POSIX) |
 | Old package still active | Uninstall scoped package and reinstall unscoped package |
 | Account pool appears stale | Run `codex auth doctor --fix`, then re-login impacted accounts |
 | Mixed path confusion | Check [reference/storage-paths.md](reference/storage-paths.md) |

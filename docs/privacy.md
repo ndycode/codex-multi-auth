@@ -46,7 +46,7 @@ Current external destinations:
 `ENABLE_PLUGIN_REQUEST_LOGGING=1` enables request logging metadata.
 `CODEX_PLUGIN_LOG_BODIES=1` enables raw request/response body logging.
 
-Raw body logs may contain sensitive payload text. Treat logs as sensitive data and rotate/delete as needed.
+Raw body logs may contain sensitive payload text. Treat logs as sensitive data, redact tokens and sensitive payloads before sharing excerpts, and rotate/delete them as needed.
 
 ---
 

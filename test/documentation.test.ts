@@ -264,8 +264,9 @@ describe("Documentation Integrity", () => {
 		const gettingStarted = read("docs/getting-started.md");
 		const troubleshooting = read("docs/troubleshooting.md");
 		const advancedInstall = read("docs/advanced-plugin-install.md");
+		const upgrade = read("docs/upgrade.md");
 
-		for (const content of [gettingStarted, troubleshooting, advancedInstall]) {
+		for (const content of [gettingStarted, troubleshooting, advancedInstall, upgrade]) {
 			expect(content).toContain("Get-Command codex");
 			expect(content).toContain("command -v codex");
 			expect(content).not.toContain("where codex");
@@ -277,6 +278,12 @@ describe("Documentation Integrity", () => {
 		expect(advancedInstall).toContain("`scripts/install-codex-auth.js` does the following:");
 		expect(advancedInstall).toContain(
 			"> It should be treated as an operator action, not something an LLM agent runs automatically.\n\n> [!NOTE]",
+		);
+		expect(advancedInstall).toContain('Remove-Item "$env:APPDATA\\Codex\\Codex.json.bak-*"');
+		expect(advancedInstall).toContain("rm -f ~/.config/Codex/Codex.json.bak-*");
+		expect(advancedInstall).toContain("see [privacy.md](privacy.md)");
+		expect(upgrade).toContain(
+			"1. Rebuild account health baseline:\n\n   > Agents should confirm with the user before running `codex auth login` because it opens a browser OAuth flow and mutates local auth state.\n\n   ```bash",
 		);
 	});
 

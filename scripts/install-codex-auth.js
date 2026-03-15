@@ -27,7 +27,11 @@ if (args.has("--help") || args.has("-h")) {
 		"  --modern           Force modern config (default)\n" +
 		"  --legacy           Use legacy config (older Codex versions)\n" +
 		"  --dry-run          Show actions without writing\n" +
-		"  --no-cache-clear   Skip clearing Codex cache\n"
+		"  --no-cache-clear   Skip clearing Codex cache\n\n" +
+		"Notes:\n" +
+		"  - On Windows, transient config-file locks are retried automatically; wait and rerun instead of starting a second installer.\n" +
+		"  - --no-cache-clear skips cache removal only; it does not change config-write retries.\n" +
+		"  - Backup files and request/body logs can contain sensitive auth state; redact secrets before sharing and delete stale Codex.json.bak-* files after verification.\n"
 	);
 	process.exit(0);
 }

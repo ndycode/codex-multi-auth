@@ -42,7 +42,7 @@ describe("install-codex-auth script", () => {
 		expect(content).not.toContain('"Codex-modern.json"');
 	});
 
-	it("describes platform-specific config paths in help output", () => {
+	it("describes platform-specific config paths and safety notes in help output", () => {
 		const result = spawnSync(process.execPath, [scriptPath, "--help"], {
 			encoding: "utf8",
 			windowsHide: true,
@@ -52,6 +52,9 @@ describe("install-codex-auth script", () => {
 		expect(result.stderr).toBe("");
 		expect(result.stdout).toContain("~/.config/Codex/Codex.json");
 		expect(result.stdout).toContain("%APPDATA%\\Codex\\Codex.json");
+		expect(result.stdout).toContain("transient config-file locks are retried automatically");
+		expect(result.stdout).toContain("--no-cache-clear skips cache removal only");
+		expect(result.stdout).toContain("request/body logs can contain sensitive auth state");
 	});
 
 	it("normalizes plugin list with empty, duplicate, and non-string entries", () => {

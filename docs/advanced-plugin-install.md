@@ -43,6 +43,22 @@ The default target is platform-specific:
 
 On Windows, antivirus or a running Codex process may briefly lock the config file. The installer retries automatically. If you see a transient permission error, wait a few seconds and re-run instead of launching a second installer concurrently. Backup files such as `Codex.json.bak-<timestamp>` contain the same plugin/config state as the primary file, so treat them as sensitive and do not commit or share them.
 
+After a successful install and verification pass, remove stale backup files you no longer need:
+
+PowerShell:
+
+```powershell
+Remove-Item "$env:APPDATA\Codex\Codex.json.bak-*" -Force -ErrorAction SilentlyContinue
+```
+
+POSIX shells:
+
+```bash
+rm -f ~/.config/Codex/Codex.json.bak-*
+```
+
+For broader local-state cleanup and log-handling guidance, see [privacy.md](privacy.md).
+
 ---
 
 ## Prerequisites
