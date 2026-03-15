@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const createAuthorizationFlowMock = vi.fn();
@@ -575,7 +573,6 @@ describe("codex manager cli commands", () => {
 		exchangeAuthorizationCodeMock.mockReset();
 		startLocalOAuthServerMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
-		setCodexCliActiveSelectionMock.mockResolvedValue(true);
 		promptAddAnotherAccountMock.mockReset();
 		isInteractiveLoginMenuAvailableMock.mockReset();
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(true);
@@ -5590,28 +5587,26 @@ describe("codex manager cli commands", () => {
 			.mockImplementationOnce(async () => "preview-restore");
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-		try {
-			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
-			expect(exitCode).toBe(0);
-			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
-			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-				1,
-				"named-backup",
-				expect.objectContaining({
-					currentStorage: expect.objectContaining({
-						accounts: expect.any(Array),
-					}),
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+			1,
+			"named-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({
+					accounts: expect.any(Array),
 				}),
-			);
-			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-				2,
-				"named-backup",
-				expect.objectContaining({
-					currentStorage: expect.objectContaining({
-						accounts: expect.any(Array),
-					}),
+			}),
+		);
+		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+			2,
+			"named-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({
+					accounts: expect.any(Array),
 				}),
 			);
 			expect(confirmMock).not.toHaveBeenCalled();
