@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
 import { UI_COPY } from "../lib/ui/copy.js";
 
 const projectRoot = resolve(process.cwd());
@@ -58,6 +59,36 @@ const compatibilityAliasAllowedFiles = new Set([
 
 function read(filePath: string): string {
 	return readFileSync(join(projectRoot, filePath), "utf-8");
+}
+
+interface AntiSlopWorkflowConfig {
+	on?: {
+		pull_request_target?: {
+			branches?: string[];
+			types?: string[];
+		};
+	};
+	permissions?: {
+		contents?: string;
+		issues?: string;
+		"pull-requests"?: string;
+	};
+	jobs?: {
+		"anti-slop"?: {
+			steps?: Array<{
+				name?: string;
+				uses?: string;
+				with?: {
+					"github-token"?: string;
+					"require-pr-template"?: boolean;
+					"strict-pr-template-sections"?: string;
+					"blocked-terms"?: string;
+					"failure-add-pr-labels"?: string;
+					"close-pr"?: boolean;
+				};
+			}>;
+		};
+	};
 }
 
 function extractInternalLinks(markdown: string): string[] {
@@ -438,46 +469,47 @@ describe("Documentation Integrity", () => {
 		).toBe(true);
 
 		const antiSlop = read(antiSlopWorkflow);
+		const antiSlopConfig = parse(antiSlop) as AntiSlopWorkflowConfig;
+		const antiSlopStep = antiSlopConfig.jobs?.["anti-slop"]?.steps?.find(
+			(step) => step.name === "Run anti-slop checks",
+		);
 		// pull_request_target runs with base-repo permissions, so the action must
 		// stay pinned to an immutable commit instead of a mutable tag or branch.
-		expect(antiSlop).toMatch(/uses:\s*peakoss\/anti-slop@[a-f0-9]{40}\b/i);
-		expect(antiSlop).toContain(
+		expect(antiSlopStep?.uses).toMatch(
+			/^peakoss\/anti-slop@[a-f0-9]{40}\b/i,
+		);
+		expect(antiSlopStep?.uses).toBe(
 			"peakoss/anti-slop@85daca1880e9e1af197fc06ea03349daf08f4202",
 		);
-		expect(antiSlop).toContain("pull_request_target:");
-		const pullRequestTargetStart = antiSlop.indexOf("pull_request_target:");
-		const jobsMatch = antiSlop
-			.slice(pullRequestTargetStart)
-			.match(/\n\s*jobs:/);
-		const jobsStart =
-			jobsMatch?.index === undefined
-				? -1
-				: pullRequestTargetStart + jobsMatch.index;
-		const pullRequestTargetSection = antiSlop.slice(
-			pullRequestTargetStart,
-			jobsStart === -1 ? undefined : jobsStart,
+		expect(antiSlopConfig.on?.pull_request_target?.branches).toEqual(["main"]);
+		expect(
+			antiSlopConfig.on?.pull_request_target?.types ?? [],
+		).toEqual(
+			[
+				"opened",
+				"synchronize",
+				"reopened",
+				"ready_for_review",
+				"edited",
+			],
 		);
-		expect(pullRequestTargetSection).toContain("types:");
-		for (const triggerType of [
-			"opened",
-			"synchronize",
-			"reopened",
-			"ready_for_review",
-			"edited",
-		]) {
-			expect(pullRequestTargetSection).toContain(triggerType);
-		}
-		expect(antiSlop).toContain("issues: read");
-		expect(antiSlop).toContain("pull-requests: write");
-		expect(antiSlop).toMatch(
-			/github-token:\s*\$\{\{\s*github\.token\s*\}\}/,
+		expect(antiSlopConfig.permissions).toMatchObject({
+			contents: "read",
+			issues: "write",
+			"pull-requests": "write",
+		});
+		expect(antiSlopStep?.with?.["github-token"]).toBe("${{ github.token }}");
+		expect(antiSlopStep?.with?.["require-pr-template"]).toBe(true);
+		expect(antiSlopStep?.with?.["strict-pr-template-sections"]).toBe(
+			"Validation,Docs Impact,Governance Review",
 		);
-		expect(antiSlop).toContain("require-pr-template: true");
-		expect(antiSlop).toContain("strict-pr-template-sections: Validation");
-		expect(antiSlop).toContain("blocked-terms:");
-		expect(antiSlop).toContain("WORKTREE_LANTERN_1455");
-		expect(antiSlop).toContain("failure-add-pr-labels: needs-human-review");
-		expect(antiSlop).toContain("close-pr: false");
+		expect(antiSlopStep?.with?.["blocked-terms"]).toContain(
+			"WORKTREE_LANTERN_1455",
+		);
+		expect(antiSlopStep?.with?.["failure-add-pr-labels"]).toBe(
+			"needs-human-review",
+		);
+		expect(antiSlopStep?.with?.["close-pr"]).toBe(false);
 
 		const prBody = read(prTemplate);
 		expect(prBody).toContain("WORKTREE_LANTERN_1455");

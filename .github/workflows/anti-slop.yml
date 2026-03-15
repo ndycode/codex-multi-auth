@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  issues: read
+  issues: write
   pull-requests: write
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
           github-token: ${{ github.token }}
           max-failures: 4
           require-pr-template: true
-          strict-pr-template-sections: Validation
+          strict-pr-template-sections: Validation,Docs Impact,Governance Review
           optional-pr-template-sections: Additional Notes
           blocked-terms: |
             WORKTREE_LANTERN_1455
