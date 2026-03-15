@@ -226,11 +226,11 @@ describe("Documentation Integrity", () => {
 		expect(gettingStarted).toContain(
 			"This installs the local account manager for `codex auth ...`.",
 		);
-		expect(gettingStarted).not.toContain(
-			"Verify that the wrapper is active:\n\n```bash\ncodex --version",
+		expect(gettingStarted).not.toMatch(
+			/Verify that the wrapper is active:\s*```bash\s*codex --version/,
 		);
-		expect(readme).not.toContain(
-			"### Option D: Verify account-manager wiring\n\n```bash\ncodex --version",
+		expect(readme).not.toMatch(
+			/### Option D: Verify account-manager wiring\s*```bash\s*codex --version/,
 		);
 
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/settings.json');
@@ -243,6 +243,12 @@ describe("Documentation Integrity", () => {
 		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/cache');
 		expect(privacy).toContain("foreach ($relativePath in @(");
 		expect(privacy).toContain("Join-Path $env:CODEX_MULTI_AUTH_DIR $relativePath");
+		expect(privacy).toContain(
+			'if [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && [ -f "$CODEX_MULTI_AUTH_DIR/settings.json" ]; then',
+		);
+		expect(privacy).toContain(
+			'if ($env:CODEX_MULTI_AUTH_DIR -and (Test-Path (Join-Path $env:CODEX_MULTI_AUTH_DIR "settings.json")))',
+		);
 		expect(privacy).toContain('Get-ChildItem "$HOME\\.codex\\multi-auth\\logs" -Filter "audit.*.log"');
 		expect(privacy).toContain('Get-ChildItem (Join-Path $env:CODEX_MULTI_AUTH_DIR "logs") -Filter "audit.*.log"');
 
@@ -282,14 +288,17 @@ describe("Documentation Integrity", () => {
 		expect(readme).toContain("needs non-auth `codex` commands to be forwarded");
 		expect(advancedInstall).toContain("`scripts/install-codex-auth.js` does the following:");
 		expect(advancedInstall).toContain(
-			"> It should be treated as an operator action, not something an LLM agent runs automatically.\n\n> [!NOTE]",
+			"> It should be treated as an operator action, not something an LLM agent runs automatically.",
 		);
+		expect(advancedInstall).toContain("> [!NOTE]");
 		expect(advancedInstall).toContain('Remove-Item "$env:APPDATA\\Codex\\Codex.json.bak-*"');
 		expect(advancedInstall).toContain("rm -f ~/.config/Codex/Codex.json.bak-*");
 		expect(advancedInstall).toContain("see [privacy.md](privacy.md)");
+		expect(upgrade).toContain("1. Rebuild account health baseline:");
 		expect(upgrade).toContain(
-			"1. Rebuild account health baseline:\n\n   > Agents should confirm with the user before running `codex auth login` because it opens a browser OAuth flow and mutates local auth state.\n\n   ```bash",
+			"Agents should confirm with the user before running `codex auth login` because it opens a browser OAuth flow and mutates local auth state.",
 		);
+		expect(upgrade).toContain("codex auth forecast --live --model gpt-5-codex");
 	});
 
 	it("documents public API stability tiers and error contracts", () => {

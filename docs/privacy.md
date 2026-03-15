@@ -57,21 +57,23 @@ These commands delete local state. Review the resolved paths before running them
 Bash:
 
 ```bash
-rm -f ~/.codex/multi-auth/settings.json
-rm -f ~/.codex/multi-auth/openai-codex-accounts.json
-rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
-rm -f ~/.codex/multi-auth/quota-cache.json
-rm -rf ~/.codex/multi-auth/logs/codex-plugin
-rm -f ~/.codex/multi-auth/logs/audit.log ~/.codex/multi-auth/logs/audit.*.log
-rm -rf ~/.codex/multi-auth/cache
+rm -f -- ~/.codex/multi-auth/settings.json
+rm -f -- ~/.codex/multi-auth/openai-codex-accounts.json
+rm -f -- ~/.codex/multi-auth/openai-codex-flagged-accounts.json
+rm -f -- ~/.codex/multi-auth/quota-cache.json
+rm -rf -- ~/.codex/multi-auth/logs/codex-plugin
+rm -f -- ~/.codex/multi-auth/logs/audit.log ~/.codex/multi-auth/logs/audit.*.log
+rm -rf -- ~/.codex/multi-auth/cache
 # Override-root cleanup examples (if overrides are set):
-[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/settings.json"
-[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/openai-codex-accounts.json"
-[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/openai-codex-flagged-accounts.json"
-[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/quota-cache.json"
-[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin"
-[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/logs/audit.log" "$CODEX_MULTI_AUTH_DIR/logs/audit."*.log
-[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/cache"
+if [ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && [ -f "$CODEX_MULTI_AUTH_DIR/settings.json" ]; then
+  rm -f -- "$CODEX_MULTI_AUTH_DIR/settings.json"
+  rm -f -- "$CODEX_MULTI_AUTH_DIR/openai-codex-accounts.json"
+  rm -f -- "$CODEX_MULTI_AUTH_DIR/openai-codex-flagged-accounts.json"
+  rm -f -- "$CODEX_MULTI_AUTH_DIR/quota-cache.json"
+  rm -rf -- "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin"
+  rm -f -- "$CODEX_MULTI_AUTH_DIR/logs/audit.log" "$CODEX_MULTI_AUTH_DIR/logs"/audit.*.log
+  rm -rf -- "$CODEX_MULTI_AUTH_DIR/cache"
+fi
 [ -n "${CODEX_MULTI_AUTH_CONFIG_PATH:-}" ] && [ -f "$CODEX_MULTI_AUTH_CONFIG_PATH" ] && rm -f "$CODEX_MULTI_AUTH_CONFIG_PATH"
 ```
 
@@ -87,7 +89,7 @@ Remove-Item "$HOME\.codex\multi-auth\logs\audit.log" -Force -ErrorAction Silentl
 Get-ChildItem "$HOME\.codex\multi-auth\logs" -Filter "audit.*.log" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\cache" -Recurse -Force -ErrorAction SilentlyContinue
 # Override-root cleanup examples (if overrides are set):
-if ($env:CODEX_MULTI_AUTH_DIR) {
+if ($env:CODEX_MULTI_AUTH_DIR -and (Test-Path (Join-Path $env:CODEX_MULTI_AUTH_DIR "settings.json"))) {
   foreach ($relativePath in @(
     "settings.json",
     "openai-codex-accounts.json",

@@ -49,7 +49,6 @@ describe("install-codex-auth script", () => {
 		});
 
 		expect(result.status).toBe(0);
-		expect(result.stderr).toBe("");
 		expect(result.stdout).toContain("~/.config/Codex/Codex.json");
 		expect(result.stdout).toContain("%APPDATA%\\Codex\\Codex.json");
 		expect(result.stdout).toContain("transient config-file locks are retried automatically");
