@@ -1,0 +1,13 @@
+{
+  "name": "ndycode",
+  "plugins": [
+    {
+      "name": "codex-multi-auth",
+      "source": {
+        "source": "local",
+        "path": "../../codex-plugin"
+      },
+      "authPolicy": "ON_USE"
+    }
+  ]
+}

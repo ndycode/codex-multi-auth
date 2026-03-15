@@ -1,0 +1,24 @@
+{
+  "name": "codex-multi-auth",
+  "description": "Multi-account auth helper for Codex operators",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Codex Multi-Auth",
+    "shortDescription": "Operator guidance for multi-account auth workflows",
+    "longDescription": "Adds guidance for login, switching, diagnostics, and repair workflows while keeping the existing codex auth wrapper as the runtime path.",
+    "developerName": "ndycode",
+    "category": "developer-tools",
+    "capabilities": [
+      "skills"
+    ],
+    "websiteURL": "https://github.com/ndycode/codex-multi-auth",
+    "privacyPolicyURL": "https://github.com/ndycode/codex-multi-auth/blob/main/docs/privacy.md",
+    "termsOfServiceURL": "https://github.com/ndycode/codex-multi-auth/blob/main/README.md",
+    "defaultPrompt": [
+      "Use codex auth status before modifying auth state",
+      "Ask before running browser login or destructive cleanup",
+      "Prefer codex auth forecast and doctor for diagnostics"
+    ],
+    "brandColor": "#10b981"
+  }
+}
