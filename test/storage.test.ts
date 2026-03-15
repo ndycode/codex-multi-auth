@@ -1210,6 +1210,92 @@ describe("storage", () => {
 			expect(assessment.imported).toBe(1);
 			expect(assessment.skipped).toBe(0);
 			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.currentActiveIndex).toBeNull();
+			expect(assessment.nextActiveIndex).toBe(0);
+			expect(assessment.activeAccountOutcome).toBe("changed");
+			expect(assessment.activeAccountChanged).toBe(true);
+			expect(assessment.namedBackupRestorePreview?.activeAccount).toMatchObject({
+				outcome: "changed",
+				changed: true,
+				current: null,
+				next: expect.objectContaining({
+					index: 0,
+					accountId: "backup-account",
+				}),
+			});
+		});
+
+		it("allows replace-only named backup restores and exposes preview conflict details", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Replace Only.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							email: "replace@example.com",
+							accountId: "replace-account",
+							refreshToken: "refresh-replaced",
+							addedAt: 20,
+							lastUsed: 20,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						email: "replace@example.com",
+						accountId: "replace-account",
+						refreshToken: "refresh-current",
+						addedAt: 10,
+						lastUsed: 10,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("Replace Only");
+
+			expect(assessment.backupAccountCount).toBe(1);
+			expect(assessment.dedupedBackupAccountCount).toBe(1);
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(0);
+			expect(assessment.replacedExistingCount).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.wouldExceedLimit).toBe(false);
+			expect(assessment.activeAccountOutcome).toBe("unchanged");
+			expect(assessment.activeAccountChanged).toBe(false);
+			expect(assessment.namedBackupRestorePreview?.conflicts).toEqual([
+				expect.objectContaining({
+					conflict: expect.objectContaining({
+						backupIndex: 0,
+						currentIndex: 0,
+						resolution: "backup-kept",
+						reasons: expect.arrayContaining(["accountId", "email"]),
+					}),
+				}),
+			]);
+
+			const restoreResult = await restoreNamedBackup("Replace Only");
+			expect(restoreResult).toEqual({ imported: 0, skipped: 1, total: 1 });
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "replace-account",
+					refreshToken: "refresh-replaced",
+				}),
+			]);
 		});
 
 		it("restores manually named backups that already exist inside the backups directory", async () => {
@@ -1316,7 +1402,7 @@ describe("storage", () => {
 
 			await expect(
 				restoreNamedBackup("deleted-after-assessment"),
-			).rejects.toThrow(/Import file not found/);
+			).rejects.toThrow(/ENOENT: no such file or directory/);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
@@ -1344,8 +1430,78 @@ describe("storage", () => {
 
 			await expect(
 				restoreNamedBackup("invalid-after-assessment"),
-			).rejects.toThrow(/Invalid JSON in import file/);
+			).rejects.toThrow(/is not valid JSON/);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+		});
+
+		it("reassesses named restores at mutation time when the current pool grows past the limit", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"limit-race.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							email: "from-backup@example.com",
+							accountId: "from-backup",
+							refreshToken: "refresh-from-backup",
+							addedAt: 100,
+							lastUsed: 100,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
+					(_value, index) => ({
+						email: `current-${index}@example.com`,
+						accountId: `current-${index}`,
+						refreshToken: `refresh-current-${index}`,
+						addedAt: index,
+						lastUsed: index,
+					}),
+				),
+			});
+
+			const initialAssessment = await assessNamedBackupRestore("limit-race");
+			expect(initialAssessment.eligibleForRestore).toBe(true);
+			expect(initialAssessment.wouldExceedLimit).toBe(false);
+			expect(initialAssessment.imported).toBe(1);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from({ length: ACCOUNT_LIMITS.MAX_ACCOUNTS }, (_value, index) => ({
+					email: `expanded-${index}@example.com`,
+					accountId: `expanded-${index}`,
+					refreshToken: `refresh-expanded-${index}`,
+					addedAt: index + 1_000,
+					lastUsed: index + 1_000,
+				})),
+			});
+
+			await expect(restoreNamedBackup("limit-race")).rejects.toThrow(
+				`Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+			);
+
+			const persisted = await loadAccounts();
+			expect(persisted?.accounts).toHaveLength(ACCOUNT_LIMITS.MAX_ACCOUNTS);
+			expect(
+				persisted?.accounts.some(
+					(account) => account.accountId === "from-backup",
+				),
+			).toBe(false);
 		});
 
 		it.each(["../openai-codex-accounts", String.raw`..\openai-codex-accounts`])(
