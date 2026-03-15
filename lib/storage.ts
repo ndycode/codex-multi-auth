@@ -179,6 +179,26 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	return previousMutex.then(fn).finally(() => releaseLock());
 }
 
+async function unlinkWithRetry(path: string): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.unlink(path);
+			return;
+		} catch (error) {
+			const unlinkError = error as NodeJS.ErrnoException;
+			const code = unlinkError.code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if ((code === "EPERM" || code === "EBUSY" || code === "EAGAIN") && attempt < 4) {
+				await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+				continue;
+			}
+			throw unlinkError;
+		}
+	}
+}
+
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 
 type AccountLike = {
@@ -1834,34 +1854,19 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			throw emptyError;
 		}
 
-		// Retry rename with exponential backoff for Windows EPERM/EBUSY
-		let lastError: NodeJS.ErrnoException | null = null;
-		for (let attempt = 0; attempt < 5; attempt++) {
-			try {
-				await fs.rename(tempPath, path);
-				try {
-					await fs.unlink(resetMarkerPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				lastAccountsSaveTimestamp = Date.now();
-				try {
-					await fs.unlink(walPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				return;
-			} catch (renameError) {
-				const code = (renameError as NodeJS.ErrnoException).code;
-				if (code === "EPERM" || code === "EBUSY") {
-					lastError = renameError as NodeJS.ErrnoException;
-					await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
-					continue;
-				}
-				throw renameError;
-			}
+		await renameFileWithRetry(tempPath, path);
+		try {
+			await fs.unlink(resetMarkerPath);
+		} catch {
+			// Best effort cleanup.
 		}
-		if (lastError) throw lastError;
+		lastAccountsSaveTimestamp = Date.now();
+		try {
+			await fs.unlink(walPath);
+		} catch {
+			// Best effort cleanup.
+		}
+		return;
 	} catch (error) {
 		try {
 			await fs.unlink(tempPath);
@@ -1996,24 +2001,34 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * Deletes the account storage file from disk.
  * Silently ignores if file doesn't exist.
  */
-export async function clearAccounts(): Promise<void> {
+export async function clearAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
 		const path = getStoragePath();
 		const resetMarkerPath = getIntentionalResetMarkerPath(path);
 		const walPath = getAccountsWalPath(path);
 		const backupPaths =
 			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
+		const legacyPaths = Array.from(
+			new Set(
+				[currentLegacyProjectStoragePath, currentLegacyWorktreeStoragePath].filter(
+					(candidate): candidate is string =>
+						typeof candidate === "string" && candidate.length > 0,
+				),
+			),
+		);
 		await fs.writeFile(
 			resetMarkerPath,
 			JSON.stringify({ version: 1, createdAt: Date.now() }),
 			{ encoding: "utf-8", mode: 0o600 },
 		);
+		let hadError = false;
 		const clearPath = async (targetPath: string): Promise<void> => {
 			try {
-				await fs.unlink(targetPath);
+				await unlinkWithRetry(targetPath);
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "ENOENT") {
+					hadError = true;
 					log.error("Failed to clear account storage artifact", {
 						path: targetPath,
 						error: String(error),
@@ -2023,14 +2038,13 @@ export async function clearAccounts(): Promise<void> {
 		};
 
 		try {
-			await Promise.all([
-				clearPath(path),
-				clearPath(walPath),
-				...backupPaths.map(clearPath),
-			]);
+			const artifacts = Array.from(new Set([path, walPath, ...backupPaths, ...legacyPaths]));
+			await Promise.all(artifacts.map(clearPath));
 		} catch {
 			// Individual path cleanup is already best-effort with per-artifact logging.
 		}
+
+		return !hadError;
 	});
 }
 
@@ -2258,7 +2272,7 @@ export async function saveFlaggedAccounts(
 	});
 }
 
-export async function clearFlaggedAccounts(): Promise<void> {
+export async function clearFlaggedAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
 		const markerPath = getIntentionalResetMarkerPath(path);
@@ -2277,22 +2291,37 @@ export async function clearFlaggedAccounts(): Promise<void> {
 		}
 		const backupPaths =
 			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		for (const candidate of [path, ...backupPaths, markerPath]) {
+		let hadError = false;
+		for (const candidate of [path, ...backupPaths]) {
 			try {
-				await fs.unlink(candidate);
+				await unlinkWithRetry(candidate);
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "ENOENT") {
+					hadError = true;
 					log.error("Failed to clear flagged account storage", {
 						path: candidate,
 						error: String(error),
 					});
-					if (candidate === path) {
-						throw error;
-					}
 				}
 			}
 		}
+		if (!hadError) {
+			try {
+				await unlinkWithRetry(markerPath);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.error("Failed to clear flagged reset marker", {
+						path,
+						markerPath,
+						error: String(error),
+					});
+					hadError = true;
+				}
+			}
+		}
+		return !hadError;
 	});
 }
 

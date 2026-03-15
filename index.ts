@@ -102,6 +102,12 @@ import {
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
 import {
+	DESTRUCTIVE_ACTION_COPY,
+	deleteAccountAtIndex,
+	deleteSavedAccounts,
+	resetLocalState,
+} from "./lib/destructive-actions.js";
+import {
 	AccountManager,
         getAccountIdCandidates,
         extractAccountEmail,
@@ -122,13 +128,11 @@ import {
 	loadAccounts,
 	saveAccounts,
 	withAccountStorageTransaction,
-	clearAccounts,
 	setStoragePath,
 	exportAccounts,
 	importAccounts,
 	loadFlaggedAccounts,
 	saveFlaggedAccounts,
-	clearFlaggedAccounts,
 	findMatchingAccountIndex,
 	StorageError,
 	formatStorageErrorHint,
@@ -3101,19 +3105,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 									if (menuResult.mode === "manage") {
 										if (typeof menuResult.deleteAccountIndex === "number") {
-											const target = workingStorage.accounts[menuResult.deleteAccountIndex];
-											if (target) {
-												workingStorage.accounts.splice(menuResult.deleteAccountIndex, 1);
-												clampActiveIndices(workingStorage);
-												await saveAccounts(workingStorage);
-												await saveFlaggedAccounts({
-													version: 1,
-													accounts: flaggedStorage.accounts.filter(
-														(flagged) => flagged.refreshToken !== target.refreshToken,
-													),
-												});
+											const deleted = await deleteAccountAtIndex({
+												storage: workingStorage,
+												index: menuResult.deleteAccountIndex,
+											});
+											if (deleted) {
 												invalidateAccountManagerCache();
-												console.log(`\nDeleted ${target.email ?? `Account ${menuResult.deleteAccountIndex + 1}`}.\n`);
+												const label = `Account ${menuResult.deleteAccountIndex + 1}`;
+												const flaggedNote =
+													deleted.removedFlaggedCount > 0
+														? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
+														: "";
+												console.log(`\nDeleted ${label}.${flaggedNote}\n`);
 											}
 											continue;
 										}
@@ -3143,13 +3146,32 @@ while (attempted.size < Math.max(1, accountCount)) {
 									if (menuResult.mode === "fresh") {
 										startFresh = true;
 										if (menuResult.deleteAll) {
-											await clearAccounts();
-											await clearFlaggedAccounts();
+											const result = await deleteSavedAccounts();
 											invalidateAccountManagerCache();
 											console.log(
-												"\nCleared saved accounts from active storage. Recovery snapshots remain available. Starting fresh.\n",
+												`\n${
+													result.accountsCleared
+														? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed
+														: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs."
+												}\n`,
 											);
 										}
+										break;
+									}
+
+									if (menuResult.mode === "reset") {
+										startFresh = true;
+										const result = await resetLocalState();
+										invalidateAccountManagerCache();
+										console.log(
+											`\n${
+												result.accountsCleared &&
+												result.flaggedCleared &&
+												result.quotaCacheCleared
+													? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
+													: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs."
+											}\n`,
+										);
 										break;
 									}
 
