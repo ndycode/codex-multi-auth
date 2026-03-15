@@ -68,6 +68,12 @@ function serializeEntry(entry: SyncHistoryEntry): string {
 	return JSON.stringify(entry);
 }
 
+export interface PrunedSyncHistory {
+	entries: SyncHistoryEntry[];
+	removed: number;
+	latest: SyncHistoryEntry | null;
+}
+
 function withHistoryLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previous = historyMutex;
 	let release: () => void = () => {};
@@ -110,6 +116,31 @@ function parseEntry(line: string): SyncHistoryEntry | null {
 		});
 		return null;
 	}
+}
+
+function parseHistoryContent(content: string): SyncHistoryEntry[] {
+	return content
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.map((line) => parseEntry(line))
+		.filter((entry): entry is SyncHistoryEntry => entry !== null);
+}
+
+async function loadHistoryEntriesFromDisk(
+	paths: SyncHistoryPaths,
+): Promise<SyncHistoryEntry[]> {
+	const content = await fs.readFile(paths.historyPath, "utf8").catch((error) => {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return "";
+		}
+		throw error;
+	});
+	if (!content) {
+		return [];
+	}
+	return parseHistoryContent(content);
 }
 
 async function readHistoryTail(
@@ -167,26 +198,85 @@ async function readHistoryTail(
 	}
 }
 
-async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<void> {
-	const content = await fs.readFile(paths.historyPath, "utf8").catch((error) => {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return "";
+export function pruneSyncHistoryEntries(
+	entries: SyncHistoryEntry[],
+	maxEntries: number = MAX_HISTORY_ENTRIES,
+): PrunedSyncHistory {
+	if (entries.length === 0) {
+		return { entries: [], removed: 0, latest: null };
+	}
+
+	const boundedMaxEntries = Math.max(0, maxEntries);
+	const latestByKind = new Map<SyncHistoryKind, SyncHistoryEntry>();
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (!entry || latestByKind.has(entry.kind)) {
+			continue;
 		}
-		throw error;
-	});
-	if (!content) {
+		latestByKind.set(entry.kind, entry);
+	}
+
+	const requiredEntries = new Set(latestByKind.values());
+	const keptEntries: SyncHistoryEntry[] = [];
+	const seenEntries = new Set<SyncHistoryEntry>();
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (!entry || seenEntries.has(entry)) {
+			continue;
+		}
+		if (
+			keptEntries.length < boundedMaxEntries ||
+			requiredEntries.has(entry)
+		) {
+			keptEntries.push(entry);
+			seenEntries.add(entry);
+		}
+	}
+
+	const chronologicalEntries = keptEntries
+		.reverse()
+		.map((entry) => cloneEntry(entry));
+	const latest = cloneEntry(chronologicalEntries.at(-1) ?? null);
+	return {
+		entries: chronologicalEntries,
+		removed: entries.length - chronologicalEntries.length,
+		latest,
+	};
+}
+
+async function rewriteLatestEntry(
+	latest: SyncHistoryEntry | null,
+	paths: SyncHistoryPaths,
+): Promise<void> {
+	if (!latest) {
+		await fs.rm(paths.latestPath, { force: true });
 		return;
 	}
-	const lines = content.split(/\r?\n/).filter(Boolean);
-	if (lines.length <= MAX_HISTORY_ENTRIES) {
-		return;
-	}
-	const trimmedContent = `${lines.slice(-MAX_HISTORY_ENTRIES).join("\n")}\n`;
-	await fs.writeFile(paths.historyPath, trimmedContent, {
+	await fs.writeFile(paths.latestPath, `${JSON.stringify(latest, null, 2)}\n`, {
 		encoding: "utf8",
 		mode: 0o600,
 	});
+}
+
+async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<PrunedSyncHistory> {
+	const entries = await loadHistoryEntriesFromDisk(paths);
+	const result = pruneSyncHistoryEntries(entries, MAX_HISTORY_ENTRIES);
+	if (result.removed === 0) {
+		return result;
+	}
+	if (result.entries.length === 0) {
+		await fs.rm(paths.historyPath, { force: true });
+		return result;
+	}
+	await fs.writeFile(
+		paths.historyPath,
+		`${result.entries.map((entry) => serializeEntry(entry)).join("\n")}\n`,
+		{
+			encoding: "utf8",
+			mode: 0o600,
+		},
+	);
+	return result;
 }
 
 export async function appendSyncHistoryEntry(
@@ -200,11 +290,8 @@ export async function appendSyncHistoryEntry(
 			encoding: "utf8",
 			mode: 0o600,
 		});
-		await trimHistoryFileIfNeeded(paths);
-		await fs.writeFile(paths.latestPath, `${JSON.stringify(entry, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
+		const prunedHistory = await trimHistoryFileIfNeeded(paths);
+		await rewriteLatestEntry(prunedHistory.latest ?? entry, paths);
 		lastAppendError = null;
 	});
 	pendingHistoryWrites.add(writePromise);
@@ -227,19 +314,14 @@ export async function readSyncHistory(
 	const { kind, limit } = options;
 	await waitForPendingHistoryWrites();
 	try {
+		const paths = getSyncHistoryPaths();
 		if (typeof limit === "number" && limit > 0) {
-			return readHistoryTail(getSyncHistoryPaths().historyPath, {
+			return readHistoryTail(paths.historyPath, {
 				kind,
 				limit,
 			});
 		}
-		const content = await fs.readFile(getSyncHistoryPaths().historyPath, "utf8");
-		const parsed = content
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter(Boolean)
-			.map((line) => parseEntry(line))
-			.filter((entry): entry is SyncHistoryEntry => entry !== null);
+		const parsed = await loadHistoryEntriesFromDisk(paths);
 		const filtered = kind
 			? parsed.filter((entry) => entry.kind === kind)
 			: parsed;
@@ -269,6 +351,39 @@ export function readLatestSyncHistorySync(): SyncHistoryEntry | null {
 		}
 		return null;
 	}
+}
+
+export async function pruneSyncHistory(
+	options: { maxEntries?: number } = {},
+): Promise<{ removed: number; kept: number; latest: SyncHistoryEntry | null }> {
+	const maxEntries = options.maxEntries ?? MAX_HISTORY_ENTRIES;
+	await waitForPendingHistoryWrites();
+	return withHistoryLock(async () => {
+		const paths = getSyncHistoryPaths();
+		await ensureHistoryDir(paths.directory);
+		const entries = await loadHistoryEntriesFromDisk(paths);
+		const result = pruneSyncHistoryEntries(entries, maxEntries);
+		if (result.entries.length === 0) {
+			await fs.rm(paths.historyPath, { force: true });
+		} else {
+			await fs.writeFile(
+				paths.historyPath,
+				`${result.entries.map((entry) => serializeEntry(entry)).join("\n")}\n`,
+				{
+					encoding: "utf8",
+					mode: 0o600,
+				},
+			);
+		}
+		await rewriteLatestEntry(result.latest, paths);
+		lastAppendPaths = paths;
+		lastAppendError = null;
+		return {
+			removed: result.removed,
+			kept: result.entries.length,
+			latest: result.latest,
+		};
+	});
 }
 
 export function cloneSyncHistoryEntry(

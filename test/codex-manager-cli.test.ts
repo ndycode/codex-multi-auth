@@ -10,6 +10,7 @@ const saveFlaggedAccountsMock = vi.fn();
 const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
 const getActionableNamedBackupRestoresMock = vi.fn();
+const listAccountSnapshotsMock = vi.fn();
 const listNamedBackupsMock = vi.fn();
 const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
@@ -136,6 +137,7 @@ vi.mock("../lib/storage.js", async () => {
 		setStoragePath: setStoragePathMock,
 		getStoragePath: getStoragePathMock,
 		getActionableNamedBackupRestores: getActionableNamedBackupRestoresMock,
+		listAccountSnapshots: listAccountSnapshotsMock,
 		listNamedBackups: listNamedBackupsMock,
 		listRotatingBackups: listRotatingBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
@@ -630,6 +632,7 @@ describe("codex manager cli commands", () => {
 			version: 1,
 			accounts: [],
 		});
+		listAccountSnapshotsMock.mockReset();
 		listNamedBackupsMock.mockReset();
 		listRotatingBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
@@ -642,6 +645,7 @@ describe("codex manager cli commands", () => {
 			allAssessments: [],
 			totalBackups: 0,
 		});
+		listAccountSnapshotsMock.mockResolvedValue([]);
 		listNamedBackupsMock.mockResolvedValue([]);
 		listRotatingBackupsMock.mockResolvedValue([]);
 		assessNamedBackupRestoreMock.mockResolvedValue({
@@ -3514,6 +3518,105 @@ describe("codex manager cli commands", () => {
 				severity: "ok",
 			}),
 		);
+	});
+
+	it("reports rollback checkpoint check in doctor json output", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "checkpoint@example.net",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+			],
+		});
+		getLatestCodexCliSyncRollbackPlanMock.mockResolvedValueOnce({
+			status: "ready",
+			reason: "Rollback checkpoint ready (1 account).",
+			snapshot: {
+				name: "codex-checkpoint",
+				path: "/mock/backups/rollback.json",
+			},
+			accountCount: 1,
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "doctor", "--json"]);
+		expect(exitCode).toBe(0);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			checks: Array<{ key: string; severity: string; details?: string }>;
+		};
+		const checkpoint = payload.checks.find(
+			(check) => check.key === "codex-cli-rollback-checkpoint",
+		);
+		expect(checkpoint).toBeDefined();
+		expect(checkpoint?.severity).toBe("ok");
+		expect(checkpoint?.details).toBe("/mock/backups/rollback.json");
+	});
+
+	it("reports actionable named backup restores in doctor json output", async () => {
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "restore@example.net",
+					refreshToken: "restore-refresh",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
+			assessments: [
+				{
+					backup: {
+						name: "restore-me",
+						path: "/mock/backups/restore-me.json",
+						createdAt: null,
+						updatedAt: null,
+						sizeBytes: null,
+						version: 3,
+						accountCount: 1,
+						schemaErrors: [],
+						valid: true,
+					},
+					currentAccountCount: 1,
+					mergedAccountCount: 1,
+					imported: 1,
+					skipped: 0,
+					wouldExceedLimit: false,
+					eligibleForRestore: true,
+				},
+			],
+			allAssessments: [],
+			totalBackups: 1,
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "doctor", "--json"]);
+		expect(exitCode).toBe(0);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			checks: Array<{ key: string; severity: string; message: string }>;
+		};
+		const restoreCheck = payload.checks.find(
+			(check) => check.key === "named-backup-restores",
+		);
+		expect(restoreCheck).toBeDefined();
+		expect(restoreCheck?.severity).toBe("ok");
+		expect(restoreCheck?.message).toContain("actionable named backup restore");
 	});
 
 	it("runs doctor --fix in dry-run mode", async () => {
