@@ -57,6 +57,7 @@ export type LoginMode =
 	| "check"
 	| "deep-check"
 	| "verify-flagged"
+	| "restore-backup"
 	| "cancel";
 
 export interface ExistingAccountInfo {
@@ -233,6 +234,14 @@ async function promptLoginModeFallback(
 			) {
 				return { mode: "verify-flagged" };
 			}
+			if (
+				normalized === "u" ||
+				normalized === "backup" ||
+				normalized === "restore" ||
+				normalized === "restore-backup"
+			) {
+				return { mode: "restore-backup" };
+			}
 			if (normalized === "q" || normalized === "quit")
 				return { mode: "cancel" };
 			console.log(UI_COPY.fallback.invalidModePrompt);
@@ -287,6 +296,8 @@ export async function promptLoginMode(
 				return { mode: "deep-check" };
 			case "verify-flagged":
 				return { mode: "verify-flagged" };
+			case "restore-backup":
+				return { mode: "restore-backup" };
 			case "select-account": {
 				const accountAction = await showAccountDetails(action.account);
 				if (accountAction === "delete") {
