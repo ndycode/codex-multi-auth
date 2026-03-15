@@ -1,6 +1,6 @@
 # Settings Reference
 
-Reference for dashboard and backend settings available from `codex auth login` -> `Settings`.
+Reference for the settings surface available from `codex auth login` -> `Settings`.
 
 ---
 
@@ -19,7 +19,11 @@ When `CODEX_MULTI_AUTH_DIR` is set, this root moves accordingly.
 
 ---
 
-## Account List View
+## Everyday Settings
+
+The top-level settings flow separates everyday dashboard preferences from advanced operator controls.
+
+### List Appearance
 
 Controls account-row display and sorting behavior:
 
@@ -37,7 +41,7 @@ Controls account-row display and sorting behavior:
 - `menuSortQuickSwitchVisibleRow`
 - `menuLayoutMode`
 
-## Summary Line
+### Details Line
 
 Controls detail-line fields and order:
 
@@ -46,7 +50,7 @@ Controls detail-line fields and order:
 - `limits`
 - `status`
 
-## Menu Behavior
+### Results & Refresh
 
 Controls result-screen and fetch behavior:
 
@@ -56,7 +60,7 @@ Controls result-screen and fetch behavior:
 - `menuShowFetchStatus`
 - `menuQuotaTtlMs`
 
-## Color Theme
+### Colors
 
 Controls display style:
 
@@ -64,9 +68,13 @@ Controls display style:
 - `uiAccentColor`
 - `menuFocusStyle`
 
-## Sync Center
+---
 
-The settings hub includes a preview-first sync center for Codex CLI account sync.
+## Advanced and Operator Controls
+
+### Codex CLI Sync
+
+The advanced section includes a preview-first sync center for Codex CLI account sync.
 See [upgrade notes](../upgrade.md) for sync workflow changes.
 
 Before applying sync, it shows:
@@ -84,9 +92,7 @@ Validation:
 - `npm run build`
 - `npm test`
 
----
-
-## Experimental
+### Experimental
 
 Experimental currently hosts:
 
@@ -108,7 +114,11 @@ Named backup behavior:
 - rejects separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes
 - fails safely on collisions instead of overwriting by default
 
-## Backend Controls
+### Advanced Backend Controls
+
+Expert backend controls stay available without changing the saved settings schema. They are grouped into categories so the default path can stay simpler for day-to-day use.
+
+## Backend Categories
 
 ### Session & Sync
 
