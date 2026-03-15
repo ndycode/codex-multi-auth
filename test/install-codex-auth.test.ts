@@ -5,6 +5,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 	readFileSync,
 } from "node:fs";
@@ -23,6 +24,7 @@ import {
 	resolveInstallPaths,
 	withFileOperationRetry,
 } from "../scripts/install-codex-auth-utils.js";
+import { installPluginIntoCache } from "../scripts/install-codex-auth.js";
 
 const scriptPath = "scripts/install-codex-auth.js";
 const tempRoots: string[] = [];
@@ -184,6 +186,12 @@ describe("install-codex-auth script", () => {
 		expect(merged).toContain("[features]\r\nplugins = true\r\n");
 		expect(merged).toContain('[plugins."codex-multi-auth@ndycode"]\r\nenabled = true\r\n');
 		expect(merged).not.toContain("\nplugins = true\n[plugins.");
+	});
+
+	it("uses LF output for empty config content", () => {
+		const merged = mergePluginConfigToml("", makePluginKey());
+		expect(merged).toContain("[features]\nplugins = true\n");
+		expect(merged).not.toContain("\r\n");
 	});
 
 	it("dry-run does not create config or plugin cache", () => {
@@ -427,12 +435,7 @@ describe("install-codex-auth script", () => {
 		writeFileSync(configPath, '[features]\nplugins = false\n', "utf8");
 		mkdirSync(lockDir, { recursive: true });
 		const staleTime = (Date.now() - 120_000) / 1000;
-		const escapedLockDir = lockDir.replace(/'/g, "''");
-		const touch = spawnSync("powershell.exe", ["-NoProfile", "-Command", `(Get-Item -LiteralPath '${escapedLockDir}').LastWriteTimeUtc = [DateTimeOffset]::FromUnixTimeSeconds(${Math.floor(staleTime)}).UtcDateTime`], {
-			encoding: "utf8",
-			windowsHide: true,
-		});
-		expect(touch.status).toBe(0);
+		utimesSync(lockDir, staleTime, staleTime);
 
 		const result = await execFileAsync(process.execPath, [scriptPath], {
 			env,
@@ -442,6 +445,34 @@ describe("install-codex-auth script", () => {
 		expect(result.stdout).toContain("Warning: removing stale installer lock");
 		expect(result.stdout).toContain("Installed plugin cache");
 		expect(existsSync(lockDir)).toBe(false);
+	});
+
+	it("restores the existing plugin cache when final rename fails", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-rollback-"));
+		tempRoots.push(home);
+		const sourcePath = path.join(process.cwd(), "codex-plugin");
+		const targetBaseDir = path.join(home, "plugins", "cache", "ndycode", "codex-multi-auth");
+		const targetInstallDir = path.join(targetBaseDir, "local");
+		const existingManifestPath = path.join(targetInstallDir, ".codex-plugin", "plugin.json");
+
+		mkdirSync(path.dirname(existingManifestPath), { recursive: true });
+		writeFileSync(existingManifestPath, '{"name":"existing-plugin"}\n', "utf8");
+
+		let renameCount = 0;
+		const renameImpl = vi.fn(async (source: string, target: string) => {
+			renameCount += 1;
+			if (renameCount === 2) {
+				throw retryableError("EPERM");
+			}
+			await import("node:fs/promises").then(({ rename }) => rename(source, target));
+		});
+
+		await expect(
+			installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDir, { renameImpl }),
+		).rejects.toMatchObject({ code: "EPERM" });
+
+		const restoredManifest = readFileSync(existingManifestPath, "utf8");
+		expect(restoredManifest).toContain("existing-plugin");
 	});
 
 	it("retries transient file-operation errors and eventually succeeds", async () => {
