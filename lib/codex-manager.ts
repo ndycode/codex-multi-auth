@@ -4373,9 +4373,17 @@ async function runAuthLogin(): Promise<number> {
 			isInteractiveLoginMenuAvailable();
 		if (canPromptForRecovery) {
 			recoveryPromptAttempted = true;
-			const recoveryState = await getActionableNamedBackupRestores({
-				currentStorage: refreshedStorage,
-			});
+			let recoveryState: Awaited<
+				ReturnType<typeof getActionableNamedBackupRestores>
+			>;
+			try {
+				recoveryState = await getActionableNamedBackupRestores({
+					currentStorage: refreshedStorage,
+				});
+			} catch {
+				// Filesystem error (e.g. Windows EPERM/EBUSY) – skip recovery prompt
+				recoveryState = { assessments: [], totalBackups: 0 };
+			}
 			if (recoveryState.assessments.length > 0) {
 				const displaySettings = await loadDashboardDisplaySettings();
 				applyUiThemeFromDashboardSettings(displaySettings);

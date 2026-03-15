@@ -1334,9 +1334,18 @@ export async function getActionableNamedBackupRestores(
 			? await loadAccounts()
 			: options.currentStorage;
 	const assess = options.assess ?? assessNamedBackupRestore;
-	const assessments = await Promise.all(
+	const settled = await Promise.allSettled(
 		backups.map((backup) => assess(backup.name, { currentStorage })),
 	);
+	const assessments = settled
+		.filter(
+			(
+				r,
+			): r is PromiseFulfilledResult<
+				Awaited<ReturnType<typeof assessNamedBackupRestore>>
+			> => r.status === "fulfilled",
+		)
+		.map((r) => r.value);
 
 	const actionable = assessments.filter(
 		(assessment) =>
