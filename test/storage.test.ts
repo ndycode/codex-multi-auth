@@ -23,6 +23,7 @@ import {
 	getStoragePath,
 	importAccounts,
 	listNamedBackups,
+	listRotatingBackups,
 	loadAccounts,
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
@@ -1351,10 +1352,10 @@ describe("storage", () => {
 			"rejects backup names that escape the backups directory: %s",
 			async (input) => {
 				await expect(assessNamedBackupRestore(input)).rejects.toThrow(
-					/must not contain path separators/i,
+					/invalid backup name/i,
 				);
 				await expect(restoreNamedBackup(input)).rejects.toThrow(
-					/must not contain path separators/i,
+					/invalid backup name/i,
 				);
 			},
 		);
@@ -4022,6 +4023,222 @@ describe("storage", () => {
 			expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-3");
 			expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
 			expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
+		});
+
+		it("lists rotating backups with stable labels and invalid metadata", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(`${testStoragePath}.bak.1`, "{broken-bak", "utf-8");
+
+			const rotatingBackups = await listRotatingBackups();
+			const namedBackups = await listNamedBackups();
+
+			expect(namedBackups).toEqual([]);
+			expect(rotatingBackups).toHaveLength(2);
+			expect(rotatingBackups[0]).toMatchObject({
+				slot: 0,
+				label: "Latest rotating backup (.bak)",
+				valid: true,
+				accountCount: 1,
+			});
+			expect(rotatingBackups[1]).toMatchObject({
+				slot: 1,
+				label: "Rotating backup 1 (.bak.1)",
+				valid: false,
+			});
+			expect(rotatingBackups[1]?.loadError).toBeTruthy();
+		});
+
+		it("skips rotating backups that disappear during load", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.bak.1`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-missing",
+							refreshToken: "ref-rotating-missing",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalReadFile = fs.readFile.bind(fs) as typeof fs.readFile;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation((async (
+					...args: Parameters<typeof fs.readFile>
+				) => {
+					const [filePath] = args;
+					if (String(filePath).endsWith(".bak.1")) {
+						throw Object.assign(
+							new Error("ENOENT: no such file or directory"),
+							{ code: "ENOENT" },
+						);
+					}
+					return originalReadFile(...args);
+				}) as typeof fs.readFile);
+
+			try {
+				await expect(listRotatingBackups()).resolves.toMatchObject([
+					{
+						slot: 0,
+						label: "Latest rotating backup (.bak)",
+						valid: true,
+						accountCount: 1,
+					},
+				]);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("keeps rotating backups visible when a non-ENOENT error mentions an ENOENT path segment", async () => {
+			const storageDir = join(testWorkDir, "ENOENT-project");
+			await fs.mkdir(storageDir, { recursive: true });
+			testStoragePath = join(storageDir, "openai-codex-accounts.json");
+			setStoragePathDirect(testStoragePath);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.bak.1`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-locked",
+							refreshToken: "ref-rotating-locked",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const lockedBackupPath = `${testStoragePath}.bak.1`;
+			const originalReadFile = fs.readFile.bind(fs) as typeof fs.readFile;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation((async (
+					...args: Parameters<typeof fs.readFile>
+				) => {
+					const [filePath] = args;
+					if (String(filePath) === lockedBackupPath) {
+						throw Object.assign(
+							new Error(
+								`EPERM: operation not permitted, open '${lockedBackupPath}'`,
+							),
+							{ code: "EPERM" },
+						);
+					}
+					return originalReadFile(...args);
+				}) as typeof fs.readFile);
+
+			try {
+				const rotatingBackups = await listRotatingBackups();
+				expect(rotatingBackups).toHaveLength(2);
+				expect(rotatingBackups[0]).toMatchObject({
+					slot: 0,
+					label: "Latest rotating backup (.bak)",
+					valid: true,
+					accountCount: 1,
+				});
+				expect(rotatingBackups[1]).toMatchObject({
+					slot: 1,
+					label: "Rotating backup 1 (.bak.1)",
+					valid: false,
+				});
+				expect(rotatingBackups[1]?.loadError).toContain("EPERM");
+			} finally {
+				readFileSpy.mockRestore();
+			}
 		});
 	});
 

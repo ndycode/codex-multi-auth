@@ -129,6 +129,12 @@ export interface NamedBackupMetadata {
 	loadError?: string;
 }
 
+export interface RotatingBackupMetadata
+	extends Omit<NamedBackupMetadata, "name"> {
+	label: string;
+	slot: number;
+}
+
 export interface BackupRestoreAssessment {
 	backup: NamedBackupMetadata;
 	currentAccountCount: number;
@@ -151,6 +157,7 @@ interface LoadedBackupCandidate {
 	storedVersion: unknown;
 	schemaErrors: string[];
 	error?: string;
+	errorCode?: string;
 }
 
 interface NamedBackupScanEntry {
@@ -185,6 +192,34 @@ export function getRedactedFilesystemErrorLabel(error: unknown): string {
 		return error.name;
 	}
 	return "UNKNOWN";
+}
+
+function normalizeBackupLookupName(rawName: string): string {
+	const trimmed = rawName.trim().replace(/\.(json|bak)$/i, "");
+	if (!trimmed) {
+		throw new StorageError(
+			`Invalid backup name: ${rawName}`,
+			"EINVALID",
+			getNamedBackupRoot(getStoragePath()),
+			"Named backup restore operations only accept backup names from the backups directory.",
+		);
+	}
+	const hasPathSeparator = /[\\/]/.test(trimmed);
+	const hasDrivePrefix = /^[a-zA-Z]:/.test(trimmed);
+	const segments = trimmed.split(/[\\/]+/).filter(Boolean);
+	if (
+		hasPathSeparator ||
+		hasDrivePrefix ||
+		segments.some((segment) => segment === "." || segment === "..")
+	) {
+		throw new StorageError(
+			`Invalid backup name: ${rawName}`,
+			"EINVALID",
+			getNamedBackupRoot(getStoragePath()),
+			"Named backup restore operations only accept backup names from the backups directory.",
+		);
+	}
+	return trimmed;
 }
 
 function buildFailedBackupRestoreAssessment(
@@ -1779,6 +1814,44 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 	return scanResult.backups.map((entry) => entry.backup);
 }
 
+export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
+	let storagePath: string | null = null;
+	try {
+		storagePath = getStoragePath();
+		const candidates =
+			await getAccountsBackupRecoveryCandidatesWithDiscovery(storagePath);
+		const backups: RotatingBackupMetadata[] = [];
+
+		for (const candidatePath of candidates) {
+			const slot = parseRotatingBackupSlot(storagePath, candidatePath);
+			if (slot === null) {
+				continue;
+			}
+
+			const candidate = await loadBackupCandidate(candidatePath);
+			if (!candidate.normalized && candidate.errorCode === "ENOENT") {
+				continue;
+			}
+			const metadata = await buildBackupFileMetadata(candidatePath, {
+				candidate,
+			});
+			backups.push({
+				label: formatRotatingBackupLabel(slot),
+				slot,
+				...metadata,
+			});
+		}
+
+		return backups.sort((a, b) => a.slot - b.slot);
+	} catch (error) {
+		log.warn("Failed to list rotating backups", {
+			path: storagePath ?? "<unresolved>",
+			error: String(error),
+		});
+		return [];
+	}
+}
+
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
 ): code is "EPERM" | "EBUSY" | "EAGAIN" {
@@ -2025,11 +2098,16 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 			loadAccountsFromPath(path),
 		);
 	} catch (error) {
+		const errorCode =
+			typeof (error as NodeJS.ErrnoException).code === "string"
+				? (error as NodeJS.ErrnoException).code
+				: undefined;
 		return {
 			normalized: null,
 			storedVersion: undefined,
 			schemaErrors: [],
 			error: String(error),
+			errorCode,
 		};
 	}
 }
@@ -2097,17 +2175,18 @@ async function findExistingNamedBackupPath(
 }
 
 async function resolveNamedBackupRestorePath(name: string): Promise<string> {
-	const existingPath = await findExistingNamedBackupPath(name);
+	const normalizedName = normalizeBackupLookupName(name);
+	const existingPath = await findExistingNamedBackupPath(normalizedName);
 	if (existingPath) {
 		return existingPath;
 	}
-	const requested = (name ?? "").trim();
+	const requested = normalizedName;
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
 		? requested
 		: `${requested}.json`;
 	try {
-		return buildNamedBackupPath(name);
+		return buildNamedBackupPath(normalizedName);
 	} catch (error) {
 		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
 			? requestedWithExtension.slice(0, -".json".length)
@@ -2339,6 +2418,17 @@ async function buildNamedBackupMetadata(
 	path: string,
 	opts: { candidate?: LoadedBackupCandidate } = {},
 ): Promise<NamedBackupMetadata> {
+	const metadata = await buildBackupFileMetadata(path, opts);
+	return {
+		name,
+		...metadata,
+	};
+}
+
+async function buildBackupFileMetadata(
+	path: string,
+	opts: { candidate?: LoadedBackupCandidate } = {},
+): Promise<Omit<NamedBackupMetadata, "name">> {
 	const candidate = opts.candidate ?? (await loadBackupCandidate(path));
 	let stats: {
 		size?: number;
@@ -2365,7 +2455,6 @@ async function buildNamedBackupMetadata(
 	const updatedAt = stats?.mtimeMs ?? null;
 
 	return {
-		name,
 		path,
 		createdAt,
 		updatedAt,
@@ -2376,6 +2465,34 @@ async function buildNamedBackupMetadata(
 		valid: !!candidate.normalized,
 		loadError: candidate.error,
 	};
+}
+
+function parseRotatingBackupSlot(
+	storagePath: string,
+	candidatePath: string,
+): number | null {
+	const latestBackupPath = getAccountsBackupPath(storagePath);
+	if (candidatePath === latestBackupPath) {
+		return 0;
+	}
+
+	const slotMatch = candidatePath.match(/\.bak\.(\d+)$/i);
+	if (!slotMatch) {
+		return null;
+	}
+
+	const parsed = Number.parseInt(slotMatch[1] ?? "", 10);
+	if (!Number.isFinite(parsed) || parsed < 1) {
+		return null;
+	}
+
+	return parsed;
+}
+
+function formatRotatingBackupLabel(slot: number): string {
+	return slot === 0
+		? "Latest rotating backup (.bak)"
+		: `Rotating backup ${slot} (.bak.${slot})`;
 }
 
 /**
