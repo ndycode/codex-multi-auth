@@ -1317,9 +1317,15 @@ describe("storage", () => {
 
 		it("should fail export when no accounts exist", async () => {
 			const storageModule = await import("../lib/storage.js");
-			storageModule.setStoragePathDirect(testStoragePath);
-			await storageModule.clearAccounts();
-			await expect(storageModule.exportAccounts(exportPath)).rejects.toThrow(
+			const isolatedStorageDir = join(
+				testWorkDir,
+				"empty-export-" + Math.random().toString(36).slice(2),
+			);
+			const isolatedStoragePath = join(isolatedStorageDir, "accounts.json");
+			const isolatedExportPath = join(isolatedStorageDir, "export.json");
+			await fs.mkdir(isolatedStorageDir, { recursive: true });
+			storageModule.setStoragePathDirect(isolatedStoragePath);
+			await expect(storageModule.exportAccounts(isolatedExportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);
 		});
