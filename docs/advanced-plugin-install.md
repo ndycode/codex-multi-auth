@@ -36,7 +36,10 @@ If you only need account login, switching, checks, and diagnostics, stop at [get
 - backs up an existing config before replacing it
 - clears the cached plugin install unless `--no-cache-clear` is used
 
-The default target is `~/.config/Codex/Codex.json`.
+The default target is platform-specific:
+
+- macOS/Linux: `~/.config/Codex/Codex.json`
+- Windows: `%APPDATA%\Codex\Codex.json`
 
 ---
 

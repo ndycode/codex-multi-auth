@@ -29,12 +29,13 @@ Check which `codex` executable is running:
 ```bash
 where codex
 which codex
-codex --version
 codex auth status
 npm ls -g codex-multi-auth
 ```
 
 Use the command lookup tool that exists on your shell.
+
+If you also installed the official Codex host/runtime, run `codex --version` as an extra routing check.
 
 If an old scoped package is still active:
 
@@ -123,7 +124,7 @@ Attach these outputs when opening a bug report:
 
 - `codex auth report --json`
 - `codex auth doctor --json`
-- `codex --version`
+- `codex --version` if the official Codex host/runtime is installed or part of the failing path
 - `npm ls -g codex-multi-auth`
 - the failing command and full terminal output
 

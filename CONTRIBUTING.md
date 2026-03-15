@@ -76,7 +76,7 @@ Before opening issues:
 
 For bug reports, include:
 
-- `codex --version`
+- `codex --version` if the official Codex host/runtime is installed or part of the failing path
 - `codex auth status`
 - `codex auth report --json`
 - `npm ls -g codex-multi-auth`

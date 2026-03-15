@@ -64,7 +64,12 @@ rm -f ~/.codex/multi-auth/quota-cache.json
 rm -rf ~/.codex/multi-auth/logs/codex-plugin
 rm -rf ~/.codex/multi-auth/cache
 # Override-root cleanup examples (if overrides are set):
-[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && [ -d "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin"
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/settings.json"
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/openai-codex-accounts.json"
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/openai-codex-flagged-accounts.json"
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -f "$CODEX_MULTI_AUTH_DIR/quota-cache.json"
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/logs/codex-plugin"
+[ -n "${CODEX_MULTI_AUTH_DIR:-}" ] && rm -rf "$CODEX_MULTI_AUTH_DIR/cache"
 [ -n "${CODEX_MULTI_AUTH_CONFIG_PATH:-}" ] && [ -f "$CODEX_MULTI_AUTH_CONFIG_PATH" ] && rm -f "$CODEX_MULTI_AUTH_CONFIG_PATH"
 ```
 

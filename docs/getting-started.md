@@ -37,9 +37,10 @@ npm i -g codex-multi-auth
 Verify that the wrapper is active:
 
 ```bash
-codex --version
 codex auth status
 ```
+
+If you also installed the official Codex host/runtime, `codex --version` should work too, but it is not required for the local account-manager flow.
 
 ---
 

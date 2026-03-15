@@ -34,13 +34,25 @@ function retryableError(code: string): Error & { code: string } {
 }
 
 describe("install-codex-auth script", () => {
-  it("uses lowercase config template filenames", () => {
-    const content = readFileSync(scriptPath, "utf8");
-    expect(content).toContain('"codex-legacy.json"');
-    expect(content).toContain('"codex-modern.json"');
-    expect(content).not.toContain('"Codex-legacy.json"');
-    expect(content).not.toContain('"Codex-modern.json"');
-  });
+	it("uses lowercase config template filenames", () => {
+		const content = readFileSync(scriptPath, "utf8");
+		expect(content).toContain('"codex-legacy.json"');
+		expect(content).toContain('"codex-modern.json"');
+		expect(content).not.toContain('"Codex-legacy.json"');
+		expect(content).not.toContain('"Codex-modern.json"');
+	});
+
+	it("describes platform-specific config paths in help output", () => {
+		const result = spawnSync(process.execPath, [scriptPath, "--help"], {
+			encoding: "utf8",
+			windowsHide: true,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toContain("~/.config/Codex/Codex.json");
+		expect(result.stdout).toContain("%APPDATA%\\Codex\\Codex.json");
+	});
 
 	it("normalizes plugin list with empty, duplicate, and non-string entries", () => {
 		expect(normalizePluginList(undefined)).toEqual(["codex-multi-auth"]);

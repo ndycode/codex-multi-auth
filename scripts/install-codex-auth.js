@@ -18,7 +18,8 @@ const args = new Set(process.argv.slice(2));
 if (args.has("--help") || args.has("-h")) {
 	console.log(`Usage: ${PLUGIN_NAME} [--modern|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
 		"Default behavior:\n" +
-		"  - Installs/updates global config at ~/.config/Codex/Codex.json\n" +
+		"  - Installs/updates global config at the platform Codex config path\n" +
+		"    (macOS/Linux: ~/.config/Codex/Codex.json, Windows: %APPDATA%\\Codex\\Codex.json)\n" +
 		"  - Uses modern config (variants) by default\n" +
 		"  - Ensures plugin is unpinned (latest)\n" +
 		"  - Clears Codex plugin cache\n\n" +

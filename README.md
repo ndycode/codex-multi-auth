@@ -72,9 +72,10 @@ Only use this path when you also need the official Codex host/runtime.
 ### Option D: Verify account-manager wiring
 
 ```bash
-codex --version
 codex auth status
 ```
+
+If you also installed the official Codex host/runtime, you can additionally verify `codex --version`, but it is not required for account-manager-only installs.
 
 </details>
 

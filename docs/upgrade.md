@@ -14,12 +14,6 @@ Migrate legacy installs to the canonical `codex-multi-auth` workflow on the `0.x
 
 ## Migration Checklist
 
-1. Install official Codex CLI:
-
-```bash
-npm i -g @openai/codex
-```
-
 1. Remove legacy scoped package if present:
 
 ```bash
@@ -35,8 +29,14 @@ npm i -g codex-multi-auth
 1. Verify routing and status:
 
 ```bash
-codex --version
 codex auth status
+```
+
+1. If you also need the official Codex host/runtime for forwarded non-auth commands or plugin-host setup, install it now and continue with [advanced-plugin-install.md](advanced-plugin-install.md):
+
+```bash
+npm i -g @openai/codex
+codex --version
 ```
 
 1. Rebuild account health baseline:

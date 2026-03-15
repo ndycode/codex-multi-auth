@@ -213,6 +213,43 @@ describe("Documentation Integrity", () => {
 		}
 	});
 
+	it("keeps default onboarding docs host-optional and cleanup/install docs aligned with current paths", () => {
+		const readme = read("README.md");
+		const gettingStarted = read("docs/getting-started.md");
+		const privacy = read("docs/privacy.md");
+		const troubleshooting = read("docs/troubleshooting.md");
+		const upgrade = read("docs/upgrade.md");
+		const advancedInstall = read("docs/advanced-plugin-install.md");
+		const contributing = read("CONTRIBUTING.md");
+
+		expect(gettingStarted).toContain(
+			"This installs the local account manager for `codex auth ...`.",
+		);
+		expect(gettingStarted).not.toContain(
+			"Verify that the wrapper is active:\n\n```bash\ncodex --version",
+		);
+		expect(readme).not.toContain(
+			"### Option D: Verify account-manager wiring\n\n```bash\ncodex --version",
+		);
+
+		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/settings.json');
+		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/openai-codex-accounts.json');
+		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/openai-codex-flagged-accounts.json');
+		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/quota-cache.json');
+		expect(privacy).toContain('$CODEX_MULTI_AUTH_DIR/cache');
+
+		expect(advancedInstall).toContain("%APPDATA%\\Codex\\Codex.json");
+		expect(troubleshooting).toContain(
+			"If you also installed the official Codex host/runtime, run `codex --version` as an extra routing check.",
+		);
+		expect(upgrade).toContain(
+			"If you also need the official Codex host/runtime for forwarded non-auth commands or plugin-host setup",
+		);
+		expect(contributing).toContain(
+			"`codex --version` if the official Codex host/runtime is installed or part of the failing path",
+		);
+	});
+
 	it("documents public API stability tiers and error contracts", () => {
 		const publicApi = read("docs/reference/public-api.md").toLowerCase();
 		const errorContracts = read(
