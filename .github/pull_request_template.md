@@ -18,11 +18,15 @@
 
 ## Docs Impact
 
+Pick one:
+
 - [ ] No docs update needed
 - [ ] Docs updated in this PR
 - [ ] Follow-up docs work needed
 
 ## Governance Review
+
+Pick one:
 
 - [ ] No CONTRIBUTING.md/SECURITY.md changes needed
 - [ ] CONTRIBUTING.md and/or SECURITY.md reviewed or updated

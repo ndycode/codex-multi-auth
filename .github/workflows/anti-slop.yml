@@ -1,6 +1,8 @@
 name: Anti Slop
 
 on:
+  # `pull_request_target` is intentional so this workflow can label/comment on
+  # PRs. It must stay metadata-only: never checkout or run untrusted PR code.
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, edited]

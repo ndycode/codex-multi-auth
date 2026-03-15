@@ -474,6 +474,10 @@ describe("Documentation Integrity", () => {
 		const antiSlopStep = antiSlopConfig.jobs?.["anti-slop"]?.steps?.find(
 			(step) => step.name === "Run anti-slop checks",
 		);
+		expect(
+			antiSlopStep,
+			'step "Run anti-slop checks" not found in anti-slop.yml',
+		).toBeDefined();
 		// pull_request_target runs with base-repo permissions, so the action must
 		// stay pinned to an immutable commit instead of a mutable tag or branch.
 		expect(antiSlopStep?.uses).toMatch(
@@ -512,16 +516,22 @@ describe("Documentation Integrity", () => {
 		);
 		expect(antiSlopStep?.with?.["close-pr"]).toBe(false);
 		expect(antiSlopStep?.with?.["lock-pr"]).toBe(false);
+		expect(antiSlop).toContain("must stay metadata-only");
 
 		const prBody = read(prTemplate);
 		expect(prBody).toContain("WORKTREE_LANTERN_1455");
+		expect(prBody).toContain("## Summary");
+		expect(prBody).toContain("## What Changed");
 		expect(prBody).toContain("npm run lint");
 		expect(prBody).toContain("npm run typecheck");
 		expect(prBody).toContain("npm test");
 		expect(prBody).toContain("npm test -- test/documentation.test.ts");
 		expect(prBody).toContain("npm run build");
 		expect(prBody).toContain("## Docs Impact");
+		expect(prBody).toContain("Pick one:");
 		expect(prBody).toContain("## Governance Review");
+		expect(prBody).toContain("## Risk and Rollback");
+		expect(prBody).toContain("## Additional Notes");
 		expect(prBody).not.toContain("## Docs and Governance Checklist");
 
 		const security = read("SECURITY.md").toLowerCase();
