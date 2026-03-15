@@ -86,14 +86,19 @@ function splitLines(content) {
 	return content.replace(/\r\n/g, "\n").split("\n");
 }
 
+function escapeRegExp(value) {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function findSectionRange(lines, sectionHeader) {
-	const headerIndex = lines.findIndex((line) => line.trim() === sectionHeader);
+	const headerPattern = new RegExp(`^\\s*${escapeRegExp(sectionHeader)}\\s*(?:#.*)?$`);
+	const headerIndex = lines.findIndex((line) => headerPattern.test(line));
 	if (headerIndex === -1) {
 		return null;
 	}
 	let endIndex = lines.length;
 	for (let index = headerIndex + 1; index < lines.length; index += 1) {
-		if (/^\s*\[[^\]]+\]\s*$/.test(lines[index])) {
+		if (/^\s*\[\[?[^\]]+\]?\]\s*(?:#.*)?$/.test(lines[index])) {
 			endIndex = index;
 			break;
 		}
@@ -102,10 +107,10 @@ function findSectionRange(lines, sectionHeader) {
 }
 
 function upsertTomlBoolean(content, sectionHeader, key, enabled) {
-	const lines = splitLines(content.trim());
-	const normalized = lines.length === 1 && lines[0] === "" ? [] : lines;
+	const normalized = content.trim().length === 0 ? [] : splitLines(content);
 	const keyLine = `${key} = ${enabled ? "true" : "false"}`;
 	const range = findSectionRange(normalized, sectionHeader);
+	const keyPattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=`);
 
 	if (!range) {
 		if (normalized.length > 0 && normalized[normalized.length - 1] !== "") {
@@ -116,7 +121,7 @@ function upsertTomlBoolean(content, sectionHeader, key, enabled) {
 	}
 
 	for (let index = range.headerIndex + 1; index < range.endIndex; index += 1) {
-		if (new RegExp(`^\\s*${key}\\s*=`).test(normalized[index])) {
+		if (keyPattern.test(normalized[index])) {
 			normalized[index] = keyLine;
 			return `${normalized.join("\n")}\n`;
 		}

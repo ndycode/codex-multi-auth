@@ -100,15 +100,20 @@ async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDi
 		return;
 	}
 
-	await withFileOperationRetry(() => mkdir(parentDir, { recursive: true }));
-	await withFileOperationRetry(() => mkdir(stagedInstallDir, { recursive: true }));
-	await withFileOperationRetry(() => cp(sourcePath, stagedInstallDir, { recursive: true }));
-	if (existsSync(targetBaseDir)) {
+	try {
+		await withFileOperationRetry(() => mkdir(parentDir, { recursive: true }));
+		await withFileOperationRetry(() => mkdir(stagedInstallDir, { recursive: true }));
+		await withFileOperationRetry(() => cp(sourcePath, stagedInstallDir, { recursive: true }));
 		await withFileOperationRetry(() => rm(targetBaseDir, { recursive: true, force: true }));
-	}
-	await renameWithRetry(stagedBaseDir, targetBaseDir, { log });
-	if (existsSync(stagedRoot)) {
-		await withFileOperationRetry(() => rm(stagedRoot, { recursive: true, force: true }));
+		await renameWithRetry(stagedBaseDir, targetBaseDir, { log });
+	} finally {
+		if (existsSync(stagedRoot)) {
+			try {
+				await withFileOperationRetry(() => rm(stagedRoot, { recursive: true, force: true }));
+			} catch (cleanupError) {
+				log(`Warning: Could not remove staged temp dir ${stagedRoot} (${cleanupError}).`);
+			}
+		}
 	}
 	log(`Installed plugin cache at ${targetInstallDir}`);
 }
@@ -118,7 +123,7 @@ async function updateConfigToml() {
 	if (existsSync(configPath)) {
 		const backupPath = await backupFile(configPath);
 		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
-		nextConfig = await readFile(configPath, "utf-8");
+		nextConfig = await withFileOperationRetry(() => readFile(configPath, "utf-8"));
 	} else {
 		log("No existing config.toml found. Creating new user config.");
 	}
