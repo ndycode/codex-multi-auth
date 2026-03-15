@@ -3274,6 +3274,7 @@ describe("codex manager cli commands", () => {
 			expect(logSpy).not.toHaveBeenCalledWith(
 				expect.stringContaining("Imported 0, skipped 2"),
 			);
+			expect(setCodexCliActiveSelectionMock).toHaveBeenCalledOnce();
 		} finally {
 			logSpy.mockRestore();
 		}

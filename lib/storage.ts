@@ -1810,9 +1810,12 @@ export async function assessNamedBackupRestore(
 		};
 	}
 
+	const incomingDeduplicatedAccounts = deduplicateAccounts([
+		...candidate.normalized.accounts,
+	]);
 	const mergedAccounts = deduplicateAccounts([
 		...currentDeduplicatedAccounts,
-		...candidate.normalized.accounts,
+		...incomingDeduplicatedAccounts,
 	]);
 	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
@@ -1820,7 +1823,7 @@ export async function assessNamedBackupRestore(
 		: mergedAccounts.length - currentDeduplicatedAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
+		: Math.max(0, incomingDeduplicatedAccounts.length - (imported ?? 0));
 	const changed = !haveEquivalentAccountRows(mergedAccounts, currentAccounts);
 	const nothingToImport = !wouldExceedLimit && !changed;
 
@@ -2021,11 +2024,22 @@ async function findExistingNamedBackupPath(
 
 function resolvePathForNamedBackupContainment(path: string): string {
 	const resolvedPath = resolvePath(path);
-	if (!existsSync(resolvedPath)) {
-		return resolvedPath;
+	let existingPrefix = resolvedPath;
+	const unresolvedSegments: string[] = [];
+	while (!existsSync(existingPrefix)) {
+		const parentPath = dirname(existingPrefix);
+		if (parentPath === existingPrefix) {
+			return resolvedPath;
+		}
+		unresolvedSegments.unshift(basename(existingPrefix));
+		existingPrefix = parentPath;
 	}
 	try {
-		return realpathSync.native(resolvedPath);
+		const canonicalPrefix = realpathSync.native(existingPrefix);
+		return unresolvedSegments.reduce(
+			(currentPath, segment) => join(currentPath, segment),
+			canonicalPrefix,
+		);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 			return resolvedPath;
@@ -2993,9 +3007,15 @@ export async function importAccounts(
 		const existingDeduplicatedAccounts = deduplicateAccounts([
 			...existingAccounts,
 		]);
+		const incomingDeduplicatedAccounts = deduplicateAccounts([
+			...normalized.accounts,
+		]);
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
-		const merged = [...existingDeduplicatedAccounts, ...normalized.accounts];
+		const merged = [
+			...existingDeduplicatedAccounts,
+			...incomingDeduplicatedAccounts,
+		];
 		const deduplicatedAccounts = deduplicateAccounts(merged);
 		if (deduplicatedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 			throw new Error(
@@ -3004,7 +3024,10 @@ export async function importAccounts(
 		}
 		const imported =
 			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
-		const skipped = Math.max(0, normalized.accounts.length - imported);
+		const skipped = Math.max(
+			0,
+			incomingDeduplicatedAccounts.length - imported,
+		);
 		const changed = !haveEquivalentAccountRows(
 			deduplicatedAccounts,
 			existingAccounts,

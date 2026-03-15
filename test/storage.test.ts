@@ -509,6 +509,51 @@ describe("storage", () => {
 			}
 		});
 
+		it("should deduplicate incoming backup rows before reporting skipped imports", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await clearAccounts();
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "duplicate-import",
+							email: "duplicate-import@example.com",
+							refreshToken: "ref-duplicate-import-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+						{
+							accountId: "duplicate-import",
+							email: "duplicate-import@example.com",
+							refreshToken: "ref-duplicate-import-new",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 1,
+				changed: true,
+			});
+			expect(loaded?.accounts).toHaveLength(1);
+			expect(loaded?.accounts[0]).toMatchObject({
+				accountId: "duplicate-import",
+				email: "duplicate-import@example.com",
+				refreshToken: "ref-duplicate-import-new",
+				lastUsed: 2,
+			});
+		});
+
 		it("should persist duplicate-only imports when they refresh stored metadata", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			await saveAccounts({
@@ -1501,6 +1546,47 @@ describe("storage", () => {
 			expect(assessment.eligibleForRestore).toBe(true);
 		});
 
+		it("deduplicates incoming backup rows when assessing restore counts", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"internal-duplicates.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "duplicate-account",
+							email: "duplicate-account@example.com",
+							refreshToken: "ref-duplicate-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+						{
+							accountId: "duplicate-account",
+							email: "duplicate-account@example.com",
+							refreshToken: "ref-duplicate-new",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("internal-duplicates");
+
+			expect(assessment.imported).toBe(1);
+			expect(assessment.skipped).toBe(0);
+			expect(assessment.mergedAccountCount).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(true);
+		});
+
 		it("rejects duplicate-only backups with nothing new to restore", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1939,6 +2025,26 @@ describe("storage", () => {
 			expect(() =>
 				assertNamedBackupRestorePath(
 					join(linkedRoot, "escape.json"),
+					backupRoot,
+				),
+			).toThrow(/escapes backup directory/i);
+		});
+
+		it("rejects missing files beneath symlinked backup subdirectories", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const outsideRoot = join(testWorkDir, "outside-missing");
+			const linkedRoot = join(backupRoot, "linked-missing");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.mkdir(outsideRoot, { recursive: true });
+			await fs.symlink(
+				resolve(outsideRoot),
+				linkedRoot,
+				process.platform === "win32" ? "junction" : "dir",
+			);
+
+			expect(() =>
+				assertNamedBackupRestorePath(
+					join(linkedRoot, "missing.json"),
 					backupRoot,
 				),
 			).toThrow(/escapes backup directory/i);
