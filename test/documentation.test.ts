@@ -83,6 +83,8 @@ interface AntiSlopWorkflowConfig {
 					"require-pr-template"?: boolean;
 					"strict-pr-template-sections"?: string;
 					"optional-pr-template-sections"?: string;
+					"max-failures"?: number;
+					"exempt-draft-prs"?: boolean;
 					"blocked-terms"?: string;
 					"failure-add-pr-labels"?: string;
 					"close-pr"?: boolean;
@@ -512,6 +514,8 @@ describe("Documentation Integrity", () => {
 		expect(antiSlopStep?.with?.["optional-pr-template-sections"]).toBe(
 			"Additional Notes",
 		);
+		expect(antiSlopStep?.with?.["max-failures"]).toBe(4);
+		expect(antiSlopStep?.with?.["exempt-draft-prs"]).toBe(true);
 		expect(antiSlopStep?.with?.["blocked-terms"]).toContain(
 			"WORKTREE_LANTERN_1455",
 		);
@@ -533,8 +537,9 @@ describe("Documentation Integrity", () => {
 		expect(prBody).toContain("npm test -- test/documentation.test.ts");
 		expect(prBody).toContain("npm run build");
 		expect(prBody).toContain("## Docs Impact");
-		expect(prBody).toContain("Pick one:");
+		expect(prBody).toMatch(/## Docs Impact\s*\n+\s*Pick one:/);
 		expect(prBody).toContain("## Governance Review");
+		expect(prBody).toMatch(/## Governance Review\s*\n+\s*Pick one:/);
 		expect(prBody).toContain("## Risk and Rollback");
 		expect(prBody).toContain("## Additional Notes");
 		expect(prBody).not.toContain("## Docs and Governance Checklist");
