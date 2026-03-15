@@ -1951,9 +1951,9 @@ function haveEquivalentAccountRows(
 	left: readonly unknown[],
 	right: readonly unknown[],
 ): boolean {
-	// deduplicateAccounts() preserves the existing-first ordering from
-	// [...currentAccounts, ...incomingAccounts], so index-aligned comparison is
-	// the correct no-op check for restore assessment/import.
+	// deduplicateAccounts() keeps the last occurrence of duplicates, so incoming
+	// rows win when we compare merged restore data against the current snapshot.
+	// That keeps index-aligned comparison correct for restore no-op detection.
 	if (left.length !== right.length) {
 		return false;
 	}
@@ -3083,9 +3083,17 @@ export async function importAccounts(
 		throw new Error(`Import file not found: ${resolvedPath}`);
 	}
 
-	const content = await retryTransientFilesystemOperation(() =>
-		fs.readFile(resolvedPath, "utf-8"),
-	);
+	let content: string;
+	try {
+		content = await retryTransientFilesystemOperation(() =>
+			fs.readFile(resolvedPath, "utf-8"),
+		);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			throw new Error(`Import file not found: ${resolvedPath}`);
+		}
+		throw error;
+	}
 
 	let imported: unknown;
 	try {

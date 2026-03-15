@@ -4254,6 +4254,7 @@ async function runBackupRestoreManager(
 
 	const currentStorage = await loadAccounts();
 	const assessments: Awaited<ReturnType<typeof assessNamedBackupRestore>>[] = [];
+	const assessmentFailures: string[] = [];
 	for (
 		let index = 0;
 		index < backups.length;
@@ -4281,12 +4282,21 @@ async function runBackupRestoreManager(
 				result.reason instanceof Error
 					? result.reason.message
 					: String(result.reason);
+			const normalizedReason =
+				collapseWhitespace(reason) || "unknown error";
+			assessmentFailures.push(`${backupName}: ${normalizedReason}`);
 			console.warn(
-				`Skipped backup assessment for "${backupName}": ${
-					collapseWhitespace(reason) || "unknown error"
-				}`,
+				`Skipped backup assessment for "${backupName}": ${normalizedReason}`,
 			);
 		}
+	}
+	if (assessments.length === 0) {
+		console.error(
+			`Could not assess any named backups in ${backupDir}: ${
+				assessmentFailures.join("; ") || "all assessments failed"
+			}`,
+		);
+		return false;
 	}
 
 	const items: MenuItem<BackupMenuAction>[] = assessments.map((assessment) => {
@@ -4475,6 +4485,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runDoctor(rest);
 	}
 	if (command === "restore-backup") {
+		setStoragePath(null);
 		try {
 			const completedWithoutFailure =
 				await runBackupRestoreManager(startupDisplaySettings);

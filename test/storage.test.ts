@@ -1595,6 +1595,44 @@ describe("storage", () => {
 			);
 		});
 
+		it("maps read-time ENOENT back to the import file-not-found contract", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "read-race",
+						refreshToken: "ref-read-race",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const backup = await createNamedBackup("read-race");
+			const originalReadFile = fs.readFile.bind(fs);
+			let injectedEnoent = false;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backup.path && !injectedEnoent) {
+						injectedEnoent = true;
+						const error = new Error("backup disappeared") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				await expect(importAccounts(backup.path)).rejects.toThrow(
+					`Import file not found: ${backup.path}`,
+				);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
 		it("assesses eligibility and restores a named backup", async () => {
 			await saveAccounts({
 				version: 3,
