@@ -1963,6 +1963,7 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		confirmMock.mockResolvedValueOnce(true);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
