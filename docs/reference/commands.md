@@ -97,7 +97,7 @@ Compatibility aliases are supported:
 Interactive dashboard workflows:
 
 - Backup restore: `codex auth login` -> `Restore From Backup`
-- Startup recovery prompt: `codex auth login`, then confirm restore when recoverable named backups are found before OAuth
+- Startup recovery prompt: interactive `codex auth login` TTY flow only, then confirm restore when recoverable named backups are found before OAuth
 - Sync preview and apply: `codex auth login` -> `Settings` -> `Codex CLI Sync`
 - Stable settings path: `codex auth login` -> `Settings` -> `Everyday Settings`
 - Advanced settings path: `codex auth login` -> `Settings` -> `Advanced & Operator`
