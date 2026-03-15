@@ -22,7 +22,11 @@ import {
 	loadCodexCliState,
 	type CodexCliTokenCacheEntry,
 } from "./codex-cli/state.js";
-import { syncAccountStorageFromCodexCli } from "./codex-cli/sync.js";
+import {
+	commitCodexCliSyncRunFailure,
+	commitPendingCodexCliSyncRun,
+	syncAccountStorageFromCodexCli,
+} from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 
 export {
@@ -116,7 +120,9 @@ export class AccountManager {
 		if (synced.changed && sourceOfTruthStorage) {
 			try {
 				await saveAccounts(sourceOfTruthStorage);
+				commitPendingCodexCliSyncRun(synced.pendingRun);
 			} catch (error) {
+				commitCodexCliSyncRunFailure(synced.pendingRun, error);
 				log.debug("Failed to persist Codex CLI source-of-truth sync", {
 					error: String(error),
 				});
