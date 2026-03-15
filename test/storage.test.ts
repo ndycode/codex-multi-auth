@@ -1,13 +1,15 @@
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
+	__testOnly,
 	assessNamedBackupRestore,
+	assertNamedBackupRestorePath,
 	buildNamedBackupPath,
 	clearAccounts,
 	clearFlaggedAccounts,
@@ -26,6 +28,8 @@ import {
 	loadAccounts,
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
+	resolveNamedBackupRestorePath,
+	restoreAssessedNamedBackup,
 	restoreNamedBackup,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
@@ -398,6 +402,41 @@ describe("storage", () => {
 			).rejects.toThrow(/different storage path/);
 		});
 
+		it("allows exporting inside an active transaction when the storage path only differs by case on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "transactional-export-same-path",
+						refreshToken: "ref-transactional-export-same-path",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const casedStoragePath = testStoragePath.toUpperCase();
+
+			try {
+				await expect(
+					withAccountStorageTransaction(async () => {
+						setStoragePathDirect(casedStoragePath);
+						try {
+							await exportAccounts(exportPath);
+						} finally {
+							setStoragePathDirect(testStoragePath);
+						}
+					}),
+				).resolves.toBeUndefined();
+				expect(existsSync(exportPath)).toBe(true);
+			} finally {
+				platformSpy.mockRestore();
+			}
+		});
+
 		it("should import accounts from a file and merge", async () => {
 			// @ts-expect-error
 			const { importAccounts } = await import("../lib/storage.js");
@@ -432,6 +471,243 @@ describe("storage", () => {
 			const loaded = await loadAccounts();
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((a) => a.accountId)).toContain("new");
+		});
+
+		it("should skip persisting duplicate-only imports", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			const existing = {
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			};
+			await saveAccounts(existing);
+			await fs.writeFile(exportPath, JSON.stringify(existing));
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+		});
+
+		it("should treat deduplicated current snapshots as a no-op import", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "existing",
+							email: "existing@example.com",
+							refreshToken: "ref-existing",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+		});
+
+		it("should deduplicate incoming backup rows before reporting skipped imports", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await clearAccounts();
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "duplicate-import",
+							email: "duplicate-import@example.com",
+							refreshToken: "ref-duplicate-import-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+						{
+							accountId: "duplicate-import",
+							email: "duplicate-import@example.com",
+							refreshToken: "ref-duplicate-import-new",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 1,
+				changed: true,
+			});
+			expect(loaded?.accounts).toHaveLength(1);
+			expect(loaded?.accounts[0]).toMatchObject({
+				accountId: "duplicate-import",
+				email: "duplicate-import@example.com",
+				refreshToken: "ref-duplicate-import-new",
+				lastUsed: 2,
+			});
+		});
+
+		it("should persist duplicate-only imports when they refresh stored metadata", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						email: "existing@example.com",
+						refreshToken: "ref-existing",
+						accessToken: "stale-access",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "existing",
+							email: "existing@example.com",
+							refreshToken: "ref-existing",
+							accessToken: "fresh-access",
+							addedAt: 1,
+							lastUsed: 10,
+						},
+					],
+				}),
+			);
+
+			const result = await importAccounts(exportPath);
+			const loaded = await loadAccounts();
+
+			expect(result).toEqual({
+				imported: 0,
+				skipped: 1,
+				total: 1,
+				changed: true,
+			});
+			expect(loaded?.accounts).toHaveLength(1);
+			expect(loaded?.accounts[0]).toMatchObject({
+				accountId: "existing",
+				accessToken: "fresh-access",
+				lastUsed: 10,
+			});
+		});
+
+		it("should skip semantically identical duplicate-only imports even when key order differs", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			await fs.writeFile(
+				exportPath,
+				'{"version":3,"activeIndex":0,"accounts":[{"lastUsed":2,"addedAt":1,"refreshToken":"ref-existing","accountId":"existing"}]}',
+			);
+
+			const writeFileSpy = vi.spyOn(fs, "writeFile");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				const storageWrites = writeFileSpy.mock.calls.filter(([targetPath]) => {
+					const target = String(targetPath);
+					return (
+						target === testStoragePath ||
+						target.startsWith(`${testStoragePath}.`)
+					);
+				});
+				expect(storageWrites).toHaveLength(0);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
 		});
 
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
@@ -479,7 +755,12 @@ describe("storage", () => {
 			const imported = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(imported).toEqual({ imported: 1, total: 3, skipped: 0 });
+			expect(imported).toEqual({
+				imported: 1,
+				total: 3,
+				skipped: 0,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(3);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual(
 				expect.arrayContaining([
@@ -530,7 +811,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
@@ -576,7 +862,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
@@ -955,10 +1246,78 @@ describe("storage", () => {
 			);
 		});
 
+		it("rejects a second import that would exceed MAX_ACCOUNTS", async () => {
+			const nearLimitAccounts = Array.from(
+				{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
+				(_, index) => ({
+					accountId: `existing-${index}`,
+					refreshToken: `ref-existing-${index}`,
+					addedAt: index + 1,
+					lastUsed: index + 1,
+				}),
+			);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: nearLimitAccounts,
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "extra-one",
+							refreshToken: "ref-extra-one",
+							addedAt: 10_000,
+							lastUsed: 10_000,
+						},
+					],
+				}),
+			);
+
+			const first = await importAccounts(exportPath);
+			expect(first).toMatchObject({
+				imported: 1,
+				skipped: 0,
+				total: ACCOUNT_LIMITS.MAX_ACCOUNTS,
+				changed: true,
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "extra-two",
+							refreshToken: "ref-extra-two",
+							addedAt: 20_000,
+							lastUsed: 20_000,
+						},
+					],
+				}),
+			);
+
+			await expect(importAccounts(exportPath)).rejects.toThrow(
+				/exceed maximum/,
+			);
+
+			const loaded = await loadAccounts();
+			expect(loaded?.accounts).toHaveLength(ACCOUNT_LIMITS.MAX_ACCOUNTS);
+			expect(
+				loaded?.accounts.some((account) => account.accountId === "extra-two"),
+			).toBe(false);
+		});
+
 		it("should fail export when no accounts exist", async () => {
-			const { exportAccounts } = await import("../lib/storage.js");
-			setStoragePathDirect(testStoragePath);
-			await expect(exportAccounts(exportPath)).rejects.toThrow(
+			const storageModule = await import("../lib/storage.js");
+			storageModule.setStoragePathDirect(testStoragePath);
+			await storageModule.clearAccounts();
+			await expect(storageModule.exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);
 		});
@@ -969,6 +1328,51 @@ describe("storage", () => {
 			await expect(importAccounts(nonexistentPath)).rejects.toThrow(
 				/Import file not found/,
 			);
+		});
+
+		it("retries transient import read errors before parsing the backup", async () => {
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "retry-import-read",
+							refreshToken: "ref-retry-import-read",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			const originalReadFile = fs.readFile.bind(fs);
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === exportPath && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("import file busy") as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toMatchObject({
+					imported: 1,
+					skipped: 0,
+					total: 1,
+					changed: true,
+				});
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
 		});
 
 		it("should fail import when file contains invalid JSON", async () => {
@@ -1138,6 +1542,57 @@ describe("storage", () => {
 			);
 		});
 
+		it("lists named backups across the chunk boundary", async () => {
+			const expectedNames: string[] = [];
+			for (
+				let index = 0;
+				index <= NAMED_BACKUP_LIST_CONCURRENCY;
+				index += 1
+			) {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: `basic-chunk-${index}`,
+							refreshToken: `ref-basic-chunk-${index}`,
+							addedAt: index + 1,
+							lastUsed: index + 1,
+						},
+					],
+				});
+				const name = `basic-chunk-${String(index).padStart(2, "0")}`;
+				expectedNames.push(name);
+				await createNamedBackup(name);
+			}
+
+			const backups = await listNamedBackups();
+
+			expect(backups).toHaveLength(NAMED_BACKUP_LIST_CONCURRENCY + 1);
+			expect(backups).toEqual(
+				expect.arrayContaining(
+					expectedNames.map((name) =>
+						expect.objectContaining({
+							name,
+							accountCount: 1,
+							valid: true,
+						}),
+					),
+				),
+			);
+		});
+
+		it("returns a contained fallback path for missing named backups", async () => {
+			const requestedName = "  missing-backup  ";
+			const resolvedPath =
+				await resolveNamedBackupRestorePath(requestedName);
+
+			expect(resolvedPath).toBe(buildNamedBackupPath("missing-backup"));
+			await expect(importAccounts(resolvedPath)).rejects.toThrow(
+				/Import file not found/,
+			);
+		});
+
 		it("assesses eligibility and restores a named backup", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1204,6 +1659,248 @@ describe("storage", () => {
 			expect(assessment.imported).toBe(1);
 			expect(assessment.skipped).toBe(0);
 			expect(assessment.eligibleForRestore).toBe(true);
+		});
+
+		it("deduplicates incoming backup rows when assessing restore counts", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"internal-duplicates.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "duplicate-account",
+							email: "duplicate-account@example.com",
+							refreshToken: "ref-duplicate-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+						{
+							accountId: "duplicate-account",
+							email: "duplicate-account@example.com",
+							refreshToken: "ref-duplicate-new",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("internal-duplicates");
+
+			expect(assessment.imported).toBe(1);
+			expect(assessment.skipped).toBe(0);
+			expect(assessment.mergedAccountCount).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(true);
+		});
+
+		it("rejects duplicate-only backups with nothing new to restore", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						refreshToken: "ref-existing-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("already-present");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						refreshToken: "ref-existing-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("already-present");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+
+			await expect(restoreNamedBackup("already-present")).rejects.toThrow(
+				"All accounts in this backup already exist",
+			);
+		});
+
+		it("treats deduplicated current snapshots as a no-op restore", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						email: "existing@example.com",
+						refreshToken: "ref-existing-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("repair-current-duplicates");
+
+			const assessment = await assessNamedBackupRestore(
+				"repair-current-duplicates",
+				{
+					currentStorage: {
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "existing-account",
+								email: "existing@example.com",
+								refreshToken: "ref-existing-account",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+							{
+								accountId: "existing-account",
+								email: "existing@example.com",
+								refreshToken: "ref-existing-account",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					},
+				},
+			);
+			expect(assessment.currentAccountCount).toBe(2);
+			expect(assessment.mergedAccountCount).toBe(1);
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+
+			await expect(
+				restoreNamedBackup("repair-current-duplicates"),
+			).rejects.toThrow("All accounts in this backup already exist");
+		});
+
+		it("treats identical accounts in a different backup order as a no-op restore", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "first-account",
+						email: "first@example.com",
+						refreshToken: "ref-first-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "second-account",
+						email: "second@example.com",
+						refreshToken: "ref-second-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			await createNamedBackup("reversed-order");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "second-account",
+						email: "second@example.com",
+						refreshToken: "ref-second-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+					{
+						accountId: "first-account",
+						email: "first@example.com",
+						refreshToken: "ref-first-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("reversed-order");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(2);
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+
+			await expect(restoreNamedBackup("reversed-order")).rejects.toThrow(
+				"All accounts in this backup already exist",
+			);
+		});
+
+		it("keeps metadata-only backups eligible for restore", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						email: "existing@example.com",
+						refreshToken: "ref-existing-account",
+						accessToken: "fresh-access",
+						addedAt: 1,
+						lastUsed: 10,
+					},
+				],
+			});
+			await createNamedBackup("metadata-refresh");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						email: "existing@example.com",
+						refreshToken: "ref-existing-account",
+						accessToken: "stale-access",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("metadata-refresh");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.error).toBeUndefined();
+
+			const restoreResult = await restoreNamedBackup("metadata-refresh");
+			expect(restoreResult).toMatchObject({
+				imported: 0,
+				skipped: 1,
+				total: 1,
+				changed: true,
+			});
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts[0]).toMatchObject({
+				accountId: "existing-account",
+				accessToken: "fresh-access",
+				lastUsed: 10,
+			});
 		});
 
 		it("restores manually named backups that already exist inside the backups directory", async () => {
@@ -1314,6 +2011,36 @@ describe("storage", () => {
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
+		it("re-resolves an assessed named backup before the final import", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "deleted-helper",
+						refreshToken: "ref-deleted-helper",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("deleted-helper-assessment");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore(
+				"deleted-helper-assessment",
+			);
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			await removeWithRetry(backup.path, { force: true });
+
+			await expect(restoreAssessedNamedBackup(assessment)).rejects.toThrow(
+				/Import file not found/,
+			);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+		});
+
 		it("throws when a named backup becomes invalid JSON after assessment", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1353,6 +2080,289 @@ describe("storage", () => {
 				);
 			},
 		);
+
+		it("allows backup filenames that begin with dots when they stay inside the backups directory", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "..notes.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "leading-dot-backup",
+							refreshToken: "ref-leading-dot-backup",
+							addedAt: 1,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const assessment = await assessNamedBackupRestore("..notes");
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			const result = await restoreNamedBackup("..notes");
+			expect(result.imported).toBe(1);
+			expect((await loadAccounts())?.accounts).toHaveLength(1);
+		});
+
+		it("rejects matched backup entries whose resolved path escapes the backups directory", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const escapedEntry = {
+				name: "../escaped-entry.json",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+			} as unknown as Awaited<ReturnType<typeof fs.readdir>>[number];
+			readdirSpy.mockImplementation(async (...args) => {
+				const [path, options] = args;
+				if (
+					String(path) === backupRoot &&
+					typeof options === "object" &&
+					options?.withFileTypes === true
+				) {
+					return [escapedEntry] as Awaited<ReturnType<typeof fs.readdir>>;
+				}
+				return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+			});
+
+			try {
+				await expect(assessNamedBackupRestore("../escaped-entry")).rejects.toThrow(
+					/escapes backup directory/i,
+				);
+				await expect(restoreNamedBackup("../escaped-entry")).rejects.toThrow(
+					/escapes backup directory/i,
+				);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("rejects backup paths whose real path escapes the backups directory through symlinked directories", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const outsideRoot = join(testWorkDir, "outside");
+			const linkedRoot = join(backupRoot, "linked");
+			const outsideBackupPath = join(outsideRoot, "escape.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.mkdir(outsideRoot, { recursive: true });
+			await fs.writeFile(
+				outsideBackupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "linked-escape",
+							refreshToken: "ref-linked-escape",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.symlink(
+				resolve(outsideRoot),
+				linkedRoot,
+				process.platform === "win32" ? "junction" : "dir",
+			);
+
+			expect(() =>
+				assertNamedBackupRestorePath(
+					join(linkedRoot, "escape.json"),
+					backupRoot,
+				),
+			).toThrow(/escapes backup directory/i);
+		});
+
+		it("rejects missing files beneath symlinked backup subdirectories", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const outsideRoot = join(testWorkDir, "outside-missing");
+			const linkedRoot = join(backupRoot, "linked-missing");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.mkdir(outsideRoot, { recursive: true });
+			await fs.symlink(
+				resolve(outsideRoot),
+				linkedRoot,
+				process.platform === "win32" ? "junction" : "dir",
+			);
+
+			expect(() =>
+				assertNamedBackupRestorePath(
+					join(linkedRoot, "missing.json"),
+					backupRoot,
+				),
+			).toThrow(/escapes backup directory/i);
+		});
+
+		it("rejects symlinked backup roots during restore path validation", async () => {
+			const canonicalBackupRoot = join(testWorkDir, "canonical-backups");
+			const linkedBackupRoot = join(testWorkDir, "linked-backups");
+			const backupPath = join(canonicalBackupRoot, "linked-root.json");
+			await fs.mkdir(canonicalBackupRoot, { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "linked-root",
+							refreshToken: "ref-linked-root",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.symlink(
+				resolve(canonicalBackupRoot),
+				linkedBackupRoot,
+				process.platform === "win32" ? "junction" : "dir",
+			);
+
+			expect(() =>
+				assertNamedBackupRestorePath(
+					join(linkedBackupRoot, "linked-root.json"),
+					linkedBackupRoot,
+				),
+			).toThrow(/escapes backup directory/i);
+		});
+
+		it("rethrows realpath containment errors for existing backup paths", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "locked.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "locked-path",
+							refreshToken: "ref-locked-path",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalRealpath = __testOnly.namedBackupContainmentFs.realpath;
+			const realpathSpy = vi
+				.spyOn(__testOnly.namedBackupContainmentFs, "realpath")
+				.mockImplementation((path) => {
+					if (String(path) === resolve(backupPath)) {
+						const error = new Error(
+							"backup path locked",
+						) as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalRealpath(path);
+				});
+
+			try {
+				expect(() =>
+					assertNamedBackupRestorePath(backupPath, backupRoot),
+				).toThrow("Backup path validation failed. Try again.");
+			} finally {
+				realpathSpy.mockRestore();
+			}
+		});
+
+		it("classifies transient realpath errors for the backup root", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "pending", "locked.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			const transientCode = process.platform === "win32" ? "EPERM" : "EAGAIN";
+
+			const originalRealpath = __testOnly.namedBackupContainmentFs.realpath;
+			const realpathSpy = vi
+				.spyOn(__testOnly.namedBackupContainmentFs, "realpath")
+				.mockImplementation((path) => {
+					if (String(path) === resolve(backupRoot)) {
+						const error = new Error(
+							"backup root busy",
+						) as NodeJS.ErrnoException;
+						error.code = transientCode;
+						throw error;
+					}
+					return originalRealpath(path);
+				});
+
+			try {
+				expect(() =>
+					assertNamedBackupRestorePath(backupPath, backupRoot),
+				).toThrow("Backup path validation failed. Try again.");
+			} finally {
+				realpathSpy.mockRestore();
+			}
+		});
+
+		it("classifies transient lstat errors for the backup root", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "pending", "locked.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			const originalLstat = __testOnly.namedBackupContainmentFs.lstat;
+			const lstatSpy = vi
+				.spyOn(__testOnly.namedBackupContainmentFs, "lstat")
+				.mockImplementation((path) => {
+					if (String(path) === resolve(backupRoot)) {
+						const error = new Error("backup root locked") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalLstat(path);
+				});
+
+			try {
+				expect(() =>
+					assertNamedBackupRestorePath(backupPath, backupRoot),
+				).toThrow("Backup path validation failed. Try again.");
+			} finally {
+				lstatSpy.mockRestore();
+			}
+		});
+
+		it("rejects named backup listings whose resolved paths escape the backups directory", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const readFileSpy = vi.spyOn(fs, "readFile");
+			const escapedEntry = {
+				name: "../escaped-entry.json",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+			} as unknown as Awaited<ReturnType<typeof fs.readdir>>[number];
+			readdirSpy.mockImplementation(async (...args) => {
+				const [path, options] = args;
+				if (
+					String(path) === backupRoot &&
+					typeof options === "object" &&
+					options?.withFileTypes === true
+				) {
+					return [escapedEntry] as Awaited<ReturnType<typeof fs.readdir>>;
+				}
+				return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+			});
+
+			try {
+				await expect(listNamedBackups()).rejects.toThrow(/escapes backup directory/i);
+				expect(readFileSpy).not.toHaveBeenCalled();
+			} finally {
+				readFileSpy.mockRestore();
+				readdirSpy.mockRestore();
+			}
+		});
 
 		it("ignores symlink-like named backup entries that point outside the backups root", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
@@ -1410,7 +2420,10 @@ describe("storage", () => {
 			}
 		});
 
-		it("rethrows unreadable backup directory errors while listing backups", async () => {
+		it("rethrows unreadable backup directory errors while listing backups on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
@@ -1418,12 +2431,17 @@ describe("storage", () => {
 
 			try {
 				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
+				expect(readdirSpy).toHaveBeenCalledTimes(1);
 			} finally {
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
-		it("rethrows unreadable backup directory errors while restoring backups", async () => {
+		it("rethrows unreadable backup directory errors while restoring backups on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
@@ -1433,12 +2451,37 @@ describe("storage", () => {
 				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
 					code: "EPERM",
 				});
+				expect(readdirSpy).toHaveBeenCalledTimes(1);
 			} finally {
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
-		it("retries transient backup directory errors while listing backups", async () => {
+		it("retries EAGAIN backup directory errors while restoring backups on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory busy") as NodeJS.ErrnoException;
+			error.code = "EAGAIN";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
+					code: "EAGAIN",
+				});
+				expect(readdirSpy).toHaveBeenCalledTimes(7);
+			} finally {
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
+			}
+		});
+
+		it("retries transient EBUSY backup directory errors while listing backups on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -1480,10 +2523,200 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
-		it("retries transient backup directory errors while restoring backups", async () => {
+		it("retries transient EAGAIN backup directory errors while listing backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list-dir-not-empty",
+						refreshToken: "ref-retry-list-dir-not-empty",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-list-dir-not-empty");
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory not empty yet",
+						) as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							name: "retry-list-dir-not-empty",
+							valid: true,
+						}),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient EPERM backup directory errors while listing backups on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list-dir-eperm",
+						refreshToken: "ref-retry-list-dir-eperm",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-list-dir-eperm");
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory busy",
+						) as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							name: "retry-list-dir-eperm",
+							valid: true,
+						}),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
+			}
+		});
+
+		it("retries a second-chunk backup read when listing more than one chunk of backups", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			const backups: Awaited<ReturnType<typeof createNamedBackup>>[] = [];
+			for (
+				let index = 0;
+				index <= NAMED_BACKUP_LIST_CONCURRENCY;
+				index += 1
+			) {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: `chunk-boundary-${index}`,
+							refreshToken: `ref-chunk-boundary-${index}`,
+							addedAt: index + 1,
+							lastUsed: index + 1,
+						},
+					],
+				});
+				backups.push(
+					await createNamedBackup(`chunk-boundary-${String(index).padStart(2, "0")}`),
+				);
+			}
+
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			const originalReadFile = fs.readFile.bind(fs);
+			const secondChunkBackup = backups.at(-1);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path, options] = args;
+					if (
+						String(path) === backupRoot &&
+						typeof options === "object" &&
+						options?.withFileTypes === true
+					) {
+						const entries = await originalReaddir(
+							...(args as Parameters<typeof fs.readdir>),
+						);
+						return [...entries].sort((left, right) =>
+							left.name.localeCompare(right.name),
+						) as Awaited<ReturnType<typeof fs.readdir>>;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === secondChunkBackup?.path && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("backup file busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const listedBackups = await listNamedBackups();
+				expect(listedBackups).toHaveLength(NAMED_BACKUP_LIST_CONCURRENCY + 1);
+				expect(listedBackups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							name: `chunk-boundary-${String(
+								NAMED_BACKUP_LIST_CONCURRENCY,
+							).padStart(2, "0")}`,
+							valid: true,
+						}),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+				expect(
+					readFileSpy.mock.calls.filter(
+						([path]) => String(path) === secondChunkBackup?.path,
+					),
+				).toHaveLength(2);
+			} finally {
+				readFileSpy.mockRestore();
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
+			}
+		});
+
+		it("retries transient EAGAIN backup directory errors while restoring backups", async () => {
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -1552,15 +2785,21 @@ describe("storage", () => {
 
 			const assessment = await assessNamedBackupRestore("Manual Backup");
 			expect(assessment.eligibleForRestore).toBe(true);
+			const storageBeforeRestore = await loadAccounts();
+			expect(storageBeforeRestore?.accounts ?? []).toHaveLength(0);
 
 			await removeWithRetry(backupPath, { force: true });
 
 			await expect(restoreNamedBackup("Manual Backup")).rejects.toThrow(
 				/Import file not found/,
 			);
+			expect(await loadAccounts()).toEqual(storageBeforeRestore);
 		});
 
-		it("retries transient backup read errors while listing backups", async () => {
+		it("retries transient EBUSY backup read errors while listing backups on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -1599,37 +2838,39 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readFileSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
-		it("retries transient backup stat errors while listing backups", async () => {
-			await saveAccounts({
-				version: 3,
-				activeIndex: 0,
-				accounts: [
-					{
-						accountId: "retry-stat",
-						refreshToken: "ref-retry-stat",
-						addedAt: 1,
-						lastUsed: 1,
-					},
-				],
-			});
-			const backup = await createNamedBackup("retry-stat");
-			const originalStat = fs.stat.bind(fs);
-			let busyFailures = 0;
-			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
-				const [path] = args;
-				if (String(path) === backup.path && busyFailures === 0) {
-					busyFailures += 1;
-					const error = new Error("backup stat busy") as NodeJS.ErrnoException;
-					error.code = "EAGAIN";
-					throw error;
-				}
-				return originalStat(...(args as Parameters<typeof fs.stat>));
-			});
-
+		it("retries transient backup stat EAGAIN errors while listing backups", async () => {
+			let statSpy: ReturnType<typeof vi.spyOn> | undefined;
 			try {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "retry-stat",
+							refreshToken: "ref-retry-stat",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
+				const backup = await createNamedBackup("retry-stat");
+				const originalStat = fs.stat.bind(fs);
+				let busyFailures = 0;
+				statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backup.path && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("backup stat busy") as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalStat(...(args as Parameters<typeof fs.stat>));
+				});
+
 				const backups = await listNamedBackups();
 				expect(backups).toEqual(
 					expect.arrayContaining([
@@ -1638,13 +2879,208 @@ describe("storage", () => {
 				);
 				expect(busyFailures).toBe(1);
 			} finally {
+				statSpy?.mockRestore();
+			}
+		});
+
+		it("sorts backups with invalid timestamps after finite timestamps", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "valid-backup",
+						refreshToken: "ref-valid-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const validBackup = await createNamedBackup("valid-backup");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "nan-backup",
+						refreshToken: "ref-nan-backup",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			const nanBackup = await createNamedBackup("nan-backup");
+			const originalStat = fs.stat.bind(fs);
+			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+				const [path] = args;
+				const stats = await originalStat(...(args as Parameters<typeof fs.stat>));
+				if (String(path) === nanBackup.path) {
+					return {
+						...stats,
+						mtimeMs: Number.NaN,
+					} as Awaited<ReturnType<typeof fs.stat>>;
+				}
+				return stats;
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups.map((backup) => backup.name)).toEqual([
+					validBackup.name,
+					nanBackup.name,
+				]);
+			} finally {
 				statSpy.mockRestore();
+			}
+		});
+
+		it("reuses freshly listed backup candidates for the first restore assessment", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "cached-backup",
+						refreshToken: "ref-cached-backup",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			const backup = await createNamedBackup("cached-backup");
+			const readFileSpy = vi.spyOn(fs, "readFile");
+			const candidateCache = new Map<string, unknown>();
+
+			try {
+				await listNamedBackups({ candidateCache });
+				await assessNamedBackupRestore("cached-backup", {
+					currentStorage: null,
+					candidateCache,
+				});
+
+				const firstPassReads = readFileSpy.mock.calls.filter(
+					([path]) => path === backup.path,
+				);
+				expect(firstPassReads).toHaveLength(1);
+
+				await assessNamedBackupRestore("cached-backup", { currentStorage: null });
+
+				const secondPassReads = readFileSpy.mock.calls.filter(
+					([path]) => path === backup.path,
+				);
+				expect(secondPassReads).toHaveLength(2);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("ignores invalid externally provided candidate cache entries", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "external-cache-backup",
+						refreshToken: "ref-external-cache-backup",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			const backup = await createNamedBackup("external-cache-backup");
+			const readFileSpy = vi.spyOn(fs, "readFile");
+			const candidateCache = new Map<string, unknown>([
+				[
+					backup.path,
+					{
+						normalized: { version: 3 },
+						storedVersion: 3,
+						schemaErrors: [],
+					},
+				],
+			]);
+
+			try {
+				const assessment = await assessNamedBackupRestore(
+					"external-cache-backup",
+					{
+						currentStorage: null,
+						candidateCache,
+					},
+				);
+				expect(assessment).toEqual(
+					expect.objectContaining({
+						eligibleForRestore: true,
+						backup: expect.objectContaining({
+							name: "external-cache-backup",
+							path: backup.path,
+						}),
+					}),
+				);
+				expect(
+					readFileSpy.mock.calls.filter(([path]) => path === backup.path),
+				).toHaveLength(1);
+				expect(candidateCache.has(backup.path)).toBe(false);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("keeps per-call named-backup caches isolated across concurrent listings", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "isolated-cache-backup",
+						refreshToken: "ref-isolated-cache-backup",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			const backup = await createNamedBackup("isolated-cache-backup");
+			const readFileSpy = vi.spyOn(fs, "readFile");
+			const firstCandidateCache = new Map<string, unknown>();
+			const secondCandidateCache = new Map<string, unknown>();
+
+			try {
+				await Promise.all([
+					listNamedBackups({ candidateCache: firstCandidateCache }),
+					listNamedBackups({ candidateCache: secondCandidateCache }),
+				]);
+
+				await assessNamedBackupRestore("isolated-cache-backup", {
+					currentStorage: null,
+					candidateCache: firstCandidateCache,
+				});
+				await assessNamedBackupRestore("isolated-cache-backup", {
+					currentStorage: null,
+					candidateCache: secondCandidateCache,
+				});
+
+				const cachedReads = readFileSpy.mock.calls.filter(
+					([path]) => path === backup.path,
+				);
+				expect(cachedReads).toHaveLength(2);
+
+				await assessNamedBackupRestore("isolated-cache-backup", {
+					currentStorage: null,
+				});
+
+				const rereadCalls = readFileSpy.mock.calls.filter(
+					([path]) => path === backup.path,
+				);
+				expect(rereadCalls).toHaveLength(3);
+			} finally {
+				readFileSpy.mockRestore();
 			}
 		});
 
 		it("limits concurrent backup reads while listing backups", async () => {
 			const backupPaths: string[] = [];
-			for (let index = 0; index < 12; index += 1) {
+			const totalBackups = NAMED_BACKUP_LIST_CONCURRENCY + 4;
+			for (let index = 0; index < totalBackups; index += 1) {
 				await saveAccounts({
 					version: 3,
 					activeIndex: 0,
@@ -1686,7 +3122,7 @@ describe("storage", () => {
 
 			try {
 				const backups = await listNamedBackups();
-				expect(backups).toHaveLength(12);
+				expect(backups).toHaveLength(totalBackups);
 				expect(peakReads).toBeLessThanOrEqual(
 					NAMED_BACKUP_LIST_CONCURRENCY,
 				);

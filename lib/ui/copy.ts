@@ -16,6 +16,25 @@ export const UI_COPY = {
 		noSearchMatches: "No accounts match your search",
 		recovery: "Recovery",
 		restoreBackup: "Restore From Backup",
+		restoreBackupConfirm: (
+			name: string,
+			netNewAccounts: number,
+			backupAccountCount: number,
+			currentAccountCount: number,
+			mergedAccountCount: number,
+		) =>
+			netNewAccounts === 0
+				? `Restore backup "${name}"? This will refresh stored metadata for matching existing account(s) in this backup.`
+				: `Restore backup "${name}"? This will add ${netNewAccounts} new account(s) (${backupAccountCount} in backup, ${currentAccountCount} current -> ${mergedAccountCount} after dedupe).`,
+		restoreBackupSuccess: (
+			name: string,
+			imported: number,
+			skipped: number,
+			total: number,
+		) =>
+			`Restored backup "${name}". Imported ${imported}, skipped ${skipped}, total ${total}.`,
+		restoreBackupRefreshSuccess: (name: string) =>
+			`Restored backup "${name}". Refreshed stored metadata for matching existing account(s).`,
 		dangerZone: "Danger Zone",
 		removeAllAccounts: "Delete Saved Accounts",
 		resetLocalState: "Reset Local State",

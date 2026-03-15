@@ -37,6 +37,12 @@ Compatibility policy for Tier B:
 - Existing exported symbols must not be removed in this release line.
 - Deprecated usage may be documented, but hard removals require a major version transition plan.
 
+Current additive compatibility note:
+
+- `importAccounts()` now returns `{ imported, total, skipped, changed }` at runtime.
+- The exported `ImportAccountsResult` type keeps `changed` optional so older callers modeling the legacy shape remain source-compatible.
+- New callers should read `changed` to distinguish duplicate-only no-ops from metadata-refresh writes.
+
 ### Tier C: Internal APIs
 
 Internal APIs are any non-exported internals and implementation details not covered by Tier A or Tier B.

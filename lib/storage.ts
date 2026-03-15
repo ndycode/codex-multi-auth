@@ -1,7 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { existsSync, promises as fs } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import {
+	existsSync,
+	lstatSync,
+	promises as fs,
+	realpathSync,
+	type Dirent,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
@@ -47,7 +53,15 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+// Max total wait across 6 sleeps is about 1.26 s with proportional jitter.
+// That's acceptable for transient AV/file-lock recovery, but it also bounds how
+// long the interactive restore menu can pause while listing or assessing backups.
+const TRANSIENT_FILESYSTEM_MAX_ATTEMPTS = 7;
+const TRANSIENT_FILESYSTEM_BASE_DELAY_MS = 10;
 export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
+// Each assessment does more I/O than a listing pass, so keep a lower ceiling to
+// reduce transient AV/file-lock pressure on Windows restore menus.
+export const NAMED_BACKUP_ASSESS_CONCURRENCY = 4;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -134,6 +148,8 @@ export interface BackupRestoreAssessment {
 	currentAccountCount: number;
 	mergedAccountCount: number | null;
 	imported: number | null;
+	// Accounts already present in current storage. Metadata-only refreshes can
+	// still report them here because they are merged rather than newly imported.
 	skipped: number | null;
 	wouldExceedLimit: boolean;
 	eligibleForRestore: boolean;
@@ -146,12 +162,14 @@ export interface ActionableNamedBackupRecoveries {
 	totalBackups: number;
 }
 
-interface LoadedBackupCandidate {
+type LoadedBackupCandidate = {
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
 	error?: string;
-}
+};
+
+type NamedBackupCandidateCache = Map<string, unknown>;
 
 interface NamedBackupScanEntry {
 	backup: NamedBackupMetadata;
@@ -166,6 +184,46 @@ interface NamedBackupScanResult {
 interface NamedBackupMetadataListingResult {
 	backups: NamedBackupMetadata[];
 	totalBackups: number;
+}
+
+function isLoadedBackupCandidate(
+	candidate: unknown,
+): candidate is LoadedBackupCandidate {
+	if (!candidate || typeof candidate !== "object") {
+		return false;
+	}
+	const typedCandidate = candidate as {
+		normalized?: unknown;
+		storedVersion?: unknown;
+		schemaErrors?: unknown;
+		error?: unknown;
+	};
+	const normalized = typedCandidate.normalized;
+	return (
+		"storedVersion" in typedCandidate &&
+		Array.isArray(typedCandidate.schemaErrors) &&
+		(normalized === null ||
+			(typeof normalized === "object" &&
+				normalized !== null &&
+				Array.isArray((normalized as { accounts?: unknown }).accounts))) &&
+		(typedCandidate.error === undefined ||
+			typeof typedCandidate.error === "string")
+	);
+}
+
+function getCachedNamedBackupCandidate(
+	candidateCache: NamedBackupCandidateCache | undefined,
+	backupPath: string,
+): LoadedBackupCandidate | undefined {
+	const candidate = candidateCache?.get(backupPath);
+	if (candidate === undefined) {
+		return undefined;
+	}
+	if (isLoadedBackupCandidate(candidate)) {
+		return candidate;
+	}
+	candidateCache?.delete(backupPath);
+	return undefined;
 }
 
 function createUnloadedBackupCandidate(): LoadedBackupCandidate {
@@ -1642,8 +1700,11 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 	};
 }
 
-async function scanNamedBackups(): Promise<NamedBackupScanResult> {
+async function scanNamedBackups(
+	options: { candidateCache?: NamedBackupCandidateCache } = {},
+): Promise<NamedBackupScanResult> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const candidateCache = options.candidateCache;
 	try {
 		const entries = await retryTransientFilesystemOperation(() =>
 			fs.readdir(backupRoot, { withFileTypes: true }),
@@ -1662,39 +1723,54 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 				index,
 				index + NAMED_BACKUP_LIST_CONCURRENCY,
 			);
-			backups.push(
-				...(await Promise.all(
-					chunk.map(async (entry) => {
-						const path = resolvePath(join(backupRoot, entry.name));
-						const name = entry.name.slice(0, -".json".length);
-						try {
-							const candidate = await loadBackupCandidate(path);
-							const backup = await buildNamedBackupMetadata(name, path, {
-								candidate,
-							});
-							return { backup, candidate };
-						} catch (error) {
-							const code = (error as NodeJS.ErrnoException).code;
-							if (code !== "ENOENT") {
-								log.warn("Failed to scan named backup", {
-									name,
-									path,
-									error: String(error),
-								});
-							}
-							return null;
-						}
-					}),
-				)).filter(
-					(entry): entry is NamedBackupScanEntry => entry !== null,
-				),
+			const chunkResults = await Promise.allSettled(
+				chunk.map(async (entry) => {
+					const path = assertNamedBackupRestorePath(
+						resolvePath(join(backupRoot, entry.name)),
+						backupRoot,
+					);
+					const candidate = await loadBackupCandidate(path);
+					candidateCache?.set(path, candidate);
+					const backup = await buildNamedBackupMetadata(
+						entry.name.slice(0, -".json".length),
+						path,
+						{ candidate },
+					);
+					return { backup, candidate };
+				}),
 			);
+			for (const [chunkIndex, result] of chunkResults.entries()) {
+				if (result.status === "fulfilled") {
+					backups.push(result.value);
+					continue;
+				}
+				if (isNamedBackupContainmentError(result.reason)) {
+					throw result.reason;
+				}
+				log.warn("Skipped named backup during listing", {
+					path: join(backupRoot, chunk[chunkIndex]?.name ?? "<unknown>"),
+					error: String(result.reason),
+				});
+			}
 		}
 		return {
-			backups: backups.sort(
-				(left, right) =>
-					(right.backup.updatedAt ?? 0) - (left.backup.updatedAt ?? 0),
-			),
+			backups: backups.sort((left, right) => {
+				const leftUpdatedAt = left.backup.updatedAt;
+				const leftTime =
+					typeof leftUpdatedAt === "number" &&
+					Number.isFinite(leftUpdatedAt) &&
+					leftUpdatedAt !== 0
+						? leftUpdatedAt
+						: 0;
+				const rightUpdatedAt = right.backup.updatedAt;
+				const rightTime =
+					typeof rightUpdatedAt === "number" &&
+					Number.isFinite(rightUpdatedAt) &&
+					rightUpdatedAt !== 0
+						? rightUpdatedAt
+						: 0;
+				return rightTime - leftTime;
+			}),
 			totalBackups,
 		};
 	} catch (error) {
@@ -1708,6 +1784,13 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 		});
 		throw error;
 	}
+}
+
+export async function listNamedBackups(
+	options: { candidateCache?: NamedBackupCandidateCache } = {},
+): Promise<NamedBackupMetadata[]> {
+	const scanResult = await scanNamedBackups(options);
+	return scanResult.backups.map((entry) => entry.backup);
 }
 
 async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataListingResult> {
@@ -1759,33 +1842,41 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataList
 	}
 }
 
-export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
-	const scanResult = await scanNamedBackups();
-	return scanResult.backups.map((entry) => entry.backup);
-}
-
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
 ): code is "EPERM" | "EBUSY" | "EAGAIN" {
-	return code === "EPERM" || code === "EBUSY" || code === "EAGAIN";
+	if (code === "EAGAIN") {
+		return true;
+	}
+	if (process.platform !== "win32") {
+		return false;
+	}
+	return code === "EPERM" || code === "EBUSY";
 }
 
 async function retryTransientFilesystemOperation<T>(
 	operation: () => Promise<T>,
 ): Promise<T> {
-	for (let attempt = 0; attempt < 5; attempt += 1) {
+	let attempt = 0;
+	while (true) {
 		try {
 			return await operation();
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
+			if (
+				!isRetryableFilesystemErrorCode(code) ||
+				attempt >= TRANSIENT_FILESYSTEM_MAX_ATTEMPTS - 1
+			) {
 				throw error;
 			}
-			await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+			const baseDelayMs = TRANSIENT_FILESYSTEM_BASE_DELAY_MS * 2 ** attempt;
+			const jitterMs = Math.floor(Math.random() * baseDelayMs);
+			await new Promise((resolve) =>
+				setTimeout(resolve, baseDelayMs + jitterMs),
+			);
 		}
+		attempt += 1;
 	}
-
-	throw new Error("Retry loop exhausted unexpectedly");
 }
 
 export function getNamedBackupsDirectoryPath(): string {
@@ -1907,10 +1998,17 @@ export async function createNamedBackup(
 
 export async function assessNamedBackupRestore(
 	name: string,
-	options: { currentStorage?: AccountStorageV3 | null } = {},
+	options: {
+		currentStorage?: AccountStorageV3 | null;
+		candidateCache?: Map<string, unknown>;
+	} = {},
 ): Promise<BackupRestoreAssessment> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
-	const candidate = await loadBackupCandidate(backupPath);
+	const candidateCache = options.candidateCache;
+	const candidate =
+		getCachedNamedBackupCandidate(candidateCache, backupPath) ??
+		(await loadBackupCandidate(backupPath));
+	candidateCache?.delete(backupPath);
 	const backup = await buildNamedBackupMetadata(
 		basename(backupPath).slice(0, -".json".length),
 		backupPath,
@@ -1929,6 +2027,9 @@ function assessNamedBackupRestoreCandidate(
 	currentStorage: AccountStorageV3 | null,
 ): BackupRestoreAssessment {
 	const currentAccounts = currentStorage?.accounts ?? [];
+	// Baseline merge math on a deduplicated current snapshot so pre-existing
+	// duplicate rows in storage cannot produce negative import counts.
+	const currentDeduplicatedAccounts = deduplicateAccounts([...currentAccounts]);
 
 	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {
 		return {
@@ -1943,17 +2044,25 @@ function assessNamedBackupRestoreCandidate(
 		};
 	}
 
-	const mergedAccounts = deduplicateAccounts([
-		...currentAccounts,
+	const incomingDeduplicatedAccounts = deduplicateAccounts([
 		...candidate.normalized.accounts,
+	]);
+	const mergedAccounts = deduplicateAccounts([
+		...currentDeduplicatedAccounts,
+		...incomingDeduplicatedAccounts,
 	]);
 	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
 		? null
-		: mergedAccounts.length - currentAccounts.length;
+		: mergedAccounts.length - currentDeduplicatedAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
+		: Math.max(0, incomingDeduplicatedAccounts.length - (imported ?? 0));
+	const changed = !haveEquivalentAccountRows(
+		mergedAccounts,
+		currentDeduplicatedAccounts,
+	);
+	const nothingToImport = !wouldExceedLimit && !changed;
 
 	return {
 		backup,
@@ -1962,18 +2071,34 @@ function assessNamedBackupRestoreCandidate(
 		imported,
 		skipped,
 		wouldExceedLimit,
-		eligibleForRestore: !wouldExceedLimit,
+		eligibleForRestore: !wouldExceedLimit && !nothingToImport,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
-			: undefined,
+			: nothingToImport
+				? "All accounts in this backup already exist"
+				: undefined,
 	};
 }
 
 export async function restoreNamedBackup(
 	name: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
-	const backupPath = await resolveNamedBackupRestorePath(name);
-	return importAccounts(backupPath);
+): Promise<ImportAccountsResult> {
+	const assessment = await assessNamedBackupRestore(name);
+	return restoreAssessedNamedBackup(assessment);
+}
+
+export async function restoreAssessedNamedBackup(
+	assessment: Pick<BackupRestoreAssessment, "backup" | "eligibleForRestore" | "error">,
+): Promise<ImportAccountsResult> {
+	if (!assessment.eligibleForRestore) {
+		throw new Error(
+			assessment.error ?? "Backup is not eligible for restore.",
+		);
+	}
+	const resolvedPath = await resolveNamedBackupRestorePath(
+		assessment.backup.name,
+	);
+	return importAccounts(resolvedPath);
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -1988,6 +2113,70 @@ function parseAndNormalizeStorage(data: unknown): {
 		: undefined;
 	return { normalized, storedVersion, schemaErrors };
 }
+
+export type ImportAccountsResult = {
+	imported: number;
+	total: number;
+	skipped: number;
+	// Runtime always includes this field; it stays optional in the public type so
+	// older compatibility callers that only model the legacy shape do not break.
+	changed?: boolean;
+};
+
+function normalizeStoragePathForComparison(path: string): string {
+	const resolved = resolvePath(path);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function canonicalizeComparisonValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((entry) => canonicalizeComparisonValue(entry));
+	}
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+
+	const record = value as Record<string, unknown>;
+	return Object.fromEntries(
+		Object.keys(record)
+			.sort()
+			.map((key) => [key, canonicalizeComparisonValue(record[key])] as const),
+	);
+}
+
+function stableStringifyForComparison(value: unknown): string {
+	return JSON.stringify(canonicalizeComparisonValue(value));
+}
+
+function haveEquivalentAccountRows(
+	left: readonly unknown[],
+	right: readonly unknown[],
+): boolean {
+	// deduplicateAccounts() preserves the existing-first ordering from
+	// [...currentAccounts, ...incomingAccounts], so index-aligned comparison is
+	// the correct no-op check for restore assessment/import.
+	if (left.length !== right.length) {
+		return false;
+	}
+	for (let index = 0; index < left.length; index += 1) {
+		if (
+			stableStringifyForComparison(left[index]) !==
+			stableStringifyForComparison(right[index])
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
+const namedBackupContainmentFs = {
+	lstat(path: string) {
+		return lstatSync(path);
+	},
+	realpath(path: string) {
+		return realpathSync.native(path);
+	},
+};
 
 async function loadAccountsFromPath(path: string): Promise<{
 	normalized: AccountStorageV3 | null;
@@ -2005,11 +2194,19 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 			loadAccountsFromPath(path),
 		);
 	} catch (error) {
+		const errorMessage =
+			error instanceof SyntaxError
+				? `Invalid JSON in import file: ${path}`
+				: (error as NodeJS.ErrnoException).code === "ENOENT"
+					? `Import file not found: ${path}`
+					: error instanceof Error
+						? error.message
+						: String(error);
 		return {
 			normalized: null,
 			storedVersion: undefined,
 			schemaErrors: [],
-			error: String(error),
+			error: errorMessage,
 		};
 	}
 }
@@ -2039,28 +2236,12 @@ async function findExistingNamedBackupPath(
 		? requested
 		: `${requested}.json`;
 	const requestedBaseName = stripNamedBackupJsonExtension(requestedWithExtension);
+	let entries: Dirent[];
 
 	try {
-		const entries = await retryTransientFilesystemOperation(() =>
+		entries = await retryTransientFilesystemOperation(() =>
 			fs.readdir(backupRoot, { withFileTypes: true }),
 		);
-		for (const entry of entries) {
-			if (!entry.name.toLowerCase().endsWith(".json")) continue;
-			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
-			const matchesRequestedEntry =
-				equalsNamedBackupEntry(entry.name, requested) ||
-				equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
-				equalsNamedBackupEntry(entryBaseName, requestedBaseName);
-			if (!matchesRequestedEntry) {
-				continue;
-			}
-			if (entry.isSymbolicLink() || !entry.isFile()) {
-				throw new Error(
-					`Named backup "${entryBaseName}" is not a regular backup file`,
-				);
-			}
-			return resolvePath(join(backupRoot, entry.name));
-		}
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
@@ -2073,25 +2254,140 @@ async function findExistingNamedBackupPath(
 		throw error;
 	}
 
+	for (const entry of entries) {
+		if (!entry.name.toLowerCase().endsWith(".json")) continue;
+		const entryBaseName = stripNamedBackupJsonExtension(entry.name);
+		const matchesRequestedEntry =
+			equalsNamedBackupEntry(entry.name, requested) ||
+			equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
+			equalsNamedBackupEntry(entryBaseName, requestedBaseName);
+		if (!matchesRequestedEntry) {
+			continue;
+		}
+		if (entry.isSymbolicLink() || !entry.isFile()) {
+			throw new Error(
+				`Named backup "${entryBaseName}" is not a regular backup file`,
+			);
+		}
+		return resolvePath(join(backupRoot, entry.name));
+	}
+
 	return undefined;
 }
 
-async function resolveNamedBackupRestorePath(name: string): Promise<string> {
-	const existingPath = await findExistingNamedBackupPath(name);
-	if (existingPath) {
-		return existingPath;
+function resolvePathForNamedBackupContainment(path: string): string {
+	const resolvedPath = resolvePath(path);
+	let existingPrefix = resolvedPath;
+	const unresolvedSegments: string[] = [];
+	while (true) {
+		try {
+			namedBackupContainmentFs.lstat(existingPrefix);
+			break;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				const parentPath = dirname(existingPrefix);
+				if (parentPath === existingPrefix) {
+					return resolvedPath;
+				}
+				unresolvedSegments.unshift(basename(existingPrefix));
+				existingPrefix = parentPath;
+				continue;
+			}
+			if (isRetryableFilesystemErrorCode(code)) {
+				throw new Error("Backup path validation failed. Try again.", {
+					cause: error instanceof Error ? error : undefined,
+				});
+			}
+			throw error;
+		}
 	}
+	try {
+		const canonicalPrefix = namedBackupContainmentFs.realpath(existingPrefix);
+		return unresolvedSegments.reduce(
+			(currentPath, segment) => join(currentPath, segment),
+			canonicalPrefix,
+		);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return resolvedPath;
+		}
+		if (isRetryableFilesystemErrorCode(code)) {
+			throw new Error("Backup path validation failed. Try again.", {
+				cause: error instanceof Error ? error : undefined,
+			});
+		}
+		throw error;
+	}
+}
+
+export function assertNamedBackupRestorePath(
+	path: string,
+	backupRoot: string,
+): string {
+	const resolvedPath = resolvePath(path);
+	const resolvedBackupRoot = resolvePath(backupRoot);
+	let backupRootIsSymlink = false;
+	try {
+		backupRootIsSymlink =
+			namedBackupContainmentFs.lstat(resolvedBackupRoot).isSymbolicLink();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			backupRootIsSymlink = false;
+		} else if (isRetryableFilesystemErrorCode(code)) {
+			throw new Error("Backup path validation failed. Try again.", {
+				cause: error instanceof Error ? error : undefined,
+			});
+		} else {
+			throw error;
+		}
+	}
+	if (backupRootIsSymlink) {
+		throw new Error("Backup path escapes backup directory");
+	}
+	const canonicalBackupRoot =
+		resolvePathForNamedBackupContainment(resolvedBackupRoot);
+	const containedPath = resolvePathForNamedBackupContainment(resolvedPath);
+	const relativePath = relative(canonicalBackupRoot, containedPath);
+	const firstSegment = relativePath.split(/[\\/]/)[0];
+	if (
+		relativePath.length === 0 ||
+		firstSegment === ".." ||
+		isAbsolute(relativePath)
+	) {
+		throw new Error("Backup path escapes backup directory");
+	}
+	return containedPath;
+}
+
+export function isNamedBackupContainmentError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		/(escapes backup directory|path validation failed)/i.test(error.message)
+	);
+}
+
+export async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const requested = (name ?? "").trim();
 	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const existingPath = await findExistingNamedBackupPath(name);
+	if (existingPath) {
+		return assertNamedBackupRestorePath(existingPath, backupRoot);
+	}
 	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
 		? requested
 		: `${requested}.json`;
+	const baseName = requestedWithExtension.slice(0, -".json".length);
+	let builtPath: string;
 	try {
-		return buildNamedBackupPath(name);
+		builtPath = buildNamedBackupPath(requested);
 	} catch (error) {
-		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
-			? requestedWithExtension.slice(0, -".json".length)
-			: requestedWithExtension;
+		// buildNamedBackupPath rejects names with special characters even when the
+		// requested backup name is a plain filename inside the backups directory.
+		// In that case, reporting ENOENT is clearer than surfacing the filename
+		// validator, but only when no separator/traversal token is present.
 		if (
 			requested.length > 0 &&
 			basename(requestedWithExtension) === requestedWithExtension &&
@@ -2104,6 +2400,7 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 		}
 		throw error;
 	}
+	return assertNamedBackupRestorePath(builtPath, backupRoot);
 }
 
 async function loadAccountsFromJournal(
@@ -2920,9 +3217,10 @@ export async function exportAccounts(
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
-	const currentStoragePath = getStoragePath();
+	const currentStoragePath = normalizeStoragePathForComparison(getStoragePath());
 	const storage = transactionState?.active
-		? transactionState.storagePath === currentStoragePath
+		? normalizeStoragePathForComparison(transactionState.storagePath) ===
+			currentStoragePath
 			? transactionState.snapshot
 			: (() => {
 					throw new Error(
@@ -2965,7 +3263,7 @@ export async function exportAccounts(
  */
 export async function importAccounts(
 	filePath: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
+): Promise<ImportAccountsResult> {
 	const resolvedPath = resolvePath(filePath);
 
 	// Check file exists with friendly error
@@ -2973,7 +3271,9 @@ export async function importAccounts(
 		throw new Error(`Import file not found: ${resolvedPath}`);
 	}
 
-	const content = await fs.readFile(resolvedPath, "utf-8");
+	const content = await retryTransientFilesystemOperation(() =>
+		fs.readFile(resolvedPath, "utf-8"),
+	);
 
 	let imported: unknown;
 	try {
@@ -2991,22 +3291,48 @@ export async function importAccounts(
 		imported: importedCount,
 		total,
 		skipped: skippedCount,
+		changed,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
+		// Keep import counts anchored to a deduplicated current snapshot for the
+		// same reason as assessNamedBackupRestore.
+		const existingDeduplicatedAccounts = deduplicateAccounts([
+			...existingAccounts,
+		]);
+		const incomingDeduplicatedAccounts = deduplicateAccounts([
+			...normalized.accounts,
+		]);
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
-		const merged = [...existingAccounts, ...normalized.accounts];
-
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccounts(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
-			}
-		}
-
+		const merged = [
+			...existingDeduplicatedAccounts,
+			...incomingDeduplicatedAccounts,
+		];
 		const deduplicatedAccounts = deduplicateAccounts(merged);
+		if (deduplicatedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			throw new Error(
+				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduplicatedAccounts.length})`,
+			);
+		}
+		const imported =
+			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
+		const skipped = Math.max(
+			0,
+			incomingDeduplicatedAccounts.length - imported,
+		);
+		const changed = !haveEquivalentAccountRows(
+			deduplicatedAccounts,
+			existingDeduplicatedAccounts,
+		);
+
+		if (!changed) {
+			return {
+				imported,
+				total: deduplicatedAccounts.length,
+				skipped,
+				changed,
+			};
+		}
 
 		const newStorage: AccountStorageV3 = {
 			version: 3,
@@ -3016,10 +3342,12 @@ export async function importAccounts(
 		};
 
 		await persist(newStorage);
-
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
-		return { imported, total: deduplicatedAccounts.length, skipped };
+		return {
+			imported,
+			total: deduplicatedAccounts.length,
+			skipped,
+			changed,
+		};
 	});
 
 	log.info("Imported accounts", {
@@ -3027,7 +3355,17 @@ export async function importAccounts(
 		imported: importedCount,
 		skipped: skippedCount,
 		total,
+		changed,
 	});
 
-	return { imported: importedCount, total, skipped: skippedCount };
+	return {
+		imported: importedCount,
+		total,
+		skipped: skippedCount,
+		changed,
+	};
 }
+
+export const __testOnly = {
+	namedBackupContainmentFs,
+};

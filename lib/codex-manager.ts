@@ -64,9 +64,10 @@ import {
 	assessNamedBackupRestore,
 	getActionableNamedBackupRestores,
 	getNamedBackupsDirectoryPath,
+	isNamedBackupContainmentError,
 	listNamedBackups,
-	NAMED_BACKUP_LIST_CONCURRENCY,
-	restoreNamedBackup,
+	NAMED_BACKUP_ASSESS_CONCURRENCY,
+	restoreAssessedNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -140,7 +141,9 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 function formatRelativeDateShort(
 	timestamp: number | null | undefined,
 ): string | null {
-	if (timestamp === null || timestamp === undefined) return null;
+	if (timestamp === null || timestamp === undefined || timestamp === 0)
+		return null;
+	if (!Number.isFinite(timestamp)) return null;
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
 	if (days <= 0) return "today";
 	if (days === 1) return "yesterday";
@@ -331,6 +334,7 @@ function printUsage(): void {
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
 			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
+			"  codex auth restore-backup",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
@@ -3912,6 +3916,18 @@ async function runAuthLogin(): Promise<number> {
 				console.log("Cancelled.");
 				return 0;
 			}
+			const modeRequiresDrainedQuotaRefresh =
+				menuResult.mode === "check" ||
+				menuResult.mode === "deep-check" ||
+				menuResult.mode === "forecast" ||
+				menuResult.mode === "fix" ||
+				menuResult.mode === "restore-backup";
+			if (modeRequiresDrainedQuotaRefresh) {
+				const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+				if (pendingQuotaRefresh) {
+					await pendingQuotaRefresh;
+				}
+			}
 			if (menuResult.mode === "check") {
 				await runActionPanel("Quick Check", "Checking local session + live status", async () => {
 					await runHealthCheck({ forceRefresh: false, liveProbe: true });
@@ -4350,7 +4366,6 @@ function getRedactedFilesystemErrorLabel(error: unknown): string {
 
 type BackupRestoreManagerAssessmentLoadResult = {
 	assessments: BackupRestoreAssessment[];
-	backupCount: number;
 	readFailed: boolean;
 	assessmentFailures: number;
 };
@@ -4358,19 +4373,27 @@ type BackupRestoreManagerAssessmentLoadResult = {
 async function loadBackupRestoreManagerAssessments(): Promise<
 	BackupRestoreManagerAssessmentLoadResult
 > {
+	// Reuse only within this list -> assess flow so storage.ts can safely treat
+	// the cache contents as LoadedBackupCandidate entries.
+	const candidateCache = new Map<string, unknown>();
 	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
 	try {
-		backups = await listNamedBackups();
+		backups = await listNamedBackups({ candidateCache });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(
-			`Could not read backup directory: ${
-				collapseWhitespace(message) || "unknown error"
-			}`,
-		);
+		if (isNamedBackupContainmentError(error)) {
+			console.error(
+				`Backup validation failed: ${collapseWhitespace(message) || "unknown error"}`,
+			);
+		} else {
+			console.error(
+				`Could not read backup directory: ${
+					collapseWhitespace(message) || "unknown error"
+				}`,
+			);
+		}
 		return {
 			assessments: [],
-			backupCount: 0,
 			readFailed: true,
 			assessmentFailures: 0,
 		};
@@ -4378,7 +4401,6 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 	if (backups.length === 0) {
 		return {
 			assessments: [],
-			backupCount: 0,
 			readFailed: false,
 			assessmentFailures: 0,
 		};
@@ -4390,18 +4412,24 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 	for (
 		let index = 0;
 		index < backups.length;
-		index += NAMED_BACKUP_LIST_CONCURRENCY
+		index += NAMED_BACKUP_ASSESS_CONCURRENCY
 	) {
-		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
+		const chunk = backups.slice(index, index + NAMED_BACKUP_ASSESS_CONCURRENCY);
 		const settledAssessments = await Promise.allSettled(
 			chunk.map((backup) =>
-				assessNamedBackupRestore(backup.name, { currentStorage }),
+				assessNamedBackupRestore(backup.name, {
+					currentStorage,
+					candidateCache,
+				}),
 			),
 		);
 		for (const [resultIndex, result] of settledAssessments.entries()) {
 			if (result.status === "fulfilled") {
 				assessments.push(result.value);
 				continue;
+			}
+			if (isNamedBackupContainmentError(result.reason)) {
+				throw result.reason;
 			}
 			const backupName = chunk[resultIndex]?.name ?? "unknown";
 			const reason =
@@ -4419,7 +4447,6 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 
 	return {
 		assessments,
-		backupCount: backups.length,
 		readFailed: false,
 		assessmentFailures,
 	};
@@ -4435,7 +4462,6 @@ async function runBackupRestoreManager(
 			? await loadBackupRestoreManagerAssessments()
 			: {
 					assessments: assessmentsOverride,
-					backupCount: assessmentsOverride.length,
 					readFailed: false,
 					assessmentFailures: 0,
 				};
@@ -4521,21 +4547,69 @@ async function runBackupRestoreManager(
 		return "dismissed";
 	}
 
-	const confirmMessage = `Restore backup "${latestAssessment.backup.name}"? This will merge ${latestAssessment.backup.accountCount ?? 0} account(s) into ${latestAssessment.currentAccountCount} current (${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`;
+	const netNewAccounts = latestAssessment.imported ?? 0;
+	const confirmMessage = UI_COPY.mainMenu.restoreBackupConfirm(
+		latestAssessment.backup.name,
+		netNewAccounts,
+		latestAssessment.backup.accountCount ?? 0,
+		latestAssessment.currentAccountCount,
+		latestAssessment.mergedAccountCount ??
+			latestAssessment.currentAccountCount,
+	);
 	const confirmed = await confirm(confirmMessage);
 	if (!confirmed) return "dismissed";
 
 	try {
-		const result = await restoreNamedBackup(latestAssessment.backup.name);
-		console.log(
-			`Restored backup "${latestAssessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
-		);
+		const result = await restoreAssessedNamedBackup(latestAssessment);
+		if (!result.changed) {
+			console.log("All accounts in this backup already exist");
+			return "dismissed";
+		}
+		if (result.imported === 0) {
+			console.log(
+				UI_COPY.mainMenu.restoreBackupRefreshSuccess(
+					latestAssessment.backup.name,
+				),
+			);
+		} else {
+			console.log(
+				UI_COPY.mainMenu.restoreBackupSuccess(
+					latestAssessment.backup.name,
+					result.imported,
+					result.skipped,
+					result.total,
+				),
+			);
+		}
+		try {
+			const synced = await autoSyncActiveAccountToCodex();
+			if (!synced) {
+				console.warn(
+					"Backup restored, but Codex CLI auth state could not be synced.",
+				);
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(
+				`Backup restored, but Codex CLI auth sync failed: ${
+					collapseWhitespace(message) || "unknown error"
+				}`,
+			);
+		}
 		return "restored";
 	} catch (error) {
-		const errorLabel = getRedactedFilesystemErrorLabel(error);
-		console.warn(
-			`Failed to restore backup "${latestAssessment.backup.name}" (${errorLabel}).`,
-		);
+		const message = error instanceof Error ? error.message : String(error);
+		const collapsedMessage = collapseWhitespace(message) || "unknown error";
+		if (/exceed maximum/i.test(collapsedMessage)) {
+			console.error(
+				`Restore failed: ${collapsedMessage}. Close other Codex instances and try again.`,
+			);
+		} else {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
+			console.warn(
+				`Failed to restore backup "${latestAssessment.backup.name}" (${errorLabel}).`,
+			);
+		}
 		return "dismissed";
 	}
 }
@@ -4596,6 +4670,18 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "doctor") {
 		return runDoctor(rest);
+	}
+	if (command === "restore-backup") {
+		try {
+			await runBackupRestoreManager(startupDisplaySettings);
+			return 0;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(
+				`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
+			);
+			return 1;
+		}
 	}
 
 	console.error(`Unknown command: ${command}`);
