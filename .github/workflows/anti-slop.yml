@@ -28,8 +28,7 @@ jobs:
           optional-pr-template-sections: Additional Notes
           # anti-slop strips HTML comments before blocked-term matching, so the
           # hidden template comment only trips if copied into visible PR text.
-          blocked-terms: |
-            WORKTREE_LANTERN_1455
+          blocked-terms: "WORKTREE_LANTERN_1455"
           blocked-paths: ""
           exempt-draft-prs: true
           failure-add-pr-labels: needs-human-review

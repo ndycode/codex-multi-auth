@@ -30,6 +30,7 @@ Pick one:
 
 - [ ] No CONTRIBUTING.md/SECURITY.md changes needed
 - [ ] CONTRIBUTING.md and/or SECURITY.md reviewed or updated
+- [ ] Follow-up CONTRIBUTING.md/SECURITY.md work needed
 
 ## Risk and Rollback
 

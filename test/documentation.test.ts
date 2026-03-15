@@ -518,7 +518,7 @@ describe("Documentation Integrity", () => {
 		);
 		expect(antiSlopStep?.with?.["max-failures"]).toBe(4);
 		expect(antiSlopStep?.with?.["exempt-draft-prs"]).toBe(true);
-		expect(antiSlopStep?.with?.["blocked-terms"]).toContain(
+		expect(antiSlopStep?.with?.["blocked-terms"]).toBe(
 			"WORKTREE_LANTERN_1455",
 		);
 		expect(antiSlopStep?.with?.["blocked-paths"]).toBe("");
@@ -546,6 +546,9 @@ describe("Documentation Integrity", () => {
 		expect(prBody).toMatch(/## Docs Impact\s*\n+\s*Pick one:/);
 		expect(prBody).toContain("## Governance Review");
 		expect(prBody).toMatch(/## Governance Review\s*\n+\s*Pick one:/);
+		expect(prBody).toContain(
+			"Follow-up CONTRIBUTING.md/SECURITY.md work needed",
+		);
 		expect(prBody).toContain("## Risk and Rollback");
 		expect(prBody).toContain("## Additional Notes");
 		expect(prBody).not.toContain("## Docs and Governance Checklist");
