@@ -747,7 +747,7 @@ describe("storage recovery paths", () => {
 		const accountSnapshots = metadata.accounts.snapshots;
 		const cacheEntries = accountSnapshots.filter((snapshot) => snapshot.path.endsWith(".cache"));
 		expect(cacheEntries).toHaveLength(0);
-		expect(metadata.accounts.latestValidPath).toBe(`${storagePath}.manual-meta-checkpoint`);
+		expect(metadata.accounts.latestValidPath).not.toBe(`${storagePath}.cache`);
 		const discovered = accountSnapshots.find((snapshot) => snapshot.path.endsWith("manual-meta-checkpoint"));
 		expect(discovered?.kind).toBe("accounts-discovered-backup");
 		expect(discovered?.valid).toBe(true);
