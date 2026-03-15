@@ -1345,6 +1345,18 @@ export async function getActionableNamedBackupRestores(
 	const settled = await Promise.allSettled(
 		backups.map((backup) => assess(backup.name, { currentStorage })),
 	);
+	for (const [index, result] of settled.entries()) {
+		if (result.status === "rejected") {
+			log.debug("Named backup recovery assessment failed", {
+				operation: "named-backup-recovery-assessment",
+				backupName: backups[index]?.name ?? null,
+				error:
+					result.reason instanceof Error
+						? result.reason.message
+						: String(result.reason),
+			});
+		}
+	}
 	const assessments = settled
 		.filter(
 			(

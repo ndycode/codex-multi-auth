@@ -35,7 +35,7 @@ import {
 	getLastLiveAccountSyncSnapshot,
 	type LiveAccountSyncSnapshot,
 } from "../live-account-sync.js";
-import { loadAccounts, saveAccounts } from "../storage.js";
+import { getStoragePath, loadAccounts, saveAccounts } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
@@ -2694,7 +2694,10 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 			const current = await loadAccounts();
 			const synced = await syncAccountStorageFromCodexCli(current);
 			if (synced.changed && synced.storage) {
-				await saveAccounts(synced.storage);
+				const syncedStorage = synced.storage;
+				await withQueuedRetry(getStoragePath(), async () =>
+					saveAccounts(syncedStorage),
+				);
 			}
 			const state = await loadCodexCliState({ forceRefresh: true });
 			preview = await previewCodexCliSync(synced.storage ?? current, {

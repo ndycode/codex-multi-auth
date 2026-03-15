@@ -722,6 +722,12 @@ async function refreshQuotaCacheForMenu(
 	return cache;
 }
 
+/** Matches ANSI escape sequences and C0/DEL control characters for display sanitization. */
+const ANSI_CONTROL_RE = new RegExp(
+	`${String.fromCharCode(0x1b)}\\[[0-9;]*m|[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+	"g",
+);
+
 const ACCESS_TOKEN_FRESH_WINDOW_MS = 5 * 60 * 1000;
 
 function hasUsableAccessToken(
@@ -4389,8 +4395,12 @@ async function runAuthLogin(): Promise<number> {
 				applyUiThemeFromDashboardSettings(displaySettings);
 				const backupDir = getNamedBackupsDirectoryPath();
 				const sample = recoveryState.assessments[0];
+				const rawName = sample?.backup.name;
+				// Strip ANSI escapes and control characters to prevent terminal injection
+				// from filenames, then fall back to a count-based label when empty.
+				const sanitized = rawName?.replace(ANSI_CONTROL_RE, "").trim();
 				const backupLabel =
-					sample?.backup.name ??
+					sanitized ||
 					`${recoveryState.assessments.length} backup${
 						recoveryState.assessments.length === 1 ? "" : "s"
 					}`;
