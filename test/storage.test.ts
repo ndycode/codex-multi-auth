@@ -28,6 +28,7 @@ import {
 	loadAccounts,
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
+	resolveNamedBackupRestorePath,
 	restoreNamedBackup,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
@@ -1577,6 +1578,17 @@ describe("storage", () => {
 						}),
 					),
 				),
+			);
+		});
+
+		it("returns a contained fallback path for missing named backups", async () => {
+			const requestedName = "  missing-backup  ";
+			const resolvedPath =
+				await resolveNamedBackupRestorePath(requestedName);
+
+			expect(resolvedPath).toBe(buildNamedBackupPath("missing-backup"));
+			await expect(importAccounts(resolvedPath)).rejects.toThrow(
+				/Import file not found/,
 			);
 		});
 

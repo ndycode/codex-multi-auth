@@ -53,6 +53,9 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+// Max total wait across 6 sleeps is about 1.26 s with proportional jitter.
+// That's acceptable for transient AV/file-lock recovery, but it also bounds how
+// long the interactive restore menu can pause while listing or assessing backups.
 const TRANSIENT_FILESYSTEM_MAX_ATTEMPTS = 7;
 const TRANSIENT_FILESYSTEM_BASE_DELAY_MS = 10;
 export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
@@ -1826,7 +1829,7 @@ export async function assessNamedBackupRestore(
 		: mergedAccounts.length - currentDeduplicatedAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, incomingDeduplicatedAccounts.length - (imported ?? 0));
+		: Math.max(0, incomingDeduplicatedAccounts.length - imported);
 	const changed = !haveEquivalentAccountRows(
 		mergedAccounts,
 		currentDeduplicatedAccounts,
@@ -2144,7 +2147,7 @@ export async function resolveNamedBackupRestorePath(name: string): Promise<strin
 	const baseName = requestedWithExtension.slice(0, -".json".length);
 	let builtPath: string;
 	try {
-		builtPath = buildNamedBackupPath(name);
+		builtPath = buildNamedBackupPath(requested);
 	} catch (error) {
 		// buildNamedBackupPath rejects names with special characters even when the
 		// requested backup name is a plain filename inside the backups directory.
