@@ -722,7 +722,9 @@ async function refreshQuotaCacheForMenu(
 	return cache;
 }
 
-/** Matches ANSI escape sequences and C0/DEL control characters for display sanitization. */
+/** Strips SGR escape sequences (ESC[..m) and all C0/DEL control characters,
+ * including bare ESC, to prevent terminal injection from backup filenames.
+ */
 const ANSI_CONTROL_RE = new RegExp(
 	`${String.fromCharCode(0x1b)}\\[[0-9;]*m|[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
 	"g",
@@ -4391,13 +4393,13 @@ async function runAuthLogin(): Promise<number> {
 					error instanceof Error && "code" in error
 						? String(error.code)
 						: undefined;
-				if (code !== "EPERM" && code !== "EBUSY") {
+				if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
 					throw error;
 				}
 				console.debug(
 					`[recovery-prompt] backup assessment skipped (${code}); falling through to OAuth`,
 				);
-				// Filesystem lock error (e.g. Windows EPERM/EBUSY) – skip recovery prompt.
+				// Filesystem lock error (e.g. Windows EPERM/EBUSY/EACCES) – skip recovery prompt.
 				recoveryState = { assessments: [], totalBackups: 0 };
 			}
 			if (recoveryState.assessments.length > 0) {

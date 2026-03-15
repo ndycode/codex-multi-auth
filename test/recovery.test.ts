@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createSessionRecoveryHook,
@@ -1222,6 +1225,11 @@ describe("handleSessionRecovery", () => {
 });
 
 describe("getActionableNamedBackupRestores", () => {
+	afterEach(async () => {
+		const storage = await import("../lib/storage.js");
+		storage.setStoragePathDirect(null);
+	});
+
 	it("filters to actionable restores only", async () => {
 		const mockBackups = [
 			{
@@ -1393,5 +1401,147 @@ describe("getActionableNamedBackupRestores", () => {
 			"actionable-backup",
 		]);
 		expect(assess).toHaveBeenCalledTimes(4);
+	});
+
+	it("returns no actionable restores when all assessments reject", async () => {
+		const mockBackups = [
+			{
+				name: "locked-a",
+				path: "/mock/backups/locked-a.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			{
+				name: "locked-b",
+				path: "/mock/backups/locked-b.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		];
+
+		const storage = await import("../lib/storage.js");
+		const assess = vi.fn(async () => {
+			throw Object.assign(new Error("access denied"), { code: "EACCES" });
+		});
+
+		const result = await storage.getActionableNamedBackupRestores({
+			backups: mockBackups,
+			assess,
+			currentStorage: null,
+		});
+
+		expect(result).toEqual({
+			assessments: [],
+			totalBackups: mockBackups.length,
+		});
+		expect(assess).toHaveBeenCalledTimes(mockBackups.length);
+	});
+
+	it("auto-loads current storage when currentStorage is omitted", async () => {
+		const workDir = await fs.mkdtemp(join(tmpdir(), "codex-recovery-test-"));
+		const storagePath = join(workDir, "accounts.json");
+		const mockBackups = [
+			{
+				name: "autoload-backup",
+				path: "/mock/backups/autoload.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		];
+
+		const storage = await import("../lib/storage.js");
+		storage.setStoragePathDirect(storagePath);
+		const persistedStorage = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "saved@example.com",
+					accountId: "acc_saved",
+					refreshToken: "refresh-saved",
+					accessToken: "access-saved",
+					expiresAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+					enabled: true,
+				},
+			],
+		};
+
+		try {
+			await storage.saveAccounts(persistedStorage);
+			const assess = vi.fn(
+				async (_name: string, options?: { currentStorage?: unknown }) => ({
+					backup: mockBackups[0],
+					currentAccountCount: 1,
+					mergedAccountCount: 2,
+					imported: 1,
+					skipped: 0,
+					wouldExceedLimit: false,
+					valid: true,
+					error: undefined,
+				}),
+			);
+
+			const result = await storage.getActionableNamedBackupRestores({
+				backups: mockBackups,
+				assess,
+			});
+
+			expect(result.totalBackups).toBe(1);
+			expect(result.assessments).toHaveLength(1);
+			expect(assess).toHaveBeenCalledWith(
+				"autoload-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						version: 3,
+						activeIndex: 0,
+						accounts: expect.arrayContaining([
+							expect.objectContaining({
+								email: "saved@example.com",
+								accountId: "acc_saved",
+							}),
+						]),
+					}),
+				}),
+			);
+		} finally {
+			storage.setStoragePathDirect(null);
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.rm(workDir, { recursive: true, force: true });
+					break;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (
+						(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
+						attempt === 4
+					) {
+						throw new Error(
+							error instanceof Error ? error.message : String(error),
+						);
+					}
+				}
+			}
+		}
 	});
 });
