@@ -119,8 +119,8 @@ function findSectionRange(lines, sectionHeader) {
 }
 
 function upsertTomlBoolean(content, sectionHeader, key, enabled) {
-	const newline = content.includes("\r\n") ? "\r\n" : "\n";
-	const normalized = content.trim().length === 0 ? [] : splitLines(content).lines;
+	const { lines, newline } = splitLines(content);
+	const normalized = content.trim().length === 0 ? [] : lines;
 	const keyLine = `${key} = ${enabled ? "true" : "false"}`;
 	const range = findSectionRange(normalized, sectionHeader);
 	const keyPattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=`);

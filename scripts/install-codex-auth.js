@@ -145,7 +145,13 @@ async function backupFile(sourcePath) {
 	return backupPath;
 }
 
-async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDir) {
+export async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDir, options = {}) {
+	const {
+		mkdirImpl = mkdir,
+		cpImpl = cp,
+		rmImpl = rm,
+		renameImpl = renameWithRetry,
+	} = options;
 	const parentDir = dirname(targetBaseDir);
 	const stagedRoot = join(
 		parentDir,
@@ -153,6 +159,11 @@ async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDi
 	);
 	const stagedBaseDir = join(stagedRoot, basename(targetBaseDir));
 	const stagedInstallDir = join(stagedBaseDir, relative(targetBaseDir, targetInstallDir));
+	const rollbackDir = join(
+		parentDir,
+		`.plugin-rollback-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+	);
+	let movedExistingPlugin = false;
 
 	if (dryRun) {
 		log(`[dry-run] Would install plugin files from ${sourcePath}`);
@@ -161,16 +172,36 @@ async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDi
 	}
 
 	try {
-		await withFileOperationRetry(() => mkdir(parentDir, { recursive: true }));
-		await withFileOperationRetry(() => mkdir(stagedInstallDir, { recursive: true }));
-		await withFileOperationRetry(() => cp(sourcePath, stagedInstallDir, { recursive: true }));
-		await withFileOperationRetry(() => rm(targetBaseDir, { recursive: true, force: true }));
-		await renameWithRetry(stagedBaseDir, targetBaseDir, { log });
+		await withFileOperationRetry(() => mkdirImpl(parentDir, { recursive: true }));
+		await withFileOperationRetry(() => mkdirImpl(stagedInstallDir, { recursive: true }));
+		await withFileOperationRetry(() => cpImpl(sourcePath, stagedInstallDir, { recursive: true }));
+		if (existsSync(targetBaseDir)) {
+			await renameImpl(targetBaseDir, rollbackDir, { log });
+			movedExistingPlugin = true;
+		}
+		try {
+			await renameImpl(stagedBaseDir, targetBaseDir, { log });
+		} catch (error) {
+			if (movedExistingPlugin && !existsSync(targetBaseDir) && existsSync(rollbackDir)) {
+				await renameImpl(rollbackDir, targetBaseDir, { log });
+				movedExistingPlugin = false;
+			}
+			throw error;
+		}
+		if (movedExistingPlugin) {
+			await withFileOperationRetry(() => rmImpl(rollbackDir, { recursive: true, force: true }));
+			movedExistingPlugin = false;
+		}
 	} finally {
 		try {
-			await withFileOperationRetry(() => rm(stagedRoot, { recursive: true, force: true }));
+			await withFileOperationRetry(() => rmImpl(stagedRoot, { recursive: true, force: true }));
 		} catch (cleanupError) {
 			log(`Warning: Could not remove staged temp dir ${stagedRoot} (${cleanupError}).`);
+		}
+		try {
+			await withFileOperationRetry(() => rmImpl(rollbackDir, { recursive: true, force: true }));
+		} catch (cleanupError) {
+			log(`Warning: Could not remove rollback temp dir ${rollbackDir} (${cleanupError}).`);
 		}
 	}
 	log(`Installed plugin cache at ${targetInstallDir}`);
