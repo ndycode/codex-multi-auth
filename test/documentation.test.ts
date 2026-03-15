@@ -547,6 +547,10 @@ describe("Documentation Integrity", () => {
 		expect(prBody).toContain("npm run build");
 		expect(prBody).toContain("## Docs Impact");
 		expect(prBody).toMatch(/## Docs Impact\s*\n+\s*Pick one:/);
+		expect(prBody).toContain("docs/getting-started.md");
+		expect(prBody).toContain("docs/features.md");
+		expect(prBody).toContain("docs/reference/*");
+		expect(prBody).toContain("docs/upgrade.md");
 		expect(prBody).toContain("## Governance Review");
 		expect(prBody).toMatch(/## Governance Review\s*\n+\s*Pick one:/);
 		expect(prBody).toContain(

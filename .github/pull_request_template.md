@@ -21,7 +21,7 @@
 Pick one:
 
 - [ ] No docs update needed
-- [ ] Docs updated in this PR
+- [ ] Docs updated in this PR <!-- README, docs/getting-started.md, docs/features.md, docs/reference/*, docs/upgrade.md -->
 - [ ] Follow-up docs work needed
 
 ## Governance Review
