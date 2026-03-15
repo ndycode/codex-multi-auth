@@ -1890,7 +1890,9 @@ export type ImportAccountsResult = {
 	imported: number;
 	total: number;
 	skipped: number;
-	changed: boolean;
+	// Runtime always includes this field; it stays optional in the public type so
+	// older compatibility callers that only model the legacy shape do not break.
+	changed?: boolean;
 };
 
 function normalizeStoragePathForComparison(path: string): string {

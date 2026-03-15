@@ -2976,6 +2976,35 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("reports backup validation failures separately from directory read failures", async () => {
+		setInteractiveTTY(true);
+		listNamedBackupsMock.mockRejectedValueOnce(
+			new Error("Backup path escapes backup directory"),
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
+			expect(selectMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"Backup validation failed: Backup path escapes backup directory",
+				),
+			);
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("propagates containment errors from batch backup assessment and returns to the login menu", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);

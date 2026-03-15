@@ -4231,11 +4231,17 @@ async function runBackupRestoreManager(
 		backups = await listNamedBackups({ candidateCache });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(
-			`Could not read backup directory: ${
-				collapseWhitespace(message) || "unknown error"
-			}`,
-		);
+		if (isNamedBackupContainmentError(error)) {
+			console.error(
+				`Backup validation failed: ${collapseWhitespace(message) || "unknown error"}`,
+			);
+		} else {
+			console.error(
+				`Could not read backup directory: ${
+					collapseWhitespace(message) || "unknown error"
+				}`,
+			);
+		}
 		return;
 	}
 	if (backups.length === 0) {
