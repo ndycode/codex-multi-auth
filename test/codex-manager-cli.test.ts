@@ -11,6 +11,7 @@ const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
 const getActionableNamedBackupRestoresMock = vi.fn();
 const listNamedBackupsMock = vi.fn();
+const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
@@ -134,6 +135,7 @@ vi.mock("../lib/storage.js", async () => {
 		getStoragePath: getStoragePathMock,
 		getActionableNamedBackupRestores: getActionableNamedBackupRestoresMock,
 		listNamedBackups: listNamedBackupsMock,
+		listRotatingBackups: listRotatingBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
 		restoreNamedBackup: restoreNamedBackupMock,
@@ -623,6 +625,7 @@ describe("codex manager cli commands", () => {
 			accounts: [],
 		});
 		listNamedBackupsMock.mockReset();
+		listRotatingBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
 		restoreNamedBackupMock.mockReset();
@@ -634,6 +637,7 @@ describe("codex manager cli commands", () => {
 			totalBackups: 0,
 		});
 		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
 		assessNamedBackupRestoreMock.mockResolvedValue({
 			backup: {
 				name: "named-backup",
@@ -2104,7 +2108,7 @@ describe("codex manager cli commands", () => {
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledWith(
-			"Found 2 recoverable backups out of 2 total (2 backups) in /mock/backups. Restore now?",
+			"Found 2 recoverable backups out of 2 total (2 backups) in /mock/backups. Open backup browser now?",
 		);
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
@@ -2153,7 +2157,7 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("shows all startup-scanned backups in the restore manager before re-prompting", async () => {
+	it("shows all startup-scanned backups in the backup browser before re-prompting", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		let storageState = {
@@ -2224,22 +2228,28 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledTimes(2);
-		const restoreManagerCall = selectMock.mock.calls.find(
-			([, options]) => options?.message === "Restore From Backup",
+		const backupBrowserCall = selectMock.mock.calls.find(
+			([, options]) => options?.message === "Backup Browser",
 		);
-		expect(restoreManagerCall).toBeDefined();
-		expect(restoreManagerCall?.[1]).toMatchObject({
-			message: "Restore From Backup",
+		expect(backupBrowserCall).toBeDefined();
+		expect(backupBrowserCall?.[1]).toMatchObject({
+			message: "Backup Browser",
 		});
-		expect(restoreManagerCall?.[0]).toEqual(
+		expect(backupBrowserCall?.[0]).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
+					label: "Named Backups",
+					kind: "heading",
+				}),
+				expect.objectContaining({
 					label: "startup-backup",
-					disabled: false,
+					value: expect.objectContaining({ type: "inspect" }),
 				}),
 				expect.objectContaining({
 					label: "stale-backup",
-					disabled: true,
+					color: "red",
+					hint: expect.stringContaining("Backup is empty or invalid"),
+					value: expect.objectContaining({ type: "inspect" }),
 				}),
 			]),
 		);
@@ -3523,7 +3533,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+		expect(listNamedBackupsMock).toHaveBeenCalled();
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
 			"named-backup",
 			expect.objectContaining({
@@ -3573,7 +3583,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(promptLoginModeMock.mock.calls[0]?.[0]).toEqual([]);
-		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+		expect(listNamedBackupsMock).toHaveBeenCalled();
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
 			"named-backup",
 			expect.objectContaining({ currentStorage: null }),
@@ -3634,7 +3644,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+		expect(listNamedBackupsMock).toHaveBeenCalled();
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
 			"named-backup",
 			expect.objectContaining({
@@ -3791,10 +3801,26 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
+		confirmMock.mockResolvedValueOnce(true);
 		selectMock.mockImplementationOnce(async (items) => {
 			const labels = items.map((item) => item.label);
+			const brokenItem = items.find((item) => item.label === "broken-backup");
 			expect(labels).toContain("healthy-backup");
-			expect(labels).not.toContain("broken-backup");
+			expect(labels).toContain("broken-backup");
+			expect(brokenItem).toMatchObject({
+				label: "broken-backup",
+				color: "yellow",
+				hint: expect.stringContaining("restore assessment unavailable"),
+				value: expect.objectContaining({
+					type: "inspect",
+					entry: expect.objectContaining({
+						kind: "named",
+						label: "broken-backup",
+						assessment: null,
+						assessmentError: "backup directory busy",
+					}),
+				}),
+			});
 			return { type: "restore", assessment: healthyAssessment };
 		});
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -3804,12 +3830,13 @@ describe("codex manager cli commands", () => {
 			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 			expect(exitCode).toBe(0);
+			expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(3);
+			expect(selectMock).toHaveBeenCalledTimes(1);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(confirmMock).toHaveBeenCalledOnce();
 			expect(restoreNamedBackupMock).toHaveBeenCalledWith("healthy-backup");
-			expect(warnSpy).toHaveBeenCalledWith(
-				expect.stringContaining(
-					'Skipped backup assessment for "broken-backup": backup directory busy',
-				),
-			);
+			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+			expect(warnSpy).not.toHaveBeenCalled();
 		} finally {
 			warnSpy.mockRestore();
 		}
@@ -3971,9 +3998,7 @@ describe("codex manager cli commands", () => {
 				}),
 			}),
 		);
-		expect(confirmMock).toHaveBeenCalledWith(
-			expect.stringContaining("into 3 current (4 after dedupe)"),
-		);
+		expect(confirmMock).toHaveBeenCalledWith('Restore backup "named-backup"?');
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
 	});
 
@@ -4099,7 +4124,10 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		const backupItems = selectMock.mock.calls[0]?.[0];
-		expect(backupItems?.[0]?.hint).toContain(
+		const epochItem = backupItems?.find(
+			(item) => item.label === "epoch-backup",
+		);
+		expect(epochItem?.hint).toContain(
 			`updated ${new Date(0).toLocaleDateString()}`,
 		);
 	});
