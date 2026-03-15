@@ -1,7 +1,10 @@
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const MOCK_BACKUP_DIR = resolve(process.cwd(), ".vitest-mock-backups");
+const MOCK_BACKUP_DIR = fileURLToPath(
+	new URL("./.vitest-mock-backups", import.meta.url),
+);
 const mockBackupPath = (name: string): string =>
 	resolve(MOCK_BACKUP_DIR, `${name}.json`);
 
@@ -2899,6 +2902,55 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("propagates containment errors from batch backup assessment and returns to the login menu", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const now = Date.now();
+		listNamedBackupsMock.mockResolvedValue([
+			{
+				name: "escaped-backup",
+				path: mockBackupPath("escaped-backup"),
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		]);
+		assessNamedBackupRestoreMock.mockRejectedValueOnce(
+			new Error("Backup path escapes backup directory"),
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(selectMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"Restore failed: Backup path escapes backup directory",
+				),
+			);
+			expect(warnSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining('Skipped backup assessment for "escaped-backup"'),
+			);
+		} finally {
+			errorSpy.mockRestore();
+			warnSpy.mockRestore();
+		}
+	});
+
 	it("keeps healthy backups selectable when one assessment fails", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);
@@ -4839,6 +4891,96 @@ describe("codex manager cli commands", () => {
 			expect(exitCode).toBe(0);
 			expect(Object.keys(currentQuotaCache.byEmail)).toEqual(
 				expect.arrayContaining(["alpha@example.com", "beta@example.com"]),
+			);
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
+	it("waits for an in-flight menu quota refresh before starting backup restore", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "restore@example.com",
+					accountId: "acc-restore",
+					accessToken: "access-restore",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-restore",
+					addedAt: now,
+					lastUsed: now,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: true,
+			menuShowFetchStatus: true,
+			menuQuotaTtlMs: 60_000,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		let currentQuotaCache: {
+			byAccountId: Record<string, unknown>;
+			byEmail: Record<string, unknown>;
+		} = {
+			byAccountId: {},
+			byEmail: {},
+		};
+		loadQuotaCacheMock.mockImplementation(async () =>
+			structuredClone(currentQuotaCache),
+		);
+		saveQuotaCacheMock.mockImplementation(async (value: typeof currentQuotaCache) => {
+			currentQuotaCache = structuredClone(value);
+		});
+		const fetchStarted = createDeferred<void>();
+		const releaseFetch = createDeferred<void>();
+		fetchCodexQuotaSnapshotMock.mockImplementation(async () => {
+			fetchStarted.resolve();
+			await releaseFetch.promise;
+			return {
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {},
+				secondary: {},
+			};
+		});
+		listNamedBackupsMock.mockResolvedValue([]);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "restore-backup" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const runPromise = runCodexMultiAuthCli(["auth", "login"]);
+
+			await fetchStarted.promise;
+			await Promise.resolve();
+
+			expect(listNamedBackupsMock).not.toHaveBeenCalled();
+
+			releaseFetch.resolve();
+
+			const exitCode = await runPromise;
+
+			expect(exitCode).toBe(0);
+			expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+			expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+			expect(saveQuotaCacheMock.mock.invocationCallOrder[0]).toBeLessThan(
+				listNamedBackupsMock.mock.invocationCallOrder[0] ??
+					Number.POSITIVE_INFINITY,
 			);
 		} finally {
 			logSpy.mockRestore();

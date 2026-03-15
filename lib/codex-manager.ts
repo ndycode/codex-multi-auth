@@ -60,6 +60,7 @@ import {
 	assertNamedBackupRestorePath,
 	importAccounts,
 	getNamedBackupsDirectoryPath,
+	isNamedBackupContainmentError,
 	listNamedBackups,
 	NAMED_BACKUP_ASSESS_CONCURRENCY,
 	findMatchingAccountIndex,
@@ -3875,7 +3876,8 @@ async function runAuthLogin(): Promise<number> {
 				menuResult.mode === "check" ||
 				menuResult.mode === "deep-check" ||
 				menuResult.mode === "forecast" ||
-				menuResult.mode === "fix";
+				menuResult.mode === "fix" ||
+				menuResult.mode === "restore-backup";
 			if (modeTouchesQuotaCache) {
 				const pendingQuotaRefresh = pendingMenuQuotaRefresh;
 				if (pendingQuotaRefresh) {
@@ -4261,6 +4263,9 @@ async function runBackupRestoreManager(
 			if (result.status === "fulfilled") {
 				assessments.push(result.value);
 				continue;
+			}
+			if (isNamedBackupContainmentError(result.reason)) {
+				throw result.reason;
 			}
 			const backupName = chunk[resultIndex]?.name ?? "unknown";
 			const reason =

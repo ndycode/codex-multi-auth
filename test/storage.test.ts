@@ -1,6 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
@@ -8,6 +8,7 @@ import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
 	assessNamedBackupRestore,
+	assertNamedBackupRestorePath,
 	buildNamedBackupPath,
 	clearAccounts,
 	clearFlaggedAccounts,
@@ -1856,6 +1857,43 @@ describe("storage", () => {
 			} finally {
 				readdirSpy.mockRestore();
 			}
+		});
+
+		it("rejects backup paths whose real path escapes the backups directory through symlinked directories", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const outsideRoot = join(testWorkDir, "outside");
+			const linkedRoot = join(backupRoot, "linked");
+			const outsideBackupPath = join(outsideRoot, "escape.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.mkdir(outsideRoot, { recursive: true });
+			await fs.writeFile(
+				outsideBackupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "linked-escape",
+							refreshToken: "ref-linked-escape",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.symlink(
+				resolve(outsideRoot),
+				linkedRoot,
+				process.platform === "win32" ? "junction" : "dir",
+			);
+
+			expect(() =>
+				assertNamedBackupRestorePath(
+					join(linkedRoot, "escape.json"),
+					backupRoot,
+				),
+			).toThrow(/escapes backup directory/i);
 		});
 
 		it("rejects named backup listings whose resolved paths escape the backups directory", async () => {

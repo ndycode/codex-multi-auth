@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { existsSync, promises as fs, type Dirent } from "node:fs";
+import { existsSync, promises as fs, realpathSync, type Dirent } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
@@ -1737,7 +1737,7 @@ async function retryTransientFilesystemOperation<T>(
 				throw error;
 			}
 			const baseDelayMs = TRANSIENT_FILESYSTEM_BASE_DELAY_MS * 2 ** attempt;
-			const jitterMs = Math.floor(Math.random() * 10);
+			const jitterMs = Math.floor(Math.random() * baseDelayMs);
 			await new Promise((resolve) =>
 				setTimeout(resolve, baseDelayMs + jitterMs),
 			);
@@ -2009,12 +2009,26 @@ async function findExistingNamedBackupPath(
 	return undefined;
 }
 
+function resolvePathForNamedBackupContainment(path: string): string {
+	const resolvedPath = resolvePath(path);
+	if (!existsSync(resolvedPath)) {
+		return resolvedPath;
+	}
+	try {
+		return realpathSync.native(resolvedPath);
+	} catch {
+		return resolvedPath;
+	}
+}
+
 export function assertNamedBackupRestorePath(
 	path: string,
 	backupRoot: string,
 ): string {
 	const resolvedPath = resolvePath(path);
-	const relativePath = relative(resolvePath(backupRoot), resolvedPath);
+	const resolvedBackupRoot = resolvePathForNamedBackupContainment(backupRoot);
+	const containedPath = resolvePathForNamedBackupContainment(resolvedPath);
+	const relativePath = relative(resolvedBackupRoot, containedPath);
 	const firstSegment = relativePath.split(/[\\/]/)[0];
 	if (
 		relativePath.length === 0 ||
@@ -2026,7 +2040,7 @@ export function assertNamedBackupRestorePath(
 	return resolvedPath;
 }
 
-function isNamedBackupContainmentError(error: unknown): boolean {
+export function isNamedBackupContainmentError(error: unknown): boolean {
 	return (
 		error instanceof Error &&
 		/escapes backup directory/i.test(error.message)
