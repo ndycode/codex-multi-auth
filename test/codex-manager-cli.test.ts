@@ -2520,6 +2520,70 @@ describe("codex manager cli commands", () => {
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledOnce();
 	});
 
+	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: mockBackupPath("named-backup"),
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		importAccountsMock.mockRejectedValueOnce(new Error("backup locked"));
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+			expect(exitCode).toBe(1);
+			expect(promptLoginModeMock).not.toHaveBeenCalled();
+			expect(confirmMock).toHaveBeenCalledOnce();
+			expect(importAccountsMock).toHaveBeenCalledWith(
+				mockBackupPath("named-backup"),
+			);
+			expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith("Restore failed: backup locked");
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("rejects a restore when the backup root changes before the final import path check", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();

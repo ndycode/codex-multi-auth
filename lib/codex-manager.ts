@@ -4222,7 +4222,7 @@ type BackupMenuAction =
 
 async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
-): Promise<void> {
+): Promise<boolean> {
 	const backupDir = getNamedBackupsDirectoryPath();
 	// Reuse only within this list -> assess flow so storage.ts can safely treat
 	// the cache contents as LoadedBackupCandidate entries.
@@ -4245,11 +4245,11 @@ async function runBackupRestoreManager(
 				}`,
 			);
 		}
-		return;
+		return false;
 	}
 	if (backups.length === 0) {
 		console.log(`No named backups found. Place backup files in ${backupDir}.`);
-		return;
+		return true;
 	}
 
 	const currentStorage = await loadAccounts();
@@ -4335,7 +4335,7 @@ async function runBackupRestoreManager(
 	});
 
 	if (!selection || selection.type === "back") {
-		return;
+		return true;
 	}
 
 	let latestAssessment: Awaited<ReturnType<typeof assessNamedBackupRestore>>;
@@ -4349,11 +4349,11 @@ async function runBackupRestoreManager(
 		console.error(
 			`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
 		);
-		return;
+		return false;
 	}
 	if (!latestAssessment.eligibleForRestore) {
 		console.log(latestAssessment.error ?? "Backup is not eligible for restore.");
-		return;
+		return false;
 	}
 
 	const netNewAccounts = latestAssessment.imported ?? 0;
@@ -4365,13 +4365,13 @@ async function runBackupRestoreManager(
 		latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount,
 	);
 	const confirmed = await confirm(confirmMessage);
-	if (!confirmed) return;
+	if (!confirmed) return true;
 
 	try {
 		const result = await restoreAssessedNamedBackup(latestAssessment);
 		if (!result.changed) {
 			console.log("All accounts in this backup already exist");
-			return;
+			return true;
 		}
 		if (result.imported === 0) {
 			console.log(
@@ -4404,6 +4404,7 @@ async function runBackupRestoreManager(
 				}`,
 			);
 		}
+		return true;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		const collapsedMessage = collapseWhitespace(message) || "unknown error";
@@ -4412,6 +4413,7 @@ async function runBackupRestoreManager(
 				? `Restore failed: ${collapsedMessage}. Close other Codex instances and try again.`
 				: `Restore failed: ${collapsedMessage}`,
 		);
+		return false;
 	}
 }
 
@@ -4474,8 +4476,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "restore-backup") {
 		try {
-			await runBackupRestoreManager(startupDisplaySettings);
-			return 0;
+			const completedWithoutFailure =
+				await runBackupRestoreManager(startupDisplaySettings);
+			return completedWithoutFailure ? 0 : 1;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(
