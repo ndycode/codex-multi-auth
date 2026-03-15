@@ -48,9 +48,54 @@ const {
 	pluginInstallDir,
 	pluginKey,
 } = installPaths;
+const installerLockDir = join(dirname(pluginBaseDir), `${PLUGIN_NAME}.install.lock`);
+const INSTALL_LOCK_RETRY_CODES = new Set(["EEXIST", "EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
+const INSTALL_LOCK_MAX_ATTEMPTS = 40;
+const INSTALL_LOCK_BASE_DELAY_MS = 25;
 
 function log(message) {
 	console.log(message);
+}
+
+function sleep(ms) {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
+async function withInstallerLock(operation) {
+	if (dryRun) {
+		return operation();
+	}
+
+	await withFileOperationRetry(() => mkdir(dirname(installerLockDir), { recursive: true }));
+
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			await mkdir(installerLockDir, { recursive: false });
+			break;
+		} catch (error) {
+			const code = error && typeof error === "object" && "code" in error
+				? error.code
+				: undefined;
+			const isRetryable = typeof code === "string" && INSTALL_LOCK_RETRY_CODES.has(code);
+			if (!isRetryable || attempt >= INSTALL_LOCK_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			const delayMs = INSTALL_LOCK_BASE_DELAY_MS * (attempt + 1);
+			await sleep(delayMs);
+		}
+	}
+
+	try {
+		return await operation();
+	} finally {
+		try {
+			await withFileOperationRetry(() => rm(installerLockDir, { recursive: true, force: true }));
+		} catch (error) {
+			log(`Warning: Could not remove installer lock ${installerLockDir} (${error}).`);
+		}
+	}
 }
 
 async function writeTextAtomic(filePath, content) {
@@ -150,8 +195,10 @@ async function main() {
 		throw new Error(`Official plugin source not found at ${pluginSourcePath}`);
 	}
 
-	await installPluginIntoCache(pluginSourcePath, pluginBaseDir, pluginInstallDir);
-	await updateConfigToml();
+	await withInstallerLock(async () => {
+		await installPluginIntoCache(pluginSourcePath, pluginBaseDir, pluginInstallDir);
+		await updateConfigToml();
+	});
 
 	log("");
 	log(`Done. ${PLUGIN_NAME}@${PLUGIN_MARKETPLACE} is enabled for official Codex plugin loading.`);
