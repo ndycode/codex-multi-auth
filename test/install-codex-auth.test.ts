@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
 	FILE_RETRY_BASE_DELAY_MS,
@@ -297,6 +298,73 @@ describe("install-codex-auth script", () => {
 		});
 
 		expect(result.stdout).toContain(`${configPath} is already up to date.`);
+		const backups = readdirSync(codexHome).filter((entry) =>
+			entry.startsWith("config.toml.bak-")
+		);
+		expect(backups.length).toBe(0);
+	});
+
+	it("reports a friendly error and removes transient backups when config.toml disappears between reads", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-config-disappears-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const preloadPath = path.join(home, "delete-config-on-second-read.mjs");
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_TEST_DELETE_ON_READ_PATH: configPath,
+		};
+
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(configPath, "[features]\nshell_tool = true\n", "utf8");
+		writeFileSync(
+			preloadPath,
+			[
+				'import { promises as fs } from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				"",
+				"const originalReadFile = fs.readFile.bind(fs);",
+				"const originalRm = fs.rm.bind(fs);",
+				"const targetPath = process.env.CODEX_MULTI_AUTH_TEST_DELETE_ON_READ_PATH;",
+				"let targetReadCount = 0;",
+				"",
+				"fs.readFile = async (...args) => {",
+				"\tconst [filePath] = args;",
+				"\tif (targetPath && typeof filePath === \"string\" && filePath === targetPath) {",
+				"\t\ttargetReadCount += 1;",
+				"\t\tif (targetReadCount === 2) {",
+				"\t\t\tawait originalRm(targetPath, { force: true });",
+				"\t\t}",
+				"\t}",
+				"\treturn originalReadFile(...args);",
+				"};",
+				"",
+				"syncBuiltinESMExports();",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		env.NODE_OPTIONS = `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--import=${pathToFileURL(preloadPath).href}`;
+
+		const failure = await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		}).then(
+			() => null,
+			(error) => error as Error & { code?: number; stderr?: string; stdout?: string },
+		);
+
+		expect(failure).not.toBeNull();
+		expect(failure?.code).toBe(1);
+		expect(failure?.stderr).toContain(
+			`Installer failed: ${configPath} was removed while preparing the install. Rerun the installer.`,
+		);
+		expect(failure?.stderr).not.toContain("ENOENT");
+		expect(existsSync(configPath)).toBe(false);
+
 		const backups = readdirSync(codexHome).filter((entry) =>
 			entry.startsWith("config.toml.bak-")
 		);

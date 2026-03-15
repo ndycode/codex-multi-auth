@@ -56,6 +56,13 @@ function log(message) {
 	console.log(message);
 }
 
+function hasErrorCode(error, code) {
+	return typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		error.code === code;
+}
+
 async function writeTextAtomic(filePath, content) {
 	const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random()
 		.toString(36)
@@ -87,11 +94,22 @@ async function backupFile(sourcePath) {
 }
 
 async function readConfigTomlIfExists() {
-	if (!existsSync(configPath)) {
-		return null;
+	try {
+		return await withFileOperationRetry(() => readFile(configPath, "utf-8"));
+	} catch (error) {
+		if (hasErrorCode(error, "ENOENT")) {
+			return null;
+		}
+		throw error;
 	}
+}
 
-	return withFileOperationRetry(() => readFile(configPath, "utf-8"));
+async function removeBackupFileIfPresent(backupPath) {
+	try {
+		await withFileOperationRetry(() => rm(backupPath, { force: true }));
+	} catch (error) {
+		log(`Warning: Could not remove transient backup ${backupPath} (${error}).`);
+	}
 }
 
 async function updateConfigToml() {
@@ -107,23 +125,40 @@ async function updateConfigToml() {
 		return;
 	}
 
+	let backupPath = null;
 	if (originalConfig !== null) {
-		const backupPath = await backupFile(configPath);
-		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
+		try {
+			backupPath = await backupFile(configPath);
+		} catch (error) {
+			if (hasErrorCode(error, "ENOENT")) {
+				throw new Error(`${configPath} was removed while preparing the install. Rerun the installer.`);
+			}
+			throw error;
+		}
 	}
 
 	if (dryRun) {
+		if (backupPath !== null) {
+			log(`[dry-run] Would create backup: ${backupPath}`);
+		}
 		log(`[dry-run] Would write ${configPath}`);
 		return;
 	}
 
 	const latestConfig = await readConfigTomlIfExists();
 	if (latestConfig !== originalConfig) {
+		if (backupPath !== null) {
+			await removeBackupFileIfPresent(backupPath);
+		}
 		throw new Error(
 			latestConfig === null
 				? `${configPath} was removed while preparing the install. Rerun the installer.`
 				: `${configPath} changed while preparing the install. Rerun the installer to merge the latest changes.`,
 		);
+	}
+
+	if (backupPath !== null) {
+		log(`Backup created: ${backupPath}`);
 	}
 
 	await withFileOperationRetry(() => mkdir(configDir, { recursive: true }));
