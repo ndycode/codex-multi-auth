@@ -209,6 +209,7 @@ interface LoadedBackupCandidate {
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
+	rawAccounts?: AccountLike[];
 	error?: string;
 	errorCode?: string;
 }
@@ -233,6 +234,7 @@ function createUnloadedBackupCandidate(): LoadedBackupCandidate {
 		normalized: null,
 		storedVersion: null,
 		schemaErrors: [],
+		rawAccounts: [],
 	};
 }
 
@@ -2168,31 +2170,11 @@ export async function assessNamedBackupRestore(
 		options.currentStorage !== undefined
 			? options.currentStorage
 			: await loadAccounts();
-	let previewAccounts: AccountLike[] = [];
-	try {
-		const rawContent = await fs.readFile(backupPath, "utf-8");
-		const parsed = JSON.parse(rawContent) as unknown;
-		if (isRecord(parsed) && Array.isArray(parsed.accounts)) {
-			previewAccounts = (parsed.accounts as unknown[]).filter(
-				(account): account is AccountLike =>
-					isRecord(account) &&
-					typeof account.refreshToken === "string" &&
-					account.refreshToken.trim().length > 0,
-			);
-		}
-	} catch (error) {
-		if (!candidate.normalized) {
-			log.debug("Failed to parse backup for restore preview", {
-				path: backupPath,
-				error: String(error),
-			});
-		}
-	}
 	return assessNamedBackupRestoreCandidate(
 		backup,
 		candidate,
 		currentStorage,
-		previewAccounts,
+		candidate.rawAccounts ?? [],
 	);
 }
 
@@ -2488,10 +2470,22 @@ async function loadAccountsFromPath(path: string): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
+	rawAccounts: AccountLike[];
 }> {
 	const content = await fs.readFile(path, "utf-8");
 	const data = JSON.parse(content) as unknown;
-	return parseAndNormalizeStorage(data);
+	return {
+		...parseAndNormalizeStorage(data),
+		rawAccounts:
+			isRecord(data) && Array.isArray(data.accounts)
+				? (data.accounts as unknown[]).filter(
+						(account): account is AccountLike =>
+							isRecord(account) &&
+							typeof account.refreshToken === "string" &&
+							account.refreshToken.trim().length > 0,
+					)
+				: [],
+	};
 }
 
 async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate> {
@@ -2508,6 +2502,7 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 			normalized: null,
 			storedVersion: undefined,
 			schemaErrors: [],
+			rawAccounts: [],
 			error: String(error),
 			errorCode,
 		};
