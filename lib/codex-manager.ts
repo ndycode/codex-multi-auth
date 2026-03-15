@@ -4369,6 +4369,7 @@ type BackupRestoreManagerAssessmentLoadResult = {
 	assessments: BackupRestoreAssessment[];
 	readFailed: boolean;
 	assessmentFailures: number;
+	assessmentFailureDetails: string[];
 };
 
 async function loadBackupRestoreManagerAssessments(): Promise<
@@ -4399,6 +4400,7 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 			assessments: [],
 			readFailed: true,
 			assessmentFailures: 0,
+			assessmentFailureDetails: [],
 		};
 	}
 	if (backups.length === 0) {
@@ -4406,12 +4408,14 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 			assessments: [],
 			readFailed: false,
 			assessmentFailures: 0,
+			assessmentFailureDetails: [],
 		};
 	}
 
 	const currentStorage = await loadAccounts();
 	const assessments: BackupRestoreAssessment[] = [];
 	let assessmentFailures = 0;
+	const assessmentFailureDetails: string[] = [];
 	for (
 		let index = 0;
 		index < backups.length;
@@ -4439,10 +4443,11 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 				result.reason instanceof Error
 					? result.reason.message
 					: String(result.reason);
+			const normalizedReason =
+				collapseWhitespace(reason) || "unknown error";
+			assessmentFailureDetails.push(`${backupName}: ${normalizedReason}`);
 			console.warn(
-				`Skipped backup assessment for "${backupName}": ${
-					collapseWhitespace(reason) || "unknown error"
-				}`,
+				`Skipped backup assessment for "${backupName}": ${normalizedReason}`,
 			);
 			assessmentFailures += 1;
 		}
@@ -4452,6 +4457,7 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 		assessments,
 		readFailed: false,
 		assessmentFailures,
+		assessmentFailureDetails,
 	};
 }
 
@@ -4467,6 +4473,7 @@ async function runBackupRestoreManager(
 					assessments: assessmentsOverride,
 					readFailed: false,
 					assessmentFailures: 0,
+					assessmentFailureDetails: [],
 				};
 	const { assessments } = assessmentLoad;
 	if (assessments.length === 0) {
@@ -4474,8 +4481,11 @@ async function runBackupRestoreManager(
 			return "failed";
 		}
 		if (assessmentLoad.assessmentFailures > 0) {
-			console.warn(
-				"Could not inspect any named backups. Resolve the backup read errors and try again.",
+			console.error(
+				`Could not assess any named backups in ${backupDir}: ${
+					assessmentLoad.assessmentFailureDetails.join("; ") ||
+					"all assessments failed"
+				}`,
 			);
 			return "failed";
 		}
@@ -4675,6 +4685,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runDoctor(rest);
 	}
 	if (command === "restore-backup") {
+		setStoragePath(null);
 		try {
 			const restoreResult = await runBackupRestoreManager(
 				startupDisplaySettings,

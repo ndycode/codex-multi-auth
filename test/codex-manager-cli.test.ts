@@ -3386,6 +3386,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
 
 		expect(exitCode).toBe(0);
+		expect(setStoragePathMock).toHaveBeenCalledWith(null);
 		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
@@ -3466,6 +3467,64 @@ describe("codex manager cli commands", () => {
 			);
 		} finally {
 			warnSpy.mockRestore();
+		}
+	});
+
+	it("returns a non-zero exit code when every direct restore assessment fails", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		listNamedBackupsMock.mockResolvedValue([
+			{
+				name: "named-backup",
+				path: mockBackupPath("named-backup"),
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+		]);
+		assessNamedBackupRestoreMock.mockRejectedValueOnce(
+			makeErrnoError("backup busy", "EBUSY"),
+		);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+			expect(exitCode).toBe(1);
+			expect(selectMock).not.toHaveBeenCalled();
+			expect(confirmMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Could not assess any named backups in"),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("named-backup: backup busy"),
+			);
+		} finally {
+			errorSpy.mockRestore();
 		}
 	});
 
@@ -3982,6 +4041,7 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
@@ -3997,13 +4057,17 @@ describe("codex manager cli commands", () => {
 					'Skipped backup assessment for "busy-backup": backup directory busy',
 				),
 			);
-			expect(warnSpy).toHaveBeenCalledWith(
-				"Could not inspect any named backups. Resolve the backup read errors and try again.",
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Could not assess any named backups in"),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("busy-backup: backup directory busy"),
 			);
 			expect(logSpy).not.toHaveBeenCalledWith(
 				expect.stringContaining("No named backups found."),
 			);
 		} finally {
+			errorSpy.mockRestore();
 			logSpy.mockRestore();
 			warnSpy.mockRestore();
 		}
