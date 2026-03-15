@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import {
 	FILE_RETRY_BASE_DELAY_MS,
 	FILE_RETRY_MAX_ATTEMPTS,
+	withInstallerLock,
 	installPluginIntoCache,
 	PLUGIN_MARKETPLACE,
 	PLUGIN_NAME,
@@ -68,6 +69,11 @@ describe("install-codex-auth script", () => {
 				PLUGIN_VERSION,
 			),
 		);
+	});
+
+	it("uses the package version for installer cache paths", () => {
+		const packageVersion = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
+		expect(PLUGIN_VERSION).toBe(packageVersion.version);
 	});
 
 	it("respects CODEX_CLI_CONFIG_PATH override", () => {
@@ -460,6 +466,35 @@ describe("install-codex-auth script", () => {
 		expect(result.stdout).toContain("Warning: removing stale installer lock");
 		expect(result.stdout).toContain("Installed plugin cache");
 		expect(existsSync(lockDir)).toBe(false);
+	});
+
+	it("retries transient errors while creating the installer lock parent dir", async () => {
+		vi.useFakeTimers();
+		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+		const lockDir = path.join(tmpdir(), "codex-plugin-lock-parent", `${PLUGIN_NAME}.install.lock`);
+		let parentAttempts = 0;
+		const mkdirImpl = vi.fn(async (target: string) => {
+			if (target === path.dirname(lockDir)) {
+				parentAttempts += 1;
+				if (parentAttempts === 1) {
+					throw retryableError("EACCES");
+				}
+			}
+		});
+		const rmImpl = vi.fn(async () => undefined);
+		const operation = vi.fn(async () => "ok");
+
+		const pending = withInstallerLock(lockDir, operation, { mkdirImpl, rmImpl });
+		await Promise.resolve();
+		expect(mkdirImpl).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(FILE_RETRY_BASE_DELAY_MS);
+		await expect(pending).resolves.toBe("ok");
+
+		expect(parentAttempts).toBe(2);
+		expect(operation).toHaveBeenCalledTimes(1);
+		expect(rmImpl).toHaveBeenCalledWith(lockDir, { recursive: true, force: true });
+		randomSpy.mockRestore();
 	});
 
 	it("restores the existing plugin cache when final rename fails", async () => {

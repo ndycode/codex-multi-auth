@@ -1,5 +1,6 @@
 {
   "name": "codex-multi-auth",
+  "version": "0.1.9",
   "description": "Multi-account auth helper for Codex operators",
   "skills": "./skills",
   "interface": {
@@ -13,7 +14,7 @@
     ],
     "websiteURL": "https://github.com/ndycode/codex-multi-auth",
     "privacyPolicyURL": "https://github.com/ndycode/codex-multi-auth/blob/main/docs/privacy.md",
-    "termsOfServiceURL": "https://github.com/ndycode/codex-multi-auth/blob/main/README.md",
+    "termsOfServiceURL": "https://github.com/ndycode/codex-multi-auth/blob/main/docs/terms.md",
     "defaultPrompt": [
       "Use codex auth status before modifying auth state",
       "Ask before running browser login or destructive cleanup",

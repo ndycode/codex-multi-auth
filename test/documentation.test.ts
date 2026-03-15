@@ -267,19 +267,28 @@ describe("Documentation Integrity", () => {
 		const pluginManifestPath = "codex-plugin/.codex-plugin/plugin.json";
 		const pluginSkillPath = "codex-plugin/skills/account-manager/SKILL.md";
 		const marketplacePath = ".agents/plugins/marketplace.json";
+		const termsPath = "docs/terms.md";
 		const packageJson = read("package.json");
 		const pluginManifest = read(pluginManifestPath);
 		const pluginSkill = read(pluginSkillPath);
 		const marketplace = read(marketplacePath);
+		const packageData = JSON.parse(packageJson) as { version: string };
+		const pluginManifestData = JSON.parse(pluginManifest) as {
+			version?: string;
+			interface?: { termsOfServiceURL?: string };
+		};
 
 		expect(packageJson).toContain('"codex-plugin/"');
 		expect(packageJson).toContain('".agents/"');
 		expect(pluginManifest).toContain('"name": "codex-multi-auth"');
 		expect(pluginManifest).toContain('"skills": "./skills"');
+		expect(pluginManifestData.version).toBe(packageData.version);
+		expect(pluginManifestData.interface?.termsOfServiceURL).toContain("/docs/terms.md");
 		expect(pluginSkill).toContain("codex auth status");
 		expect(pluginSkill).toContain("codex auth login");
 		expect(marketplace).toContain('"name": "ndycode"');
 		expect(marketplace).toContain('"path": "../../codex-plugin"');
+		expect(existsSync(join(projectRoot, termsPath)), `${termsPath} should exist`).toBe(true);
 	});
 
 	it("documents stable overrides separately from advanced and internal overrides", () => {

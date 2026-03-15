@@ -1,15 +1,24 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, rename as fsRename, rm } from "node:fs/promises";
+import { cp, mkdir, rename as fsRename, rm, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { basename, dirname, join, relative } from "node:path";
 import { homedir } from "node:os";
 
+const requireFromUtils = createRequire(import.meta.url);
+const { version: packageVersion } = requireFromUtils("../package.json");
+
 export const PLUGIN_NAME = "codex-multi-auth";
 export const PLUGIN_MARKETPLACE = "ndycode";
-export const PLUGIN_VERSION = "local";
+export const PLUGIN_VERSION = packageVersion;
 export const FILE_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
 export const FILE_RETRY_MAX_ATTEMPTS = 6;
 export const FILE_RETRY_BASE_DELAY_MS = 25;
 export const FILE_RETRY_JITTER_MS = 20;
+export const INSTALL_LOCK_RETRY_CODES = new Set(["EEXIST", "EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
+export const INSTALL_LOCK_MAX_ATTEMPTS = 40;
+export const INSTALL_LOCK_BASE_DELAY_MS = 25;
+export const INSTALL_LOCK_MAX_DELAY_MS = 500;
+export const INSTALL_LOCK_STALE_MS = 60_000;
 
 function firstNonEmpty(values) {
 	for (const value of values) {
@@ -289,4 +298,65 @@ export async function installPluginIntoCache(sourcePath, targetBaseDir, targetIn
 		}
 	}
 	log(`Installed plugin cache at ${targetInstallDir}`);
+}
+
+export async function withInstallerLock(installerLockDir, operation, options = {}) {
+	const {
+		dryRun = false,
+		log = () => {},
+		mkdirImpl = mkdir,
+		rmImpl = rm,
+		statImpl = stat,
+		sleep: sleepImpl = sleep,
+		now = Date.now,
+	} = options;
+
+	if (dryRun) {
+		return operation();
+	}
+
+	await withFileOperationRetry(() => mkdirImpl(dirname(installerLockDir), { recursive: true }));
+
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			await mkdirImpl(installerLockDir, { recursive: false });
+			break;
+		} catch (error) {
+			const code = error && typeof error === "object" && "code" in error
+				? error.code
+				: undefined;
+			const isRetryable = typeof code === "string" && INSTALL_LOCK_RETRY_CODES.has(code);
+			if (!isRetryable || attempt >= INSTALL_LOCK_MAX_ATTEMPTS - 1) {
+				throw error;
+			}
+			if (code === "EEXIST") {
+				if (attempt === 0) {
+					log(`Waiting for installer lock ${installerLockDir}`);
+				}
+				try {
+					const { mtimeMs } = await statImpl(installerLockDir);
+					if (now() - mtimeMs > INSTALL_LOCK_STALE_MS) {
+						log(`Warning: removing stale installer lock ${installerLockDir}`);
+						await withFileOperationRetry(() => rmImpl(installerLockDir, { recursive: true, force: true }));
+						continue;
+					}
+				} catch {
+					await sleepImpl(INSTALL_LOCK_BASE_DELAY_MS);
+					continue;
+				}
+			}
+			const delayMs = Math.min(INSTALL_LOCK_BASE_DELAY_MS * 2 ** attempt, INSTALL_LOCK_MAX_DELAY_MS);
+			await sleepImpl(delayMs);
+		}
+	}
+
+	try {
+		return await operation();
+	} finally {
+		try {
+			await withFileOperationRetry(() => rmImpl(installerLockDir, { recursive: true, force: true }));
+		} catch (error) {
+			log(`Warning: Could not remove installer lock ${installerLockDir} (${error}).`);
+		}
+	}
 }
