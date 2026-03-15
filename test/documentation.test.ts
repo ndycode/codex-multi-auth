@@ -543,6 +543,8 @@ describe("Documentation Integrity", () => {
 
 		const prBody = read(prTemplate);
 		expect(prBody).toContain("WORKTREE_LANTERN_1455");
+		const visiblePrBody = prBody.replace(/<!--[\s\S]*?-->/g, "");
+		expect(visiblePrBody).not.toContain("WORKTREE_LANTERN_1455");
 		expect(prBody).toContain("## Summary");
 		expect(prBody).toContain("## What Changed");
 		expect(prBody).toContain("npm run lint");
