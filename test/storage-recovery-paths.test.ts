@@ -719,6 +719,7 @@ describe("storage recovery paths", () => {
 		);
 
 		await fs.writeFile(`${storagePath}.cache`, "noise", "utf-8");
+		await new Promise((resolve) => setTimeout(resolve, 20));
 		await fs.writeFile(
 			`${storagePath}.manual-meta-checkpoint`,
 			JSON.stringify({
