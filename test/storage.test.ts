@@ -1,4 +1,4 @@
-import { existsSync, promises as fs, realpathSync } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
+	__testOnly,
 	assessNamedBackupRestore,
 	assertNamedBackupRestorePath,
 	buildNamedBackupPath,
@@ -1311,10 +1312,10 @@ describe("storage", () => {
 		});
 
 		it("should fail export when no accounts exist", async () => {
-			const { exportAccounts } = await import("../lib/storage.js");
-			setStoragePathDirect(testStoragePath);
-			await clearAccounts();
-			await expect(exportAccounts(exportPath)).rejects.toThrow(
+			const storageModule = await import("../lib/storage.js");
+			storageModule.setStoragePathDirect(testStoragePath);
+			await storageModule.clearAccounts();
+			await expect(storageModule.exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);
 		});
@@ -2212,9 +2213,9 @@ describe("storage", () => {
 				"utf-8",
 			);
 
-			const originalRealpathNative = realpathSync.native.bind(realpathSync);
+			const originalRealpath = __testOnly.namedBackupContainmentFs.realpath;
 			const realpathSpy = vi
-				.spyOn(realpathSync, "native")
+				.spyOn(__testOnly.namedBackupContainmentFs, "realpath")
 				.mockImplementation((path) => {
 					if (String(path) === resolve(backupPath)) {
 						const error = new Error(
@@ -2223,27 +2224,27 @@ describe("storage", () => {
 						error.code = "EPERM";
 						throw error;
 					}
-					return originalRealpathNative(path);
+					return originalRealpath(path);
 				});
 
 			try {
 				expect(() =>
 					assertNamedBackupRestorePath(backupPath, backupRoot),
-				).toThrow(/backup path locked/);
+				).toThrow("Backup path validation failed. Try again.");
 			} finally {
 				realpathSpy.mockRestore();
 			}
 		});
 
-		it("rethrows transient realpath errors for the backup root", async () => {
+		it("classifies transient realpath errors for the backup root", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const backupPath = join(backupRoot, "pending", "locked.json");
 			await fs.mkdir(backupRoot, { recursive: true });
 			const transientCode = process.platform === "win32" ? "EPERM" : "EAGAIN";
 
-			const originalRealpathNative = realpathSync.native.bind(realpathSync);
+			const originalRealpath = __testOnly.namedBackupContainmentFs.realpath;
 			const realpathSpy = vi
-				.spyOn(realpathSync, "native")
+				.spyOn(__testOnly.namedBackupContainmentFs, "realpath")
 				.mockImplementation((path) => {
 					if (String(path) === resolve(backupRoot)) {
 						const error = new Error(
@@ -2252,15 +2253,40 @@ describe("storage", () => {
 						error.code = transientCode;
 						throw error;
 					}
-					return originalRealpathNative(path);
+					return originalRealpath(path);
 				});
 
 			try {
 				expect(() =>
 					assertNamedBackupRestorePath(backupPath, backupRoot),
-				).toThrow(/backup root busy/);
+				).toThrow("Backup path validation failed. Try again.");
 			} finally {
 				realpathSpy.mockRestore();
+			}
+		});
+
+		it("classifies transient lstat errors for the backup root", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "pending", "locked.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			const originalLstat = __testOnly.namedBackupContainmentFs.lstat;
+			const lstatSpy = vi
+				.spyOn(__testOnly.namedBackupContainmentFs, "lstat")
+				.mockImplementation((path) => {
+					if (String(path) === resolve(backupRoot)) {
+						const error = new Error("backup root locked") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalLstat(path);
+				});
+
+			try {
+				expect(() =>
+					assertNamedBackupRestorePath(backupPath, backupRoot),
+				).toThrow("Backup path validation failed. Try again.");
+			} finally {
+				lstatSpy.mockRestore();
 			}
 		});
 
@@ -2921,7 +2947,14 @@ describe("storage", () => {
 			const backup = await createNamedBackup("external-cache-backup");
 			const readFileSpy = vi.spyOn(fs, "readFile");
 			const candidateCache = new Map<string, unknown>([
-				[backup.path, { normalized: "invalid" }],
+				[
+					backup.path,
+					{
+						normalized: { version: 3 },
+						storedVersion: 3,
+						schemaErrors: [],
+					},
+				],
 			]);
 
 			try {

@@ -17,6 +17,7 @@ const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
 const listNamedBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
+const resolveNamedBackupRestorePathMock = vi.fn();
 const importAccountsMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
@@ -118,6 +119,7 @@ vi.mock("../lib/storage.js", async () => {
 		listNamedBackups: listNamedBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
+		resolveNamedBackupRestorePath: resolveNamedBackupRestorePathMock,
 		importAccounts: importAccountsMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,
@@ -515,6 +517,7 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
+		resolveNamedBackupRestorePathMock.mockReset();
 		importAccountsMock.mockReset();
 		confirmMock.mockReset();
 		listNamedBackupsMock.mockResolvedValue([]);
@@ -540,6 +543,9 @@ describe("codex manager cli commands", () => {
 			error: undefined,
 		});
 		getNamedBackupsDirectoryPathMock.mockReturnValue(MOCK_BACKUP_DIR);
+		resolveNamedBackupRestorePathMock.mockImplementation(async (name: string) =>
+			mockBackupPath(name),
+		);
 		importAccountsMock.mockResolvedValue({
 			imported: 1,
 			skipped: 0,
@@ -2440,7 +2446,7 @@ describe("codex manager cli commands", () => {
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledOnce();
 	});
 
-	it("rejects a restore when the reassessed backup path escapes the backup directory", async () => {
+	it("rejects a restore when the backup root changes before the final import path check", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
@@ -2481,17 +2487,11 @@ describe("codex manager cli commands", () => {
 			eligibleForRestore: true,
 			error: undefined,
 		};
-		const escapedAssessment = {
-			...assessment,
-			backup: {
-				...assessment.backup,
-				path: resolve(MOCK_BACKUP_DIR, "../outside.json"),
-			},
-		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
-		assessNamedBackupRestoreMock
-			.mockResolvedValueOnce(assessment)
-			.mockResolvedValueOnce(escapedAssessment);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		resolveNamedBackupRestorePathMock.mockRejectedValueOnce(
+			new Error("Backup path escapes backup directory"),
+		);
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });

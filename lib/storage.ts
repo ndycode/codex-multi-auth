@@ -172,11 +172,14 @@ function isLoadedBackupCandidate(
 		schemaErrors?: unknown;
 		error?: unknown;
 	};
+	const normalized = typedCandidate.normalized;
 	return (
 		"storedVersion" in typedCandidate &&
 		Array.isArray(typedCandidate.schemaErrors) &&
-		(typedCandidate.normalized === null ||
-			typeof typedCandidate.normalized === "object") &&
+		(normalized === null ||
+			(typeof normalized === "object" &&
+				normalized !== null &&
+				Array.isArray((normalized as { accounts?: unknown }).accounts))) &&
 		(typedCandidate.error === undefined ||
 			typeof typedCandidate.error === "string")
 	);
@@ -1928,6 +1931,15 @@ function haveEquivalentAccountRows(
 	return true;
 }
 
+const namedBackupContainmentFs = {
+	lstat(path: string) {
+		return lstatSync(path);
+	},
+	realpath(path: string) {
+		return realpathSync.native(path);
+	},
+};
+
 async function loadAccountsFromPath(path: string): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
@@ -2029,16 +2041,31 @@ function resolvePathForNamedBackupContainment(path: string): string {
 	const resolvedPath = resolvePath(path);
 	let existingPrefix = resolvedPath;
 	const unresolvedSegments: string[] = [];
-	while (!existsSync(existingPrefix)) {
-		const parentPath = dirname(existingPrefix);
-		if (parentPath === existingPrefix) {
-			return resolvedPath;
+	while (true) {
+		try {
+			namedBackupContainmentFs.lstat(existingPrefix);
+			break;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				const parentPath = dirname(existingPrefix);
+				if (parentPath === existingPrefix) {
+					return resolvedPath;
+				}
+				unresolvedSegments.unshift(basename(existingPrefix));
+				existingPrefix = parentPath;
+				continue;
+			}
+			if (isRetryableFilesystemErrorCode(code)) {
+				throw new Error("Backup path validation failed. Try again.", {
+					cause: error instanceof Error ? error : undefined,
+				});
+			}
+			throw error;
 		}
-		unresolvedSegments.unshift(basename(existingPrefix));
-		existingPrefix = parentPath;
 	}
 	try {
-		const canonicalPrefix = realpathSync.native(existingPrefix);
+		const canonicalPrefix = namedBackupContainmentFs.realpath(existingPrefix);
 		return unresolvedSegments.reduce(
 			(currentPath, segment) => join(currentPath, segment),
 			canonicalPrefix,
@@ -2047,6 +2074,11 @@ function resolvePathForNamedBackupContainment(path: string): string {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
 			return resolvedPath;
+		}
+		if (isRetryableFilesystemErrorCode(code)) {
+			throw new Error("Backup path validation failed. Try again.", {
+				cause: error instanceof Error ? error : undefined,
+			});
 		}
 		throw error;
 	}
@@ -2060,10 +2092,17 @@ export function assertNamedBackupRestorePath(
 	const resolvedBackupRoot = resolvePath(backupRoot);
 	let backupRootIsSymlink = false;
 	try {
-		backupRootIsSymlink = lstatSync(resolvedBackupRoot).isSymbolicLink();
+		backupRootIsSymlink =
+			namedBackupContainmentFs.lstat(resolvedBackupRoot).isSymbolicLink();
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
+		if (code === "ENOENT") {
+			backupRootIsSymlink = false;
+		} else if (isRetryableFilesystemErrorCode(code)) {
+			throw new Error("Backup path validation failed. Try again.", {
+				cause: error instanceof Error ? error : undefined,
+			});
+		} else {
 			throw error;
 		}
 	}
@@ -2088,11 +2127,11 @@ export function assertNamedBackupRestorePath(
 export function isNamedBackupContainmentError(error: unknown): boolean {
 	return (
 		error instanceof Error &&
-		/escapes backup directory/i.test(error.message)
+		/(escapes backup directory|path validation failed)/i.test(error.message)
 	);
 }
 
-async function resolveNamedBackupRestorePath(name: string): Promise<string> {
+export async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const requested = (name ?? "").trim();
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	const existingPath = await findExistingNamedBackupPath(name);
@@ -3086,3 +3125,7 @@ export async function importAccounts(
 		changed,
 	};
 }
+
+export const __testOnly = {
+	namedBackupContainmentFs,
+};

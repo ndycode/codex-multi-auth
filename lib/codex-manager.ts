@@ -57,12 +57,12 @@ import {
 } from "./quota-cache.js";
 import {
 	assessNamedBackupRestore,
-	assertNamedBackupRestorePath,
 	importAccounts,
 	getNamedBackupsDirectoryPath,
 	isNamedBackupContainmentError,
 	listNamedBackups,
 	NAMED_BACKUP_ASSESS_CONCURRENCY,
+	resolveNamedBackupRestorePath,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -4359,9 +4359,8 @@ async function runBackupRestoreManager(
 	if (!confirmed) return;
 
 	try {
-		const validatedBackupPath = assertNamedBackupRestorePath(
-			latestAssessment.backup.path,
-			getNamedBackupsDirectoryPath(),
+		const validatedBackupPath = await resolveNamedBackupRestorePath(
+			latestAssessment.backup.name,
 		);
 		const result = await importAccounts(validatedBackupPath);
 		if (!result.changed) {
