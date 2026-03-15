@@ -50,7 +50,6 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 ### Option A: Standard install
 
 ```bash
-npm i -g @openai/codex
 npm i -g codex-multi-auth
 ```
 
@@ -75,18 +74,16 @@ codex auth status
 
 ### Step-by-step
 
-1. Install global packages:
-   - `npm i -g @openai/codex`
+1. Install global package:
    - `npm i -g codex-multi-auth`
 2. Run first login flow with `codex auth login`
-3. Validate state with `codex auth list` and `codex auth check`
+3. Validate state with `codex auth status` and `codex auth check`
 4. Confirm routing with `codex auth forecast --live`
 
 ### Verification
 
 ```bash
 codex auth status
-codex auth list
 codex auth check
 ```
 
@@ -98,7 +95,7 @@ codex auth check
 
 ```bash
 codex auth login
-codex auth list
+codex auth status
 codex auth check
 codex auth forecast --live
 ```
