@@ -263,7 +263,7 @@ describe("Documentation Integrity", () => {
 		expect(manager).not.toContain("codex-multi-auth auth switch <index>");
 	});
 
-	it("ships the official Codex plugin shell and marketplace metadata", () => {
+	it("ships the official Codex plugin shell and keeps local marketplace metadata in repo", () => {
 		const pluginManifestPath = "codex-plugin/.codex-plugin/plugin.json";
 		const pluginSkillPath = "codex-plugin/skills/account-manager/SKILL.md";
 		const marketplacePath = ".agents/plugins/marketplace.json";
@@ -279,7 +279,7 @@ describe("Documentation Integrity", () => {
 		};
 
 		expect(packageJson).toContain('"codex-plugin/"');
-		expect(packageJson).toContain('".agents/"');
+		expect(packageJson).not.toContain('".agents/"');
 		expect(pluginManifest).toContain('"name": "codex-multi-auth"');
 		expect(pluginManifest).toContain('"skills": "./skills"');
 		expect(pluginManifestData.version).toBe(packageData.version);

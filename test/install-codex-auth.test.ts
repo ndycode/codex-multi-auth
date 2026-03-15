@@ -95,8 +95,8 @@ describe("install-codex-auth script", () => {
 			{ USERPROFILE: "C:\\Users\\alice" },
 			"C:\\Users\\fallback",
 		);
-		expect(paths.codexHomeDir).toBe(path.join("C:\\Users\\alice", ".codex"));
-		expect(paths.configPath).toBe(path.join("C:\\Users\\alice", ".codex", "config.toml"));
+		expect(paths.codexHomeDir).toBe(path.win32.join("C:\\Users\\alice", ".codex"));
+		expect(paths.configPath).toBe(path.win32.join("C:\\Users\\alice", ".codex", "config.toml"));
 	});
 
 	it("resolves codex home dir on windows using HOMEDRIVE and HOMEPATH fallback", () => {
@@ -105,8 +105,8 @@ describe("install-codex-auth script", () => {
 			{ HOMEDRIVE: "C:", HOMEPATH: "\\Users\\bob" },
 			"C:\\Users\\fallback",
 		);
-		expect(paths.codexHomeDir).toBe(path.join("C:\\Users\\bob", ".codex"));
-		expect(paths.configPath).toBe(path.join("C:\\Users\\bob", ".codex", "config.toml"));
+		expect(paths.codexHomeDir).toBe(path.win32.join("C:\\Users\\bob", ".codex"));
+		expect(paths.configPath).toBe(path.win32.join("C:\\Users\\bob", ".codex", "config.toml"));
 	});
 
 	it("merges plugin settings into config.toml", () => {

@@ -74,7 +74,6 @@
 	"files": [
 		"dist/",
 		"codex-plugin/",
-		".agents/",
 		"assets/",
 		"config/",
 		"scripts/",
