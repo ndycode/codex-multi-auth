@@ -97,6 +97,7 @@ async function withInstallerLock(operation) {
 						continue;
 					}
 				} catch {
+					await sleep(INSTALL_LOCK_BASE_DELAY_MS);
 					continue;
 				}
 			}
@@ -146,21 +147,28 @@ async function backupFile(sourcePath) {
 	return backupPath;
 }
 
+async function readConfigTomlIfExists() {
+	if (!existsSync(configPath)) {
+		return null;
+	}
+
+	return withFileOperationRetry(() => readFile(configPath, "utf-8"));
+}
+
 async function updateConfigToml() {
-	let originalConfig = "";
-	if (existsSync(configPath)) {
-		originalConfig = await withFileOperationRetry(() => readFile(configPath, "utf-8"));
-	} else {
+	const originalConfig = await readConfigTomlIfExists();
+	if (originalConfig === null) {
 		log("No existing config.toml found. Creating new user config.");
 	}
 
-	const nextConfig = mergePluginConfigToml(originalConfig, pluginKey);
-	if (nextConfig === originalConfig) {
+	const normalizedOriginalConfig = originalConfig ?? "";
+	const nextConfig = mergePluginConfigToml(normalizedOriginalConfig, pluginKey);
+	if (nextConfig === normalizedOriginalConfig) {
 		log(`${configPath} is already up to date.`);
 		return;
 	}
 
-	if (existsSync(configPath)) {
+	if (originalConfig !== null) {
 		const backupPath = await backupFile(configPath);
 		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
 	}
@@ -168,6 +176,15 @@ async function updateConfigToml() {
 	if (dryRun) {
 		log(`[dry-run] Would write ${configPath}`);
 		return;
+	}
+
+	const latestConfig = await readConfigTomlIfExists();
+	if (latestConfig !== originalConfig) {
+		throw new Error(
+			latestConfig === null
+				? `${configPath} was removed while preparing the install. Rerun the installer.`
+				: `${configPath} changed while preparing the install. Rerun the installer to merge the latest changes.`,
+		);
 	}
 
 	await withFileOperationRetry(() => mkdir(configDir, { recursive: true }));

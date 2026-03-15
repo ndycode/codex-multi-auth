@@ -410,12 +410,27 @@ describe("install-codex-auth script", () => {
 		expect(config).toContain("plugins = true");
 		expect(config).toContain('[plugins."codex-multi-auth@ndycode"]');
 		expect(config).toContain("enabled = true");
+		const pluginManifestPath = path.join(
+			codexHome,
+			"plugins",
+			"cache",
+			PLUGIN_MARKETPLACE,
+			PLUGIN_NAME,
+			PLUGIN_VERSION,
+			".codex-plugin",
+			"plugin.json",
+		);
+		expect(existsSync(pluginManifestPath)).toBe(true);
+		expect(readFileSync(pluginManifestPath, "utf8")).toContain('"name": "codex-multi-auth"');
 
 		const backups = readdirSync(codexHome).filter((entry) =>
 			entry.startsWith("config.toml.bak-")
 		);
 		expect(backups.length).toBe(1);
 		expect(new Set(backups).size).toBe(backups.length);
+		expect(existsSync(
+			path.join(codexHome, "plugins", "cache", PLUGIN_MARKETPLACE, `${PLUGIN_NAME}.install.lock`),
+		)).toBe(false);
 	});
 
 	it("reclaims a stale installer lock before installing", async () => {
