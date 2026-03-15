@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile, copyFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,12 +62,33 @@ function hasErrorCode(error, code) {
 		error.code === code;
 }
 
-async function writeTextAtomic(filePath, content) {
+function createConfigPrepareRaceError(latestConfig) {
+	const error = new Error(
+		latestConfig === null
+			? `${configPath} was removed while preparing the install. Rerun the installer.`
+			: `${configPath} changed while preparing the install. Rerun the installer to merge the latest changes.`,
+	);
+	error.configPrepareRace = true;
+	return error;
+}
+
+function isConfigPrepareRaceError(error) {
+	return typeof error === "object" &&
+		error !== null &&
+		"configPrepareRace" in error &&
+		error.configPrepareRace === true;
+}
+
+async function writeTextAtomic(filePath, content, options = {}) {
+	const { beforeRename } = options;
 	const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random()
 		.toString(36)
 		.slice(2, 8)}`;
 	try {
 		await withFileOperationRetry(() => writeFile(tempPath, content, "utf-8"));
+		if (beforeRename) {
+			await beforeRename();
+		}
 		await renameWithRetry(tempPath, filePath, { log });
 	} finally {
 		try {
@@ -112,6 +132,13 @@ async function removeBackupFileIfPresent(backupPath) {
 	}
 }
 
+async function assertConfigTomlUnchanged(expectedConfig) {
+	const latestConfig = await readConfigTomlIfExists();
+	if (latestConfig !== expectedConfig) {
+		throw createConfigPrepareRaceError(latestConfig);
+	}
+}
+
 async function updateConfigToml() {
 	const originalConfig = await readConfigTomlIfExists();
 	if (originalConfig === null) {
@@ -145,24 +172,24 @@ async function updateConfigToml() {
 		return;
 	}
 
-	const latestConfig = await readConfigTomlIfExists();
-	if (latestConfig !== originalConfig) {
-		if (backupPath !== null) {
+	try {
+		await assertConfigTomlUnchanged(originalConfig);
+		await withFileOperationRetry(() => mkdir(configDir, { recursive: true }));
+		await writeTextAtomic(configPath, nextConfig, {
+			beforeRename: async () => {
+				await assertConfigTomlUnchanged(originalConfig);
+			},
+		});
+	} catch (error) {
+		if (backupPath !== null && isConfigPrepareRaceError(error)) {
 			await removeBackupFileIfPresent(backupPath);
 		}
-		throw new Error(
-			latestConfig === null
-				? `${configPath} was removed while preparing the install. Rerun the installer.`
-				: `${configPath} changed while preparing the install. Rerun the installer to merge the latest changes.`,
-		);
+		throw error;
 	}
 
 	if (backupPath !== null) {
 		log(`Backup created: ${backupPath}`);
 	}
-
-	await withFileOperationRetry(() => mkdir(configDir, { recursive: true }));
-	await writeTextAtomic(configPath, nextConfig);
 	log(`Wrote ${configPath}`);
 }
 
@@ -171,10 +198,6 @@ async function main() {
 		log(
 			`Compatibility note: ${compatibilityFlags.join(", ")} ${compatibilityFlags.length === 1 ? "is" : "are"} ignored. Official Codex plugin install now targets config.toml + plugin cache.`,
 		);
-	}
-
-	if (!existsSync(pluginSourcePath)) {
-		throw new Error(`Official plugin source not found at ${pluginSourcePath}`);
 	}
 
 	await withInstallerLock(installerLockDir, async () => {

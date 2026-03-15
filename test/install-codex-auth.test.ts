@@ -371,6 +371,126 @@ describe("install-codex-auth script", () => {
 		expect(backups.length).toBe(0);
 	});
 
+	it("preserves external config changes made before the atomic rename step", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-config-external-write-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const preloadPath = path.join(home, "mutate-config-before-rename.mjs");
+		const externalConfig = '[features]\nplugins = false\n[plugins."external@tool"]\nenabled = true\n';
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_TEST_MUTATE_CONFIG_PATH: configPath,
+		};
+
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(configPath, "[features]\nshell_tool = true\n", "utf8");
+		writeFileSync(
+			preloadPath,
+			[
+				'import { promises as fs } from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				"",
+				"const originalWriteFile = fs.writeFile.bind(fs);",
+				"const targetPath = process.env.CODEX_MULTI_AUTH_TEST_MUTATE_CONFIG_PATH;",
+				"const externalConfig = '[features]\\nplugins = false\\n[plugins.\"external@tool\"]\\nenabled = true\\n';",
+				"let injected = false;",
+				"",
+				"fs.writeFile = async (...args) => {",
+				"\tconst [filePath] = args;",
+				"\tif (!injected && targetPath && typeof filePath === \"string\" && filePath.startsWith(`${targetPath}.tmp-`)) {",
+				"\t\tinjected = true;",
+				"\t\tawait originalWriteFile(targetPath, externalConfig, \"utf8\");",
+				"\t}",
+				"\treturn originalWriteFile(...args);",
+				"};",
+				"",
+				"syncBuiltinESMExports();",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		env.NODE_OPTIONS = `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--import=${pathToFileURL(preloadPath).href}`;
+
+		const failure = await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		}).then(
+			() => null,
+			(error) => error as Error & { code?: number; stderr?: string; stdout?: string },
+		);
+
+		expect(failure).not.toBeNull();
+		expect(failure?.code).toBe(1);
+		expect(failure?.stderr).toContain(
+			`${configPath} changed while preparing the install. Rerun the installer to merge the latest changes.`,
+		);
+		expect(readFileSync(configPath, "utf8")).toBe(externalConfig);
+
+		const backups = readdirSync(codexHome).filter((entry) =>
+			entry.startsWith("config.toml.bak-")
+		);
+		expect(backups.length).toBe(0);
+	});
+
+	it("reports a friendly error when the plugin source disappears mid-install", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-source-missing-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const preloadPath = path.join(home, "remove-plugin-source-before-copy.mjs");
+		const pluginSourcePath = path.join(process.cwd(), "codex-plugin");
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_TEST_MISSING_SOURCE_PATH: pluginSourcePath,
+		};
+
+		writeFileSync(
+			preloadPath,
+			[
+				'import { promises as fs } from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				"",
+				"const originalCp = fs.cp.bind(fs);",
+				"const targetPath = process.env.CODEX_MULTI_AUTH_TEST_MISSING_SOURCE_PATH;",
+				"",
+				"fs.cp = async (...args) => {",
+				"\tconst [sourcePath] = args;",
+				"\tif (targetPath && typeof sourcePath === \"string\" && sourcePath === targetPath) {",
+				"\t\tconst error = new Error(`missing source ${targetPath}`);",
+				"\t\terror.code = \"ENOENT\";",
+				"\t\tthrow error;",
+				"\t}",
+				"\treturn originalCp(...args);",
+				"};",
+				"",
+				"syncBuiltinESMExports();",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		env.NODE_OPTIONS = `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--import=${pathToFileURL(preloadPath).href}`;
+
+		const failure = await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		}).then(
+			() => null,
+			(error) => error as Error & { code?: number; stderr?: string; stdout?: string },
+		);
+
+		expect(failure).not.toBeNull();
+		expect(failure?.code).toBe(1);
+		expect(failure?.stderr).toContain(`Installer failed: Official plugin source not found at ${pluginSourcePath}`);
+		expect(failure?.stderr).not.toContain("ENOENT");
+		expect(existsSync(path.join(codexHome, "config.toml"))).toBe(false);
+	});
+
 	it("replaces an existing plugin cache entry with the current plugin shell", async () => {
 		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-reinstall-"));
 		tempRoots.push(home);
@@ -563,6 +683,36 @@ describe("install-codex-auth script", () => {
 		expect(operation).toHaveBeenCalledTimes(1);
 		expect(rmImpl).toHaveBeenCalledWith(lockDir, { recursive: true, force: true });
 		randomSpy.mockRestore();
+	});
+
+	it("refreshes the installer lock heartbeat while the operation is running", async () => {
+		vi.useFakeTimers();
+		const lockDir = path.join(tmpdir(), "codex-plugin-lock-heartbeat", `${PLUGIN_NAME}.install.lock`);
+		const mkdirImpl = vi.fn(async () => undefined);
+		const rmImpl = vi.fn(async () => undefined);
+		const utimesImpl = vi.fn(async () => undefined);
+		const operation = vi.fn(async () => {
+			await new Promise((resolve) => {
+				setTimeout(resolve, 2500);
+			});
+			return "ok";
+		});
+
+		const pending = withInstallerLock(lockDir, operation, {
+			mkdirImpl,
+			rmImpl,
+			utimesImpl,
+			heartbeatIntervalMs: 1000,
+		});
+		await Promise.resolve();
+		await vi.advanceTimersByTimeAsync(2500);
+		await expect(pending).resolves.toBe("ok");
+
+		expect(operation).toHaveBeenCalledTimes(1);
+		expect(utimesImpl).toHaveBeenCalledTimes(2);
+		expect(utimesImpl).toHaveBeenNthCalledWith(1, lockDir, expect.any(Date), expect.any(Date));
+		expect(utimesImpl).toHaveBeenNthCalledWith(2, lockDir, expect.any(Date), expect.any(Date));
+		expect(rmImpl).toHaveBeenCalledWith(lockDir, { recursive: true, force: true });
 	});
 
 	it("restores the existing plugin cache when final rename fails", async () => {

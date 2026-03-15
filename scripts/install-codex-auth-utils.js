@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, rename as fsRename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, rename as fsRename, rm, stat, utimes } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join, relative } from "node:path";
 import { homedir } from "node:os";
@@ -19,6 +19,7 @@ export const INSTALL_LOCK_MAX_ATTEMPTS = 40;
 export const INSTALL_LOCK_BASE_DELAY_MS = 25;
 export const INSTALL_LOCK_MAX_DELAY_MS = 500;
 export const INSTALL_LOCK_STALE_MS = 60_000;
+export const INSTALL_LOCK_HEARTBEAT_INTERVAL_MS = 15_000;
 
 function firstNonEmpty(values) {
 	for (const value of values) {
@@ -174,6 +175,13 @@ function shouldRetryFileOperation(error) {
 		FILE_RETRY_CODES.has(error.code);
 }
 
+function hasErrorCode(error, code) {
+	return typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		error.code === code;
+}
+
 export async function withFileOperationRetry(operation) {
 	for (let attempt = 1; ; attempt += 1) {
 		try {
@@ -258,7 +266,14 @@ export async function installPluginIntoCache(sourcePath, targetBaseDir, targetIn
 	try {
 		await withFileOperationRetry(() => mkdirImpl(parentDir, { recursive: true }));
 		await withFileOperationRetry(() => mkdirImpl(stagedInstallDir, { recursive: true }));
-		await withFileOperationRetry(() => cpImpl(sourcePath, stagedInstallDir, { recursive: true }));
+		try {
+			await withFileOperationRetry(() => cpImpl(sourcePath, stagedInstallDir, { recursive: true }));
+		} catch (error) {
+			if (hasErrorCode(error, "ENOENT")) {
+				throw new Error(`Official plugin source not found at ${sourcePath}`);
+			}
+			throw error;
+		}
 		if (existsSync(targetBaseDir)) {
 			await renameImpl(targetBaseDir, rollbackDir, { log });
 			movedExistingPlugin = true;
@@ -310,7 +325,9 @@ export async function withInstallerLock(installerLockDir, operation, options = {
 		mkdirImpl = mkdir,
 		rmImpl = rm,
 		statImpl = stat,
+		utimesImpl = utimes,
 		sleep: sleepImpl = sleep,
+		heartbeatIntervalMs = INSTALL_LOCK_HEARTBEAT_INTERVAL_MS,
 		now = Date.now,
 	} = options;
 
@@ -353,9 +370,29 @@ export async function withInstallerLock(installerLockDir, operation, options = {
 		}
 	}
 
+	let heartbeat = Promise.resolve();
+	const refreshLockHeartbeat = async () => {
+		const touchedAt = new Date(now());
+		try {
+			await withFileOperationRetry(() => utimesImpl(installerLockDir, touchedAt, touchedAt));
+		} catch (error) {
+			log(`Warning: Could not refresh installer lock ${installerLockDir} (${error}).`);
+		}
+	};
+	const heartbeatHandle = heartbeatIntervalMs > 0
+		? setInterval(() => {
+			heartbeat = heartbeat.then(() => refreshLockHeartbeat());
+		}, heartbeatIntervalMs)
+		: null;
+	heartbeatHandle?.unref?.();
+
 	try {
 		return await operation();
 	} finally {
+		if (heartbeatHandle !== null) {
+			clearInterval(heartbeatHandle);
+			await heartbeat;
+		}
 		try {
 			await withFileOperationRetry(() => rmImpl(installerLockDir, { recursive: true, force: true }));
 		} catch (error) {
