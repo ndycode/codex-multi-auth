@@ -72,6 +72,29 @@ codex auth forecast --live
 
 ---
 
+## Restore Or Start Fresh
+
+Use the restore path when you already have named backup files and want to recover account state before creating new OAuth sessions.
+
+- Automatic path: run `codex auth login`, then confirm the startup restore prompt when it appears
+- Manual path: run `codex auth login`, then choose `Restore From Backup`
+- Backup location: `~/.codex/multi-auth/backups/<name>.json`
+
+The restore manager shows each backup name, account count, freshness, and whether the restore would exceed the account limit before it lets you apply anything.
+
+---
+
+## Sync And Settings
+
+The settings flow is split into two productized sections:
+
+- `Everyday Settings` for list appearance, details line, results and refresh behavior, and colors
+- `Advanced & Operator` for `Codex CLI Sync`, `Experimental`, and backend tuning
+
+Use `Codex CLI Sync` when you want to preview one-way sync from official Codex CLI account files before applying it. The sync screen shows source and target paths, preview summary, destination-only preservation, and backup rollback paths before apply.
+
+---
+
 ## Day-1 Command Pack
 
 ```bash
