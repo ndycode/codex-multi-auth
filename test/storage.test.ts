@@ -1646,7 +1646,7 @@ describe("storage", () => {
 
 			await expect(
 				restoreNamedBackup("deleted-after-assessment"),
-			).rejects.toThrow(/Import file not found/);
+			).rejects.toThrow(/ENOENT: no such file or directory/);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
@@ -1674,7 +1674,7 @@ describe("storage", () => {
 
 			await expect(
 				restoreNamedBackup("invalid-after-assessment"),
-			).rejects.toThrow(/Invalid JSON in import file/);
+			).rejects.toThrow(/is not valid JSON/);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 

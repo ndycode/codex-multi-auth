@@ -1630,6 +1630,166 @@ describe("codex manager cli commands", () => {
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
 	});
 
+	it("runs restore preview before applying a replace-only named backup", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "current@example.com",
+					accountId: "current-account",
+					refreshToken: "refresh-current",
+					accessToken: "access-current",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			backupAccountCount: 1,
+			dedupedBackupAccountCount: 1,
+			conflictsWithinBackup: 0,
+			conflictsWithExisting: 0,
+			replacedExistingCount: 1,
+			keptExistingCount: 0,
+			keptBackupCount: 1,
+			currentAccountCount: 1,
+			mergedAccountCount: 1,
+			imported: 0,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "current@example.com",
+			nextActiveAccountId: "current-account",
+			currentActiveIndex: 0,
+			currentActiveEmail: "current@example.com",
+			currentActiveAccountId: "current-account",
+			activeAccountOutcome: "unchanged",
+			activeAccountChanged: false,
+			activeAccountPreview: {
+				current: {
+					index: 0,
+					email: "current@example.com",
+					accountId: "current-account",
+				},
+				next: {
+					index: 0,
+					email: "current@example.com",
+					accountId: "current-account",
+				},
+				outcome: "unchanged",
+				changed: false,
+			},
+			namedBackupRestorePreview: {
+				conflicts: [
+					{
+						conflict: {
+							backupIndex: 0,
+							currentIndex: 0,
+							reasons: ["accountId", "email"],
+							resolution: "backup-kept",
+						},
+						backup: {
+							index: 0,
+							email: "current@example.com",
+							accountId: "current-account",
+						},
+						current: {
+							index: 0,
+							email: "current@example.com",
+							accountId: "current-account",
+						},
+					},
+				],
+				activeAccount: {
+					current: {
+						index: 0,
+						email: "current@example.com",
+						accountId: "current-account",
+					},
+					next: {
+						index: 0,
+						email: "current@example.com",
+						accountId: "current-account",
+					},
+					outcome: "unchanged",
+					changed: false,
+				},
+			},
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock
+			.mockResolvedValueOnce(assessment)
+			.mockResolvedValueOnce(assessment);
+		selectMock
+			.mockResolvedValueOnce({
+				type: "inspect",
+				entry: {
+					kind: "named",
+					label: assessment.backup.name,
+					backup: assessment.backup,
+					assessment,
+				},
+			})
+			.mockResolvedValueOnce("preview-restore");
+		confirmMock.mockResolvedValueOnce(true);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+		expect(exitCode).toBe(0);
+		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+		expect(selectMock).toHaveBeenCalledTimes(2);
+		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
+			message: "Backup Browser",
+		});
+		expect(selectMock.mock.calls[1]?.[1]).toMatchObject({
+			message: "Backup Actions",
+			subtitle: "named-backup",
+		});
+		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+			1,
+			"named-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({
+					accounts: expect.any(Array),
+				}),
+			}),
+		);
+		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+			2,
+			"named-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({
+					accounts: expect.any(Array),
+				}),
+			}),
+		);
+		expect(confirmMock).toHaveBeenCalledWith(
+			"Restore named-backup? Import 0 new accounts for 1 total. Replacing 1 current account.",
+		);
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+	});
+
 	it("restores healthy flagged accounts into active storage", async () => {
 		const now = Date.now();
 		loadFlaggedAccountsMock.mockResolvedValueOnce({
@@ -5642,26 +5802,28 @@ describe("codex manager cli commands", () => {
 			.mockImplementationOnce(async () => "preview-restore");
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
-		expect(exitCode).toBe(0);
-		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
-		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-			1,
-			"named-backup",
-			expect.objectContaining({
-				currentStorage: expect.objectContaining({
-					accounts: expect.any(Array),
+			expect(exitCode).toBe(0);
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+				1,
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						accounts: expect.any(Array),
+					}),
 				}),
-			}),
-		);
-		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-			2,
-			"named-backup",
-			expect.objectContaining({
-				currentStorage: expect.objectContaining({
-					accounts: expect.any(Array),
+			);
+			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+				2,
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						accounts: expect.any(Array),
+					}),
 				}),
 			);
 			expect(confirmMock).not.toHaveBeenCalled();

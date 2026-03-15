@@ -5069,6 +5069,7 @@ async function showBackupBrowserDetails(
 		[
 			{ label: "Preview Restore", value: "preview-restore", color: "green" },
 			{ label: "Back", value: "back" },
+			{ label: "Preview Restore", value: "preview-restore", color: "green" },
 		],
 		{
 			message: "Backup Actions",
