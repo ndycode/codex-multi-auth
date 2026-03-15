@@ -32,6 +32,8 @@ const previewCodexCliSyncMock = vi.fn();
 const applyCodexCliSyncToStorageMock = vi.fn();
 const commitPendingCodexCliSyncRunMock = vi.fn();
 const commitCodexCliSyncRunFailureMock = vi.fn();
+const getLatestCodexCliSyncRollbackPlanMock = vi.fn();
+const rollbackLatestCodexCliSyncMock = vi.fn();
 const formatRollbackPathsMock = vi.fn((targetPath: string) => [
 	`${targetPath}.bak`,
 	`${targetPath}.bak.1`,
@@ -170,8 +172,10 @@ vi.mock("../lib/codex-cli/sync.js", () => ({
 	commitCodexCliSyncRunFailure: commitCodexCliSyncRunFailureMock,
 	commitPendingCodexCliSyncRun: commitPendingCodexCliSyncRunMock,
 	formatRollbackPaths: formatRollbackPathsMock,
+	getLatestCodexCliSyncRollbackPlan: getLatestCodexCliSyncRollbackPlanMock,
 	getLastCodexCliSyncRun: getLastCodexCliSyncRunMock,
 	previewCodexCliSync: previewCodexCliSyncMock,
+	rollbackLatestCodexCliSync: rollbackLatestCodexCliSyncMock,
 }));
 
 vi.mock("../lib/codex-cli/state.js", () => ({
@@ -585,6 +589,8 @@ describe("codex manager cli commands", () => {
 		applyCodexCliSyncToStorageMock.mockReset();
 		commitPendingCodexCliSyncRunMock.mockReset();
 		commitCodexCliSyncRunFailureMock.mockReset();
+		getLatestCodexCliSyncRollbackPlanMock.mockReset();
+		rollbackLatestCodexCliSyncMock.mockReset();
 		formatRollbackPathsMock.mockReset();
 		formatRollbackPathsMock.mockImplementation((targetPath: string) => [
 			`${targetPath}.bak`,
@@ -768,6 +774,16 @@ describe("codex manager cli commands", () => {
 			changed: false,
 			storage: null,
 			pendingRun: null,
+		});
+		getLatestCodexCliSyncRollbackPlanMock.mockResolvedValue({
+			status: "unavailable",
+			reason: "No manual Codex CLI apply with a rollback checkpoint is available.",
+			snapshot: null,
+		});
+		rollbackLatestCodexCliSyncMock.mockResolvedValue({
+			status: "unavailable",
+			reason: "No manual Codex CLI apply with a rollback checkpoint is available.",
+			snapshot: null,
 		});
 		getCodexCliAccountsPathMock.mockReturnValue("/mock/codex/accounts.json");
 		getCodexCliAuthPathMock.mockReturnValue("/mock/codex/auth.json");
