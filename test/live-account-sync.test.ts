@@ -453,6 +453,68 @@ describe("live-account-sync", () => {
 		sync.stop();
 	});
 
+	it("keeps the prior path published when stop aborts a path switch mid-start", async () => {
+		const secondStoragePath = join(
+			workDir,
+			"openai-codex-accounts-aborted-switch.json",
+		);
+		await fs.writeFile(
+			secondStoragePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+
+		const sync = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+		await sync.syncToPath(storagePath);
+
+		const originalStat = fs.stat;
+		const secondStatStarted = createDeferred<void>();
+		const releaseSecondStat = createDeferred<void>();
+		const statSpy = vi
+			.spyOn(fs, "stat")
+			.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+				if (args[0] === secondStoragePath) {
+					secondStatStarted.resolve(undefined);
+					await releaseSecondStat.promise;
+				}
+				return originalStat(...args);
+			});
+
+		try {
+			const pendingSwitch = sync.syncToPath(secondStoragePath);
+			await secondStatStarted.promise;
+
+			sync.stop();
+			expect(getLastLiveAccountSyncSnapshot()).toEqual(
+				expect.objectContaining({
+					path: storagePath,
+					running: false,
+				}),
+			);
+
+			releaseSecondStat.resolve(undefined);
+			await pendingSwitch;
+
+			expect(sync.getSnapshot()).toEqual(
+				expect.objectContaining({
+					path: storagePath,
+					running: false,
+				}),
+			);
+			expect(getLastLiveAccountSyncSnapshot()).toEqual(
+				expect.objectContaining({
+					path: storagePath,
+					running: false,
+				}),
+			);
+		} finally {
+			statSpy.mockRestore();
+		}
+	});
+
 	it("waits for the prior path reload before counting the next path as synced", async () => {
 		const secondStoragePath = join(workDir, "openai-codex-accounts-third.json");
 		await fs.writeFile(

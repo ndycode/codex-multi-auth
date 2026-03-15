@@ -152,12 +152,12 @@ export class LiveAccountSync {
 		if (this.currentPath === path && this.running) return;
 		this.stop();
 		const generation = this.generation;
-
-		this.currentPath = path;
-		this.lastKnownMtimeMs = await readMtimeMs(path);
+		const nextMtimeMs = await readMtimeMs(path);
 		if (generation !== this.generation) {
 			return;
 		}
+		this.currentPath = path;
+		this.lastKnownMtimeMs = nextMtimeMs;
 		const targetDir = dirname(path);
 		const targetName = basename(path);
 

@@ -1786,7 +1786,11 @@ async function loadAccountsInternal(
 	}
 }
 
-interface SaveAccountsOptions {
+/**
+ * Optional per-call overrides for account storage persistence.
+ * When omitted, `saveAccounts` uses the module-level backup policy.
+ */
+export interface SaveAccountsOptions {
 	backupEnabled?: boolean;
 }
 
@@ -2001,6 +2005,8 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
  * Creates the Codex multi-auth storage directory if it doesn't exist.
  * Verifies file was written correctly and provides detailed error messages.
  * @param storage - Account storage data to save
+ * @param options - Optional per-call persistence overrides. Set `backupEnabled`
+ * to override the module-level backup policy for this save only.
  * @throws StorageError with platform-aware hints on failure
  */
 export async function saveAccounts(
