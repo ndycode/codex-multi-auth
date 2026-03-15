@@ -1856,16 +1856,21 @@ export async function restoreNamedBackup(
 	name: string,
 ): Promise<ImportAccountsResult> {
 	const assessment = await assessNamedBackupRestore(name);
+	return restoreAssessedNamedBackup(assessment);
+}
+
+export async function restoreAssessedNamedBackup(
+	assessment: Pick<BackupRestoreAssessment, "backup" | "eligibleForRestore" | "error">,
+): Promise<ImportAccountsResult> {
 	if (!assessment.eligibleForRestore) {
 		throw new Error(
 			assessment.error ?? "Backup is not eligible for restore.",
 		);
 	}
-	const validatedPath = assertNamedBackupRestorePath(
-		assessment.backup.path,
-		getNamedBackupRoot(getStoragePath()),
+	const resolvedPath = await resolveNamedBackupRestorePath(
+		assessment.backup.name,
 	);
-	return importAccounts(validatedPath);
+	return importAccounts(resolvedPath);
 }
 
 function parseAndNormalizeStorage(data: unknown): {

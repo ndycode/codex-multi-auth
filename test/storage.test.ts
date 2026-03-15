@@ -29,6 +29,7 @@ import {
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
 	resolveNamedBackupRestorePath,
+	restoreAssessedNamedBackup,
 	restoreNamedBackup,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
@@ -2007,6 +2008,36 @@ describe("storage", () => {
 			await expect(
 				restoreNamedBackup("deleted-after-assessment"),
 			).rejects.toThrow(/Import file not found/);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+		});
+
+		it("re-resolves an assessed named backup before the final import", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "deleted-helper",
+						refreshToken: "ref-deleted-helper",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("deleted-helper-assessment");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore(
+				"deleted-helper-assessment",
+			);
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			await removeWithRetry(backup.path, { force: true });
+
+			await expect(restoreAssessedNamedBackup(assessment)).rejects.toThrow(
+				/Import file not found/,
+			);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 

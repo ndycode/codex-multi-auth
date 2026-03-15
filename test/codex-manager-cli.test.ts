@@ -19,6 +19,7 @@ const assessNamedBackupRestoreMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const resolveNamedBackupRestorePathMock = vi.fn();
 const importAccountsMock = vi.fn();
+const restoreAssessedNamedBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
@@ -121,6 +122,7 @@ vi.mock("../lib/storage.js", async () => {
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
 		resolveNamedBackupRestorePath: resolveNamedBackupRestorePathMock,
 		importAccounts: importAccountsMock,
+		restoreAssessedNamedBackup: restoreAssessedNamedBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,
 	};
@@ -519,6 +521,7 @@ describe("codex manager cli commands", () => {
 		getNamedBackupsDirectoryPathMock.mockReset();
 		resolveNamedBackupRestorePathMock.mockReset();
 		importAccountsMock.mockReset();
+		restoreAssessedNamedBackupMock.mockReset();
 		confirmMock.mockReset();
 		listNamedBackupsMock.mockResolvedValue([]);
 		assessNamedBackupRestoreMock.mockResolvedValue({
@@ -552,6 +555,11 @@ describe("codex manager cli commands", () => {
 			total: 1,
 			changed: true,
 		});
+		restoreAssessedNamedBackupMock.mockImplementation(async (assessment) =>
+			importAccountsMock(
+				await resolveNamedBackupRestorePathMock(assessment.backup.name),
+			),
+		);
 		confirmMock.mockResolvedValue(true);
 		withAccountStorageTransactionMock.mockImplementation(
 			async (handler) => {
@@ -2430,6 +2438,72 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
+		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({
+					accounts: expect.any(Array),
+				}),
+			}),
+		);
+		expect(confirmMock).toHaveBeenCalledOnce();
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			mockBackupPath("named-backup"),
+		);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledOnce();
+	});
+
+	it("restores a named backup from the direct restore-backup command", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: mockBackupPath("named-backup"),
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
 			"named-backup",

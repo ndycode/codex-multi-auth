@@ -57,12 +57,11 @@ import {
 } from "./quota-cache.js";
 import {
 	assessNamedBackupRestore,
-	importAccounts,
 	getNamedBackupsDirectoryPath,
 	isNamedBackupContainmentError,
 	listNamedBackups,
 	NAMED_BACKUP_ASSESS_CONCURRENCY,
-	resolveNamedBackupRestorePath,
+	restoreAssessedNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -329,6 +328,7 @@ function printUsage(): void {
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
 			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
+			"  codex auth restore-backup",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
@@ -4359,10 +4359,7 @@ async function runBackupRestoreManager(
 	if (!confirmed) return;
 
 	try {
-		const validatedBackupPath = await resolveNamedBackupRestorePath(
-			latestAssessment.backup.name,
-		);
-		const result = await importAccounts(validatedBackupPath);
+		const result = await restoreAssessedNamedBackup(latestAssessment);
 		if (!result.changed) {
 			console.log("All accounts in this backup already exist");
 			return;
@@ -4465,6 +4462,18 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "doctor") {
 		return runDoctor(rest);
+	}
+	if (command === "restore-backup") {
+		try {
+			await runBackupRestoreManager(startupDisplaySettings);
+			return 0;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(
+				`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
+			);
+			return 1;
+		}
 	}
 
 	console.error(`Unknown command: ${command}`);
