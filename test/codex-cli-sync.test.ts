@@ -558,7 +558,7 @@ describe("codex-cli sync", () => {
 		expect(preview.summary.selectionChanged).toBe(false);
 	});
 
-	it("preserves a newer persisted local selection after restart", async () => {
+	it("preserves a newer persisted local selection after restart when the target mtime is only 500ms newer", async () => {
 		await writeFile(
 			accountsPath,
 			JSON.stringify(
@@ -594,7 +594,7 @@ describe("codex-cli sync", () => {
 		);
 
 		const sourceTime = new Date("2026-03-13T00:00:00.000Z");
-		const targetTime = new Date("2026-03-13T00:00:05.000Z");
+		const targetTime = new Date("2026-03-13T00:00:00.500Z");
 		await utimes(accountsPath, sourceTime, sourceTime);
 		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
 		await utimes(targetStoragePath, targetTime, targetTime);
@@ -636,6 +636,88 @@ describe("codex-cli sync", () => {
 
 		expect(preview.status).toBe("noop");
 		expect(preview.summary.selectionChanged).toBe(false);
+	});
+
+	it("preserves a newer persisted local selection on apply when the target mtime is only 500ms newer", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const sourceTime = new Date("2026-03-13T00:00:00.000Z");
+		const targetTime = new Date("2026-03-13T00:00:00.500Z");
+		await utimes(accountsPath, sourceTime, sourceTime);
+		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
+		await utimes(targetStoragePath, targetTime, targetTime);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			forceRefresh: true,
+		});
+
+		expect(result.changed).toBe(false);
+		expect(result.pendingRun).toBeNull();
+		expect(result.storage?.activeIndex).toBe(1);
+		expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
 	});
 
 	it("preserves a newer local selection when Codex state has no timestamp metadata", async () => {

@@ -511,9 +511,9 @@ function shouldApplyCodexCliSelection(
 	if (localVersion <= 0) {
 		return persistedLocalTimestamp !== null;
 	}
-	// Keep local selection when plugin wrote more recently than Codex state.
-	const toleranceMs = hasSyncVersion ? 0 : 1_000;
-	return codexVersion >= localVersion - toleranceMs;
+	// When only source mtime is available, require Codex to be at least as new as the
+	// local selection. A grace window here can overwrite a newer persisted local choice.
+	return codexVersion >= localVersion;
 }
 
 function reconcileCodexCliState(
