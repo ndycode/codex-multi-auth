@@ -20,6 +20,7 @@ jobs:
   anti-slop:
     name: PR Quality Screening
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Run anti-slop checks

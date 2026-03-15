@@ -79,6 +79,7 @@ interface AntiSlopWorkflowConfig {
 	};
 	jobs?: {
 		"anti-slop"?: {
+			"timeout-minutes"?: number;
 			steps?: Array<{
 				name?: string;
 				uses?: string;
@@ -480,9 +481,12 @@ describe("Documentation Integrity", () => {
 
 		const antiSlop = read(antiSlopWorkflow);
 		const antiSlopConfig = parse(antiSlop) as AntiSlopWorkflowConfig;
-		const antiSlopStep = antiSlopConfig.jobs?.["anti-slop"]?.steps?.find(
+		const antiSlopJob = antiSlopConfig.jobs?.["anti-slop"];
+		const antiSlopStep = antiSlopJob?.steps?.find(
 			(step) => step.name === "Run anti-slop checks",
 		);
+		const hiddenDocsImpactHint =
+			"<!-- README, docs/getting-started.md, docs/features.md, docs/reference/*, docs/upgrade.md -->";
 		expect(
 			antiSlopStep,
 			'step "Run anti-slop checks" not found in anti-slop.yml',
@@ -513,6 +517,7 @@ describe("Documentation Integrity", () => {
 			issues: "write",
 			"pull-requests": "write",
 		});
+		expect(antiSlopJob?.["timeout-minutes"]).toBe(5);
 		expect(antiSlopStep?.with?.["github-token"]).toBe("${{ github.token }}");
 		expect(antiSlopStep?.with?.["require-pr-template"]).toBe(true);
 		expect(antiSlopStep?.with?.["strict-pr-template-sections"]).toBe(
@@ -547,10 +552,9 @@ describe("Documentation Integrity", () => {
 		expect(prBody).toContain("npm run build");
 		expect(prBody).toContain("## Docs Impact");
 		expect(prBody).toMatch(/## Docs Impact\s*\n+\s*Pick one:/);
-		expect(prBody).toContain("docs/getting-started.md");
-		expect(prBody).toContain("docs/features.md");
-		expect(prBody).toContain("docs/reference/*");
-		expect(prBody).toContain("docs/upgrade.md");
+		// The concrete docs file list lives in a hidden HTML hint so the raw
+		// template stays specific even though GitHub hides it in rendered PRs.
+		expect(prBody).toContain(hiddenDocsImpactHint);
 		expect(prBody).toContain("## Governance Review");
 		expect(prBody).toMatch(/## Governance Review\s*\n+\s*Pick one:/);
 		expect(prBody).toContain(
