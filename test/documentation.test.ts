@@ -85,6 +85,7 @@ interface AntiSlopWorkflowConfig {
 					"blocked-terms"?: string;
 					"failure-add-pr-labels"?: string;
 					"close-pr"?: boolean;
+					"lock-pr"?: boolean;
 				};
 			}>;
 		};
@@ -493,7 +494,7 @@ describe("Documentation Integrity", () => {
 				"edited",
 			],
 		);
-		expect(antiSlopConfig.permissions).toMatchObject({
+		expect(antiSlopConfig.permissions).toEqual({
 			contents: "read",
 			issues: "write",
 			"pull-requests": "write",
@@ -510,6 +511,7 @@ describe("Documentation Integrity", () => {
 			"needs-human-review",
 		);
 		expect(antiSlopStep?.with?.["close-pr"]).toBe(false);
+		expect(antiSlopStep?.with?.["lock-pr"]).toBe(false);
 
 		const prBody = read(prTemplate);
 		expect(prBody).toContain("WORKTREE_LANTERN_1455");
