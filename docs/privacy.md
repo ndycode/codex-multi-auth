@@ -94,7 +94,7 @@ if ($env:CODEX_MULTI_AUTH_DIR) {
   }
 
   foreach ($relativePath in @(
-    "logs\\codex-plugin",
+    "logs\codex-plugin",
     "cache"
   )) {
     Remove-Item (Join-Path $env:CODEX_MULTI_AUTH_DIR $relativePath) -Recurse -Force -ErrorAction SilentlyContinue

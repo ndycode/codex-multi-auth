@@ -268,13 +268,14 @@ describe("Documentation Integrity", () => {
 		for (const content of [gettingStarted, troubleshooting, advancedInstall]) {
 			expect(content).toContain("Get-Command codex");
 			expect(content).toContain("command -v codex");
-			expect(content).not.toContain("```bash\nwhere codex\nwhich codex");
+			expect(content).not.toContain("where codex");
+			expect(content).not.toContain("which codex");
 		}
 
 		expect(readme).toContain("Get-Command codex` (PowerShell) or `command -v codex` (POSIX)");
 		expect(readme).toContain("needs non-auth `codex` commands to be forwarded");
 		expect(advancedInstall).toContain("`scripts/install-codex-auth.js` does the following:");
-		expect(advancedInstall).not.toContain(
+		expect(advancedInstall).toContain(
 			"> It should be treated as an operator action, not something an LLM agent runs automatically.\n\n> [!NOTE]",
 		);
 	});
