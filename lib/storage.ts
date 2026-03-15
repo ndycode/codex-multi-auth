@@ -1,6 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { existsSync, promises as fs, realpathSync, type Dirent } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	promises as fs,
+	realpathSync,
+	type Dirent,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
@@ -2026,9 +2032,14 @@ export function assertNamedBackupRestorePath(
 	backupRoot: string,
 ): string {
 	const resolvedPath = resolvePath(path);
-	const resolvedBackupRoot = resolvePathForNamedBackupContainment(backupRoot);
+	const resolvedBackupRoot = resolvePath(backupRoot);
+	if (existsSync(resolvedBackupRoot) && lstatSync(resolvedBackupRoot).isSymbolicLink()) {
+		throw new Error("Backup path escapes backup directory");
+	}
+	const canonicalBackupRoot =
+		resolvePathForNamedBackupContainment(resolvedBackupRoot);
 	const containedPath = resolvePathForNamedBackupContainment(resolvedPath);
-	const relativePath = relative(resolvedBackupRoot, containedPath);
+	const relativePath = relative(canonicalBackupRoot, containedPath);
 	const firstSegment = relativePath.split(/[\\/]/)[0];
 	if (
 		relativePath.length === 0 ||
@@ -2037,7 +2048,7 @@ export function assertNamedBackupRestorePath(
 	) {
 		throw new Error("Backup path escapes backup directory");
 	}
-	return resolvedPath;
+	return containedPath;
 }
 
 export function isNamedBackupContainmentError(error: unknown): boolean {

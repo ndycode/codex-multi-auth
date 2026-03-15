@@ -1896,6 +1896,41 @@ describe("storage", () => {
 			).toThrow(/escapes backup directory/i);
 		});
 
+		it("rejects symlinked backup roots during restore path validation", async () => {
+			const canonicalBackupRoot = join(testWorkDir, "canonical-backups");
+			const linkedBackupRoot = join(testWorkDir, "linked-backups");
+			const backupPath = join(canonicalBackupRoot, "linked-root.json");
+			await fs.mkdir(canonicalBackupRoot, { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "linked-root",
+							refreshToken: "ref-linked-root",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.symlink(
+				resolve(canonicalBackupRoot),
+				linkedBackupRoot,
+				process.platform === "win32" ? "junction" : "dir",
+			);
+
+			expect(() =>
+				assertNamedBackupRestorePath(
+					join(linkedBackupRoot, "linked-root.json"),
+					linkedBackupRoot,
+				),
+			).toThrow(/escapes backup directory/i);
+		});
+
 		it("rejects named backup listings whose resolved paths escape the backups directory", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const originalReaddir = fs.readdir.bind(fs);
@@ -2252,7 +2287,9 @@ describe("storage", () => {
 				expect(listedBackups).toEqual(
 					expect.arrayContaining([
 						expect.objectContaining({
-							name: "chunk-boundary-08",
+							name: `chunk-boundary-${String(
+								NAMED_BACKUP_LIST_CONCURRENCY,
+							).padStart(2, "0")}`,
 							valid: true,
 						}),
 					]),
