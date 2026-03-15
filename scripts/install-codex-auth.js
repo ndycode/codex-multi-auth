@@ -178,8 +178,13 @@ async function updateConfigToml() {
 			},
 		});
 	} catch (error) {
-		if (backupPath !== null && isConfigPrepareRaceError(error)) {
-			await removeBackupFileIfPresent(backupPath);
+		if (backupPath !== null) {
+			if (isConfigPrepareRaceError(error)) {
+				await removeBackupFileIfPresent(backupPath);
+				backupPath = null;
+			} else {
+				log(`Backup preserved at ${backupPath} (install failed, original config intact).`);
+			}
 		}
 		throw error;
 	}

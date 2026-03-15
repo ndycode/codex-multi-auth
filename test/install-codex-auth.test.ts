@@ -560,19 +560,23 @@ describe("install-codex-auth script", () => {
 		expect(existsSync(path.join(codexHome, "config.toml"))).toBe(false);
 	});
 
-	it("replaces an existing plugin cache entry with the current plugin shell", async () => {
+	it("replaces an existing plugin cache entry and removes stale version dirs", async () => {
 		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-reinstall-"));
 		tempRoots.push(home);
 		const codexHome = path.join(home, ".codex");
 		const configPath = path.join(codexHome, "config.toml");
-		const pluginRoot = path.join(
+		const pluginBaseDir = path.join(
 			codexHome,
 			"plugins",
 			"cache",
 			PLUGIN_MARKETPLACE,
 			PLUGIN_NAME,
+		);
+		const pluginRoot = path.join(
+			pluginBaseDir,
 			PLUGIN_VERSION,
 		);
+		const staleVersionRoot = path.join(pluginBaseDir, "0.0.0-stale");
 		const env = {
 			...process.env,
 			HOME: home,
@@ -584,6 +588,12 @@ describe("install-codex-auth script", () => {
 		writeFileSync(
 			path.join(pluginRoot, ".codex-plugin", "plugin.json"),
 			'{"name":"stale-plugin"}\n',
+			"utf8",
+		);
+		mkdirSync(path.join(staleVersionRoot, ".codex-plugin"), { recursive: true });
+		writeFileSync(
+			path.join(staleVersionRoot, ".codex-plugin", "plugin.json"),
+			'{"name":"older-plugin"}\n',
 			"utf8",
 		);
 		mkdirSync(path.dirname(configPath), { recursive: true });
@@ -600,6 +610,72 @@ describe("install-codex-auth script", () => {
 		);
 		expect(manifest).toContain('"name": "codex-multi-auth"');
 		expect(manifest).not.toContain("stale-plugin");
+		expect(existsSync(staleVersionRoot)).toBe(false);
+	});
+
+	it("logs preserved backups when config writes fail after backup creation", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-plugin-backup-preserved-"));
+		tempRoots.push(home);
+		const codexHome = path.join(home, ".codex");
+		const configPath = path.join(codexHome, "config.toml");
+		const preloadPath = path.join(home, "fail-config-temp-write.mjs");
+		const originalConfig = "[features]\nshell_tool = true\n";
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_TEST_FAIL_WRITE_PATH: configPath,
+		};
+
+		mkdirSync(path.dirname(configPath), { recursive: true });
+		writeFileSync(configPath, originalConfig, "utf8");
+		writeFileSync(
+			preloadPath,
+			[
+				'import { promises as fs } from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				"",
+				"const originalWriteFile = fs.writeFile.bind(fs);",
+				"const targetPath = process.env.CODEX_MULTI_AUTH_TEST_FAIL_WRITE_PATH;",
+				"",
+				"fs.writeFile = async (...args) => {",
+				"\tconst [filePath] = args;",
+				"\tif (targetPath && typeof filePath === \"string\" && filePath.startsWith(`${targetPath}.tmp-`)) {",
+				"\t\tconst error = new Error(`blocked temp write for ${targetPath}`);",
+				"\t\terror.code = \"EPERM\";",
+				"\t\tthrow error;",
+				"\t}",
+				"\treturn originalWriteFile(...args);",
+				"};",
+				"",
+				"syncBuiltinESMExports();",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		env.NODE_OPTIONS = `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--import=${pathToFileURL(preloadPath).href}`;
+
+		const failure = await execFileAsync(process.execPath, [scriptPath], {
+			env,
+			windowsHide: true,
+		}).then(
+			() => null,
+			(error) => error as Error & { code?: number; stderr?: string; stdout?: string },
+		);
+
+		expect(failure).not.toBeNull();
+		expect(failure?.code).toBe(1);
+		expect(failure?.stderr).toContain(`Installer failed: blocked temp write for ${configPath}`);
+		expect(readFileSync(configPath, "utf8")).toBe(originalConfig);
+
+		const backups = readdirSync(codexHome).filter((entry) =>
+			entry.startsWith("config.toml.bak-")
+		);
+		expect(backups).toHaveLength(1);
+		expect(failure?.stdout).toContain(
+			`Backup preserved at ${path.join(codexHome, backups[0])} (install failed, original config intact).`,
+		);
 	});
 
 	it("backs up and updates an overridden CODEX_CLI_CONFIG_PATH", async () => {
@@ -694,6 +770,16 @@ describe("install-codex-auth script", () => {
 		expect(existsSync(
 			path.join(codexHome, "plugins", "cache", PLUGIN_MARKETPLACE, `${PLUGIN_NAME}.install.lock`),
 		)).toBe(false);
+		const tempArtifacts = readdirSync(
+			path.join(codexHome, "plugins", "cache", PLUGIN_MARKETPLACE),
+		).filter((entry) =>
+			entry.startsWith(".plugin-install-") || entry.startsWith(".plugin-rollback-")
+		);
+		expect(tempArtifacts).toHaveLength(0);
+		const configTempFiles = readdirSync(codexHome).filter((entry) =>
+			entry.includes(".tmp-")
+		);
+		expect(configTempFiles).toHaveLength(0);
 	});
 
 	it("reclaims a stale installer lock before installing", async () => {
