@@ -82,6 +82,7 @@ interface AntiSlopWorkflowConfig {
 					"github-token"?: string;
 					"require-pr-template"?: boolean;
 					"strict-pr-template-sections"?: string;
+					"optional-pr-template-sections"?: string;
 					"blocked-terms"?: string;
 					"failure-add-pr-labels"?: string;
 					"close-pr"?: boolean;
@@ -507,6 +508,9 @@ describe("Documentation Integrity", () => {
 		expect(antiSlopStep?.with?.["require-pr-template"]).toBe(true);
 		expect(antiSlopStep?.with?.["strict-pr-template-sections"]).toBe(
 			"Validation",
+		);
+		expect(antiSlopStep?.with?.["optional-pr-template-sections"]).toBe(
+			"Additional Notes",
 		);
 		expect(antiSlopStep?.with?.["blocked-terms"]).toContain(
 			"WORKTREE_LANTERN_1455",
