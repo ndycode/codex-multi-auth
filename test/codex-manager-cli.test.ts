@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const createAuthorizationFlowMock = vi.fn();
@@ -569,6 +571,7 @@ describe("codex manager cli commands", () => {
 		exchangeAuthorizationCodeMock.mockReset();
 		startLocalOAuthServerMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
 		promptAddAnotherAccountMock.mockReset();
 		isInteractiveLoginMenuAvailableMock.mockReset();
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(true);
