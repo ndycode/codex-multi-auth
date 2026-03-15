@@ -1,4 +1,4 @@
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, promises as fs, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1540,6 +1540,54 @@ describe("storage", () => {
 			);
 		});
 
+		it("baselines restore counts on a deduplicated current snapshot", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing-account",
+						email: "existing@example.com",
+						refreshToken: "ref-existing-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("repair-current-duplicates");
+
+			const assessment = await assessNamedBackupRestore(
+				"repair-current-duplicates",
+				{
+					currentStorage: {
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "existing-account",
+								email: "existing@example.com",
+								refreshToken: "ref-existing-account",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+							{
+								accountId: "existing-account",
+								email: "existing@example.com",
+								refreshToken: "ref-existing-account",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					},
+				},
+			);
+			expect(assessment.currentAccountCount).toBe(2);
+			expect(assessment.mergedAccountCount).toBe(1);
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(true);
+		});
+
 		it("treats identical accounts in a different backup order as a no-op restore", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1931,6 +1979,50 @@ describe("storage", () => {
 			).toThrow(/escapes backup directory/i);
 		});
 
+		it("rethrows realpath containment errors for existing backup paths", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const backupPath = join(backupRoot, "locked.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "locked-path",
+							refreshToken: "ref-locked-path",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalRealpathNative = realpathSync.native.bind(realpathSync);
+			const realpathSpy = vi
+				.spyOn(realpathSync, "native")
+				.mockImplementation((path) => {
+					if (String(path) === resolve(backupPath)) {
+						const error = new Error(
+							"backup path locked",
+						) as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalRealpathNative(path);
+				});
+
+			try {
+				expect(() =>
+					assertNamedBackupRestorePath(backupPath, backupRoot),
+				).toThrow(/backup path locked/);
+			} finally {
+				realpathSpy.mockRestore();
+			}
+		});
+
 		it("rejects named backup listings whose resolved paths escape the backups directory", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const originalReaddir = fs.readdir.bind(fs);
@@ -2076,7 +2168,10 @@ describe("storage", () => {
 			}
 		});
 
-		it("retries transient backup directory errors while listing backups", async () => {
+		it("retries transient EBUSY backup directory errors while listing backups on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -2118,10 +2213,11 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
-		it("retries transient ENOTEMPTY backup directory errors while listing backups", async () => {
+		it("retries transient EAGAIN backup directory errors while listing backups", async () => {
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -2147,7 +2243,7 @@ describe("storage", () => {
 						const error = new Error(
 							"backup directory not empty yet",
 						) as NodeJS.ErrnoException;
-						error.code = "ENOTEMPTY";
+						error.code = "EAGAIN";
 						throw error;
 					}
 					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
@@ -2222,6 +2318,9 @@ describe("storage", () => {
 		});
 
 		it("retries a second-chunk backup read when listing more than one chunk of backups", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
 			const backups: Awaited<ReturnType<typeof createNamedBackup>>[] = [];
 			for (
 				let index = 0;
@@ -2303,6 +2402,7 @@ describe("storage", () => {
 			} finally {
 				readFileSpy.mockRestore();
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 
@@ -2386,7 +2486,10 @@ describe("storage", () => {
 			expect(await loadAccounts()).toEqual(storageBeforeRestore);
 		});
 
-		it("retries transient backup read errors while listing backups", async () => {
+		it("retries transient EBUSY backup read errors while listing backups on win32", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -2425,6 +2528,7 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readFileSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 

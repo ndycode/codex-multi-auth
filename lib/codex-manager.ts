@@ -3872,13 +3872,13 @@ async function runAuthLogin(): Promise<number> {
 				console.log("Cancelled.");
 				return 0;
 			}
-			const modeTouchesQuotaCache =
+			const modeRequiresDrainedQuotaRefresh =
 				menuResult.mode === "check" ||
 				menuResult.mode === "deep-check" ||
 				menuResult.mode === "forecast" ||
 				menuResult.mode === "fix" ||
 				menuResult.mode === "restore-backup";
-			if (modeTouchesQuotaCache) {
+			if (modeRequiresDrainedQuotaRefresh) {
 				const pendingQuotaRefresh = pendingMenuQuotaRefresh;
 				if (pendingQuotaRefresh) {
 					await pendingQuotaRefresh;

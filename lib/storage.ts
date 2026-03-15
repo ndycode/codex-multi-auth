@@ -1720,11 +1720,14 @@ export async function listNamedBackups(
 
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
-): code is "EPERM" | "EBUSY" | "EAGAIN" | "ENOTEMPTY" {
-	if (code === "EBUSY" || code === "ENOTEMPTY" || code === "EAGAIN") {
+): code is "EPERM" | "EBUSY" | "EAGAIN" {
+	if (code === "EAGAIN") {
 		return true;
 	}
-	return code === "EPERM" && process.platform === "win32";
+	if (process.platform !== "win32") {
+		return false;
+	}
+	return code === "EPERM" || code === "EBUSY";
 }
 
 async function retryTransientFilesystemOperation<T>(
@@ -1792,6 +1795,7 @@ export async function assessNamedBackupRestore(
 			? options.currentStorage
 			: await loadAccounts();
 	const currentAccounts = currentStorage?.accounts ?? [];
+	const currentDeduplicatedAccounts = deduplicateAccounts([...currentAccounts]);
 
 	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {
 		return {
@@ -1807,13 +1811,13 @@ export async function assessNamedBackupRestore(
 	}
 
 	const mergedAccounts = deduplicateAccounts([
-		...currentAccounts,
+		...currentDeduplicatedAccounts,
 		...candidate.normalized.accounts,
 	]);
 	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
 		? null
-		: mergedAccounts.length - currentAccounts.length;
+		: mergedAccounts.length - currentDeduplicatedAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
 		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
@@ -2022,8 +2026,11 @@ function resolvePathForNamedBackupContainment(path: string): string {
 	}
 	try {
 		return realpathSync.native(resolvedPath);
-	} catch {
-		return resolvedPath;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return resolvedPath;
+		}
+		throw error;
 	}
 }
 
@@ -2983,16 +2990,20 @@ export async function importAccounts(
 		changed,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
+		const existingDeduplicatedAccounts = deduplicateAccounts([
+			...existingAccounts,
+		]);
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
-		const merged = [...existingAccounts, ...normalized.accounts];
+		const merged = [...existingDeduplicatedAccounts, ...normalized.accounts];
 		const deduplicatedAccounts = deduplicateAccounts(merged);
 		if (deduplicatedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 			throw new Error(
 				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduplicatedAccounts.length})`,
 			);
 		}
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
+		const imported =
+			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
 		const skipped = Math.max(0, normalized.accounts.length - imported);
 		const changed = !haveEquivalentAccountRows(
 			deduplicatedAccounts,
