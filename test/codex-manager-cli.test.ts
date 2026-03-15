@@ -567,6 +567,29 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
+	it("falls through to OAuth when backup assessment throws EBUSY", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		const ebusy = Object.assign(new Error("EBUSY: resource busy"), {
+			code: "EBUSY",
+		});
+		getActionableNamedBackupRestoresMock.mockRejectedValueOnce(ebusy);
+		selectMock.mockResolvedValueOnce("cancel");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("skips startup restore prompt in fallback login mode", async () => {
 		setInteractiveTTY(true);
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(false);
