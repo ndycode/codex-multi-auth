@@ -83,7 +83,11 @@ export function resolveInstallPaths(
 }
 
 function splitLines(content) {
-	return content.replace(/\r\n/g, "\n").split("\n");
+	const newline = content.includes("\r\n") ? "\r\n" : "\n";
+	return {
+		lines: content.replace(/\r\n/g, "\n").split("\n"),
+		newline,
+	};
 }
 
 function escapeRegExp(value) {
@@ -107,7 +111,8 @@ function findSectionRange(lines, sectionHeader) {
 }
 
 function upsertTomlBoolean(content, sectionHeader, key, enabled) {
-	const normalized = content.trim().length === 0 ? [] : splitLines(content);
+	const newline = content.includes("\r\n") ? "\r\n" : "\n";
+	const normalized = content.trim().length === 0 ? [] : splitLines(content).lines;
 	const keyLine = `${key} = ${enabled ? "true" : "false"}`;
 	const range = findSectionRange(normalized, sectionHeader);
 	const keyPattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=`);
@@ -117,18 +122,18 @@ function upsertTomlBoolean(content, sectionHeader, key, enabled) {
 			normalized.push("");
 		}
 		normalized.push(sectionHeader, keyLine);
-		return `${normalized.join("\n")}\n`;
+		return `${normalized.join(newline)}${newline}`;
 	}
 
 	for (let index = range.headerIndex + 1; index < range.endIndex; index += 1) {
 		if (keyPattern.test(normalized[index])) {
 			normalized[index] = keyLine;
-			return `${normalized.join("\n")}\n`;
+			return `${normalized.join(newline)}${newline}`;
 		}
 	}
 
 	normalized.splice(range.endIndex, 0, keyLine);
-	return `${normalized.join("\n")}\n`;
+	return `${normalized.join(newline)}${newline}`;
 }
 
 export function mergePluginConfigToml(content, pluginKey) {

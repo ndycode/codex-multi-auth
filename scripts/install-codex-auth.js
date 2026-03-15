@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rm, writeFile, copyFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	PLUGIN_MARKETPLACE,
@@ -91,8 +91,8 @@ async function installPluginIntoCache(sourcePath, targetBaseDir, targetInstallDi
 		parentDir,
 		`.plugin-install-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
 	);
-	const stagedBaseDir = join(stagedRoot, PLUGIN_NAME);
-	const stagedInstallDir = join(stagedBaseDir, PLUGIN_VERSION);
+	const stagedBaseDir = join(stagedRoot, basename(targetBaseDir));
+	const stagedInstallDir = join(stagedBaseDir, relative(targetBaseDir, targetInstallDir));
 
 	if (dryRun) {
 		log(`[dry-run] Would install plugin files from ${sourcePath}`);
