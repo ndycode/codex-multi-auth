@@ -7,6 +7,7 @@ import {
 	getLastLiveAccountSyncSnapshot,
 	LiveAccountSync,
 } from "../lib/live-account-sync.js";
+import * as syncHistory from "../lib/sync-history.js";
 
 const RETRYABLE_REMOVE_CODES = new Set([
 	"EBUSY",
@@ -63,6 +64,8 @@ describe("live-account-sync", () => {
 			tmpdir(),
 			`codex-live-sync-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
+		syncHistory.configureSyncHistoryForTests(join(workDir, "logs"));
+		await syncHistory.__resetSyncHistoryForTests();
 		storagePath = join(workDir, "openai-codex-accounts.json");
 		await fs.mkdir(workDir, { recursive: true });
 		await fs.writeFile(
@@ -75,6 +78,8 @@ describe("live-account-sync", () => {
 	afterEach(async () => {
 		vi.useRealTimers();
 		__resetLastLiveAccountSyncSnapshotForTests();
+		await syncHistory.__resetSyncHistoryForTests();
+		syncHistory.configureSyncHistoryForTests(null);
 		await removeWithRetry(workDir, { recursive: true, force: true });
 	});
 
@@ -221,6 +226,7 @@ describe("live-account-sync", () => {
 		const reload = vi.fn(async () => {
 			throw new Error("reload failed");
 		});
+		const appendSpy = vi.spyOn(syncHistory, "appendSyncHistoryEntry");
 		const sync = new LiveAccountSync(reload, {
 			pollIntervalMs: 500,
 			debounceMs: 50,
@@ -244,7 +250,25 @@ describe("live-account-sync", () => {
 		const snapshot = sync.getSnapshot();
 		expect(snapshot.errorCount).toBeGreaterThan(0);
 		expect(snapshot.reloadCount).toBe(0);
+		expect(appendSpy).toHaveBeenCalled();
+		expect(syncHistory.__getLastSyncHistoryErrorForTests()).toBeNull();
+		const paths = syncHistory.getSyncHistoryPaths();
+		expect(paths.directory).toBe(join(workDir, "logs"));
+		const lastAppendPaths = syncHistory.__getLastSyncHistoryPathsForTests();
+		expect(lastAppendPaths?.directory).toBe(paths.directory);
+		const history = await syncHistory.readSyncHistory({
+			kind: "live-account-sync",
+		});
+		const last = history.at(-1);
+		expect(last?.kind).toBe("live-account-sync");
+		if (last?.kind === "live-account-sync") {
+			expect(last.outcome).toBe("error");
+			expect(["poll", "watch"]).toContain(last.reason);
+			expect(last.path).toBe("openai-codex-accounts.json");
+			expect(last.snapshot.path).toBe("openai-codex-accounts.json");
+		}
 		sync.stop();
+		appendSpy.mockRestore();
 	});
 
 	it("stops watching cleanly and prevents further reloads", async () => {
@@ -361,6 +385,14 @@ describe("live-account-sync", () => {
 
 		expect(reload).toHaveBeenCalledTimes(2);
 		expect(sync.getSnapshot().reloadCount).toBe(2);
+		const history = await syncHistory.readSyncHistory({
+			kind: "live-account-sync",
+		});
+		const last = history.at(-1);
+		expect(last?.kind).toBe("live-account-sync");
+		if (last?.kind === "live-account-sync") {
+			expect(last.outcome).toBe("success");
+		}
 		sync.stop();
 	});
 
