@@ -5098,7 +5098,7 @@ async function runBackupRestorePreview(
 		console.warn(
 			`Failed to re-assess backup "${backupName}" before restore (${errorLabel}).`,
 		);
-		return "dismissed";
+		return "failed";
 	}
 
 	if (output.isTTY) {
