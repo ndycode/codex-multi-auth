@@ -573,6 +573,50 @@ describe("storage", () => {
 			]);
 		});
 
+		it("should report imported counts against deduplicated existing storage", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "shared-workspace",
+						email: "same@example.com",
+						refreshToken: "refresh-existing-a",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "shared-workspace",
+						email: "same@example.com",
+						refreshToken: "refresh-existing-b",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "new-workspace",
+							email: "new@example.com",
+							refreshToken: "refresh-imported",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+			);
+
+			const result = await importAccounts(exportPath);
+
+			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+		});
+
 		it("should serialize concurrent transactional updates without losing accounts", async () => {
 			await saveAccounts({
 				version: 3,

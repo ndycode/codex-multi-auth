@@ -1968,9 +1968,12 @@ function assessNamedBackupRestoreCandidate(
 		};
 	}
 
+	const deduplicatedIncomingAccounts = deduplicateAccounts([
+		...candidate.normalized.accounts,
+	]);
 	const mergedAccounts = deduplicateAccounts([
 		...deduplicatedCurrentAccounts,
-		...candidate.normalized.accounts,
+		...deduplicatedIncomingAccounts,
 	]);
 	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
@@ -1978,7 +1981,7 @@ function assessNamedBackupRestoreCandidate(
 		: mergedAccounts.length - deduplicatedCurrentAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
+		: Math.max(0, deduplicatedIncomingAccounts.length - (imported ?? 0));
 
 	return {
 		backup,
@@ -1998,6 +2001,10 @@ export async function restoreNamedBackup(
 	name: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
+	const assessment = await assessNamedBackupRestore(name);
+	if (!assessment.eligibleForRestore) {
+		throw new Error(assessment.error ?? "Backup is not eligible for restore.");
+	}
 	return importAccounts(backupPath);
 }
 
@@ -2970,7 +2977,10 @@ export async function exportAccounts(
 	const transactionState = transactionSnapshotContext.getStore();
 	const currentStoragePath = getStoragePath();
 	const storage = transactionState?.active
-		? transactionState.storagePath === currentStoragePath
+		? (process.platform === "win32"
+				? transactionState.storagePath?.toLowerCase() ===
+					currentStoragePath?.toLowerCase()
+				: transactionState.storagePath === currentStoragePath)
 			? transactionState.snapshot
 			: (() => {
 					throw new Error(
@@ -3016,12 +3026,17 @@ export async function importAccounts(
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
 
-	// Check file exists with friendly error
-	if (!existsSync(resolvedPath)) {
-		throw new Error(`Import file not found: ${resolvedPath}`);
+	let content: string;
+	try {
+		content = await retryTransientFilesystemOperation(() =>
+			fs.readFile(resolvedPath, "utf-8"),
+		);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			throw new Error(`Import file not found: ${resolvedPath}`);
+		}
+		throw error;
 	}
-
-	const content = await fs.readFile(resolvedPath, "utf-8");
 
 	let imported: unknown;
 	try {
@@ -3041,7 +3056,9 @@ export async function importAccounts(
 		skipped: skippedCount,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
+		const existingDeduplicatedAccounts = deduplicateAccounts(existingAccounts);
 		const existingActiveIndex = existing?.activeIndex ?? 0;
+		const incomingDeduplicatedAccounts = deduplicateAccounts(normalized.accounts);
 
 		const merged = [...existingAccounts, ...normalized.accounts];
 
@@ -3065,8 +3082,9 @@ export async function importAccounts(
 
 		await persist(newStorage);
 
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
+		const imported =
+			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
+		const skipped = Math.max(0, incomingDeduplicatedAccounts.length - imported);
 		return { imported, total: deduplicatedAccounts.length, skipped };
 	});
 
