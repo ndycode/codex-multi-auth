@@ -4360,34 +4360,39 @@ async function runFirstRunWizard(
 				await runBackupBrowserManager(displaySettings);
 				break;
 			case "import-opencode": {
-				const assessment = await assessOpencodeAccountPool();
-				if (!assessment) {
-					console.log("No OpenCode account pool was detected.");
-					break;
-				}
-				if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
-					console.log(
-						formatOpencodeImportFailure(assessment.error),
-					);
-					break;
-				}
-				const confirmed = await confirm(
-					`Import OpenCode accounts from ${assessment.backup.path}?`,
-				);
-				if (!confirmed) {
-					break;
-				}
-				await runActionPanel(
-					"Import OpenCode Accounts",
-					`Importing from ${assessment.backup.path}`,
-					async () => {
-						const imported = await importAccounts(assessment.backup.path);
+				try {
+					const assessment = await assessOpencodeAccountPool();
+					if (!assessment) {
+						console.log("No OpenCode account pool was detected.");
+						break;
+					}
+					if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
 						console.log(
-							`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+							formatOpencodeImportFailure(assessment.error),
 						);
-					},
-					displaySettings,
-				);
+						break;
+					}
+					const confirmed = await confirm(
+						`Import OpenCode accounts from ${assessment.backup.path}?`,
+					);
+					if (!confirmed) {
+						break;
+					}
+					await runActionPanel(
+						"Import OpenCode Accounts",
+						`Importing from ${assessment.backup.path}`,
+						async () => {
+							const imported = await importAccounts(assessment.backup.path);
+							console.log(
+								`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+							);
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(`OpenCode import failed (${errorLabel}).`);
+				}
 				break;
 			}
 			case "settings":
