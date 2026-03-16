@@ -6,6 +6,7 @@ import {
 	type AccountStorageV3,
 	findMatchingAccountIndex,
 	getLastAccountsSaveTimestamp,
+	getRedactedFilesystemErrorLabel,
 	getStoragePath,
 	type NamedBackupMetadata,
 	normalizeAccountStorage,
@@ -35,6 +36,8 @@ import {
 const log = createLogger("codex-cli-sync");
 const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
 export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 4;
+const RETRYABLE_ROLLBACK_SAVE_CODES = new Set(["EBUSY", "EAGAIN"]);
+const ROLLBACK_SAVE_MAX_ATTEMPTS = 5;
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -442,17 +445,44 @@ async function loadRollbackSnapshot(
 			storage: normalized,
 		};
 	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
 		const reason =
 			(error as NodeJS.ErrnoException).code === "ENOENT"
-				? `Rollback checkpoint is missing at ${snapshot.path}.`
-				: `Failed to read rollback checkpoint: ${
-						error instanceof Error ? error.message : String(error)
-					}`;
+				? `Rollback checkpoint file not found (snapshot: ${snapshot.name}).`
+				: `Failed to read rollback checkpoint for snapshot ${snapshot.name} [${errorLabel}].`;
 		return {
 			status: "unavailable",
 			reason,
 			snapshot,
 		};
+	}
+}
+
+function isRetryableRollbackSaveError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (typeof code !== "string") {
+		return false;
+	}
+	if (RETRYABLE_ROLLBACK_SAVE_CODES.has(code)) {
+		return true;
+	}
+	return code === "EPERM" && process.platform === "win32";
+}
+
+async function saveRollbackStorageWithRetry(storage: AccountStorageV3): Promise<void> {
+	for (let attempt = 0; attempt < ROLLBACK_SAVE_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await saveAccounts(storage);
+			return;
+		} catch (error) {
+			if (
+				!isRetryableRollbackSaveError(error) ||
+				attempt + 1 >= ROLLBACK_SAVE_MAX_ATTEMPTS
+			) {
+				throw error;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
 	}
 }
 
@@ -484,7 +514,7 @@ export async function rollbackLatestCodexCliSync(
 	}
 
 	try {
-		await saveAccounts(resolvedPlan.storage);
+		await saveRollbackStorageWithRetry(resolvedPlan.storage);
 		return {
 			status: "restored",
 			reason: resolvedPlan.reason,

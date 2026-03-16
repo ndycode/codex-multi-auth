@@ -1699,10 +1699,15 @@ describe("codex-cli sync", () => {
 		const plan = await getLatestCodexCliSyncRollbackPlan();
 		expect(plan.status).toBe("unavailable");
 		expect(plan.reason).toContain("missing");
+		expect(plan.reason).toContain(missingRun.rollbackSnapshot?.name ?? "");
+		expect(plan.reason).not.toContain(missingRun.rollbackSnapshot?.path ?? "");
 
 		const rollbackResult = await rollbackLatestCodexCliSync(plan);
 		expect(rollbackResult.status).toBe("unavailable");
 		expect(rollbackResult.reason).toContain("missing");
+		expect(rollbackResult.reason).not.toContain(
+			missingRun.rollbackSnapshot?.path ?? "",
+		);
 	});
 
 	it.each([
@@ -1817,6 +1822,78 @@ describe("codex-cli sync", () => {
 		expect(rollbackResult.status).toBe("error");
 		expect(rollbackResult.reason).toBe("save busy");
 		await expect(rollbackLastCodexCliSync()).rejects.toThrow("save busy");
+
+		saveSpy.mockRestore();
+	});
+
+	it("retries transient rollback save failures before succeeding", async () => {
+		const snapshotPath = join(tempDir, "rollback-retry-snapshot.json");
+		await writeFile(
+			snapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old",
+							accountIdSource: "token",
+							email: "old@example.com",
+							refreshToken: "refresh-old",
+							accessToken: "access-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const recordedRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-retry",
+				path: snapshotPath,
+			},
+		};
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: recordedRun.runAt,
+			run: recordedRun,
+		});
+
+		const transientError = Object.assign(new Error("save busy"), {
+			code: "EBUSY",
+		});
+		const saveSpy = vi
+			.spyOn(storageModule, "saveAccounts")
+			.mockRejectedValueOnce(transientError)
+			.mockResolvedValueOnce(undefined);
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("ready");
+
+		const rollbackResult = await rollbackLatestCodexCliSync(plan);
+		expect(rollbackResult.status).toBe("restored");
+		expect(saveSpy).toHaveBeenCalledTimes(2);
 
 		saveSpy.mockRestore();
 	});
