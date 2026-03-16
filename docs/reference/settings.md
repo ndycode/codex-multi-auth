@@ -37,6 +37,11 @@ Controls account-row display and sorting behavior:
 - `menuSortQuickSwitchVisibleRow`
 - `menuLayoutMode`
 
+Layout notes:
+
+- `compact-details`: wide terminals use the split dashboard with a right-side detail pane; narrow terminals fall back to the stacked list.
+- `expanded-rows`: keeps the legacy single-column list with per-row hints visible.
+
 ## Summary Line
 
 Controls detail-line fields and order:

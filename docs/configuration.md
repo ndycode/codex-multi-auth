@@ -52,6 +52,8 @@ Plugin runtime config source selection is resolved in this order:
 After a config source is selected, environment variables override individual runtime settings.
 Dashboard display values are resolved from persisted `dashboardDisplaySettings` and then normalized defaults.
 
+`menuLayoutMode: "compact-details"` now uses the dashboard-first layout: on wide terminals it renders a split command-center view with the account list on the left and contextual details on the right; on narrow terminals it falls back to the stacked single-column view.
+
 ---
 
 ## Stable Environment Overrides

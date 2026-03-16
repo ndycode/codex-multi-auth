@@ -22,6 +22,12 @@ Required sections:
 3. Saved Accounts
 4. Danger Zone
 
+Wide-terminal default:
+
+1. Left pane keeps navigation and selection.
+2. Right pane shows contextual detail for the focused action or account.
+3. Narrow terminals must collapse back to a readable single-column layout.
+
 Required action set:
 
 - Add New Account
