@@ -735,6 +735,12 @@ describe("storage recovery paths", () => {
 			}),
 			"utf-8",
 		);
+		const manualCheckpointMtime = new Date(Date.now() + 5_000);
+		await fs.utimes(
+			`${storagePath}.manual-meta-checkpoint`,
+			manualCheckpointMtime,
+			manualCheckpointMtime,
+		);
 
 		const metadata = await getBackupMetadata();
 		const accountSnapshots = metadata.accounts.snapshots;
