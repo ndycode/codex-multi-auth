@@ -716,6 +716,16 @@ describe("CLI Module", () => {
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
 				mode: "restore-backup",
 			});
+
+			mockRl.question.mockResolvedValueOnce("backup");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "restore-backup",
+			});
+
+			mockRl.question.mockResolvedValueOnce("restore-backup");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "restore-backup",
+			});
 		});
 
 		it("evaluates CODEX_TUI/CODEX_DESKTOP/TERM_PROGRAM/ELECTRON branches when TTY is true", async () => {
