@@ -104,6 +104,19 @@ function asError(error: unknown, fallbackMessage: string): Error {
 		: new Error(`${fallbackMessage}: ${String(error)}`);
 }
 
+function asSafeAggregateError(error: unknown, fallbackMessage: string): Error {
+	const baseError = asError(error, fallbackMessage);
+	if (!/[\\/]/.test(baseError.message)) {
+		return baseError;
+	}
+	const safeError = new Error(fallbackMessage);
+	const errorCode = (baseError as NodeJS.ErrnoException).code;
+	if (typeof errorCode === "string") {
+		Object.assign(safeError, { code: errorCode });
+	}
+	return safeError;
+}
+
 export async function deleteAccountAtIndex(options: {
 	storage: AccountStorageV3;
 	index: number;
@@ -146,8 +159,11 @@ export async function deleteAccountAtIndex(options: {
 			} catch (rollbackError) {
 				throw new AggregateError(
 					[
-						originalError,
-						asError(
+						asSafeAggregateError(
+							originalError,
+							"Failed to save flagged account storage after deleting an account",
+						),
+						asSafeAggregateError(
 							rollbackError,
 							"Failed to roll back account storage after flagged save failure",
 						),

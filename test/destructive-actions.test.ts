@@ -298,4 +298,75 @@ describe("destructive actions", () => {
 		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
 		expect(storage.accounts).toHaveLength(2);
 	});
+
+	it("redacts filesystem paths from aggregate delete failures", async () => {
+		const flaggedSaveError = Object.assign(
+			new Error("EPERM: C:\\Users\\alice\\AppData\\Local\\Codex\\flagged.json"),
+			{ code: "EPERM" },
+		);
+		const rollbackError = Object.assign(
+			new Error("EPERM: C:\\Users\\alice\\AppData\\Local\\Codex\\accounts.json"),
+			{ code: "EPERM" },
+		);
+		saveAccountsMock
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(rollbackError);
+		saveFlaggedAccountsMock.mockRejectedValueOnce(flaggedSaveError);
+		loadFlaggedAccountsMock.mockResolvedValue({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "refresh-remove",
+					addedAt: 1,
+					lastUsed: 1,
+					flaggedAt: 1,
+				},
+			],
+		});
+
+		const { deleteAccountAtIndex } = await import(
+			"../lib/destructive-actions.js"
+		);
+
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-keep",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					refreshToken: "refresh-remove",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+
+		try {
+			await deleteAccountAtIndex({ storage, index: 1 });
+			throw new Error("expected deleteAccountAtIndex to throw");
+		} catch (error) {
+			expect(error).toBeInstanceOf(AggregateError);
+			const aggregateError = error as AggregateError;
+			expect(aggregateError.errors).toEqual([
+				expect.objectContaining({
+					message: "Failed to save flagged account storage after deleting an account",
+					code: "EPERM",
+				}),
+				expect.objectContaining({
+					message: "Failed to roll back account storage after flagged save failure",
+					code: "EPERM",
+				}),
+			]);
+			expect(
+				aggregateError.errors.every(
+					(item) => item instanceof Error && !item.message.includes("alice"),
+				),
+			).toBe(true);
+		}
+	});
 });
