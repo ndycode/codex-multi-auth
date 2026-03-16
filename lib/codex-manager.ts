@@ -4071,6 +4071,7 @@ function resolveManageActionAccountNumber(
 
 interface RunSwitchOptions {
 	displayAccountNumber?: number;
+	preloadedStorage?: AccountStorageV3;
 }
 
 function reportUnavailableManageActionAccount(
@@ -4152,11 +4153,21 @@ async function handleManageAction(
 ): Promise<void> {
 	if (typeof menuResult.switchAccountIndex === "number") {
 		const index = menuResult.switchAccountIndex;
+		const displayAccountNumber = resolveManageActionAccountNumber(
+			menuResult,
+			index,
+		);
+		const freshStorage = await loadManageActionStorage(
+			storage,
+			displayAccountNumber,
+			index,
+		);
+		if (!freshStorage) {
+			return;
+		}
 		await runSwitch([String(index + 1)], {
-			displayAccountNumber: resolveManageActionAccountNumber(
-				menuResult,
-				index,
-			),
+			displayAccountNumber,
+			preloadedStorage: freshStorage,
 		});
 		return;
 	}
@@ -4609,7 +4620,7 @@ async function runSwitch(
 			? Math.max(1, Math.floor(options.displayAccountNumber))
 			: parsed;
 
-	const storage = await loadAccounts();
+	const storage = options.preloadedStorage ?? (await loadAccounts());
 	if (!storage || storage.accounts.length === 0) {
 		console.error("No accounts configured.");
 		return 1;
