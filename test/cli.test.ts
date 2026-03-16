@@ -704,28 +704,34 @@ describe("CLI Module", () => {
 			});
 		});
 
-		it("returns restore-backup for fallback restore aliases", async () => {
+		it("rejects fallback restore aliases that need the interactive backup browser", async () => {
 			const { promptLoginMode } = await import("../lib/cli.js");
 
 			mockRl.question.mockResolvedValueOnce("u");
+			mockRl.question.mockResolvedValueOnce("quit");
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
-				mode: "restore-backup",
+				mode: "cancel",
 			});
 
 			mockRl.question.mockResolvedValueOnce("restore");
+			mockRl.question.mockResolvedValueOnce("quit");
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
-				mode: "restore-backup",
+				mode: "cancel",
 			});
 
 			mockRl.question.mockResolvedValueOnce("backup");
+			mockRl.question.mockResolvedValueOnce("quit");
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
-				mode: "restore-backup",
+				mode: "cancel",
 			});
 
 			mockRl.question.mockResolvedValueOnce("restore-backup");
+			mockRl.question.mockResolvedValueOnce("quit");
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
-				mode: "restore-backup",
+				mode: "cancel",
 			});
+
+			expect(mockRl.question).toHaveBeenCalledTimes(8);
 		});
 
 		it("evaluates CODEX_TUI/CODEX_DESKTOP/TERM_PROGRAM/ELECTRON branches when TTY is true", async () => {

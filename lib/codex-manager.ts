@@ -10,7 +10,12 @@ import {
 } from "./auth/auth.js";
 import { startLocalOAuthServer } from "./auth/server.js";
 import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
-import { promptAddAnotherAccount, promptLoginMode, type ExistingAccountInfo } from "./cli.js";
+import {
+	isNonInteractiveMode,
+	promptAddAnotherAccount,
+	promptLoginMode,
+	type ExistingAccountInfo,
+} from "./cli.js";
 import {
 	extractAccountEmail,
 	extractAccountId,
@@ -4223,6 +4228,13 @@ type BackupMenuAction =
 async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
 ): Promise<boolean> {
+	if (isNonInteractiveMode()) {
+		console.error(
+			"Backup restore manager requires an interactive TTY. Run this command in an interactive terminal.",
+		);
+		return false;
+	}
+
 	const backupDir = getNamedBackupsDirectoryPath();
 	// Reuse only within this list -> assess flow so storage.ts can safely treat
 	// the cache contents as LoadedBackupCandidate entries.

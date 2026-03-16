@@ -24,6 +24,7 @@ const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
 const promptLoginModeMock = vi.fn();
+const isNonInteractiveModeMock = vi.fn(() => false);
 const fetchCodexQuotaSnapshotMock = vi.fn();
 const loadDashboardDisplaySettingsMock = vi.fn();
 const saveDashboardDisplaySettingsMock = vi.fn();
@@ -72,6 +73,7 @@ vi.mock("../lib/auth/server.js", () => ({
 }));
 
 vi.mock("../lib/cli.js", () => ({
+	isNonInteractiveMode: isNonInteractiveModeMock,
 	promptAddAnotherAccount: promptAddAnotherAccountMock,
 	promptLoginMode: promptLoginModeMock,
 }));
@@ -480,6 +482,8 @@ describe("codex manager cli commands", () => {
 		setCodexCliActiveSelectionMock.mockResolvedValue(true);
 		promptAddAnotherAccountMock.mockReset();
 		promptLoginModeMock.mockReset();
+		isNonInteractiveModeMock.mockReset();
+		isNonInteractiveModeMock.mockReturnValue(false);
 		fetchCodexQuotaSnapshotMock.mockReset();
 		loadDashboardDisplaySettingsMock.mockReset();
 		saveDashboardDisplaySettingsMock.mockReset();
@@ -2519,6 +2523,28 @@ describe("codex manager cli commands", () => {
 			mockBackupPath("named-backup"),
 		);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledOnce();
+	});
+
+	it("returns a non-zero exit code for the direct restore-backup command without an interactive TTY", async () => {
+		setInteractiveTTY(false);
+		isNonInteractiveModeMock.mockReturnValueOnce(true);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+			expect(exitCode).toBe(1);
+			expect(promptLoginModeMock).not.toHaveBeenCalled();
+			expect(listNamedBackupsMock).not.toHaveBeenCalled();
+			expect(selectMock).not.toHaveBeenCalled();
+			expect(confirmMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				"Backup restore manager requires an interactive TTY. Run this command in an interactive terminal.",
+			);
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 
 	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
