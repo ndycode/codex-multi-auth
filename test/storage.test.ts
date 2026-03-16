@@ -949,10 +949,26 @@ describe("storage", () => {
 			const isolatedStoragePath = join(isolatedStorageDir, "accounts.json");
 			const isolatedExportPath = join(isolatedStorageDir, "export.json");
 			await fs.mkdir(isolatedStorageDir, { recursive: true });
-			setStoragePathDirect(isolatedStoragePath);
-			await expect(exportAccounts(isolatedExportPath)).rejects.toThrow(
-				/No accounts to export/,
-			);
+			vi.resetModules();
+			const isolatedStorageModule = await import("../lib/storage.js");
+			isolatedStorageModule.setStoragePathDirect(isolatedStoragePath);
+			try {
+				await fs.writeFile(
+					isolatedStoragePath,
+					JSON.stringify({
+						version: 3,
+						activeIndex: 0,
+						activeIndexByFamily: {},
+						accounts: [],
+					}),
+				);
+				await expect(
+					isolatedStorageModule.exportAccounts(isolatedExportPath),
+				).rejects.toThrow(/No accounts to export/);
+			} finally {
+				isolatedStorageModule.setStoragePathDirect(null);
+				vi.resetModules();
+			}
 		});
 
 		it("should fail import when file does not exist", async () => {
@@ -1412,6 +1428,24 @@ describe("storage", () => {
 			}
 		});
 
+		it("rethrows unreadable backup directory errors after one attempt on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
+				expect(readdirSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
+			}
+		});
+
 		it("rethrows unreadable backup directory errors while restoring backups", async () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
@@ -1626,6 +1660,57 @@ describe("storage", () => {
 					]),
 				);
 				expect(busyFailures).toBe(1);
+			} finally {
+				statSpy.mockRestore();
+			}
+		});
+
+		it("sorts backups with invalid timestamps after finite timestamps", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "valid-backup",
+						refreshToken: "ref-valid-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const validBackup = await createNamedBackup("valid-backup");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "nan-backup",
+						refreshToken: "ref-nan-backup",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			const nanBackup = await createNamedBackup("nan-backup");
+			const originalStat = fs.stat.bind(fs);
+			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+				const [path] = args;
+				const stats = await originalStat(...(args as Parameters<typeof fs.stat>));
+				if (String(path) === nanBackup.path) {
+					return {
+						...stats,
+						mtimeMs: Number.NaN,
+					} as Awaited<ReturnType<typeof fs.stat>>;
+				}
+				return stats;
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups.map((backup) => backup.name)).toEqual([
+					validBackup.name,
+					nanBackup.name,
+				]);
 			} finally {
 				statSpy.mockRestore();
 			}

@@ -64,6 +64,7 @@ import {
 import {
 	assessNamedBackupRestore,
 	getActionableNamedBackupRestores,
+	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
 	NAMED_BACKUP_LIST_CONCURRENCY,
@@ -328,6 +329,7 @@ function printUsage(): void {
 			"  codex auth best [--live] [--json] [--model <model>]",
 			"  codex auth check",
 			"  codex auth features",
+			"  codex auth restore-backup",
 			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
 			"  codex auth forecast [--live] [--json] [--model <model>]",
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
@@ -4048,6 +4050,17 @@ async function runAuthLogin(): Promise<number> {
 				console.log("Cancelled.");
 				return 0;
 			}
+			const modeRequiresDrainedQuotaRefresh =
+				menuResult.mode === "check" ||
+				menuResult.mode === "deep-check" ||
+				menuResult.mode === "forecast" ||
+				menuResult.mode === "fix";
+			if (modeRequiresDrainedQuotaRefresh) {
+				const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+				if (pendingQuotaRefresh) {
+					await pendingQuotaRefresh;
+				}
+			}
 			if (menuResult.mode === "check") {
 				await runActionPanel("Quick Check", "Checking local session + live status", async () => {
 					await runHealthCheck({ forceRefresh: false, liveProbe: true });
@@ -4731,18 +4744,7 @@ type BackupRestoreAssessment = Awaited<
 	ReturnType<typeof assessNamedBackupRestore>
 >;
 
-type BackupRestoreManagerResult = "restored" | "dismissed";
-
-function getRedactedFilesystemErrorLabel(error: unknown): string {
-	const code = (error as NodeJS.ErrnoException).code;
-	if (typeof code === "string" && code.trim().length > 0) {
-		return code;
-	}
-	if (error instanceof Error && error.name && error.name !== "Error") {
-		return error.name;
-	}
-	return "UNKNOWN";
-}
+type BackupRestoreManagerResult = "restored" | "dismissed" | "failed";
 
 async function loadBackupRestoreManagerAssessments(): Promise<
 	BackupRestoreAssessment[]
@@ -4869,11 +4871,11 @@ async function runBackupRestoreManager(
 		console.warn(
 			`Failed to re-assess backup "${selection.assessment.backup.name}" before restore (${errorLabel}).`,
 		);
-		return "dismissed";
+		return "failed";
 	}
 	if (!latestAssessment.eligibleForRestore) {
 		console.log(latestAssessment.error ?? "Backup is not eligible for restore.");
-		return "dismissed";
+		return "failed";
 	}
 
 	const confirmMessage = `Restore backup "${latestAssessment.backup.name}"? This will merge ${latestAssessment.backup.accountCount ?? 0} account(s) into ${latestAssessment.currentAccountCount} current (${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`;
@@ -4891,7 +4893,7 @@ async function runBackupRestoreManager(
 		console.warn(
 			`Failed to restore backup "${latestAssessment.backup.name}" (${errorLabel}).`,
 		);
-		return "dismissed";
+		return "failed";
 	}
 }
 
@@ -4924,8 +4926,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runAuthLogin();
 	}
 	if (command === "restore-backup") {
-		await runBackupRestoreManager(startupDisplaySettings);
-		return 0;
+		return (await runBackupRestoreManager(startupDisplaySettings)) === "failed"
+			? 1
+			: 0;
 	}
 	if (command === "list" || command === "status") {
 		await showAccountStatus();
