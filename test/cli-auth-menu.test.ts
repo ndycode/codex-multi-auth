@@ -85,6 +85,22 @@ describe("CLI auth menu shortcuts", () => {
 		});
 	});
 
+	it("normalizes invalid display indexes before returning manage actions", async () => {
+		showAuthMenu.mockResolvedValueOnce({
+			type: "set-current-account",
+			account: { index: Number.NaN, sourceIndex: 4 },
+		});
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([{ index: 0, sourceIndex: 4 }]);
+
+		expect(result).toEqual({
+			mode: "manage",
+			switchAccountIndex: 4,
+			selectedAccountNumber: 1,
+		});
+	});
+
 	it("returns switch action when account details picks set current", async () => {
 		showAuthMenu.mockResolvedValueOnce({
 			type: "select-account",

@@ -153,7 +153,12 @@ function resolveAccountDisplayNumber(
 	) {
 		return Math.max(1, Math.floor(account.quickSwitchNumber));
 	}
-	return Math.max(1, Math.floor(account.index) + 1);
+	return Math.max(
+		1,
+		typeof account.index === "number" && Number.isFinite(account.index)
+			? Math.floor(account.index) + 1
+			: 1,
+	);
 }
 
 function warnUnresolvableAccountSelection(account: ExistingAccountInfo): void {
