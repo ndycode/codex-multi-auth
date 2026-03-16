@@ -3998,9 +3998,12 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(2);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
 		expect(promptLoginModeMock.mock.calls[0]?.[0]).toEqual([]);
+		expect(promptLoginModeMock.mock.calls[0]?.[1]).toMatchObject({
+			healthSummary: undefined,
+		});
 		expect(confirmMock).not.toHaveBeenCalled();
 		expect(selectMock).toHaveBeenCalledTimes(1);
 		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
@@ -4891,7 +4894,9 @@ describe("codex manager cli commands", () => {
 		getActionableNamedBackupRestoresMock.mockRejectedValue(
 			new Error("EBUSY backups"),
 		);
-		getLastCodexCliSyncRunMock.mockReturnValue(null);
+		getLastCodexCliSyncRunMock.mockImplementation(() => {
+			throw new Error("EBUSY: resource busy, sync history");
+		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -4907,6 +4912,30 @@ describe("codex manager cli commands", () => {
 						/^((?!Sync unknown)(?!Doctor unknown).)*Pool 1 active.*$/s,
 					),
 				}),
+			}),
+		);
+	});
+
+	it("omits the health summary and skips related I/O when no accounts are saved", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [],
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(getLatestCodexCliSyncRollbackPlanMock).not.toHaveBeenCalled();
+		expect(getLastCodexCliSyncRunMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({
+				healthSummary: undefined,
 			}),
 		);
 	});

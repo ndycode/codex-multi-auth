@@ -4545,7 +4545,7 @@ async function runAuthLogin(): Promise<number> {
 				toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
 				{
 					flaggedCount: flaggedStorage.accounts.length,
-					healthSummary,
+					healthSummary: healthSummary ?? undefined,
 					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
 				},
 			);
