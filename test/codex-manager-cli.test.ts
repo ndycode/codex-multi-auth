@@ -782,6 +782,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
 
 		expect(exitCode).toBe(0);
+		expect(setStoragePathMock).toHaveBeenCalledWith(null);
 		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
 			"named-backup",
@@ -3966,9 +3967,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		const backupItems = selectMock.mock.calls[0]?.[0];
-		expect(backupItems?.[0]?.hint).toContain(
-			`updated ${new Date(0).toLocaleDateString()}`,
-		);
+		expect(backupItems?.[0]?.hint).not.toContain("updated");
 	});
 
 	it("shows experimental settings in the settings hub", async () => {

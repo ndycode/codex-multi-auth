@@ -141,7 +141,14 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 function formatRelativeDateShort(
 	timestamp: number | null | undefined,
 ): string | null {
-	if (timestamp === null || timestamp === undefined) return null;
+	if (
+		timestamp === null ||
+		timestamp === undefined ||
+		!Number.isFinite(timestamp) ||
+		timestamp <= 0
+	) {
+		return null;
+	}
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
 	if (days <= 0) return "today";
 	if (days === 1) return "yesterday";
@@ -4534,6 +4541,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runAuthLogin();
 	}
 	if (command === "restore-backup") {
+		setStoragePath(null);
 		return (await runBackupRestoreManager(startupDisplaySettings)) === "failed"
 			? 1
 			: 0;

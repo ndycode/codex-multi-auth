@@ -2989,7 +2989,9 @@ export async function importAccounts(
 		throw new Error(`Import file not found: ${resolvedPath}`);
 	}
 
-	const content = await fs.readFile(resolvedPath, "utf-8");
+	const content = await retryTransientFilesystemOperation(() =>
+		fs.readFile(resolvedPath, "utf-8"),
+	);
 
 	let imported: unknown;
 	try {
@@ -3009,6 +3011,7 @@ export async function importAccounts(
 		skipped: skippedCount,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
+		const existingDeduplicatedAccounts = deduplicateAccounts(existingAccounts);
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
 		const merged = [...existingAccounts, ...normalized.accounts];
@@ -3033,8 +3036,9 @@ export async function importAccounts(
 
 		await persist(newStorage);
 
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
+		const imported =
+			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
+		const skipped = Math.max(0, normalized.accounts.length - imported);
 		return { imported, total: deduplicatedAccounts.length, skipped };
 	});
 
