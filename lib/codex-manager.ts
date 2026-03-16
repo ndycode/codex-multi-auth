@@ -27,38 +27,6 @@ import {
 	sanitizeEmail,
 	selectBestAccountCandidate,
 } from "./accounts.js";
-<<<<<<< HEAD
-=======
-import {
-	createAuthorizationFlow,
-	exchangeAuthorizationCode,
-	parseAuthorizationInput,
-	REDIRECT_URI,
-} from "./auth/auth.js";
-import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
-import { startLocalOAuthServer } from "./auth/server.js";
-import {
-	type ExistingAccountInfo,
-	isInteractiveLoginMenuAvailable,
-	promptAddAnotherAccount,
-	promptLoginMode,
-} from "./cli.js";
-import {
-	getCodexCliAuthPath,
-	getCodexCliConfigPath,
-	loadCodexCliState,
-} from "./codex-cli/state.js";
-import {
-	getLastCodexCliSyncRun,
-	getLatestCodexCliSyncRollbackPlan,
-} from "./codex-cli/sync.js";
-import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
-import {
-	applyUiThemeFromDashboardSettings,
-	configureUnifiedSettings,
-	resolveMenuLayoutMode,
-} from "./codex-manager/settings-hub.js";
->>>>>>> b09a947 (feat(ui): add health summary dashboard)
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
 	loadDashboardDisplaySettings,
@@ -122,7 +90,10 @@ import {
 	getCodexCliConfigPath,
 	loadCodexCliState,
 } from "./codex-cli/state.js";
-import { getLatestCodexCliSyncRollbackPlan } from "./codex-cli/sync.js";
+import {
+	getLastCodexCliSyncRun,
+	getLatestCodexCliSyncRollbackPlan,
+} from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { ANSI } from "./ui/ansi.js";
 import { confirm } from "./ui/confirm.js";
@@ -4109,6 +4080,7 @@ async function buildLoginMenuHealthSummary(
 		ReturnType<typeof getActionableNamedBackupRestores>
 	> = {
 		assessments: [],
+		allAssessments: [],
 		totalBackups: 0,
 	};
 	let rollbackPlan: Awaited<
@@ -4289,31 +4261,17 @@ async function runAuthLogin(): Promise<number> {
 							});
 					}
 				}
-<<<<<<< HEAD
 			const flaggedStorage = await loadFlaggedAccounts();
+			const healthSummary = await buildLoginMenuHealthSummary(currentStorage);
 
 			const menuResult = await promptLoginMode(
 				toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
 				{
 					flaggedCount: flaggedStorage.accounts.length,
+					healthSummary,
 					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
 				},
 			);
-=======
-				const flaggedStorage = await loadFlaggedAccounts();
-				const healthSummary = await buildLoginMenuHealthSummary(currentStorage);
-
-				const menuResult = await promptLoginMode(
-					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
-					{
-						flaggedCount: flaggedStorage.accounts.length,
-						healthSummary,
-						statusMessage: showFetchStatus
-							? () => menuQuotaRefreshStatus
-							: undefined,
-					},
-				);
->>>>>>> b09a947 (feat(ui): add health summary dashboard)
 
 			if (menuResult.mode === "cancel") {
 				console.log("Cancelled.");

@@ -30,14 +30,9 @@ const clearQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const previewCodexCliSyncMock = vi.fn();
-<<<<<<< HEAD
 const applyCodexCliSyncToStorageMock = vi.fn();
 const commitPendingCodexCliSyncRunMock = vi.fn();
 const commitCodexCliSyncRunFailureMock = vi.fn();
-=======
-const syncAccountStorageFromCodexCliMock = vi.fn();
-const getLastCodexCliSyncRunMock = vi.fn();
->>>>>>> b09a947 (feat(ui): add health summary dashboard)
 const getLatestCodexCliSyncRollbackPlanMock = vi.fn();
 const rollbackLatestCodexCliSyncMock = vi.fn();
 const formatRollbackPathsMock = vi.fn((targetPath: string) => [
@@ -162,16 +157,10 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
 }));
 
 vi.mock("../lib/codex-cli/sync.js", () => ({
-<<<<<<< HEAD
 	applyCodexCliSyncToStorage: applyCodexCliSyncToStorageMock,
 	commitCodexCliSyncRunFailure: commitCodexCliSyncRunFailureMock,
 	commitPendingCodexCliSyncRun: commitPendingCodexCliSyncRunMock,
 	formatRollbackPaths: formatRollbackPathsMock,
-=======
-	previewCodexCliSync: previewCodexCliSyncMock,
-	syncAccountStorageFromCodexCli: syncAccountStorageFromCodexCliMock,
-	getLastCodexCliSyncRun: getLastCodexCliSyncRunMock,
->>>>>>> b09a947 (feat(ui): add health summary dashboard)
 	getLatestCodexCliSyncRollbackPlan: getLatestCodexCliSyncRollbackPlanMock,
 	getLastCodexCliSyncRun: getLastCodexCliSyncRunMock,
 	previewCodexCliSync: previewCodexCliSyncMock,
@@ -586,14 +575,9 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		previewCodexCliSyncMock.mockReset();
-<<<<<<< HEAD
 		applyCodexCliSyncToStorageMock.mockReset();
 		commitPendingCodexCliSyncRunMock.mockReset();
 		commitCodexCliSyncRunFailureMock.mockReset();
-=======
-		syncAccountStorageFromCodexCliMock.mockReset();
-		getLastCodexCliSyncRunMock.mockReset();
->>>>>>> b09a947 (feat(ui): add health summary dashboard)
 		getLatestCodexCliSyncRollbackPlanMock.mockReset();
 		rollbackLatestCodexCliSyncMock.mockReset();
 		formatRollbackPathsMock.mockReset();
@@ -1146,7 +1130,6 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
 
 		expect(exitCode).toBe(0);
-<<<<<<< HEAD
 		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
 		expect(selectMock).toHaveBeenCalledTimes(2);
 		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
@@ -1178,11 +1161,6 @@ describe("codex manager cli commands", () => {
 			"Restore named-backup? Import 0 new accounts for 1 total. Replacing 1 current account.",
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
-=======
-		expect(action).toHaveBeenCalledTimes(1);
-		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
-		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
->>>>>>> b09a947 (feat(ui): add health summary dashboard)
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
@@ -2342,7 +2320,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(2);
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
 		expect(promptLoginModeMock.mock.calls[0]?.[0]).toEqual([]);
 		expect(confirmMock).not.toHaveBeenCalled();
@@ -2687,7 +2665,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getActionableNamedBackupRestoresMock).not.toHaveBeenCalled();
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
@@ -2981,7 +2959,7 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(action).toHaveBeenCalledTimes(1);
-			expect(getActionableNamedBackupRestoresMock).not.toHaveBeenCalled();
+			expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 			expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 		},
 	);
