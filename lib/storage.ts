@@ -1760,13 +1760,14 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataList
 		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to list named backups", {
-				path: backupRoot,
-				error: String(error),
-			});
+		if (code === "ENOENT") {
+			return { backups: [], totalBackups: 0 };
 		}
-		return { backups: [], totalBackups: 0 };
+		log.warn("Failed to list named backups", {
+			path: backupRoot,
+			error: String(error),
+		});
+		throw error;
 	}
 }
 
@@ -1945,6 +1946,7 @@ function assessNamedBackupRestoreCandidate(
 	currentStorage: AccountStorageV3 | null,
 ): BackupRestoreAssessment {
 	const currentAccounts = currentStorage?.accounts ?? [];
+	const deduplicatedCurrentAccounts = deduplicateAccounts([...currentAccounts]);
 
 	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {
 		return {
@@ -1959,17 +1961,20 @@ function assessNamedBackupRestoreCandidate(
 		};
 	}
 
-	const mergedAccounts = deduplicateAccounts([
-		...currentAccounts,
+	const deduplicatedIncomingAccounts = deduplicateAccounts([
 		...candidate.normalized.accounts,
+	]);
+	const mergedAccounts = deduplicateAccounts([
+		...deduplicatedCurrentAccounts,
+		...deduplicatedIncomingAccounts,
 	]);
 	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
 		? null
-		: mergedAccounts.length - currentAccounts.length;
+		: mergedAccounts.length - deduplicatedCurrentAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
+		: Math.max(0, deduplicatedIncomingAccounts.length - (imported ?? 0));
 
 	return {
 		backup,
@@ -2938,7 +2943,10 @@ export async function exportAccounts(
 	const transactionState = transactionSnapshotContext.getStore();
 	const currentStoragePath = getStoragePath();
 	const storage = transactionState?.active
-		? transactionState.storagePath === currentStoragePath
+		? (process.platform === "win32"
+				? transactionState.storagePath?.toLowerCase() ===
+					currentStoragePath?.toLowerCase()
+				: transactionState.storagePath === currentStoragePath)
 			? transactionState.snapshot
 			: (() => {
 					throw new Error(

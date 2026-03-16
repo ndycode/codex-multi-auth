@@ -3843,9 +3843,10 @@ export function resolveStartupRecoveryAction(
 	if (recoveryState.assessments.length > 0) {
 		return "show-recovery-prompt";
 	}
-	return recoveryScanFailed
-		? "continue-with-oauth"
-		: "open-empty-storage-menu";
+	if (recoveryScanFailed || recoveryState.totalBackups > 0) {
+		return "continue-with-oauth";
+	}
+	return "open-empty-storage-menu";
 }
 
 async function runAuthLogin(): Promise<number> {

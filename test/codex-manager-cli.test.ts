@@ -1978,7 +1978,7 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("shows the empty storage menu before OAuth when startup recovery finds backups but none are actionable", async () => {
+	it("continues with OAuth when startup recovery finds backups but none are actionable", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		let storageState = {
@@ -2004,8 +2004,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
-		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
-		expect(promptLoginModeMock.mock.calls[0]?.[0]).toEqual([]);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(confirmMock).not.toHaveBeenCalled();
 		expect(selectMock).toHaveBeenCalledTimes(1);
 		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
@@ -2016,9 +2015,6 @@ describe("codex manager cli commands", () => {
 		expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
-		expect(promptLoginModeMock.mock.invocationCallOrder[0]).toBeLessThan(
-			createAuthorizationFlowMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-		);
 	});
 
 	it("shows all startup-scanned backups in the restore manager before re-prompting", async () => {
