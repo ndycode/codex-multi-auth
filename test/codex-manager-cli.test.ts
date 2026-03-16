@@ -15,11 +15,9 @@ const listNamedBackupsMock = vi.fn();
 const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
 const assessOpencodeAccountPoolMock = vi.fn();
-const listAccountSnapshotsMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const importAccountsMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
-const importAccountsMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
@@ -5354,7 +5352,12 @@ describe("codex manager cli commands", () => {
 	it("offers backup restore from the login menu when no accounts are saved", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue(null);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
 		const assessment = {
 			backup: {
 				name: "named-backup",
@@ -5391,7 +5394,9 @@ describe("codex manager cli commands", () => {
 		expect(listNamedBackupsMock).toHaveBeenCalled();
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
 			"named-backup",
-			expect.objectContaining({ currentStorage: null }),
+			expect.objectContaining({
+				currentStorage: expect.objectContaining({ accounts: [] }),
+			}),
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
 	});
@@ -5566,7 +5571,12 @@ describe("codex manager cli commands", () => {
 
 	it("keeps healthy backups selectable when one assessment fails", async () => {
 		setInteractiveTTY(true);
-		loadAccountsMock.mockResolvedValue(null);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
 		const now = Date.now();
 		const healthyAssessment = {
 			backup: {
@@ -5649,7 +5659,12 @@ describe("codex manager cli commands", () => {
 
 	it("limits concurrent backup assessments in the restore menu", async () => {
 		setInteractiveTTY(true);
-		loadAccountsMock.mockResolvedValue(null);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
 		const { NAMED_BACKUP_LIST_CONCURRENCY } =
 			await vi.importActual<typeof import("../lib/storage.js")>(
 				"../lib/storage.js",
@@ -5929,7 +5944,12 @@ describe("codex manager cli commands", () => {
 
 	it("shows epoch backup timestamps in restore hints", async () => {
 		setInteractiveTTY(true);
-		loadAccountsMock.mockResolvedValue(null);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
 		const assessment = {
 			backup: {
 				name: "epoch-backup",
