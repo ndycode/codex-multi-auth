@@ -7,6 +7,7 @@ import {
 	clearFlaggedAccounts,
 	findMatchingAccountIndex,
 	type FlaggedAccountStorageV1,
+	getStoragePath,
 	loadFlaggedAccounts,
 	snapshotAccountStorage,
 	snapshotAndClearAccounts,
