@@ -1481,6 +1481,20 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
 	});
 
+	it("shows the redesigned auth login dashboard before oauth even when no accounts exist", async () => {
+		loadAccountsMock.mockResolvedValue(null);
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
+		expect(promptLoginModeMock).toHaveBeenCalledWith([], expect.any(Object));
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
 	it("marks newly added login account active so smart sort reflects it immediately", async () => {
 		const now = Date.now();
 		let storageState: {
