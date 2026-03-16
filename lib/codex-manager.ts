@@ -4252,13 +4252,15 @@ async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 		const namedBackups = await listNamedBackups();
 		namedBackupCount = namedBackups.length;
 	} catch (error) {
-		console.warn("Failed to list named backups", error);
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(`Failed to list named backups (${errorLabel}).`);
 	}
 	try {
 		const rotatingBackups = await listRotatingBackups();
 		rotatingBackupCount = rotatingBackups.length;
 	} catch (error) {
-		console.warn("Failed to list rotating backups", error);
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(`Failed to list rotating backups (${errorLabel}).`);
 	}
 	try {
 		hasOpencodeSource = (await assessOpencodeAccountPool()) !== null;

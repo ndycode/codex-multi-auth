@@ -940,6 +940,40 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
+	it("redacts first-run backup listing warnings", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		listNamedBackupsMock.mockRejectedValueOnce(
+			new Error("EPERM: C:\\Users\\alice\\AppData\\Local\\Codex\\named-backups"),
+		);
+		listRotatingBackupsMock.mockRejectedValueOnce(
+			new Error("EBUSY: C:\\Users\\alice\\AppData\\Local\\Codex\\rotating-backups"),
+		);
+		assessOpencodeAccountPoolMock.mockResolvedValueOnce(null);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		vi.spyOn(authMenu, "showFirstRunWizard").mockResolvedValue({
+			type: "cancel",
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(
+			warnSpy.mock.calls.some((call) =>
+				String(call[0]).includes("Failed to list named backups") &&
+				!String(call[0]).includes("alice"),
+			),
+		).toBe(true);
+		expect(
+			warnSpy.mock.calls.some((call) =>
+				String(call[0]).includes("Failed to list rotating backups") &&
+				!String(call[0]).includes("alice"),
+			),
+		).toBe(true);
+	});
+
 	it("continues into OAuth when first-run wizard chooses login", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);
