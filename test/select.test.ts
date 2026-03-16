@@ -98,4 +98,55 @@ describe("ui select", () => {
 		expect(process.listenerCount("SIGINT")).toBe(initialSigintCount);
 		clearIntervalSpy.mockRestore();
 	});
+
+	it("renders a split pane when the layout is enabled and the terminal is wide", async () => {
+		const { __testOnly } = await import("../lib/ui/select.js");
+		const lines = __testOnly.renderSelectFrame(
+			[
+				{ label: "Quick Actions", value: "noop", kind: "heading" },
+				{ label: "Add New Account", value: "add" },
+				{ label: "Run Health Check", value: "check" },
+			],
+			1,
+			{
+				message: "Accounts Dashboard",
+				headerNote: "Add | Check | Best | Fix",
+				layout: "split-pane-auto",
+				detailPane: () => ({
+					title: "Add New Account",
+					lines: ["Choose browser or manual sign-in.", "Enter starts the flow."],
+				}),
+			},
+			{ columns: 120, rows: 18 },
+		);
+
+		expect(lines.some((line: string) => line.includes("Accounts Dashboard"))).toBe(true);
+		expect(lines.some((line: string) => line.includes("Add New Account"))).toBe(true);
+		expect(lines.some((line: string) => line.includes("Choose browser or manual sign-in."))).toBe(true);
+		expect(lines.some((line: string) => line.includes("|"))).toBe(true);
+	});
+
+	it("falls back to stacked rendering when the terminal is narrow", async () => {
+		const { __testOnly } = await import("../lib/ui/select.js");
+		const lines = __testOnly.renderSelectFrame(
+			[
+				{ label: "Quick Actions", value: "noop", kind: "heading" },
+				{ label: "Add New Account", value: "add", hint: "Choose browser or manual sign-in." },
+				{ label: "Run Health Check", value: "check" },
+			],
+			1,
+			{
+				message: "Accounts Dashboard",
+				layout: "split-pane-auto",
+				detailPane: () => ({
+					title: "Add New Account",
+					lines: ["Choose browser or manual sign-in."],
+				}),
+			},
+			{ columns: 72, rows: 18 },
+		);
+
+		expect(lines.some((line: string) => line.includes("Choose browser or manual sign-in."))).toBe(true);
+		expect(lines.filter((line: string) => line.includes("|")).length).toBeLessThanOrEqual(1);
+	});
 });

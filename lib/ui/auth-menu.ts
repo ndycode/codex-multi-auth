@@ -3,8 +3,8 @@ import { stdin as input, stdout as output } from "node:process";
 import { ANSI, isTTY } from "./ansi.js";
 import { confirm } from "./confirm.js";
 import { getUiRuntimeOptions } from "./runtime.js";
-import { select, type MenuItem } from "./select.js";
-import { paintUiText, formatUiBadge, quotaToneFromLeftPercent } from "./format.js";
+import { select, type MenuItem, type SelectDetailPane } from "./select.js";
+import { paintUiText, formatUiBadge, formatUiInlineList, formatUiKeyValue, quotaToneFromLeftPercent } from "./format.js";
 import { UI_COPY, formatCheckFlaggedLabel } from "./copy.js";
 
 export type AccountStatus =
@@ -436,6 +436,153 @@ function authMenuFocusKey(action: AuthMenuAction): string {
 	}
 }
 
+function formatAccountStateLine(account: AccountInfo, ui: ReturnType<typeof getUiRuntimeOptions>): string {
+	const badges: string[] = [];
+	if (account.isCurrentAccount && account.showCurrentBadge !== false) {
+		badges.push(ui.v2Enabled ? formatUiBadge(ui, "current", "accent") : `${ANSI.cyan}[current]${ANSI.reset}`);
+	}
+	if (account.showStatusBadge !== false) {
+		badges.push(statusBadge(account.status));
+	} else {
+		badges.push(ui.v2Enabled ? paintUiText(ui, statusText(account.status), statusTone(account.status)) : statusText(account.status));
+	}
+	if (account.enabled === false) {
+		badges.push(ui.v2Enabled ? formatUiBadge(ui, "disabled", "danger") : `${ANSI.red}[disabled]${ANSI.reset}`);
+	}
+	return badges.join(" ");
+}
+
+function buildActionDetailPane(
+	action: AuthMenuAction,
+	ui: ReturnType<typeof getUiRuntimeOptions>,
+	flaggedCount: number,
+): SelectDetailPane {
+	switch (action.type) {
+		case "add":
+			return {
+				title: "Add New Account",
+				lines: [
+					formatUiKeyValue(ui, "Flow", "Choose browser or manual sign-in", "accent"),
+					formatUiKeyValue(ui, "Use when", "You need another workspace, org, or personal account", "heading"),
+					formatUiKeyValue(ui, "Tip", UI_COPY.fallback.addAnotherTip, "muted"),
+					"",
+					formatUiKeyValue(ui, "Controls", "Enter starts sign-in", "muted"),
+				],
+			};
+		case "check":
+			return {
+				title: "Run Health Check",
+				lines: [
+					formatUiKeyValue(ui, "Scope", "Local session plus live status", "accent"),
+					formatUiKeyValue(ui, "Use when", "You want a quick read without a full token refresh", "heading"),
+					formatUiKeyValue(ui, "Result", "Highlights broken, expired, or limited accounts", "muted"),
+				],
+			};
+		case "forecast":
+			return {
+				title: "Pick Best Account",
+				lines: [
+					formatUiKeyValue(ui, "Goal", "Compare account readiness", "accent"),
+					formatUiKeyValue(ui, "Use when", "You want the safest account before a long coding run", "heading"),
+					formatUiKeyValue(ui, "Signals", "Quota, health, cooldowns, and current status", "muted"),
+				],
+			};
+		case "fix":
+			return {
+				title: "Auto-Repair Issues",
+				lines: [
+					formatUiKeyValue(ui, "Goal", "Check and fix common account problems", "accent"),
+					formatUiKeyValue(ui, "Use when", "Rotation looks wrong or sessions feel stale", "heading"),
+					formatUiKeyValue(ui, "Includes", "Health checks, refreshes, and account cleanup paths", "muted"),
+				],
+			};
+		case "settings":
+			return {
+				title: "Settings",
+				lines: [
+					formatUiKeyValue(ui, "Panels", "Account List, Summary Line, Behavior, Theme, Backend", "accent"),
+					formatUiKeyValue(ui, "Use when", "You want a different dashboard density or menu behavior", "heading"),
+					formatUiKeyValue(ui, "Safety", "Current dashboard stays active until settings are saved", "muted"),
+				],
+			};
+		case "deep-check":
+			return {
+				title: "Refresh All Accounts",
+				lines: [
+					formatUiKeyValue(ui, "Scope", "Forces refresh and re-checks every saved account", "accent"),
+					formatUiKeyValue(ui, "Use when", "You suspect stale quota or auth state across the pool", "heading"),
+					formatUiKeyValue(ui, "Tradeoff", "Slower than quick check but more complete", "muted"),
+				],
+			};
+		case "verify-flagged":
+			return {
+				title: "Problem Accounts",
+				lines: [
+					formatUiKeyValue(ui, "Queue", `${flaggedCount} flagged account${flaggedCount === 1 ? "" : "s"}`, flaggedCount > 0 ? "danger" : "muted"),
+					formatUiKeyValue(ui, "Use when", "You want to re-verify accounts already marked risky", "heading"),
+					formatUiKeyValue(ui, "Focus", "Keeps the remediation loop scoped to problem accounts", "muted"),
+				],
+			};
+		case "delete-all":
+			return {
+				title: "Delete All Accounts",
+				lines: [
+					formatUiKeyValue(ui, "Risk", "Removes every saved account from local storage", "danger"),
+					formatUiKeyValue(ui, "Guard", "Still requires a typed confirmation before execution", "heading"),
+					formatUiKeyValue(ui, "Use when", "You want a full reset before starting clean", "muted"),
+				],
+			};
+		case "select-account":
+		case "set-current-account":
+		case "refresh-account":
+		case "toggle-account":
+		case "delete-account":
+			return buildAccountDetailPane(action.account, ui);
+		case "search":
+		case "fresh":
+		case "cancel":
+			return {
+				title: "Accounts Dashboard",
+				lines: [
+					formatUiKeyValue(ui, "Search", "Use / to filter by email, label, id, or quick number", "accent"),
+					formatUiKeyValue(ui, "Navigation", "Arrow keys move, Enter opens, 1-9 switches accounts", "heading"),
+					formatUiKeyValue(ui, "Exit", "Q leaves the dashboard", "muted"),
+				],
+			};
+	}
+}
+
+function buildAccountDetailPane(
+	account: AccountInfo,
+	ui: ReturnType<typeof getUiRuntimeOptions>,
+): SelectDetailPane {
+	const summary = formatQuotaSummary(account, ui);
+	const lines = [
+		formatUiKeyValue(ui, "Status", formatAccountStateLine(account, ui)),
+		formatUiKeyValue(ui, "Last used", formatRelativeTime(account.lastUsed), "heading"),
+		formatUiKeyValue(ui, "Added", formatDate(account.addedAt), "muted"),
+	];
+
+	if (account.email) {
+		lines.unshift(formatUiKeyValue(ui, "Email", sanitizeTerminalText(account.email) ?? "unknown", "accent"));
+	} else if (account.accountLabel) {
+		lines.unshift(formatUiKeyValue(ui, "Label", sanitizeTerminalText(account.accountLabel) ?? "unknown", "accent"));
+	}
+	if (summary) {
+		lines.push(formatUiKeyValue(ui, "Limits", summary));
+	}
+	if (account.accountId) {
+		lines.push(formatUiKeyValue(ui, "Account ID", sanitizeTerminalText(account.accountId) ?? "unknown", "muted"));
+	}
+	lines.push("");
+	lines.push(formatUiKeyValue(ui, "Manage", "Enter opens account actions", "muted"));
+	lines.push(formatUiKeyValue(ui, "Quick switch", "Press 1-9 from the dashboard", "muted"));
+	return {
+		title: accountTitle(account),
+		lines,
+	};
+}
+
 export async function showAuthMenu(
 	accounts: AccountInfo[],
 	options: AuthMenuOptions = {},
@@ -519,6 +666,7 @@ export async function showAuthMenu(
 		const showHintsForUnselectedRows = visibleAccounts[0]?.showHintsForUnselectedRows ??
 			accounts[0]?.showHintsForUnselectedRows ??
 			false;
+		const splitDashboardLayout = !showHintsForUnselectedRows;
 		const focusStyle = visibleAccounts[0]?.focusStyle ??
 			accounts[0]?.focusStyle ??
 			"row-invert";
@@ -547,16 +695,29 @@ export async function showAuthMenu(
 
 		const result = await select(items, {
 			message: mainMenuTitleWithVersion(),
+			headerNote: formatUiInlineList(
+				ui,
+				["Add", "Check", "Best", "Fix", "Settings", "Refresh", "Danger Zone"],
+				"muted",
+			),
 			subtitle: buildSubtitle(),
 			dynamicSubtitle: buildSubtitle,
 			help: showDetailedHelp ? detailedHelp : compactHelp,
 			clearScreen: true,
+			layout: splitDashboardLayout ? "split-pane-auto" : "single-column",
+			splitMinWidth: 108,
 			selectedEmphasis: "minimal",
 			focusStyle,
 			showHintsForUnselected: showHintsForUnselectedRows,
 			refreshIntervalMs: 200,
 			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
 			theme: ui.theme,
+			detailPane: splitDashboardLayout
+				? ({ selectedItem }) => {
+					if (!selectedItem || selectedItem.separator || selectedItem.kind === "heading") return null;
+					return buildActionDetailPane(selectedItem.value, ui, flaggedCount);
+				}
+				: undefined,
 			onInput: (input, context) => {
 				const lower = input.toLowerCase();
 				if (lower === "?") {

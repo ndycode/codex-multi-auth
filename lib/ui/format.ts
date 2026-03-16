@@ -178,8 +178,23 @@ export function formatUiKeyValue(
 ): string {
 	if (!ui.v2Enabled) return `${key}: ${value}`;
 	const keyText = paintUiText(ui, `${key}:`, "muted");
+	if (value.includes("\x1b[")) {
+		return `${keyText} ${value}`;
+	}
 	const valueText = paintUiText(ui, value, valueTone);
 	return `${keyText} ${valueText}`;
+}
+
+export function formatUiInlineList(
+	ui: UiRuntimeOptions,
+	items: string[],
+	tone: UiTextTone = "muted",
+): string {
+	const visibleItems = items.filter((item) => item.trim().length > 0);
+	if (visibleItems.length === 0) return "";
+	if (!ui.v2Enabled) return visibleItems.join(" | ");
+	const separator = ` ${paintUiText(ui, "|", "muted")} `;
+	return visibleItems.map((item) => item.includes("\x1b[") ? item : paintUiText(ui, item, tone)).join(separator);
 }
 
 /**

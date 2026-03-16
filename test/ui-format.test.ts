@@ -3,6 +3,7 @@ import { createUiTheme } from "../lib/ui/theme.js";
 import {
 	formatUiBadge,
 	formatUiHeader,
+	formatUiInlineList,
 	formatUiItem,
 	formatUiKeyValue,
 	formatUiSection,
@@ -58,6 +59,19 @@ describe("UI text formatter", () => {
 		const item = formatUiItem(v2Ui, "1. user@example.com");
 		expect(item).toContain("1. user@example.com");
 		expect(item).toContain(v2Ui.theme.glyphs.bullet);
+	});
+
+	it("preserves ansi-formatted values and joins inline lists", () => {
+		const badge = formatUiBadge(v2Ui, "current", "accent");
+		const line = formatUiKeyValue(v2Ui, "Status", badge);
+		expect(line).toContain("Status:");
+		expect(line).toContain("[current]");
+
+		const inline = formatUiInlineList(v2Ui, ["Add", "Check", "Fix"]);
+		expect(inline).toContain("Add");
+		expect(inline).toContain("Check");
+		expect(inline).toContain("Fix");
+		expect(inline).toContain("|");
 	});
 
 	it("maps quota severity with traffic-light thresholds", () => {

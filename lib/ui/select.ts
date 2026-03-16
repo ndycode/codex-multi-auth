@@ -15,17 +15,21 @@ export interface MenuItem<T = string> {
 
 export interface SelectOptions<T = string> {
 	message: string;
+	headerNote?: string;
 	subtitle?: string;
 	dynamicSubtitle?: () => string | undefined;
 	help?: string;
 	clearScreen?: boolean;
 	theme?: UiTheme;
+	layout?: "single-column" | "split-pane-auto";
+	splitMinWidth?: number;
 	selectedEmphasis?: "chip" | "minimal";
 	focusStyle?: "row-invert" | "chip";
 	showHintsForUnselected?: boolean;
 	refreshIntervalMs?: number;
 	initialCursor?: number;
 	allowEscape?: boolean;
+	detailPane?: (context: SelectRenderContext<T>) => SelectDetailPane | null | undefined;
 	onCursorChange?: (
 		context: {
 			cursor: number;
@@ -41,6 +45,19 @@ export interface SelectOptions<T = string> {
 			requestRerender: () => void;
 		},
 	) => T | null | undefined;
+}
+
+export interface SelectDetailPane {
+	title?: string;
+	lines: string[];
+}
+
+export interface SelectRenderContext<T = string> {
+	cursor: number;
+	items: MenuItem<T>[];
+	selectedItem: MenuItem<T> | undefined;
+	columns: number;
+	rows: number;
 }
 
 const ESCAPE_TIMEOUT_MS = 50;
@@ -90,6 +107,18 @@ function truncateAnsi(input: string, maxVisibleChars: number): string {
 	}
 
 	return output + suffix;
+}
+
+function padAnsi(input: string, visibleWidth: number): string {
+	const truncated = truncateAnsi(input, visibleWidth);
+	const padding = Math.max(0, visibleWidth - stripAnsi(truncated).length);
+	return `${truncated}${" ".repeat(padding)}`;
+}
+
+function fitVisibleLines(lines: string[], maxLines: number): string[] {
+	if (maxLines <= 0) return [];
+	if (lines.length >= maxLines) return lines.slice(0, maxLines);
+	return [...lines, ...Array.from({ length: maxLines - lines.length }, () => "")];
 }
 
 /**
@@ -154,6 +183,202 @@ function decodeHotkeyInput(data: Buffer): string | null {
 	return null;
 }
 
+function renderSelectFrame<T>(
+	items: MenuItem<T>[],
+	cursor: number,
+	options: SelectOptions<T>,
+	terminal: { columns: number; rows: number },
+): string[] {
+	const { columns, rows } = terminal;
+	const subtitleText = options.dynamicSubtitle ? options.dynamicSubtitle() : options.subtitle;
+	const theme = options.theme;
+	const focusStyle = options.focusStyle ?? "row-invert";
+	const border = theme?.colors.border ?? ANSI.dim;
+	const muted = theme?.colors.muted ?? ANSI.dim;
+	const heading = theme?.colors.heading ?? ANSI.reset;
+	const reset = theme?.colors.reset ?? ANSI.reset;
+	const selectedGlyph = theme?.glyphs.selected ?? ">";
+	const unselectedGlyph = theme?.glyphs.unselected ?? "o";
+	const selectedGlyphColor = theme?.colors.success ?? ANSI.green;
+	const selectedChip = theme
+		? `${theme.colors.focusBg}${theme.colors.focusText}${ANSI.bold}`
+		: `${ANSI.bgGreen}${ANSI.black}${ANSI.bold}`;
+	const codexColorCode = (color: MenuItem["color"]): string => {
+		if (!theme) {
+			return colorCode(color);
+		}
+		switch (color) {
+			case "red":
+				return theme.colors.danger;
+			case "green":
+				return theme.colors.success;
+			case "yellow":
+				return theme.colors.warning;
+			case "cyan":
+				return theme.colors.accent;
+			default:
+				return theme.colors.heading;
+		}
+	};
+
+	const headerLines: string[] = [
+		`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`,
+	];
+	if (options.headerNote) {
+		headerLines.push(` ${muted}${truncateAnsi(options.headerNote, Math.max(1, columns - 2))}${reset}`);
+	}
+	if (subtitleText) {
+		headerLines.push(` ${muted}${truncateAnsi(subtitleText, Math.max(1, columns - 2))}${reset}`);
+	}
+	headerLines.push("");
+
+	const renderItemRow = (
+		item: MenuItem<T>,
+		itemIndex: number,
+		width: number,
+		showHintsInline: boolean,
+	): string[] => {
+		if (item.separator) {
+			return [""];
+		}
+		if (item.kind === "heading") {
+			return [` ${truncateAnsi(`${muted}${item.label}${reset}`, Math.max(1, width - 1))}`];
+		}
+
+		const selected = itemIndex === cursor;
+		if (selected) {
+			const selectedText = item.selectedLabel
+				? stripAnsi(item.selectedLabel)
+				: item.disabled
+					? item.hideUnavailableSuffix
+						? stripAnsi(item.label)
+						: `${stripAnsi(item.label)} (unavailable)`
+					: stripAnsi(item.label);
+			if (focusStyle === "row-invert") {
+				const rowText = `${selectedGlyph} ${selectedText}`;
+				const focusedRow = theme
+					? `${theme.colors.focusBg}${theme.colors.focusText}${ANSI.bold}${truncateAnsi(rowText, Math.max(1, width - 1))}${reset}`
+					: `${ANSI.inverse}${truncateAnsi(rowText, Math.max(1, width - 1))}${ANSI.reset}`;
+				const lines = [` ${focusedRow}`];
+				if (showHintsInline && item.hint) {
+					const detailLines = item.hint.split("\n").slice(0, 3);
+					for (const detailLine of detailLines) {
+						const detail = truncateAnsi(detailLine, Math.max(1, width - 4));
+						lines.push(`   ${muted}${detail}${reset}`);
+					}
+				}
+				return lines;
+			}
+
+			const selectedLabel = `${selectedChip}${selectedText}${reset}`;
+			const lines = [
+				` ${selectedGlyphColor}${selectedGlyph}${reset} ${truncateAnsi(selectedLabel, Math.max(1, width - 3))}`,
+			];
+			if (showHintsInline && item.hint) {
+				const detailLines = item.hint.split("\n").slice(0, 3);
+				for (const detailLine of detailLines) {
+					const detail = truncateAnsi(detailLine, Math.max(1, width - 4));
+					lines.push(`   ${muted}${detail}${reset}`);
+				}
+			}
+			return lines;
+		}
+
+		const itemColor = codexColorCode(item.color);
+		const labelText = item.disabled
+			? item.hideUnavailableSuffix
+				? `${muted}${item.label}${reset}`
+				: `${muted}${item.label} (unavailable)${reset}`
+			: `${itemColor}${item.label}${reset}`;
+		const lines = [
+			` ${muted}${unselectedGlyph}${reset} ${truncateAnsi(labelText, Math.max(1, width - 3))}`,
+		];
+		if (showHintsInline && item.hint && (options.showHintsForUnselected ?? true)) {
+			const detailLines = item.hint.split("\n").slice(0, 2);
+			for (const detailLine of detailLines) {
+				const detail = truncateAnsi(`${muted}${detailLine}${reset}`, Math.max(1, width - 4));
+				lines.push(`   ${detail}`);
+			}
+		}
+		return lines;
+	};
+
+	const selectableHeight = Math.max(1, rows - headerLines.length - 2 - 1);
+	let windowStart = 0;
+	let windowEnd = items.length;
+	if (items.length > selectableHeight) {
+		windowStart = cursor - Math.floor(selectableHeight / 2);
+		windowStart = Math.max(0, Math.min(windowStart, items.length - selectableHeight));
+		windowEnd = windowStart + selectableHeight;
+	}
+
+	const visibleItems = items.slice(windowStart, windowEnd);
+	const selectedItem = items[cursor];
+	const detailPane = options.detailPane?.({
+		cursor,
+		items,
+		selectedItem,
+		columns,
+		rows,
+	}) ?? null;
+	const splitEnabled = options.layout === "split-pane-auto"
+		&& detailPane !== null
+		&& columns >= (options.splitMinWidth ?? 104);
+
+	const windowHint =
+		items.length > visibleItems.length ? ` (${windowStart + 1}-${windowEnd}/${items.length})` : "";
+	const backLabel = "Q Back";
+	const helpText = options.help ?? `↑↓ Move | Enter Select | ${backLabel}${windowHint}`;
+	const footerLines = [
+		` ${muted}${truncateAnsi(helpText, Math.max(1, columns - 2))}${reset}`,
+		`${border}+${reset}`,
+	];
+
+	if (!splitEnabled) {
+		const bodyLines: string[] = [];
+		for (let i = 0; i < visibleItems.length; i += 1) {
+			const itemIndex = windowStart + i;
+			const item = visibleItems[i];
+			if (!item) continue;
+			bodyLines.push(...renderItemRow(item, itemIndex, columns, true));
+		}
+		return [...headerLines, ...bodyLines, ...footerLines];
+	}
+
+	const bodyHeight = Math.max(4, rows - headerLines.length - footerLines.length);
+	let splitWindowStart = 0;
+	let splitWindowEnd = items.length;
+	if (items.length > bodyHeight) {
+		splitWindowStart = cursor - Math.floor(bodyHeight / 2);
+		splitWindowStart = Math.max(0, Math.min(splitWindowStart, items.length - bodyHeight));
+		splitWindowEnd = splitWindowStart + bodyHeight;
+	}
+	const splitVisibleItems = items.slice(splitWindowStart, splitWindowEnd);
+	const minimumRightWidth = 30;
+	const leftWidth = Math.max(34, Math.min(Math.floor(columns * 0.5), columns - minimumRightWidth - 3));
+	const rightWidth = Math.max(minimumRightWidth, columns - leftWidth - 3);
+	const divider = `${border}|${reset}`;
+
+	const leftLines = fitVisibleLines(
+		splitVisibleItems.flatMap((item, index) =>
+			renderItemRow(item, splitWindowStart + index, leftWidth, false).slice(0, 1)
+		),
+		bodyHeight,
+	);
+	const rightLinesRaw: string[] = [];
+	if (detailPane?.title) {
+		rightLinesRaw.push(`${heading}${detailPane.title}${reset}`);
+		rightLinesRaw.push(`${muted}${"-".repeat(Math.max(6, rightWidth - 2))}${reset}`);
+	}
+	rightLinesRaw.push(...(detailPane?.lines ?? []));
+	const rightLines = fitVisibleLines(rightLinesRaw, bodyHeight);
+	const bodyLines = leftLines.map((line, index) => {
+		const rightLine = rightLines[index] ?? "";
+		return `${padAnsi(line, leftWidth)}${divider}${padAnsi(` ${rightLine}`, rightWidth)}`;
+	});
+	return [...headerLines, ...bodyLines, ...footerLines];
+}
+
 /**
  * Present an interactive TTY menu, let the user navigate and choose an item.
  *
@@ -209,7 +434,6 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 	let renderedLines = 0;
 	let hasRendered = false;
 	let inputGuardUntil = 0;
-	const theme = options.theme;
 	let rerenderRequested = false;
 
 	const requestRerender = () => {
@@ -237,37 +461,8 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		}
 	};
 
-	const codexColorCode = (color: MenuItem["color"]): string => {
-		if (!theme) {
-			return colorCode(color);
-		}
-		switch (color) {
-			case "red":
-				return theme.colors.danger;
-			case "green":
-				return theme.colors.success;
-			case "yellow":
-				return theme.colors.warning;
-			case "cyan":
-				return theme.colors.accent;
-			default:
-				return theme.colors.heading;
-		}
-	};
-
-	const selectedLabelStart = (): string => {
-		if (!theme) {
-			return `${ANSI.bgGreen}${ANSI.black}${ANSI.bold}`;
-		}
-		return `${theme.colors.focusBg}${theme.colors.focusText}${ANSI.bold}`;
-	};
-
 	const render = () => {
-		const columns = stdout.columns ?? 80;
-		const rows = stdout.rows ?? 24;
 		const previousRenderedLines = renderedLines;
-		const subtitleText = options.dynamicSubtitle ? options.dynamicSubtitle() : options.subtitle;
-		const focusStyle = options.focusStyle ?? "row-invert";
 		let didFullClear = false;
 
 		if (options.clearScreen && !hasRendered) {
@@ -282,108 +477,13 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 			stdout.write(`${ANSI.clearLine}${line}\n`);
 			linesWritten += 1;
 		};
-
-		const subtitleLines = subtitleText ? 2 : 0;
-		const fixedLines = 2 + subtitleLines + 2;
-		const maxVisibleItems = Math.max(1, Math.min(items.length, rows - fixedLines - 1));
-
-		let windowStart = 0;
-		let windowEnd = items.length;
-		if (items.length > maxVisibleItems) {
-			windowStart = cursor - Math.floor(maxVisibleItems / 2);
-			windowStart = Math.max(0, Math.min(windowStart, items.length - maxVisibleItems));
-			windowEnd = windowStart + maxVisibleItems;
+		const lines = renderSelectFrame(items, cursor, options, {
+			columns: stdout.columns ?? 80,
+			rows: stdout.rows ?? 24,
+		});
+		for (const line of lines) {
+			writeLine(line);
 		}
-
-		const visibleItems = items.slice(windowStart, windowEnd);
-		const border = theme?.colors.border ?? ANSI.dim;
-		const muted = theme?.colors.muted ?? ANSI.dim;
-		const heading = theme?.colors.heading ?? ANSI.reset;
-		const reset = theme?.colors.reset ?? ANSI.reset;
-		const selectedGlyph = theme?.glyphs.selected ?? ">";
-		const unselectedGlyph = theme?.glyphs.unselected ?? "o";
-		const selectedGlyphColor = theme?.colors.success ?? ANSI.green;
-		const selectedChip = selectedLabelStart();
-
-		writeLine(`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`);
-		if (subtitleText) {
-			writeLine(` ${muted}${truncateAnsi(subtitleText, Math.max(1, columns - 2))}${reset}`);
-		}
-		writeLine("");
-
-		for (let i = 0; i < visibleItems.length; i += 1) {
-			const itemIndex = windowStart + i;
-			const item = visibleItems[i];
-			if (!item) continue;
-
-			if (item.separator) {
-				writeLine("");
-				continue;
-			}
-
-			if (item.kind === "heading") {
-				const heading = truncateAnsi(
-					`${muted}${item.label}${reset}`,
-					Math.max(1, columns - 2),
-				);
-				writeLine(` ${heading}`);
-				continue;
-			}
-
-			const selected = itemIndex === cursor;
-			if (selected) {
-				const selectedText = item.selectedLabel
-					? stripAnsi(item.selectedLabel)
-					: item.disabled
-						? item.hideUnavailableSuffix
-							? stripAnsi(item.label)
-							: `${stripAnsi(item.label)} (unavailable)`
-						: stripAnsi(item.label);
-				if (focusStyle === "row-invert") {
-					const rowText = `${selectedGlyph} ${selectedText}`;
-					const focusedRow = theme
-						? `${theme.colors.focusBg}${theme.colors.focusText}${ANSI.bold}${truncateAnsi(rowText, Math.max(1, columns - 2))}${reset}`
-						: `${ANSI.inverse}${truncateAnsi(rowText, Math.max(1, columns - 2))}${ANSI.reset}`;
-					writeLine(` ${focusedRow}`);
-				} else {
-					const selectedLabel = `${selectedChip}${selectedText}${reset}`;
-					writeLine(
-						` ${selectedGlyphColor}${selectedGlyph}${reset} ${truncateAnsi(selectedLabel, Math.max(1, columns - 4))}`,
-					);
-				}
-				if (item.hint) {
-					const detailLines = item.hint.split("\n").slice(0, 3);
-					for (const detailLine of detailLines) {
-						const detail = truncateAnsi(detailLine, Math.max(1, columns - 8));
-						writeLine(`   ${muted}${detail}${reset}`);
-					}
-				}
-			} else {
-				const itemColor = codexColorCode(item.color);
-				const labelText = item.disabled
-					? item.hideUnavailableSuffix
-						? `${muted}${item.label}${reset}`
-						: `${muted}${item.label} (unavailable)${reset}`
-					: `${itemColor}${item.label}${reset}`;
-				writeLine(
-					` ${muted}${unselectedGlyph}${reset} ${truncateAnsi(labelText, Math.max(1, columns - 4))}`,
-				);
-				if (item.hint && (options.showHintsForUnselected ?? true)) {
-					const detailLines = item.hint.split("\n").slice(0, 2);
-					for (const detailLine of detailLines) {
-						const detail = truncateAnsi(`${muted}${detailLine}${reset}`, Math.max(1, columns - 8));
-						writeLine(`   ${detail}`);
-					}
-				}
-			}
-		}
-
-		const windowHint =
-			items.length > visibleItems.length ? ` (${windowStart + 1}-${windowEnd}/${items.length})` : "";
-		const backLabel = "Q Back";
-		const helpText = options.help ?? `↑↓ Move | Enter Select | ${backLabel}${windowHint}`;
-		writeLine(` ${muted}${truncateAnsi(helpText, Math.max(1, columns - 2))}${reset}`);
-		writeLine(`${border}+${reset}`);
 
 		if (!didFullClear && previousRenderedLines > linesWritten) {
 			const extra = previousRenderedLines - linesWritten;
@@ -546,3 +646,7 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		stdin.on("data", onKey);
 	});
 }
+
+export const __testOnly = {
+	renderSelectFrame,
+};
