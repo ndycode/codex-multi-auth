@@ -4078,7 +4078,10 @@ function summarizeReadOnlyDoctorState(
 
 async function buildLoginMenuHealthSummary(
 	storage: AccountStorageV3,
-): Promise<DashboardHealthSummary> {
+): Promise<DashboardHealthSummary | null> {
+	if (storage.accounts.length === 0) {
+		return null;
+	}
 	const enabledCount = storage.accounts.filter(
 		(account) => account.enabled !== false,
 	).length;
@@ -4288,7 +4291,7 @@ async function runAuthLogin(): Promise<number> {
 				toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
 				{
 					flaggedCount: flaggedStorage.accounts.length,
-					healthSummary,
+					healthSummary: healthSummary ?? undefined,
 					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
 				},
 			);
