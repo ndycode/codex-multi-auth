@@ -92,10 +92,8 @@ describe("sync history", () => {
 			snapshot: {
 				path: "openai-codex-accounts.json",
 				running: true,
-				lastReason: "watch",
-				lastError: null,
-				lastSuccessAt: 2,
-				lastAttemptAt: 2,
+				lastKnownMtimeMs: 2,
+				lastSyncAt: 2,
 				reloadCount: 1,
 				errorCount: 0,
 			},
