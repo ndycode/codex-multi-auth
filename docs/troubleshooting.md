@@ -87,7 +87,7 @@ Use `codex auth login` -> `Settings` -> `Codex CLI Sync` when you want to inspec
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | Sync preview looks one-way | This is the shipped behavior | Review the preview, then apply only if the target result is what you want |
-| A target-only account would be lost | The sync center preserves destination-only accounts instead of deleting them | Recheck the preview summary before apply |
+| You want to confirm target-only accounts are preserved | The sync center preserves destination-only accounts instead of deleting them | Recheck the preview summary before apply |
 | You want rollback context before syncing | Backup support is disabled in current settings | Enable storage backups in advanced settings, then refresh the sync preview |
 | Active selection does not match expectation | Preview kept the newer local choice or updated from Codex CLI based on selection precedence | Refresh preview and review the selection summary before apply |
 

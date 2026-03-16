@@ -17,7 +17,7 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 - Multi-account OAuth pool with health-aware selection and automatic failover
 - Project-scoped account storage under `~/.codex/multi-auth/projects/<project-key>/...`
 - Interactive dashboard for login, restore, switching, sync preview, and settings
-- Productized settings split across `Everyday Settings`, `Codex CLI Sync`, `Experimental`, and `Advanced & Operator`
+- Productized settings flow with `Everyday Settings` plus `Advanced & Operator` sections for `Codex CLI Sync`, `Experimental`, and `Advanced Backend Controls`
 - Forecast, report, fix, and doctor commands for operational safety
 - Flagged account verification and restore flow
 - Session affinity and live account sync controls
@@ -179,9 +179,10 @@ Override root with `CODEX_MULTI_AUTH_DIR=<path>`.
 
 ## Configuration
 
-Primary config root:
-- `~/.codex/multi-auth/settings.json`
-- or `CODEX_MULTI_AUTH_DIR/settings.json` when custom root is set
+Primary config file:
+- `~/.codex/multi-auth/settings.json` by default
+- `CODEX_MULTI_AUTH_DIR/settings.json` when a custom root is set
+- `CODEX_MULTI_AUTH_CONFIG_PATH=<path>` when you want an alternate config file source
 
 Selected runtime/environment overrides:
 
