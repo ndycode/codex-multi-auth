@@ -947,26 +947,7 @@ describe("codex manager cli commands", () => {
 		vi.spyOn(authMenu, "showFirstRunWizard").mockResolvedValue({
 			type: "login",
 		});
-		createAuthorizationFlowMock.mockResolvedValue({
-			codeVerifier: "verifier",
-			authorizationUrl: "https://example.test/auth",
-			state: "state",
-		});
-		startLocalOAuthServerMock.mockResolvedValue({
-			waitForCallback: vi
-				.fn()
-				.mockResolvedValue(
-					new URL(
-						"http://localhost:1455/auth/callback?code=test-code&state=state",
-					),
-				),
-			close: vi.fn().mockResolvedValue(undefined),
-		});
-		exchangeAuthorizationCodeMock.mockResolvedValue({
-			accessToken: "access",
-			refreshToken: "refresh",
-			expiresAt: Date.now() + 60_000,
-		});
+		await configureSuccessfulOAuthFlow();
 		promptAddAnotherAccountMock.mockResolvedValue(false);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");

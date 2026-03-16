@@ -4015,9 +4015,14 @@ function summarizeReadOnlyDoctorState(
 
 	const warnings: string[] = [];
 	const errors: string[] = [];
-	const activeIndex = resolveActiveIndex(storage, "codex");
+	const rawActiveCandidate =
+		storage.activeIndexByFamily?.codex ?? storage.activeIndex;
+	const normalizedActiveCandidate = Number.isFinite(rawActiveCandidate)
+		? Math.trunc(rawActiveCandidate)
+		: Number.NaN;
 	const activeExists =
-		activeIndex >= 0 && activeIndex < storage.accounts.length;
+		normalizedActiveCandidate >= 0 &&
+		normalizedActiveCandidate < storage.accounts.length;
 	if (!activeExists) {
 		errors.push("active index is out of range");
 	}
@@ -4036,11 +4041,13 @@ function summarizeReadOnlyDoctorState(
 	let placeholderEmailCount = 0;
 	let likelyInvalidRefreshTokenCount = 0;
 	for (const account of storage.accounts) {
-		const token = account.refreshToken.trim();
-		if (seenRefreshTokens.has(token)) {
-			duplicateTokenCount += 1;
-		} else {
-			seenRefreshTokens.add(token);
+		const token = getDoctorRefreshTokenKey(account.refreshToken);
+		if (token) {
+			if (seenRefreshTokens.has(token)) {
+				duplicateTokenCount += 1;
+			} else {
+				seenRefreshTokens.add(token);
+			}
 		}
 		if (hasPlaceholderEmail(account.email)) {
 			placeholderEmailCount += 1;
@@ -4103,16 +4110,25 @@ async function buildLoginMenuHealthSummary(
 		reason: "health summary unavailable",
 		snapshot: null,
 	};
+	let syncSummary = {
+		label: "unknown",
+		hint: "Sync state unavailable.",
+	};
+	let doctorSummary: DoctorReadOnlySummary = {
+		severity: "warn",
+		label: "unknown",
+		hint: "Doctor state unavailable.",
+	};
 	try {
 		[actionableRestores, rollbackPlan] = await Promise.all([
 			getActionableNamedBackupRestores({ currentStorage: storage }),
 			getLatestCodexCliSyncRollbackPlan(),
 		]);
+		syncSummary = summarizeLatestCodexCliSyncState();
+		doctorSummary = summarizeReadOnlyDoctorState(storage);
 	} catch (error) {
 		console.warn("Failed to build login menu health summary", error);
 	}
-	const syncSummary = summarizeLatestCodexCliSyncState();
-	const doctorSummary = summarizeReadOnlyDoctorState(storage);
 	const restoreLabel =
 		actionableRestores.totalBackups > 0
 			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
@@ -4136,6 +4152,14 @@ async function buildLoginMenuHealthSummary(
 			`Rollback ${rollbackLabel} | Doctor ${doctorSummary.label}`,
 		hint: hintParts.join(" | "),
 	};
+}
+
+function formatOpencodeImportFailure(error: unknown): string {
+	if (typeof error !== "string") {
+		return "OpenCode account pool is not importable.";
+	}
+	const normalized = collapseWhitespace(error);
+	return normalized || "OpenCode account pool is not importable.";
 }
 
 async function handleManageAction(
@@ -4239,7 +4263,10 @@ async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 	try {
 		hasOpencodeSource = (await assessOpencodeAccountPool()) !== null;
 	} catch (error) {
-		console.warn("Failed to detect OpenCode import source", error);
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to detect OpenCode import source (${errorLabel}).`,
+		);
 	}
 
 	return {
@@ -4273,7 +4300,7 @@ async function runFirstRunWizard(
 				}
 				if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
 					console.log(
-						assessment.error ?? "OpenCode account pool is not importable.",
+						formatOpencodeImportFailure(assessment.error),
 					);
 					break;
 				}
@@ -4329,6 +4356,7 @@ async function runAuthLogin(): Promise<number> {
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
 	let skipEmptyStorageRecoveryMenu = false;
+	let firstRunWizardShownInLoop = false;
 	const initialStorage = await loadAccounts();
 	const startedFromMissingStorage = shouldShowFirstRunWizard(initialStorage);
 	let cachedInitialStorage: AccountStorageV3 | null | undefined =
@@ -4494,7 +4522,7 @@ async function runAuthLogin(): Promise<number> {
 					assessment.wouldExceedLimit
 				) {
 					console.log(
-						assessment.error ?? "OpenCode account pool is not importable.",
+						formatOpencodeImportFailure(assessment.error),
 					);
 					continue;
 				}
@@ -4679,9 +4707,11 @@ async function runAuthLogin(): Promise<number> {
 		}
 		if (
 			startedFromMissingStorage &&
+			!firstRunWizardShownInLoop &&
 			existingCount === 0 &&
 			isInteractiveLoginMenuAvailable()
 		) {
+			firstRunWizardShownInLoop = true;
 			const displaySettings = await loadDashboardDisplaySettings();
 			applyUiThemeFromDashboardSettings(displaySettings);
 			const firstRunResult = await runFirstRunWizard(displaySettings);
