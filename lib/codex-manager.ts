@@ -4525,7 +4525,7 @@ async function runSwitch(
 	}
 	if (targetIndex < 0 || targetIndex >= storage.accounts.length) {
 		console.error(
-			`Selected account ${displayAccountNumber} is out of range. Valid range: 1-${storage.accounts.length}.`,
+			`Selected account ${displayAccountNumber} is no longer available (storage position ${targetIndex + 1} is outside 1-${storage.accounts.length}).`,
 		);
 		return 1;
 	}

@@ -2928,6 +2928,60 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
 	});
 
+	it("reports stale storage positions when the dashboard list shrinks after selection", async () => {
+		const now = Date.now();
+		const originalStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: Array.from({ length: 29 }, (_, index) => ({
+				email: `account-${index + 1}@example.com`,
+				accountId: `acc_${index + 1}`,
+				refreshToken: `refresh-${index + 1}`,
+				accessToken: `access-${index + 1}`,
+				expiresAt: now + 3_600_000,
+				addedAt: now - 1_000 - index,
+				lastUsed: now - 1_000 - index,
+				enabled: true,
+			})),
+		};
+		const shrunkenStorage = {
+			...structuredClone(originalStorage),
+			accounts: originalStorage.accounts
+				.slice(0, 20)
+				.map((account) => structuredClone(account)),
+		};
+		let returnShrunken = false;
+		loadAccountsMock.mockImplementation(async () => {
+			if (returnShrunken) {
+				returnShrunken = false;
+				return structuredClone(shrunkenStorage);
+			}
+			return structuredClone(originalStorage);
+		});
+		promptLoginModeMock
+			.mockImplementationOnce(async () => {
+				returnShrunken = true;
+				return {
+					mode: "manage" as const,
+					switchAccountIndex: 28,
+					selectedAccountNumber: 1,
+				};
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Selected account 1 is no longer available (storage position 29 is outside 1-20).",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
 	it("marks newly added login account active so smart sort reflects it immediately", async () => {
 		const now = Date.now();
 		let storageState: {
