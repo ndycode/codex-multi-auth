@@ -3233,7 +3233,7 @@ describe("codex manager cli commands", () => {
 						/Pool 1 active[\s\S]*Sync unknown[\s\S]*Doctor 2 warnings/,
 					),
 					hint: expect.stringMatching(
-						/Restore backups: 0 actionable of 0 total[\s\S]*Rollback: health summary unavailable[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
+						/Restore backups: 0 actionable of 0 total[\s\S]*Rollback: no rollback checkpoint available[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
 					),
 				}),
 			}),

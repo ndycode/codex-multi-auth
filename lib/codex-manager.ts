@@ -4095,6 +4095,26 @@ function logLoginMenuHealthSummaryWarning(
 	console.warn(`${context} [${errorLabel}]`);
 }
 
+function formatLoginMenuRollbackHint(
+	rollbackPlan: Awaited<ReturnType<typeof getLatestCodexCliSyncRollbackPlan>>,
+): string {
+	if (rollbackPlan.status === "ready") {
+		const accountCount = rollbackPlan.accountCount;
+		if (
+			typeof accountCount === "number" &&
+			Number.isFinite(accountCount) &&
+			accountCount >= 0
+		) {
+			return `checkpoint ready for ${Math.trunc(accountCount)} account(s)`;
+		}
+		return "checkpoint ready";
+	}
+	if (collapseWhitespace(rollbackPlan.reason) === "health summary unavailable") {
+		return "rollback state unavailable";
+	}
+	return rollbackPlan.snapshot ? "checkpoint unavailable" : "no rollback checkpoint available";
+}
+
 async function buildLoginMenuHealthSummary(
 	storage: AccountStorageV3,
 ): Promise<DashboardHealthSummary | null> {
@@ -4129,13 +4149,20 @@ async function buildLoginMenuHealthSummary(
 		hint: "Doctor state unavailable.",
 	};
 	try {
-		[actionableRestores, rollbackPlan] = await Promise.all([
-			getActionableNamedBackupRestores({ currentStorage: storage }),
-			getLatestCodexCliSyncRollbackPlan(),
-		]);
+		actionableRestores = await getActionableNamedBackupRestores({
+			currentStorage: storage,
+		});
 	} catch (error) {
 		logLoginMenuHealthSummaryWarning(
-			"Failed to load async login menu health summary state",
+			"Failed to load login menu restore health summary state",
+			error,
+		);
+	}
+	try {
+		rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+	} catch (error) {
+		logLoginMenuHealthSummaryWarning(
+			"Failed to load login menu rollback health summary state",
 			error,
 		);
 	}
@@ -4168,7 +4195,7 @@ async function buildLoginMenuHealthSummary(
 		`Accounts: ${enabledCount} enabled / ${disabledCount} disabled / ${storage.accounts.length} total`,
 		`Sync: ${syncSummary.hint}`,
 		`Restore backups: ${actionableRestores.assessments.length} actionable of ${actionableRestores.totalBackups} total`,
-		`Rollback: ${rollbackPlan.reason}`,
+		`Rollback: ${formatLoginMenuRollbackHint(rollbackPlan)}`,
 		`Doctor: ${doctorSummary.hint}`,
 	];
 
