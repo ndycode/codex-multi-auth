@@ -4883,6 +4883,32 @@ describe("storage", () => {
 			expect(assessment?.imported).toBe(1);
 		});
 
+		it("does not fall back to auto-detection when an explicit CODEX_OPENCODE_POOL_PATH override is missing", async () => {
+			await fs.writeFile(
+				poolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "fallback-account",
+							refreshToken: "ref-fallback",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			process.env.CODEX_OPENCODE_POOL_PATH = join(
+				tempRoot,
+				"explicit",
+				"missing-pool.json",
+			);
+
+			expect(detectOpencodeAccountPoolPath()).toBeNull();
+			await expect(assessOpencodeAccountPool()).resolves.toBeNull();
+		});
+
 		it("refuses malformed opencode source before any mutation", async () => {
 			await fs.writeFile(poolPath, "not valid json");
 
