@@ -492,7 +492,7 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		const selectedGlyphColor = theme?.colors.success ?? ANSI.green;
 		const selectedChip = selectedLabelStart();
 
-		if (options.shellMode === "opentui-preview" && panel && columns >= 80) {
+		if (options.shellMode === "opentui-preview" && panel) {
 			writeLine(`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`);
 			if (subtitleText) {
 				writeLine(` ${muted}${truncateAnsi(subtitleText, Math.max(1, columns - 2))}${reset}`);
@@ -507,24 +507,51 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 			);
 			writeLine(`${border}+${reset}`);
 
-			const leftWidth = Math.max(28, Math.min(44, Math.floor(columns * 0.42)));
-			const rightWidth = Math.max(24, columns - leftWidth - 5);
-			const contentRows = Math.max(8, rows - 6);
-			const leftLines = buildPreviewListLines(
-				visibleItems,
-				windowStart,
-				cursor,
-				options,
-				theme,
-				codexColorCode,
-				selectedLabelStart,
-				leftWidth,
-			);
-			const rightLines = buildPreviewPanelLines(panel, rightWidth, contentRows, theme);
-			for (let i = 0; i < contentRows; i += 1) {
-				const left = leftLines[i] ?? "";
-				const right = rightLines[i] ?? "";
-				writeLine(` ${padAnsi(left, leftWidth)} ${border}|${reset} ${padAnsi(right, rightWidth)}`);
+			if (columns >= 80) {
+				const leftWidth = Math.max(28, Math.min(44, Math.floor(columns * 0.42)));
+				const rightWidth = Math.max(24, columns - leftWidth - 5);
+				const contentRows = Math.max(8, rows - 6);
+				const leftLines = buildPreviewListLines(
+					visibleItems,
+					windowStart,
+					cursor,
+					options,
+					theme,
+					codexColorCode,
+					selectedLabelStart,
+					leftWidth,
+				);
+				const rightLines = buildPreviewPanelLines(panel, rightWidth, contentRows, theme);
+				for (let i = 0; i < contentRows; i += 1) {
+					const left = leftLines[i] ?? "";
+					const right = rightLines[i] ?? "";
+					writeLine(` ${padAnsi(left, leftWidth)} ${border}|${reset} ${padAnsi(right, rightWidth)}`);
+				}
+			} else {
+				const contentWidth = Math.max(24, columns - 2);
+				const listLines = buildPreviewListLines(
+					visibleItems,
+					windowStart,
+					cursor,
+					options,
+					theme,
+					codexColorCode,
+					selectedLabelStart,
+					contentWidth,
+				);
+				for (const line of listLines) {
+					writeLine(` ${padAnsi(line, contentWidth)}`);
+				}
+				writeLine(`${border}+${reset}`);
+				const panelLines = buildPreviewPanelLines(
+					panel,
+					contentWidth,
+					Math.max(6, rows - listLines.length - 7),
+					theme,
+				);
+				for (const line of panelLines) {
+					writeLine(` ${padAnsi(line, contentWidth)}`);
+				}
 			}
 			writeLine(`${border}+${reset}`);
 
