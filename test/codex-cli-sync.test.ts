@@ -1266,6 +1266,109 @@ describe("codex-cli sync", () => {
 		}
 	});
 
+	it("applies the Codex selection when the persisted target stat succeeds on the 7th attempt", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const sourceTime = new Date("2026-03-13T00:00:05.000Z");
+		const targetTime = new Date("2026-03-13T00:00:00.000Z");
+		await utimes(accountsPath, sourceTime, sourceTime);
+		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
+		await utimes(targetStoragePath, targetTime, targetTime);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+		vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
+
+		const nodeFs = await import("node:fs");
+		const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+		let targetStatCalls = 0;
+		const statSpy = vi
+			.spyOn(nodeFs.promises, "stat")
+			.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+				if (args[0] === targetStoragePath) {
+					targetStatCalls += 1;
+					if (targetStatCalls < SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS) {
+						const error = new Error("busy target") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+				}
+				return originalStat(...args);
+			});
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		try {
+			const preview = await previewCodexCliSync(current, {
+				forceRefresh: true,
+			});
+
+			expect(targetStatCalls).toBe(7);
+			expect(preview.status).toBe("ready");
+			expect(preview.summary.selectionChanged).toBe(true);
+		} finally {
+			statSpy.mockRestore();
+		}
+	});
+
 	it("records a changed manual sync only after the caller commits persistence", async () => {
 		await writeFile(
 			accountsPath,

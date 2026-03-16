@@ -22,6 +22,7 @@ const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
 const isInteractiveLoginMenuAvailableMock = vi.fn(() => true);
 const promptLoginModeMock = vi.fn();
+const isNonInteractiveModeMock = vi.fn(() => false);
 const fetchCodexQuotaSnapshotMock = vi.fn();
 const loadDashboardDisplaySettingsMock = vi.fn();
 const saveDashboardDisplaySettingsMock = vi.fn();
@@ -90,6 +91,7 @@ vi.mock("../lib/auth/server.js", () => ({
 
 vi.mock("../lib/cli.js", () => ({
 	isInteractiveLoginMenuAvailable: isInteractiveLoginMenuAvailableMock,
+	isNonInteractiveMode: isNonInteractiveModeMock,
 	promptAddAnotherAccount: promptAddAnotherAccountMock,
 	promptLoginMode: promptLoginModeMock,
 }));
@@ -566,6 +568,8 @@ describe("codex manager cli commands", () => {
 		isInteractiveLoginMenuAvailableMock.mockReset();
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(true);
 		promptLoginModeMock.mockReset();
+		isNonInteractiveModeMock.mockReset();
+		isNonInteractiveModeMock.mockReturnValue(false);
 		fetchCodexQuotaSnapshotMock.mockReset();
 		loadDashboardDisplaySettingsMock.mockReset();
 		saveDashboardDisplaySettingsMock.mockReset();
@@ -2029,7 +2033,10 @@ describe("codex manager cli commands", () => {
 				activeIndexByFamily: { codex: 0 },
 				accounts: [
 					{
+						accountId: "acc-restored",
 						email: "restored@example.com",
+						accessToken: "access-restored",
+						expiresAt: now + 3_600_000,
 						refreshToken: "refresh-restored",
 						addedAt: now,
 						lastUsed: now,
@@ -2039,6 +2046,7 @@ describe("codex manager cli commands", () => {
 			};
 			return { imported: 1, skipped: 0, total: 1 };
 		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		createAuthorizationFlowMock.mockRejectedValue(
 			new Error("oauth flow should be skipped when restoring backup"),
@@ -2052,6 +2060,14 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledTimes(2);
 		expect(selectMock).toHaveBeenCalled();
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc-restored",
+				email: "restored@example.com",
+				accessToken: "access-restored",
+				refreshToken: "refresh-restored",
+			}),
+		);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
@@ -4072,7 +4088,7 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("shows epoch backup timestamps in restore hints", async () => {
+	it("omits zero backup timestamps from restore hints", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);
 		const assessment = {
@@ -4108,9 +4124,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		const backupItems = selectMock.mock.calls[0]?.[0];
-		expect(backupItems?.[0]?.hint).toContain(
-			`updated ${new Date(0).toLocaleDateString()}`,
-		);
+		expect(backupItems?.[0]?.hint).not.toContain("updated");
 	});
 
 	it("shows experimental settings in the settings hub", async () => {
@@ -6445,6 +6459,7 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("waits for an in-flight menu quota refresh before opening backup restore manager", async () => {
+		setInteractiveTTY(true);
 		const now = Date.now();
 		const fetchStarted = createDeferred<void>();
 		const fetchDeferred = createDeferred<{

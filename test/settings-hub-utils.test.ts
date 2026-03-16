@@ -500,8 +500,8 @@ describe("settings-hub utility coverage", () => {
 		const storageModule = await import("../lib/storage.js");
 		const codexCliState = await import("../lib/codex-cli/state.js");
 		let loadAttempts = 0;
-		const loadAccountsSpy = vi
-			.spyOn(storageModule, "loadAccounts")
+		const loadAccountsReadOnlySpy = vi
+			.spyOn(storageModule, "loadAccountsReadOnly")
 			.mockImplementation(async () => {
 				loadAttempts += 1;
 				if (loadAttempts === 1) {
@@ -527,10 +527,10 @@ describe("settings-hub utility coverage", () => {
 
 		try {
 			await api.promptSyncCenter({});
-			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsReadOnlySpy).toHaveBeenCalledTimes(2);
 			expect(loadStateSpy).toHaveBeenCalledTimes(1);
 		} finally {
-			loadAccountsSpy.mockRestore();
+			loadAccountsReadOnlySpy.mockRestore();
 			loadStateSpy.mockRestore();
 		}
 	});
@@ -539,7 +539,9 @@ describe("settings-hub utility coverage", () => {
 		const api = await loadSettingsHubTestApi();
 		const storageModule = await import("../lib/storage.js");
 		const codexCliState = await import("../lib/codex-cli/state.js");
-		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+		const loadAccountsReadOnlySpy = vi
+			.spyOn(storageModule, "loadAccountsReadOnly")
+			.mockResolvedValue({
 			version: 3,
 			accounts: [],
 			activeIndex: 0,
@@ -566,9 +568,9 @@ describe("settings-hub utility coverage", () => {
 		try {
 			await api.promptSyncCenter({});
 			expect(loadStateSpy).toHaveBeenCalledTimes(2);
-			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsReadOnlySpy).toHaveBeenCalledTimes(2);
 		} finally {
-			loadAccountsSpy.mockRestore();
+			loadAccountsReadOnlySpy.mockRestore();
 			loadStateSpy.mockRestore();
 		}
 	});
@@ -577,7 +579,9 @@ describe("settings-hub utility coverage", () => {
 		const api = await loadSettingsHubTestApi();
 		const storageModule = await import("../lib/storage.js");
 		const codexCliState = await import("../lib/codex-cli/state.js");
-		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+		const loadAccountsReadOnlySpy = vi
+			.spyOn(storageModule, "loadAccountsReadOnly")
+			.mockResolvedValue({
 			version: 3,
 			accounts: [],
 			activeIndex: 0,
@@ -610,9 +614,9 @@ describe("settings-hub utility coverage", () => {
 			await api.promptSyncCenter({});
 
 			expect(loadStateSpy).toHaveBeenCalledTimes(2);
-			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsReadOnlySpy).toHaveBeenCalledTimes(2);
 		} finally {
-			loadAccountsSpy.mockRestore();
+			loadAccountsReadOnlySpy.mockRestore();
 			loadStateSpy.mockRestore();
 		}
 	});

@@ -774,7 +774,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		expect(readPaths).toEqual(
 			expect.arrayContaining([lockedBackup?.path, validBackup?.path]),
 		);
-		expect(readPaths.filter((path) => path === lockedBackup?.path)).toHaveLength(5);
+		expect(readPaths.filter((path) => path === lockedBackup?.path)).toHaveLength(7);
 		expect(readPaths.filter((path) => path === validBackup?.path)).toHaveLength(1);
 	});
 

@@ -24,7 +24,7 @@ import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
 const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
-export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 4;
+export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 7;
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {

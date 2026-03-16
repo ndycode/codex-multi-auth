@@ -26,7 +26,9 @@ import {
 	loadAccounts,
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
+	resolveNamedBackupRestorePath,
 	restoreNamedBackup,
+	restoreAssessedNamedBackup,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
 	StorageError,
@@ -470,7 +472,12 @@ describe("storage", () => {
 			const imported = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(imported).toEqual({ imported: 1, total: 3, skipped: 0 });
+			expect(imported).toEqual({
+				imported: 1,
+				total: 3,
+				skipped: 0,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(3);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual(
 				expect.arrayContaining([
@@ -520,7 +527,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
@@ -565,7 +577,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
@@ -614,7 +631,59 @@ describe("storage", () => {
 
 			const result = await importAccounts(exportPath);
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
+		});
+
+		it("returns changed false and skips persistence for duplicate-only imports", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "duplicate-import",
+						email: "duplicate@example.com",
+						refreshToken: "ref-duplicate",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "duplicate-import",
+							email: "duplicate@example.com",
+							refreshToken: "ref-duplicate",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const renameSpy = vi.spyOn(fs, "rename");
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toEqual({
+					imported: 0,
+					skipped: 1,
+					total: 1,
+					changed: false,
+				});
+				expect(renameSpy).not.toHaveBeenCalled();
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("should serialize concurrent transactional updates without losing accounts", async () => {
@@ -986,6 +1055,7 @@ describe("storage", () => {
 		});
 
 		it("should fail export when no accounts exist", async () => {
+			const storageModule = await import("../lib/storage.js");
 			const isolatedStorageDir = join(
 				testWorkDir,
 				"empty-export-" + Math.random().toString(36).slice(2),
@@ -993,9 +1063,7 @@ describe("storage", () => {
 			const isolatedStoragePath = join(isolatedStorageDir, "accounts.json");
 			const isolatedExportPath = join(isolatedStorageDir, "export.json");
 			await fs.mkdir(isolatedStorageDir, { recursive: true });
-			vi.resetModules();
-			const isolatedStorageModule = await import("../lib/storage.js");
-			isolatedStorageModule.setStoragePathDirect(isolatedStoragePath);
+			storageModule.setStoragePathDirect(isolatedStoragePath);
 			try {
 				await fs.writeFile(
 					isolatedStoragePath,
@@ -1007,11 +1075,10 @@ describe("storage", () => {
 					}),
 				);
 				await expect(
-					isolatedStorageModule.exportAccounts(isolatedExportPath),
+					storageModule.exportAccounts(isolatedExportPath),
 				).rejects.toThrow(/No accounts to export/);
 			} finally {
-				isolatedStorageModule.setStoragePathDirect(null);
-				vi.resetModules();
+				storageModule.setStoragePathDirect(null);
 			}
 		});
 
@@ -1022,6 +1089,102 @@ describe("storage", () => {
 			);
 		});
 
+		it("retries transient import read errors before parsing the backup", async () => {
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "retry-import-read",
+							refreshToken: "ref-retry-import-read",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			const originalReadFile = fs.readFile.bind(fs);
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === exportPath && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("import file busy") as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toMatchObject({
+					imported: 1,
+					skipped: 0,
+					total: 1,
+					changed: true,
+				});
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("imports a backup even when existsSync falsely reports the file missing", async () => {
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "exists-sync-false-negative",
+							refreshToken: "ref-exists-sync-false-negative",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const actualFs = await vi.importActual<typeof import("node:fs")>(
+				"node:fs",
+			);
+			vi.resetModules();
+			vi.doMock("node:fs", () => ({
+				...actualFs,
+				existsSync: (path: Parameters<typeof actualFs.existsSync>[0]) =>
+					String(path) === exportPath ? false : actualFs.existsSync(path),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(testStoragePath);
+
+				const result = await isolatedStorageModule.importAccounts(exportPath);
+				expect(result).toMatchObject({
+					imported: 1,
+					skipped: 0,
+					total: 1,
+					changed: true,
+				});
+
+				const loaded = await isolatedStorageModule.loadAccounts();
+				expect(loaded?.accounts).toEqual([
+					expect.objectContaining({
+						accountId: "exists-sync-false-negative",
+						refreshToken: "ref-exists-sync-false-negative",
+					}),
+				]);
+			} finally {
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+			}
+		});
 		it("should fail import when file contains invalid JSON", async () => {
 			await fs.writeFile(exportPath, "not valid json {[");
 			await expect(importAccounts(exportPath)).rejects.toThrow(/Invalid JSON/);
@@ -1187,6 +1350,17 @@ describe("storage", () => {
 			);
 		});
 
+		it("returns a contained fallback path for missing named backups", async () => {
+			const requestedName = "  missing-backup  ";
+			const resolvedPath =
+				await resolveNamedBackupRestorePath(requestedName);
+
+			expect(resolvedPath).toBe(buildNamedBackupPath("missing-backup"));
+			await expect(importAccounts(resolvedPath)).rejects.toThrow(
+				/Import file not found/,
+			);
+		});
+
 		it("assesses eligibility and restores a named backup", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1213,6 +1387,93 @@ describe("storage", () => {
 
 			const restored = await loadAccounts();
 			expect(restored?.accounts[0]?.accountId).toBe("primary");
+		});
+
+		it("marks duplicate-only named backups as ineligible restore no-ops", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "duplicate-only",
+						email: "duplicate@example.com",
+						refreshToken: "ref-duplicate",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await createNamedBackup("already-present");
+
+			const assessment = await assessNamedBackupRestore("already-present");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+
+			await expect(restoreNamedBackup("already-present")).rejects.toThrow(
+				"All accounts in this backup already exist",
+			);
+		});
+
+		it("allows metadata-refresh restores even when no net-new account is imported", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "metadata-refresh",
+						email: "metadata@example.com",
+						refreshToken: "ref-fresh",
+						accessToken: "access-fresh",
+						expiresAt: 9_000,
+						addedAt: 5,
+						lastUsed: 5,
+					},
+				],
+			});
+			await createNamedBackup("metadata-refresh");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "metadata-refresh",
+						email: "metadata@example.com",
+						refreshToken: "ref-stale",
+						accessToken: "access-stale",
+						expiresAt: 1_000,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("metadata-refresh");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.error).toBeUndefined();
+
+			const restoreResult = await restoreNamedBackup("metadata-refresh");
+			expect(restoreResult).toEqual({
+				imported: 0,
+				skipped: 1,
+				total: 1,
+				changed: true,
+			});
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "metadata-refresh",
+					refreshToken: "ref-fresh",
+					accessToken: "access-fresh",
+					expiresAt: 9_000,
+				}),
+			]);
 		});
 
 		it("honors explicit null currentStorage when assessing a named backup", async () => {
@@ -1410,6 +1671,33 @@ describe("storage", () => {
 				restoreNamedBackup("deleted-after-assessment"),
 			).rejects.toThrow(/Import file not found/);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+		});
+
+		it("restoreAssessedNamedBackup rechecks the backup path at execution time", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "helper-backup",
+						refreshToken: "ref-helper-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("helper-missing-after-assessment");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore(
+				"helper-missing-after-assessment",
+			);
+			await removeWithRetry(backup.path, { force: true });
+
+			await expect(restoreAssessedNamedBackup(assessment)).rejects.toThrow(
+				/Import file not found/,
+			);
 		});
 
 		it("throws when a named backup becomes invalid JSON after assessment", async () => {

@@ -47,6 +47,8 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const TRANSIENT_FILESYSTEM_MAX_ATTEMPTS = 7;
+const TRANSIENT_FILESYSTEM_BASE_DELAY_MS = 10;
 export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
@@ -139,6 +141,13 @@ export interface BackupRestoreAssessment {
 	eligibleForRestore: boolean;
 	error?: string;
 }
+
+export type ImportAccountsResult = {
+	imported: number;
+	total: number;
+	skipped: number;
+	changed?: boolean;
+};
 
 export interface ActionableNamedBackupRecoveries {
 	assessments: BackupRestoreAssessment[];
@@ -1786,25 +1795,30 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
 ): code is "EPERM" | "EBUSY" | "EAGAIN" {
-	if (code === "EBUSY" || code === "EAGAIN") {
+	if (code === "EAGAIN") {
 		return true;
 	}
-	return code === "EPERM" && process.platform === "win32";
+	return process.platform === "win32" && (code === "EPERM" || code === "EBUSY");
 }
 
 async function retryTransientFilesystemOperation<T>(
 	operation: () => Promise<T>,
 ): Promise<T> {
-	for (let attempt = 0; attempt < 5; attempt += 1) {
+	for (let attempt = 0; attempt < TRANSIENT_FILESYSTEM_MAX_ATTEMPTS; attempt += 1) {
 		try {
 			return await operation();
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
+			if (
+				!isRetryableFilesystemErrorCode(code) ||
+				attempt >= TRANSIENT_FILESYSTEM_MAX_ATTEMPTS - 1
+			) {
 				throw error;
 			}
+			const baseDelayMs = TRANSIENT_FILESYSTEM_BASE_DELAY_MS * 2 ** attempt;
+			const jitterMs = Math.floor(Math.random() * baseDelayMs);
 			await new Promise((resolve) =>
-				setTimeout(resolve, 10 * 2 ** attempt + Math.floor(Math.random() * 10)),
+				setTimeout(resolve, baseDelayMs + jitterMs),
 			);
 		}
 	}
@@ -1982,6 +1996,10 @@ function assessNamedBackupRestoreCandidate(
 	const skipped = wouldExceedLimit
 		? null
 		: Math.max(0, deduplicatedIncomingAccounts.length - (imported ?? 0));
+	const changed = !haveEquivalentAccountRows(
+		mergedAccounts,
+		deduplicatedCurrentAccounts,
+	);
 
 	return {
 		backup,
@@ -1990,21 +2008,29 @@ function assessNamedBackupRestoreCandidate(
 		imported,
 		skipped,
 		wouldExceedLimit,
-		eligibleForRestore: !wouldExceedLimit,
+		eligibleForRestore: !wouldExceedLimit && changed,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
-			: undefined,
+			: !changed
+				? "All accounts in this backup already exist"
+				: undefined,
 	};
 }
 
 export async function restoreNamedBackup(
 	name: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
-	const backupPath = await resolveNamedBackupRestorePath(name);
+): Promise<ImportAccountsResult> {
 	const assessment = await assessNamedBackupRestore(name);
+	return restoreAssessedNamedBackup(assessment);
+}
+
+export async function restoreAssessedNamedBackup(
+	assessment: Pick<BackupRestoreAssessment, "backup" | "eligibleForRestore" | "error">,
+): Promise<ImportAccountsResult> {
 	if (!assessment.eligibleForRestore) {
 		throw new Error(assessment.error ?? "Backup is not eligible for restore.");
 	}
+	const backupPath = await resolveNamedBackupRestorePath(assessment.backup.name);
 	return importAccounts(backupPath);
 }
 
@@ -2019,6 +2045,44 @@ function parseAndNormalizeStorage(data: unknown): {
 		? (data as { version?: unknown }).version
 		: undefined;
 	return { normalized, storedVersion, schemaErrors };
+}
+
+function canonicalizeComparisonValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((entry) => canonicalizeComparisonValue(entry));
+	}
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+
+	const record = value as Record<string, unknown>;
+	return Object.fromEntries(
+		Object.keys(record)
+			.sort()
+			.map((key) => [key, canonicalizeComparisonValue(record[key])] as const),
+	);
+}
+
+function stableStringifyForComparison(value: unknown): string {
+	return JSON.stringify(canonicalizeComparisonValue(value));
+}
+
+function haveEquivalentAccountRows(
+	left: readonly unknown[],
+	right: readonly unknown[],
+): boolean {
+	if (left.length !== right.length) {
+		return false;
+	}
+	for (let index = 0; index < left.length; index += 1) {
+		if (
+			stableStringifyForComparison(left[index]) !==
+			stableStringifyForComparison(right[index])
+		) {
+			return false;
+		}
+	}
+	return true;
 }
 
 async function loadAccountsFromPath(path: string): Promise<{
@@ -2037,11 +2101,19 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 			loadAccountsFromPath(path),
 		);
 	} catch (error) {
+		const errorMessage =
+			error instanceof SyntaxError
+				? `Invalid JSON in import file: ${path}`
+				: (error as NodeJS.ErrnoException).code === "ENOENT"
+					? `Import file not found: ${path}`
+					: error instanceof Error
+						? error.message
+						: String(error);
 		return {
 			normalized: null,
 			storedVersion: undefined,
 			schemaErrors: [],
-			error: String(error),
+			error: errorMessage,
 		};
 	}
 }
@@ -2108,7 +2180,7 @@ async function findExistingNamedBackupPath(
 	return undefined;
 }
 
-async function resolveNamedBackupRestorePath(name: string): Promise<string> {
+export async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const existingPath = await findExistingNamedBackupPath(name);
 	if (existingPath) {
 		return existingPath;
@@ -3023,7 +3095,7 @@ export async function exportAccounts(
  */
 export async function importAccounts(
 	filePath: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
+): Promise<ImportAccountsResult> {
 	const resolvedPath = resolvePath(filePath);
 
 	let content: string;
@@ -3054,24 +3126,40 @@ export async function importAccounts(
 		imported: importedCount,
 		total,
 		skipped: skippedCount,
+		changed,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
-		const existingDeduplicatedAccounts = deduplicateAccounts(existingAccounts);
+		const existingDeduplicatedAccounts = deduplicateAccounts([
+			...existingAccounts,
+		]);
+		const incomingDeduplicatedAccounts = deduplicateAccounts([
+			...normalized.accounts,
+		]);
 		const existingActiveIndex = existing?.activeIndex ?? 0;
-		const incomingDeduplicatedAccounts = deduplicateAccounts(normalized.accounts);
-
-		const merged = [...existingAccounts, ...normalized.accounts];
-
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccounts(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
-			}
+		const deduplicatedAccounts = deduplicateAccounts([
+			...existingDeduplicatedAccounts,
+			...incomingDeduplicatedAccounts,
+		]);
+		if (deduplicatedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			throw new Error(
+				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduplicatedAccounts.length})`,
+			);
 		}
-
-		const deduplicatedAccounts = deduplicateAccounts(merged);
+		const imported =
+			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
+		const skipped = Math.max(0, incomingDeduplicatedAccounts.length - imported);
+		const changed = !haveEquivalentAccountRows(
+			deduplicatedAccounts,
+			existingDeduplicatedAccounts,
+		);
+		if (!changed) {
+			return {
+				imported,
+				total: deduplicatedAccounts.length,
+				skipped,
+				changed,
+			};
+		}
 
 		const newStorage: AccountStorageV3 = {
 			version: 3,
@@ -3081,11 +3169,12 @@ export async function importAccounts(
 		};
 
 		await persist(newStorage);
-
-		const imported =
-			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
-		const skipped = Math.max(0, incomingDeduplicatedAccounts.length - imported);
-		return { imported, total: deduplicatedAccounts.length, skipped };
+		return {
+			imported,
+			total: deduplicatedAccounts.length,
+			skipped,
+			changed,
+		};
 	});
 
 	log.info("Imported accounts", {
@@ -3093,7 +3182,13 @@ export async function importAccounts(
 		imported: importedCount,
 		skipped: skippedCount,
 		total,
+		changed,
 	});
 
-	return { imported: importedCount, total, skipped: skippedCount };
+	return {
+		imported: importedCount,
+		total,
+		skipped: skippedCount,
+		changed,
+	};
 }
