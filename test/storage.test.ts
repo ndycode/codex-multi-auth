@@ -2300,6 +2300,49 @@ describe("storage", () => {
 			).rejects.toThrow(/snapshot failed/);
 		});
 
+		it("writes the provided storage snapshot instead of re-reading live storage", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "live",
+						refreshToken: "ref-live",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const snapshot = await snapshotAccountStorage({
+				reason: "import-accounts",
+				storage: {
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "provided",
+							refreshToken: "ref-provided",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				},
+				storagePath: testStoragePath,
+			});
+
+			expect(snapshot?.path && existsSync(snapshot.path)).toBe(true);
+			const snapshotContent = JSON.parse(
+				await fs.readFile(snapshot!.path, "utf-8"),
+			) as { accounts: Array<{ accountId?: string }> };
+			expect(snapshotContent.accounts).toEqual([
+				expect.objectContaining({ accountId: "provided" }),
+			]);
+			expect((await loadAccounts())?.accounts).toEqual([
+				expect.objectContaining({ accountId: "live" }),
+			]);
+		});
+
 		it("creates a named snapshot before deleteSavedAccounts", async () => {
 			await saveAccounts({
 				version: 3,

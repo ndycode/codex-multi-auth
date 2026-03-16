@@ -8,6 +8,9 @@ const loadFlaggedAccountsMock = vi.fn();
 const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
 const snapshotAccountStorageMock = vi.fn();
+const withAccountAndFlaggedStorageTransactionMock = vi.fn();
+const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
+let transactionCurrentStorage: unknown = null;
 
 vi.mock("../lib/codex-cli/state.js", () => ({
 	clearCodexCliStateCache: clearCodexCliStateCacheMock,
@@ -24,10 +27,13 @@ vi.mock("../lib/quota-cache.js", () => ({
 vi.mock("../lib/storage.js", () => ({
 	clearAccounts: clearAccountsMock,
 	clearFlaggedAccounts: clearFlaggedAccountsMock,
+	getStoragePath: getStoragePathMock,
 	loadFlaggedAccounts: loadFlaggedAccountsMock,
 	saveAccounts: saveAccountsMock,
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
 	snapshotAccountStorage: snapshotAccountStorageMock,
+	withAccountAndFlaggedStorageTransaction:
+		withAccountAndFlaggedStorageTransactionMock,
 }));
 
 describe("destructive actions", () => {
@@ -41,6 +47,34 @@ describe("destructive actions", () => {
 		saveAccountsMock.mockResolvedValue(undefined);
 		saveFlaggedAccountsMock.mockResolvedValue(undefined);
 		snapshotAccountStorageMock.mockResolvedValue(null);
+		transactionCurrentStorage = null;
+		withAccountAndFlaggedStorageTransactionMock.mockImplementation(
+			async (handler) => {
+				const previousSnapshot = structuredClone(transactionCurrentStorage);
+				return handler(
+					transactionCurrentStorage,
+					async (accountStorage: unknown, flaggedStorage: unknown) => {
+						await saveAccountsMock(accountStorage);
+						try {
+							await saveFlaggedAccountsMock(flaggedStorage);
+							transactionCurrentStorage = structuredClone(accountStorage);
+						} catch (error) {
+							try {
+								await saveAccountsMock(previousSnapshot);
+								transactionCurrentStorage =
+									structuredClone(previousSnapshot);
+							} catch (rollbackError) {
+								throw new AggregateError(
+									[error, rollbackError],
+									"Deleting the account partially failed and rollback also failed.",
+								);
+							}
+							throw error;
+						}
+					},
+				);
+			},
+		);
 	});
 
 	it("returns delete-only results without pretending kept data was cleared", async () => {
@@ -135,12 +169,16 @@ describe("destructive actions", () => {
 				},
 			],
 		};
+		transactionCurrentStorage = structuredClone(storage);
 
 		const deleted = await deleteAccountAtIndex({ storage, index: 0 });
 
 		expect(deleted).not.toBeNull();
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(snapshotAccountStorageMock).toHaveBeenCalledWith({
 			reason: "delete-account",
+			storage,
+			storagePath: "/mock/openai-codex-accounts.json",
 		});
 		expect(
 			snapshotAccountStorageMock.mock.invocationCallOrder[0],
@@ -204,10 +242,12 @@ describe("destructive actions", () => {
 				},
 			],
 		};
+		transactionCurrentStorage = structuredClone(storage);
 
 		const deleted = await deleteAccountAtIndex({ storage, index: 1 });
 
 		expect(deleted).not.toBeNull();
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(deleted?.flagged.accounts).toEqual([
 			expect.objectContaining({ refreshToken: "refresh-newer" }),
 		]);
@@ -255,6 +295,7 @@ describe("destructive actions", () => {
 				},
 			],
 		};
+		transactionCurrentStorage = structuredClone(storage);
 
 		await expect(deleteAccountAtIndex({ storage, index: 1 })).rejects.toBe(
 			flaggedSaveError,
@@ -307,6 +348,7 @@ describe("destructive actions", () => {
 				},
 			],
 		};
+		transactionCurrentStorage = structuredClone(storage);
 
 		try {
 			await deleteAccountAtIndex({ storage, index: 1 });

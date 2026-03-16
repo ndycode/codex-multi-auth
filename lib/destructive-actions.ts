@@ -7,10 +7,10 @@ import {
 	clearAccounts,
 	clearFlaggedAccounts,
 	type FlaggedAccountStorageV1,
+	getStoragePath,
 	loadFlaggedAccounts,
-	saveAccounts,
-	saveFlaggedAccounts,
 	snapshotAccountStorage,
+	withAccountAndFlaggedStorageTransaction,
 } from "./storage.js";
 
 export const DESTRUCTIVE_ACTION_COPY = {
@@ -99,74 +99,62 @@ export interface DestructiveActionResult {
 	quotaCacheCleared: boolean;
 }
 
-function asError(error: unknown, fallbackMessage: string): Error {
-	return error instanceof Error
-		? error
-		: new Error(`${fallbackMessage}: ${String(error)}`);
-}
-
 export async function deleteAccountAtIndex(options: {
 	storage: AccountStorageV3;
 	index: number;
 }): Promise<DeleteAccountResult | null> {
-	const target = options.storage.accounts.at(options.index);
-	if (!target) return null;
-	const flagged = await loadFlaggedAccounts();
-	await snapshotAccountStorage({ reason: "delete-account" });
-	const nextStorage: AccountStorageV3 = {
-		...options.storage,
-		accounts: options.storage.accounts.map((account) => ({ ...account })),
-		activeIndexByFamily: { ...(options.storage.activeIndexByFamily ?? {}) },
-	};
-	const previousStorage: AccountStorageV3 = {
-		...options.storage,
-		accounts: options.storage.accounts.map((account) => ({ ...account })),
-		activeIndexByFamily: { ...(options.storage.activeIndexByFamily ?? {}) },
-	};
+	const requestedTarget = options.storage.accounts.at(options.index);
+	if (!requestedTarget) return null;
 
-	nextStorage.accounts.splice(options.index, 1);
-	rebaseActiveIndicesAfterDelete(nextStorage, options.index);
-	clampActiveIndices(nextStorage);
-	await saveAccounts(nextStorage);
-
-	const remainingFlagged = flagged.accounts.filter(
-		(account) => account.refreshToken !== target.refreshToken,
-	);
-	const removedFlaggedCount = flagged.accounts.length - remainingFlagged.length;
-	let updatedFlagged = flagged;
-	if (removedFlaggedCount > 0) {
-		updatedFlagged = { ...flagged, accounts: remainingFlagged };
-		try {
-			await saveFlaggedAccounts(updatedFlagged);
-		} catch (error) {
-			const originalError = asError(
-				error,
-				"Failed to save flagged account storage after deleting an account",
-			);
-			try {
-				await saveAccounts(previousStorage);
-			} catch (rollbackError) {
-				throw new AggregateError(
-					[
-						originalError,
-						asError(
-							rollbackError,
-							"Failed to roll back account storage after flagged save failure",
-						),
-					],
-					"Deleting the account partially failed and rollback also failed.",
-				);
-			}
-			throw originalError;
+	return withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+		const sourceStorage = current ?? options.storage;
+		const targetIndex = sourceStorage.accounts.findIndex(
+			(account) => account.refreshToken === requestedTarget.refreshToken,
+		);
+		if (targetIndex < 0) {
+			return null;
 		}
-	}
+		const target = sourceStorage.accounts[targetIndex];
+		if (!target) {
+			return null;
+		}
 
-	return {
-		storage: nextStorage,
-		flagged: updatedFlagged,
-		removedAccount: target,
-		removedFlaggedCount,
-	};
+		const flagged = await loadFlaggedAccounts();
+		await snapshotAccountStorage({
+			reason: "delete-account",
+			storage: sourceStorage,
+			storagePath: getStoragePath(),
+		});
+
+		const nextStorage: AccountStorageV3 = {
+			...sourceStorage,
+			accounts: sourceStorage.accounts.map((account) => ({ ...account })),
+			activeIndexByFamily: { ...(sourceStorage.activeIndexByFamily ?? {}) },
+		};
+
+		nextStorage.accounts.splice(targetIndex, 1);
+		rebaseActiveIndicesAfterDelete(nextStorage, targetIndex);
+		clampActiveIndices(nextStorage);
+
+		const remainingFlagged = flagged.accounts.filter(
+			(account) => account.refreshToken !== target.refreshToken,
+		);
+		const removedFlaggedCount =
+			flagged.accounts.length - remainingFlagged.length;
+		const updatedFlagged =
+			removedFlaggedCount > 0
+				? { ...flagged, accounts: remainingFlagged }
+				: flagged;
+
+		await persist(nextStorage, updatedFlagged);
+
+		return {
+			storage: nextStorage,
+			flagged: updatedFlagged,
+			removedAccount: target,
+			removedFlaggedCount,
+		};
+	});
 }
 
 /**
