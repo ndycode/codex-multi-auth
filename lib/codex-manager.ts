@@ -4655,6 +4655,12 @@ async function runAuthLogin(): Promise<number> {
 					);
 					continue;
 				}
+				if (assessment.wouldExceedLimit) {
+					console.log(
+						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
+					);
+					continue;
+				}
 				const backupLabel = basename(assessment.backup.path);
 				const confirmed = await confirm(
 					`Import OpenCode accounts from ${backupLabel}?`,
