@@ -219,6 +219,8 @@ export interface AccountSnapshotOptions {
 	force?: boolean;
 	failurePolicy?: AccountSnapshotFailurePolicy;
 	createBackup?: typeof createNamedBackup;
+	storage?: AccountStorageV3 | null;
+	storagePath?: string;
 }
 
 interface LoadedBackupCandidate {
@@ -2148,8 +2150,15 @@ export async function getActionableNamedBackupRestores(
 
 export async function createNamedBackup(
 	name: string,
-	options: { force?: boolean } = {},
+	options: {
+		force?: boolean;
+		storage?: AccountStorageV3;
+		storagePath?: string;
+	} = {},
 ): Promise<NamedBackupMetadata> {
+	if (options.storage) {
+		return writeNamedBackupFromStorage(name, options.storage, options);
+	}
 	const backupPath = await exportNamedBackup(name, options);
 	const candidate = await loadBackupCandidate(backupPath);
 	return buildNamedBackupMetadata(
@@ -2157,6 +2166,37 @@ export async function createNamedBackup(
 		backupPath,
 		{ candidate },
 	);
+}
+
+async function writeNamedBackupFromStorage(
+	name: string,
+	storage: AccountStorageV3,
+	options: {
+		force?: boolean;
+		storagePath?: string;
+	} = {},
+): Promise<NamedBackupMetadata> {
+	const storagePath = options.storagePath ?? getStoragePath();
+	const backupPath = resolveNamedBackupPath(name, storagePath);
+	if (!options.force && existsSync(backupPath)) {
+		throw new Error(`File already exists: ${backupPath}`);
+	}
+	await fs.mkdir(dirname(backupPath), { recursive: true });
+	await fs.writeFile(
+		backupPath,
+		JSON.stringify(
+			{
+				version: storage.version,
+				accounts: storage.accounts,
+				activeIndex: storage.activeIndex,
+				activeIndexByFamily: storage.activeIndexByFamily,
+			},
+			null,
+			2,
+		),
+		{ encoding: "utf-8", mode: 0o600 },
+	);
+	return buildNamedBackupMetadata(name, backupPath);
 }
 
 function formatTimestampForSnapshot(timestamp: number): string {
@@ -2214,15 +2254,21 @@ export async function snapshotAccountStorage(
 		force = true,
 		failurePolicy = "warn",
 		createBackup = createNamedBackup,
+		storagePath,
 	} = options;
-	const currentStorage = await loadAccounts();
+	const currentStorage =
+		options.storage !== undefined ? options.storage : await loadAccounts();
 	if (!currentStorage || currentStorage.accounts.length === 0) {
 		return null;
 	}
 
 	const backupName = buildAccountSnapshotName(reason, now);
 	try {
-		return await createBackup(backupName, { force });
+		return await createBackup(backupName, {
+			force,
+			storage: currentStorage,
+			storagePath,
+		});
 	} catch (error) {
 		if (failurePolicy === "error") {
 			throw error;
@@ -2623,13 +2669,24 @@ async function loadImportableBackupCandidate(
 async function importNormalizedAccounts(
 	normalized: AccountStorageV3,
 	sourcePath: string,
-	options: { replacedExistingCount?: number } = {},
+	options: {
+		replacedExistingCount?: number;
+		snapshotReason?: AccountSnapshotReason;
+	} = {},
 ): Promise<{ imported: number; total: number; skipped: number }> {
+	const { snapshotReason } = options;
 	const {
 		imported: importedCount,
 		total,
 		skipped: skippedCount,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
+		if (snapshotReason) {
+			await snapshotAccountStorage({
+				reason: snapshotReason,
+				storage: existing,
+				storagePath: getStoragePath(),
+			});
+		}
 		const existingAccounts = existing?.accounts ?? [];
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
@@ -3723,8 +3780,8 @@ export async function importAccounts(
 	filePath: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
-
 	const candidate = await loadImportableBackupCandidate(resolvedPath);
-	await snapshotAccountStorage({ reason: "import-accounts" });
-	return importNormalizedAccounts(candidate.normalized, resolvedPath);
+	return importNormalizedAccounts(candidate.normalized, resolvedPath, {
+		snapshotReason: "import-accounts",
+	});
 }
