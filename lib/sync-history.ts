@@ -11,6 +11,7 @@ const HISTORY_FILE_NAME = "sync-history.ndjson";
 const LATEST_FILE_NAME = "sync-history-latest.json";
 const MAX_HISTORY_ENTRIES = 200;
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
 
 type SyncHistoryKind = "codex-cli-sync" | "live-account-sync";
 
@@ -84,6 +85,23 @@ async function waitForPendingHistoryWrites(): Promise<void> {
 
 async function ensureHistoryDir(directory: string): Promise<void> {
 	await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+}
+
+async function retryHistoryWrite(operation: () => Promise<void>): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await operation();
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (!code || !RETRYABLE_WRITE_CODES.has(code) || attempt === 4) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, 25 * 2 ** attempt),
+			);
+		}
+	}
 }
 
 function isSyncHistoryEntry(value: unknown): value is SyncHistoryEntry {
@@ -168,25 +186,28 @@ async function readHistoryTail(
 }
 
 async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<void> {
-	const content = await fs.readFile(paths.historyPath, "utf8").catch((error) => {
+	const entries = await readHistoryTail(paths.historyPath, {
+		limit: MAX_HISTORY_ENTRIES + 1,
+	}).catch((error) => {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
-			return "";
+			return [];
 		}
 		throw error;
 	});
-	if (!content) {
+	if (entries.length <= MAX_HISTORY_ENTRIES) {
 		return;
 	}
-	const lines = content.split(/\r?\n/).filter(Boolean);
-	if (lines.length <= MAX_HISTORY_ENTRIES) {
-		return;
-	}
-	const trimmedContent = `${lines.slice(-MAX_HISTORY_ENTRIES).join("\n")}\n`;
-	await fs.writeFile(paths.historyPath, trimmedContent, {
-		encoding: "utf8",
-		mode: 0o600,
-	});
+	const trimmedContent = `${entries
+		.slice(-MAX_HISTORY_ENTRIES)
+		.map((entry) => serializeEntry(entry))
+		.join("\n")}\n`;
+	await retryHistoryWrite(() =>
+		fs.writeFile(paths.historyPath, trimmedContent, {
+			encoding: "utf8",
+			mode: 0o600,
+		}),
+	);
 }
 
 export async function appendSyncHistoryEntry(
@@ -196,15 +217,19 @@ export async function appendSyncHistoryEntry(
 		const paths = getSyncHistoryPaths();
 		lastAppendPaths = paths;
 		await ensureHistoryDir(paths.directory);
-		await fs.appendFile(paths.historyPath, `${serializeEntry(entry)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
+		await retryHistoryWrite(() =>
+			fs.appendFile(paths.historyPath, `${serializeEntry(entry)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			}),
+		);
 		await trimHistoryFileIfNeeded(paths);
-		await fs.writeFile(paths.latestPath, `${JSON.stringify(entry, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
+		await retryHistoryWrite(() =>
+			fs.writeFile(paths.latestPath, `${JSON.stringify(entry, null, 2)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			}),
+		);
 		lastAppendError = null;
 	});
 	pendingHistoryWrites.add(writePromise);
@@ -218,6 +243,23 @@ export async function appendSyncHistoryEntry(
 		throw error;
 	} finally {
 		pendingHistoryWrites.delete(writePromise);
+	}
+}
+
+export async function readLatestSyncHistory(): Promise<SyncHistoryEntry | null> {
+	await waitForPendingHistoryWrites();
+	try {
+		const content = await fs.readFile(getSyncHistoryPaths().latestPath, "utf8");
+		const parsed = parseEntry(content);
+		return parsed ? cloneEntry(parsed) : null;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.debug("Failed to read latest sync history", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		return null;
 	}
 }
 

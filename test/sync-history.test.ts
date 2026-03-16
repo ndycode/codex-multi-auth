@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__resetLastCodexCliSyncRunForTests,
 	getLastCodexCliSyncRun,
+	loadLastCodexCliSyncRun,
 } from "../lib/codex-cli/sync.js";
 import {
 	__resetSyncHistoryForTests,
@@ -162,16 +163,52 @@ describe("sync history", () => {
 		__resetLastCodexCliSyncRunForTests();
 
 		expect(getLastCodexCliSyncRun()).toBeNull();
+		await expect(loadLastCodexCliSyncRun()).resolves.toMatchObject({
+			outcome: "changed",
+			sourcePath: "source.json",
+			targetPath: "target.json",
+			summary: expect.objectContaining({
+				addedAccountCount: 1,
+			}),
+		});
+	});
 
-		await vi.waitFor(() => {
-			expect(getLastCodexCliSyncRun()).toMatchObject({
-				outcome: "changed",
-				sourcePath: "source.json",
-				targetPath: "target.json",
-				summary: expect.objectContaining({
-					addedAccountCount: 1,
-				}),
+	it("trims oversized history without re-reading the full history file", async () => {
+		const readFileSpy = vi.spyOn(nodeFs, "readFile");
+
+		for (let index = 1; index <= 205; index += 1) {
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: index,
+				run: {
+					outcome: "changed",
+					runAt: index,
+					sourcePath: `source-${index}.json`,
+					targetPath: "target.json",
+					summary: {
+						sourceAccountCount: index,
+						targetAccountCountBefore: index - 1,
+						targetAccountCountAfter: index,
+						addedAccountCount: 1,
+						updatedAccountCount: 0,
+						unchangedAccountCount: 0,
+						destinationOnlyPreservedCount: 0,
+						selectionChanged: false,
+					},
+				},
 			});
+		}
+
+		expect(readFileSpy).not.toHaveBeenCalled();
+		const history = await readSyncHistory({ kind: "codex-cli-sync" });
+		expect(history).toHaveLength(200);
+		expect(history[0]).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 6,
+		});
+		expect(history.at(-1)).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 205,
 		});
 	});
 });

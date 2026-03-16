@@ -13,6 +13,7 @@ import {
 	commitPendingCodexCliSyncRun,
 	getActiveSelectionForFamily,
 	getLastCodexCliSyncRun,
+	loadLastCodexCliSyncRun,
 	previewCodexCliSync,
 	SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS,
 	syncAccountStorageFromCodexCli,
@@ -1336,7 +1337,7 @@ describe("codex-cli sync", () => {
 			expect(lastHistory.run.summary.addedAccountCount).toBe(1);
 		}
 		__resetLastCodexCliSyncRunForTests();
-		const persisted = getLastCodexCliSyncRun();
+		const persisted = await loadLastCodexCliSyncRun();
 		expect(persisted?.outcome).toBe("changed");
 		expect(persisted?.summary.addedAccountCount).toBe(1);
 	});

@@ -24,7 +24,7 @@ import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 import {
 	appendSyncHistoryEntry,
 	cloneSyncHistoryEntry,
-	readLatestSyncHistorySync,
+	readLatestSyncHistory,
 	readSyncHistory,
 } from "../sync-history.js";
 
@@ -121,6 +121,8 @@ let lastCodexCliSyncRunRevision = 0;
 let nextCodexCliSyncRunRevision = 0;
 const activePendingCodexCliSyncRunRevisions = new Set<number>();
 let lastCodexCliSyncHistoryLoadAttempted = false;
+let lastCodexCliSyncRunLoadPromise: Promise<CodexCliSyncRun | null> | null =
+	null;
 
 function createEmptySyncSummary(): CodexCliSyncSummary {
 	return {
@@ -234,23 +236,39 @@ export function getLastCodexCliSyncRun(): CodexCliSyncRun | null {
 	if (lastCodexCliSyncRun) {
 		return cloneCodexCliSyncRun(lastCodexCliSyncRun);
 	}
-	if (!lastCodexCliSyncHistoryLoadAttempted) {
-		lastCodexCliSyncHistoryLoadAttempted = true;
-		const latest = cloneSyncHistoryEntry(readLatestSyncHistorySync());
+	return null;
+}
+
+export async function loadLastCodexCliSyncRun(): Promise<CodexCliSyncRun | null> {
+	if (lastCodexCliSyncRun) {
+		return cloneCodexCliSyncRun(lastCodexCliSyncRun);
+	}
+	if (lastCodexCliSyncRunLoadPromise) {
+		const loadedRun = await lastCodexCliSyncRunLoadPromise;
+		return loadedRun ? cloneCodexCliSyncRun(loadedRun) : null;
+	}
+	if (lastCodexCliSyncHistoryLoadAttempted) {
+		return null;
+	}
+	lastCodexCliSyncHistoryLoadAttempted = true;
+	lastCodexCliSyncRunLoadPromise = (async () => {
+		const latest = cloneSyncHistoryEntry(await readLatestSyncHistory());
 		if (latest?.kind === "codex-cli-sync") {
 			return hydrateLastCodexCliSyncRunFromHistory(latest.run);
 		}
-		void readSyncHistory({ kind: "codex-cli-sync", limit: 1 })
-			.then((entries) => {
-				if (lastCodexCliSyncRun) return;
-				const lastEntry = entries.at(-1);
-				if (lastEntry?.kind === "codex-cli-sync") {
-					lastCodexCliSyncRun = cloneCodexCliSyncRun(lastEntry.run);
-				}
-			})
-			.catch(() => undefined);
-	}
-	return null;
+		const entries = await readSyncHistory({ kind: "codex-cli-sync", limit: 1 });
+		const lastEntry = entries.at(-1);
+		if (lastEntry?.kind === "codex-cli-sync") {
+			return hydrateLastCodexCliSyncRunFromHistory(lastEntry.run);
+		}
+		return null;
+	})()
+		.catch(() => null)
+		.finally(() => {
+			lastCodexCliSyncRunLoadPromise = null;
+		});
+	const loadedRun = await lastCodexCliSyncRunLoadPromise;
+	return loadedRun ? cloneCodexCliSyncRun(loadedRun) : null;
 }
 
 export function commitPendingCodexCliSyncRun(
@@ -295,6 +313,7 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	nextCodexCliSyncRunRevision = 0;
 	activePendingCodexCliSyncRunRevisions.clear();
 	lastCodexCliSyncHistoryLoadAttempted = false;
+	lastCodexCliSyncRunLoadPromise = null;
 }
 
 function hasConflictingIdentity(
@@ -669,7 +688,7 @@ export async function previewCodexCliSync(
 		targetPath,
 		rollbackPaths: formatRollbackPaths(targetPath),
 	};
-	const lastSync = getLastCodexCliSyncRun();
+	const lastSync = await loadLastCodexCliSyncRun();
 	const emptySummary = createEmptySyncSummary();
 	emptySummary.targetAccountCountBefore = current?.accounts.length ?? 0;
 	emptySummary.targetAccountCountAfter = current?.accounts.length ?? 0;
