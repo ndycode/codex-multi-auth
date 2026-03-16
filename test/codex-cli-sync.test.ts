@@ -1575,6 +1575,98 @@ describe("codex-cli sync", () => {
 		expect(restored?.accounts[0]?.refreshToken).toBe("refresh-old");
 	});
 
+	it.each([
+		["null checkpoint", null],
+		[
+			"blank checkpoint path",
+			{
+				name: "accounts-codex-cli-sync-snapshot-invalid",
+				path: "   ",
+			},
+		],
+	] satisfies Array<
+		[
+			string,
+			{ name: string; path: string } | null,
+		]
+	>)(
+		"falls back to the newest valid rollback checkpoint when a newer manual change has a %s",
+		async (_label, invalidSnapshot) => {
+			const snapshotPath = join(tempDir, "rollback-fallback-snapshot.json");
+			await writeFile(
+				snapshotPath,
+				JSON.stringify(
+					{
+						version: 3,
+						accounts: [
+							{
+								accountId: "acc_old",
+								accountIdSource: "token",
+								email: "old@example.com",
+								refreshToken: "refresh-old",
+								accessToken: "access-old",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+						activeIndex: 0,
+						activeIndexByFamily: { codex: 0 },
+					} satisfies AccountStorageV3,
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			const summary = {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			};
+			const validRun: CodexCliSyncRun = {
+				outcome: "changed",
+				runAt: 10,
+				sourcePath: accountsPath,
+				targetPath: targetStoragePath,
+				summary,
+				trigger: "manual",
+				rollbackSnapshot: {
+					name: "accounts-codex-cli-sync-snapshot-valid",
+					path: snapshotPath,
+				},
+			};
+			const newerInvalidRun: CodexCliSyncRun = {
+				outcome: "changed",
+				runAt: 20,
+				sourcePath: accountsPath,
+				targetPath: targetStoragePath,
+				summary,
+				trigger: "manual",
+				rollbackSnapshot: invalidSnapshot,
+			};
+
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: validRun.runAt,
+				run: validRun,
+			});
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: newerInvalidRun.runAt,
+				run: newerInvalidRun,
+			});
+
+			const plan = await getLatestCodexCliSyncRollbackPlan();
+			expect(plan.status).toBe("ready");
+			expect(plan.snapshot).toEqual(validRun.rollbackSnapshot);
+		},
+	);
+
 	it("marks the rollback plan unavailable when the checkpoint file is missing", async () => {
 		const missingRun: CodexCliSyncRun = {
 			outcome: "changed",

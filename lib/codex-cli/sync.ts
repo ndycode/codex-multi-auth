@@ -372,19 +372,30 @@ function isManualChangedSyncRun(run: CodexCliSyncRun | null): run is CodexCliSyn
 	return Boolean(run && run.outcome === "changed" && run.trigger === "manual");
 }
 
+function hasUsableRollbackSnapshot(
+	snapshot: CodexCliSyncRollbackSnapshot | null,
+): snapshot is CodexCliSyncRollbackSnapshot {
+	return Boolean(snapshot?.name.trim() && snapshot.path.trim());
+}
+
 async function findLatestManualRollbackRun(): Promise<
 	CodexCliSyncRun | null
 > {
 	const history = await readSyncHistory({ kind: "codex-cli-sync" });
+	let fallbackRun: CodexCliSyncRun | null = null;
 	for (let index = history.length - 1; index >= 0; index -= 1) {
 		const entry = history[index];
 		if (!entry || entry.kind !== "codex-cli-sync") continue;
 		const run = normalizeCodexCliSyncRun(entry.run);
-		if (isManualChangedSyncRun(run)) {
+		if (!isManualChangedSyncRun(run)) {
+			continue;
+		}
+		fallbackRun ??= run;
+		if (hasUsableRollbackSnapshot(run.rollbackSnapshot)) {
 			return run;
 		}
 	}
-	return null;
+	return fallbackRun;
 }
 
 async function loadRollbackSnapshot(
