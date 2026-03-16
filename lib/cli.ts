@@ -225,14 +225,6 @@ async function promptLoginModeFallback(
 				}
 				return { mode: "reset" };
 			}
-			if (
-				normalized === "u" ||
-				normalized === "restore" ||
-				normalized === "backup" ||
-				normalized === "restore-backup"
-			) {
-				return { mode: "restore-backup" };
-			}
 			if (normalized === "c" || normalized === "check")
 				return { mode: "check" };
 			if (normalized === "d" || normalized === "deep") {
