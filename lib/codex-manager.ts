@@ -4604,17 +4604,22 @@ async function runAuthLogin(): Promise<number> {
 				if (!confirmed) {
 					continue;
 				}
-				await runActionPanel(
-					"Import OpenCode Accounts",
-					`Importing from ${assessment.backup.path}`,
-					async () => {
-						const imported = await importAccounts(assessment.backup.path);
-						console.log(
-							`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
-						);
-					},
-					displaySettings,
-				);
+				try {
+					await runActionPanel(
+						"Import OpenCode Accounts",
+						`Importing from ${assessment.backup.path}`,
+						async () => {
+							const imported = await importAccounts(assessment.backup.path);
+							console.log(
+								`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+							);
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.error(`Import failed: ${errorLabel}`);
+				}
 				continue;
 			}
 			if (menuResult.mode === "fresh" && menuResult.deleteAll) {
