@@ -2347,7 +2347,7 @@ async function getLatestManualCodexCliRollbackSnapshotNames(): Promise<
 			}
 			const snapshotName = run.rollbackSnapshot?.name?.trim();
 			if (!snapshotName) {
-				break;
+				continue;
 			}
 			return new Set([snapshotName]);
 		}
