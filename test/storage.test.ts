@@ -1508,6 +1508,24 @@ describe("storage", () => {
 			}
 		});
 
+		it("rethrows EBUSY backup directory errors after one attempt on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory busy") as NodeJS.ErrnoException;
+			error.code = "EBUSY";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EBUSY" });
+				expect(readdirSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
+			}
+		});
+
 		it("rethrows unreadable backup directory errors while restoring backups", async () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;

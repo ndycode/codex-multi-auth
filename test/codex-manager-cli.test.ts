@@ -752,7 +752,29 @@ describe("codex manager cli commands", () => {
 	it("restores a named backup from direct auth restore-backup command", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValue(null);
+		const restoredStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "restored@example.com",
+					accountId: "acc-restored",
+					refreshToken: "refresh-restored",
+					accessToken: "access-restored",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		let loadCallCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCallCount += 1;
+			return loadCallCount === 1 ? null : structuredClone(restoredStorage);
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
 		const assessment = {
 			backup: {
 				name: "named-backup",
@@ -789,6 +811,14 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({ currentStorage: null }),
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc-restored",
+				email: "restored@example.com",
+				accessToken: "access-restored",
+				refreshToken: "refresh-restored",
+			}),
+		);
 	});
 
 	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {

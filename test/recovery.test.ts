@@ -781,7 +781,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 });
 
 describe("resolveStartupRecoveryAction", () => {
-	it("re-enters the empty storage menu instead of OAuth when backups exist but none are actionable", async () => {
+	it("falls through to OAuth when backups exist but none are actionable", async () => {
 		const { resolveStartupRecoveryAction } = await import(
 			"../lib/codex-manager.js"
 		);
@@ -791,13 +791,13 @@ describe("resolveStartupRecoveryAction", () => {
 				{ assessments: [], totalBackups: 2 },
 				false,
 			),
-		).toBe("open-empty-storage-menu");
+		).toBe("continue-with-oauth");
 		expect(
 			resolveStartupRecoveryAction(
 				{ assessments: [], totalBackups: 2 },
 				false,
 			),
-		).not.toBe("continue-with-oauth");
+		).not.toBe("open-empty-storage-menu");
 	});
 
 	it("falls through to OAuth when the startup recovery scan itself failed", async () => {

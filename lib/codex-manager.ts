@@ -4503,6 +4503,21 @@ async function runBackupRestoreManager(
 		console.log(
 			`Restored backup "${latestAssessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
 		);
+		try {
+			const synced = await autoSyncActiveAccountToCodex();
+			if (!synced) {
+				console.warn(
+					"Backup restored, but Codex CLI auth state could not be synced.",
+				);
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(
+				`Backup restored, but Codex CLI auth sync failed: ${
+					collapseWhitespace(message) || "unknown error"
+				}`,
+			);
+		}
 		return "restored";
 	} catch (error) {
 		const errorLabel = getRedactedFilesystemErrorLabel(error);
