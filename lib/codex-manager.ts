@@ -3757,6 +3757,7 @@ async function handleManageAction(
 				index: idx,
 			});
 			if (deleted) {
+				Object.assign(storage, deleted.storage);
 				const label = `Account ${idx + 1}`;
 				const flaggedNote =
 					deleted.removedFlaggedCount > 0

@@ -3110,6 +3110,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 												index: menuResult.deleteAccountIndex,
 											});
 											if (deleted) {
+												Object.assign(workingStorage, deleted.storage);
 												invalidateAccountManagerCache();
 												const label = `Account ${menuResult.deleteAccountIndex + 1}`;
 												const flaggedNote =
