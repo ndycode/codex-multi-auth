@@ -253,10 +253,29 @@ async function rewriteLatestEntry(
 		await fs.rm(paths.latestPath, { force: true });
 		return;
 	}
-	await fs.writeFile(paths.latestPath, `${JSON.stringify(latest, null, 2)}\n`, {
-		encoding: "utf8",
-		mode: 0o600,
-	});
+	await writeHistoryFileAtomically(
+		paths.latestPath,
+		`${JSON.stringify(latest, null, 2)}\n`,
+	);
+}
+
+async function writeHistoryFileAtomically(
+	targetPath: string,
+	content: string,
+): Promise<void> {
+	const tempPath = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random()
+		.toString(36)
+		.slice(2)}`;
+	try {
+		await fs.writeFile(tempPath, content, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		await fs.rename(tempPath, targetPath);
+	} catch (error) {
+		await fs.rm(tempPath, { force: true }).catch(() => {});
+		throw error;
+	}
 }
 
 async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<PrunedSyncHistory> {
@@ -269,13 +288,9 @@ async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<PrunedS
 		await fs.rm(paths.historyPath, { force: true });
 		return result;
 	}
-	await fs.writeFile(
+	await writeHistoryFileAtomically(
 		paths.historyPath,
 		`${result.entries.map((entry) => serializeEntry(entry)).join("\n")}\n`,
-		{
-			encoding: "utf8",
-			mode: 0o600,
-		},
 	);
 	return result;
 }
@@ -367,17 +382,12 @@ export async function pruneSyncHistory(
 		if (result.entries.length === 0) {
 			await fs.rm(paths.historyPath, { force: true });
 		} else {
-			await fs.writeFile(
+			await writeHistoryFileAtomically(
 				paths.historyPath,
 				`${result.entries.map((entry) => serializeEntry(entry)).join("\n")}\n`,
-				{
-					encoding: "utf8",
-					mode: 0o600,
-				},
 			);
 		}
 		await rewriteLatestEntry(result.latest, paths);
-		lastAppendPaths = paths;
 		return {
 			removed: result.removed,
 			kept: result.entries.length,
