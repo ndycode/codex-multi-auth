@@ -1080,6 +1080,71 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("returns to the dashboard when OpenCode import fails", async () => {
+		setInteractiveTTY(true);
+		const currentStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "existing-refresh",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(currentStorage);
+		const assessment = {
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "existing@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "",
+		};
+		assessOpencodeAccountPoolMock.mockResolvedValue(assessment);
+		importAccountsMock.mockRejectedValueOnce(new Error("import locked"));
+		confirmMock.mockResolvedValueOnce(true);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/.opencode/openai-codex-accounts.json",
+		);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(
+			errorSpy.mock.calls.some(([message]) =>
+				String(message).includes("Import failed:")
+			),
+		).toBe(true);
+		errorSpy.mockRestore();
+	});
+
 	it("skips startup restore prompt in fallback login mode", async () => {
 		setInteractiveTTY(true);
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(false);
