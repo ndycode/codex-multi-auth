@@ -1200,7 +1200,11 @@ describe("codex manager cli commands", () => {
 			error: "",
 		};
 		assessOpencodeAccountPoolMock.mockResolvedValue(assessment);
-		importAccountsMock.mockRejectedValueOnce(new Error("import locked"));
+		const importError = makeErrnoError(
+			"operation not permitted, open 'C:\\Users\\alice\\AppData\\Local\\OpenCode\\openai-codex-accounts.json'",
+			"EPERM",
+		);
+		importAccountsMock.mockRejectedValueOnce(importError);
 		confirmMock.mockResolvedValueOnce(true);
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "import-opencode" })
@@ -1215,11 +1219,14 @@ describe("codex manager cli commands", () => {
 			"/mock/.opencode/openai-codex-accounts.json",
 		);
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Import failed: EPERM: operation not permitted, open 'openai-codex-accounts.json'",
+		);
 		expect(
 			errorSpy.mock.calls.some(([message]) =>
-				String(message).includes("Import failed:")
+				String(message).includes("C:\\Users\\alice\\AppData\\Local\\OpenCode"),
 			),
-		).toBe(true);
+		).toBe(false);
 		errorSpy.mockRestore();
 	});
 
@@ -1256,6 +1263,8 @@ describe("codex manager cli commands", () => {
 	it.each([
 		{
 			label: "would exceed the account limit",
+			expectedLog:
+				"Import would exceed the account limit (2 current, 5 after import). Remove accounts first.",
 			assessment: {
 				backup: {
 					name: "openai-codex-accounts.json",
@@ -1284,6 +1293,7 @@ describe("codex manager cli commands", () => {
 		},
 		{
 			label: "is not eligible for restore",
+			expectedLog: "OpenCode account pool is not importable.",
 			assessment: {
 				backup: {
 					name: "openai-codex-accounts.json",
@@ -1312,7 +1322,7 @@ describe("codex manager cli commands", () => {
 		},
 	])(
 		"skips confirmation and import when the OpenCode assessment $label",
-		async ({ assessment }) => {
+		async ({ assessment, expectedLog }) => {
 			setInteractiveTTY(true);
 			loadAccountsMock.mockResolvedValue({
 				version: 3,
@@ -1331,6 +1341,7 @@ describe("codex manager cli commands", () => {
 			promptLoginModeMock
 				.mockResolvedValueOnce({ mode: "import-opencode" })
 				.mockResolvedValueOnce({ mode: "cancel" });
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -1340,6 +1351,8 @@ describe("codex manager cli commands", () => {
 			expect(confirmMock).not.toHaveBeenCalled();
 			expect(importAccountsMock).not.toHaveBeenCalled();
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(logSpy).toHaveBeenCalledWith(expectedLog);
+			logSpy.mockRestore();
 		},
 	);
 
