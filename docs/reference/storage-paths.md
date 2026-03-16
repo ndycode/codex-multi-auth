@@ -109,6 +109,10 @@ Restore workflow:
 3. Choose `Restore From Backup`.
 4. Pick a backup and confirm the merge summary before import.
 
+Direct entrypoint:
+
+- Run `codex auth restore-backup` to open the same picker without entering the full login dashboard first.
+
 ---
 
 ## oc-chatgpt Target Paths

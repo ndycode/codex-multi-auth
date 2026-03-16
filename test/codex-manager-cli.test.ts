@@ -1283,6 +1283,61 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
+	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "settings@example.com",
+					accountId: "acc_settings",
+					refreshToken: "refresh-settings",
+					accessToken: "access-settings",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const assessment = {
+			backup: {
+				name: "named-backup",
+				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		restoreNamedBackupMock.mockRejectedValueOnce(new Error("backup locked"));
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+		expect(exitCode).toBe(1);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(confirmMock).toHaveBeenCalledOnce();
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+	});
+
 	it("restores healthy flagged accounts into active storage", async () => {
 		const now = Date.now();
 		loadFlaggedAccountsMock.mockResolvedValueOnce({
