@@ -1556,6 +1556,10 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
 	return loadAccountsInternal(saveAccounts);
 }
 
+export async function loadAccountsReadOnly(): Promise<AccountStorageV3 | null> {
+	return loadAccountsInternal(null);
+}
+
 export async function getBackupMetadata(): Promise<BackupMetadata> {
 	const storagePath = getStoragePath();
 	const walPath = getAccountsWalPath(storagePath);
@@ -1949,6 +1953,7 @@ function assessNamedBackupRestoreCandidate(
 	currentStorage: AccountStorageV3 | null,
 ): BackupRestoreAssessment {
 	const currentAccounts = currentStorage?.accounts ?? [];
+	const deduplicatedCurrentAccounts = deduplicateAccounts([...currentAccounts]);
 
 	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {
 		return {
@@ -1964,13 +1969,13 @@ function assessNamedBackupRestoreCandidate(
 	}
 
 	const mergedAccounts = deduplicateAccounts([
-		...currentAccounts,
+		...deduplicatedCurrentAccounts,
 		...candidate.normalized.accounts,
 	]);
 	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
 		? null
-		: mergedAccounts.length - currentAccounts.length;
+		: mergedAccounts.length - deduplicatedCurrentAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
 		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
@@ -2521,7 +2526,10 @@ function cloneAccountStorageForPersistence(
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
-		persist: (storage: AccountStorageV3) => Promise<void>,
+		persist: (
+			storage: AccountStorageV3,
+			options?: SaveAccountsOptions,
+		) => Promise<void>,
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
@@ -2532,8 +2540,11 @@ export async function withAccountStorageTransaction<T>(
 			storagePath,
 		};
 		const current = state.snapshot;
-		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
+		const persist = async (
+			storage: AccountStorageV3,
+			options: SaveAccountsOptions = {},
+		): Promise<void> => {
+			await saveAccountsUnlocked(storage, options);
 			state.snapshot = storage;
 		};
 		return transactionSnapshotContext.run(state, () =>

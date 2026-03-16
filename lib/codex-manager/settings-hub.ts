@@ -11,7 +11,6 @@ import {
 } from "../codex-cli/state.js";
 import {
 	applyCodexCliSyncToStorage,
-	commitCodexCliSyncRunFailure,
 	commitPendingCodexCliSyncRun,
 	type CodexCliSyncPreview,
 	type CodexCliSyncRun,
@@ -50,8 +49,9 @@ import { detectOcChatgptMultiAuthTarget } from "../oc-chatgpt-target-detection.j
 import {
 	getStoragePath,
 	loadAccounts,
+	loadAccountsReadOnly,
 	normalizeAccountStorage,
-	saveAccounts,
+	withAccountStorageTransaction,
 } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
@@ -2685,7 +2685,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		context: SyncCenterOverviewContext;
 		sourceState: CodexCliState | null;
 	}> => {
-		const current = await loadAccounts();
+		const current = await loadAccountsReadOnly();
 		const sourceState = isCodexCliSyncEnabled()
 			? await loadCodexCliState({ forceRefresh })
 			: null;
@@ -2844,34 +2844,35 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		}
 
 		try {
-			const synced = await withQueuedRetry(preview.targetPath, async () => {
-				const current = await loadAccounts();
-				return applyCodexCliSyncToStorage(current, {
-					sourceState,
-				});
-			});
 			const storageBackupEnabled = getStorageBackupEnabled(config);
-			if (synced.changed && synced.storage) {
-				const syncedStorage = synced.storage;
-				try {
-					await withQueuedRetry(preview.targetPath, async () =>
-						saveAccounts(syncedStorage, {
-							backupEnabled: storageBackupEnabled,
-						}),
-					);
-					commitPendingCodexCliSyncRun(synced.pendingRun);
-				} catch (error) {
-					commitCodexCliSyncRunFailure(synced.pendingRun, error);
-					preview = {
-						...preview,
-						lastSync: getLastCodexCliSyncRun(),
-						status: "error",
-						statusDetail: `Failed to save synced storage: ${
-							error instanceof Error ? error.message : String(error)
-						}`,
-					};
-					continue;
-				}
+			let synced;
+			try {
+				synced = await withQueuedRetry(preview.targetPath, async () =>
+					withAccountStorageTransaction(async (current, persist) => {
+						const next = await applyCodexCliSyncToStorage(current, {
+							sourceState,
+						});
+						if (next.changed && next.storage) {
+							await persist(next.storage, {
+								backupEnabled: storageBackupEnabled,
+							});
+						}
+						return next;
+					}),
+				);
+			} catch (error) {
+				preview = {
+					...preview,
+					lastSync: getLastCodexCliSyncRun(),
+					status: "error",
+					statusDetail: `Failed to save synced storage: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				};
+				continue;
+			}
+			if (synced.changed && synced.pendingRun) {
+				commitPendingCodexCliSyncRun(synced.pendingRun);
 			}
 			({ preview, context, sourceState } = await buildPreviewSafely(
 				true,

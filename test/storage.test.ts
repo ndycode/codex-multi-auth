@@ -1211,6 +1211,55 @@ describe("storage", () => {
 			expect(assessment.eligibleForRestore).toBe(true);
 		});
 
+		it("deduplicates the current storage baseline when assessing restore import counts", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-new",
+						refreshToken: "ref-backup-new",
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
+			});
+			await createNamedBackup("duplicate-current-baseline");
+
+			const duplicateCurrentStorage = {
+				version: 3 as const,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "current-shared",
+						email: "current@example.com",
+						refreshToken: "ref-current-old",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "current-shared",
+						email: "current@example.com",
+						refreshToken: "ref-current-new",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			};
+
+			const assessment = await assessNamedBackupRestore(
+				"duplicate-current-baseline",
+				{ currentStorage: duplicateCurrentStorage },
+			);
+
+			expect(assessment.currentAccountCount).toBe(2);
+			expect(assessment.mergedAccountCount).toBe(2);
+			expect(assessment.imported).toBe(1);
+			expect(assessment.skipped).toBe(0);
+			expect(assessment.eligibleForRestore).toBe(true);
+		});
+
 		it("restores manually named backups that already exist inside the backups directory", async () => {
 			const backupPath = join(
 				dirname(testStoragePath),
