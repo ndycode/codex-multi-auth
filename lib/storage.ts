@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
@@ -2068,6 +2069,35 @@ export function getNamedBackupsDirectoryPath(): string {
 	return getNamedBackupRoot(getStoragePath());
 }
 
+export function detectOpencodeAccountPoolPath(): string | null {
+	const candidates = new Set<string>();
+	const explicit = process.env.CODEX_OPENCODE_POOL_PATH;
+	if (explicit?.trim()) {
+		candidates.add(resolvePath(explicit.trim()));
+	}
+
+	const appDataBases = [process.env.LOCALAPPDATA, process.env.APPDATA].filter(
+		(base): base is string => !!base && base.trim().length > 0,
+	);
+	for (const base of appDataBases) {
+		candidates.add(join(base, "OpenCode", ACCOUNTS_FILE_NAME));
+		candidates.add(join(base, "opencode", ACCOUNTS_FILE_NAME));
+	}
+
+	const home = homedir();
+	if (home) {
+		candidates.add(join(home, ".opencode", ACCOUNTS_FILE_NAME));
+	}
+
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) {
+			return candidate;
+		}
+	}
+
+	return null;
+}
+
 export async function getActionableNamedBackupRestores(
 	options: {
 		currentStorage?: AccountStorageV3 | null;
@@ -2424,6 +2454,35 @@ export async function assessNamedBackupRestore(
 		backupPath,
 		{ candidate },
 	);
+	const currentStorage =
+		options.currentStorage !== undefined
+			? options.currentStorage
+			: await loadAccounts();
+	return assessNamedBackupRestoreCandidate(
+		backup,
+		candidate,
+		currentStorage,
+		candidate.rawAccounts ?? [],
+	);
+}
+
+export async function assessOpencodeAccountPool(
+	options: { currentStorage?: AccountStorageV3 | null; path?: string } = {},
+): Promise<BackupRestoreAssessment | null> {
+	const resolvedPath = options.path?.trim()
+		? resolvePath(options.path.trim())
+		: detectOpencodeAccountPoolPath();
+
+	if (!resolvedPath) {
+		return null;
+	}
+
+	const candidate = await loadBackupCandidate(resolvedPath);
+	const baseBackup = await buildBackupFileMetadata(resolvedPath, { candidate });
+	const backup: NamedBackupMetadata = {
+		name: basename(resolvedPath),
+		...baseBackup,
+	};
 	const currentStorage =
 		options.currentStorage !== undefined
 			? options.currentStorage
