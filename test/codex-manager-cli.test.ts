@@ -7612,6 +7612,194 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith("Enabled account 1.");
 	});
 
+	it("reports stale delete selections when the dashboard list shrinks after selection", async () => {
+		const now = Date.now();
+		const originalStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: Array.from({ length: 29 }, (_, index) => ({
+				email: `account-${index + 1}@example.com`,
+				accountId: `acc_${index + 1}`,
+				refreshToken: `refresh-${index + 1}`,
+				accessToken: `access-${index + 1}`,
+				expiresAt: now + 3_600_000,
+				addedAt: now - 1_000 - index,
+				lastUsed: now - 1_000 - index,
+				enabled: true,
+			})),
+		};
+		const shrunkenStorage = {
+			...structuredClone(originalStorage),
+			accounts: originalStorage.accounts
+				.slice(0, 20)
+				.map((account) => structuredClone(account)),
+		};
+		let returnShrunken = false;
+		loadAccountsMock.mockImplementation(async () => {
+			if (returnShrunken) {
+				returnShrunken = false;
+				return structuredClone(shrunkenStorage);
+			}
+			return structuredClone(originalStorage);
+		});
+		promptLoginModeMock
+			.mockImplementationOnce(async () => {
+				returnShrunken = true;
+				return {
+					mode: "manage" as const,
+					deleteAccountIndex: 28,
+					selectedAccountNumber: 1,
+				};
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(deleteAccountAtIndexMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Selected account 1 is no longer available (storage position 29 is outside 1-20).",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
+	it("reports stale toggle selections when the chosen storage slot disappears", async () => {
+		const now = Date.now();
+		const originalStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: Array.from({ length: 29 }, (_, index) => ({
+				email: `account-${index + 1}@example.com`,
+				accountId: `acc_${index + 1}`,
+				refreshToken: `refresh-${index + 1}`,
+				accessToken: `access-${index + 1}`,
+				expiresAt: now + 3_600_000,
+				addedAt: now - 1_000 - index,
+				lastUsed: now - 1_000 - index,
+				enabled: true,
+			})),
+		};
+		const staleAccounts = originalStorage.accounts
+			.map((account) => structuredClone(account));
+		staleAccounts[28] = undefined as never;
+		const staleStorage = {
+			...structuredClone(originalStorage),
+			accounts: staleAccounts,
+		};
+		let returnStale = false;
+		loadAccountsMock.mockImplementation(async () => {
+			if (returnStale) {
+				returnStale = false;
+				return structuredClone(staleStorage);
+			}
+			return structuredClone(originalStorage);
+		});
+		promptLoginModeMock
+			.mockImplementationOnce(async () => {
+				returnStale = true;
+				return {
+					mode: "manage" as const,
+					toggleAccountIndex: 28,
+					selectedAccountNumber: 1,
+				};
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Selected account 1 is no longer available.",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
+	it("reports stale toggle selections when the chosen storage slot now holds a different account", async () => {
+		const now = Date.now();
+		const originalStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc_first",
+					refreshToken: "refresh-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "toggle@example.com",
+					accountId: "acc_toggle",
+					refreshToken: "refresh-toggle",
+					accessToken: "access-toggle",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		const replacedStorage = {
+			...structuredClone(originalStorage),
+			accounts: [
+				structuredClone(originalStorage.accounts[0]),
+				{
+					email: "replacement@example.com",
+					accountId: "acc_replacement",
+					refreshToken: "refresh-replacement",
+					accessToken: "access-replacement",
+					expiresAt: now + 3_600_000,
+					addedAt: now,
+					lastUsed: now,
+					enabled: true,
+				},
+			],
+		};
+		let returnReplaced = false;
+		loadAccountsMock.mockImplementation(async () => {
+			if (returnReplaced) {
+				returnReplaced = false;
+				return structuredClone(replacedStorage);
+			}
+			return structuredClone(originalStorage);
+		});
+		promptLoginModeMock
+			.mockImplementationOnce(async () => {
+				returnReplaced = true;
+				return {
+					mode: "manage" as const,
+					toggleAccountIndex: 1,
+					selectedAccountNumber: 1,
+				};
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Selected account 1 is no longer available.",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
 	it("refreshes reordered accounts from manage mode using visible row numbers", async () => {
 		const now = Date.now();
 		let storageState = {
@@ -7686,6 +7874,64 @@ describe("codex manager cli commands", () => {
 		expect(authModule.exchangeAuthorizationCode).toHaveBeenCalledTimes(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
 		expect(logSpy).toHaveBeenCalledWith("Refreshed account 1.");
+	});
+
+	it("reports stale refresh selections when the chosen storage slot disappears", async () => {
+		const now = Date.now();
+		const originalStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: Array.from({ length: 29 }, (_, index) => ({
+				email: `account-${index + 1}@example.com`,
+				accountId: `acc_${index + 1}`,
+				refreshToken: `refresh-${index + 1}`,
+				accessToken: `access-${index + 1}`,
+				expiresAt: now + 3_600_000,
+				addedAt: now - 1_000 - index,
+				lastUsed: now - 1_000 - index,
+				enabled: true,
+			})),
+		};
+		const staleAccounts = originalStorage.accounts
+			.map((account) => structuredClone(account));
+		staleAccounts[28] = undefined as never;
+		const staleStorage = {
+			...structuredClone(originalStorage),
+			accounts: staleAccounts,
+		};
+		let returnStale = false;
+		loadAccountsMock.mockImplementation(async () => {
+			if (returnStale) {
+				returnStale = false;
+				return structuredClone(staleStorage);
+			}
+			return structuredClone(originalStorage);
+		});
+		promptLoginModeMock
+			.mockImplementationOnce(async () => {
+				returnStale = true;
+				return {
+					mode: "manage" as const,
+					refreshAccountIndex: 28,
+					selectedAccountNumber: 1,
+				};
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const authModule = await import("../lib/auth/auth.js");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(authModule.createAuthorizationFlow).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Selected account 1 is no longer available.",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
 	});
 
 	it("skips destructive work when user cancels from menu", async () => {

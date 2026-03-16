@@ -4073,6 +4073,79 @@ interface RunSwitchOptions {
 	displayAccountNumber?: number;
 }
 
+function reportUnavailableManageActionAccount(
+	displayAccountNumber: number,
+	targetIndex: number,
+	totalAccounts: number,
+): void {
+	if (targetIndex < 0 || targetIndex >= totalAccounts) {
+		console.error(
+			`Selected account ${displayAccountNumber} is no longer available (storage position ${targetIndex + 1} is outside 1-${totalAccounts}).`,
+		);
+		return;
+	}
+	console.error(`Selected account ${displayAccountNumber} is no longer available.`);
+}
+
+async function loadManageActionStorage(
+	storage: AccountStorageV3,
+	displayAccountNumber: number,
+	targetIndex: number,
+): Promise<AccountStorageV3 | null> {
+	if (targetIndex < 0) {
+		reportUnavailableManageActionAccount(displayAccountNumber, targetIndex, 0);
+		return null;
+	}
+	const selectedAccount = storage.accounts[targetIndex];
+	if (!selectedAccount) {
+		reportUnavailableManageActionAccount(
+			displayAccountNumber,
+			targetIndex,
+			storage.accounts.length,
+		);
+		return null;
+	}
+	const freshStorage = await loadAccounts();
+	if (!freshStorage || freshStorage.accounts.length === 0) {
+		reportUnavailableManageActionAccount(displayAccountNumber, targetIndex, 0);
+		return null;
+	}
+
+	if (targetIndex < 0 || targetIndex >= freshStorage.accounts.length) {
+		reportUnavailableManageActionAccount(
+			displayAccountNumber,
+			targetIndex,
+			freshStorage.accounts.length,
+		);
+		return null;
+	}
+
+	const matchingIndex = findMatchingAccountIndex(
+		freshStorage.accounts,
+		selectedAccount,
+		{ allowUniqueAccountIdFallbackWithoutEmail: true },
+	);
+	if (matchingIndex !== targetIndex) {
+		reportUnavailableManageActionAccount(
+			displayAccountNumber,
+			targetIndex,
+			freshStorage.accounts.length,
+		);
+		return null;
+	}
+
+	if (!freshStorage.accounts[targetIndex]) {
+		reportUnavailableManageActionAccount(
+			displayAccountNumber,
+			targetIndex,
+			freshStorage.accounts.length,
+		);
+		return null;
+	}
+
+	return freshStorage;
+}
+
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
@@ -4094,19 +4167,25 @@ async function handleManageAction(
 			menuResult,
 			idx,
 		);
-		if (idx >= 0 && idx < storage.accounts.length) {
-			const deleted = await deleteAccountAtIndex({
-				storage,
-				index: idx,
-			});
-			if (deleted) {
-				const label = `Account ${displayAccountNumber}`;
-				const flaggedNote =
-					deleted.removedFlaggedCount > 0
-						? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
-						: "";
-				console.log(`Deleted ${label}.${flaggedNote}`);
-			}
+		const freshStorage = await loadManageActionStorage(
+			storage,
+			displayAccountNumber,
+			idx,
+		);
+		if (!freshStorage) {
+			return;
+		}
+		const deleted = await deleteAccountAtIndex({
+			storage: freshStorage,
+			index: idx,
+		});
+		if (deleted) {
+			const label = `Account ${displayAccountNumber}`;
+			const flaggedNote =
+				deleted.removedFlaggedCount > 0
+					? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
+					: "";
+			console.log(`Deleted ${label}.${flaggedNote}`);
 		}
 		return;
 	}
@@ -4117,14 +4196,20 @@ async function handleManageAction(
 			menuResult,
 			idx,
 		);
-		const account = storage.accounts[idx];
-		if (account) {
-			account.enabled = account.enabled === false;
-			await saveAccounts(storage);
-			console.log(
-				`${account.enabled === false ? "Disabled" : "Enabled"} account ${displayAccountNumber}.`,
-			);
+		const freshStorage = await loadManageActionStorage(
+			storage,
+			displayAccountNumber,
+			idx,
+		);
+		if (!freshStorage) {
+			return;
 		}
+		const account = freshStorage.accounts[idx]!;
+		account.enabled = account.enabled === false;
+		await saveAccounts(freshStorage);
+		console.log(
+			`${account.enabled === false ? "Disabled" : "Enabled"} account ${displayAccountNumber}.`,
+		);
 		return;
 	}
 
@@ -4134,8 +4219,14 @@ async function handleManageAction(
 			menuResult,
 			idx,
 		);
-		const existing = storage.accounts[idx];
-		if (!existing) return;
+		const freshStorage = await loadManageActionStorage(
+			storage,
+			displayAccountNumber,
+			idx,
+		);
+		if (!freshStorage) {
+			return;
+		}
 
 		const tokenResult = await runOAuthFlow(true);
 		if (tokenResult.type !== "success") {
