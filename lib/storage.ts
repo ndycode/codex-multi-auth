@@ -2740,6 +2740,13 @@ async function importNormalizedAccounts(
 		total,
 		skipped: skippedCount,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
+		if (snapshotReason) {
+			await snapshotAccountStorage({
+				reason: snapshotReason,
+				storage: existing,
+				storagePath: getStoragePath(),
+			});
+		}
 		const existingAccounts = existing?.accounts ?? [];
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
