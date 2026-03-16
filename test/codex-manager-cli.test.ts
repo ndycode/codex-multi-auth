@@ -1565,7 +1565,7 @@ describe("codex manager cli commands", () => {
 			"/mock/.opencode/openai-codex-accounts.json",
 		);
 		expect(confirmMock).toHaveBeenCalledWith(
-			"Import OpenCode accounts from /mock/.opencode/openai-codex-accounts.json?",
+			"Import OpenCode accounts from openai-codex-accounts.json?",
 		);
 	});
 
