@@ -4215,6 +4215,10 @@ export function resolveStartupRecoveryAction(
 		: "open-empty-storage-menu";
 }
 
+function shouldShowFirstRunWizard(storage: AccountStorageV3 | null): boolean {
+	return isInteractiveLoginMenuAvailable() && storage === null;
+}
+
 async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 	let namedBackupCount = 0;
 	let rotatingBackupCount = 0;
@@ -4267,7 +4271,7 @@ async function runFirstRunWizard(
 					console.log("No OpenCode account pool was detected.");
 					break;
 				}
-				if (!assessment.valid || assessment.wouldExceedLimit) {
+				if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
 					console.log(
 						assessment.error ?? "OpenCode account pool is not importable.",
 					);
@@ -4306,6 +4310,11 @@ async function runFirstRunWizard(
 				);
 				break;
 		}
+
+		const latestStorage = await loadAccounts();
+		if (latestStorage && latestStorage.accounts.length > 0) {
+			return "continue";
+		}
 	}
 }
 
@@ -4319,18 +4328,24 @@ async function runAuthLogin(): Promise<number> {
 	> | null = null;
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
+	let skipEmptyStorageRecoveryMenu = false;
 	const initialStorage = await loadAccounts();
+	const startedFromMissingStorage = shouldShowFirstRunWizard(initialStorage);
 	let cachedInitialStorage: AccountStorageV3 | null | undefined =
 		initialStorage;
 
-	if (shouldShowFirstRunWizard(initialStorage)) {
+	if (startedFromMissingStorage) {
 		const displaySettings = await loadDashboardDisplaySettings();
 		applyUiThemeFromDashboardSettings(displaySettings);
 		const wizardOutcome = await runFirstRunWizard(displaySettings);
 		if (wizardOutcome === "cancelled") {
 			return 0;
 		}
-		cachedInitialStorage = null;
+		cachedInitialStorage = await loadAccounts();
+		if (cachedInitialStorage && cachedInitialStorage.accounts.length > 0) {
+			return 0;
+		}
+		skipEmptyStorageRecoveryMenu = true;
 	}
 
 	loginFlow:
@@ -4400,7 +4415,7 @@ async function runAuthLogin(): Promise<number> {
 				},
 			);
 
-			if (menuResult.mode === "cancel") {
+			if (!menuResult || menuResult.mode === "cancel") {
 				console.log("Cancelled.");
 				return 0;
 			}
@@ -4614,7 +4629,8 @@ async function runAuthLogin(): Promise<number> {
 				recoveryState = scannedRecoveryState;
 				if (
 					resolveStartupRecoveryAction(scannedRecoveryState, recoveryScanFailed) ===
-					"open-empty-storage-menu"
+						"open-empty-storage-menu" &&
+					!skipEmptyStorageRecoveryMenu
 				) {
 					allowEmptyStorageMenu = true;
 					continue loginFlow;
@@ -4661,7 +4677,11 @@ async function runAuthLogin(): Promise<number> {
 				}
 			}
 		}
-		if (existingCount === 0 && isInteractiveLoginMenuAvailable()) {
+		if (
+			startedFromMissingStorage &&
+			existingCount === 0 &&
+			isInteractiveLoginMenuAvailable()
+		) {
 			const displaySettings = await loadDashboardDisplaySettings();
 			applyUiThemeFromDashboardSettings(displaySettings);
 			const firstRunResult = await runFirstRunWizard(displaySettings);
