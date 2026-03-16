@@ -1017,6 +1017,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(configureUnifiedSettingsSpy).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(authMenu.showFirstRunWizard)).toHaveBeenCalledTimes(2);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
@@ -1042,6 +1043,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
+		expect(vi.mocked(authMenu.showFirstRunWizard)).toHaveBeenCalledTimes(2);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
@@ -1116,6 +1118,36 @@ describe("codex manager cli commands", () => {
 			"/mock/.opencode/openai-codex-accounts.json",
 		);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
+	it("keeps the first-run wizard open when OpenCode import probing fails", async () => {
+		setInteractiveTTY(true);
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		const wizardSpy = vi
+			.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValueOnce({ type: "import-opencode" })
+			.mockResolvedValueOnce({ type: "cancel" });
+		loadAccountsMock.mockResolvedValue(null);
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessOpencodeAccountPoolMock.mockRejectedValueOnce(
+			new Error("EBUSY: C:\\Users\\alice\\AppData\\Local\\opencode\\openai-codex-accounts.json"),
+		);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(wizardSpy).toHaveBeenCalledTimes(2);
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("OpenCode import failed"),
+		);
+		expect(
+			warnSpy.mock.calls.every((call) => !String(call[0]).includes("alice")),
+		).toBe(true);
 	});
 
 	it("offers startup backup browser after first-run login when interactive login starts empty", async () => {
