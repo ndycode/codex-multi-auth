@@ -378,7 +378,6 @@ export async function pruneSyncHistory(
 		}
 		await rewriteLatestEntry(result.latest, paths);
 		lastAppendPaths = paths;
-		lastAppendError = null;
 		return {
 			removed: result.removed,
 			kept: result.entries.length,

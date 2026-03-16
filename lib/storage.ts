@@ -52,6 +52,8 @@ export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 export const ACCOUNT_SNAPSHOT_RETENTION_PER_REASON = 3;
 const AUTO_SNAPSHOT_NAME_PATTERN =
 	/^accounts-(?<reason>[a-z0-9-]+)-snapshot-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\d{3}$/i;
+const AUTO_SNAPSHOT_TIMESTAMP_PATTERN =
+	/-snapshot-(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})_(?<hour>\d{2})-(?<minute>\d{2})-(?<second>\d{2})_(?<millisecond>\d{3})$/i;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -2303,11 +2305,23 @@ function parseAutoSnapshot(
 	if (!reason) {
 		return null;
 	}
+	const timestampMatch = backup.name.match(AUTO_SNAPSHOT_TIMESTAMP_PATTERN);
+	const sortTimestamp = timestampMatch?.groups
+		? Date.UTC(
+			Number(timestampMatch.groups.year),
+			Number(timestampMatch.groups.month) - 1,
+			Number(timestampMatch.groups.day),
+			Number(timestampMatch.groups.hour),
+			Number(timestampMatch.groups.minute),
+			Number(timestampMatch.groups.second),
+			Number(timestampMatch.groups.millisecond),
+		)
+		: (backup.updatedAt ?? backup.createdAt ?? 0);
 	return {
 		backup,
 		name: backup.name,
 		reason,
-		sortTimestamp: backup.updatedAt ?? backup.createdAt ?? 0,
+		sortTimestamp,
 	};
 }
 
