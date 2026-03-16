@@ -4445,9 +4445,10 @@ async function runAuthLogin(): Promise<number> {
 					!assessment.eligibleForRestore ||
 					assessment.wouldExceedLimit
 				) {
-					console.log(
-						assessment.error ?? "OpenCode account pool is not importable.",
-					);
+					const assessmentErrorLabel = assessment.error
+						? getRedactedFilesystemErrorLabel(assessment.error)
+						: "OpenCode account pool is not importable.";
+					console.log(assessmentErrorLabel);
 					continue;
 				}
 				const confirmed = await confirm(
