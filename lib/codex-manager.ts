@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { promises as fs, existsSync } from "node:fs";
@@ -3420,6 +3421,14 @@ function getDoctorRefreshTokenKey(
 	if (typeof refreshToken !== "string") return undefined;
 	const trimmed = refreshToken.trim();
 	return trimmed || undefined;
+}
+
+function getReadOnlyDoctorRefreshTokenFingerprint(
+	refreshToken: unknown,
+): string | undefined {
+	const token = getDoctorRefreshTokenKey(refreshToken);
+	if (!token) return undefined;
+	return createHash("sha256").update(token).digest("hex").slice(0, 12);
 }
 
 function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {

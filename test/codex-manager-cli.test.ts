@@ -4916,7 +4916,7 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("omits the health summary and skips related I/O when no accounts are saved", async () => {
+	it("omits the health summary and skips health-summary I/O when no accounts are saved", async () => {
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
 			activeIndex: 0,
@@ -4929,6 +4929,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
+		// The single restore scan comes from the startup recovery prompt guard, not the health summary path.
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(getLatestCodexCliSyncRollbackPlanMock).not.toHaveBeenCalled();
 		expect(getLastCodexCliSyncRunMock).not.toHaveBeenCalled();
