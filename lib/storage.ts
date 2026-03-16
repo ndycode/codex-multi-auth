@@ -2073,7 +2073,8 @@ export function detectOpencodeAccountPoolPath(): string | null {
 	const candidates = new Set<string>();
 	const explicit = process.env.CODEX_OPENCODE_POOL_PATH;
 	if (explicit?.trim()) {
-		candidates.add(resolvePath(explicit.trim()));
+		const explicitPath = resolvePath(explicit.trim());
+		return existsSync(explicitPath) ? explicitPath : null;
 	}
 
 	const appDataBases = [process.env.LOCALAPPDATA, process.env.APPDATA].filter(

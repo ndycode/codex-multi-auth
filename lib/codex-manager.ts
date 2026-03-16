@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { promises as fs, existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
@@ -4459,8 +4459,9 @@ async function runAuthLogin(): Promise<number> {
 					console.log(assessmentErrorLabel);
 					continue;
 				}
+				const backupLabel = basename(assessment.backup.path);
 				const confirmed = await confirm(
-					`Import OpenCode accounts from ${assessment.backup.path}?`,
+					`Import OpenCode accounts from ${backupLabel}?`,
 				);
 				if (!confirmed) {
 					continue;
@@ -4468,7 +4469,7 @@ async function runAuthLogin(): Promise<number> {
 				try {
 					await runActionPanel(
 						"Import OpenCode Accounts",
-						`Importing from ${assessment.backup.path}`,
+						`Importing from ${backupLabel}`,
 						async () => {
 							const imported = await importAccounts(assessment.backup.path);
 							console.log(
