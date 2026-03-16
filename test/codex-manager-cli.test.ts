@@ -3224,7 +3224,12 @@ describe("codex manager cli commands", () => {
 			expect.any(Array),
 			expect.objectContaining({
 				healthSummary: expect.objectContaining({
-					label: expect.stringContaining("Pool 1 active"),
+					label: expect.stringMatching(
+						/Pool 1 active[\s\S]*Sync none[\s\S]*Doctor 2 warnings/,
+					),
+					hint: expect.stringMatching(
+						/Restore backups: 0 actionable of 0 total[\s\S]*Rollback: health summary unavailable[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
+					),
 				}),
 			}),
 		);

@@ -4111,11 +4111,15 @@ async function buildLoginMenuHealthSummary(
 			getActionableNamedBackupRestores({ currentStorage: storage }),
 			getLatestCodexCliSyncRollbackPlan(),
 		]);
-		syncSummary = summarizeLatestCodexCliSyncState();
-		doctorSummary = summarizeReadOnlyDoctorState(storage);
 	} catch (error) {
-		console.warn("Failed to build login menu health summary", error);
+		console.warn("Failed to load async login menu health summary state", error);
 	}
+	try {
+		syncSummary = summarizeLatestCodexCliSyncState();
+	} catch (error) {
+		console.warn("Failed to summarize login menu sync state", error);
+	}
+	doctorSummary = summarizeReadOnlyDoctorState(storage);
 	const restoreLabel =
 		actionableRestores.totalBackups > 0
 			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
