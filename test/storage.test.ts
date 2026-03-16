@@ -1038,6 +1038,100 @@ describe("storage", () => {
 			);
 		});
 
+		it("retries transient import read errors before parsing the backup", async () => {
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "retry-import-read",
+							refreshToken: "ref-retry-import-read",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			const originalReadFile = fs.readFile.bind(fs);
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === exportPath && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("import file busy") as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const result = await importAccounts(exportPath);
+				expect(result).toMatchObject({
+					imported: 1,
+					skipped: 0,
+					total: 1,
+				});
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("imports a backup even when existsSync falsely reports the file missing", async () => {
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "exists-sync-false-negative",
+							refreshToken: "ref-exists-sync-false-negative",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const actualFs = await vi.importActual<typeof import("node:fs")>(
+				"node:fs",
+			);
+			vi.resetModules();
+			vi.doMock("node:fs", () => ({
+				...actualFs,
+				existsSync: (path: Parameters<typeof actualFs.existsSync>[0]) =>
+					String(path) === exportPath ? false : actualFs.existsSync(path),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(testStoragePath);
+
+				const result = await isolatedStorageModule.importAccounts(exportPath);
+				expect(result).toMatchObject({
+					imported: 1,
+					skipped: 0,
+					total: 1,
+				});
+
+				const loaded = await isolatedStorageModule.loadAccounts();
+				expect(loaded?.accounts).toEqual([
+					expect.objectContaining({
+						accountId: "exists-sync-false-negative",
+						refreshToken: "ref-exists-sync-false-negative",
+					}),
+				]);
+			} finally {
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+			}
+		});
 		it("should fail import when file contains invalid JSON", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "not valid json {[");

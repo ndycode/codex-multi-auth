@@ -704,28 +704,43 @@ describe("CLI Module", () => {
 			});
 		});
 
-		it("returns restore-backup for fallback restore aliases", async () => {
+		it("rejects fallback restore aliases that need the interactive backup browser", async () => {
 			const { promptLoginMode } = await import("../lib/cli.js");
+			const { UI_COPY } = await import("../lib/ui/copy.js");
+			const consoleSpy = vi.spyOn(console, "log");
 
 			mockRl.question.mockResolvedValueOnce("u");
+			mockRl.question.mockResolvedValueOnce("quit");
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
-				mode: "restore-backup",
+				mode: "cancel",
 			});
 
 			mockRl.question.mockResolvedValueOnce("restore");
+			mockRl.question.mockResolvedValueOnce("quit");
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
-				mode: "restore-backup",
+				mode: "cancel",
 			});
 
 			mockRl.question.mockResolvedValueOnce("backup");
+			mockRl.question.mockResolvedValueOnce("quit");
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
-				mode: "restore-backup",
+				mode: "cancel",
 			});
 
 			mockRl.question.mockResolvedValueOnce("restore-backup");
+			mockRl.question.mockResolvedValueOnce("quit");
 			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
-				mode: "restore-backup",
+				mode: "cancel",
 			});
+
+			expect(UI_COPY.fallback.selectModePrompt).not.toContain("(u)");
+			expect(UI_COPY.fallback.invalidModePrompt).not.toContain(", u,");
+			expect(mockRl.question).toHaveBeenCalledTimes(8);
+			expect(
+				consoleSpy.mock.calls.filter(
+					([message]) => message === UI_COPY.fallback.invalidModePrompt,
+				),
+			).toHaveLength(4);
 		});
 
 		it("evaluates CODEX_TUI/CODEX_DESKTOP/TERM_PROGRAM/ELECTRON branches when TTY is true", async () => {

@@ -2992,14 +2992,17 @@ export async function importAccounts(
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
 
-	// Check file exists with friendly error
-	if (!existsSync(resolvedPath)) {
-		throw new Error(`Import file not found: ${resolvedPath}`);
+	let content: string;
+	try {
+		content = await retryTransientFilesystemOperation(() =>
+			fs.readFile(resolvedPath, "utf-8"),
+		);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			throw new Error(`Import file not found: ${resolvedPath}`);
+		}
+		throw error;
 	}
-
-	const content = await retryTransientFilesystemOperation(() =>
-		fs.readFile(resolvedPath, "utf-8"),
-	);
 
 	let imported: unknown;
 	try {

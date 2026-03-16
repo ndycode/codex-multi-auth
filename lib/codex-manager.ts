@@ -12,6 +12,7 @@ import { startLocalOAuthServer } from "./auth/server.js";
 import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
 import {
 	isInteractiveLoginMenuAvailable,
+	isNonInteractiveMode,
 	promptAddAnotherAccount,
 	promptLoginMode,
 	type ExistingAccountInfo,
@@ -4419,6 +4420,13 @@ async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
 	assessmentsOverride?: BackupRestoreAssessment[],
 ): Promise<BackupRestoreManagerResult> {
+	if (isNonInteractiveMode() || !input.isTTY || !output.isTTY) {
+		console.error(
+			"Backup restore manager requires an interactive TTY. Run this command in an interactive terminal.",
+		);
+		return "failed";
+	}
+
 	const backupDir = getNamedBackupsDirectoryPath();
 	const assessments =
 		assessmentsOverride ?? (await loadBackupRestoreManagerAssessments());

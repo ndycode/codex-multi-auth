@@ -19,6 +19,7 @@ const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
 const isInteractiveLoginMenuAvailableMock = vi.fn(() => true);
 const promptLoginModeMock = vi.fn();
+const isNonInteractiveModeMock = vi.fn(() => false);
 const fetchCodexQuotaSnapshotMock = vi.fn();
 const loadDashboardDisplaySettingsMock = vi.fn();
 const saveDashboardDisplaySettingsMock = vi.fn();
@@ -68,6 +69,7 @@ vi.mock("../lib/auth/server.js", () => ({
 
 vi.mock("../lib/cli.js", () => ({
 	isInteractiveLoginMenuAvailable: isInteractiveLoginMenuAvailableMock,
+	isNonInteractiveMode: isNonInteractiveModeMock,
 	promptAddAnotherAccount: promptAddAnotherAccountMock,
 	promptLoginMode: promptLoginModeMock,
 }));
@@ -515,6 +517,8 @@ describe("codex manager cli commands", () => {
 		isInteractiveLoginMenuAvailableMock.mockReset();
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(true);
 		promptLoginModeMock.mockReset();
+		isNonInteractiveModeMock.mockReset();
+		isNonInteractiveModeMock.mockReturnValue(false);
 		fetchCodexQuotaSnapshotMock.mockReset();
 		loadDashboardDisplaySettingsMock.mockReset();
 		saveDashboardDisplaySettingsMock.mockReset();
@@ -819,6 +823,27 @@ describe("codex manager cli commands", () => {
 				refreshToken: "refresh-restored",
 			}),
 		);
+	});
+
+	it("returns a non-zero exit code for the direct restore-backup command when stdin/stdout are not TTYs", async () => {
+		setInteractiveTTY(false);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+			expect(exitCode).toBe(1);
+			expect(promptLoginModeMock).not.toHaveBeenCalled();
+			expect(listNamedBackupsMock).not.toHaveBeenCalled();
+			expect(selectMock).not.toHaveBeenCalled();
+			expect(confirmMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				"Backup restore manager requires an interactive TTY. Run this command in an interactive terminal.",
+			);
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 
 	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
@@ -5260,6 +5285,7 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("waits for an in-flight menu quota refresh before opening backup restore manager", async () => {
+		setInteractiveTTY(true);
 		const now = Date.now();
 		const fetchStarted = createDeferred<void>();
 		const fetchDeferred = createDeferred<{
