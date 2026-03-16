@@ -98,4 +98,57 @@ describe("ui select", () => {
 		expect(process.listenerCount("SIGINT")).toBe(initialSigintCount);
 		clearIntervalSpy.mockRestore();
 	});
+
+	it("renders the preview split shell at 80 columns", async () => {
+		const columnsDescriptor = Object.getOwnPropertyDescriptor(stdout, "columns");
+		const rowsDescriptor = Object.getOwnPropertyDescriptor(stdout, "rows");
+		Object.defineProperty(stdout, "columns", {
+			value: 80,
+			configurable: true,
+		});
+		Object.defineProperty(stdout, "rows", {
+			value: 24,
+			configurable: true,
+		});
+
+		try {
+			const { select } = await import("../lib/ui/select.js");
+			const selectPromise = select(
+				[
+					{ label: "Open Browser", value: "browser" },
+					{ label: "Manual", value: "manual" },
+				],
+				{
+					message: "Sign-In Method",
+					shellMode: "opentui-preview",
+					panel: () => ({
+						tag: "Sign-In Flow",
+						title: "Open Browser",
+						body: "Use the browser flow to finish OAuth with the local callback server.",
+						footer: "Q Back",
+					}),
+				},
+			);
+
+			await vi.advanceTimersByTimeAsync(130);
+			stdin.emit("data", Buffer.from("\x1b", "utf8"));
+			await vi.advanceTimersByTimeAsync(80);
+			await selectPromise;
+
+			const output = writeSpy?.mock.calls.map((call) => String(call[0])).join("") ?? "";
+			expect(output).toContain("Sign-In Flow");
+			expect(output).toContain("Open Browser");
+		} finally {
+			if (columnsDescriptor) {
+				Object.defineProperty(stdout, "columns", columnsDescriptor);
+			} else {
+				delete (stdout as NodeJS.WriteStream & { columns?: number }).columns;
+			}
+			if (rowsDescriptor) {
+				Object.defineProperty(stdout, "rows", rowsDescriptor);
+			} else {
+				delete (stdout as NodeJS.WriteStream & { rows?: number }).rows;
+			}
+		}
+	});
 });

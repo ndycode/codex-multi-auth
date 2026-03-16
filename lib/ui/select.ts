@@ -492,7 +492,7 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		const selectedGlyphColor = theme?.colors.success ?? ANSI.green;
 		const selectedChip = selectedLabelStart();
 
-		if (options.shellMode === "opentui-preview" && panel && columns >= 96) {
+		if (options.shellMode === "opentui-preview" && panel && columns >= 80) {
 			writeLine(`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`);
 			if (subtitleText) {
 				writeLine(` ${muted}${truncateAnsi(subtitleText, Math.max(1, columns - 2))}${reset}`);
