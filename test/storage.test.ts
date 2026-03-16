@@ -4817,6 +4817,49 @@ describe("storage", () => {
 			expect(assessment?.imported).toBe(1);
 		});
 
+		it("prefers an explicit CODEX_OPENCODE_POOL_PATH override", async () => {
+			const explicitPoolPath = join(tempRoot, "explicit", "pool.json");
+			await fs.mkdir(dirname(explicitPoolPath), { recursive: true });
+			await fs.writeFile(
+				explicitPoolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "explicit-account",
+							refreshToken: "ref-explicit",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			await fs.writeFile(
+				poolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "fallback-account",
+							refreshToken: "ref-fallback",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			process.env.CODEX_OPENCODE_POOL_PATH = `  ${explicitPoolPath}  `;
+
+			const detected = detectOpencodeAccountPoolPath();
+			expect(detected).toBe(explicitPoolPath);
+
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment?.backup.path).toBe(explicitPoolPath);
+			expect(assessment?.imported).toBe(1);
+		});
+
 		it("refuses malformed opencode source before any mutation", async () => {
 			await fs.writeFile(poolPath, "not valid json");
 
@@ -4837,6 +4880,31 @@ describe("storage", () => {
 				restoreEligible: true,
 				restoreReason: "missing-storage",
 			});
+		});
+
+		it("rejects using the active storage file as the opencode import source", async () => {
+			const activeStoragePath = getStoragePath();
+			await fs.writeFile(
+				activeStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "current-account",
+							refreshToken: "ref-current",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			process.env.CODEX_OPENCODE_POOL_PATH = activeStoragePath;
+
+			expect(detectOpencodeAccountPoolPath()).toBe(activeStoragePath);
+			await expect(assessOpencodeAccountPool()).rejects.toThrow(
+				"Import source cannot be the active storage file.",
+			);
 		});
 	});
 

@@ -2477,6 +2477,10 @@ export async function assessOpencodeAccountPool(
 		return null;
 	}
 
+	if (equalsResolvedStoragePath(resolvedPath, getStoragePath())) {
+		throw new Error("Import source cannot be the active storage file.");
+	}
+
 	const candidate = await loadBackupCandidate(resolvedPath);
 	const baseBackup = await buildBackupFileMetadata(resolvedPath, { candidate });
 	const backup: NamedBackupMetadata = {
@@ -2827,6 +2831,12 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 }
 
 function equalsNamedBackupEntry(left: string, right: string): boolean {
+	return process.platform === "win32"
+		? left.toLowerCase() === right.toLowerCase()
+		: left === right;
+}
+
+function equalsResolvedStoragePath(left: string, right: string): boolean {
 	return process.platform === "win32"
 		? left.toLowerCase() === right.toLowerCase()
 		: left === right;
