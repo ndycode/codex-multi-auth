@@ -1143,7 +1143,7 @@ describe("codex manager cli commands", () => {
 		expect(importAccountsMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 		expect(warnSpy).toHaveBeenCalledWith(
-			expect.stringContaining("OpenCode import failed"),
+			expect.stringContaining("Failed to detect OpenCode import source"),
 		);
 		expect(
 			warnSpy.mock.calls.every((call) => !String(call[0]).includes("alice")),
