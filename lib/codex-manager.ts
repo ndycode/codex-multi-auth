@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { promises as fs, existsSync } from "node:fs";
@@ -3269,6 +3270,14 @@ function getDoctorRefreshTokenKey(
 	return trimmed || undefined;
 }
 
+function getReadOnlyDoctorRefreshTokenFingerprint(
+	refreshToken: unknown,
+): string | undefined {
+	const token = getDoctorRefreshTokenKey(refreshToken);
+	if (!token) return undefined;
+	return createHash("sha256").update(token).digest("hex").slice(0, 12);
+}
+
 function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {
 	let changed = false;
 	const actions: DoctorFixAction[] = [];
@@ -4028,7 +4037,9 @@ function summarizeReadOnlyDoctorState(
 	let placeholderEmailCount = 0;
 	let likelyInvalidRefreshTokenCount = 0;
 	for (const account of storage.accounts) {
-		const token = getDoctorRefreshTokenKey(account.refreshToken);
+		const token = getReadOnlyDoctorRefreshTokenFingerprint(
+			account.refreshToken,
+		);
 		if (token) {
 			if (seenRefreshTokens.has(token)) {
 				duplicateTokenCount += 1;
@@ -4076,6 +4087,14 @@ function summarizeReadOnlyDoctorState(
 	};
 }
 
+function logLoginMenuHealthSummaryWarning(
+	context: string,
+	error: unknown,
+): void {
+	const errorLabel = getRedactedFilesystemErrorLabel(error);
+	console.warn(`${context} [${errorLabel}]`);
+}
+
 async function buildLoginMenuHealthSummary(
 	storage: AccountStorageV3,
 ): Promise<DashboardHealthSummary | null> {
@@ -4115,14 +4134,27 @@ async function buildLoginMenuHealthSummary(
 			getLatestCodexCliSyncRollbackPlan(),
 		]);
 	} catch (error) {
-		console.warn("Failed to load async login menu health summary state", error);
+		logLoginMenuHealthSummaryWarning(
+			"Failed to load async login menu health summary state",
+			error,
+		);
 	}
 	try {
 		syncSummary = summarizeLatestCodexCliSyncState();
 	} catch (error) {
-		console.warn("Failed to summarize login menu sync state", error);
+		logLoginMenuHealthSummaryWarning(
+			"Failed to summarize login menu sync state",
+			error,
+		);
 	}
-	doctorSummary = summarizeReadOnlyDoctorState(storage);
+	try {
+		doctorSummary = summarizeReadOnlyDoctorState(storage);
+	} catch (error) {
+		logLoginMenuHealthSummaryWarning(
+			"Failed to summarize login menu doctor state",
+			error,
+		);
+	}
 	const restoreLabel =
 		actionableRestores.totalBackups > 0
 			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
