@@ -112,6 +112,61 @@ function parseEntry(line: string): SyncHistoryEntry | null {
 	}
 }
 
+async function readHistoryTail(
+	historyPath: string,
+	options: { limit: number; kind?: SyncHistoryKind },
+): Promise<SyncHistoryEntry[]> {
+	const { kind, limit } = options;
+	const handle = await fs.open(historyPath, "r");
+	try {
+		const stats = await handle.stat();
+		if (stats.size === 0) {
+			return [];
+		}
+
+		let position = stats.size;
+		let remainder = "";
+		const chunkSize = 8 * 1024;
+		const matchesNewestFirst: SyncHistoryEntry[] = [];
+
+		while (position > 0 && matchesNewestFirst.length < limit) {
+			const start = Math.max(0, position - chunkSize);
+			const length = position - start;
+			const buffer = Buffer.alloc(length);
+			const { bytesRead } = await handle.read(buffer, 0, length, start);
+			const combined = buffer.toString("utf8", 0, bytesRead) + remainder;
+			const lines = combined.split("\n");
+			remainder = lines.shift() ?? "";
+
+			for (let index = lines.length - 1; index >= 0; index -= 1) {
+				const line = lines[index]?.trim();
+				if (!line) continue;
+				const entry = parseEntry(line);
+				if (!entry) continue;
+				if (kind && entry.kind !== kind) continue;
+				matchesNewestFirst.push(entry);
+				if (matchesNewestFirst.length >= limit) {
+					break;
+				}
+			}
+
+			position = start;
+		}
+
+		const leadingLine = remainder.trim();
+		if (matchesNewestFirst.length < limit && leadingLine) {
+			const entry = parseEntry(leadingLine);
+			if (entry && (!kind || entry.kind === kind)) {
+				matchesNewestFirst.push(entry);
+			}
+		}
+
+		return matchesNewestFirst.reverse().map((entry) => cloneEntry(entry));
+	} finally {
+		await handle.close();
+	}
+}
+
 async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<void> {
 	const content = await fs.readFile(paths.historyPath, "utf8").catch((error) => {
 		const code = (error as NodeJS.ErrnoException).code;
@@ -172,6 +227,12 @@ export async function readSyncHistory(
 	const { kind, limit } = options;
 	await waitForPendingHistoryWrites();
 	try {
+		if (typeof limit === "number" && limit > 0) {
+			return readHistoryTail(getSyncHistoryPaths().historyPath, {
+				kind,
+				limit,
+			});
+		}
 		const content = await fs.readFile(getSyncHistoryPaths().historyPath, "utf8");
 		const parsed = content
 			.split(/\r?\n/)
@@ -182,9 +243,6 @@ export async function readSyncHistory(
 		const filtered = kind
 			? parsed.filter((entry) => entry.kind === kind)
 			: parsed;
-		if (typeof limit === "number" && limit > 0) {
-			return filtered.slice(-limit).map((entry) => cloneEntry(entry));
-		}
 		return filtered.map((entry) => cloneEntry(entry));
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
