@@ -992,6 +992,27 @@ describe("storage", () => {
 			await expect(importAccounts(exportPath)).rejects.toThrow(/Invalid JSON/);
 		});
 
+		it("should fail import when file is the active storage file", async () => {
+			await fs.writeFile(
+				testStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "current-account",
+							refreshToken: "ref-current",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			await expect(importAccounts(testStoragePath)).rejects.toThrow(
+				/Import source cannot be the active storage file/,
+			);
+		});
+
 		it("should fail import when file contains invalid format", async () => {
 			await fs.writeFile(exportPath, JSON.stringify({ invalid: "format" }));
 			await expect(importAccounts(exportPath)).rejects.toThrow(
@@ -4788,7 +4809,9 @@ describe("storage", () => {
 				delete process.env.CODEX_OPENCODE_POOL_PATH;
 			else process.env.CODEX_OPENCODE_POOL_PATH = originalPoolPath;
 			setStoragePathDirect(null);
-			await fs.rm(tempRoot, { recursive: true, force: true });
+			if (tempRoot) {
+				await fs.rm(tempRoot, { recursive: true, force: true });
+			}
 		});
 
 		it("detects and assesses a valid opencode pool source", async () => {

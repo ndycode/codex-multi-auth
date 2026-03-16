@@ -65,6 +65,7 @@ import {
 	assessNamedBackupRestore,
 	assessOpencodeAccountPool,
 	type BackupRestoreAssessment,
+	formatRedactedFilesystemError,
 	getActionableNamedBackupRestores,
 	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
@@ -4348,9 +4349,16 @@ async function runAuthLogin(): Promise<number> {
 				continue;
 			}
 			if (menuResult.mode === "import-opencode") {
-				const assessment = await assessOpencodeAccountPool({
-					currentStorage,
-				});
+				let assessment: BackupRestoreAssessment | null;
+				try {
+					assessment = await assessOpencodeAccountPool({
+						currentStorage,
+					});
+				} catch (error) {
+					const errorLabel = formatRedactedFilesystemError(error);
+					console.error(`Import assessment failed: ${errorLabel}`);
+					continue;
+				}
 				if (!assessment) {
 					console.log("No OpenCode account pool was detected.");
 					continue;
@@ -4361,7 +4369,7 @@ async function runAuthLogin(): Promise<number> {
 					assessment.wouldExceedLimit
 				) {
 					const assessmentErrorLabel = assessment.error
-						? getRedactedFilesystemErrorLabel(assessment.error)
+						? formatRedactedFilesystemError(assessment.error)
 						: "OpenCode account pool is not importable.";
 					console.log(assessmentErrorLabel);
 					continue;
@@ -4385,7 +4393,7 @@ async function runAuthLogin(): Promise<number> {
 						displaySettings,
 					);
 				} catch (error) {
-					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					const errorLabel = formatRedactedFilesystemError(error);
 					console.error(`Import failed: ${errorLabel}`);
 				}
 				continue;
