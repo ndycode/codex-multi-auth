@@ -2864,7 +2864,7 @@ describe("codex manager cli commands", () => {
 			28,
 		);
 		expect(logSpy).toHaveBeenCalledWith(
-			"Switched to account 1: 29. account-29@example.com",
+			"Switched to account 1: 1. account-29@example.com",
 		);
 		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
 	});

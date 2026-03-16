@@ -146,17 +146,14 @@ function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
 
 function resolveAccountDisplayNumber(
 	account: ExistingAccountInfo,
-): number | undefined {
+): number {
 	if (
 		typeof account.quickSwitchNumber === "number" &&
 		Number.isFinite(account.quickSwitchNumber)
 	) {
 		return Math.max(1, Math.floor(account.quickSwitchNumber));
 	}
-	if (typeof account.index === "number" && Number.isFinite(account.index)) {
-		return Math.max(1, Math.floor(account.index) + 1);
-	}
-	return undefined;
+	return Math.max(1, Math.floor(account.index) + 1);
 }
 
 function warnUnresolvableAccountSelection(account: ExistingAccountInfo): void {
@@ -175,9 +172,7 @@ function buildManageResult(
 	return {
 		mode: "manage",
 		...result,
-		...(typeof selectedAccountNumber === "number"
-			? { selectedAccountNumber }
-			: {}),
+		selectedAccountNumber,
 	};
 }
 
