@@ -76,15 +76,28 @@ vi.mock("../lib/accounts.js", () => ({
 	getAccountIdCandidates: vi.fn(() => []),
 	resolveRequestAccountId: vi.fn(
 		(
-			_override: string | undefined,
-			_source: string | undefined,
+			storedAccountId: string | undefined,
+			currentAccountIdSource: string | undefined,
 			tokenId: string | undefined,
-		) => tokenId,
+		) => {
+			if (!storedAccountId) return tokenId;
+			if (currentAccountIdSource === "org" || currentAccountIdSource === "manual") {
+				return storedAccountId;
+			}
+			return tokenId ?? storedAccountId;
+		},
 	),
 	sanitizeEmail: vi.fn((email: string | undefined) =>
 		typeof email === "string" ? email.toLowerCase() : undefined,
 	),
 	selectBestAccountCandidate: vi.fn(() => null),
+	shouldUpdateAccountIdFromToken: vi.fn(
+		(currentAccountIdSource: string | undefined, currentAccountId: string | undefined) => {
+			if (!currentAccountId) return true;
+			if (!currentAccountIdSource) return true;
+			return currentAccountIdSource === "token" || currentAccountIdSource === "id_token";
+		},
+	),
 }));
 
 vi.mock("../lib/storage.js", async () => {
@@ -747,6 +760,139 @@ describe("codex manager cli commands", () => {
 		extractAccountIdMock.mockImplementation(() => "acc_test");
 	});
 
+	it("preserves org-selected workspace binding during flagged recovery refresh", async () => {
+		const now = Date.now();
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "flagged-refresh",
+					accountId: "workspace-alpha",
+					accountIdSource: "org",
+					accountLabel: "Workspace Alpha [id:alpha]",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					flaggedAt: now - 5_000,
+				},
+			],
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-existing",
+					accountId: "workspace-alpha",
+					accountIdSource: "org",
+					accountLabel: "Workspace Alpha [id:alpha]",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation((accessToken?: string) =>
+			accessToken === "access-restored" ? "token-personal" : "workspace-alpha",
+		);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0] as {
+			accounts: Array<{ accountId?: string; accountIdSource?: string; refreshToken?: string }>;
+		};
+		expect(savedStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-alpha",
+				accountIdSource: "org",
+				refreshToken: "refresh-restored",
+			}),
+		);
+		extractAccountIdMock.mockImplementation(() => "acc_test");
+	});
+
+	it("does not clear an existing workspace binding when flagged recovery refresh has no account id", async () => {
+		const now = Date.now();
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "flagged-refresh",
+					email: "a@example.com",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					flaggedAt: now - 5_000,
+				},
+			],
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-existing",
+					accountId: "workspace-alpha",
+					accountIdSource: "org",
+					accountLabel: "Workspace Alpha [id:alpha]",
+					email: "a@example.com",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation((accessToken?: string) =>
+			accessToken === "access-restored" ? undefined : "workspace-alpha",
+		);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0] as {
+			accounts: Array<{
+				accountId?: string;
+				accountIdSource?: string;
+				refreshToken?: string;
+				email?: string;
+			}>;
+		};
+		expect(savedStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-alpha",
+				accountIdSource: "org",
+				refreshToken: "refresh-restored",
+				email: "a@example.com",
+			}),
+		);
+		extractAccountIdMock.mockImplementation(() => "acc_test");
+	});
+
 	it("rolls back active storage when flagged persistence fails during recovery", async () => {
 		const now = Date.now();
 		loadFlaggedAccountsMock.mockResolvedValueOnce({
@@ -905,7 +1051,7 @@ describe("codex manager cli commands", () => {
 		expect(payload.reports[0]?.outcome).toBe("warning-soft-failure");
 	});
 
-	it("persists rotated tokens during auth check and syncs active codex selection", async () => {
+	it("persists rotated tokens during auth check and preserves org-selected workspace binding", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
@@ -913,7 +1059,9 @@ describe("codex manager cli commands", () => {
 			activeIndexByFamily: { codex: 0 },
 			accounts: [
 				{
-					accountId: "acc_old",
+					accountId: "workspace-alpha",
+					accountIdSource: "org",
+					accountLabel: "Workspace Alpha [id:alpha]",
 					email: "a@example.com",
 					refreshToken: "refresh-a",
 					accessToken: "access-a",
@@ -924,6 +1072,11 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation((accessToken?: string) =>
+			accessToken === "access-a-next" ? "token-personal" : "workspace-alpha",
+		);
 		queuedRefreshMock.mockResolvedValueOnce({
 			type: "success",
 			access: "access-a-next",
@@ -938,14 +1091,25 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(logSpy).toHaveBeenCalled();
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0] as {
+			accounts: Array<{ accountId?: string; accountIdSource?: string }>;
+		};
+		expect(savedStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-alpha",
+				accountIdSource: "org",
+			}),
+		);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
+				accountId: "workspace-alpha",
 				accessToken: "access-a-next",
 				refreshToken: "refresh-a-next",
 				expiresAt: now + 3_600_000,
 			}),
 		);
+		extractAccountIdMock.mockImplementation(() => "acc_test");
 	});
 
 	it("treats fresh access tokens as healthy without forcing refresh", async () => {
@@ -1069,7 +1233,7 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("refreshes token pair during switch when cached access token is missing", async () => {
+	it("refreshes token pair during switch without downgrading an org-selected workspace binding", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
@@ -1078,7 +1242,9 @@ describe("codex manager cli commands", () => {
 			accounts: [
 				{
 					email: "a@example.com",
-					accountId: "acc_a",
+					accountId: "workspace-alpha",
+					accountIdSource: "org",
+					accountLabel: "Workspace Alpha [id:alpha]",
 					refreshToken: "refresh-a",
 					addedAt: now - 1_000,
 					lastUsed: now - 1_000,
@@ -1086,6 +1252,11 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation((accessToken?: string) =>
+			accessToken === "access-a-next" ? "token-personal" : "workspace-alpha",
+		);
 		queuedRefreshMock.mockResolvedValueOnce({
 			type: "success",
 			access: "access-a-next",
@@ -1101,14 +1272,25 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0] as {
+			accounts: Array<{ accountId?: string; accountIdSource?: string }>;
+		};
+		expect(savedStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-alpha",
+				accountIdSource: "org",
+			}),
+		);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
+				accountId: "workspace-alpha",
 				accessToken: "access-a-next",
 				refreshToken: "refresh-a-next",
 				expiresAt: now + 3_600_000,
 				idToken: "id-a-next",
 			}),
 		);
+		extractAccountIdMock.mockImplementation(() => "acc_test");
 	});
 
 	it("warns on switch validation refresh failure and keeps local active index", async () => {
@@ -1190,7 +1372,7 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("autoSyncActiveAccountToCodex refreshes missing access token then syncs", async () => {
+	it("autoSyncActiveAccountToCodex refreshes missing access token while preserving org-selected workspace binding", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
@@ -1199,7 +1381,9 @@ describe("codex manager cli commands", () => {
 			accounts: [
 				{
 					email: "a@example.com",
-					accountId: "acc_a",
+					accountId: "workspace-alpha",
+					accountIdSource: "org",
+					accountLabel: "Workspace Alpha [id:alpha]",
 					refreshToken: "refresh-a",
 					addedAt: now - 1_000,
 					lastUsed: now - 1_000,
@@ -1207,6 +1391,11 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation((accessToken?: string) =>
+			accessToken === "access-a-next" ? "token-personal" : "workspace-alpha",
+		);
 		queuedRefreshMock.mockResolvedValueOnce({
 			type: "success",
 			access: "access-a-next",
@@ -1224,14 +1413,25 @@ describe("codex manager cli commands", () => {
 		expect(synced).toBe(true);
 		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0] as {
+			accounts: Array<{ accountId?: string; accountIdSource?: string }>;
+		};
+		expect(savedStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-alpha",
+				accountIdSource: "org",
+			}),
+		);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
+				accountId: "workspace-alpha",
 				accessToken: "access-a-next",
 				refreshToken: "refresh-a-next",
 				expiresAt: now + 3_600_000,
 				idToken: "id-a-next",
 			}),
 		);
+		extractAccountIdMock.mockImplementation(() => "acc_test");
 	});
 
 	it("keeps auth login menu open after switch until user cancels", async () => {

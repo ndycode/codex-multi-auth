@@ -1166,7 +1166,7 @@ function findCompatibleRefreshTokenMatchIndex<T extends AccountLike>(
 			matchingAccount = account;
 			continue;
 		}
-		const newest = selectNewestAccount(matchingAccount, account);
+		const newest: T = selectNewestAccount(matchingAccount ?? undefined, account);
 		if (newest === account) {
 			matchingIndex = i;
 			matchingAccount = account;
@@ -1939,6 +1939,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			active: true,
 		};
 		const current = state.snapshot;
 		const persist = async (

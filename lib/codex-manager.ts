@@ -21,6 +21,7 @@ import {
 	resolveRequestAccountId,
 	sanitizeEmail,
 	selectBestAccountCandidate,
+	shouldUpdateAccountIdFromToken,
 } from "./accounts.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
@@ -905,6 +906,55 @@ function resolveAccountSelection(tokens: TokenSuccess): TokenSuccessWithAccount 
 	};
 }
 
+function resolveStoredAccountIdentity(
+	storedAccountId: string | undefined,
+	storedAccountIdSource: AccountIdSource | undefined,
+	tokenAccountId: string | undefined,
+): { accountId?: string; accountIdSource?: AccountIdSource } {
+	const accountId = resolveRequestAccountId(
+		storedAccountId,
+		storedAccountIdSource,
+		tokenAccountId,
+	);
+	if (!accountId) {
+		return {};
+	}
+
+	if (!shouldUpdateAccountIdFromToken(storedAccountIdSource, storedAccountId)) {
+		return {
+			accountId,
+			accountIdSource: storedAccountIdSource,
+		};
+	}
+
+	return {
+		accountId,
+		accountIdSource: accountId === tokenAccountId ? "token" : storedAccountIdSource,
+	};
+}
+
+function applyTokenAccountIdentity(
+	account: { accountId?: string; accountIdSource?: AccountIdSource },
+	tokenAccountId: string | undefined,
+): boolean {
+	const nextIdentity = resolveStoredAccountIdentity(
+		account.accountId,
+		account.accountIdSource,
+		tokenAccountId,
+	);
+	if (!nextIdentity.accountId) {
+		return false;
+	}
+	if (nextIdentity.accountId === account.accountId
+		&& nextIdentity.accountIdSource === account.accountIdSource) {
+		return false;
+	}
+
+	account.accountId = nextIdentity.accountId;
+	account.accountIdSource = nextIdentity.accountIdSource;
+	return true;
+}
+
 async function promptManualCallback(state: string): Promise<string | null> {
 	if (!input.isTTY || !output.isTTY) {
 		return null;
@@ -1567,9 +1617,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 				account.email = nextEmail;
 				changed = true;
 			}
-			if (tokenAccountId && tokenAccountId !== account.accountId) {
-				account.accountId = tokenAccountId;
-				account.accountIdSource = "token";
+			if (applyTokenAccountIdentity(account, tokenAccountId)) {
 				changed = true;
 			}
 			if (account.enabled === false) {
@@ -2466,7 +2514,9 @@ function upsertRecoveredFlaggedAccount(
 	now: number,
 ): { restored: boolean; changed: boolean; message: string } {
 	const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken)) ?? flagged.email;
-	const nextAccountId = extractAccountId(refreshResult.access) ?? flagged.accountId;
+	const tokenAccountId = extractAccountId(refreshResult.access);
+	const { accountId: nextAccountId, accountIdSource: nextAccountIdSource } =
+		resolveStoredAccountIdentity(flagged.accountId, flagged.accountIdSource, tokenAccountId);
 	const existingIndex = findExistingAccountIndexForFlagged(
 		storage,
 		flagged,
@@ -2497,9 +2547,15 @@ function upsertRecoveredFlaggedAccount(
 			existing.email = nextEmail;
 			changed = true;
 		}
-		if (nextAccountId && nextAccountId !== existing.accountId) {
+		if (
+			nextAccountId !== undefined &&
+			(
+				(nextAccountId !== existing.accountId)
+				|| (nextAccountIdSource !== existing.accountIdSource)
+			)
+		) {
 			existing.accountId = nextAccountId;
-			existing.accountIdSource = "token";
+			existing.accountIdSource = nextAccountIdSource;
 			changed = true;
 		}
 		if (existing.enabled === false) {
@@ -2531,7 +2587,7 @@ function upsertRecoveredFlaggedAccount(
 		accessToken: refreshResult.access,
 		expiresAt: refreshResult.expires,
 		accountId: nextAccountId,
-		accountIdSource: nextAccountId ? "token" : flagged.accountIdSource,
+		accountIdSource: nextAccountIdSource,
 		accountLabel: flagged.accountLabel,
 		email: nextEmail,
 		addedAt: flagged.addedAt ?? now,
@@ -2617,13 +2673,19 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 			const { index: i, flagged, label, result } = check;
 			if (result.type === "success") {
 				if (!options.restore) {
+					const tokenAccountId = extractAccountId(result.access);
+					const nextIdentity = resolveStoredAccountIdentity(
+						flagged.accountId,
+						flagged.accountIdSource,
+						tokenAccountId,
+					);
 					const nextFlagged: FlaggedAccountMetadataV1 = {
 						...flagged,
 						refreshToken: result.refresh,
 						accessToken: result.access,
 						expiresAt: result.expires,
-						accountId: extractAccountId(result.access) ?? flagged.accountId,
-						accountIdSource: extractAccountId(result.access) ? "token" : flagged.accountIdSource,
+						accountId: nextIdentity.accountId,
+						accountIdSource: nextIdentity.accountIdSource,
 						email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
 						lastUsed: now,
 						lastError: undefined,
@@ -2654,13 +2716,19 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 					continue;
 				}
 
+				const tokenAccountId = extractAccountId(result.access);
+				const nextIdentity = resolveStoredAccountIdentity(
+					flagged.accountId,
+					flagged.accountIdSource,
+					tokenAccountId,
+				);
 				const updatedFlagged: FlaggedAccountMetadataV1 = {
 					...flagged,
 					refreshToken: result.refresh,
 					accessToken: result.access,
 					expiresAt: result.expires,
-					accountId: extractAccountId(result.access) ?? flagged.accountId,
-					accountIdSource: extractAccountId(result.access) ? "token" : flagged.accountIdSource,
+					accountId: nextIdentity.accountId,
+					accountIdSource: nextIdentity.accountIdSource,
 					email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
 					lastUsed: now,
 					lastError: upsertResult.message,
@@ -3613,10 +3681,7 @@ async function runDoctor(args: string[]): Promise<number> {
 							activeAccount.refreshToken = refreshResult.refresh;
 							activeAccount.expiresAt = refreshResult.expires;
 							if (refreshedEmail) activeAccount.email = refreshedEmail;
-							if (refreshedAccountId) {
-								activeAccount.accountId = refreshedAccountId;
-								activeAccount.accountIdSource = "token";
-							}
+							applyTokenAccountIdentity(activeAccount, refreshedAccountId);
 							syncAccessToken = refreshResult.access;
 							syncRefreshToken = refreshResult.refresh;
 							syncExpiresAt = refreshResult.expires;
@@ -4007,10 +4072,7 @@ async function runSwitch(args: string[]): Promise<number> {
 			if (nextEmail && nextEmail !== account.email) {
 				account.email = nextEmail;
 			}
-			if (tokenAccountId && tokenAccountId !== account.accountId) {
-				account.accountId = tokenAccountId;
-				account.accountIdSource = "token";
-			}
+			applyTokenAccountIdentity(account, tokenAccountId);
 			syncAccessToken = refreshResult.access;
 			syncRefreshToken = refreshResult.refresh;
 			syncExpiresAt = refreshResult.expires;
@@ -4091,9 +4153,7 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 				account.email = nextEmail;
 				changed = true;
 			}
-			if (tokenAccountId && tokenAccountId !== account.accountId) {
-				account.accountId = tokenAccountId;
-				account.accountIdSource = "token";
+			if (applyTokenAccountIdentity(account, tokenAccountId)) {
 				changed = true;
 			}
 			syncAccessToken = refreshResult.access;
