@@ -72,10 +72,16 @@ import {
 	loadCodexCliState,
 } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import {
+	getCodexTuiColorProfile,
+	getCodexTuiGlyphMode,
+	getCodexTuiMode,
+	loadPluginConfig,
+} from "./config.js";
 import { ANSI } from "./ui/ansi.js";
 import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
-import { getUiRuntimeOptions } from "./ui/runtime.js";
+import { getUiRuntimeOptions, setUiRuntimeOptions } from "./ui/runtime.js";
 import { select, type MenuItem } from "./ui/select.js";
 import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, resolveMenuLayoutMode } from "./codex-manager/settings-hub.js";
 
@@ -4224,6 +4230,12 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 }
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
+	const pluginConfig = loadPluginConfig();
+	setUiRuntimeOptions({
+		mode: getCodexTuiMode(pluginConfig),
+		colorProfile: getCodexTuiColorProfile(pluginConfig),
+		glyphMode: getCodexTuiGlyphMode(pluginConfig),
+	});
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
 

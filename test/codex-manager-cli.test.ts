@@ -517,6 +517,9 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
 		selectMock.mockResolvedValue(undefined);
+		void import("../lib/ui/runtime.js").then((runtime) => {
+			runtime.resetUiRuntimeOptions();
+		});
 		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
@@ -585,6 +588,27 @@ describe("codex manager cli commands", () => {
 				),
 			),
 		).toBe(true);
+	});
+
+	it("applies preview runtime mode from CLI config before rendering menus", async () => {
+		loadPluginConfigMock.mockReturnValue({
+			codexTuiMode: "opentui-preview",
+			codexTuiColorProfile: "ansi16",
+			codexTuiGlyphMode: "ascii",
+		});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const runtime = await import("../lib/ui/runtime.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "features"]);
+
+		expect(exitCode).toBe(0);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(runtime.getUiRuntimeOptions()).toMatchObject({
+			mode: "opentui-preview",
+			colorProfile: "ansi16",
+			glyphMode: "ascii",
+		});
 	});
 
 	it("prints auth help when subcommand is --help", async () => {
