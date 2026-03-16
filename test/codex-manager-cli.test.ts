@@ -1223,6 +1223,176 @@ describe("codex manager cli commands", () => {
 		errorSpy.mockRestore();
 	});
 
+	it("returns to the dashboard when OpenCode import assessment fails", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		assessOpencodeAccountPoolMock.mockRejectedValueOnce(
+			makeErrnoError("assessment locked", "EPERM"),
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Import assessment failed: EPERM: assessment locked",
+		);
+		errorSpy.mockRestore();
+	});
+
+	it.each([
+		{
+			label: "would exceed the account limit",
+			assessment: {
+				backup: {
+					name: "openai-codex-accounts.json",
+					path: "/mock/.opencode/openai-codex-accounts.json",
+					createdAt: null,
+					updatedAt: Date.now(),
+					sizeBytes: 256,
+					version: 3,
+					accountCount: 3,
+					schemaErrors: [],
+					valid: true,
+					loadError: "",
+				},
+				currentAccountCount: 2,
+				mergedAccountCount: 5,
+				imported: 3,
+				skipped: 0,
+				wouldExceedLimit: true,
+				eligibleForRestore: true,
+				nextActiveIndex: 0,
+				nextActiveEmail: "existing@example.com",
+				nextActiveAccountId: undefined,
+				activeAccountChanged: false,
+				error: "",
+			},
+		},
+		{
+			label: "is not eligible for restore",
+			assessment: {
+				backup: {
+					name: "openai-codex-accounts.json",
+					path: "/mock/.opencode/openai-codex-accounts.json",
+					createdAt: null,
+					updatedAt: Date.now(),
+					sizeBytes: 256,
+					version: 3,
+					accountCount: 1,
+					schemaErrors: [],
+					valid: true,
+					loadError: "",
+				},
+				currentAccountCount: 1,
+				mergedAccountCount: null,
+				imported: null,
+				skipped: null,
+				wouldExceedLimit: false,
+				eligibleForRestore: false,
+				nextActiveIndex: null,
+				nextActiveEmail: undefined,
+				nextActiveAccountId: undefined,
+				activeAccountChanged: false,
+				error: "OpenCode account pool is not importable.",
+			},
+		},
+	])(
+		"skips confirmation and import when the OpenCode assessment $label",
+		async ({ assessment }) => {
+			setInteractiveTTY(true);
+			loadAccountsMock.mockResolvedValue({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "existing@example.com",
+						refreshToken: "existing-refresh",
+						addedAt: Date.now(),
+						lastUsed: Date.now(),
+					},
+				],
+			});
+			assessOpencodeAccountPoolMock.mockResolvedValue(assessment);
+			promptLoginModeMock
+				.mockResolvedValueOnce({ mode: "import-opencode" })
+				.mockResolvedValueOnce({ mode: "cancel" });
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+			expect(confirmMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		},
+	);
+
+	it("redacts filesystem details when the OpenCode assessment is invalid", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		assessOpencodeAccountPoolMock.mockResolvedValue({
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 0,
+				schemaErrors: ["invalid"],
+				valid: false,
+				loadError: "ENOENT: C:\\Users\\neil\\AppData\\Local\\OpenCode\\openai-codex-accounts.json",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: null,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: false,
+			eligibleForRestore: false,
+			nextActiveIndex: null,
+			nextActiveEmail: undefined,
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "ENOENT: C:\\Users\\neil\\AppData\\Local\\OpenCode\\openai-codex-accounts.json",
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			"ENOENT: openai-codex-accounts.json",
+		);
+		logSpy.mockRestore();
+	});
+
 	it("skips startup restore prompt in fallback login mode", async () => {
 		setInteractiveTTY(true);
 		isInteractiveLoginMenuAvailableMock.mockReturnValue(false);

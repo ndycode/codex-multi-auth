@@ -279,6 +279,9 @@ async function promptLoginModeFallback(
 			) {
 				return { mode: "restore-backup" };
 			}
+			if (normalized === "i" || normalized === "import-opencode") {
+				return { mode: "import-opencode" };
+			}
 			if (normalized === "q" || normalized === "quit")
 				return { mode: "cancel" };
 			console.log(UI_COPY.fallback.invalidModePrompt);
