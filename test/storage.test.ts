@@ -4812,7 +4812,8 @@ describe("storage", () => {
 			const assessment = await assessOpencodeAccountPool();
 			expect(assessment).not.toBeNull();
 			expect(assessment?.backup.path).toBe(poolPath);
-			expect(assessment?.valid).toBe(true);
+			expect(assessment?.backup.valid).toBe(true);
+			expect(assessment?.eligibleForRestore).toBe(true);
 			expect(assessment?.imported).toBe(1);
 		});
 
@@ -4824,10 +4825,18 @@ describe("storage", () => {
 
 			const assessment = await assessOpencodeAccountPool();
 			expect(assessment).not.toBeNull();
-			expect(assessment?.valid).toBe(false);
+			expect(assessment?.backup.valid).toBe(false);
+			expect(assessment?.eligibleForRestore).toBe(false);
 			expect(assessment?.imported).toBeNull();
 			const current = await loadAccounts();
-			expect(current).toBeNull();
+			expect(current).toMatchObject({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [],
+				restoreEligible: true,
+				restoreReason: "missing-storage",
+			});
 		});
 	});
 

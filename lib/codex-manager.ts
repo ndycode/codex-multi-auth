@@ -64,10 +64,13 @@ import {
 } from "./quota-cache.js";
 import {
 	assessNamedBackupRestore,
+	assessOpencodeAccountPool,
+	type BackupRestoreAssessment,
 	getActionableNamedBackupRestores,
 	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
 	listAccountSnapshots,
+	importAccounts,
 	listNamedBackups,
 	listRotatingBackups,
 	NAMED_BACKUP_LIST_CONCURRENCY,
@@ -84,6 +87,8 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
+	type NamedBackupMetadata,
+	type RotatingBackupMetadata,
 } from "./storage.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import {
@@ -101,63 +106,6 @@ import {
 	configureUnifiedSettings,
 	resolveMenuLayoutMode,
 } from "./codex-manager/settings-hub.js";
-import { ACCOUNT_LIMITS } from "./constants.js";
-import {
-	type DashboardAccountSortMode,
-	type DashboardDisplaySettings,
-	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-	loadDashboardDisplaySettings,
-} from "./dashboard-settings.js";
-import {
-	DESTRUCTIVE_ACTION_COPY,
-	deleteAccountAtIndex,
-	deleteSavedAccounts,
-	resetLocalState,
-} from "./destructive-actions.js";
-import {
-	evaluateForecastAccounts,
-	type ForecastAccountResult,
-	isHardRefreshFailure,
-	recommendForecastAccount,
-	summarizeForecast,
-} from "./forecast.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
-import {
-	loadQuotaCache,
-	type QuotaCacheData,
-	type QuotaCacheEntry,
-	saveQuotaCache,
-} from "./quota-cache.js";
-import {
-	type CodexQuotaSnapshot,
-	fetchCodexQuotaSnapshot,
-	formatQuotaSnapshotLine,
-} from "./quota-probe.js";
-import { queuedRefresh } from "./refresh-queue.js";
-import {
-	type AccountMetadataV3,
-	type AccountStorageV3,
-	assessNamedBackupRestore,
-	assessOpencodeAccountPool,
-	type BackupRestoreAssessment,
-	type FlaggedAccountMetadataV1,
-	type FlaggedAccountStorageV1,
-	getActionableNamedBackupRestores,
-	getNamedBackupsDirectoryPath,
-	getStoragePath,
-	importAccounts,
-	listNamedBackups,
-	listRotatingBackups,
-	loadAccounts,
-	loadFlaggedAccounts,
-	type NamedBackupMetadata,
-	type RotatingBackupMetadata,
-	restoreNamedBackup,
-	saveAccounts,
-	saveFlaggedAccounts,
-	setStoragePath,
-} from "./storage.js";
-import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
 import { confirm } from "./ui/confirm.js";
 import { UI_COPY } from "./ui/copy.js";
@@ -4492,7 +4440,11 @@ async function runAuthLogin(): Promise<number> {
 					console.log("No OpenCode account pool was detected.");
 					continue;
 				}
-				if (!assessment.valid || assessment.wouldExceedLimit) {
+				if (
+					!assessment.backup.valid ||
+					!assessment.eligibleForRestore ||
+					assessment.wouldExceedLimit
+				) {
 					console.log(
 						assessment.error ?? "OpenCode account pool is not importable.",
 					);

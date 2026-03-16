@@ -14,7 +14,9 @@ const listAccountSnapshotsMock = vi.fn();
 const listNamedBackupsMock = vi.fn();
 const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
+const assessOpencodeAccountPoolMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
+const importAccountsMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
@@ -141,7 +143,9 @@ vi.mock("../lib/storage.js", async () => {
 		listNamedBackups: listNamedBackupsMock,
 		listRotatingBackups: listRotatingBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
+		assessOpencodeAccountPool: assessOpencodeAccountPoolMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
+		importAccounts: importAccountsMock,
 		restoreNamedBackup: restoreNamedBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,
@@ -636,7 +640,9 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockReset();
 		listRotatingBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
+		assessOpencodeAccountPoolMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
+		importAccountsMock.mockReset();
 		restoreNamedBackupMock.mockReset();
 		confirmMock.mockReset();
 		getActionableNamedBackupRestoresMock.mockReset();
@@ -669,7 +675,13 @@ describe("codex manager cli commands", () => {
 			eligibleForRestore: true,
 			error: undefined,
 		});
+		assessOpencodeAccountPoolMock.mockResolvedValue(null);
 		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
+		importAccountsMock.mockResolvedValue({
+			imported: 0,
+			skipped: 0,
+			total: 0,
+		});
 		restoreNamedBackupMock.mockResolvedValue({
 			imported: 1,
 			skipped: 0,
@@ -1037,49 +1049,32 @@ describe("codex manager cli commands", () => {
 			imported: 1,
 			skipped: 0,
 			wouldExceedLimit: false,
-			valid: true,
+			eligibleForRestore: true,
 			nextActiveIndex: 0,
 			nextActiveEmail: "existing@example.com",
 			nextActiveAccountId: undefined,
 			activeAccountChanged: false,
 			error: "",
 		};
-		const assessOpencodeAccountPoolMock = vi.fn().mockResolvedValue(assessment);
-		vi.doMock("../lib/storage.js", async () => {
-			const actual = await vi.importActual("../lib/storage.js");
-			return {
-				...(actual as Record<string, unknown>),
-				loadAccounts: loadAccountsMock,
-				loadFlaggedAccounts: loadFlaggedAccountsMock,
-				saveAccounts: saveAccountsMock,
-				saveFlaggedAccounts: saveFlaggedAccountsMock,
-				setStoragePath: setStoragePathMock,
-				getStoragePath: getStoragePathMock,
-				getActionableNamedBackupRestores: getActionableNamedBackupRestoresMock,
-				listNamedBackups: listNamedBackupsMock,
-				listRotatingBackups: listRotatingBackupsMock,
-				assessNamedBackupRestore: assessNamedBackupRestoreMock,
-				getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
-				restoreNamedBackup: restoreNamedBackupMock,
-				assessOpencodeAccountPool: assessOpencodeAccountPoolMock,
-				importAccounts: vi.fn().mockResolvedValue({
-					imported: 1,
-					skipped: 0,
-					total: 2,
-				}),
-			};
+		assessOpencodeAccountPoolMock.mockResolvedValue(assessment);
+		importAccountsMock.mockResolvedValue({
+			imported: 1,
+			skipped: 0,
+			total: 2,
 		});
 		confirmMock.mockResolvedValueOnce(true);
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "import-opencode" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		vi.resetModules();
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
 		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/.opencode/openai-codex-accounts.json",
+		);
 		expect(confirmMock).toHaveBeenCalledWith(
 			"Import OpenCode accounts from /mock/.opencode/openai-codex-accounts.json?",
 		);
