@@ -4448,15 +4448,17 @@ async function runAuthLogin(): Promise<number> {
 					console.log("No OpenCode account pool was detected.");
 					continue;
 				}
-				if (
-					!assessment.backup.valid ||
-					!assessment.eligibleForRestore ||
-					assessment.wouldExceedLimit
-				) {
+				if (!assessment.backup.valid || !assessment.eligibleForRestore) {
 					const assessmentErrorLabel = assessment.error
 						? formatRedactedFilesystemError(assessment.error)
 						: "OpenCode account pool is not importable.";
 					console.log(assessmentErrorLabel);
+					continue;
+				}
+				if (assessment.wouldExceedLimit) {
+					console.log(
+						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
+					);
 					continue;
 				}
 				const backupLabel = basename(assessment.backup.path);
