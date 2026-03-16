@@ -4174,6 +4174,14 @@ async function loadManageActionStorage(
 	return freshStorage;
 }
 
+function formatOpencodeImportFailure(error: unknown): string {
+	if (typeof error !== "string") {
+		return "OpenCode account pool is not importable.";
+	}
+	const normalized = collapseWhitespace(error);
+	return normalized || "OpenCode account pool is not importable.";
+}
+
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
@@ -4320,7 +4328,10 @@ async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 	try {
 		hasOpencodeSource = (await assessOpencodeAccountPool()) !== null;
 	} catch (error) {
-		console.warn("Failed to detect OpenCode import source", error);
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to detect OpenCode import source (${errorLabel}).`,
+		);
 	}
 
 	return {
@@ -4354,7 +4365,7 @@ async function runFirstRunWizard(
 				}
 				if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
 					console.log(
-						assessment.error ?? "OpenCode account pool is not importable.",
+						formatOpencodeImportFailure(assessment.error),
 					);
 					break;
 				}
@@ -4410,6 +4421,7 @@ async function runAuthLogin(): Promise<number> {
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
 	let skipEmptyStorageRecoveryMenu = false;
+	let firstRunWizardShownInLoop = false;
 	const initialStorage = await loadAccounts();
 	const startedFromMissingStorage = shouldShowFirstRunWizard(initialStorage);
 	let cachedInitialStorage: AccountStorageV3 | null | undefined =
@@ -4575,7 +4587,7 @@ async function runAuthLogin(): Promise<number> {
 					assessment.wouldExceedLimit
 				) {
 					console.log(
-						assessment.error ?? "OpenCode account pool is not importable.",
+						formatOpencodeImportFailure(assessment.error),
 					);
 					continue;
 				}
@@ -4760,9 +4772,11 @@ async function runAuthLogin(): Promise<number> {
 		}
 		if (
 			startedFromMissingStorage &&
+			!firstRunWizardShownInLoop &&
 			existingCount === 0 &&
 			isInteractiveLoginMenuAvailable()
 		) {
+			firstRunWizardShownInLoop = true;
 			const displaySettings = await loadDashboardDisplaySettings();
 			applyUiThemeFromDashboardSettings(displaySettings);
 			const firstRunResult = await runFirstRunWizard(displaySettings);
