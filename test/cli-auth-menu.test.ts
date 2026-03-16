@@ -44,7 +44,11 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0 }, { index: 1 }]);
 
-		expect(result).toEqual({ mode: "manage", switchAccountIndex: 1 });
+		expect(result).toEqual({
+			mode: "manage",
+			switchAccountIndex: 1,
+			selectedAccountNumber: 2,
+		});
 	});
 
 	it("uses source index for set current when sorted view provides source mapping", async () => {
@@ -56,7 +60,29 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0, sourceIndex: 4 }]);
 
-		expect(result).toEqual({ mode: "manage", switchAccountIndex: 4 });
+		expect(result).toEqual({
+			mode: "manage",
+			switchAccountIndex: 4,
+			selectedAccountNumber: 1,
+		});
+	});
+
+	it("preserves visible row numbers separately from saved source indexes", async () => {
+		showAuthMenu.mockResolvedValueOnce({
+			type: "set-current-account",
+			account: { index: 0, sourceIndex: 28, quickSwitchNumber: 1 },
+		});
+
+		const { promptLoginMode } = await import("../lib/cli.js");
+		const result = await promptLoginMode([
+			{ index: 0, sourceIndex: 28, quickSwitchNumber: 1 },
+		]);
+
+		expect(result).toEqual({
+			mode: "manage",
+			switchAccountIndex: 28,
+			selectedAccountNumber: 1,
+		});
 	});
 
 	it("returns switch action when account details picks set current", async () => {
@@ -69,7 +95,11 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0 }, { index: 1 }, { index: 2 }]);
 
-		expect(result).toEqual({ mode: "manage", switchAccountIndex: 2 });
+		expect(result).toEqual({
+			mode: "manage",
+			switchAccountIndex: 2,
+			selectedAccountNumber: 3,
+		});
 	});
 
 	it("returns refresh action when auth menu requests refresh", async () => {
@@ -81,7 +111,11 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0 }]);
 
-		expect(result).toEqual({ mode: "manage", refreshAccountIndex: 0 });
+		expect(result).toEqual({
+			mode: "manage",
+			refreshAccountIndex: 0,
+			selectedAccountNumber: 1,
+		});
 	});
 
 	it("returns toggle action when auth menu requests toggle", async () => {
@@ -93,7 +127,11 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0 }, { index: 1 }]);
 
-		expect(result).toEqual({ mode: "manage", toggleAccountIndex: 1 });
+		expect(result).toEqual({
+			mode: "manage",
+			toggleAccountIndex: 1,
+			selectedAccountNumber: 2,
+		});
 	});
 
 	it("uses source index for account-details actions when sorted view provides source mapping", async () => {
@@ -106,7 +144,11 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0, sourceIndex: 3 }]);
 
-		expect(result).toEqual({ mode: "manage", refreshAccountIndex: 3 });
+		expect(result).toEqual({
+			mode: "manage",
+			refreshAccountIndex: 3,
+			selectedAccountNumber: 1,
+		});
 	});
 
 	it("returns forecast mode when auth menu requests forecast", async () => {
@@ -151,7 +193,11 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0 }]);
 
-		expect(result).toEqual({ mode: "manage", deleteAccountIndex: 0 });
+		expect(result).toEqual({
+			mode: "manage",
+			deleteAccountIndex: 0,
+			selectedAccountNumber: 1,
+		});
 	});
 
 	it("returns deep-check mode when auth menu requests deep-check", async () => {
@@ -237,7 +283,11 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0 }, { index: 1 }]);
 
-		expect(result).toEqual({ mode: "manage", deleteAccountIndex: 1 });
+		expect(result).toEqual({
+			mode: "manage",
+			deleteAccountIndex: 1,
+			selectedAccountNumber: 2,
+		});
 	});
 
 	it("returns manage toggle action when account details picks toggle", async () => {
@@ -250,7 +300,11 @@ describe("CLI auth menu shortcuts", () => {
 		const { promptLoginMode } = await import("../lib/cli.js");
 		const result = await promptLoginMode([{ index: 0, sourceIndex: 2 }]);
 
-		expect(result).toEqual({ mode: "manage", toggleAccountIndex: 2 });
+		expect(result).toEqual({
+			mode: "manage",
+			toggleAccountIndex: 2,
+			selectedAccountNumber: 1,
+		});
 	});
 
 	it("continues when account-details delete cannot resolve source index", async () => {
