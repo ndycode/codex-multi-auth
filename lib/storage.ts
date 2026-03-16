@@ -3078,11 +3078,6 @@ export async function importAccounts(
 ): Promise<ImportAccountsResult> {
 	const resolvedPath = resolvePath(filePath);
 
-	// Check file exists with friendly error
-	if (!existsSync(resolvedPath)) {
-		throw new Error(`Import file not found: ${resolvedPath}`);
-	}
-
 	let content: string;
 	try {
 		content = await retryTransientFilesystemOperation(() =>

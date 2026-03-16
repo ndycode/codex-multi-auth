@@ -4228,7 +4228,7 @@ type BackupMenuAction =
 async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
 ): Promise<boolean> {
-	if (isNonInteractiveMode()) {
+	if (isNonInteractiveMode() || !input.isTTY || !output.isTTY) {
 		console.error(
 			"Backup restore manager requires an interactive TTY. Run this command in an interactive terminal.",
 		);

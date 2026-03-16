@@ -2525,9 +2525,8 @@ describe("codex manager cli commands", () => {
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledOnce();
 	});
 
-	it("returns a non-zero exit code for the direct restore-backup command without an interactive TTY", async () => {
+	it("returns a non-zero exit code for the direct restore-backup command when stdin/stdout are not TTYs", async () => {
 		setInteractiveTTY(false);
-		isNonInteractiveModeMock.mockReturnValueOnce(true);
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		try {

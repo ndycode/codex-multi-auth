@@ -1383,6 +1383,58 @@ describe("storage", () => {
 			}
 		});
 
+		it("imports a backup even when existsSync falsely reports the file missing", async () => {
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "exists-sync-false-negative",
+							refreshToken: "ref-exists-sync-false-negative",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const actualFs = await vi.importActual<typeof import("node:fs")>(
+				"node:fs",
+			);
+			vi.resetModules();
+			vi.doMock("node:fs", () => ({
+				...actualFs,
+				existsSync: (path: Parameters<typeof actualFs.existsSync>[0]) =>
+					String(path) === exportPath ? false : actualFs.existsSync(path),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(testStoragePath);
+
+				const result = await isolatedStorageModule.importAccounts(exportPath);
+				expect(result).toMatchObject({
+					imported: 1,
+					skipped: 0,
+					total: 1,
+					changed: true,
+				});
+
+				const loaded = await isolatedStorageModule.loadAccounts();
+				expect(loaded?.accounts).toEqual([
+					expect.objectContaining({
+						accountId: "exists-sync-false-negative",
+						refreshToken: "ref-exists-sync-false-negative",
+					}),
+				]);
+			} finally {
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+			}
+		});
+
 		it("should fail import when file contains invalid JSON", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "not valid json {[");
