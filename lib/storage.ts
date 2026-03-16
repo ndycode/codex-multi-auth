@@ -176,7 +176,7 @@ function createUnloadedBackupCandidate(): LoadedBackupCandidate {
 	};
 }
 
-function getBackupRestoreAssessmentErrorLabel(error: unknown): string {
+export function getRedactedFilesystemErrorLabel(error: unknown): string {
 	const code = (error as NodeJS.ErrnoException).code;
 	if (typeof code === "string" && code.trim().length > 0) {
 		return code;
@@ -200,8 +200,14 @@ function buildFailedBackupRestoreAssessment(
 		skipped: null,
 		wouldExceedLimit: false,
 		eligibleForRestore: false,
-		error: getBackupRestoreAssessmentErrorLabel(error),
+		error: getRedactedFilesystemErrorLabel(error),
 	};
+}
+
+function normalizeBackupUpdatedAt(updatedAt: number | null | undefined): number {
+	return typeof updatedAt === "number" && Number.isFinite(updatedAt) && updatedAt !== 0
+		? updatedAt
+		: 0;
 }
 
 /**
@@ -1693,7 +1699,8 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 		return {
 			backups: backups.sort(
 				(left, right) =>
-					(right.backup.updatedAt ?? 0) - (left.backup.updatedAt ?? 0),
+					normalizeBackupUpdatedAt(right.backup.updatedAt) -
+					normalizeBackupUpdatedAt(left.backup.updatedAt),
 			),
 			totalBackups,
 		};
@@ -1744,7 +1751,11 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataList
 		}
 
 		return {
-			backups: backups.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
+			backups: backups.sort(
+				(left, right) =>
+					normalizeBackupUpdatedAt(right.updatedAt) -
+					normalizeBackupUpdatedAt(left.updatedAt),
+			),
 			totalBackups,
 		};
 	} catch (error) {
@@ -1767,7 +1778,10 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
 ): code is "EPERM" | "EBUSY" | "EAGAIN" {
-	return code === "EPERM" || code === "EBUSY" || code === "EAGAIN";
+	if (code === "EBUSY" || code === "EAGAIN") {
+		return true;
+	}
+	return code === "EPERM" && process.platform === "win32";
 }
 
 async function retryTransientFilesystemOperation<T>(
@@ -1781,7 +1795,9 @@ async function retryTransientFilesystemOperation<T>(
 			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
 				throw error;
 			}
-			await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+			await new Promise((resolve) =>
+				setTimeout(resolve, 10 * 2 ** attempt + Math.floor(Math.random() * 10)),
+			);
 		}
 	}
 

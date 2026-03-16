@@ -26,6 +26,7 @@ Compatibility aliases are supported:
 | `codex auth switch <index>` | Set active account by index |
 | `codex auth check` | Run quick account health check |
 | `codex auth features` | Print implemented feature summary |
+| `codex auth restore-backup` | Open the backup restore picker directly |
 
 ---
 
@@ -111,6 +112,7 @@ codex auth report --live --json
 Repair and recovery:
 
 ```bash
+codex auth restore-backup
 codex auth fix --dry-run
 codex auth fix --live --model gpt-5-codex
 codex auth doctor --fix
