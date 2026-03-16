@@ -43,6 +43,7 @@ Used only for host plugin mode through the host runtime config file.
 | Key | Default |
 | --- | --- |
 | `codexMode` | `true` |
+| `codexTuiMode` | `classic` |
 | `codexTuiV2` | `true` |
 | `codexTuiColorProfile` | `truecolor` |
 | `codexTuiGlyphMode` | `ascii` |
@@ -190,6 +191,7 @@ Used only for host plugin mode through the host runtime config file.
 | `CODEX_MULTI_AUTH_DIR` | Custom root for settings/accounts/cache/logs |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file input |
 | `CODEX_MODE` | Toggle Codex mode |
+| `CODEX_TUI_MODE` | Toggle classic vs OpenTUI preview shell |
 | `CODEX_TUI_V2` | Toggle TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE` | TUI color profile |
 | `CODEX_TUI_GLYPHS` | TUI glyph mode |

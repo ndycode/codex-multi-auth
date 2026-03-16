@@ -1011,9 +1011,23 @@ async function promptOAuthSignInMode(): Promise<OAuthSignInMode> {
 		subtitle: UI_COPY.oauth.chooseModeSubtitle,
 		help: UI_COPY.oauth.chooseModeHelp,
 		clearScreen: true,
+		shellMode: ui.mode,
 		theme: ui.theme,
 		selectedEmphasis: "minimal",
 		allowEscape: false,
+		panel: ({ selectedItem }) => {
+			const choice = selectedItem?.value ?? "browser";
+			return {
+				tag: "Sign-In Flow",
+				title: choice === "manual" ? UI_COPY.oauth.manualMode : choice === "cancel" ? UI_COPY.oauth.back : UI_COPY.oauth.openBrowser,
+				body: choice === "manual"
+					? "Use this when browser callback forwarding is blocked or you want a private/incognito login. The dashboard will wait for a pasted callback URL or code."
+					: choice === "cancel"
+						? "Leave the sign-in flow and return to the dashboard without changing the current pool."
+						: "Open the browser on the local OAuth flow and wait for the callback on 127.0.0.1:1455.",
+				footer: "Hotkeys: 1 browser-first, 2 manual, Q back.",
+			};
+		},
 		onInput: (raw) => {
 			const lower = raw.toLowerCase();
 			if (lower === "q") return "cancel";
@@ -1216,6 +1230,38 @@ async function runActionPanel(
 			: failed
 				? UI_COPY.returnFlow.failed
 				: UI_COPY.returnFlow.done;
+		const ui = getUiRuntimeOptions();
+		if (ui.mode === "opentui-preview") {
+			const columns = Math.max(60, output.columns ?? 80);
+			const panelWidth = Math.max(20, columns - 4);
+			const divider = `${ANSI.dim}+${"-".repeat(panelWidth)}${ANSI.reset}`;
+			previousLog(divider);
+			previousLog(`| ${stylePromptText(title, "accent")}`);
+			previousLog(`| ${stylePromptText(stageText, failed ? "danger" : running ? "accent" : "success")}`);
+			previousLog(`| ${stylePromptText("Live task output", "muted")}`);
+			previousLog(divider);
+			const lines = captured.slice(-maxVisibleLines);
+			for (const line of lines) {
+				previousLog(`| ${line}`);
+			}
+			const remainingLines = Math.max(0, maxVisibleLines - lines.length);
+			for (let i = 0; i < remainingLines; i += 1) {
+				previousLog("|");
+			}
+			previousLog(divider);
+			previousLog(
+				stylePromptText(
+					running
+						? "Task is still running. Output updates live until the action finishes."
+						: failed
+							? "Task failed. The return prompt stays available for inspection."
+							: "Task finished. Returning follows the configured auto-return behavior.",
+					"muted",
+				),
+			);
+			frame += 1;
+			return;
+		}
 		previousLog(stylePromptText(title, "accent"));
 		previousLog(stylePromptText(stageText, failed ? "danger" : running ? "accent" : "success"));
 		previousLog("");

@@ -12,6 +12,7 @@ describe("UI runtime options", () => {
 
 	it("starts with codex v2 enabled by default", () => {
 		const ui = getUiRuntimeOptions();
+		expect(ui.mode).toBe("classic");
 		expect(ui.v2Enabled).toBe(true);
 		expect(ui.colorProfile).toBe("truecolor");
 		expect(ui.glyphMode).toBe("ascii");
@@ -21,6 +22,7 @@ describe("UI runtime options", () => {
 
 	it("updates runtime options and rebuilds theme", () => {
 		const updated = setUiRuntimeOptions({
+			mode: "opentui-preview",
 			v2Enabled: false,
 			colorProfile: "ansi16",
 			glyphMode: "unicode",
@@ -28,6 +30,7 @@ describe("UI runtime options", () => {
 			accent: "cyan",
 		});
 
+		expect(updated.mode).toBe("opentui-preview");
 		expect(updated.v2Enabled).toBe(false);
 		expect(updated.colorProfile).toBe("ansi16");
 		expect(updated.glyphMode).toBe("unicode");
@@ -40,6 +43,7 @@ describe("UI runtime options", () => {
 	it("supports partial updates", () => {
 		setUiRuntimeOptions({ v2Enabled: false });
 		const ui = getUiRuntimeOptions();
+		expect(ui.mode).toBe("classic");
 		expect(ui.v2Enabled).toBe(false);
 		expect(ui.colorProfile).toBe("truecolor");
 		expect(ui.glyphMode).toBe("ascii");

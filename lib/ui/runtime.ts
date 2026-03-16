@@ -7,7 +7,10 @@ import {
 	type UiTheme,
 } from "./theme.js";
 
+export type UiMode = "classic" | "opentui-preview";
+
 export interface UiRuntimeOptions {
+	mode: UiMode;
 	v2Enabled: boolean;
 	colorProfile: UiColorProfile;
 	glyphMode: UiGlyphMode;
@@ -17,6 +20,7 @@ export interface UiRuntimeOptions {
 }
 
 const DEFAULT_OPTIONS: UiRuntimeOptions = {
+	mode: "classic",
 	v2Enabled: true,
 	colorProfile: "truecolor",
 	glyphMode: "ascii",
@@ -51,12 +55,14 @@ let runtimeOptions: UiRuntimeOptions = { ...DEFAULT_OPTIONS };
 export function setUiRuntimeOptions(
 	options: Partial<Omit<UiRuntimeOptions, "theme">>,
 ): UiRuntimeOptions {
+	const mode = options.mode ?? runtimeOptions.mode;
 	const v2Enabled = options.v2Enabled ?? runtimeOptions.v2Enabled;
 	const colorProfile = options.colorProfile ?? runtimeOptions.colorProfile;
 	const glyphMode = options.glyphMode ?? runtimeOptions.glyphMode;
 	const palette = options.palette ?? runtimeOptions.palette;
 	const accent = options.accent ?? runtimeOptions.accent;
 	runtimeOptions = {
+		mode,
 		v2Enabled,
 		colorProfile,
 		glyphMode,

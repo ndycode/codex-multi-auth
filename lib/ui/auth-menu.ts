@@ -3,7 +3,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { ANSI, isTTY } from "./ansi.js";
 import { confirm } from "./confirm.js";
 import { getUiRuntimeOptions } from "./runtime.js";
-import { select, type MenuItem } from "./select.js";
+import { select, type MenuItem, type SelectPanel } from "./select.js";
 import { paintUiText, formatUiBadge, quotaToneFromLeftPercent } from "./format.js";
 import { UI_COPY, formatCheckFlaggedLabel } from "./copy.js";
 
@@ -69,6 +69,15 @@ export type AuthMenuAction =
 	| { type: "cancel" };
 
 export type AccountAction = "back" | "delete" | "refresh" | "toggle" | "set-current" | "cancel";
+
+interface AuthActionDescriptor {
+	section: "quick" | "advanced" | "danger";
+	label: string;
+	value: Exclude<AuthMenuAction, { type: "select-account" | "set-current-account" | "refresh-account" | "toggle-account" | "delete-account" }>;
+	color: MenuItem<AuthMenuAction>["color"];
+	description: string;
+	searchText: string;
+}
 
 function resolveCliVersionLabel(): string | null {
 	const raw = (process.env.CODEX_MULTI_AUTH_CLI_VERSION ?? "").trim();
@@ -406,11 +415,128 @@ async function promptSearchQuery(current: string): Promise<string> {
 	const rl = createInterface({ input, output });
 	try {
 		const suffix = current ? ` (${current})` : "";
-		const answer = await rl.question(`Search${suffix} (blank clears): `);
+		const answer = await rl.question(`Search dashboard${suffix} (blank clears): `);
 		return answer.trim().toLowerCase();
 	} finally {
 		rl.close();
 	}
+}
+
+function formatAccountPanel(account: AccountInfo): SelectPanel {
+	const status = statusText(account.status);
+	const lines = [
+		`Email: ${account.email ?? account.accountLabel ?? account.accountId ?? `Account ${account.index + 1}`}`,
+		`Status: ${status}`,
+		`Last used: ${formatRelativeTime(account.lastUsed)}`,
+		`Added: ${formatDate(account.addedAt)}`,
+	];
+
+	const quotaSummary = formatQuotaSummary(account, getUiRuntimeOptions()).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+	if (quotaSummary.trim().length > 0) {
+		lines.push(`Limits: ${quotaSummary}`);
+	}
+
+	if (typeof account.quota5hResetAtMs === "number") {
+		const cooldown = formatLimitCooldown(account.quota5hResetAtMs);
+		if (cooldown) lines.push(`5h window: ${cooldown}`);
+	}
+	if (typeof account.quota7dResetAtMs === "number") {
+		const cooldown = formatLimitCooldown(account.quota7dResetAtMs);
+		if (cooldown) lines.push(`7d window: ${cooldown}`);
+	}
+
+	return {
+		tag: account.isCurrentAccount ? "Current Account" : "Account Details",
+		title: account.email ?? account.accountLabel ?? account.accountId ?? `Account ${account.index + 1}`,
+		body: lines.join("\n"),
+		footer: "Enter opens account actions. Hotkeys: S set current, R re-login, E toggle, D delete, Q back.",
+	};
+}
+
+function createActionDescriptors(flaggedCount: number): AuthActionDescriptor[] {
+	return [
+		{
+			section: "quick",
+			label: UI_COPY.mainMenu.addAccount,
+			value: { type: "add" },
+			color: "green",
+			description: "Start a browser-first sign-in flow with a safe fallback for manual or incognito callback paste.",
+			searchText: "add login oauth browser manual sign in account",
+		},
+		{
+			section: "quick",
+			label: UI_COPY.mainMenu.checkAccounts,
+			value: { type: "check" },
+			color: "green",
+			description: "Run the main health check to refresh session health, quota summaries, and current availability.",
+			searchText: "check health quota verify current availability",
+		},
+		{
+			section: "quick",
+			label: UI_COPY.mainMenu.bestAccount,
+			value: { type: "forecast" },
+			color: "green",
+			description: "Recommend the healthiest account to switch to based on readiness, limits, and recent state.",
+			searchText: "best forecast recommend switch healthiest account",
+		},
+		{
+			section: "quick",
+			label: UI_COPY.mainMenu.fixIssues,
+			value: { type: "fix" },
+			color: "green",
+			description: "Attempt focused repair steps for broken or stale auth state without leaving the dashboard.",
+			searchText: "fix repair refresh issues auth stale problem",
+		},
+		{
+			section: "quick",
+			label: UI_COPY.mainMenu.settings,
+			value: { type: "settings" },
+			color: "green",
+			description: "Open the searchable settings hub to tune dashboard layout, behavior, theme, backend, and preview mode.",
+			searchText: "settings theme behavior backend layout preview search",
+		},
+		{
+			section: "advanced",
+			label: UI_COPY.mainMenu.refreshChecks,
+			value: { type: "deep-check" },
+			color: "green",
+			description: "Run a deeper refresh across stored accounts to re-check limits and session freshness.",
+			searchText: "advanced deep check refresh all accounts limits",
+		},
+		{
+			section: "advanced",
+			label: formatCheckFlaggedLabel(flaggedCount),
+			value: { type: "verify-flagged" },
+			color: flaggedCount > 0 ? "red" : "yellow",
+			description: flaggedCount > 0
+				? `Re-check the ${flaggedCount} problem account${flaggedCount === 1 ? "" : "s"} that need attention.`
+				: "No problem accounts are currently flagged, but this check can confirm that state.",
+			searchText: "verify flagged problem accounts warnings disabled",
+		},
+		{
+			section: "danger",
+			label: UI_COPY.mainMenu.removeAllAccounts,
+			value: { type: "delete-all" },
+			color: "red",
+			description: "Delete every stored account in this pool. This is destructive and should be used sparingly.",
+			searchText: "delete all remove accounts danger destructive",
+		},
+	];
+}
+
+function formatActionPanel(
+	action: AuthActionDescriptor,
+	searchQuery: string,
+	statusText: string | undefined,
+): SelectPanel {
+	const searchNote = searchQuery ? `Active search: ${searchQuery}` : "Search can target actions, settings, and accounts.";
+	const footer = [statusText, searchNote].filter(Boolean).join(" | ");
+	return {
+		tag: action.section === "danger" ? "Danger Zone" : action.section === "advanced" ? "Advanced Check" : "Quick Action",
+		title: action.label,
+		body: action.description,
+		footer,
+	};
 }
 
 function authMenuFocusKey(action: AuthMenuAction): string {
@@ -441,15 +567,29 @@ export async function showAuthMenu(
 	options: AuthMenuOptions = {},
 ): Promise<AuthMenuAction> {
 	const flaggedCount = options.flaggedCount ?? 0;
-	const verifyLabel = formatCheckFlaggedLabel(flaggedCount);
 	const ui = getUiRuntimeOptions();
+	const actionDescriptors = createActionDescriptors(flaggedCount);
 	let showDetailedHelp = false;
 	let searchQuery = "";
 	let focusKey = "action:add";
 	while (true) {
 		const normalizedSearch = searchQuery.trim().toLowerCase();
+		const matchesSearch = (value: string): boolean =>
+			normalizedSearch.length === 0 || value.toLowerCase().includes(normalizedSearch);
+		const matchingQuickActions = actionDescriptors.filter((action) =>
+			action.section === "quick" && matchesSearch(`${action.label} ${action.searchText}`)
+		);
+		const matchingAdvancedActions = actionDescriptors.filter((action) =>
+			action.section === "advanced" && matchesSearch(`${action.label} ${action.searchText}`)
+		);
+		const matchingDangerActions = actionDescriptors.filter((action) =>
+			action.section === "danger" && matchesSearch(`${action.label} ${action.searchText}`)
+		);
 		const visibleAccounts = normalizedSearch.length > 0
-			? accounts.filter((account) => accountSearchText(account).includes(normalizedSearch))
+			? accounts.filter((account) =>
+				accountSearchText(account).includes(normalizedSearch) ||
+				`account saved profile ${statusText(account.status)}`.includes(normalizedSearch)
+			)
 			: accounts;
 		const visibleByNumber = new Map<number, AccountInfo>();
 		const duplicateQuickSwitchNumbers = new Set<number>();
@@ -462,28 +602,41 @@ export async function showAuthMenu(
 			visibleByNumber.set(quickSwitchNumber, account);
 		}
 
-		const items: MenuItem<AuthMenuAction>[] = [
-			{ label: UI_COPY.mainMenu.quickStart, value: { type: "cancel" }, kind: "heading" },
-			{ label: UI_COPY.mainMenu.addAccount, value: { type: "add" }, color: "green" },
-			{ label: UI_COPY.mainMenu.checkAccounts, value: { type: "check" }, color: "green" },
-			{ label: UI_COPY.mainMenu.bestAccount, value: { type: "forecast" }, color: "green" },
-			{ label: UI_COPY.mainMenu.fixIssues, value: { type: "fix" }, color: "green" },
-			{ label: UI_COPY.mainMenu.settings, value: { type: "settings" }, color: "green" },
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{ label: UI_COPY.mainMenu.moreChecks, value: { type: "cancel" }, kind: "heading" },
-			{ label: UI_COPY.mainMenu.refreshChecks, value: { type: "deep-check" }, color: "green" },
-			{ label: verifyLabel, value: { type: "verify-flagged" }, color: flaggedCount > 0 ? "red" : "yellow" },
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{ label: UI_COPY.mainMenu.accounts, value: { type: "cancel" }, kind: "heading" },
-		];
+		const items: MenuItem<AuthMenuAction>[] = [];
+		const pushActionSection = (
+			headingLabel: string,
+			sectionActions: AuthActionDescriptor[],
+		): void => {
+			if (sectionActions.length === 0) return;
+			items.push({ label: headingLabel, value: { type: "cancel" }, kind: "heading" });
+			for (const action of sectionActions) {
+				items.push({
+					label: action.label,
+					value: action.value,
+					color: action.color,
+				});
+			}
+			items.push({ label: "", value: { type: "cancel" }, separator: true });
+		};
 
-		if (visibleAccounts.length === 0) {
+		pushActionSection(UI_COPY.mainMenu.quickStart, matchingQuickActions);
+		pushActionSection(UI_COPY.mainMenu.moreChecks, matchingAdvancedActions);
+		if (visibleAccounts.length > 0 || normalizedSearch.length === 0) {
+			items.push({ label: UI_COPY.mainMenu.accounts, value: { type: "cancel" }, kind: "heading" });
+		}
+
+		const noDashboardMatches =
+			matchingQuickActions.length === 0 &&
+			matchingAdvancedActions.length === 0 &&
+			matchingDangerActions.length === 0 &&
+			visibleAccounts.length === 0;
+		if (noDashboardMatches) {
 			items.push({
 				label: UI_COPY.mainMenu.noSearchMatches,
 				value: { type: "cancel" },
 				disabled: true,
 			});
-		} else {
+		} else if (visibleAccounts.length > 0) {
 			items.push(
 				...visibleAccounts.map((account) => {
 					const currentBadge = account.isCurrentAccount && account.showCurrentBadge !== false
@@ -510,9 +663,17 @@ export async function showAuthMenu(
 			);
 		}
 
-		items.push({ label: "", value: { type: "cancel" }, separator: true });
-		items.push({ label: UI_COPY.mainMenu.dangerZone, value: { type: "cancel" }, kind: "heading" });
-		items.push({ label: UI_COPY.mainMenu.removeAllAccounts, value: { type: "delete-all" }, color: "red" });
+		if (matchingDangerActions.length > 0) {
+			items.push({ label: "", value: { type: "cancel" }, separator: true });
+			items.push({ label: UI_COPY.mainMenu.dangerZone, value: { type: "cancel" }, kind: "heading" });
+			items.push(
+				...matchingDangerActions.map((action) => ({
+					label: action.label,
+					value: action.value,
+					color: action.color,
+				})),
+			);
+		}
 
 		const compactHelp = UI_COPY.mainMenu.helpCompact;
 		const detailedHelp = UI_COPY.mainMenu.helpDetailed;
@@ -554,9 +715,36 @@ export async function showAuthMenu(
 			selectedEmphasis: "minimal",
 			focusStyle,
 			showHintsForUnselected: showHintsForUnselectedRows,
+			shellMode: ui.mode,
 			refreshIntervalMs: 200,
 			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
 			theme: ui.theme,
+			panel: ({ selectedItem }) => {
+				if (showDetailedHelp) {
+					const statusText = resolveStatusMessage();
+					return {
+						tag: "Help",
+						title: "Dashboard Shortcuts",
+						body: detailedHelp.replace(/\s+\|\s+/g, "\n"),
+						footer: [
+							statusText,
+							normalizedSearch ? `Search results for "${normalizedSearch}"` : undefined,
+						].filter(Boolean).join(" | "),
+					};
+				}
+
+				const selected = selectedItem?.value;
+				if (!selected) return undefined;
+				if (selected.type === "select-account") {
+					return formatAccountPanel(selected.account);
+				}
+
+				const descriptor = actionDescriptors.find((action) => action.value.type === selected.type);
+				if (!descriptor) {
+					return undefined;
+				}
+				return formatActionPanel(descriptor, normalizedSearch, resolveStatusMessage());
+			},
 			onInput: (input, context) => {
 				const lower = input.toLowerCase();
 				if (lower === "?") {
@@ -655,8 +843,29 @@ export async function showAccountDetails(account: AccountInfo): Promise<AccountA
 			clearScreen: true,
 			selectedEmphasis: "minimal",
 			focusStyle: account.focusStyle ?? "row-invert",
+			shellMode: ui.mode,
 			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
 			theme: ui.theme,
+			panel: ({ selectedItem }) => {
+				const nextAction = selectedItem?.value ?? "back";
+				const actionDescription = nextAction === "set-current"
+					? "Make this account the active Codex account immediately."
+					: nextAction === "refresh"
+						? "Start a focused re-login for this account without leaving the dashboard."
+						: nextAction === "toggle"
+							? account.enabled === false
+								? "Re-enable this account so it can rejoin rotation and checks."
+								: "Disable this account while keeping it stored in the pool."
+							: nextAction === "delete"
+								? "Delete this account from storage. This action is destructive."
+								: "Return to the main dashboard.";
+				return {
+					tag: "Account Actions",
+					title: account.email ?? account.accountLabel ?? account.accountId ?? `Account ${account.index + 1}`,
+					body: `${formatAccountPanel(account).body}\n\nSelected action: ${nextAction}\n${actionDescription}`,
+					footer: "Hotkeys stay active here: S current, R re-login, E toggle, D delete, Q back.",
+				};
+			},
 			onInput: (input) => {
 				const lower = input.toLowerCase();
 				if (lower === "q") return "cancel";

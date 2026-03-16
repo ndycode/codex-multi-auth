@@ -1,5 +1,6 @@
 import { ANSI, isTTY, parseKey } from "./ansi.js";
 import type { UiTheme } from "./theme.js";
+import type { UiMode } from "./runtime.js";
 
 export interface MenuItem<T = string> {
 	label: string;
@@ -18,6 +19,7 @@ export interface SelectOptions<T = string> {
 	subtitle?: string;
 	dynamicSubtitle?: () => string | undefined;
 	help?: string;
+	shellMode?: UiMode;
 	clearScreen?: boolean;
 	theme?: UiTheme;
 	selectedEmphasis?: "chip" | "minimal";
@@ -41,6 +43,20 @@ export interface SelectOptions<T = string> {
 			requestRerender: () => void;
 		},
 	) => T | null | undefined;
+	panel?: (
+		context: {
+			cursor: number;
+			items: MenuItem<T>[];
+			selectedItem: MenuItem<T> | undefined;
+		},
+	) => SelectPanel | undefined;
+}
+
+export interface SelectPanel {
+	tag?: string;
+	title?: string;
+	body?: string;
+	footer?: string;
 }
 
 const ESCAPE_TIMEOUT_MS = 50;
@@ -49,6 +65,172 @@ const ANSI_LEADING_REGEX = /^\x1b\[[0-9;]*m/;
 
 function stripAnsi(input: string): string {
 	return input.replace(ANSI_REGEX, "");
+}
+
+function padAnsi(input: string, width: number): string {
+	const truncated = truncateAnsi(input, width);
+	return `${truncated}${" ".repeat(Math.max(0, width - stripAnsi(truncated).length))}`;
+}
+
+function wrapText(input: string | undefined, width: number, maxLines = Number.POSITIVE_INFINITY): string[] {
+	if (!input) return [];
+	const safeWidth = Math.max(1, width);
+	const output: string[] = [];
+	for (const sourceLine of input.split("\n")) {
+		const words = sourceLine.trim().split(/\s+/).filter(Boolean);
+		if (words.length === 0) {
+			output.push("");
+			if (output.length >= maxLines) return output.slice(0, maxLines);
+			continue;
+		}
+		let current = "";
+		for (const word of words) {
+			const candidate = current.length > 0 ? `${current} ${word}` : word;
+			if (candidate.length <= safeWidth) {
+				current = candidate;
+				continue;
+			}
+			if (current.length > 0) {
+				output.push(current);
+				if (output.length >= maxLines) return output.slice(0, maxLines);
+			}
+			if (word.length <= safeWidth) {
+				current = word;
+				continue;
+			}
+			let remaining = word;
+			while (remaining.length > safeWidth) {
+				output.push(remaining.slice(0, safeWidth));
+				if (output.length >= maxLines) return output.slice(0, maxLines);
+				remaining = remaining.slice(safeWidth);
+			}
+			current = remaining;
+		}
+		if (current.length > 0) {
+			output.push(current);
+			if (output.length >= maxLines) return output.slice(0, maxLines);
+		}
+	}
+	return output.slice(0, maxLines);
+}
+
+function buildPreviewListLines<T>(
+	visibleItems: MenuItem<T>[],
+	windowStart: number,
+	cursor: number,
+	options: SelectOptions<T>,
+	theme: UiTheme | undefined,
+	codexColorCode: (color: MenuItem["color"]) => string,
+	selectedLabelStart: () => string,
+	width: number,
+): string[] {
+	const muted = theme?.colors.muted ?? ANSI.dim;
+	const reset = theme?.colors.reset ?? ANSI.reset;
+	const selectedGlyph = theme?.glyphs.selected ?? ">";
+	const unselectedGlyph = theme?.glyphs.unselected ?? "o";
+	const selectedGlyphColor = theme?.colors.success ?? ANSI.green;
+	const selectedChip = selectedLabelStart();
+	const focusStyle = options.focusStyle ?? "row-invert";
+	const lines: string[] = [];
+
+	for (let i = 0; i < visibleItems.length; i += 1) {
+		const itemIndex = windowStart + i;
+		const item = visibleItems[i];
+		if (!item) continue;
+
+		if (item.separator) {
+			lines.push(`${muted}${"-".repeat(Math.max(4, width - 2))}${reset}`);
+			continue;
+		}
+
+		if (item.kind === "heading") {
+			lines.push(`${muted}${truncateAnsi(item.label.toUpperCase(), width)}${reset}`);
+			continue;
+		}
+
+		const selected = itemIndex === cursor;
+		const selectedText = item.selectedLabel
+			? stripAnsi(item.selectedLabel)
+			: item.disabled
+				? item.hideUnavailableSuffix
+					? stripAnsi(item.label)
+					: `${stripAnsi(item.label)} (unavailable)`
+				: stripAnsi(item.label);
+
+		if (selected) {
+			if (focusStyle === "row-invert") {
+				const rowText = `${selectedGlyph} ${selectedText}`;
+				lines.push(
+					theme
+						? `${theme.colors.focusBg}${theme.colors.focusText}${ANSI.bold}${padAnsi(rowText, width)}${reset}`
+						: `${ANSI.inverse}${padAnsi(rowText, width)}${ANSI.reset}`,
+				);
+				continue;
+			}
+
+			const selectedLabel = `${selectedChip}${selectedText}${reset}`;
+			lines.push(
+				padAnsi(
+					`${selectedGlyphColor}${selectedGlyph}${reset} ${selectedLabel}`,
+					width,
+				),
+			);
+			continue;
+		}
+
+		const itemColor = codexColorCode(item.color);
+		const labelText = item.disabled
+			? item.hideUnavailableSuffix
+				? `${muted}${item.label}${reset}`
+				: `${muted}${item.label} (unavailable)${reset}`
+			: `${itemColor}${item.label}${reset}`;
+		lines.push(
+			padAnsi(
+				`${muted}${unselectedGlyph}${reset} ${truncateAnsi(labelText, Math.max(1, width - 2))}`,
+				width,
+			),
+		);
+	}
+
+	return lines;
+}
+
+function buildPreviewPanelLines(
+	panel: SelectPanel | undefined,
+	width: number,
+	height: number,
+	theme: UiTheme | undefined,
+): string[] {
+	const muted = theme?.colors.muted ?? ANSI.dim;
+	const heading = theme?.colors.heading ?? ANSI.reset;
+	const accent = theme?.colors.accent ?? ANSI.cyan;
+	const reset = theme?.colors.reset ?? ANSI.reset;
+	const lines: string[] = [];
+
+	if (panel?.tag) {
+		lines.push(`${accent}${ANSI.bold}${truncateAnsi(panel.tag, width)}${reset}`);
+	}
+	if (panel?.title) {
+		lines.push(`${heading}${ANSI.bold}${truncateAnsi(panel.title, width)}${reset}`);
+	}
+	if (panel?.body) {
+		if (lines.length > 0) lines.push("");
+		for (const line of wrapText(panel.body, width, Math.max(1, height - 4))) {
+			lines.push(line.length > 0 ? `${reset}${line}${reset}` : "");
+		}
+	}
+	if (panel?.footer) {
+		if (lines.length > 0) lines.push("");
+		for (const line of wrapText(panel.footer, width, 3)) {
+			lines.push(line.length > 0 ? `${muted}${line}${reset}` : "");
+		}
+	}
+
+	if (lines.length === 0) {
+		lines.push(`${muted}No details available.${reset}`);
+	}
+
+	return lines.slice(0, height);
 }
 
 /**
@@ -268,6 +450,11 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		const previousRenderedLines = renderedLines;
 		const subtitleText = options.dynamicSubtitle ? options.dynamicSubtitle() : options.subtitle;
 		const focusStyle = options.focusStyle ?? "row-invert";
+		const panel = options.panel?.({
+			cursor,
+			items,
+			selectedItem: items[cursor],
+		});
 		let didFullClear = false;
 
 		if (options.clearScreen && !hasRendered) {
@@ -304,6 +491,54 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		const unselectedGlyph = theme?.glyphs.unselected ?? "o";
 		const selectedGlyphColor = theme?.colors.success ?? ANSI.green;
 		const selectedChip = selectedLabelStart();
+
+		if (options.shellMode === "opentui-preview" && panel && columns >= 96) {
+			writeLine(`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`);
+			if (subtitleText) {
+				writeLine(` ${muted}${truncateAnsi(subtitleText, Math.max(1, columns - 2))}${reset}`);
+			}
+			const windowHint =
+				items.length > visibleItems.length ? ` ${windowStart + 1}-${windowEnd}/${items.length}` : "";
+			writeLine(
+				` ${muted}${truncateAnsi(
+					`${options.help ?? "↑↓ Move | Enter Select | Q Back"}${windowHint ? ` | ${windowHint}` : ""}`,
+					Math.max(1, columns - 2),
+				)}${reset}`,
+			);
+			writeLine(`${border}+${reset}`);
+
+			const leftWidth = Math.max(28, Math.min(44, Math.floor(columns * 0.42)));
+			const rightWidth = Math.max(24, columns - leftWidth - 5);
+			const contentRows = Math.max(8, rows - 6);
+			const leftLines = buildPreviewListLines(
+				visibleItems,
+				windowStart,
+				cursor,
+				options,
+				theme,
+				codexColorCode,
+				selectedLabelStart,
+				leftWidth,
+			);
+			const rightLines = buildPreviewPanelLines(panel, rightWidth, contentRows, theme);
+			for (let i = 0; i < contentRows; i += 1) {
+				const left = leftLines[i] ?? "";
+				const right = rightLines[i] ?? "";
+				writeLine(` ${padAnsi(left, leftWidth)} ${border}|${reset} ${padAnsi(right, rightWidth)}`);
+			}
+			writeLine(`${border}+${reset}`);
+
+			if (!didFullClear && previousRenderedLines > linesWritten) {
+				const extra = previousRenderedLines - linesWritten;
+				for (let i = 0; i < extra; i += 1) {
+					writeLine("");
+				}
+			}
+
+			renderedLines = linesWritten;
+			hasRendered = true;
+			return;
+		}
 
 		writeLine(`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`);
 		if (subtitleText) {

@@ -28,6 +28,7 @@ const LEGACY_CODEX_AUTH_CONFIG_PATH = join(
 	LEGACY_CODEX_DIR,
 	"openai-codex-auth-config.json",
 );
+const TUI_MODES = new Set(["classic", "opentui-preview"]);
 const TUI_COLOR_PROFILES = new Set(["truecolor", "ansi16", "ansi256"]);
 const TUI_GLYPH_MODES = new Set(["ascii", "unicode", "auto"]);
 const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
@@ -116,6 +117,7 @@ function resolvePluginConfigPath(): string | null {
  */
 export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	codexMode: true,
+	codexTuiMode: "classic",
 	codexTuiV2: true,
 	codexTuiColorProfile: "truecolor",
 	codexTuiGlyphMode: "ascii",
@@ -513,6 +515,17 @@ function resolveStringSetting<T extends string>(
 
 export function getCodexMode(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting("CODEX_MODE", pluginConfig.codexMode, true);
+}
+
+export function getCodexTuiMode(
+	pluginConfig: PluginConfig,
+): "classic" | "opentui-preview" {
+	return resolveStringSetting(
+		"CODEX_TUI_MODE",
+		pluginConfig.codexTuiMode,
+		"classic",
+		TUI_MODES,
+	);
 }
 
 export function getCodexTuiV2(pluginConfig: PluginConfig): boolean {

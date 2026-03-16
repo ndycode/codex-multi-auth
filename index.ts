@@ -39,6 +39,7 @@ import { startLocalOAuthServer } from "./lib/auth/server.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
 import {
 	getCodexMode,
+	getCodexTuiMode,
 	getFastSession,
 	getFastSessionStrategy,
 	getFastSessionMaxInputItems,
@@ -747,6 +748,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			pluginConfig: ReturnType<typeof loadPluginConfig>,
 		): UiRuntimeOptions => {
 			return setUiRuntimeOptions({
+				mode: getCodexTuiMode(pluginConfig),
 				v2Enabled: getCodexTuiV2(pluginConfig),
 				colorProfile: getCodexTuiColorProfile(pluginConfig),
 				glyphMode: getCodexTuiGlyphMode(pluginConfig),

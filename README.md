@@ -17,6 +17,7 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 - Multi-account OAuth pool with health-aware selection and automatic failover
 - Project-scoped account storage under `~/.codex/multi-auth/projects/<project-key>/...`
 - Interactive dashboard for account actions and settings
+- OpenTUI-inspired preview shell with list-plus-detail navigation and unified search
 - Experimental settings tab for staged sync, backup, and refresh-guard controls
 - Forecast, report, fix, and doctor commands for operational safety
 - Flagged account verification and restore flow
@@ -181,6 +182,7 @@ Selected runtime/environment overrides:
 | `CODEX_MULTI_AUTH_DIR` | Override settings/accounts root |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file path |
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
+| `CODEX_TUI_MODE=classic|opentui-preview` | Switch between the current dashboard and the OpenTUI preview shell |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |

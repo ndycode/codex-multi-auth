@@ -277,6 +277,7 @@ type SettingsHubMenuItem = {
 };
 
 const SETTINGS_HUB_MENU_ORDER = [
+	"interface-mode",
 	"account-list",
 	"summary-fields",
 	"behavior",
@@ -286,6 +287,7 @@ const SETTINGS_HUB_MENU_ORDER = [
 ] as const;
 
 const BASELINE_SETTINGS_HUB_PANELS = [
+	"interface-mode",
 	"account-list",
 	"summary-fields",
 	"behavior",

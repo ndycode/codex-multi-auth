@@ -90,6 +90,8 @@ Compatibility aliases are supported:
 
 Settings screen hotkeys are panel-specific:
 
+- Settings hub: `Enter Select | / Search | Q Back`
+- Interface Mode: `Enter Select | 1 Classic | 2 Preview | S Save | Q Back (No Save)`
 - Account List View: `Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)`
 - Summary Line: `Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)`
 - Menu Behavior: `Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)`

@@ -290,7 +290,8 @@ describe("Documentation Integrity", () => {
 		expect(UI_COPY.settings.subtitle).toBe(
 			"Customize menu, behavior, backend, and experiments",
 		);
-		expect(UI_COPY.settings.help).toBe("↑↓ Move | Enter Select | Q Back");
+		expect(UI_COPY.settings.help).toBe("↑↓ Move | Enter Select | / Search | Q Back");
+		expect(UI_COPY.settings.interfaceMode).toBe("Interface Mode");
 		expect(UI_COPY.settings.accountList).toBe("Account List View");
 		expect(UI_COPY.settings.summaryFields).toBe("Summary Line");
 		expect(UI_COPY.settings.behavior).toBe("Menu Behavior");
@@ -299,6 +300,9 @@ describe("Documentation Integrity", () => {
 		expect(UI_COPY.settings.backend).toBe("Backend Controls");
 		expect(UI_COPY.settings.accountListHelp).toBe(
 			"Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)",
+		);
+		expect(UI_COPY.settings.interfaceModeHelp).toBe(
+			"Enter Select | 1 Classic | 2 Preview | S Save | Q Back (No Save)",
 		);
 		expect(UI_COPY.settings.summaryHelp).toBe(
 			"Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)",
@@ -317,6 +321,7 @@ describe("Documentation Integrity", () => {
 	it("keeps settings reference sections aligned with current menu labels and backend categories", () => {
 		const settingsRef = read("docs/reference/settings.md");
 
+		expect(settingsRef).toContain(`## ${UI_COPY.settings.interfaceMode}`);
 		expect(settingsRef).toContain(`## ${UI_COPY.settings.accountList}`);
 		expect(settingsRef).toContain(`## ${UI_COPY.settings.summaryFields}`);
 		expect(settingsRef).toContain(`## ${UI_COPY.settings.behavior}`);
@@ -333,6 +338,7 @@ describe("Documentation Integrity", () => {
 		expect(settingsRef).toContain("- `menuShowQuotaSummary`");
 		expect(settingsRef).toContain("- `menuShowFetchStatus`");
 		expect(settingsRef).toContain("- `menuStatuslineFields`");
+		expect(settingsRef).toContain("- `CODEX_TUI_MODE`");
 	});
 
 	it("keeps changelog aligned with canonical 0.x release policy", () => {

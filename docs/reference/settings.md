@@ -37,6 +37,17 @@ Controls account-row display and sorting behavior:
 - `menuSortQuickSwitchVisibleRow`
 - `menuLayoutMode`
 
+## Interface Mode
+
+Controls which interactive shell the dashboard uses:
+
+- `codexTuiMode`
+
+Modes:
+
+- `classic` keeps the current dashboard flow
+- `opentui-preview` enables the split-shell preview with detail panels, unified search, and richer task screens
+
 ## Summary Line
 
 Controls detail-line fields and order:
@@ -149,6 +160,7 @@ Common operator overrides:
 - `CODEX_MULTI_AUTH_DIR`
 - `CODEX_MULTI_AUTH_CONFIG_PATH`
 - `CODEX_MODE`
+- `CODEX_TUI_MODE`
 - `CODEX_TUI_V2`
 - `CODEX_TUI_COLOR_PROFILE`
 - `CODEX_TUI_GLYPHS`

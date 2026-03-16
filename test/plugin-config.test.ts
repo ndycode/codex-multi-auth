@@ -3,6 +3,7 @@ import {
 	__resetConfigWarningCacheForTests,
 	loadPluginConfig,
 	getCodexMode,
+	getCodexTuiMode,
 	getCodexTuiV2,
 	getCodexTuiColorProfile,
 	getCodexTuiGlyphMode,
@@ -54,6 +55,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_HOME',
 		'CODEX_MULTI_AUTH_DIR',
 		'CODEX_MODE',
+		'CODEX_TUI_MODE',
 		'CODEX_TUI_V2',
 		'CODEX_TUI_COLOR_PROFILE',
 		'CODEX_TUI_GLYPHS',
@@ -97,6 +99,7 @@ describe('Plugin Configuration', () => {
 
 			expect(config).toEqual({
 				codexMode: true,
+				codexTuiMode: 'classic',
 				codexTuiV2: true,
 				codexTuiColorProfile: 'truecolor',
 				codexTuiGlyphMode: 'ascii',
@@ -155,6 +158,7 @@ describe('Plugin Configuration', () => {
 
 			expect(config).toEqual({
 				codexMode: false,
+				codexTuiMode: 'classic',
 				codexTuiV2: true,
 				codexTuiColorProfile: 'truecolor',
 				codexTuiGlyphMode: 'ascii',
@@ -410,6 +414,7 @@ describe('Plugin Configuration', () => {
 
 			expect(config).toEqual({
 				codexMode: true,
+				codexTuiMode: 'classic',
 				codexTuiV2: true,
 				codexTuiColorProfile: 'truecolor',
 				codexTuiGlyphMode: 'ascii',
@@ -474,6 +479,7 @@ describe('Plugin Configuration', () => {
 
 	expect(config).toEqual({
 		codexMode: true,
+		codexTuiMode: 'classic',
 		codexTuiV2: true,
 		codexTuiColorProfile: 'truecolor',
 		codexTuiGlyphMode: 'ascii',
@@ -532,6 +538,7 @@ describe('Plugin Configuration', () => {
 
 		expect(config).toEqual({
 			codexMode: true,
+			codexTuiMode: 'classic',
 			codexTuiV2: true,
 			codexTuiColorProfile: 'truecolor',
 			codexTuiGlyphMode: 'ascii',
@@ -673,6 +680,29 @@ describe('Plugin Configuration', () => {
 			expect(getCodexTuiV2({ codexTuiV2: true })).toBe(false);
 			process.env.CODEX_TUI_V2 = '1';
 			expect(getCodexTuiV2({ codexTuiV2: false })).toBe(true);
+		});
+	});
+
+	describe('getCodexTuiMode', () => {
+		it('should default to classic', () => {
+			delete process.env.CODEX_TUI_MODE;
+			expect(getCodexTuiMode({})).toBe('classic');
+		});
+
+		it('should use config value when env var not set', () => {
+			delete process.env.CODEX_TUI_MODE;
+			expect(getCodexTuiMode({ codexTuiMode: 'opentui-preview' })).toBe('opentui-preview');
+		});
+
+		it('should prioritize valid env value over config', () => {
+			process.env.CODEX_TUI_MODE = 'opentui-preview';
+			expect(getCodexTuiMode({ codexTuiMode: 'classic' })).toBe('opentui-preview');
+		});
+
+		it('should ignore invalid env value and fallback to config/default', () => {
+			process.env.CODEX_TUI_MODE = 'invalid';
+			expect(getCodexTuiMode({ codexTuiMode: 'opentui-preview' })).toBe('opentui-preview');
+			expect(getCodexTuiMode({})).toBe('classic');
 		});
 	});
 

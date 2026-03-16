@@ -27,7 +27,7 @@ import { loadAccounts, normalizeAccountStorage } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
-import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
+import { getUiRuntimeOptions, setUiRuntimeOptions, type UiMode } from "../ui/runtime.js";
 import { type MenuItem, select } from "../ui/select.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
@@ -263,13 +263,20 @@ type BackendSettingsHubAction =
 	| { type: "cancel" };
 
 type SettingsHubAction =
+	| { type: "interface-mode" }
 	| { type: "account-list" }
 	| { type: "summary-fields" }
 	| { type: "behavior" }
 	| { type: "theme" }
 	| { type: "experimental" }
 	| { type: "backend" }
+	| { type: "search" }
 	| { type: "back" };
+
+type InterfaceModeSettingsAction =
+	| { type: "set-mode"; mode: UiMode }
+	| { type: "save" }
+	| { type: "cancel" };
 
 type ExperimentalSettingsAction =
 	| { type: "sync" }
@@ -796,6 +803,106 @@ async function persistBackendConfigSelection(
 	} catch (error) {
 		warnPersistFailure(scope, error);
 		return fallback;
+	}
+}
+
+function formatUiModeLabel(mode: UiMode | undefined): string {
+	return mode === "opentui-preview" ? "OpenTUI Preview" : "Classic";
+}
+
+async function promptSettingsSearchQuery(current: string): Promise<string> {
+	if (!input.isTTY || !output.isTTY) {
+		return current;
+	}
+
+	const rl = createInterface({ input, output });
+	try {
+		const suffix = current ? ` (${current})` : "";
+		const answer = await rl.question(`Search settings${suffix} (blank clears): `);
+		return answer.trim().toLowerCase();
+	} finally {
+		rl.close();
+	}
+}
+
+async function persistInterfaceModeSelection(
+	mode: UiMode,
+	currentConfig: PluginConfig,
+): Promise<PluginConfig> {
+	const fallback = {
+		...currentConfig,
+		codexTuiMode: mode,
+	};
+	try {
+		await withQueuedRetry(resolvePluginConfigSavePathKey(), async () => {
+			await savePluginConfig({ codexTuiMode: mode });
+		});
+		return fallback;
+	} catch (error) {
+		warnPersistFailure("interface-mode", error);
+		return fallback;
+	}
+}
+
+async function promptInterfaceModeSettings(
+	currentConfig: PluginConfig,
+): Promise<UiMode | null> {
+	const ui = getUiRuntimeOptions();
+	let draftMode: UiMode = currentConfig.codexTuiMode === "opentui-preview"
+		? "opentui-preview"
+		: "classic";
+	while (true) {
+		const items: MenuItem<InterfaceModeSettingsAction>[] = [
+			{
+				label: "Classic Dashboard",
+				value: { type: "set-mode", mode: "classic" },
+				color: draftMode === "classic" ? "green" : "yellow",
+				hint: "Keep the current menu layout and interaction model.",
+			},
+			{
+				label: "OpenTUI Preview",
+				value: { type: "set-mode", mode: "opentui-preview" },
+				color: draftMode === "opentui-preview" ? "green" : "yellow",
+				hint: "Enable the split-shell preview with a detail panel, unified search, and richer task views.",
+			},
+			{ label: "", value: { type: "cancel" }, separator: true },
+			{ label: UI_COPY.settings.saveAndBack, value: { type: "save" }, color: "green" },
+			{ label: UI_COPY.settings.backNoSave, value: { type: "cancel" }, color: "red" },
+		];
+
+		const selected = await select<InterfaceModeSettingsAction>(items, {
+			message: UI_COPY.settings.interfaceModeTitle,
+			subtitle: `${UI_COPY.settings.interfaceModeSubtitle} | Current: ${formatUiModeLabel(draftMode)}`,
+			help: UI_COPY.settings.interfaceModeHelp,
+			clearScreen: true,
+			shellMode: ui.mode,
+			theme: ui.theme,
+			selectedEmphasis: "minimal",
+			panel: ({ selectedItem }) => {
+				const action = selectedItem?.value;
+				const mode = action?.type === "set-mode" ? action.mode : draftMode;
+				return {
+					tag: "Preview Gate",
+					title: formatUiModeLabel(mode),
+					body: mode === "opentui-preview"
+						? "This preview turns on the redesigned split-shell navigation for the dashboard, account details, OAuth chooser, and searchable settings hub."
+						: "This keeps the existing interactive dashboard flow while leaving the new preview disabled.",
+					footer: "Save writes `codexTuiMode` to config. Q cancels without saving.",
+				};
+			},
+			onInput: (raw) => {
+				const lower = raw.toLowerCase();
+				if (lower === "q") return { type: "cancel" };
+				if (lower === "s") return { type: "save" };
+				if (lower === "1") return { type: "set-mode", mode: "classic" };
+				if (lower === "2") return { type: "set-mode", mode: "opentui-preview" };
+				return undefined;
+			},
+		});
+
+		if (!selected || selected.type === "cancel") return null;
+		if (selected.type === "save") return draftMode;
+		draftMode = selected.mode;
 	}
 }
 
@@ -2870,71 +2977,171 @@ async function promptSettingsHub(
 ): Promise<SettingsHubAction | null> {
 	if (!input.isTTY || !output.isTTY) return null;
 	const ui = getUiRuntimeOptions();
-	const items: MenuItem<SettingsHubAction>[] = [
+	let searchQuery = "";
+	type SettingsHubDescriptor = {
+		section: "basic" | "advanced" | "exit";
+		label: string;
+		value: Exclude<SettingsHubAction, { type: "search" }>;
+		color: MenuItem<SettingsHubAction>["color"];
+		description: string;
+		searchText: string;
+	};
+	const descriptors: SettingsHubDescriptor[] = [
 		{
-			label: UI_COPY.settings.sectionTitle,
-			value: { type: "back" },
-			kind: "heading",
+			section: "basic",
+			label: UI_COPY.settings.interfaceMode,
+			value: { type: "interface-mode" },
+			color: "green",
+			description: "Toggle between the current dashboard and the OpenTUI-inspired preview shell.",
+			searchText: "interface mode preview classic opentui shell",
 		},
 		{
+			section: "basic",
 			label: UI_COPY.settings.accountList,
 			value: { type: "account-list" },
 			color: "green",
+			description: "Tune account-row density, sorting, badges, fetch status, and row detail layout.",
+			searchText: "account list rows sorting badges layout",
 		},
 		{
+			section: "basic",
 			label: UI_COPY.settings.summaryFields,
 			value: { type: "summary-fields" },
 			color: "green",
+			description: "Choose which detail fields appear in the focused account summary line and in what order.",
+			searchText: "summary line fields statusline details order",
 		},
 		{
+			section: "basic",
 			label: UI_COPY.settings.behavior,
 			value: { type: "behavior" },
 			color: "green",
-		},
-		{ label: UI_COPY.settings.theme, value: { type: "theme" }, color: "green" },
-		{ label: "", value: { type: "back" }, separator: true },
-		{
-			label: UI_COPY.settings.advancedTitle,
-			value: { type: "back" },
-			kind: "heading",
+			description: "Control auto-return timing, pause behavior, and limit-fetch status behavior.",
+			searchText: "behavior auto return pause fetch status ttl",
 		},
 		{
+			section: "basic",
+			label: UI_COPY.settings.theme,
+			value: { type: "theme" },
+			color: "green",
+			description: "Adjust the dashboard palette and accent colors used by the terminal UI.",
+			searchText: "theme color accent palette",
+		},
+		{
+			section: "advanced",
 			label: UI_COPY.settings.experimental,
 			value: { type: "experimental" },
 			color: "yellow",
+			description: "Preview sync and backup flows before they become stable defaults.",
+			searchText: "experimental sync backup preview",
 		},
 		{
+			section: "advanced",
 			label: UI_COPY.settings.backend,
 			value: { type: "backend" },
 			color: "green",
+			description: "Tune backend retry, quota, session sync, refresh, and performance controls.",
+			searchText: "backend retry quota sync refresh performance",
 		},
-		{ label: "", value: { type: "back" }, separator: true },
 		{
-			label: UI_COPY.settings.exitTitle,
+			section: "exit",
+			label: UI_COPY.settings.back,
 			value: { type: "back" },
-			kind: "heading",
+			color: "red",
+			description: "Return to the dashboard without opening another settings panel.",
+			searchText: "back exit close",
 		},
-		{ label: UI_COPY.settings.back, value: { type: "back" }, color: "red" },
 	];
-	const initialCursor = items.findIndex((item) => {
-		if (item.separator || item.disabled || item.kind === "heading")
-			return false;
-		return item.value.type === initialFocus;
-	});
-	return select<SettingsHubAction>(items, {
-		message: UI_COPY.settings.title,
-		subtitle: UI_COPY.settings.subtitle,
-		help: UI_COPY.settings.help,
-		clearScreen: true,
-		theme: ui.theme,
-		selectedEmphasis: "minimal",
-		initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-		onInput: (raw) => {
-			const lower = raw.toLowerCase();
-			if (lower === "q") return { type: "back" };
-			return undefined;
-		},
-	});
+
+	while (true) {
+		const normalizedSearch = searchQuery.trim().toLowerCase();
+		const matchesSearch = (descriptor: SettingsHubDescriptor): boolean =>
+			normalizedSearch.length === 0 ||
+			`${descriptor.label} ${descriptor.searchText}`.toLowerCase().includes(normalizedSearch);
+		const matchingBasic = descriptors.filter((descriptor) => descriptor.section === "basic" && matchesSearch(descriptor));
+		const matchingAdvanced = descriptors.filter((descriptor) => descriptor.section === "advanced" && matchesSearch(descriptor));
+		const matchingExit = descriptors.filter((descriptor) => descriptor.section === "exit" && matchesSearch(descriptor));
+		const items: MenuItem<SettingsHubAction>[] = [];
+		const pushSection = (
+			heading: string,
+			sectionItems: SettingsHubDescriptor[],
+		): void => {
+			if (sectionItems.length === 0) return;
+			items.push({ label: heading, value: { type: "back" }, kind: "heading" });
+			for (const descriptor of sectionItems) {
+				items.push({
+					label: descriptor.label,
+					value: descriptor.value,
+					color: descriptor.color,
+				});
+			}
+			items.push({ label: "", value: { type: "back" }, separator: true });
+		};
+
+		pushSection(UI_COPY.settings.sectionTitle, matchingBasic);
+		pushSection(UI_COPY.settings.advancedTitle, matchingAdvanced);
+		pushSection(UI_COPY.settings.exitTitle, matchingExit);
+		if (items.length === 0) {
+			items.push({
+				label: "No settings match your search",
+				value: { type: "back" },
+				disabled: true,
+			});
+		}
+
+		const initialCursor = items.findIndex((item) => {
+			if (item.separator || item.disabled || item.kind === "heading") {
+				return false;
+			}
+			return item.value.type === initialFocus;
+		});
+
+		const result = await select<SettingsHubAction>(items, {
+			message: UI_COPY.settings.title,
+			subtitle: normalizedSearch
+				? `${UI_COPY.settings.subtitle} | Search: ${normalizedSearch}`
+				: UI_COPY.settings.subtitle,
+			help: UI_COPY.settings.help,
+			clearScreen: true,
+			shellMode: ui.mode,
+			theme: ui.theme,
+			selectedEmphasis: "minimal",
+			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
+			panel: ({ selectedItem }) => {
+				const selected = descriptors.find((descriptor) => descriptor.value.type === selectedItem?.value.type);
+				if (!selected) {
+					return {
+						tag: "Settings Search",
+						title: normalizedSearch ? `Results for "${normalizedSearch}"` : "Searchable Settings Hub",
+						body: "Use / to filter settings panels, Enter to open one, and Q to return.",
+						footer: `Current UI mode: ${formatUiModeLabel(ui.mode)}`,
+					};
+				}
+				return {
+					tag: selected.section === "advanced" ? "Advanced" : selected.section === "exit" ? "Navigation" : "Basic",
+					title: selected.label,
+					body: selected.description,
+					footer: [
+						normalizedSearch ? `Search: ${normalizedSearch}` : undefined,
+						selected.value.type === "interface-mode" ? `Current: ${formatUiModeLabel(ui.mode)}` : undefined,
+					].filter(Boolean).join(" | "),
+				};
+			},
+			onInput: (raw) => {
+				const lower = raw.toLowerCase();
+				if (lower === "q") return { type: "back" };
+				if (lower === "/") return { type: "search" };
+				return undefined;
+			},
+		});
+
+		if (!result) return null;
+		if (result.type === "search") {
+			searchQuery = await promptSettingsSearchQuery(searchQuery);
+			continue;
+		}
+		return result;
+	}
 }
 
 /* c8 ignore stop */
@@ -2954,6 +3161,14 @@ async function configureUnifiedSettings(
 			return current;
 		}
 		hubFocus = action.type;
+		if (action.type === "interface-mode") {
+			const selectedMode = await promptInterfaceModeSettings(backendConfig);
+			if (selectedMode && backendConfig.codexTuiMode !== selectedMode) {
+				backendConfig = await persistInterfaceModeSelection(selectedMode, backendConfig);
+				setUiRuntimeOptions({ mode: selectedMode });
+			}
+			continue;
+		}
 		if (action.type === "account-list") {
 			current = await configureDashboardDisplaySettings(current);
 			continue;

@@ -109,6 +109,7 @@ vi.mock("../lib/config.js", () => ({
 	getPreemptiveQuotaRemainingPercent7d: () => 5,
 	getPreemptiveQuotaMaxDeferralMs: () => 2 * 60 * 60_000,
 	getCodexTuiV2: () => false,
+	getCodexTuiMode: () => "classic",
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
 	loadPluginConfig: () => ({}),
