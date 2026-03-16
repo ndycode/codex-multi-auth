@@ -190,7 +190,9 @@ function publishCodexCliSyncRun(
 function hydrateLastCodexCliSyncRunFromHistory(
 	run: CodexCliSyncRun,
 ): CodexCliSyncRun {
-	lastCodexCliSyncRun = cloneCodexCliSyncRun(run);
+	if (!lastCodexCliSyncRun) {
+		lastCodexCliSyncRun = cloneCodexCliSyncRun(run);
+	}
 	return cloneCodexCliSyncRun(run);
 }
 

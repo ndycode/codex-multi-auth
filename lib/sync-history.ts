@@ -87,11 +87,12 @@ async function ensureHistoryDir(directory: string): Promise<void> {
 	await fs.mkdir(directory, { recursive: true, mode: 0o700 });
 }
 
-async function retryHistoryWrite(operation: () => Promise<void>): Promise<void> {
+async function retryHistoryWrite<T>(
+	operation: () => Promise<T>,
+): Promise<T> {
 	for (let attempt = 0; attempt < 5; attempt += 1) {
 		try {
-			await operation();
-			return;
+			return await operation();
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (!code || !RETRYABLE_WRITE_CODES.has(code) || attempt === 4) {
@@ -102,6 +103,7 @@ async function retryHistoryWrite(operation: () => Promise<void>): Promise<void> 
 			);
 		}
 	}
+	throw new Error("retryHistoryWrite exhausted without returning");
 }
 
 function isSyncHistoryEntry(value: unknown): value is SyncHistoryEntry {
@@ -186,9 +188,11 @@ async function readHistoryTail(
 }
 
 async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<void> {
-	const entries = await readHistoryTail(paths.historyPath, {
-		limit: MAX_HISTORY_ENTRIES + 1,
-	}).catch((error) => {
+	const entries = await retryHistoryWrite(() =>
+		readHistoryTail(paths.historyPath, {
+			limit: MAX_HISTORY_ENTRIES + 1,
+		}),
+	).catch((error) => {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
 			return [];

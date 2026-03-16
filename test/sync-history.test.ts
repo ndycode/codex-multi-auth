@@ -209,4 +209,78 @@ describe("sync history", () => {
 			recordedAt: 205,
 		});
 	});
+
+	it("retries transient EBUSY while opening history during trim", async () => {
+		for (let index = 1; index <= 200; index += 1) {
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: index,
+				run: {
+					outcome: "changed",
+					runAt: index,
+					sourcePath: `source-${index}.json`,
+					targetPath: "target.json",
+					summary: {
+						sourceAccountCount: index,
+						targetAccountCountBefore: index - 1,
+						targetAccountCountAfter: index,
+						addedAccountCount: 1,
+						updatedAccountCount: 0,
+						unchangedAccountCount: 0,
+						destinationOnlyPreservedCount: 0,
+						selectionChanged: false,
+					},
+				},
+			});
+		}
+
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const originalOpen = nodeFs.open.bind(nodeFs);
+		let failedOpenAttempts = 0;
+		vi.spyOn(nodeFs, "open").mockImplementation(
+			async (...args: Parameters<typeof nodeFs.open>) => {
+				const [path] = args;
+				if (String(path) === historyPath && failedOpenAttempts < 2) {
+					failedOpenAttempts += 1;
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalOpen(...args);
+			},
+		);
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 201,
+			run: {
+				outcome: "changed",
+				runAt: 201,
+				sourcePath: "source-201.json",
+				targetPath: "target.json",
+				summary: {
+					sourceAccountCount: 201,
+					targetAccountCountBefore: 200,
+					targetAccountCountAfter: 201,
+					addedAccountCount: 1,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		});
+
+		const history = await readSyncHistory({ kind: "codex-cli-sync" });
+		expect(failedOpenAttempts).toBe(2);
+		expect(history).toHaveLength(200);
+		expect(history[0]).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 2,
+		});
+		expect(history.at(-1)).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 201,
+		});
+	});
 });

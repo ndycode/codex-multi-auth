@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { promises as nodeFs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +21,9 @@ import {
 } from "../lib/codex-cli/sync.js";
 import {
 	__resetSyncHistoryForTests,
+	appendSyncHistoryEntry,
 	configureSyncHistoryForTests,
+	getSyncHistoryPaths,
 	readSyncHistory,
 } from "../lib/sync-history.js";
 import * as writerModule from "../lib/codex-cli/writer.js";
@@ -1340,6 +1343,177 @@ describe("codex-cli sync", () => {
 		const persisted = await loadLastCodexCliSyncRun();
 		expect(persisted?.outcome).toBe("changed");
 		expect(persisted?.summary.addedAccountCount).toBe(1);
+	});
+
+	it("deduplicates concurrent history loads", async () => {
+		const staleEntry = {
+			kind: "codex-cli-sync" as const,
+			recordedAt: 10,
+			run: {
+				outcome: "noop" as const,
+				runAt: 10,
+				sourcePath: "stale-source.json",
+				targetPath: targetStoragePath,
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 1,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 1,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		};
+		await appendSyncHistoryEntry(staleEntry);
+		__resetLastCodexCliSyncRunForTests();
+
+		const historyPaths = getSyncHistoryPaths();
+		const originalReadFile = nodeFs.readFile.bind(nodeFs);
+		let latestReadCount = 0;
+		let releaseLatestRead: (() => void) | null = null;
+		const latestReadBlocked = new Promise<void>((resolve) => {
+			releaseLatestRead = resolve;
+		});
+		let markLatestReadObserved: (() => void) | null = null;
+		const latestReadObserved = new Promise<void>((resolve) => {
+			markLatestReadObserved = resolve;
+		});
+
+		vi.spyOn(nodeFs, "readFile").mockImplementation(
+			async (...args: Parameters<typeof nodeFs.readFile>) => {
+				const [path, options] = args;
+				if (String(path) === historyPaths.latestPath) {
+					latestReadCount += 1;
+					markLatestReadObserved?.();
+					await latestReadBlocked;
+					return `${JSON.stringify(staleEntry, null, 2)}\n` as Awaited<
+						ReturnType<typeof nodeFs.readFile>
+					>;
+				}
+				return originalReadFile(path, options);
+			},
+		);
+
+		const firstLoad = loadLastCodexCliSyncRun();
+		const secondLoad = loadLastCodexCliSyncRun();
+		await latestReadObserved;
+		releaseLatestRead?.();
+
+		const [firstResult, secondResult] = await Promise.all([
+			firstLoad,
+			secondLoad,
+		]);
+
+		expect(latestReadCount).toBe(1);
+		expect(firstResult?.sourcePath).toBe("stale-source.json");
+		expect(secondResult?.sourcePath).toBe("stale-source.json");
+	});
+
+	it("does not let stale history hydration overwrite a newer in-memory sync run", async () => {
+		const staleEntry = {
+			kind: "codex-cli-sync" as const,
+			recordedAt: 10,
+			run: {
+				outcome: "noop" as const,
+				runAt: 10,
+				sourcePath: "stale-source.json",
+				targetPath: targetStoragePath,
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 1,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 1,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		};
+		await appendSyncHistoryEntry(staleEntry);
+		__resetLastCodexCliSyncRunForTests();
+
+		const historyPaths = getSyncHistoryPaths();
+		const originalReadFile = nodeFs.readFile.bind(nodeFs);
+		let releaseLatestRead: (() => void) | null = null;
+		const latestReadBlocked = new Promise<void>((resolve) => {
+			releaseLatestRead = resolve;
+		});
+		let markLatestReadObserved: (() => void) | null = null;
+		const latestReadObserved = new Promise<void>((resolve) => {
+			markLatestReadObserved = resolve;
+		});
+
+		vi.spyOn(nodeFs, "readFile").mockImplementation(
+			async (...args: Parameters<typeof nodeFs.readFile>) => {
+				const [path, options] = args;
+				if (String(path) === historyPaths.latestPath) {
+					markLatestReadObserved?.();
+					await latestReadBlocked;
+					return `${JSON.stringify(staleEntry, null, 2)}\n` as Awaited<
+						ReturnType<typeof nodeFs.readFile>
+					>;
+				}
+				return originalReadFile(path, options);
+			},
+		);
+
+		const pendingLoad = loadLastCodexCliSyncRun();
+		await latestReadObserved;
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current);
+		expect(result.pendingRun).not.toBeNull();
+		commitPendingCodexCliSyncRun(result.pendingRun);
+		expect(getLastCodexCliSyncRun()?.sourcePath).toBe(accountsPath);
+		expect(getLastCodexCliSyncRun()?.outcome).toBe("changed");
+
+		releaseLatestRead?.();
+		const loaded = await pendingLoad;
+
+		expect(loaded?.sourcePath).toBe("stale-source.json");
+		expect(getLastCodexCliSyncRun()?.sourcePath).toBe(accountsPath);
+		expect(getLastCodexCliSyncRun()?.outcome).toBe("changed");
 	});
 
 	it("re-reads Codex CLI state on apply when forceRefresh is requested", async () => {
