@@ -1414,11 +1414,13 @@ describe("codex-cli sync", () => {
 		expect(result.pendingRun).not.toBeNull();
 		expect(result.storage?.accounts).toHaveLength(2);
 		expect(getLastCodexCliSyncRun()).toBeNull();
+		const pendingRunAt = result.pendingRun?.run.runAt;
 
 		commitPendingCodexCliSyncRun(result.pendingRun);
 
 		const lastRun = getLastCodexCliSyncRun();
 		expect(lastRun?.outcome).toBe("changed");
+		expect(lastRun?.runAt).toBe(pendingRunAt);
 		expect(lastRun?.sourcePath).toBe(accountsPath);
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
 		expect(lastRun?.summary.destinationOnlyPreservedCount).toBe(1);
@@ -1810,11 +1812,13 @@ describe("codex-cli sync", () => {
 
 		const result = await applyCodexCliSyncToStorage(current);
 		expect(result.pendingRun).not.toBeNull();
+		const pendingRunAt = result.pendingRun?.run.runAt;
 
 		commitCodexCliSyncRunFailure(result.pendingRun, new Error("save busy"));
 
 		const lastRun = getLastCodexCliSyncRun();
 		expect(lastRun?.outcome).toBe("error");
+		expect(lastRun?.runAt).toBe(pendingRunAt);
 		expect(lastRun?.message).toBe("save busy");
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
 	});

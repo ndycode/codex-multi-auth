@@ -78,12 +78,6 @@ Before applying sync, it shows:
 - destination-only preservation behavior
 - backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`)
 
-Validation:
-
-- `npm run typecheck`
-- `npm run build`
-- `npm test`
-
 ---
 
 ## Experimental
