@@ -1292,6 +1292,61 @@ describe("storage", () => {
 			expect(restoreResult.total).toBe(1);
 		});
 
+		it("restores named backups whose names end with .bak without colliding with sibling backups", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.writeFile(
+				join(backupRoot, "demo.json"),
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "demo-json",
+							refreshToken: "ref-demo-json",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				join(backupRoot, "demo.bak.json"),
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "demo-bak-json",
+							refreshToken: "ref-demo-bak-json",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await clearAccounts();
+			await expect(restoreNamedBackup("demo.bak")).resolves.toMatchObject({
+				total: 1,
+			});
+			expect((await loadAccounts())?.accounts[0]?.accountId).toBe("demo-bak-json");
+
+			await clearAccounts();
+			await expect(restoreNamedBackup("demo")).resolves.toMatchObject({
+				total: 1,
+			});
+			expect((await loadAccounts())?.accounts[0]?.accountId).toBe("demo-json");
+
+			await clearAccounts();
+			await expect(restoreNamedBackup("demo.bak.json")).resolves.toMatchObject({
+				total: 1,
+			});
+			expect((await loadAccounts())?.accounts[0]?.accountId).toBe("demo-bak-json");
+		});
+
 		it("throws when a named backup is deleted after assessment", async () => {
 			await saveAccounts({
 				version: 3,
@@ -4239,6 +4294,66 @@ describe("storage", () => {
 			} finally {
 				readFileSpy.mockRestore();
 			}
+		});
+
+		it("ignores stray files that only resemble rotating backups", async () => {
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-latest",
+							refreshToken: "ref-rotating-latest",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.bak.1`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-history",
+							refreshToken: "ref-rotating-history",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.notes.bak.1`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "stray-lookalike",
+							refreshToken: "ref-stray-lookalike",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const rotatingBackups = await listRotatingBackups();
+
+			expect(rotatingBackups).toHaveLength(2);
+			expect(rotatingBackups.map((backup) => backup.slot)).toEqual([0, 1]);
+			expect(rotatingBackups.map((backup) => backup.path)).toEqual([
+				`${testStoragePath}.bak`,
+				`${testStoragePath}.bak.1`,
+			]);
 		});
 	});
 

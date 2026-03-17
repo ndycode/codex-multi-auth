@@ -195,7 +195,7 @@ export function getRedactedFilesystemErrorLabel(error: unknown): string {
 }
 
 function normalizeBackupLookupName(rawName: string): string {
-	const trimmed = rawName.trim().replace(/\.(json|bak)$/i, "");
+	const trimmed = rawName.trim().replace(/\.json$/i, "");
 	if (!trimmed) {
 		throw new StorageError(
 			`Invalid backup name: ${rawName}`,
@@ -220,6 +220,10 @@ function normalizeBackupLookupName(rawName: string): string {
 		);
 	}
 	return trimmed;
+}
+
+function normalizeFilesystemPathForComparison(path: string): string {
+	return process.platform === "win32" ? path.toLowerCase() : path;
 }
 
 function buildFailedBackupRestoreAssessment(
@@ -2069,6 +2073,20 @@ export async function restoreNamedBackup(
 	return importAccounts(backupPath);
 }
 
+export async function restoreRotatingBackup(
+	slot: number,
+): Promise<{ imported: number; total: number; skipped: number }> {
+	if (!Number.isInteger(slot) || slot < 0) {
+		throw new StorageError(
+			`Invalid rotating backup slot: ${slot}`,
+			"EINVALID",
+			getAccountsBackupPath(getStoragePath()),
+			"Rotating backup restore operations only accept non-negative numeric slots.",
+		);
+	}
+	return importAccounts(getAccountsBackupPathAtIndex(getStoragePath(), slot));
+}
+
 function parseAndNormalizeStorage(data: unknown): {
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
@@ -2467,17 +2485,26 @@ function parseRotatingBackupSlot(
 	storagePath: string,
 	candidatePath: string,
 ): number | null {
-	const latestBackupPath = getAccountsBackupPath(storagePath);
-	if (candidatePath === latestBackupPath) {
+	const latestBackupPath = normalizeFilesystemPathForComparison(
+		getAccountsBackupPath(storagePath),
+	);
+	const normalizedCandidatePath =
+		normalizeFilesystemPathForComparison(candidatePath);
+	if (normalizedCandidatePath === latestBackupPath) {
 		return 0;
 	}
 
-	const slotMatch = candidatePath.match(/\.bak\.(\d+)$/i);
-	if (!slotMatch) {
+	const slotPrefix = `${latestBackupPath}.`;
+	if (!normalizedCandidatePath.startsWith(slotPrefix)) {
 		return null;
 	}
 
-	const parsed = Number.parseInt(slotMatch[1] ?? "", 10);
+	const slotText = normalizedCandidatePath.slice(slotPrefix.length);
+	if (!/^\d+$/.test(slotText)) {
+		return null;
+	}
+
+	const parsed = Number.parseInt(slotText, 10);
 	if (!Number.isFinite(parsed) || parsed < 1) {
 		return null;
 	}

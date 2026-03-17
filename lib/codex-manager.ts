@@ -70,6 +70,7 @@ import {
 	listRotatingBackups,
 	NAMED_BACKUP_LIST_CONCURRENCY,
 	restoreNamedBackup,
+	restoreRotatingBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -4414,6 +4415,18 @@ function hasNamedBackupAssessment(
 	return entry.kind === "named" && entry.assessment !== null;
 }
 
+function canRestoreBackupBrowserEntry(entry: BackupBrowserEntry): boolean {
+	if (entry.kind === "rotating") {
+		return entry.backup.valid;
+	}
+
+	return (
+		entry.assessment !== null &&
+		entry.assessment.eligibleForRestore &&
+		!entry.assessment.wouldExceedLimit
+	);
+}
+
 function normalizeBackupAssessmentError(error: unknown): string {
 	const detail = collapseWhitespace(
 		error instanceof Error ? error.message : String(error),
@@ -4483,6 +4496,7 @@ async function showBackupBrowserDetails(
 	displaySettings: DashboardDisplaySettings,
 ): Promise<"back" | "restore"> {
 	const backup = entry.backup;
+	const restorable = canRestoreBackupBrowserEntry(entry);
 	const typeLabel =
 		entry.kind === "named"
 			? "Named backup"
@@ -4541,12 +4555,7 @@ async function showBackupBrowserDetails(
 		console.log(line);
 	}
 	console.log("");
-	if (
-		entry.kind !== "named" ||
-		entry.assessment === null ||
-		!entry.assessment.eligibleForRestore ||
-		entry.assessment.wouldExceedLimit
-	) {
+	if (!restorable) {
 		await waitForMenuReturn();
 		return "back";
 	}
@@ -4785,6 +4794,33 @@ async function runBackupBrowserManager(
 				const errorLabel = getRedactedFilesystemErrorLabel(restoreError);
 				console.warn(
 					`Failed to restore backup "${backupName}" (${errorLabel}).`,
+				);
+				return "failed";
+			}
+		}
+		if (action === "restore" && entry?.kind === "rotating") {
+			const backupLabel = entry.label;
+			const confirmed = await confirm(`Restore backup "${backupLabel}"?`);
+			if (!confirmed) {
+				continue;
+			}
+			try {
+				await runActionPanel(
+					"Restore Backup",
+					`Restoring ${backupLabel}`,
+					async () => {
+						const result = await restoreRotatingBackup(entry.backup.slot);
+						console.log(
+							`Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`,
+						);
+					},
+					displaySettings,
+				);
+				return "restored";
+			} catch (restoreError) {
+				const errorLabel = getRedactedFilesystemErrorLabel(restoreError);
+				console.warn(
+					`Failed to restore backup "${backupLabel}" (${errorLabel}).`,
 				);
 				return "failed";
 			}

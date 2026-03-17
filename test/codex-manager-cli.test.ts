@@ -15,6 +15,7 @@ const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
+const restoreRotatingBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
@@ -139,6 +140,7 @@ vi.mock("../lib/storage.js", async () => {
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
 		restoreNamedBackup: restoreNamedBackupMock,
+		restoreRotatingBackup: restoreRotatingBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,
 	};
@@ -394,6 +396,30 @@ function queueNamedBackupBrowserSelection<T extends { backup: { name: string } }
 	detailAction: "restore" | "back" = "restore",
 ): ReturnType<typeof buildNamedBackupBrowserEntry<T>> {
 	const entry = buildNamedBackupBrowserEntry(assessment);
+	selectMock.mockResolvedValueOnce({ type: "inspect", entry });
+	selectMock.mockResolvedValueOnce(detailAction);
+	return entry;
+}
+
+function buildRotatingBackupBrowserEntry<T extends { slot: number; label: string }>(
+	backup: T,
+): {
+	kind: "rotating";
+	label: string;
+	backup: T;
+} {
+	return {
+		kind: "rotating",
+		label: backup.label,
+		backup,
+	};
+}
+
+function queueRotatingBackupBrowserSelection<T extends { slot: number; label: string }>(
+	backup: T,
+	detailAction: "restore" | "back" = "restore",
+): ReturnType<typeof buildRotatingBackupBrowserEntry<T>> {
+	const entry = buildRotatingBackupBrowserEntry(backup);
 	selectMock.mockResolvedValueOnce({ type: "inspect", entry });
 	selectMock.mockResolvedValueOnce(detailAction);
 	return entry;
@@ -671,6 +697,7 @@ describe("codex manager cli commands", () => {
 		assessNamedBackupRestoreMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
 		restoreNamedBackupMock.mockReset();
+		restoreRotatingBackupMock.mockReset();
 		confirmMock.mockReset();
 		getActionableNamedBackupRestoresMock.mockReset();
 		getActionableNamedBackupRestoresMock.mockResolvedValue({
@@ -703,6 +730,11 @@ describe("codex manager cli commands", () => {
 		});
 		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
 		restoreNamedBackupMock.mockResolvedValue({
+			imported: 1,
+			skipped: 0,
+			total: 1,
+		});
+		restoreRotatingBackupMock.mockResolvedValue({
 			imported: 1,
 			skipped: 0,
 			total: 1,
@@ -1022,6 +1054,35 @@ describe("codex manager cli commands", () => {
 		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(confirmMock).toHaveBeenCalledOnce();
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+	});
+
+	it("restores a rotating backup from direct auth restore-backup command", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const rotatingBackup = {
+			label: "Rotating backup 1 (.bak.1)",
+			slot: 1,
+			path: "/mock/openai-codex-accounts.json.bak.1",
+			createdAt: null,
+			updatedAt: Date.now(),
+			sizeBytes: 256,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: [],
+			valid: true,
+			loadError: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([rotatingBackup]);
+		queueRotatingBackupBrowserSelection(rotatingBackup);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(restoreRotatingBackupMock).toHaveBeenCalledWith(1);
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
