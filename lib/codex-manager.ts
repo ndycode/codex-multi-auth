@@ -4097,7 +4097,11 @@ function logLoginMenuHealthSummaryWarning(
 
 function formatLoginMenuRollbackHint(
 	rollbackPlan: Awaited<ReturnType<typeof getLatestCodexCliSyncRollbackPlan>>,
+	rollbackPlanLoadFailed = false,
 ): string {
+	if (rollbackPlanLoadFailed) {
+		return "rollback state unavailable";
+	}
 	if (rollbackPlan.status === "ready") {
 		const accountCount = rollbackPlan.accountCount;
 		if (
@@ -4108,9 +4112,6 @@ function formatLoginMenuRollbackHint(
 			return `checkpoint ready for ${Math.trunc(accountCount)} account(s)`;
 		}
 		return "checkpoint ready";
-	}
-	if (collapseWhitespace(rollbackPlan.reason) === "health summary unavailable") {
-		return "rollback state unavailable";
 	}
 	return rollbackPlan.snapshot ? "checkpoint unavailable" : "no rollback checkpoint available";
 }
@@ -4136,9 +4137,10 @@ async function buildLoginMenuHealthSummary(
 		ReturnType<typeof getLatestCodexCliSyncRollbackPlan>
 	> = {
 		status: "unavailable",
-		reason: "health summary unavailable",
+		reason: "rollback state unavailable",
 		snapshot: null,
 	};
+	let rollbackPlanLoadFailed = false;
 	let syncSummary = {
 		label: "unknown",
 		hint: "Sync state unavailable.",
@@ -4161,6 +4163,7 @@ async function buildLoginMenuHealthSummary(
 	try {
 		rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
 	} catch (error) {
+		rollbackPlanLoadFailed = true;
 		logLoginMenuHealthSummaryWarning(
 			"Failed to load login menu rollback health summary state",
 			error,
@@ -4195,7 +4198,7 @@ async function buildLoginMenuHealthSummary(
 		`Accounts: ${enabledCount} enabled / ${disabledCount} disabled / ${storage.accounts.length} total`,
 		`Sync: ${syncSummary.hint}`,
 		`Restore backups: ${actionableRestores.assessments.length} actionable of ${actionableRestores.totalBackups} total`,
-		`Rollback: ${formatLoginMenuRollbackHint(rollbackPlan)}`,
+		`Rollback: ${formatLoginMenuRollbackHint(rollbackPlan, rollbackPlanLoadFailed)}`,
 		`Doctor: ${doctorSummary.hint}`,
 	];
 

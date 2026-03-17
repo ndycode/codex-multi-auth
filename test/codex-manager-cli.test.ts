@@ -3193,7 +3193,9 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				healthSummary: expect.objectContaining({
 					label: expect.stringContaining("Pool 1/2 enabled"),
-					hint: expect.stringContaining("Rollback: Rollback checkpoint ready"),
+					hint: expect.stringContaining(
+						"Rollback: checkpoint ready for 2 account(s)",
+					),
 				}),
 			}),
 		);
@@ -3216,15 +3218,26 @@ describe("codex manager cli commands", () => {
 		getActionableNamedBackupRestoresMock.mockRejectedValue(
 			new Error("EBUSY backups"),
 		);
+		getLatestCodexCliSyncRollbackPlanMock.mockRejectedValue(
+			new Error("EBUSY rollback at C:\\sensitive\\rollback.json"),
+		);
 		getLastCodexCliSyncRunMock.mockImplementation(() => {
 			throw new Error("EBUSY: resource busy, sync history");
 		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		const warningOutput = warnSpy.mock.calls.flat().join("\n");
 
 		expect(exitCode).toBe(0);
+		expect(warnSpy).toHaveBeenCalled();
+		expect(warningOutput).toContain(
+			"Failed to load login menu rollback health summary state [UNKNOWN]",
+		);
+		expect(warningOutput).not.toContain("EBUSY");
+		expect(warningOutput).not.toContain("C:\\sensitive\\rollback.json");
 		expect(promptLoginModeMock).toHaveBeenCalledWith(
 			expect.any(Array),
 			expect.objectContaining({
@@ -3233,7 +3246,7 @@ describe("codex manager cli commands", () => {
 						/Pool 1 active[\s\S]*Sync unknown[\s\S]*Doctor 2 warnings/,
 					),
 					hint: expect.stringMatching(
-						/Restore backups: 0 actionable of 0 total[\s\S]*Rollback: no rollback checkpoint available[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
+						/Restore backups: 0 actionable of 0 total[\s\S]*Rollback: rollback state unavailable[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
 					),
 				}),
 			}),
