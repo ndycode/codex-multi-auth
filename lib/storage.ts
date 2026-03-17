@@ -1998,8 +1998,9 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
 }
 
 /**
- * Deletes the account storage file from disk.
- * Silently ignores if file doesn't exist.
+ * Deletes saved account storage artifacts from disk.
+ * Returns `true` when every targeted artifact was removed or already missing.
+ * Returns `false` when one or more artifacts could not be removed after retries and were logged.
  */
 export async function clearAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
@@ -2270,6 +2271,12 @@ export async function saveFlaggedAccounts(
 	});
 }
 
+/**
+ * Deletes flagged/problem account storage artifacts from disk.
+ * Returns `true` when the flagged data files were removed or already missing.
+ * Returns `false` when one or more flagged data artifacts could not be removed after retries and were logged.
+ * Marker cleanup remains best-effort and does not change the returned result once flagged data is cleared.
+ */
 export async function clearFlaggedAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
