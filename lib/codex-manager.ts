@@ -4071,6 +4071,7 @@ async function runBest(args: string[]): Promise<number> {
 	const now = Date.now();
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
+	const probeIdTokenByIndex = new Map<number, string>();
 	const probeErrors: string[] = [];
 	let changed = false;
 
@@ -4124,6 +4125,9 @@ async function runBest(args: string[]): Promise<number> {
 					account.accountId = refreshedAccountId;
 					account.accountIdSource = "token";
 					changed = true;
+				}
+				if (refreshResult.idToken) {
+					probeIdTokenByIndex.set(i, refreshResult.idToken);
 				}
 
 				probeAccessToken = account.accessToken;
@@ -4225,7 +4229,7 @@ async function runBest(args: string[]): Promise<number> {
 	let syncAccessToken = bestAccount.accessToken;
 	let syncRefreshToken = bestAccount.refreshToken;
 	let syncExpiresAt = bestAccount.expiresAt;
-	let syncIdToken: string | undefined;
+	let syncIdToken = probeIdTokenByIndex.get(bestIndex);
 
 	if (!hasUsableAccessToken(bestAccount, switchNow)) {
 		const refreshResult = await queuedRefresh(bestAccount.refreshToken);
