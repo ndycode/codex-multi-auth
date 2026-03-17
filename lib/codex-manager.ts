@@ -3972,6 +3972,42 @@ async function runSwitch(args: string[]): Promise<number> {
 		return 1;
 	}
 
+	const { synced, wasDisabled } = await persistAndSyncSelectedAccount({
+		storage,
+		targetIndex,
+		parsed,
+		switchReason: "rotation",
+	});
+	if (!synced) {
+		console.warn(
+			`Switched account ${parsed} locally, but Codex auth sync did not complete. Multi-auth routing will still use this account.`,
+		);
+	}
+
+	console.log(
+		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
+	);
+	return 0;
+}
+
+async function persistAndSyncSelectedAccount({
+	storage,
+	targetIndex,
+	parsed,
+	switchReason,
+	initialSyncIdToken,
+}: {
+	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
+	targetIndex: number;
+	parsed: number;
+	switchReason: "rotation" | "best";
+	initialSyncIdToken?: string;
+}): Promise<{ synced: boolean; wasDisabled: boolean }> {
+	const account = storage.accounts[targetIndex];
+	if (!account) {
+		throw new Error(`Account ${parsed} not found.`);
+	}
+
 	storage.activeIndex = targetIndex;
 	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
 	for (const family of MODEL_FAMILIES) {
@@ -3985,7 +4021,7 @@ async function runSwitch(args: string[]): Promise<number> {
 	let syncAccessToken = account.accessToken;
 	let syncRefreshToken = account.refreshToken;
 	let syncExpiresAt = account.expiresAt;
-	let syncIdToken: string | undefined;
+	let syncIdToken = initialSyncIdToken;
 
 	if (!hasUsableAccessToken(account, switchNow)) {
 		const refreshResult = await queuedRefresh(account.refreshToken);
@@ -4020,7 +4056,7 @@ async function runSwitch(args: string[]): Promise<number> {
 	}
 
 	account.lastUsed = switchNow;
-	account.lastSwitchReason = "rotation";
+	account.lastSwitchReason = switchReason;
 	await saveAccounts(storage);
 
 	const synced = await setCodexCliActiveSelection({
@@ -4031,16 +4067,7 @@ async function runSwitch(args: string[]): Promise<number> {
 		expiresAt: syncExpiresAt,
 		...(syncIdToken ? { idToken: syncIdToken } : {}),
 	});
-	if (!synced) {
-		console.warn(
-			`Switched account ${parsed} locally, but Codex auth sync did not complete. Multi-auth routing will still use this account.`,
-		);
-	}
-
-	console.log(
-		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
-	);
-	return 0;
+	return { synced, wasDisabled };
 }
 
 async function runBest(args: string[]): Promise<number> {
@@ -4091,77 +4118,77 @@ async function runBest(args: string[]): Promise<number> {
 	};
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
-			const account = storage.accounts[i];
-			if (!account || !options.live) continue;
-			if (account.enabled === false) continue;
+		const account = storage.accounts[i];
+		if (!account || !options.live) continue;
+		if (account.enabled === false) continue;
 
-			let probeAccessToken = account.accessToken;
-			let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
-			if (!hasUsableAccessToken(account, now)) {
-				const refreshResult = await queuedRefresh(account.refreshToken);
-				if (refreshResult.type !== "success") {
-					refreshFailures.set(i, {
-						...refreshResult,
-						message: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
-					});
-					continue;
-				}
-
-				const refreshedEmail = sanitizeEmail(
-					extractAccountEmail(refreshResult.access, refreshResult.idToken),
-				);
-				const refreshedAccountId = extractAccountId(refreshResult.access);
-
-				if (account.refreshToken !== refreshResult.refresh) {
-					account.refreshToken = refreshResult.refresh;
-					changed = true;
-				}
-				if (account.accessToken !== refreshResult.access) {
-					account.accessToken = refreshResult.access;
-					changed = true;
-				}
-				if (account.expiresAt !== refreshResult.expires) {
-					account.expiresAt = refreshResult.expires;
-					changed = true;
-				}
-				if (refreshedEmail && refreshedEmail !== account.email) {
-					account.email = refreshedEmail;
-					changed = true;
-				}
-				if (refreshedAccountId && refreshedAccountId !== account.accountId) {
-					account.accountId = refreshedAccountId;
-					account.accountIdSource = "token";
-					changed = true;
-				}
-				if (refreshResult.idToken) {
-					probeIdTokenByIndex.set(i, refreshResult.idToken);
-				}
-				probeRefreshedIndices.add(i);
-
-				probeAccessToken = account.accessToken;
-				probeAccountId = account.accountId ?? refreshedAccountId;
-			}
-
-			if (!probeAccessToken || !probeAccountId) {
-				probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
+		let probeAccessToken = account.accessToken;
+		let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
+		if (!hasUsableAccessToken(account, now)) {
+			const refreshResult = await queuedRefresh(account.refreshToken);
+			if (refreshResult.type !== "success") {
+				refreshFailures.set(i, {
+					...refreshResult,
+					message: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
+				});
 				continue;
 			}
 
-			try {
-				const liveQuota = await fetchCodexQuotaSnapshot({
-					accountId: probeAccountId,
-					accessToken: probeAccessToken,
-					model: options.model,
-				});
-				liveQuotaByIndex.set(i, liveQuota);
-			} catch (error) {
-				const message = normalizeFailureDetail(
-					error instanceof Error ? error.message : String(error),
-					undefined,
-				);
-				probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
+			const refreshedEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
+			const refreshedAccountId = extractAccountId(refreshResult.access);
+
+			if (account.refreshToken !== refreshResult.refresh) {
+				account.refreshToken = refreshResult.refresh;
+				changed = true;
 			}
+			if (account.accessToken !== refreshResult.access) {
+				account.accessToken = refreshResult.access;
+				changed = true;
+			}
+			if (account.expiresAt !== refreshResult.expires) {
+				account.expiresAt = refreshResult.expires;
+				changed = true;
+			}
+			if (refreshedEmail && refreshedEmail !== account.email) {
+				account.email = refreshedEmail;
+				changed = true;
+			}
+			if (refreshedAccountId && refreshedAccountId !== account.accountId) {
+				account.accountId = refreshedAccountId;
+				account.accountIdSource = "token";
+				changed = true;
+			}
+			if (refreshResult.idToken) {
+				probeIdTokenByIndex.set(i, refreshResult.idToken);
+			}
+			probeRefreshedIndices.add(i);
+
+			probeAccessToken = account.accessToken;
+			probeAccountId = account.accountId ?? refreshedAccountId;
 		}
+
+		if (!probeAccessToken || !probeAccountId) {
+			probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
+			continue;
+		}
+
+		try {
+			const liveQuota = await fetchCodexQuotaSnapshot({
+				accountId: probeAccountId,
+				accessToken: probeAccessToken,
+				model: options.model,
+			});
+			liveQuotaByIndex.set(i, liveQuota);
+		} catch (error) {
+			const message = normalizeFailureDetail(
+				error instanceof Error ? error.message : String(error),
+				undefined,
+			);
+			probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
+		}
+	}
 
 	const forecastInputs = storage.accounts.map((account, index) => ({
 		index,
@@ -4239,68 +4266,14 @@ async function runBest(args: string[]): Promise<number> {
 		return 0;
 	}
 
-	// Switch to best account (reuse runSwitch logic)
 	const targetIndex = bestIndex;
 	const parsed = targetIndex + 1;
-	storage.activeIndex = targetIndex;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = targetIndex;
-	}
-	const wasDisabled = bestAccount.enabled === false;
-	if (wasDisabled) {
-		bestAccount.enabled = true;
-	}
-	const switchNow = Date.now();
-	let syncAccessToken = bestAccount.accessToken;
-	let syncRefreshToken = bestAccount.refreshToken;
-	let syncExpiresAt = bestAccount.expiresAt;
-	let syncIdToken = probeIdTokenByIndex.get(bestIndex);
-
-	if (!hasUsableAccessToken(bestAccount, switchNow)) {
-		const refreshResult = await queuedRefresh(bestAccount.refreshToken);
-		if (refreshResult.type === "success") {
-			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
-			if (bestAccount.refreshToken !== refreshResult.refresh) {
-				bestAccount.refreshToken = refreshResult.refresh;
-			}
-			if (bestAccount.accessToken !== refreshResult.access) {
-				bestAccount.accessToken = refreshResult.access;
-			}
-			if (bestAccount.expiresAt !== refreshResult.expires) {
-				bestAccount.expiresAt = refreshResult.expires;
-			}
-			if (nextEmail && nextEmail !== bestAccount.email) {
-				bestAccount.email = nextEmail;
-			}
-			if (tokenAccountId && tokenAccountId !== bestAccount.accountId) {
-				bestAccount.accountId = tokenAccountId;
-				bestAccount.accountIdSource = "token";
-			}
-			syncAccessToken = refreshResult.access;
-			syncRefreshToken = refreshResult.refresh;
-			syncExpiresAt = refreshResult.expires;
-			syncIdToken = refreshResult.idToken;
-		} else {
-			console.warn(
-				`Switch validation refresh failed for account ${parsed}: ${normalizeFailureDetail(refreshResult.message, refreshResult.reason)}.`,
-			);
-		}
-	}
-
-	bestAccount.lastUsed = switchNow;
-	bestAccount.lastSwitchReason = "best";
-	await saveAccounts(storage);
-	changed = false;
-
-	const synced = await setCodexCliActiveSelection({
-		accountId: bestAccount.accountId,
-		email: bestAccount.email,
-		accessToken: syncAccessToken,
-		refreshToken: syncRefreshToken,
-		expiresAt: syncExpiresAt,
-		...(syncIdToken ? { idToken: syncIdToken } : {}),
+	const { synced, wasDisabled } = await persistAndSyncSelectedAccount({
+		storage,
+		targetIndex,
+		parsed,
+		switchReason: "best",
+		initialSyncIdToken: probeIdTokenByIndex.get(bestIndex),
 	});
 
 	if (options.json) {
