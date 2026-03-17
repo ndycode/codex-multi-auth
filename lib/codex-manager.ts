@@ -67,7 +67,6 @@ import {
 	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
-	NAMED_BACKUP_LIST_CONCURRENCY,
 	restoreNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
@@ -4126,8 +4125,12 @@ async function runAuthLogin(): Promise<number> {
 							recoveryState.allAssessments,
 						);
 						if (restoreResult !== "restored") {
-							pendingRecoveryState = recoveryState;
-							recoveryPromptAttempted = false;
+							if (restoreResult === "dismissed") {
+								suppressRecoveryPrompt = true;
+							} else {
+								pendingRecoveryState = recoveryState;
+								recoveryPromptAttempted = false;
+							}
 						}
 						continue;
 					}
@@ -4362,6 +4365,7 @@ type BackupRestoreAssessment = Awaited<
 >;
 
 type BackupRestoreManagerResult = "restored" | "dismissed" | "failed";
+const NAMED_BACKUP_ASSESS_CONCURRENCY = 4;
 
 async function loadBackupRestoreManagerAssessments(): Promise<
 	BackupRestoreAssessment[]
@@ -4387,9 +4391,9 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 	for (
 		let index = 0;
 		index < backups.length;
-		index += NAMED_BACKUP_LIST_CONCURRENCY
+		index += NAMED_BACKUP_ASSESS_CONCURRENCY
 	) {
-		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
+		const chunk = backups.slice(index, index + NAMED_BACKUP_ASSESS_CONCURRENCY);
 		const settledAssessments = await Promise.allSettled(
 			chunk.map((backup) =>
 				assessNamedBackupRestore(backup.name, { currentStorage }),

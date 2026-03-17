@@ -140,6 +140,14 @@ export interface BackupRestoreAssessment {
 	error?: string;
 }
 
+export type ImportAccountsResult = {
+	imported: number;
+	total: number;
+	skipped: number;
+	// Keep the legacy field in the public type so existing callers do not break.
+	changed?: boolean;
+};
+
 export interface ActionableNamedBackupRecoveries {
 	assessments: BackupRestoreAssessment[];
 	allAssessments: BackupRestoreAssessment[];
@@ -1420,6 +1428,44 @@ export function deduplicateAccountsByEmail<
 	return deduplicateAccountsByIdentity(accounts);
 }
 
+function canonicalizeComparisonValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((entry) => canonicalizeComparisonValue(entry));
+	}
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+
+	const record = value as Record<string, unknown>;
+	return Object.fromEntries(
+		Object.keys(record)
+			.sort()
+			.map((key) => [key, canonicalizeComparisonValue(record[key])] as const),
+	);
+}
+
+function stableStringifyForComparison(value: unknown): string {
+	return JSON.stringify(canonicalizeComparisonValue(value));
+}
+
+function haveEquivalentAccountRows(
+	left: readonly unknown[],
+	right: readonly unknown[],
+): boolean {
+	if (left.length !== right.length) {
+		return false;
+	}
+	for (let index = 0; index < left.length; index += 1) {
+		if (
+			stableStringifyForComparison(left[index]) !==
+			stableStringifyForComparison(right[index])
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -1969,6 +2015,10 @@ function assessNamedBackupRestoreCandidate(
 		...deduplicatedIncomingAccounts,
 	]);
 	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
+	const changed = !haveEquivalentAccountRows(
+		mergedAccounts,
+		deduplicatedCurrentAccounts,
+	);
 	const imported = wouldExceedLimit
 		? null
 		: mergedAccounts.length - deduplicatedCurrentAccounts.length;
@@ -1983,16 +2033,18 @@ function assessNamedBackupRestoreCandidate(
 		imported,
 		skipped,
 		wouldExceedLimit,
-		eligibleForRestore: !wouldExceedLimit,
+		eligibleForRestore: !wouldExceedLimit && changed,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
+			: !changed
+				? "All accounts in this backup already exist"
 			: undefined,
 	};
 }
 
 export async function restoreNamedBackup(
 	name: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
+): Promise<ImportAccountsResult> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
 	return importAccounts(backupPath);
 }
@@ -2989,7 +3041,7 @@ export async function exportAccounts(
  */
 export async function importAccounts(
 	filePath: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
+): Promise<ImportAccountsResult> {
 	const resolvedPath = resolvePath(filePath);
 
 	let content: string;
@@ -3020,9 +3072,11 @@ export async function importAccounts(
 		imported: importedCount,
 		total,
 		skipped: skippedCount,
+		changed,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
 		const existingDeduplicatedAccounts = deduplicateAccounts(existingAccounts);
+		const incomingDeduplicatedAccounts = deduplicateAccounts(normalized.accounts);
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
 		const merged = [...existingAccounts, ...normalized.accounts];
@@ -3037,6 +3091,23 @@ export async function importAccounts(
 		}
 
 		const deduplicatedAccounts = deduplicateAccounts(merged);
+		const changed = !haveEquivalentAccountRows(
+			deduplicatedAccounts,
+			existingDeduplicatedAccounts,
+		);
+
+		const imported =
+			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
+		const skipped = Math.max(0, incomingDeduplicatedAccounts.length - imported);
+
+		if (!changed) {
+			return {
+				imported,
+				total: deduplicatedAccounts.length,
+				skipped,
+				changed,
+			};
+		}
 
 		const newStorage: AccountStorageV3 = {
 			version: 3,
@@ -3046,11 +3117,12 @@ export async function importAccounts(
 		};
 
 		await persist(newStorage);
-
-		const imported =
-			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
-		const skipped = Math.max(0, normalized.accounts.length - imported);
-		return { imported, total: deduplicatedAccounts.length, skipped };
+		return {
+			imported,
+			total: deduplicatedAccounts.length,
+			skipped,
+			changed,
+		};
 	});
 
 	log.info("Imported accounts", {
@@ -3058,7 +3130,13 @@ export async function importAccounts(
 		imported: importedCount,
 		skipped: skippedCount,
 		total,
+		changed,
 	});
 
-	return { imported: importedCount, total, skipped: skippedCount };
+	return {
+		imported: importedCount,
+		total,
+		skipped: skippedCount,
+		changed,
+	};
 }

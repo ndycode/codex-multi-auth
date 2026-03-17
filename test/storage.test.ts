@@ -398,6 +398,44 @@ describe("storage", () => {
 			).rejects.toThrow(/different storage path/);
 		});
 
+		it("allows export inside an active transaction when Windows path casing differs", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "transactional-export-win32",
+						refreshToken: "ref-transactional-export-win32",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			const caseVariantStoragePath =
+				testStoragePath.replace(/[a-z]/, (value) => value.toUpperCase()) ??
+				testStoragePath;
+
+			try {
+				await expect(
+					withAccountStorageTransaction(async () => {
+						setStoragePathDirect(caseVariantStoragePath);
+						try {
+							await exportAccounts(exportPath);
+						} finally {
+							setStoragePathDirect(testStoragePath);
+						}
+					}),
+				).resolves.toBeUndefined();
+				expect(existsSync(exportPath)).toBe(true);
+			} finally {
+				platformSpy.mockRestore();
+			}
+		});
+
 		it("should import accounts from a file and merge", async () => {
 			// @ts-expect-error
 			const { importAccounts } = await import("../lib/storage.js");
@@ -479,7 +517,12 @@ describe("storage", () => {
 			const imported = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(imported).toEqual({ imported: 1, total: 3, skipped: 0 });
+			expect(imported).toEqual({
+				imported: 1,
+				total: 3,
+				skipped: 0,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(3);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual(
 				expect.arrayContaining([
@@ -530,12 +573,58 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
 				"refresh-imported",
 			]);
+		});
+
+		it("reports changed false when import adds no effective accounts", async () => {
+			const { importAccounts } = await import("../lib/storage.js");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "shared-account",
+						refreshToken: "refresh-shared",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "shared-account",
+							refreshToken: "refresh-shared",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const result = await importAccounts(exportPath);
+
+			expect(result).toEqual({
+				imported: 0,
+				skipped: 1,
+				total: 1,
+				changed: false,
+			});
 		});
 
 		it("should preserve duplicate shared accountId entries when imported rows lack email", async () => {
@@ -576,7 +665,12 @@ describe("storage", () => {
 			const result = await importAccounts(exportPath);
 			const loaded = await loadAccounts();
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(loaded?.accounts.map((account) => account.refreshToken)).toEqual([
 				"refresh-existing",
@@ -626,7 +720,12 @@ describe("storage", () => {
 
 			const result = await importAccounts(exportPath);
 
-			expect(result).toEqual({ imported: 1, skipped: 0, total: 2 });
+			expect(result).toEqual({
+				imported: 1,
+				skipped: 0,
+				total: 2,
+				changed: true,
+			});
 		});
 
 		it("should serialize concurrent transactional updates without losing accounts", async () => {
@@ -1325,6 +1424,35 @@ describe("storage", () => {
 
 			const restored = await loadAccounts();
 			expect(restored?.accounts[0]?.accountId).toBe("primary");
+		});
+
+		it("marks identical named backups as already restored", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await createNamedBackup("already-restored");
+
+			const assessment = await assessNamedBackupRestore("already-restored");
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+			await expect(restoreNamedBackup("already-restored")).resolves.toEqual({
+				imported: 0,
+				skipped: 1,
+				total: 1,
+				changed: false,
+			});
 		});
 
 		it("honors explicit null currentStorage when assessing a named backup", async () => {
