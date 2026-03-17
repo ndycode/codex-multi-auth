@@ -440,7 +440,7 @@ export async function __resetSyncHistoryForTests(): Promise<void> {
 	});
 	lastAppendError = null;
 	lastAppendPaths = null;
-	historyEntryCountEstimate = 0;
+	historyEntryCountEstimate = 0; // Files were just deleted; no disk reread is needed on the next append.
 }
 
 export function __getLastSyncHistoryErrorForTests(): string | null {

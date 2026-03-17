@@ -1282,7 +1282,7 @@ async function runActionPanel(
 		await action();
 	} catch (error) {
 		failed = error;
-		capture("x ", [error instanceof Error ? error.message : String(error)]);
+		capture("x ", [collapseWhitespace(formatRedactedFilesystemError(error))]);
 	} finally {
 		running = false;
 		if (timer) {
@@ -4309,15 +4309,16 @@ async function runFirstRunWizard(
 						);
 						break;
 					}
+					const backupLabel = basename(assessment.backup.path);
 					const confirmed = await confirm(
-						`Import OpenCode accounts from ${assessment.backup.path}?`,
+						`Import OpenCode accounts from ${backupLabel}?`,
 					);
 					if (!confirmed) {
 						break;
 					}
 					await runActionPanel(
 						"Import OpenCode Accounts",
-						`Importing from ${assessment.backup.path}`,
+						`Importing from ${backupLabel}`,
 						async () => {
 							const imported = await importAccounts(assessment.backup.path);
 							console.log(
@@ -4519,6 +4520,7 @@ async function runAuthLogin(): Promise<number> {
 				continue;
 			}
 			if (menuResult.mode === "import-opencode") {
+				let importStage: "assessment" | "import" = "assessment";
 				try {
 					const assessment = await assessOpencodeAccountPool({
 						currentStorage,
@@ -4546,6 +4548,7 @@ async function runAuthLogin(): Promise<number> {
 					if (!confirmed) {
 						continue;
 					}
+					importStage = "import";
 					await runActionPanel(
 						"Import OpenCode Accounts",
 						`Importing from ${backupLabel}`,
@@ -4562,8 +4565,7 @@ async function runAuthLogin(): Promise<number> {
 						formatRedactedFilesystemError(error),
 					);
 					const actionLabel =
-						error instanceof Error &&
-						error.message.includes("assessment")
+						importStage === "assessment"
 							? "Import assessment failed"
 							: "Import failed";
 					console.error(`${actionLabel}: ${errorLabel}`);

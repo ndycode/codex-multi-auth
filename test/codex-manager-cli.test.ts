@@ -65,6 +65,14 @@ const normalizeAccountStorageMock = vi.fn((value) => value);
 const withAccountStorageTransactionMock = vi.fn();
 const withAccountAndFlaggedStorageTransactionMock = vi.fn();
 
+function flattenMockCallArgs(call: unknown[]): string {
+	return call
+		.map((arg) =>
+			arg instanceof Error ? `${arg.name}: ${arg.message}` : String(arg),
+		)
+		.join(" ");
+}
+
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
 		debug: vi.fn(),
@@ -959,17 +967,18 @@ describe("codex manager cli commands", () => {
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
+		const warningLines = warnSpy.mock.calls.map(flattenMockCallArgs);
 		expect(exitCode).toBe(0);
 		expect(
-			warnSpy.mock.calls.some((call) =>
-				String(call[0]).includes("Failed to list named backups") &&
-				!String(call[0]).includes("alice"),
+			warningLines.some((line) =>
+				line.includes("Failed to list named backups") &&
+				!line.includes("alice"),
 			),
 		).toBe(true);
 		expect(
-			warnSpy.mock.calls.some((call) =>
-				String(call[0]).includes("Failed to list rotating backups") &&
-				!String(call[0]).includes("alice"),
+			warningLines.some((line) =>
+				line.includes("Failed to list rotating backups") &&
+				!line.includes("alice"),
 			),
 		).toBe(true);
 	});
@@ -1050,6 +1059,7 @@ describe("codex manager cli commands", () => {
 
 	it("imports OpenCode accounts from the first-run wizard", async () => {
 		setInteractiveTTY(true);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const authMenu = await import("../lib/ui/auth-menu.js");
 		vi.spyOn(authMenu, "showFirstRunWizard").mockResolvedValue({
 			type: "import-opencode",
@@ -1116,6 +1126,18 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/.opencode/openai-codex-accounts.json",
+		);
+		expect(confirmMock).toHaveBeenCalledWith(
+			"Import OpenCode accounts from openai-codex-accounts.json?",
+		);
+		const logLines = logSpy.mock.calls.map(flattenMockCallArgs);
+		expect(
+			logLines.some((line) =>
+				line.includes("Importing from openai-codex-accounts.json"),
+			),
+		).toBe(true);
+		expect(logLines.join("\n")).not.toContain(
 			"/mock/.opencode/openai-codex-accounts.json",
 		);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
@@ -1434,6 +1456,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "import-opencode" })
 			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
@@ -1452,6 +1475,10 @@ describe("codex manager cli commands", () => {
 				String(message).includes("C:\\Users\\alice\\AppData\\Local\\OpenCode"),
 			),
 		).toBe(false);
+		expect(logSpy.mock.calls.map(flattenMockCallArgs).join("\n")).not.toContain(
+			"C:\\Users\\alice\\AppData\\Local\\OpenCode",
+		);
+		logSpy.mockRestore();
 		errorSpy.mockRestore();
 	});
 
@@ -1464,7 +1491,10 @@ describe("codex manager cli commands", () => {
 			accounts: [],
 		});
 		assessOpencodeAccountPoolMock.mockRejectedValueOnce(
-			makeErrnoError("assessment locked", "EPERM"),
+			makeErrnoError(
+				"operation not permitted, open 'C:\\Users\\alice\\AppData\\Local\\OpenCode\\openai-codex-accounts.json'",
+				"EPERM",
+			),
 		);
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "import-opencode" })
@@ -1480,7 +1510,7 @@ describe("codex manager cli commands", () => {
 		expect(importAccountsMock).not.toHaveBeenCalled();
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 		expect(errorSpy).toHaveBeenCalledWith(
-			"Import assessment failed: EPERM: assessment locked",
+			"Import assessment failed: EPERM: operation not permitted, open 'openai-codex-accounts.json'",
 		);
 		errorSpy.mockRestore();
 	});
@@ -3932,6 +3962,7 @@ describe("codex manager cli commands", () => {
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
+		const warningLines = warnSpy.mock.calls.map(flattenMockCallArgs);
 		expect(exitCode).toBe(0);
 		expect(promptLoginModeMock).toHaveBeenCalledWith(
 			expect.any(Array),
@@ -3944,9 +3975,9 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		expect(
-			warnSpy.mock.calls.some((call) =>
-				String(call[0]).includes("Failed to build login menu health summary") &&
-				!String(call[0]).includes("alice"),
+			warningLines.some((line) =>
+				line.includes("Failed to build login menu health summary") &&
+				!line.includes("alice"),
 			),
 		).toBe(true);
 		warnSpy.mockRestore();
