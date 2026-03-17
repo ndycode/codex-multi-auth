@@ -1,6 +1,11 @@
 import { select } from "./select.js";
 import { getUiRuntimeOptions } from "./runtime.js";
 
+export interface ConfirmOptions {
+	subtitle?: string;
+	help?: string;
+}
+
 /**
  * Prompt the user with a Yes/No choice.
  *
@@ -10,7 +15,11 @@ import { getUiRuntimeOptions } from "./runtime.js";
  * @param defaultYes - If true, "Yes" is presented first and treated as the default ordering
  * @returns `true` if the user selects "Yes", `false` otherwise
  */
-export async function confirm(message: string, defaultYes = false): Promise<boolean> {
+export async function confirm(
+	message: string,
+	defaultYes = false,
+	options: ConfirmOptions = {},
+): Promise<boolean> {
 	const ui = getUiRuntimeOptions();
 	const items = defaultYes
 		? [
@@ -24,6 +33,8 @@ export async function confirm(message: string, defaultYes = false): Promise<bool
 
 	const result = await select(items, {
 		message,
+		subtitle: options.subtitle,
+		help: options.help,
 		theme: ui.theme,
 	});
 	return result ?? false;

@@ -1,4 +1,4 @@
-import { ANSI, isTTY, parseKey } from "./ansi.js";
+import { ANSI, isTTY } from "./ansi.js";
 import type { UiTheme } from "./theme.js";
 
 export interface MenuItem<T = string> {
@@ -60,7 +60,6 @@ export interface SelectRenderContext<T = string> {
 	rows: number;
 }
 
-const ESCAPE_TIMEOUT_MS = 50;
 const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 const ANSI_LEADING_REGEX = /^\x1b\[[0-9;]*m/;
 
@@ -142,45 +141,6 @@ function colorCode(color: MenuItem["color"]): string {
 		default:
 			return "";
 	}
-}
-
-/**
- * Decode a raw stdin buffer into a single printable "hotkey" character or `null` when none is available.
- *
- * Recognizes common VT-style numpad/keypad escape sequences and otherwise yields the first printable ASCII character in the input. Safe to call concurrently; it performs no filesystem or external I/O and behaves the same on Windows. This function never returns control or non-printable bytes, reducing the risk of leaking raw control sequences or sensitive tokens.
- *
- * @param data - Raw input buffer from stdin (may contain escape sequences or control bytes)
- * @returns The decoded single-character hotkey (for example, `"0"`, `"a"`, `"+"`) or `null` if no printable character is present
- */
-function decodeHotkeyInput(data: Buffer): string | null {
-	const input = data.toString("utf8");
-	// Common VT-style numpad sequences in raw mode.
-	const keypadMap: Record<string, string> = {
-		"\x1bOp": "0",
-		"\x1bOq": "1",
-		"\x1bOr": "2",
-		"\x1bOs": "3",
-		"\x1bOt": "4",
-		"\x1bOu": "5",
-		"\x1bOv": "6",
-		"\x1bOw": "7",
-		"\x1bOx": "8",
-		"\x1bOy": "9",
-		"\x1bOk": "+",
-		"\x1bOm": "-",
-		"\x1bOj": "*",
-		"\x1bOo": "/",
-		"\x1bOn": ".",
-	};
-	const mapped = keypadMap[input];
-	if (mapped) return mapped;
-
-	// Fallback: strip control bytes and keep first printable ASCII char.
-	for (const ch of input) {
-		const code = ch.charCodeAt(0);
-		if (code >= 32 && code <= 126) return ch;
-	}
-	return null;
 }
 
 function renderSelectFrame<T>(
@@ -419,7 +379,6 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		return selectable[0]?.value ?? null;
 	}
 
-	const { stdin, stdout } = process;
 	let cursor = items.findIndex(isSelectable);
 	if (typeof options.initialCursor === "number" && Number.isFinite(options.initialCursor)) {
 		const bounded = Math.max(0, Math.min(items.length - 1, Math.trunc(options.initialCursor)));
@@ -429,221 +388,132 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		cursor = items.findIndex(isSelectable);
 	}
 	if (cursor < 0) cursor = 0;
-	let escapeTimeout: ReturnType<typeof setTimeout> | null = null;
-	let cleanedUp = false;
-	let renderedLines = 0;
-	let hasRendered = false;
-	let inputGuardUntil = 0;
-	let rerenderRequested = false;
-
-	const requestRerender = () => {
-		rerenderRequested = true;
+	const findNextSelectable = (from: number, direction: 1 | -1): number => {
+		if (items.length === 0) return from;
+		let next = from;
+		do {
+			next = (next + direction + items.length) % items.length;
+		} while (items[next]?.disabled || items[next]?.separator || items[next]?.kind === "heading");
+		return next;
 	};
 
-	const notifyCursorChange = () => {
-		if (!options.onCursorChange) return;
-		rerenderRequested = false;
-		options.onCursorChange({
-			cursor,
-			items,
-			requestRerender,
-		});
-	};
-
-	const drainStdinBuffer = () => {
-		try {
-			let chunk: Buffer | string | null;
-			do {
-				chunk = stdin.read();
-			} while (chunk !== null);
-		} catch {
-			// best effort: ignore non-readable states
+	const moveToStart = (): void => {
+		const firstSelectable = items.findIndex(isSelectable);
+		if (firstSelectable >= 0) {
+			cursor = firstSelectable;
 		}
 	};
 
-	const render = () => {
-		const previousRenderedLines = renderedLines;
-		let didFullClear = false;
-
-		if (options.clearScreen && !hasRendered) {
-			stdout.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
-			didFullClear = true;
-		} else if (previousRenderedLines > 0) {
-			stdout.write(ANSI.up(previousRenderedLines));
-		}
-
-		let linesWritten = 0;
-		const writeLine = (line: string) => {
-			stdout.write(`${ANSI.clearLine}${line}\n`);
-			linesWritten += 1;
-		};
-		const lines = renderSelectFrame(items, cursor, options, {
-			columns: stdout.columns ?? 80,
-			rows: stdout.rows ?? 24,
-		});
-		for (const line of lines) {
-			writeLine(line);
-		}
-
-		if (!didFullClear && previousRenderedLines > linesWritten) {
-			const extra = previousRenderedLines - linesWritten;
-			for (let i = 0; i < extra; i += 1) {
-				writeLine("");
+	const moveToEnd = (): void => {
+		for (let i = items.length - 1; i >= 0; i -= 1) {
+			const item = items[i];
+			if (item && isSelectable(item)) {
+				cursor = i;
+				return;
 			}
 		}
-
-		renderedLines = linesWritten;
-		hasRendered = true;
 	};
 
-	return new Promise((resolve) => {
-		const wasRaw = stdin.isRaw ?? false;
-		let refreshTimer: ReturnType<typeof setInterval> | null = null;
+	const { runInkLineApp } = await import("./ink-host.js");
 
-		const cleanup = () => {
-			if (cleanedUp) return;
-			cleanedUp = true;
+	return runInkLineApp<T>({
+		clearScreen: options.clearScreen,
+		initialGuardMs: 120,
+		renderLines: (terminal) => renderSelectFrame(items, cursor, options, terminal),
+		onMount: (controller) => {
+			options.onCursorChange?.({
+				cursor,
+				items,
+				requestRerender: () => controller.rerender(),
+			});
 
-			if (escapeTimeout) {
-				clearTimeout(escapeTimeout);
-				escapeTimeout = null;
+			if (!options.dynamicSubtitle || (options.refreshIntervalMs ?? 0) <= 0) {
+				return undefined;
 			}
 
-			try {
-				stdin.removeListener("data", onKey);
-				stdin.setRawMode(wasRaw);
-				stdin.pause();
-				if (refreshTimer) {
-					clearInterval(refreshTimer);
-					refreshTimer = null;
-				}
-				stdout.write(ANSI.show);
-			} catch {
-				// best effort cleanup
-			}
-
-			process.removeListener("SIGINT", onSignal);
-			process.removeListener("SIGTERM", onSignal);
-		};
-
-		const finish = (value: T | null) => {
-			cleanup();
-			resolve(value);
-		};
-
-		const onSignal = () => finish(null);
-
-		const findNextSelectable = (from: number, direction: 1 | -1): number => {
-			if (items.length === 0) return from;
-			let next = from;
-			do {
-				next = (next + direction + items.length) % items.length;
-			} while (items[next]?.disabled || items[next]?.separator || items[next]?.kind === "heading");
-			return next;
-		};
-
-		const onKey = (data: Buffer) => {
-			if (escapeTimeout) {
-				clearTimeout(escapeTimeout);
-				escapeTimeout = null;
-			}
-
-			if (Date.now() < inputGuardUntil) {
-				const action = parseKey(data);
-				if (action === "enter" || action === "escape" || action === "escape-start") {
-					return;
-				}
-			}
-
-			const action = parseKey(data);
-			switch (action) {
-				case "up":
-					cursor = findNextSelectable(cursor, -1);
-					notifyCursorChange();
-					render();
-					return;
-				case "down":
-					cursor = findNextSelectable(cursor, 1);
-					notifyCursorChange();
-					render();
-					return;
-				case "home":
-					cursor = items.findIndex(isSelectable);
-					notifyCursorChange();
-					render();
-					return;
-				case "end": {
-					for (let i = items.length - 1; i >= 0; i -= 1) {
-						const item = items[i];
-						if (item && isSelectable(item)) {
-							cursor = i;
-							break;
-						}
-					}
-					notifyCursorChange();
-					render();
-					return;
-				}
-				case "enter":
-					finish(items[cursor]?.value ?? null);
-					return;
-				case "escape":
-					if (options.allowEscape !== false) {
-						finish(null);
-					}
-					return;
-				case "escape-start":
-					if (options.allowEscape !== false) {
-						escapeTimeout = setTimeout(() => finish(null), ESCAPE_TIMEOUT_MS);
-					}
-					return;
-				default:
-					if (options.onInput) {
-						const hotkey = decodeHotkeyInput(data);
-						if (hotkey) {
-							rerenderRequested = false;
-							const result = options.onInput(hotkey, {
-								cursor,
-								items,
-								requestRerender,
-							});
-							if (result !== undefined) {
-								finish(result);
-								return;
-							}
-							if (rerenderRequested) {
-								render();
-							}
-						}
-					}
-					return;
-			}
-		};
-
-		process.once("SIGINT", onSignal);
-		process.once("SIGTERM", onSignal);
-
-		try {
-			stdin.setRawMode(true);
-		} catch {
-			cleanup();
-			resolve(null);
-			return;
-		}
-
-		stdin.resume();
-		drainStdinBuffer();
-		inputGuardUntil = Date.now() + 120;
-		stdout.write(ANSI.hide);
-		notifyCursorChange();
-		render();
-		if (options.dynamicSubtitle && (options.refreshIntervalMs ?? 0) > 0) {
+			let lastDynamicSubtitle = options.dynamicSubtitle();
 			const intervalMs = Math.max(80, Math.round(options.refreshIntervalMs ?? 0));
-			refreshTimer = setInterval(() => {
-				render();
+			const refreshTimer = setInterval(() => {
+				const nextSubtitle = options.dynamicSubtitle?.();
+				if (nextSubtitle === lastDynamicSubtitle) {
+					return;
+				}
+				lastDynamicSubtitle = nextSubtitle;
+				controller.rerender();
 			}, intervalMs);
-		}
-		stdin.on("data", onKey);
+
+			return () => {
+				clearInterval(refreshTimer);
+			};
+		},
+		onInput: (input, key, controller) => {
+			if (key.upArrow) {
+				cursor = findNextSelectable(cursor, -1);
+				options.onCursorChange?.({
+					cursor,
+					items,
+					requestRerender: () => controller.rerender(),
+				});
+				controller.rerender();
+				return;
+			}
+			if (key.downArrow) {
+				cursor = findNextSelectable(cursor, 1);
+				options.onCursorChange?.({
+					cursor,
+					items,
+					requestRerender: () => controller.rerender(),
+				});
+				controller.rerender();
+				return;
+			}
+			if (input === "\u001b[H" || input === "\u001b[1~") {
+				moveToStart();
+				options.onCursorChange?.({
+					cursor,
+					items,
+					requestRerender: () => controller.rerender(),
+				});
+				controller.rerender();
+				return;
+			}
+			if (input === "\u001b[F" || input === "\u001b[4~") {
+				moveToEnd();
+				options.onCursorChange?.({
+					cursor,
+					items,
+					requestRerender: () => controller.rerender(),
+				});
+				controller.rerender();
+				return;
+			}
+			if (key.return) {
+				controller.finish(items[cursor]?.value ?? null);
+				return;
+			}
+			if (key.escape) {
+				if (options.allowEscape !== false) {
+					controller.finish(null);
+				}
+				return;
+			}
+			if (key.ctrl && input.toLowerCase() === "c") {
+				controller.finish(null);
+				return;
+			}
+			if (!options.onInput || input.length === 0) {
+				return;
+			}
+
+			const result = options.onInput(input, {
+				cursor,
+				items,
+				requestRerender: () => controller.rerender(),
+			});
+			if (result !== undefined) {
+				controller.finish(result);
+			}
+		},
 	});
 }
 
