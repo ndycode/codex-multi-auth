@@ -2016,6 +2016,7 @@ export async function clearAccounts(): Promise<boolean> {
 				),
 			),
 		);
+		await fs.mkdir(dirname(resetMarkerPath), { recursive: true });
 		await fs.writeFile(
 			resetMarkerPath,
 			JSON.stringify({ version: 1, createdAt: Date.now() }),
@@ -2275,6 +2276,7 @@ export async function clearFlaggedAccounts(): Promise<boolean> {
 		const legacyPath = getLegacyFlaggedAccountsPath();
 		const markerPath = getIntentionalResetMarkerPath(path);
 		try {
+			await fs.mkdir(dirname(markerPath), { recursive: true });
 			await fs.writeFile(markerPath, "reset", {
 				encoding: "utf-8",
 				mode: 0o600,

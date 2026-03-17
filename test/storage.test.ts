@@ -1785,6 +1785,14 @@ describe("storage", () => {
 			await expect(clearAccounts()).resolves.not.toThrow();
 		});
 
+		it("returns true when clearing accounts from an empty storage directory", async () => {
+			const markerPath = `${testStoragePath}.reset-intent`;
+
+			await expect(clearAccounts()).resolves.toBe(true);
+			expect(existsSync(testStoragePath)).toBe(false);
+			expect(existsSync(markerPath)).toBe(true);
+		});
+
 		it.each(["EPERM", "EBUSY", "EAGAIN"] as const)(
 			"retries transient %s when clearing saved account artifacts",
 			async (code) => {
@@ -1938,6 +1946,15 @@ describe("storage", () => {
 				}
 			},
 		);
+
+		it("returns true when clearing flagged accounts from an empty storage directory", async () => {
+			const flaggedPath = getFlaggedAccountsPath();
+			const markerPath = `${flaggedPath}.reset-intent`;
+
+			await expect(clearFlaggedAccounts()).resolves.toBe(true);
+			expect(existsSync(flaggedPath)).toBe(false);
+			expect(existsSync(markerPath)).toBe(false);
+		});
 	});
 
 	describe("setStoragePath", () => {
