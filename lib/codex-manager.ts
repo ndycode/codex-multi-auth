@@ -5498,7 +5498,13 @@ function buildRestoreAssessmentLines(
 			assessment.currentActiveIndex,
 		)}`,
 		`${stylePromptText("Active after restore:", "muted")} ${formatActiveAccountOutcome(assessment)}`,
-		`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.eligibleForRestore ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
+		`${stylePromptText("Eligibility:", "muted")} ${
+			assessment.wouldExceedLimit
+				? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
+				: assessment.eligibleForRestore
+					? "Recoverable"
+					: assessment.error?.trim() || "Unavailable"
+		}`,
 	];
 }
 
