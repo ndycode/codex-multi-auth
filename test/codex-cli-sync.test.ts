@@ -501,6 +501,33 @@ describe("codex-cli sync", () => {
 		expect(preview.statusDetail).toContain("1 source account skipped");
 	});
 
+	it("redacts filesystem details when sync preview loading fails", async () => {
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		};
+		const loadError = Object.assign(new Error("permission denied at C:/secret"), {
+			code: "EPERM",
+		});
+		const loadSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockRejectedValue(loadError);
+
+		try {
+			const preview = await previewCodexCliSync(current, {
+				forceRefresh: true,
+			});
+
+			expect(preview.status).toBe("error");
+			expect(preview.statusDetail).toBe("Failed to build sync preview (EPERM).");
+			expect(preview.statusDetail).not.toContain("permission denied");
+		} finally {
+			loadSpy.mockRestore();
+		}
+	});
+
 	it("preserves the current selection when Codex CLI source has no active marker", async () => {
 		await writeFile(
 			accountsPath,

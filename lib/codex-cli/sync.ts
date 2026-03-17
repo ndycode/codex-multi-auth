@@ -6,6 +6,7 @@ import {
 	type AccountStorageV3,
 	findMatchingAccountIndex,
 	getLastAccountsSaveTimestamp,
+	getRedactedFilesystemErrorLabel,
 	getStoragePath,
 	normalizeEmailKey,
 } from "../storage.js";
@@ -683,7 +684,9 @@ export async function previewCodexCliSync(
 	} catch (error) {
 		return {
 			status: "error",
-			statusDetail: error instanceof Error ? error.message : String(error),
+			statusDetail: `Failed to build sync preview (${getRedactedFilesystemErrorLabel(
+				error,
+			)}).`,
 			sourcePath: null,
 			sourceAccountCount: null,
 			targetPath,

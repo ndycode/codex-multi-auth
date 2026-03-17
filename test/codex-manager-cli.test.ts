@@ -4379,29 +4379,9 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		previewCodexCliSyncMock.mockResolvedValue({
-			status: "error",
-			statusDetail: "busy",
-			sourcePath: null,
-			sourceAccountCount: null,
-			targetPath: "/mock/openai-codex-accounts.json",
-			summary: {
-				sourceAccountCount: 0,
-				targetAccountCountBefore: 1,
-				targetAccountCountAfter: 1,
-				addedAccountCount: 0,
-				updatedAccountCount: 0,
-				unchangedAccountCount: 0,
-				destinationOnlyPreservedCount: 0,
-				selectionChanged: false,
-			},
-			backup: {
-				enabled: true,
-				targetPath: "/mock/openai-codex-accounts.json",
-				rollbackPaths: ["/mock/openai-codex-accounts.json.bak"],
-			},
-			lastSync: null,
-		});
+		previewCodexCliSyncMock.mockRejectedValue(
+			Object.assign(new Error("missing"), { code: "ENOENT" }),
+		);
 
 		let selectCall = 0;
 		selectMock.mockImplementation(async (items) => {
@@ -4412,7 +4392,7 @@ describe("codex manager cli commands", () => {
 					.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
 					.join("\n");
 				expect(text).toContain("Status: error");
-				expect(text).toContain("busy");
+				expect(text).toContain("Failed to refresh sync center (ENOENT).");
 				return { type: "back" };
 			}
 			return { type: "back" };
@@ -4518,29 +4498,9 @@ describe("codex manager cli commands", () => {
 				},
 				lastSync: null,
 			})
-			.mockResolvedValueOnce({
-				status: "error",
-				statusDetail: "busy",
-				sourcePath: null,
-				sourceAccountCount: null,
-				targetPath: "/mock/openai-codex-accounts.json",
-				summary: {
-					sourceAccountCount: 0,
-					targetAccountCountBefore: 1,
-					targetAccountCountAfter: 1,
-					addedAccountCount: 0,
-					updatedAccountCount: 0,
-					unchangedAccountCount: 0,
-					destinationOnlyPreservedCount: 0,
-					selectionChanged: false,
-				},
-				backup: {
-					enabled: true,
-					targetPath: "/mock/openai-codex-accounts.json",
-					rollbackPaths: ["/mock/openai-codex-accounts.json.bak"],
-				},
-				lastSync: null,
-			});
+			.mockRejectedValueOnce(
+				Object.assign(new Error("busy"), { code: "EIO" }),
+			);
 
 		let selectCall = 0;
 		selectMock.mockImplementation(async (items) => {
@@ -4552,7 +4512,7 @@ describe("codex manager cli commands", () => {
 					.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
 					.join("\n");
 				expect(text).toContain("Status: error");
-				expect(text).toContain("busy");
+				expect(text).toContain("Failed to refresh sync center (EIO).");
 				return { type: "back" };
 			}
 			return { type: "back" };
@@ -5316,7 +5276,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "settings" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		previewCodexCliSyncMock.mockResolvedValueOnce({
+		previewCodexCliSyncMock.mockResolvedValue({
 			status: "ready",
 			statusDetail: "Preview ready.",
 			sourcePath: "/mock/codex/accounts.json",
@@ -5389,9 +5349,11 @@ describe("codex manager cli commands", () => {
 				destinationOnlyPreservedCount: 1,
 				selectionChanged: false,
 			},
-			message: "busy",
+			message: "missing",
 		});
-		saveAccountsMock.mockRejectedValue(new Error("busy"));
+		saveAccountsMock.mockRejectedValue(
+			Object.assign(new Error("missing"), { code: "ENOENT" }),
+		);
 
 		let selectCall = 0;
 		selectMock.mockImplementation(async (items) => {
@@ -5402,7 +5364,7 @@ describe("codex manager cli commands", () => {
 				const text = (items as Array<{ label?: string; hint?: string }>)
 					.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
 					.join("\n");
-				expect(text).toContain("Failed to save synced storage: busy");
+				expect(text).toContain("Failed to save synced storage (ENOENT).");
 				return { type: "back" };
 			}
 			return { type: "back" };

@@ -48,6 +48,7 @@ import {
 } from "../oc-chatgpt-orchestrator.js";
 import { detectOcChatgptMultiAuthTarget } from "../oc-chatgpt-target-detection.js";
 import {
+	getRedactedFilesystemErrorLabel,
 	getStoragePath,
 	loadAccounts,
 	loadAccountsReadOnly,
@@ -783,6 +784,10 @@ function warnPersistFailure(scope: string, error: unknown): void {
 	console.warn(
 		`Settings save failed (${scope}) after retries: ${formatPersistError(error)}`,
 	);
+}
+
+function formatSyncCenterStatusError(action: string, error: unknown): string {
+	return `${action} (${getRedactedFilesystemErrorLabel(error)}).`;
 }
 
 async function persistDashboardSettingsSelection(
@@ -2772,9 +2777,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 			);
 		} catch (error) {
 			return buildErrorState(
-				`Failed to refresh sync center: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				formatSyncCenterStatusError("Failed to refresh sync center", error),
 				previousPreview,
 			);
 		}
@@ -2877,9 +2880,10 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 					...preview,
 					lastSync: getLastCodexCliSyncRun(),
 					status: "error",
-					statusDetail: `Failed to save synced storage: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
+					statusDetail: formatSyncCenterStatusError(
+						"Failed to save synced storage",
+						error,
+					),
 				};
 				continue;
 			}
@@ -2895,9 +2899,10 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				...preview,
 				status: "error",
 				lastSync: getLastCodexCliSyncRun(),
-				statusDetail: `Failed to refresh sync center: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				statusDetail: formatSyncCenterStatusError(
+					"Failed to refresh sync center",
+					error,
+				),
 			};
 		}
 	}
