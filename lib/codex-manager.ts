@@ -3587,14 +3587,12 @@ async function runDoctor(args: string[]): Promise<number> {
 	addCheck({
 		key: "recovery-chain",
 		severity:
-			storageExists ||
 			walExists ||
 			validRotatingBackups.length > 0 ||
 			validSnapshots.length > 0
 				? "ok"
 				: "warn",
 		message:
-			storageExists ||
 			walExists ||
 			validRotatingBackups.length > 0 ||
 			validSnapshots.length > 0

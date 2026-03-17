@@ -91,6 +91,17 @@ describe("sync history", () => {
 		};
 	}
 
+	function createDeferred(): {
+		promise: Promise<void>;
+		resolve: () => void;
+	} {
+		let resolve = (): void => {};
+		const promise = new Promise<void>((resolvePromise) => {
+			resolve = resolvePromise;
+		});
+		return { promise, resolve };
+	}
+
 	it("reads the last matching history entry without loading the whole file", async () => {
 		await appendSyncHistoryEntry({
 			kind: "codex-cli-sync",
@@ -270,5 +281,152 @@ describe("sync history", () => {
 				sourcePath: "source-2.json",
 			}),
 		});
+	});
+
+	it("retries transient rename failures while pruning history files", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/source-1"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "live-account-sync",
+			recordedAt: 2,
+			reason: "watch",
+			outcome: "success",
+			path: "/watch-1",
+			snapshot: createLiveSnapshot(2, "/watch-1"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 3,
+			run: createCodexRun(3, "/source-2"),
+		});
+
+		const originalRename = fs.rename.bind(fs);
+		let failedHistoryRename = false;
+		const renameSpy = vi
+			.spyOn(fs, "rename")
+			.mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+				const [, targetPath] = args;
+				if (
+					!failedHistoryRename &&
+					typeof targetPath === "string" &&
+					targetPath.endsWith("sync-history.ndjson")
+				) {
+					failedHistoryRename = true;
+					const error = new Error("locked") as NodeJS.ErrnoException;
+					error.code = "EPERM";
+					throw error;
+				}
+				return originalRename(...args);
+			});
+
+		const result = await pruneSyncHistory({ maxEntries: 1 });
+
+		expect(result.kept).toBe(2);
+		expect(renameSpy).toHaveBeenCalled();
+		expect(failedHistoryRename).toBe(true);
+		expect((await readSyncHistory()).map((entry) => entry.recordedAt)).toEqual([
+			2,
+			3,
+		]);
+		expect(readLatestSyncHistorySync()?.recordedAt).toBe(3);
+	});
+
+	it("waits for in-flight prune rewrites before serving reads", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/source-1"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "live-account-sync",
+			recordedAt: 2,
+			reason: "watch",
+			outcome: "success",
+			path: "/watch-1",
+			snapshot: createLiveSnapshot(2, "/watch-1"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 3,
+			run: createCodexRun(3, "/source-2"),
+		});
+
+		const writeGate = createDeferred();
+		const originalWriteFile = fs.writeFile.bind(fs);
+		let blockedPruneWrite = false;
+		vi.spyOn(fs, "writeFile").mockImplementation(
+			async (...args: Parameters<typeof fs.writeFile>) => {
+				const [targetPath] = args;
+				if (
+					!blockedPruneWrite &&
+					typeof targetPath === "string" &&
+					targetPath.includes("sync-history.ndjson.tmp")
+				) {
+					blockedPruneWrite = true;
+					await writeGate.promise;
+				}
+				return originalWriteFile(...args);
+			},
+		);
+
+		const prunePromise = pruneSyncHistory({ maxEntries: 1 });
+		await vi.waitFor(() => {
+			expect(blockedPruneWrite).toBe(true);
+		});
+
+		let readResolved = false;
+		const readPromise = readSyncHistory().then((history) => {
+			readResolved = true;
+			return history;
+		});
+
+		await Promise.resolve();
+		expect(readResolved).toBe(false);
+
+		writeGate.resolve();
+		const [pruneResult, history] = await Promise.all([prunePromise, readPromise]);
+
+		expect(pruneResult.kept).toBe(2);
+		expect(history.map((entry) => entry.recordedAt)).toEqual([2, 3]);
+		expect(readLatestSyncHistorySync()?.recordedAt).toBe(3);
+	});
+
+	it("retries transient latest-file removal when pruning empty history", async () => {
+		const latestPath = getSyncHistoryPaths().latestPath;
+		await fs.writeFile(
+			latestPath,
+			`${JSON.stringify({
+				kind: "codex-cli-sync",
+				recordedAt: 7,
+				run: createCodexRun(7, "/stale"),
+			})}\n`,
+			"utf8",
+		);
+
+		const originalRm = fs.rm.bind(fs);
+		let failedLatestRemove = false;
+		vi.spyOn(fs, "rm").mockImplementation(async (...args: Parameters<typeof fs.rm>) => {
+			const [targetPath] = args;
+			if (
+				!failedLatestRemove &&
+				typeof targetPath === "string" &&
+				targetPath === latestPath
+			) {
+				failedLatestRemove = true;
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			}
+			return originalRm(...args);
+		});
+
+		const result = await pruneSyncHistory();
+
+		expect(result.kept).toBe(0);
+		expect(failedLatestRemove).toBe(true);
+		expect(readLatestSyncHistorySync()).toBeNull();
 	});
 });

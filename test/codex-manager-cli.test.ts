@@ -1,4 +1,8 @@
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 const createAuthorizationFlowMock = vi.fn();
 const exchangeAuthorizationCodeMock = vi.fn();
@@ -5085,6 +5089,39 @@ describe("codex manager cli commands", () => {
 		expect(checkpoint).toBeDefined();
 		expect(checkpoint?.severity).toBe("ok");
 		expect(checkpoint?.details).toBe("/mock/backups/rollback.json");
+	});
+
+	it("reports recovery-chain as warn when only the storage file exists", async () => {
+		const storageDir = await fs.mkdtemp(join(tmpdir(), "codex-doctor-storage-"));
+		const storagePath = join(storageDir, "openai-codex-accounts.json");
+		await fs.writeFile(storagePath, JSON.stringify({ version: 3, accounts: [] }), "utf8");
+		getStoragePathMock.mockReturnValueOnce(storagePath);
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "doctor", "--json"]);
+			expect(exitCode).toBe(0);
+
+			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				checks: Array<{ key: string; severity: string; details?: string }>;
+			};
+			const recoveryChain = payload.checks.find(
+				(check) => check.key === "recovery-chain",
+			);
+			expect(recoveryChain).toBeDefined();
+			expect(recoveryChain?.severity).toBe("warn");
+			expect(recoveryChain?.details).toContain("storage=true");
+			expect(recoveryChain?.details).toContain("wal=false");
+		} finally {
+			await removeWithRetry(storageDir, { recursive: true, force: true });
+		}
 	});
 
 	it("reports actionable named backup restores in doctor json output", async () => {

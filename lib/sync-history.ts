@@ -10,7 +10,13 @@ const log = createLogger("sync-history");
 const HISTORY_FILE_NAME = "sync-history.ndjson";
 const LATEST_FILE_NAME = "sync-history-latest.json";
 const MAX_HISTORY_ENTRIES = 200;
-const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const RETRYABLE_REMOVE_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"ENOTEMPTY",
+	"EACCES",
+]);
+const RETRYABLE_RENAME_CODES = new Set(["EBUSY", "EPERM", "EACCES"]);
 
 type SyncHistoryKind = "codex-cli-sync" | "live-account-sync";
 
@@ -87,6 +93,17 @@ async function waitForPendingHistoryWrites(): Promise<void> {
 	while (pendingHistoryWrites.size > 0) {
 		await Promise.allSettled(Array.from(pendingHistoryWrites));
 	}
+}
+
+function trackPendingHistoryWrite<T>(promise: Promise<T>): Promise<T> {
+	const trackedPromise = promise.then(
+		() => undefined,
+		() => undefined,
+	);
+	pendingHistoryWrites.add(trackedPromise);
+	return promise.finally(() => {
+		pendingHistoryWrites.delete(trackedPromise);
+	});
 }
 
 async function ensureHistoryDir(directory: string): Promise<void> {
@@ -245,12 +262,60 @@ export function pruneSyncHistoryEntries(
 	};
 }
 
+async function waitForHistoryRetry(attempt: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+}
+
+async function removeHistoryFileWithRetry(targetPath: string): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.rm(targetPath, { force: true });
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (
+				!code ||
+				!RETRYABLE_REMOVE_CODES.has(code) ||
+				attempt === 4
+			) {
+				throw error;
+			}
+			await waitForHistoryRetry(attempt);
+		}
+	}
+}
+
+async function renameHistoryFileWithRetry(
+	tempPath: string,
+	targetPath: string,
+): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.rename(tempPath, targetPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				!code ||
+				!RETRYABLE_RENAME_CODES.has(code) ||
+				attempt === 4
+			) {
+				throw error;
+			}
+			await waitForHistoryRetry(attempt);
+		}
+	}
+}
+
 async function rewriteLatestEntry(
 	latest: SyncHistoryEntry | null,
 	paths: SyncHistoryPaths,
 ): Promise<void> {
 	if (!latest) {
-		await fs.rm(paths.latestPath, { force: true });
+		await removeHistoryFileWithRetry(paths.latestPath);
 		return;
 	}
 	await writeHistoryFileAtomically(
@@ -271,9 +336,9 @@ async function writeHistoryFileAtomically(
 			encoding: "utf8",
 			mode: 0o600,
 		});
-		await fs.rename(tempPath, targetPath);
+		await renameHistoryFileWithRetry(tempPath, targetPath);
 	} catch (error) {
-		await fs.rm(tempPath, { force: true }).catch(() => {});
+		await removeHistoryFileWithRetry(tempPath).catch(() => {});
 		throw error;
 	}
 }
@@ -285,7 +350,7 @@ async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<PrunedS
 		return result;
 	}
 	if (result.entries.length === 0) {
-		await fs.rm(paths.historyPath, { force: true });
+		await removeHistoryFileWithRetry(paths.historyPath);
 		return result;
 	}
 	await writeHistoryFileAtomically(
@@ -298,7 +363,7 @@ async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<PrunedS
 export async function appendSyncHistoryEntry(
 	entry: SyncHistoryEntry,
 ): Promise<void> {
-	const writePromise = withHistoryLock(async () => {
+	const writePromise = trackPendingHistoryWrite(withHistoryLock(async () => {
 		const paths = getSyncHistoryPaths();
 		lastAppendPaths = paths;
 		await ensureHistoryDir(paths.directory);
@@ -309,8 +374,7 @@ export async function appendSyncHistoryEntry(
 		const prunedHistory = await trimHistoryFileIfNeeded(paths);
 		await rewriteLatestEntry(prunedHistory.latest ?? entry, paths);
 		lastAppendError = null;
-	});
-	pendingHistoryWrites.add(writePromise);
+	}));
 	try {
 		await writePromise;
 	} catch (error) {
@@ -319,8 +383,6 @@ export async function appendSyncHistoryEntry(
 			error: lastAppendError,
 		});
 		throw error;
-	} finally {
-		pendingHistoryWrites.delete(writePromise);
 	}
 }
 
@@ -374,13 +436,13 @@ export async function pruneSyncHistory(
 ): Promise<{ removed: number; kept: number; latest: SyncHistoryEntry | null }> {
 	const maxEntries = options.maxEntries ?? MAX_HISTORY_ENTRIES;
 	await waitForPendingHistoryWrites();
-	return withHistoryLock(async () => {
+	return trackPendingHistoryWrite(withHistoryLock(async () => {
 		const paths = getSyncHistoryPaths();
 		await ensureHistoryDir(paths.directory);
 		const entries = await loadHistoryEntriesFromDisk(paths);
 		const result = pruneSyncHistoryEntries(entries, maxEntries);
 		if (result.entries.length === 0) {
-			await fs.rm(paths.historyPath, { force: true });
+			await removeHistoryFileWithRetry(paths.historyPath);
 		} else {
 			await writeHistoryFileAtomically(
 				paths.historyPath,
@@ -393,7 +455,7 @@ export async function pruneSyncHistory(
 			kept: result.entries.length,
 			latest: result.latest,
 		};
-	});
+	}));
 }
 
 export function cloneSyncHistoryEntry(
@@ -411,24 +473,7 @@ export async function __resetSyncHistoryForTests(): Promise<void> {
 	await waitForPendingHistoryWrites();
 	await withHistoryLock(async () => {
 		for (const target of [paths.historyPath, paths.latestPath]) {
-			for (let attempt = 0; attempt < 5; attempt += 1) {
-				try {
-					await fs.rm(target, { force: true });
-					break;
-				} catch (error) {
-					const code = (error as NodeJS.ErrnoException).code;
-					if (
-						!code ||
-						!RETRYABLE_REMOVE_CODES.has(code) ||
-						attempt === 4
-					) {
-						throw error;
-					}
-					await new Promise((resolve) =>
-						setTimeout(resolve, 25 * 2 ** attempt),
-					);
-				}
-			}
+			await removeHistoryFileWithRetry(target);
 		}
 	});
 	lastAppendError = null;
