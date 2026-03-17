@@ -211,7 +211,7 @@ codex auth forecast --live
 
 The Settings menu now includes an `Experimental` section for staged features:
 
-- preview-first sync into `oc-chatgpt-multi-auth`
+- preview-first sync into the companion `oc-chatgpt-multi-auth` account pool
 - named local pool backup export with filename prompt
 - refresh guard toggle and interval controls moved out of Backend Controls
 
@@ -244,7 +244,7 @@ codex auth login
 - `codex auth` unrecognized: run `where codex`, then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
-- Interactive login skipped restore and went straight to OAuth: place named backups in `~/.codex/multi-auth/backups/`, then rerun `codex auth login` in a normal TTY
+- Interactive login skipped restore and went straight to OAuth: place named backups in your active backup root (`$CODEX_MULTI_AUTH_DIR/backups` or `%CODEX_MULTI_AUTH_DIR%\backups`; default examples: `~/.codex/multi-auth/backups/` and `C:\Users\<User>\.codex\multi-auth\backups\`), then rerun `codex auth login` in a normal TTY
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account
 
 </details>

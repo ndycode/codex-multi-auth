@@ -20,7 +20,7 @@ Compatibility aliases are supported:
 
 | Command | Description |
 | --- | --- |
-| `codex auth login` | Open interactive auth dashboard, including login, restore, settings, and diagnostics entry points |
+| `codex auth login` | Open interactive auth dashboard, including login, restore, settings, and dashboard paths and links to diagnostics commands |
 | `codex auth list` | List saved accounts and active account |
 | `codex auth status` | Print short runtime/account summary |
 | `codex auth switch <index>` | Set active account by index |

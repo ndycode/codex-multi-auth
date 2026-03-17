@@ -344,7 +344,7 @@ describe("Documentation Integrity", () => {
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.summaryFields}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.behavior}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.theme}`);
-		expect(settingsRef).toContain("## Advanced and Operator Controls");
+		expect(settingsRef).toContain("## Advanced & Operator");
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.syncCenter}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.experimental}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.backend}`);

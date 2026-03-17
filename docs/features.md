@@ -24,7 +24,7 @@ User-facing capability map for `codex-multi-auth`.
 | --- | --- | --- |
 | Readiness and risk forecast | Suggests the best next account | `codex auth forecast` |
 | Live quota probe mode | Uses live headers for stronger decisions | `codex auth forecast --live` |
-| JSON report output | Lets you inspect account state in automation or support workflows | `codex auth report --live --json` |
+| JSON report and diagnostics pack | Lets you inspect account state in automation, support, and bug-report workflows | `codex auth report --live --json` |
 
 ---
 
@@ -34,7 +34,6 @@ User-facing capability map for `codex-multi-auth`.
 | --- | --- | --- |
 | Safe repair workflow | Detects and repairs known local storage inconsistencies | `codex auth fix` |
 | Diagnostics with optional repair | One command to inspect and optionally fix common failures | `codex auth doctor` |
-| JSON diagnostics pack | Machine-readable state for support, bug reports, and deeper inspection | `codex auth report --live --json` |
 | Backup and WAL recovery | Safer persistence when local writes are interrupted or partially applied | storage runtime |
 
 ---
