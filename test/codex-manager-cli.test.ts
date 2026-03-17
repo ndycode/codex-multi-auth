@@ -3937,7 +3937,9 @@ describe("codex manager cli commands", () => {
 			expect.any(Array),
 			expect.objectContaining({
 				healthSummary: expect.objectContaining({
-					label: expect.stringContaining("Pool 1 active"),
+					label: expect.stringMatching(
+						/^((?!Sync unknown)(?!Doctor unknown).)*Pool 1 active.*$/s,
+					),
 				}),
 			}),
 		);
