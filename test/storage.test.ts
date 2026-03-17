@@ -2343,6 +2343,71 @@ describe("storage", () => {
 			]);
 		});
 
+		it("passes the first loaded storage snapshot to createBackup when no storage is provided", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "before-reread",
+						refreshToken: "ref-before-reread",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			let observedStorage:
+				| {
+						accounts: Array<{ accountId?: string }>;
+				  }
+				| undefined;
+
+			const snapshot = await snapshotAccountStorage({
+				reason: "reset-local-state",
+				createBackup: async (name, options) => {
+					observedStorage = options.storage as {
+						accounts: Array<{ accountId?: string }>;
+					};
+					await fs.writeFile(
+						testStoragePath,
+						JSON.stringify({
+							version: 3,
+							activeIndex: 0,
+							accounts: [
+								{
+									accountId: "after-reread",
+									refreshToken: "ref-after-reread",
+									addedAt: 2,
+									lastUsed: 2,
+								},
+							],
+						}),
+						"utf-8",
+					);
+					return {
+						name,
+						path: join(getNamedBackupsDirectoryPath(), `${name}.json`),
+						createdAt: null,
+						updatedAt: null,
+						sizeBytes: null,
+						version: 3,
+						accountCount: options.storage?.accounts.length ?? null,
+						schemaErrors: [],
+						valid: true,
+					};
+				},
+			});
+
+			expect(snapshot?.accountCount).toBe(1);
+			expect(observedStorage?.accounts).toEqual([
+				expect.objectContaining({ accountId: "before-reread" }),
+			]);
+			expect((await loadAccounts())?.accounts).toEqual([
+				expect.objectContaining({ accountId: "after-reread" }),
+			]);
+		});
+
 		it("creates a named snapshot before deleteSavedAccounts", async () => {
 			await saveAccounts({
 				version: 3,
@@ -2369,6 +2434,81 @@ describe("storage", () => {
 				accounts: [],
 				restoreReason: "intentional-reset",
 			});
+		});
+
+		it("clears the pre-delete snapshot before releasing the lock to newer saves", async () => {
+			const originalWriteFile = fs.writeFile.bind(fs);
+			let releaseSnapshotWrite: (() => void) | undefined;
+			const snapshotWriteBlocked = new Promise<void>((resolve) => {
+				releaseSnapshotWrite = resolve;
+			});
+			let snapshotWriteStarted = false;
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (path, data, options) => {
+					if (
+						!snapshotWriteStarted &&
+						String(path).includes("accounts-delete-saved-accounts-snapshot-")
+					) {
+						snapshotWriteStarted = true;
+						await snapshotWriteBlocked;
+					}
+					return originalWriteFile(path, data as never, options as never);
+				});
+
+			try {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "delete-original",
+							refreshToken: "ref-delete-original",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
+
+				const deletePromise = deleteSavedAccounts();
+				await vi.waitFor(() => {
+					expect(snapshotWriteStarted).toBe(true);
+				});
+
+				const concurrentSave = saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "saved-after-delete",
+							refreshToken: "ref-saved-after-delete",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				});
+
+				releaseSnapshotWrite?.();
+
+				await expect(deletePromise).resolves.toMatchObject({
+					accountsCleared: true,
+				});
+				await expect(concurrentSave).resolves.toBeUndefined();
+
+				expect((await loadAccounts())?.accounts).toEqual([
+					expect.objectContaining({ accountId: "saved-after-delete" }),
+				]);
+
+				const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+				expect(
+					entries.some((name) =>
+						name.startsWith("accounts-delete-saved-accounts-snapshot-"),
+					),
+				).toBe(true);
+			} finally {
+				releaseSnapshotWrite?.();
+				writeFileSpy.mockRestore();
+			}
 		});
 
 		it("creates a named snapshot before resetLocalState", async () => {

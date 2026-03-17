@@ -3360,54 +3360,74 @@ export async function saveAccounts(
 	});
 }
 
+async function clearAccountsUnlocked(storagePath: string): Promise<boolean> {
+	const resetMarkerPath = getIntentionalResetMarkerPath(storagePath);
+	const walPath = getAccountsWalPath(storagePath);
+	const backupPaths =
+		await getAccountsBackupRecoveryCandidatesWithDiscovery(storagePath);
+	const legacyPaths = Array.from(
+		new Set(
+			[currentLegacyProjectStoragePath, currentLegacyWorktreeStoragePath].filter(
+				(candidate): candidate is string =>
+					typeof candidate === "string" && candidate.length > 0,
+			),
+		),
+	);
+	await fs.writeFile(
+		resetMarkerPath,
+		JSON.stringify({ version: 1, createdAt: Date.now() }),
+		{ encoding: "utf-8", mode: 0o600 },
+	);
+	let hadError = false;
+	const clearPath = async (targetPath: string): Promise<void> => {
+		try {
+			await unlinkWithRetry(targetPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				hadError = true;
+				log.error("Failed to clear account storage artifact", {
+					path: targetPath,
+					error: String(error),
+				});
+			}
+		}
+	};
+
+	try {
+		const artifacts = Array.from(
+			new Set([storagePath, walPath, ...backupPaths, ...legacyPaths]),
+		);
+		await Promise.all(artifacts.map(clearPath));
+	} catch {
+		// Individual path cleanup is already best-effort with per-artifact logging.
+	}
+
+	return !hadError;
+}
+
+export async function snapshotAndClearAccounts(
+	reason: AccountSnapshotReason,
+): Promise<boolean> {
+	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
+		const currentStorage = await loadAccountsInternal(saveAccountsUnlocked);
+		await snapshotAccountStorage({
+			reason,
+			storage: currentStorage,
+			storagePath,
+		});
+		return clearAccountsUnlocked(storagePath);
+	});
+}
+
 /**
  * Deletes the account storage file from disk.
  * Silently ignores if file doesn't exist.
  */
 export async function clearAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
-		const path = getStoragePath();
-		const resetMarkerPath = getIntentionalResetMarkerPath(path);
-		const walPath = getAccountsWalPath(path);
-		const backupPaths =
-			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		const legacyPaths = Array.from(
-			new Set(
-				[currentLegacyProjectStoragePath, currentLegacyWorktreeStoragePath].filter(
-					(candidate): candidate is string =>
-						typeof candidate === "string" && candidate.length > 0,
-				),
-			),
-		);
-		await fs.writeFile(
-			resetMarkerPath,
-			JSON.stringify({ version: 1, createdAt: Date.now() }),
-			{ encoding: "utf-8", mode: 0o600 },
-		);
-		let hadError = false;
-		const clearPath = async (targetPath: string): Promise<void> => {
-			try {
-				await unlinkWithRetry(targetPath);
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					hadError = true;
-					log.error("Failed to clear account storage artifact", {
-						path: targetPath,
-						error: String(error),
-					});
-				}
-			}
-		};
-
-		try {
-			const artifacts = Array.from(new Set([path, walPath, ...backupPaths, ...legacyPaths]));
-			await Promise.all(artifacts.map(clearPath));
-		} catch {
-			// Individual path cleanup is already best-effort with per-artifact logging.
-		}
-
-		return !hadError;
+		return clearAccountsUnlocked(getStoragePath());
 	});
 }
 
