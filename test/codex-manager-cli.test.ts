@@ -142,6 +142,9 @@ vi.mock("../lib/storage.js", async () => {
 		listNamedBackups: listNamedBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
+		restoreAssessedNamedBackup: async (assessment: {
+			backup: { name: string };
+		}) => restoreNamedBackupMock(assessment.backup.name),
 		restoreNamedBackup: restoreNamedBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,

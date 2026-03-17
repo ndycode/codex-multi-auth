@@ -68,7 +68,7 @@ import {
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
 	NAMED_BACKUP_LIST_CONCURRENCY,
-	restoreNamedBackup,
+	restoreAssessedNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -4510,7 +4510,7 @@ async function runBackupRestoreManager(
 	if (!confirmed) return "dismissed";
 
 	try {
-		const result = await restoreNamedBackup(latestAssessment.backup.name);
+		const result = await restoreAssessedNamedBackup(latestAssessment);
 		if (result.changed === false) {
 			console.log("All accounts in this backup already exist");
 		} else if (result.imported === 0) {
