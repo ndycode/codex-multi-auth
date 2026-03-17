@@ -3829,6 +3829,7 @@ async function handleManageAction(
 				});
 				if (deleted) {
 					Object.assign(storage, deleted.storage);
+					await autoSyncActiveAccountToCodex();
 					const label = `Account ${idx + 1}`;
 					const flaggedNote =
 						deleted.removedFlaggedCount > 0
