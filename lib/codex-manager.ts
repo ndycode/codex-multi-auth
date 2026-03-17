@@ -4124,7 +4124,7 @@ async function runAuthLogin(): Promise<number> {
 							displaySettings,
 							recoveryState.allAssessments,
 						);
-						if (restoreResult !== "restored") {
+						if (restoreResult === "dismissed") {
 							pendingRecoveryState = recoveryState;
 							recoveryPromptAttempted = false;
 						}

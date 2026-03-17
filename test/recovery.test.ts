@@ -458,6 +458,65 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		}
 	});
 
+	it("surfaces failed backup assessments when every fast-path backup read fails", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "locked@example.com",
+					refreshToken: "locked-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("locked-backup");
+		await storage.saveAccounts(emptyStorage);
+
+		const backups = await storage.listNamedBackups();
+		const lockedBackup = backups.find((backup) => backup.name === "locked-backup");
+		expect(lockedBackup).toBeDefined();
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(
+			(async (...args: Parameters<typeof fs.readFile>) => {
+				const [path] = args;
+				if (path === lockedBackup?.path) {
+					const error = new Error("resource busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalReadFile(...args);
+			}) as typeof fs.readFile,
+		);
+
+		try {
+			const result = await storage.getActionableNamedBackupRestores({
+				currentStorage: emptyStorage,
+			});
+
+			expect(result.totalBackups).toBe(1);
+			expect(result.assessments).toEqual([]);
+			expect(result.allAssessments).toHaveLength(1);
+			expect(result.allAssessments[0]).toMatchObject({
+				backup: expect.objectContaining({ name: "locked-backup" }),
+				eligibleForRestore: false,
+				error: expect.stringContaining("busy"),
+			});
+		} finally {
+			readFileSpy.mockRestore();
+		}
+	});
+
 	it("keeps actionable backups when fast-path metadata stat hits EBUSY", async () => {
 		const storage = await import("../lib/storage.js");
 		const emptyStorage = {

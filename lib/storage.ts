@@ -160,6 +160,8 @@ interface LoadedBackupCandidate {
 	storedVersion: unknown;
 	schemaErrors: string[];
 	error?: string;
+	errorCode?: string;
+	errorCause?: unknown;
 }
 
 interface NamedBackupScanEntry {
@@ -182,6 +184,8 @@ function createUnloadedBackupCandidate(): LoadedBackupCandidate {
 		normalized: null,
 		storedVersion: null,
 		schemaErrors: [],
+		errorCode: undefined,
+		errorCause: undefined,
 	};
 }
 
@@ -1674,8 +1678,10 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 		const backupEntries = entries
 			.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
 			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
-		const backups: NamedBackupScanEntry[] = [];
-		const totalBackups = backupEntries.length;
+			const backups: NamedBackupScanEntry[] = [];
+			const totalBackups = backupEntries.length;
+			let failedCount = 0;
+			let firstFailedScanError: unknown;
 		for (
 			let index = 0;
 			index < backupEntries.length;
@@ -1695,10 +1701,23 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 							const backup = await buildNamedBackupMetadata(name, path, {
 								candidate,
 							});
+							if (
+								typeof candidate.errorCode === "string" &&
+								candidate.errorCode !== "ENOENT"
+							) {
+								failedCount += 1;
+								firstFailedScanError ??=
+									candidate.errorCause ??
+									Object.assign(new Error(candidate.error ?? candidate.errorCode), {
+										code: candidate.errorCode,
+									});
+							}
 							return { backup, candidate };
 						} catch (error) {
 							const code = (error as NodeJS.ErrnoException).code;
 							if (code !== "ENOENT") {
+								failedCount += 1;
+								firstFailedScanError ??= error;
 								log.warn("Failed to scan named backup", {
 									name,
 									path,
@@ -1713,10 +1732,17 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 				),
 			);
 		}
-		return {
-			backups: backups.sort(
-				(left, right) =>
-					normalizeBackupUpdatedAt(right.backup.updatedAt) -
+			if (
+				totalBackups > 0 &&
+				failedCount === totalBackups &&
+				firstFailedScanError !== undefined
+			) {
+				throw firstFailedScanError;
+			}
+			return {
+				backups: backups.sort(
+					(left, right) =>
+						normalizeBackupUpdatedAt(right.backup.updatedAt) -
 					normalizeBackupUpdatedAt(left.backup.updatedAt),
 			),
 			totalBackups,
@@ -2109,14 +2135,19 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 					: error instanceof Error
 						? error.message
 						: String(error);
-		return {
-			normalized: null,
-			storedVersion: undefined,
-			schemaErrors: [],
-			error: errorMessage,
-		};
+			return {
+				normalized: null,
+				storedVersion: undefined,
+				schemaErrors: [],
+				error: errorMessage,
+				errorCode:
+					typeof (error as NodeJS.ErrnoException).code === "string"
+						? (error as NodeJS.ErrnoException).code
+						: undefined,
+				errorCause: error,
+			};
+		}
 	}
-}
 
 function equalsNamedBackupEntry(left: string, right: string): boolean {
 	return process.platform === "win32"

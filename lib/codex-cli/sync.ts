@@ -23,7 +23,11 @@ import {
 import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
-const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
+const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EAGAIN",
+]);
 export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 7;
 
 function createEmptyStorage(): AccountStorageV3 {
@@ -488,12 +492,12 @@ function shouldApplyCodexCliSelection(
 		getLastAccountsSaveTimestamp(),
 		getLastCodexCliSelectionWriteTimestamp(),
 	);
-	if (persistedLocalTimestamp === null && inProcessLocalVersion <= 0) {
+	if (persistedLocalTimestamp === null) {
 		return false;
 	}
 	const localVersion = Math.max(
 		inProcessLocalVersion,
-		persistedLocalTimestamp ?? 0,
+		persistedLocalTimestamp,
 	);
 	if (codexVersion <= 0) return localVersion <= 0;
 	if (localVersion <= 0) {

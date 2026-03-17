@@ -2391,7 +2391,7 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("re-prompts startup recovery after restore fails inside the backup browser", async () => {
+	it("continues to OAuth after restore fails inside the backup browser", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		let storageState = {
@@ -2434,8 +2434,7 @@ describe("codex manager cli commands", () => {
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock
 			.mockResolvedValueOnce(true)
-			.mockResolvedValueOnce(true)
-			.mockResolvedValueOnce(false);
+			.mockResolvedValueOnce(true);
 		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
 		restoreNamedBackupMock.mockRejectedValueOnce(
 			makeErrnoError("resource busy", "EBUSY"),
@@ -2449,7 +2448,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
-		expect(confirmMock).toHaveBeenCalledTimes(3);
+		expect(confirmMock).toHaveBeenCalledTimes(2);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("startup-backup");
 		expect(warnSpy).toHaveBeenCalledWith(
 			'Failed to restore backup "startup-backup" (EBUSY).',
@@ -2539,7 +2538,7 @@ describe("codex manager cli commands", () => {
 		warnSpy.mockRestore();
 	});
 
-	it("falls back to OAuth when startup recovery re-assessment throws EBUSY", async () => {
+	it("continues to OAuth when startup recovery re-assessment throws EBUSY", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		let storageState = {
@@ -2578,7 +2577,7 @@ describe("codex manager cli commands", () => {
 			allAssessments: [assessment],
 			totalBackups: 1,
 		});
-		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+		confirmMock.mockResolvedValueOnce(true);
 		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
 		assessNamedBackupRestoreMock.mockRejectedValueOnce(
 			makeErrnoError("resource busy", "EBUSY"),
@@ -2592,7 +2591,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
-		expect(confirmMock).toHaveBeenCalledTimes(2);
+		expect(confirmMock).toHaveBeenCalledTimes(1);
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
 			"startup-backup",
 			expect.objectContaining({
