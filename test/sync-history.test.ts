@@ -267,4 +267,63 @@ describe("sync history", () => {
 		expect(latestLive?.recordedAt).toBe(10_000);
 		expect(readLatestSyncHistorySync()?.recordedAt).toBe(10_000);
 	});
+
+	it("skips trim reads while append count stays within the default cap", async () => {
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const readFileSpy = vi.spyOn(fs, "readFile");
+
+		for (let index = 0; index < 200; index += 1) {
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: index + 1,
+				run: createCodexRun(index + 1, `/codex-${index + 1}`),
+			});
+		}
+
+		const historyReads = readFileSpy.mock.calls.filter(
+			([target]) => target === historyPath,
+		);
+		expect(historyReads).toHaveLength(0);
+	});
+
+	it("reloads and trims once when append count crosses the default cap", async () => {
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const readFileSpy = vi.spyOn(fs, "readFile");
+
+		for (let index = 0; index < 201; index += 1) {
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: index + 1,
+				run: createCodexRun(index + 1, `/codex-${index + 1}`),
+			});
+		}
+
+		const historyReads = readFileSpy.mock.calls.filter(
+			([target]) => target === historyPath,
+		);
+		expect(historyReads).toHaveLength(1);
+		expect((await readSyncHistory()).length).toBeLessThanOrEqual(200);
+	});
+
+	it("re-reads seeded history after configureSyncHistoryForTests resets the estimate to null", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/seeded"),
+		});
+		configureSyncHistoryForTests(logDir);
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const readFileSpy = vi.spyOn(fs, "readFile");
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 2,
+			run: createCodexRun(2, "/after-reset"),
+		});
+
+		const historyReads = readFileSpy.mock.calls.filter(
+			([target]) => target === historyPath,
+		);
+		expect(historyReads).toHaveLength(1);
+	});
 });

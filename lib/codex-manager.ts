@@ -1334,7 +1334,7 @@ async function runActionPanel(
 		await action();
 	} catch (error) {
 		failed = error;
-		capture("x ", [error instanceof Error ? error.message : String(error)]);
+		capture("x ", [collapseWhitespace(formatRedactedFilesystemError(error))]);
 	} finally {
 		running = false;
 		if (timer) {
@@ -4373,15 +4373,16 @@ async function runFirstRunWizard(
 						);
 						break;
 					}
+					const backupLabel = basename(assessment.backup.path);
 					const confirmed = await confirm(
-						`Import OpenCode accounts from ${assessment.backup.path}?`,
+						`Import OpenCode accounts from ${backupLabel}?`,
 					);
 					if (!confirmed) {
 						break;
 					}
 					await runActionPanel(
 						"Import OpenCode Accounts",
-						`Importing from ${assessment.backup.path}`,
+						`Importing from ${backupLabel}`,
 						async () => {
 							const imported = await importAccounts(assessment.backup.path);
 							console.log(
