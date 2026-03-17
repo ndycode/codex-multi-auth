@@ -2572,6 +2572,8 @@ describe("storage", () => {
 				getProjectStorageKey(worktreeRepo),
 				"openai-codex-accounts.json",
 			);
+			expect(canonicalPath).not.toBe(legacyProjectPath);
+			expect(canonicalPath).not.toBe(legacyWorktreePath);
 			const storage = buildStorage([accountFromLegacy]);
 
 			await fs.mkdir(dirname(canonicalPath), { recursive: true });
@@ -2605,6 +2607,8 @@ describe("storage", () => {
 				getProjectStorageKey(worktreeRepo),
 				"openai-codex-accounts.json",
 			);
+			expect(canonicalPath).not.toBe(legacyProjectPath);
+			expect(canonicalPath).not.toBe(legacyWorktreePath);
 			const storage = buildStorage([accountFromLegacy]);
 
 			await fs.mkdir(dirname(canonicalPath), { recursive: true });

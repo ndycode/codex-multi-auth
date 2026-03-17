@@ -4092,6 +4092,98 @@ describe("codex manager cli commands", () => {
 		logSpy.mockRestore();
 	});
 
+	it("skips manage delete while reset is already running", async () => {
+		const now = Date.now();
+		const skipMessage =
+			"Another destructive action is already running. Wait for it to finish.";
+		const secondMenuAttempted = createDeferred<void>();
+		const skipLogged = createDeferred<void>();
+		const logSpy = vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+			if (message === skipMessage) {
+				skipLogged.resolve();
+			}
+		});
+		const firstResetStarted = createDeferred<void>();
+		const allowFirstResetToFinish = createDeferred<void>();
+		let menuPromptCall = 0;
+
+		loadAccountsMock.mockImplementation(async () => ({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-first",
+					addedAt: now,
+					lastUsed: now,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					accountId: "acc-second",
+					accessToken: "access-second",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-second",
+					addedAt: now,
+					lastUsed: now,
+					enabled: true,
+				},
+			],
+		}));
+		promptLoginModeMock.mockImplementation(async () => {
+			menuPromptCall += 1;
+			if (menuPromptCall === 2) {
+				secondMenuAttempted.resolve();
+			}
+			if (menuPromptCall === 1) {
+				return { mode: "reset" };
+			}
+			if (menuPromptCall === 2) {
+				return { mode: "manage", deleteAccountIndex: 1 };
+			}
+			return { mode: "cancel" };
+		});
+		resetLocalStateMock.mockImplementationOnce(async () => {
+			firstResetStarted.resolve();
+			await allowFirstResetToFinish.promise;
+			return {
+				accountsCleared: true,
+				flaggedCleared: true,
+				quotaCacheCleared: true,
+			};
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const firstRunPromise = runCodexMultiAuthCli(["auth", "login"]);
+
+		await firstResetStarted.promise;
+
+		const secondRunPromise = runCodexMultiAuthCli(["auth", "login"]);
+		await secondMenuAttempted.promise;
+		await skipLogged.promise;
+
+		expect(resetLocalStateMock).toHaveBeenCalledTimes(1);
+		expect(deleteAccountAtIndexMock).not.toHaveBeenCalled();
+
+		allowFirstResetToFinish.resolve();
+
+		const [firstExitCode, secondExitCode] = await Promise.all([
+			firstRunPromise,
+			secondRunPromise,
+		]);
+
+		expect(firstExitCode).toBe(0);
+		expect(secondExitCode).toBe(0);
+		expect(resetLocalStateMock).toHaveBeenCalledTimes(1);
+		expect(deleteAccountAtIndexMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(skipMessage);
+		logSpy.mockRestore();
+	});
+
 	it("keeps settings unchanged in non-interactive mode and returns to menu", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue(
