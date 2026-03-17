@@ -113,6 +113,25 @@ describe("flagged account storage", () => {
 		);
 	});
 
+	it("preserves \"best\" as a flagged account switch reason on load", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "best-token",
+					lastSwitchReason: "best",
+					flaggedAt: 10,
+					addedAt: 5,
+					lastUsed: 9,
+				},
+			],
+		});
+
+		const flagged = await loadFlaggedAccounts();
+
+		expect(flagged.accounts[0]?.lastSwitchReason).toBe("best");
+	});
+
 	it("migrates legacy blocked-account file to flagged-account storage", async () => {
 		const legacyPath = join(
 			dirname(getStoragePath()),

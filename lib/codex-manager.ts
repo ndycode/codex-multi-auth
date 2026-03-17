@@ -4071,7 +4071,16 @@ async function runBest(args: string[]): Promise<number> {
 	const now = Date.now();
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
+	const probeErrors: string[] = [];
 	let changed = false;
+
+	const printProbeNotes = (): void => {
+		if (probeErrors.length === 0) return;
+		console.log(`Live check notes (${probeErrors.length}):`);
+		for (const error of probeErrors) {
+			console.log(`  - ${error}`);
+		}
+	};
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 			const account = storage.accounts[i];
@@ -4121,7 +4130,10 @@ async function runBest(args: string[]): Promise<number> {
 				probeAccountId = account.accountId ?? refreshedAccountId;
 			}
 
-			if (!probeAccessToken || !probeAccountId) continue;
+			if (!probeAccessToken || !probeAccountId) {
+				probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
+				continue;
+			}
 
 			try {
 				const liveQuota = await fetchCodexQuotaSnapshot({
@@ -4130,8 +4142,12 @@ async function runBest(args: string[]): Promise<number> {
 					model: options.model,
 				});
 				liveQuotaByIndex.set(i, liveQuota);
-			} catch {
-				// Ignore probe errors for best selection
+			} catch (error) {
+				const message = normalizeFailureDetail(
+					error instanceof Error ? error.message : String(error),
+					undefined,
+				);
+				probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 			}
 		}
 
@@ -4153,9 +4169,13 @@ async function runBest(args: string[]): Promise<number> {
 
 	if (recommendation.recommendedIndex === null) {
 		if (options.json) {
-			console.log(JSON.stringify({ error: recommendation.reason }, null, 2));
+			console.log(JSON.stringify({
+				error: recommendation.reason,
+				...(probeErrors.length > 0 ? { probeErrors } : {}),
+			}, null, 2));
 		} else {
 			console.log(`No best account available: ${recommendation.reason}`);
+			printProbeNotes();
 		}
 		return 1;
 	}
@@ -4179,10 +4199,12 @@ async function runBest(args: string[]): Promise<number> {
 				message: `Already on best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
 				accountIndex: bestIndex + 1,
 				reason: recommendation.reason,
+				...(probeErrors.length > 0 ? { probeErrors } : {}),
 			}, null, 2));
 		} else {
 			console.log(`Already on best account ${bestIndex + 1}: ${formatAccountLabel(bestAccount, bestIndex)}`);
 			console.log(`Reason: ${recommendation.reason}`);
+			printProbeNotes();
 		}
 		return 0;
 	}
@@ -4257,10 +4279,12 @@ async function runBest(args: string[]): Promise<number> {
 			reason: recommendation.reason,
 			synced,
 			wasDisabled,
+			...(probeErrors.length > 0 ? { probeErrors } : {}),
 		}, null, 2));
 	} else {
 		console.log(`Switched to best account ${parsed}: ${formatAccountLabel(bestAccount, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`);
 		console.log(`Reason: ${recommendation.reason}`);
+		printProbeNotes();
 		if (!synced) {
 			console.warn("Codex auth sync did not complete. Multi-auth routing will still use this account.");
 		}

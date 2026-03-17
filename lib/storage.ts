@@ -1829,7 +1829,10 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		const isSwitchReason = (
 			value: unknown,
 		): value is AccountMetadataV3["lastSwitchReason"] =>
-			value === "rate-limit" || value === "initial" || value === "rotation";
+			value === "rate-limit" ||
+			value === "initial" ||
+			value === "rotation" ||
+			value === "best";
 		const isCooldownReason = (
 			value: unknown,
 		): value is AccountMetadataV3["cooldownReason"] =>
