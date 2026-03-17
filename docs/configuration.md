@@ -54,6 +54,8 @@ Dashboard display values are resolved from persisted `dashboardDisplaySettings` 
 
 `menuLayoutMode: "compact-details"` now uses the dashboard-first layout: on wide terminals it renders a split command-center view with the account list on the left and contextual details on the right; on narrow terminals it falls back to the stacked single-column view.
 
+Interactive TTY prompts now share the same terminal UI path across the auth dashboard, typed confirmation prompts, and manager/settings follow-up panels. Non-TTY and host-managed sessions still fall back to deterministic text behavior.
+
 ---
 
 ## Stable Environment Overrides

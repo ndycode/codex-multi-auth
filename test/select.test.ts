@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const runInkLineAppMock = vi.fn();
+
 vi.mock("../lib/ui/ansi.js", async () => {
 	const actual = await vi.importActual<typeof import("../lib/ui/ansi.js")>(
 		"../lib/ui/ansi.js",
@@ -9,6 +11,10 @@ vi.mock("../lib/ui/ansi.js", async () => {
 		isTTY: () => true,
 	};
 });
+
+vi.mock("../lib/ui/ink-host.js", () => ({
+	runInkLineApp: runInkLineAppMock,
+}));
 
 describe("ui select", () => {
 	const stdin = process.stdin as NodeJS.ReadStream & {
@@ -24,6 +30,7 @@ describe("ui select", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.useFakeTimers();
+		runInkLineAppMock.mockReset();
 		if (typeof stdin.setRawMode !== "function") {
 			Object.defineProperty(stdin, "setRawMode", {
 				value: (_mode: boolean) => undefined,
@@ -48,7 +55,48 @@ describe("ui select", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("suppresses initial enter during the input guard window", async () => {
+	it("delegates the initial input guard window to the Ink host and still handles hotkeys", async () => {
+		runInkLineAppMock.mockImplementationOnce(
+			async (options: {
+				initialGuardMs?: number;
+				onInput?: (...args: unknown[]) => void;
+			}) => {
+				expect(options.initialGuardMs).toBe(120);
+				let finished: string | null = null;
+				options.onInput?.(
+					"x",
+					{
+						upArrow: false,
+						downArrow: false,
+						leftArrow: false,
+						rightArrow: false,
+						pageDown: false,
+						pageUp: false,
+						return: false,
+						escape: false,
+						ctrl: false,
+						shift: false,
+						tab: false,
+						backspace: false,
+						delete: false,
+						meta: false,
+					},
+					{
+						finish(value: string | null) {
+							finished = value;
+						},
+						rerender() {
+							return undefined;
+						},
+						getTerminal() {
+							return { columns: 80, rows: 24 };
+						},
+					},
+				);
+				return finished;
+			},
+		);
+
 		const { select } = await import("../lib/ui/select.js");
 		const selectPromise = select(
 			[
@@ -64,16 +112,30 @@ describe("ui select", () => {
 			},
 		);
 
-		stdin.emit("data", Buffer.from("\r", "utf8"));
-		stdin.emit("data", Buffer.from("x", "utf8"));
-
 		const result = await selectPromise;
 		expect(result).toBe("hotkey-picked");
 	});
 
-	it("cleans up refresh interval and signal listeners on cancel", async () => {
-		const initialSigintCount = process.listenerCount("SIGINT");
+	it("cleans up refresh interval when the Ink host closes the prompt", async () => {
 		const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+		runInkLineAppMock.mockImplementationOnce(
+			async (options: {
+				onMount?: (controller: {
+					rerender(): void;
+				}) => void | (() => void);
+			}) => {
+				const cleanup = options.onMount?.({
+					rerender() {
+						return undefined;
+					},
+				});
+				await vi.advanceTimersByTimeAsync(130);
+				if (typeof cleanup === "function") {
+					cleanup();
+				}
+				return null;
+			},
+		);
 		const { select } = await import("../lib/ui/select.js");
 
 		const selectPromise = select(
@@ -95,7 +157,6 @@ describe("ui select", () => {
 		const result = await selectPromise;
 		expect(result).toBeNull();
 		expect(clearIntervalSpy).toHaveBeenCalled();
-		expect(process.listenerCount("SIGINT")).toBe(initialSigintCount);
 		clearIntervalSpy.mockRestore();
 	});
 

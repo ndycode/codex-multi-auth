@@ -40,6 +40,7 @@ Controls account-row display and sorting behavior:
 Layout notes:
 
 - `compact-details`: wide terminals use the split dashboard with a right-side detail pane; narrow terminals fall back to the stacked list.
+- `compact-details` also keeps follow-up prompts in the same aligned terminal shell, including search, typed confirmations, manual callback entry, and action return panels.
 - `expanded-rows`: keeps the legacy single-column list with per-row hints visible.
 
 ## Summary Line
@@ -89,6 +90,7 @@ Sync behavior:
 Named backup behavior:
 
 - prompts for a filename
+- uses the shared terminal text prompt on interactive TTY hosts
 - appends `.json` when omitted
 - rejects separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes
 - fails safely on collisions instead of overwriting by default
