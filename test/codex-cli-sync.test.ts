@@ -1050,7 +1050,7 @@ describe("codex-cli sync", () => {
 		},
 	);
 
-	it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
+	it.each(["EBUSY", "EPERM", "EAGAIN", "EIO"] as const)(
 		"logs exhausted retries when reading the persisted target timestamp fails with %s",
 		async (code) => {
 			const debugSpy = vi.fn();
@@ -1460,7 +1460,7 @@ describe("codex-cli sync", () => {
 				forceRefresh: true,
 			});
 
-			expect(targetStatCalls).toBe(1);
+			expect(targetStatCalls).toBe(SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS);
 			expect(preview.status).toBe("noop");
 			expect(preview.summary.selectionChanged).toBe(false);
 		} finally {
@@ -1546,7 +1546,7 @@ describe("codex-cli sync", () => {
 			expect(result.pendingRun).toBeNull();
 			expect(result.storage?.activeIndex).toBe(1);
 			expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
-			expect(targetStatCalls).toBe(1);
+			expect(targetStatCalls).toBe(SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS);
 		} finally {
 			statSpy.mockRestore();
 		}

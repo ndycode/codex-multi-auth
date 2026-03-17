@@ -458,7 +458,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		}
 	});
 
-	it("surfaces failed backup assessments when every fast-path backup read fails", async () => {
+	it("rethrows when every fast-path backup scan fails", async () => {
 		const storage = await import("../lib/storage.js");
 		const emptyStorage = {
 			version: 3,
@@ -500,18 +500,11 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		);
 
 		try {
-			const result = await storage.getActionableNamedBackupRestores({
-				currentStorage: emptyStorage,
-			});
-
-			expect(result.totalBackups).toBe(1);
-			expect(result.assessments).toEqual([]);
-			expect(result.allAssessments).toHaveLength(1);
-			expect(result.allAssessments[0]).toMatchObject({
-				backup: expect.objectContaining({ name: "locked-backup" }),
-				eligibleForRestore: false,
-				error: expect.stringContaining("busy"),
-			});
+			await expect(
+				storage.getActionableNamedBackupRestores({
+					currentStorage: emptyStorage,
+				}),
+			).rejects.toMatchObject({ code: "EBUSY" });
 		} finally {
 			readFileSpy.mockRestore();
 		}
