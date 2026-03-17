@@ -3793,6 +3793,8 @@ describe("codex manager cli commands", () => {
 			primary: Record<string, never>;
 			secondary: Record<string, never>;
 		}>();
+		const saveStarted = createDeferred<void>();
+		const allowSaveToFinish = createDeferred<void>();
 
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
@@ -3829,6 +3831,10 @@ describe("codex manager cli commands", () => {
 			byAccountId: {},
 			byEmail: {},
 		});
+		saveQuotaCacheMock.mockImplementationOnce(async () => {
+			saveStarted.resolve();
+			await allowSaveToFinish.promise;
+		});
 		fetchCodexQuotaSnapshotMock.mockImplementation(async () => {
 			fetchStarted.resolve();
 			return fetchDeferred.promise;
@@ -3851,6 +3857,9 @@ describe("codex manager cli commands", () => {
 			primary: {},
 			secondary: {},
 		});
+		await saveStarted.promise;
+		expect(resetLocalStateMock).not.toHaveBeenCalled();
+		allowSaveToFinish.resolve();
 
 		const exitCode = await runPromise;
 

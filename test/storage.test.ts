@@ -2590,6 +2590,39 @@ describe("storage", () => {
 			expect(existsSync(legacyWorktreePath)).toBe(false);
 		});
 
+		it("clearAccounts removes legacy project and worktree account files for windows linked worktrees", async () => {
+			const { worktreeRepo } = await prepareWorktreeFixture({
+				pointerStyle: "windows",
+				worktreeName: "repo-pr-win-clean",
+			});
+
+			setStoragePath(worktreeRepo);
+			const canonicalPath = getStoragePath();
+			const legacyProjectPath = join(worktreeRepo, ".codex", "openai-codex-accounts.json");
+			const legacyWorktreePath = join(
+				getConfigDir(),
+				"projects",
+				getProjectStorageKey(worktreeRepo),
+				"openai-codex-accounts.json",
+			);
+			const storage = buildStorage([accountFromLegacy]);
+
+			await fs.mkdir(dirname(canonicalPath), { recursive: true });
+			await fs.mkdir(dirname(legacyProjectPath), { recursive: true });
+			await fs.mkdir(dirname(legacyWorktreePath), { recursive: true });
+			await Promise.all([
+				fs.writeFile(canonicalPath, JSON.stringify(storage), "utf-8"),
+				fs.writeFile(legacyProjectPath, JSON.stringify(storage), "utf-8"),
+				fs.writeFile(legacyWorktreePath, JSON.stringify(storage), "utf-8"),
+			]);
+
+			await expect(clearAccounts()).resolves.toBe(true);
+
+			expect(existsSync(canonicalPath)).toBe(false);
+			expect(existsSync(legacyProjectPath)).toBe(false);
+			expect(existsSync(legacyWorktreePath)).toBe(false);
+		});
+
 		it("keeps legacy worktree file when migration persist fails", async () => {
 			const { worktreeRepo } = await prepareWorktreeFixture();
 

@@ -232,7 +232,7 @@ describe("flagged account storage", () => {
 		expect(flagged.accounts).toHaveLength(0);
 	});
 
-	it.each(["EPERM", "EBUSY"] as const)(
+	it.each(["EPERM", "EBUSY", "EAGAIN"] as const)(
 		"retries transient %s when clearing flagged storage",
 		async (code) => {
 			await saveFlaggedAccounts({
@@ -276,7 +276,7 @@ describe("flagged account storage", () => {
 		},
 	);
 
-	it.each(["EPERM", "EBUSY"] as const)(
+	it.each(["EPERM", "EBUSY", "EAGAIN"] as const)(
 		"returns false when clearing flagged storage exhausts retryable %s failures",
 		async (code) => {
 			await saveFlaggedAccounts({
