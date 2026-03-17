@@ -4871,7 +4871,9 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				healthSummary: expect.objectContaining({
 					label: expect.stringContaining("Pool 1/2 enabled"),
-					hint: expect.stringContaining("Rollback: Rollback checkpoint ready"),
+					hint: expect.stringContaining(
+						"Rollback: checkpoint ready for 2 account(s)",
+					),
 				}),
 			}),
 		);
@@ -4894,16 +4896,27 @@ describe("codex manager cli commands", () => {
 		getActionableNamedBackupRestoresMock.mockRejectedValue(
 			new Error("EBUSY backups"),
 		);
+		getLatestCodexCliSyncRollbackPlanMock.mockRejectedValue(
+			new Error("EBUSY rollback at C:\\sensitive\\rollback.json"),
+		);
 		getLastCodexCliSyncRunMock.mockImplementation(() => {
 			throw new Error("EBUSY: resource busy, sync history");
 		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		const warningOutput = warnSpy.mock.calls.flat().join("\n");
 
 		const warningLines = warnSpy.mock.calls.map(flattenMockCallArgs);
 		expect(exitCode).toBe(0);
+		expect(warnSpy).toHaveBeenCalled();
+		expect(warningOutput).toContain(
+			"Failed to load login menu rollback health summary state [UNKNOWN]",
+		);
+		expect(warningOutput).not.toContain("EBUSY");
+		expect(warningOutput).not.toContain("C:\\sensitive\\rollback.json");
 		expect(promptLoginModeMock).toHaveBeenCalledWith(
 			expect.any(Array),
 			expect.objectContaining({
