@@ -499,7 +499,7 @@ describe("codex manager cli commands", () => {
 		expect(payload.recommendation.recommendedIndex).toBe(0);
 	});
 
-	it("prints implemented 40-feature matrix", async () => {
+	it("prints implemented 41-feature matrix", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -507,11 +507,11 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "features"]);
 		expect(exitCode).toBe(0);
 		expect(errorSpy).not.toHaveBeenCalled();
-		expect(logSpy.mock.calls[0]?.[0]).toBe("Implemented features (40)");
+		expect(logSpy.mock.calls[0]?.[0]).toBe("Implemented features (41)");
 		expect(
 			logSpy.mock.calls.some((call) =>
 				String(call[0]).includes(
-					"40. OAuth browser-first flow with manual callback fallback",
+					"41. Auto-switch to best account command",
 				),
 			),
 		).toBe(true);
@@ -901,9 +901,10 @@ describe("codex manager cli commands", () => {
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(storageState.accounts[1]?.accessToken).toBe("access-best-next");
 		expect(storageState.accounts[1]?.refreshToken).toBe("refresh-best-next");
+		expect(storageState.accounts[1]?.accountId).toBe("acc_test");
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				accountId: "acc_best",
+				accountId: storageState.accounts[1]?.accountId,
 				email: "best@example.com",
 				accessToken: "access-best-next",
 				refreshToken: "refresh-best-next",
