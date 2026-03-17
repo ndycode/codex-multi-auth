@@ -2024,12 +2024,17 @@ describe("codex-cli sync", () => {
 		expect(result.pendingRun).not.toBeNull();
 		const pendingRunAt = result.pendingRun?.run.runAt;
 
-		commitCodexCliSyncRunFailure(result.pendingRun, new Error("save busy"));
+		commitCodexCliSyncRunFailure(
+			result.pendingRun,
+			Object.assign(new Error("save busy at C:/secret/store.json"), {
+				code: "EPERM",
+			}),
+		);
 
 		const lastRun = getLastCodexCliSyncRun();
 		expect(lastRun?.outcome).toBe("error");
 		expect(lastRun?.runAt).toBe(pendingRunAt);
-		expect(lastRun?.message).toBe("save busy");
+		expect(lastRun?.message).toBe("EPERM");
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
 	});
 
@@ -2085,13 +2090,18 @@ describe("codex-cli sync", () => {
 		expect(first.pendingRun).not.toBeNull();
 		expect(second.pendingRun).not.toBeNull();
 
-		commitCodexCliSyncRunFailure(second.pendingRun, new Error("later run failed"));
+		commitCodexCliSyncRunFailure(
+			second.pendingRun,
+			Object.assign(new Error("later run failed at C:/secret/store.json"), {
+				code: "EPERM",
+			}),
+		);
 		expect(getLastCodexCliSyncRun()?.outcome).toBe("error");
 
 		commitPendingCodexCliSyncRun(first.pendingRun);
 
 		expect(getLastCodexCliSyncRun()?.outcome).toBe("error");
-		expect(getLastCodexCliSyncRun()?.message).toBe("later run failed");
+		expect(getLastCodexCliSyncRun()?.message).toBe("EPERM");
 	});
 
 	it("ignores a duplicate sync-run publish for the same revision", async () => {

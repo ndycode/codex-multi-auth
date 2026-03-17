@@ -5349,7 +5349,7 @@ describe("codex manager cli commands", () => {
 				destinationOnlyPreservedCount: 1,
 				selectionChanged: false,
 			},
-			message: "missing",
+			message: "ENOENT",
 		});
 		saveAccountsMock.mockRejectedValue(
 			Object.assign(new Error("missing"), { code: "ENOENT" }),
@@ -5365,6 +5365,7 @@ describe("codex manager cli commands", () => {
 					.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
 					.join("\n");
 				expect(text).toContain("Failed to save synced storage (ENOENT).");
+				expect(text).toContain("Last sync: error: ENOENT");
 				return { type: "back" };
 			}
 			return { type: "back" };

@@ -183,7 +183,7 @@ function buildSyncRunError(
 	return {
 		...run,
 		outcome: "error",
-		message: error instanceof Error ? error.message : String(error),
+		message: getRedactedFilesystemErrorLabel(error),
 	};
 }
 
