@@ -3823,20 +3823,26 @@ async function handleManageAction(
 			}
 			destructiveActionInFlight = true;
 			try {
-				const deleted = await deleteAccountAtIndex({
-					storage,
-					index: idx,
-				});
-				if (deleted) {
-					Object.assign(storage, deleted.storage);
-					await autoSyncActiveAccountToCodex();
-					const label =
-						deleted.removedAccount.email?.trim() || `Account ${idx + 1}`;
-					const flaggedNote =
-						deleted.removedFlaggedCount > 0
-							? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
-							: "";
-					console.log(`Deleted ${label}.${flaggedNote}`);
+				try {
+					const deleted = await deleteAccountAtIndex({
+						storage,
+						index: idx,
+					});
+					if (deleted) {
+						Object.assign(storage, deleted.storage);
+						await autoSyncActiveAccountToCodex();
+						const label =
+							deleted.removedAccount.email?.trim() || `Account ${idx + 1}`;
+						const flaggedNote =
+							deleted.removedFlaggedCount > 0
+								? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
+								: "";
+						console.log(`Deleted ${label}.${flaggedNote}`);
+					}
+				} catch (error) {
+					console.log(
+						`Failed to delete account: ${error instanceof Error ? error.message : String(error)}`,
+					);
 				}
 			} finally {
 				destructiveActionInFlight = false;

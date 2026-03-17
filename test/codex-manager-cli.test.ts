@@ -3550,6 +3550,56 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("logs a friendly error and keeps the menu running when manage delete fails", async () => {
+		const now = Date.now();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-first",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					accountId: "acc-second",
+					accessToken: "access-second",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-second",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		deleteAccountAtIndexMock.mockRejectedValueOnce(
+			new Error("Failed to save flagged account storage after deleting an account."),
+		);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(deleteAccountAtIndexMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			"Failed to delete account: Failed to save flagged account storage after deleting an account.",
+		);
+		logSpy.mockRestore();
+	});
+
 	it("skips a second manage delete while another destructive action is already running", async () => {
 		const now = Date.now();
 		const skipMessage =

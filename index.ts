@@ -3105,22 +3105,28 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 									if (menuResult.mode === "manage") {
 										if (typeof menuResult.deleteAccountIndex === "number") {
-											const deleted = await deleteAccountAtIndex({
-												storage: workingStorage,
-												index: menuResult.deleteAccountIndex,
-											});
-											if (deleted) {
-												Object.assign(workingStorage, deleted.storage);
-												Object.assign(flaggedStorage, deleted.flagged);
-												invalidateAccountManagerCache();
-												const label =
-													deleted.removedAccount.email?.trim() ||
-													`Account ${menuResult.deleteAccountIndex + 1}`;
-												const flaggedNote =
-													deleted.removedFlaggedCount > 0
-														? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
-														: "";
-												console.log(`\nDeleted ${label}.${flaggedNote}\n`);
+											try {
+												const deleted = await deleteAccountAtIndex({
+													storage: workingStorage,
+													index: menuResult.deleteAccountIndex,
+												});
+												if (deleted) {
+													Object.assign(workingStorage, deleted.storage);
+													Object.assign(flaggedStorage, deleted.flagged);
+													invalidateAccountManagerCache();
+													const label =
+														deleted.removedAccount.email?.trim() ||
+														`Account ${menuResult.deleteAccountIndex + 1}`;
+													const flaggedNote =
+														deleted.removedFlaggedCount > 0
+															? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
+															: "";
+													console.log(`\nDeleted ${label}.${flaggedNote}\n`);
+												}
+											} catch (error) {
+												console.log(
+													`\nFailed to delete account: ${error instanceof Error ? error.message : String(error)}\n`,
+												);
 											}
 											continue;
 										}
