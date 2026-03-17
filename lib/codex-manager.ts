@@ -4391,7 +4391,7 @@ async function runBackupRestoreManager(
 
 	try {
 		const result = await restoreAssessedNamedBackup(latestAssessment);
-		if (!result.changed) {
+		if (result.changed === false) {
 			console.log("All accounts in this backup already exist");
 			return true;
 		}

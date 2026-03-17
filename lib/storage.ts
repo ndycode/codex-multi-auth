@@ -2181,6 +2181,16 @@ export function isNamedBackupPathValidationTransientError(
 	);
 }
 
+function hasNamedBackupTraversalSegment(
+	requested: string,
+	baseName: string,
+): boolean {
+	return (
+		baseName === ".." ||
+		requested.split(/[\\/]/).some((segment) => segment === "..")
+	);
+}
+
 export async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const requested = (name ?? "").trim();
 	const backupRoot = getNamedBackupRoot(getStoragePath());
@@ -2203,7 +2213,7 @@ export async function resolveNamedBackupRestorePath(name: string): Promise<strin
 		if (
 			requested.length > 0 &&
 			basename(requestedWithExtension) === requestedWithExtension &&
-			!requestedWithExtension.includes("..") &&
+			!hasNamedBackupTraversalSegment(requested, baseName) &&
 			!/^[A-Za-z0-9_-]+$/.test(baseName)
 		) {
 			throw new Error(

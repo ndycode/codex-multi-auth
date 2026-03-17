@@ -2208,6 +2208,18 @@ describe("storage", () => {
 			expect((await loadAccounts())?.accounts).toHaveLength(1);
 		});
 
+		it.each(["..missing", "..missing.json"])(
+			"reports ENOENT for missing dot-prefixed backup filenames that stay inside the backups directory: %s",
+			async (input) => {
+				await expect(assessNamedBackupRestore(input)).rejects.toThrow(
+					/Import file not found/i,
+				);
+				await expect(restoreNamedBackup(input)).rejects.toThrow(
+					/Import file not found/i,
+				);
+			},
+		);
+
 		it("rejects matched backup entries whose resolved path escapes the backups directory", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const originalReaddir = fs.readdir.bind(fs);
