@@ -82,7 +82,7 @@ npm i -g codex-multi-auth
 
 ## Codex CLI Sync Problems
 
-Use `codex auth login` -> `Settings` -> `Codex CLI Sync` when you want to inspect sync state before applying it.
+Use `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync` when you want to inspect sync state before applying it.
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
@@ -117,8 +117,8 @@ codex auth doctor --json
 
 Interactive diagnostics path:
 
-- `codex auth login` -> `Settings` -> `Codex CLI Sync` for preview-based sync diagnostics
-- `codex auth login` -> `Settings` -> `Advanced Backend Controls` for sync, retry, quota, recovery, and timeout tuning
+- `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync` for preview-based sync diagnostics
+- `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Advanced Backend Controls` for sync, retry, quota, recovery, and timeout tuning
 
 ---
 

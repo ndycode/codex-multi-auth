@@ -115,7 +115,7 @@ codex auth doctor --fix
 Interactive dashboard paths:
 
 - restore named backups: `codex auth login` -> `Restore From Backup`
-- preview Codex CLI sync: `codex auth login` -> `Settings` -> `Codex CLI Sync`
+- preview Codex CLI sync: `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync`
 - adjust stable dashboard preferences: `codex auth login` -> `Settings` -> `Everyday Settings`
 
 ---
@@ -182,14 +182,14 @@ Override root with `CODEX_MULTI_AUTH_DIR=<path>`.
 Primary config file:
 - `~/.codex/multi-auth/settings.json` by default
 - `CODEX_MULTI_AUTH_DIR/settings.json` when a custom root is set
-- `CODEX_MULTI_AUTH_CONFIG_PATH=<path>` when you want an alternate config file source
+- `CODEX_MULTI_AUTH_CONFIG_PATH=<path>` when you want to override the default config file lookup
 
 Selected runtime/environment overrides:
 
 | Variable | Effect |
 | --- | --- |
 | `CODEX_MULTI_AUTH_DIR` | Override settings/accounts root |
-| `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file path |
+| `CODEX_MULTI_AUTH_CONFIG_PATH` | Override the default config file path lookup |
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |

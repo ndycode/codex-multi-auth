@@ -361,6 +361,23 @@ describe("Documentation Integrity", () => {
 		expect(settingsRef).toContain("- `menuStatuslineFields`");
 	});
 
+	it("keeps getting-started and troubleshooting docs aligned with current restore and sync flows", () => {
+		const gettingStarted = read("docs/getting-started.md");
+		const troubleshooting = read("docs/troubleshooting.md");
+
+		expect(gettingStarted).toContain("## Restore Or Start Fresh");
+		expect(gettingStarted).toContain("## Sync And Settings");
+		expect(gettingStarted).toContain("Restore From Backup");
+		expect(troubleshooting).toContain("## Backup Restore Problems");
+		expect(troubleshooting).toContain("## Codex CLI Sync Problems");
+		expect(troubleshooting).toContain(
+			"`codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync`",
+		);
+		expect(troubleshooting).toContain(
+			"`codex auth login` -> `Settings` -> `Advanced & Operator` -> `Advanced Backend Controls`",
+		);
+	});
+
 	it("keeps changelog aligned with canonical 0.x release policy", () => {
 		const changelog = read("CHANGELOG.md");
 		expect(changelog).toContain("## [0.1.8] - 2026-03-11");

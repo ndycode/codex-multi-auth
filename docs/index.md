@@ -44,7 +44,7 @@ codex auth doctor --fix
 Interactive workflows that ship in the dashboard:
 
 - backup restore: `codex auth login` -> `Restore From Backup`
-- sync preview and apply: `codex auth login` -> `Settings` -> `Codex CLI Sync`
+- sync preview and apply: `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync`
 - settings split: `codex auth login` -> `Settings` -> `Everyday Settings` or `Advanced & Operator`
 
 ---

@@ -105,7 +105,7 @@ Interactive dashboard workflows:
 
 - Backup restore: `codex auth login` -> `Restore From Backup`
 - Startup recovery prompt: interactive `codex auth login` TTY flow only, then confirm restore when recoverable named backups are found before OAuth
-- Sync preview and apply: `codex auth login` -> `Settings` -> `Codex CLI Sync`
+- Sync preview and apply: `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync`
 - Stable settings path: `codex auth login` -> `Settings` -> `Everyday Settings`
 - Advanced settings path: `codex auth login` -> `Settings` -> `Advanced & Operator`
 
