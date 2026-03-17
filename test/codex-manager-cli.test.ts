@@ -1043,7 +1043,10 @@ describe("codex manager cli commands", () => {
 			"named-backup",
 			expect.objectContaining({ currentStorage: null }),
 		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({ assessment: expect.anything() }),
+		);
 	});
 
 	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
@@ -1098,7 +1101,10 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(1);
 		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(confirmMock).toHaveBeenCalledOnce();
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({ assessment: expect.anything() }),
+		);
 	});
 
 	it("runs restore preview before applying a replace-only named backup", async () => {
@@ -1223,42 +1229,58 @@ describe("codex manager cli commands", () => {
 			})
 			.mockResolvedValueOnce("preview-restore");
 		confirmMock.mockResolvedValueOnce(true);
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
-
-		expect(exitCode).toBe(0);
-		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
-		expect(selectMock).toHaveBeenCalledTimes(2);
-		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
-			message: "Backup Browser",
+		restoreNamedBackupMock.mockResolvedValueOnce({
+			imported: 0,
+			skipped: 1,
+			total: 1,
 		});
-		expect(selectMock.mock.calls[1]?.[1]).toMatchObject({
-			message: "Backup Actions",
-			subtitle: "named-backup",
-		});
-		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-			1,
-			"named-backup",
-			expect.objectContaining({
-				currentStorage: expect.objectContaining({
-					accounts: expect.any(Array),
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+			expect(exitCode).toBe(0);
+			expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+			expect(selectMock).toHaveBeenCalledTimes(2);
+			expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
+				message: "Backup Browser",
+			});
+			expect(selectMock.mock.calls[1]?.[1]).toMatchObject({
+				message: "Backup Actions",
+				subtitle: "named-backup",
+			});
+			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+				1,
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						accounts: expect.any(Array),
+					}),
 				}),
-			}),
-		);
-		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-			2,
-			"named-backup",
-			expect.objectContaining({
-				currentStorage: expect.objectContaining({
-					accounts: expect.any(Array),
+			);
+			expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
+				2,
+				"named-backup",
+				expect.objectContaining({
+					currentStorage: expect.objectContaining({
+						accounts: expect.any(Array),
+					}),
 				}),
-			}),
-		);
-		expect(confirmMock).toHaveBeenCalledWith(
-			"Restore named-backup? Import 0 new accounts for 1 total. Replacing 1 current account.",
-		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+			);
+			expect(confirmMock).toHaveBeenCalledWith(
+				"Restore named-backup? Import 0 new accounts for 1 total. Replacing 1 current account.",
+			);
+			expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+				"named-backup",
+				expect.objectContaining({ assessment: expect.anything() }),
+			);
+			expect(logSpy).toHaveBeenCalledWith(
+				"Replaced 1 current account. Total accounts: 1.",
+			);
+		} finally {
+			logSpy.mockRestore();
+		}
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
@@ -3212,7 +3234,10 @@ describe("codex manager cli commands", () => {
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalled();
 		expect(confirmMock).toHaveBeenCalledTimes(2);
 		expect(selectMock).toHaveBeenCalled();
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({ assessment: expect.anything() }),
+		);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
@@ -3601,7 +3626,10 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledTimes(3);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("startup-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+			"startup-backup",
+			expect.objectContaining({ assessment: expect.anything() }),
+		);
 		expect(warnSpy).toHaveBeenCalledWith(
 			'Failed to restore backup "startup-backup" (EBUSY).',
 		);
@@ -4709,7 +4737,10 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		expect(confirmMock).toHaveBeenCalledOnce();
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({ assessment: expect.anything() }),
+		);
 	});
 
 	it("offers backup restore from the login menu when no accounts are saved", async () => {
@@ -4754,7 +4785,10 @@ describe("codex manager cli commands", () => {
 			"named-backup",
 			expect.objectContaining({ currentStorage: null }),
 		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({ assessment: expect.anything() }),
+		);
 	});
 
 	it("does not restore a named backup when confirmation is declined", async () => {
@@ -4881,7 +4915,10 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
-			expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+			expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+				"named-backup",
+				expect.objectContaining({ assessment: expect.anything() }),
+			);
 			expect(warnSpy).toHaveBeenCalledWith(
 				'Failed to restore backup "named-backup" (UNKNOWN).',
 			);
@@ -5000,7 +5037,10 @@ describe("codex manager cli commands", () => {
 			expect(selectMock).toHaveBeenCalledTimes(1);
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 			expect(confirmMock).toHaveBeenCalledOnce();
-			expect(restoreNamedBackupMock).toHaveBeenCalledWith("healthy-backup");
+			expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+				"healthy-backup",
+				expect.objectContaining({ assessment: expect.anything() }),
+			);
 			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 			expect(warnSpy).not.toHaveBeenCalled();
 		} finally {
@@ -5188,7 +5228,10 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledWith(
 			"Restore named-backup? Import 1 new account for 4 total.",
 		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
+			"named-backup",
+			expect.objectContaining({ assessment: expect.anything() }),
+		);
 	});
 
 	it("returns to the login menu when preview reassessment fails before confirmation", async () => {
