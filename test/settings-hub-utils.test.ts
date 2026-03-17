@@ -415,6 +415,49 @@ describe("settings-hub utility coverage", () => {
 		expect(overview[2]?.label).toContain("accounts.json active");
 	});
 
+	it("preserves UNC prefixes when labeling the active sync source", async () => {
+		const api = await loadSettingsHubTestApi();
+		const overview = api.buildSyncCenterOverview(
+			{
+				status: "ready",
+				statusDetail: "Preview ready",
+				sourcePath: "\\\\Server\\Share\\.codex\\accounts.json",
+				targetPath: "\\\\Server\\Share\\.codex\\openai-codex-accounts.json",
+				summary: {
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					destinationOnlyPreservedCount: 1,
+					targetAccountCountAfter: 1,
+					selectionChanged: false,
+				},
+				backup: {
+					enabled: true,
+					rollbackPaths: [
+						"\\\\Server\\Share\\.codex\\openai-codex-accounts.json.bak",
+					],
+				},
+				lastSync: null,
+			},
+			{
+				accountsPath: "//server/share/.codex/accounts.json/",
+				authPath: "//server/share/.codex/auth.json",
+				configPath: "//server/share/.codex/config.toml",
+				sourceAccountCount: 1,
+				liveSync: {
+					path: null,
+					running: false,
+					lastKnownMtimeMs: null,
+					lastSyncAt: null,
+					reloadCount: 0,
+					errorCount: 0,
+				},
+				syncEnabled: true,
+			},
+		);
+
+		expect(overview[2]?.label).toContain("accounts.json active");
+	});
+
 	it("formats layout mode labels", async () => {
 		const api = await loadSettingsHubTestApi();
 		expect(api.formatMenuLayoutMode("expanded-rows")).toBe("Expanded Rows");

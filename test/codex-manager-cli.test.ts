@@ -597,6 +597,14 @@ describe("codex manager cli commands", () => {
 		loadCodexCliStateMock.mockReset();
 		clearCodexCliStateCacheMock.mockReset();
 		getLastLiveAccountSyncSnapshotMock.mockReset();
+		getLastLiveAccountSyncSnapshotMock.mockReturnValue({
+			path: null,
+			running: false,
+			lastKnownMtimeMs: null,
+			lastSyncAt: null,
+			reloadCount: 0,
+			errorCount: 0,
+		});
 		selectMock.mockReset();
 		planOcChatgptSyncMock.mockReset();
 		applyOcChatgptSyncMock.mockReset();

@@ -1360,9 +1360,15 @@ function normalizePathForComparison(
 	if (typeof path !== "string" || path.length === 0) {
 		return null;
 	}
-	const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+	const normalized = path.replace(/\\/g, "/");
+	const hasUncPrefix = normalized.startsWith("//");
+	const collapsed = hasUncPrefix
+		? `//${normalized.slice(2).replace(/\/+/g, "/")}`
+		: normalized.replace(/\/+/g, "/");
 	const trimmed =
-		normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+		collapsed.length > (hasUncPrefix ? 2 : 1)
+			? collapsed.replace(/\/+$/, "")
+			: collapsed;
 	const isWindowsPath = path.includes("\\") || /^[a-z]:\//i.test(trimmed);
 	return isWindowsPath ? trimmed.toLowerCase() : trimmed;
 }

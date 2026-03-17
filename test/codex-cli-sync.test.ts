@@ -1050,7 +1050,7 @@ describe("codex-cli sync", () => {
 		},
 	);
 
-	it.each(["EBUSY", "EPERM", "EAGAIN", "EIO"] as const)(
+	it.each(["EBUSY", "EPERM", "EAGAIN", "EIO", "ENXIO"] as const)(
 		"logs exhausted retries when reading the persisted target timestamp fails with %s",
 		async (code) => {
 			const debugSpy = vi.fn();
@@ -1163,7 +1163,7 @@ describe("codex-cli sync", () => {
 		},
 	);
 
-	it.each(["EBUSY", "EAGAIN"] as const)(
+	it.each(["EBUSY", "EAGAIN", "ENXIO"] as const)(
 		"retries a transient persisted-target %s before applying the Codex selection",
 		async (code) => {
 		await writeFile(
