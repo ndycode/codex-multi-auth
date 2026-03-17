@@ -118,7 +118,7 @@ Named backup behavior:
 
 Expert backend controls stay available without changing the saved settings schema. They are grouped into categories so the default path can stay simpler for day-to-day use.
 
-## Backend Categories
+### Backend Categories
 
 ### Session & Sync
 

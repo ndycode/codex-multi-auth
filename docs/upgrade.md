@@ -68,6 +68,14 @@ Interactive `codex auth login` now offers named-backup recovery before OAuth onl
 
 The prompt is intentionally skipped in fallback/non-interactive login paths and after same-session `fresh` or `reset` actions so an intentional wipe does not immediately re-offer restore state.
 
+### Sync Center
+
+The settings hub now includes a preview-first Sync Center for Codex CLI reconciliation.
+
+- preview shows source and target paths, last session sync status, and whether destination-only accounts are preserved
+- apply is blocked until the preview status is ready
+- rollback context surfaces backup paths such as `.bak`, `.bak.1`, `.bak.2`, and `.wal`
+
 ---
 
 ## Legacy Compatibility

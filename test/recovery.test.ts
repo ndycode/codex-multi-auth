@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,9 +52,15 @@ async function removeWithRetry(targetPath: string): Promise<void> {
 			await fs.rm(targetPath, { recursive: true, force: true });
 			return;
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
+			const code = ((error as NodeJS.ErrnoException).code ?? "").toUpperCase();
 			if (
-				(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
+				!(
+					code === "EBUSY" ||
+					code === "EPERM" ||
+					code === "ENOTEMPTY" ||
+					code === "EACCES" ||
+					code === "ETIMEDOUT"
+				) ||
 				attempt === 4
 			) {
 				throw error;
@@ -377,6 +383,42 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		expect(result.assessments[0]?.imported).toBe(1);
 	});
 
+	it("keeps storage cleanup disabled during read-only recovery assessment", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "read-only@example.com",
+					refreshToken: "read-only-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("startup-read-only");
+		await storage.saveAccounts(emptyStorage);
+
+		const staleArtifactPath = `${storage.getStoragePath()}.bak.rotate.0.tmp`;
+		await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+		const result = await storage.getActionableNamedBackupRestores();
+
+		expect(result.totalBackups).toBe(1);
+		expect(result.assessments.map((item) => item.backup.name)).toEqual([
+			"startup-read-only",
+		]);
+		expect(existsSync(staleArtifactPath)).toBe(true);
+	});
+
 	it("keeps actionable backups when fast-path scan hits EBUSY", async () => {
 		const storage = await import("../lib/storage.js");
 		const emptyStorage = {
@@ -447,6 +489,58 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 			expect(readFileSpy.mock.calls.map(([path]) => path)).toEqual(
 				expect.arrayContaining([lockedBackup?.path, validBackup?.path]),
 			);
+		} finally {
+			readFileSpy.mockRestore();
+		}
+	});
+
+	it("rethrows when every fast-path backup scan fails", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "locked@example.com",
+					refreshToken: "locked-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("locked-backup");
+		await storage.saveAccounts(emptyStorage);
+
+		const backups = await storage.listNamedBackups();
+		const lockedBackup = backups.find((backup) => backup.name === "locked-backup");
+		expect(lockedBackup).toBeDefined();
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(
+			(async (...args: Parameters<typeof fs.readFile>) => {
+				const [path] = args;
+				if (path === lockedBackup?.path) {
+					const error = new Error("resource busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalReadFile(...args);
+			}) as typeof fs.readFile,
+		);
+
+		try {
+			await expect(
+				storage.getActionableNamedBackupRestores({
+					currentStorage: emptyStorage,
+				}),
+			).rejects.toMatchObject({ code: "EBUSY" });
 		} finally {
 			readFileSpy.mockRestore();
 		}
@@ -652,7 +746,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 					typeof path === "string" ? path.replaceAll("\\", "/") : String(path);
 				if (
 					path === lockedBackup?.path ||
-					normalizedPath.endsWith("/locked-backup.json")
+					normalizedPath.endsWith("/first-backup.json")
 				) {
 					const error = new Error("resource busy") as NodeJS.ErrnoException;
 					error.code = "EBUSY";
@@ -774,7 +868,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		expect(readPaths).toEqual(
 			expect.arrayContaining([lockedBackup?.path, validBackup?.path]),
 		);
-		expect(readPaths.filter((path) => path === lockedBackup?.path)).toHaveLength(5);
+		expect(readPaths.filter((path) => path === lockedBackup?.path)).toHaveLength(7);
 		expect(readPaths.filter((path) => path === validBackup?.path)).toHaveLength(1);
 	});
 

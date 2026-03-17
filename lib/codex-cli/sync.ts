@@ -6,6 +6,7 @@ import {
 	type AccountStorageV3,
 	findMatchingAccountIndex,
 	getLastAccountsSaveTimestamp,
+	getRedactedFilesystemErrorLabel,
 	getStoragePath,
 	normalizeEmailKey,
 } from "../storage.js";
@@ -23,8 +24,14 @@ import {
 import { getLastCodexCliSelectionWriteTimestamp } from "./writer.js";
 
 const log = createLogger("codex-cli-sync");
-const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
-export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 4;
+const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EAGAIN",
+	"EIO",
+	"ENXIO",
+]);
+export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 7;
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -176,7 +183,7 @@ function buildSyncRunError(
 	return {
 		...run,
 		outcome: "error",
-		message: error instanceof Error ? error.message : String(error),
+		message: getRedactedFilesystemErrorLabel(error),
 	};
 }
 
@@ -218,13 +225,7 @@ export function commitPendingCodexCliSyncRun(
 	if (!markPendingCodexCliSyncRunCompleted(pendingRun.revision)) {
 		return;
 	}
-	publishCodexCliSyncRun(
-		{
-			...pendingRun.run,
-			runAt: Date.now(),
-		},
-		allocateCodexCliSyncRunRevision(),
-	);
+	publishCodexCliSyncRun(pendingRun.run, pendingRun.revision);
 }
 
 export function commitCodexCliSyncRunFailure(
@@ -236,14 +237,8 @@ export function commitCodexCliSyncRunFailure(
 		return;
 	}
 	publishCodexCliSyncRun(
-		buildSyncRunError(
-			{
-				...pendingRun.run,
-				runAt: Date.now(),
-			},
-			error,
-		),
-		allocateCodexCliSyncRunRevision(),
+		buildSyncRunError(pendingRun.run, error),
+		pendingRun.revision,
 	);
 }
 
@@ -500,16 +495,17 @@ function shouldApplyCodexCliSelection(
 		getLastAccountsSaveTimestamp(),
 		getLastCodexCliSelectionWriteTimestamp(),
 	);
-	if (persistedLocalTimestamp === null && inProcessLocalVersion <= 0) {
+	if (persistedLocalTimestamp === null) {
 		return false;
 	}
 	const localVersion = Math.max(
 		inProcessLocalVersion,
-		persistedLocalTimestamp ?? 0,
+		persistedLocalTimestamp,
 	);
 	if (codexVersion <= 0) return localVersion <= 0;
 	if (localVersion <= 0) {
-		return persistedLocalTimestamp !== null;
+		// No local state has been persisted yet, so prefer the Codex CLI selection.
+		return true;
 	}
 	// When only source mtime is available, require Codex to be at least as new as the
 	// local selection. A grace window here can overwrite a newer persisted local choice.
@@ -688,7 +684,9 @@ export async function previewCodexCliSync(
 	} catch (error) {
 		return {
 			status: "error",
-			statusDetail: error instanceof Error ? error.message : String(error),
+			statusDetail: `Failed to build sync preview (${getRedactedFilesystemErrorLabel(
+				error,
+			)}).`,
 			sourcePath: null,
 			sourceAccountCount: null,
 			targetPath,

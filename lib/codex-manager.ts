@@ -12,6 +12,7 @@ import { startLocalOAuthServer } from "./auth/server.js";
 import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
 import {
 	isInteractiveLoginMenuAvailable,
+	isNonInteractiveMode,
 	promptAddAnotherAccount,
 	promptLoginMode,
 	type ExistingAccountInfo,
@@ -67,7 +68,7 @@ import {
 	getNamedBackupsDirectoryPath,
 	listNamedBackups,
 	NAMED_BACKUP_LIST_CONCURRENCY,
-	restoreNamedBackup,
+	restoreAssessedNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -141,7 +142,14 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 function formatRelativeDateShort(
 	timestamp: number | null | undefined,
 ): string | null {
-	if (timestamp === null || timestamp === undefined) return null;
+	if (
+		timestamp === null ||
+		timestamp === undefined ||
+		!Number.isFinite(timestamp) ||
+		timestamp <= 0
+	) {
+		return null;
+	}
 	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
 	if (days <= 0) return "today";
 	if (days === 1) return "yesterday";
@@ -4116,7 +4124,7 @@ async function runAuthLogin(): Promise<number> {
 							displaySettings,
 							recoveryState.allAssessments,
 						);
-						if (restoreResult !== "restored") {
+						if (restoreResult === "dismissed") {
 							pendingRecoveryState = recoveryState;
 							recoveryPromptAttempted = false;
 						}
@@ -4357,17 +4365,19 @@ type BackupRestoreManagerResult = "restored" | "dismissed" | "failed";
 async function loadBackupRestoreManagerAssessments(): Promise<
 	BackupRestoreAssessment[]
 > {
+	if (isNonInteractiveMode() || !input.isTTY || !output.isTTY) {
+		console.error(
+			"Backup restore manager requires an interactive TTY. Run this command in an interactive terminal.",
+		);
+		return [];
+	}
 	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
 	try {
 		backups = await listNamedBackups();
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.error(
-			`Could not read backup directory: ${
-				collapseWhitespace(message) || "unknown error"
-			}`,
-		);
-		return [];
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.error(`Could not read backup directory (${errorLabel}).`);
+		throw error;
 	}
 	if (backups.length === 0) {
 		return [];
@@ -4392,15 +4402,8 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 				continue;
 			}
 			const backupName = chunk[resultIndex]?.name ?? "unknown";
-			const reason =
-				result.reason instanceof Error
-					? result.reason.message
-					: String(result.reason);
-			console.warn(
-				`Skipped backup assessment for "${backupName}": ${
-					collapseWhitespace(reason) || "unknown error"
-				}`,
-			);
+			const reason = getRedactedFilesystemErrorLabel(result.reason);
+			console.warn(`Skipped backup assessment for "${backupName}" (${reason}).`);
 		}
 	}
 
@@ -4411,9 +4414,21 @@ async function runBackupRestoreManager(
 	displaySettings: DashboardDisplaySettings,
 	assessmentsOverride?: BackupRestoreAssessment[],
 ): Promise<BackupRestoreManagerResult> {
+	if (isNonInteractiveMode() || !input.isTTY || !output.isTTY) {
+		console.error(
+			"Backup restore manager requires an interactive TTY. Run this command in an interactive terminal.",
+		);
+		return "failed";
+	}
+
 	const backupDir = getNamedBackupsDirectoryPath();
-	const assessments =
-		assessmentsOverride ?? (await loadBackupRestoreManagerAssessments());
+	let assessments: BackupRestoreAssessment[];
+	try {
+		assessments =
+			assessmentsOverride ?? (await loadBackupRestoreManagerAssessments());
+	} catch {
+		return "failed";
+	}
 	if (assessments.length === 0) {
 		console.log(`No named backups found. Place backup files in ${backupDir}.`);
 		return "dismissed";
@@ -4486,15 +4501,42 @@ async function runBackupRestoreManager(
 		return "failed";
 	}
 
-	const confirmMessage = `Restore backup "${latestAssessment.backup.name}"? This will merge ${latestAssessment.backup.accountCount ?? 0} account(s) into ${latestAssessment.currentAccountCount} current (${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`;
+	const netNewAccounts = latestAssessment.imported ?? 0;
+	const confirmMessage =
+		netNewAccounts > 0
+			? `Restore backup "${latestAssessment.backup.name}"? This will merge ${netNewAccounts} new account(s) from ${latestAssessment.backup.accountCount ?? 0} backed up into ${latestAssessment.currentAccountCount} current (${latestAssessment.mergedAccountCount ?? latestAssessment.currentAccountCount} after dedupe).`
+			: `Restore backup "${latestAssessment.backup.name}"? All ${latestAssessment.backup.accountCount ?? 0} backup account(s) are already present, so this will refresh stored metadata only.`;
 	const confirmed = await confirm(confirmMessage);
 	if (!confirmed) return "dismissed";
 
 	try {
-		const result = await restoreNamedBackup(latestAssessment.backup.name);
-		console.log(
-			`Restored backup "${latestAssessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
-		);
+		const result = await restoreAssessedNamedBackup(latestAssessment);
+		if (result.changed === false) {
+			console.log("All accounts in this backup already exist");
+		} else if (result.imported === 0) {
+			console.log(
+				`Restored backup "${latestAssessment.backup.name}". Metadata refreshed for existing accounts.`,
+			);
+		} else {
+			console.log(
+				`Restored backup "${latestAssessment.backup.name}". Imported ${result.imported}, skipped ${result.skipped}, total ${result.total}.`,
+			);
+		}
+		try {
+			const synced = await autoSyncActiveAccountToCodex();
+			if (!synced) {
+				console.warn(
+					"Backup restored, but Codex CLI auth state could not be synced.",
+				);
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(
+				`Backup restored, but Codex CLI auth sync failed: ${
+					collapseWhitespace(message) || "unknown error"
+				}`,
+			);
+		}
 		return "restored";
 	} catch (error) {
 		const errorLabel = getRedactedFilesystemErrorLabel(error);
@@ -4534,6 +4576,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runAuthLogin();
 	}
 	if (command === "restore-backup") {
+		setStoragePath(null);
 		return (await runBackupRestoreManager(startupDisplaySettings)) === "failed"
 			? 1
 			: 0;

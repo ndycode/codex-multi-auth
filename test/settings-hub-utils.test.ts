@@ -415,6 +415,49 @@ describe("settings-hub utility coverage", () => {
 		expect(overview[2]?.label).toContain("accounts.json active");
 	});
 
+	it("preserves UNC prefixes when labeling the active sync source", async () => {
+		const api = await loadSettingsHubTestApi();
+		const overview = api.buildSyncCenterOverview(
+			{
+				status: "ready",
+				statusDetail: "Preview ready",
+				sourcePath: "\\\\Server\\Share\\.codex\\accounts.json",
+				targetPath: "\\\\Server\\Share\\.codex\\openai-codex-accounts.json",
+				summary: {
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					destinationOnlyPreservedCount: 1,
+					targetAccountCountAfter: 1,
+					selectionChanged: false,
+				},
+				backup: {
+					enabled: true,
+					rollbackPaths: [
+						"\\\\Server\\Share\\.codex\\openai-codex-accounts.json.bak",
+					],
+				},
+				lastSync: null,
+			},
+			{
+				accountsPath: "//server/share/.codex/accounts.json/",
+				authPath: "//server/share/.codex/auth.json",
+				configPath: "//server/share/.codex/config.toml",
+				sourceAccountCount: 1,
+				liveSync: {
+					path: null,
+					running: false,
+					lastKnownMtimeMs: null,
+					lastSyncAt: null,
+					reloadCount: 0,
+					errorCount: 0,
+				},
+				syncEnabled: true,
+			},
+		);
+
+		expect(overview[2]?.label).toContain("accounts.json active");
+	});
+
 	it("formats layout mode labels", async () => {
 		const api = await loadSettingsHubTestApi();
 		expect(api.formatMenuLayoutMode("expanded-rows")).toBe("Expanded Rows");
@@ -500,8 +543,8 @@ describe("settings-hub utility coverage", () => {
 		const storageModule = await import("../lib/storage.js");
 		const codexCliState = await import("../lib/codex-cli/state.js");
 		let loadAttempts = 0;
-		const loadAccountsSpy = vi
-			.spyOn(storageModule, "loadAccounts")
+		const loadAccountsReadOnlySpy = vi
+			.spyOn(storageModule, "loadAccountsReadOnly")
 			.mockImplementation(async () => {
 				loadAttempts += 1;
 				if (loadAttempts === 1) {
@@ -527,10 +570,10 @@ describe("settings-hub utility coverage", () => {
 
 		try {
 			await api.promptSyncCenter({});
-			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsReadOnlySpy).toHaveBeenCalledTimes(2);
 			expect(loadStateSpy).toHaveBeenCalledTimes(1);
 		} finally {
-			loadAccountsSpy.mockRestore();
+			loadAccountsReadOnlySpy.mockRestore();
 			loadStateSpy.mockRestore();
 		}
 	});
@@ -539,7 +582,9 @@ describe("settings-hub utility coverage", () => {
 		const api = await loadSettingsHubTestApi();
 		const storageModule = await import("../lib/storage.js");
 		const codexCliState = await import("../lib/codex-cli/state.js");
-		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+		const loadAccountsReadOnlySpy = vi
+			.spyOn(storageModule, "loadAccountsReadOnly")
+			.mockResolvedValue({
 			version: 3,
 			accounts: [],
 			activeIndex: 0,
@@ -566,9 +611,9 @@ describe("settings-hub utility coverage", () => {
 		try {
 			await api.promptSyncCenter({});
 			expect(loadStateSpy).toHaveBeenCalledTimes(2);
-			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsReadOnlySpy).toHaveBeenCalledTimes(2);
 		} finally {
-			loadAccountsSpy.mockRestore();
+			loadAccountsReadOnlySpy.mockRestore();
 			loadStateSpy.mockRestore();
 		}
 	});
@@ -577,7 +622,9 @@ describe("settings-hub utility coverage", () => {
 		const api = await loadSettingsHubTestApi();
 		const storageModule = await import("../lib/storage.js");
 		const codexCliState = await import("../lib/codex-cli/state.js");
-		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+		const loadAccountsReadOnlySpy = vi
+			.spyOn(storageModule, "loadAccountsReadOnly")
+			.mockResolvedValue({
 			version: 3,
 			accounts: [],
 			activeIndex: 0,
@@ -610,9 +657,9 @@ describe("settings-hub utility coverage", () => {
 			await api.promptSyncCenter({});
 
 			expect(loadStateSpy).toHaveBeenCalledTimes(2);
-			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsReadOnlySpy).toHaveBeenCalledTimes(2);
 		} finally {
-			loadAccountsSpy.mockRestore();
+			loadAccountsReadOnlySpy.mockRestore();
 			loadStateSpy.mockRestore();
 		}
 	});

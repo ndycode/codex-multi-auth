@@ -3,6 +3,7 @@ import { basename, dirname } from "node:path";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("live-account-sync");
+const RESET_MARKER_SUFFIX = ".reset-intent";
 
 export interface LiveAccountSyncOptions {
 	debounceMs?: number;
@@ -30,19 +31,23 @@ const EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT: LiveAccountSyncSnapshot = {
 let lastLiveAccountSyncSnapshot: LiveAccountSyncSnapshot = {
 	...EMPTY_LIVE_ACCOUNT_SYNC_SNAPSHOT,
 };
-const activeLiveAccountSyncSnapshots = new Map<number, LiveAccountSyncSnapshot>();
+const activeLiveAccountSyncSnapshots = new Map<
+	number,
+	{ publishRevision: number; snapshot: LiveAccountSyncSnapshot }
+>();
 let lastStoppedLiveAccountSyncSnapshot:
-	| { instanceId: number; snapshot: LiveAccountSyncSnapshot }
+	| { publishRevision: number; snapshot: LiveAccountSyncSnapshot }
 	| null = null;
 let nextLiveAccountSyncInstanceId = 0;
+let nextLiveAccountSyncPublishRevision = 0;
 
 function refreshLastLiveAccountSyncSnapshot(): void {
-	let latestActiveInstanceId = -1;
+	let latestPublishRevision = -1;
 	let latestActiveSnapshot: LiveAccountSyncSnapshot | null = null;
-	for (const [instanceId, snapshot] of activeLiveAccountSyncSnapshots.entries()) {
-		if (instanceId > latestActiveInstanceId) {
-			latestActiveInstanceId = instanceId;
-			latestActiveSnapshot = snapshot;
+	for (const entry of activeLiveAccountSyncSnapshots.values()) {
+		if (entry.publishRevision > latestPublishRevision) {
+			latestPublishRevision = entry.publishRevision;
+			latestActiveSnapshot = entry.snapshot;
 		}
 	}
 	if (latestActiveSnapshot) {
@@ -67,6 +72,7 @@ export function __resetLastLiveAccountSyncSnapshotForTests(): void {
 	activeLiveAccountSyncSnapshots.clear();
 	lastStoppedLiveAccountSyncSnapshot = null;
 	nextLiveAccountSyncInstanceId = 0;
+	nextLiveAccountSyncPublishRevision = 0;
 }
 
 /**
@@ -81,6 +87,19 @@ function normalizeFsWatchFilename(
 	if (filename === null) return null;
 	if (typeof filename === "string") return filename;
 	return filename.toString("utf-8");
+}
+
+function shouldIgnoreWatchedStorageSibling(
+	targetName: string,
+	filename: string,
+): boolean {
+	if (!filename.startsWith(`${targetName}.`)) return false;
+	const normalized = filename.toLowerCase();
+	return (
+		normalized.includes(".cache") ||
+		normalized.includes(".rotate.") ||
+		normalized.endsWith(RESET_MARKER_SUFFIX)
+	);
 }
 
 /**
@@ -172,7 +191,11 @@ export class LiveAccountSync {
 						return;
 					}
 
-					if (name === targetName || name.startsWith(`${targetName}.`)) {
+					if (
+						name === targetName ||
+						(name.startsWith(`${targetName}.`) &&
+							!shouldIgnoreWatchedStorageSibling(targetName, name))
+					) {
 						this.scheduleReload("watch");
 					}
 				},
@@ -232,16 +255,20 @@ export class LiveAccountSync {
 
 	private publishSnapshot(): void {
 		const snapshot = this.getSnapshot();
+		const publishRevision = ++nextLiveAccountSyncPublishRevision;
 		if (snapshot.running) {
-			activeLiveAccountSyncSnapshots.set(this.instanceId, snapshot);
+			activeLiveAccountSyncSnapshots.set(this.instanceId, {
+				publishRevision,
+				snapshot,
+			});
 		} else {
 			activeLiveAccountSyncSnapshots.delete(this.instanceId);
 			if (
 				!lastStoppedLiveAccountSyncSnapshot ||
-				this.instanceId >= lastStoppedLiveAccountSyncSnapshot.instanceId
+				publishRevision >= lastStoppedLiveAccountSyncSnapshot.publishRevision
 			) {
 				lastStoppedLiveAccountSyncSnapshot = {
-					instanceId: this.instanceId,
+					publishRevision,
 					snapshot,
 				};
 			}
@@ -346,3 +373,8 @@ export class LiveAccountSync {
 		} while (this.reloadQueued);
 	}
 }
+
+export const __testOnly = {
+	normalizeFsWatchFilename,
+	shouldIgnoreWatchedStorageSibling,
+};

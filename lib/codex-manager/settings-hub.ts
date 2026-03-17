@@ -48,10 +48,12 @@ import {
 } from "../oc-chatgpt-orchestrator.js";
 import { detectOcChatgptMultiAuthTarget } from "../oc-chatgpt-target-detection.js";
 import {
+	getRedactedFilesystemErrorLabel,
 	getStoragePath,
 	loadAccounts,
+	loadAccountsReadOnly,
 	normalizeAccountStorage,
-	saveAccounts,
+	withAccountStorageTransaction,
 } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
@@ -784,6 +786,10 @@ function warnPersistFailure(scope: string, error: unknown): void {
 	);
 }
 
+function formatSyncCenterStatusError(action: string, error: unknown): string {
+	return `${action} (${getRedactedFilesystemErrorLabel(error)}).`;
+}
+
 async function persistDashboardSettingsSelection(
 	selected: DashboardDisplaySettings,
 	keys: readonly DashboardSettingKey[],
@@ -1359,9 +1365,15 @@ function normalizePathForComparison(
 	if (typeof path !== "string" || path.length === 0) {
 		return null;
 	}
-	const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+	const normalized = path.replace(/\\/g, "/");
+	const hasUncPrefix = normalized.startsWith("//");
+	const collapsed = hasUncPrefix
+		? `//${normalized.slice(2).replace(/\/+/g, "/")}`
+		: normalized.replace(/\/+/g, "/");
 	const trimmed =
-		normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+		collapsed.length > (hasUncPrefix ? 2 : 1)
+			? collapsed.replace(/\/+$/, "")
+			: collapsed;
 	const isWindowsPath = path.includes("\\") || /^[a-z]:\//i.test(trimmed);
 	return isWindowsPath ? trimmed.toLowerCase() : trimmed;
 }
@@ -2685,7 +2697,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		context: SyncCenterOverviewContext;
 		sourceState: CodexCliState | null;
 	}> => {
-		const current = await loadAccounts();
+		const current = await loadAccountsReadOnly();
 		const sourceState = isCodexCliSyncEnabled()
 			? await loadCodexCliState({ forceRefresh })
 			: null;
@@ -2765,9 +2777,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 			);
 		} catch (error) {
 			return buildErrorState(
-				`Failed to refresh sync center: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				formatSyncCenterStatusError("Failed to refresh sync center", error),
 				previousPreview,
 			);
 		}
@@ -2844,34 +2854,41 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 		}
 
 		try {
-			const synced = await withQueuedRetry(preview.targetPath, async () => {
-				const current = await loadAccounts();
-				return applyCodexCliSyncToStorage(current, {
-					sourceState,
-				});
-			});
 			const storageBackupEnabled = getStorageBackupEnabled(config);
-			if (synced.changed && synced.storage) {
-				const syncedStorage = synced.storage;
-				try {
-					await withQueuedRetry(preview.targetPath, async () =>
-						saveAccounts(syncedStorage, {
-							backupEnabled: storageBackupEnabled,
-						}),
-					);
-					commitPendingCodexCliSyncRun(synced.pendingRun);
-				} catch (error) {
-					commitCodexCliSyncRunFailure(synced.pendingRun, error);
-					preview = {
-						...preview,
-						lastSync: getLastCodexCliSyncRun(),
-						status: "error",
-						statusDetail: `Failed to save synced storage: ${
-							error instanceof Error ? error.message : String(error)
-						}`,
-					};
-					continue;
-				}
+			let synced;
+			try {
+				synced = await withQueuedRetry(preview.targetPath, async () =>
+					withAccountStorageTransaction(async (current, persist) => {
+						const next = await applyCodexCliSyncToStorage(current, {
+							sourceState,
+						});
+						if (next.changed && next.storage) {
+							try {
+								await persist(next.storage, {
+									backupEnabled: storageBackupEnabled,
+								});
+							} catch (error) {
+								commitCodexCliSyncRunFailure(next.pendingRun, error);
+								throw error;
+							}
+						}
+						return next;
+					}),
+				);
+			} catch (error) {
+				preview = {
+					...preview,
+					lastSync: getLastCodexCliSyncRun(),
+					status: "error",
+					statusDetail: formatSyncCenterStatusError(
+						"Failed to save synced storage",
+						error,
+					),
+				};
+				continue;
+			}
+			if (synced?.changed && synced.pendingRun) {
+				commitPendingCodexCliSyncRun(synced.pendingRun);
 			}
 			({ preview, context, sourceState } = await buildPreviewSafely(
 				true,
@@ -2882,9 +2899,10 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				...preview,
 				status: "error",
 				lastSync: getLastCodexCliSyncRun(),
-				statusDetail: `Failed to refresh sync center: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				statusDetail: formatSyncCenterStatusError(
+					"Failed to refresh sync center",
+					error,
+				),
 			};
 		}
 	}

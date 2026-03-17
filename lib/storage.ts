@@ -47,6 +47,8 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const TRANSIENT_FILESYSTEM_MAX_ATTEMPTS = 7;
+const TRANSIENT_FILESYSTEM_BASE_DELAY_MS = 10;
 export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
@@ -140,6 +142,13 @@ export interface BackupRestoreAssessment {
 	error?: string;
 }
 
+export type ImportAccountsResult = {
+	imported: number;
+	total: number;
+	skipped: number;
+	changed?: boolean;
+};
+
 export interface ActionableNamedBackupRecoveries {
 	assessments: BackupRestoreAssessment[];
 	allAssessments: BackupRestoreAssessment[];
@@ -151,6 +160,8 @@ interface LoadedBackupCandidate {
 	storedVersion: unknown;
 	schemaErrors: string[];
 	error?: string;
+	errorCode?: string;
+	errorCause?: unknown;
 }
 
 interface NamedBackupScanEntry {
@@ -173,6 +184,8 @@ function createUnloadedBackupCandidate(): LoadedBackupCandidate {
 		normalized: null,
 		storedVersion: null,
 		schemaErrors: [],
+		errorCode: undefined,
+		errorCause: undefined,
 	};
 }
 
@@ -1556,6 +1569,10 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
 	return loadAccountsInternal(saveAccounts);
 }
 
+export async function loadAccountsReadOnly(): Promise<AccountStorageV3 | null> {
+	return loadAccountsInternal(null, { allowFilesystemCleanup: false });
+}
+
 export async function getBackupMetadata(): Promise<BackupMetadata> {
 	const storagePath = getStoragePath();
 	const walPath = getAccountsWalPath(storagePath);
@@ -1652,6 +1669,19 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 	};
 }
 
+async function isReadableNamedBackupPath(path: string): Promise<boolean> {
+	try {
+		const stats = await retryTransientFilesystemOperation(() => fs.lstat(path));
+		return stats.isFile() && !stats.isSymbolicLink();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+}
+
 async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
@@ -1663,6 +1693,8 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
 		const backups: NamedBackupScanEntry[] = [];
 		const totalBackups = backupEntries.length;
+		let failedCount = 0;
+		let firstFailedScanError: unknown;
 		for (
 			let index = 0;
 			index < backupEntries.length;
@@ -1678,14 +1710,30 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 						const path = resolvePath(join(backupRoot, entry.name));
 						const name = entry.name.slice(0, -".json".length);
 						try {
+							if (!(await isReadableNamedBackupPath(path))) {
+								return null;
+							}
 							const candidate = await loadBackupCandidate(path);
 							const backup = await buildNamedBackupMetadata(name, path, {
 								candidate,
 							});
+							if (
+								typeof candidate.errorCode === "string" &&
+								candidate.errorCode !== "ENOENT"
+							) {
+								failedCount += 1;
+								firstFailedScanError ??=
+									candidate.errorCause ??
+									Object.assign(new Error(candidate.error ?? candidate.errorCode), {
+										code: candidate.errorCode,
+									});
+							}
 							return { backup, candidate };
 						} catch (error) {
 							const code = (error as NodeJS.ErrnoException).code;
 							if (code !== "ENOENT") {
+								failedCount += 1;
+								firstFailedScanError ??= error;
 								log.warn("Failed to scan named backup", {
 									name,
 									path,
@@ -1699,6 +1747,13 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 					(entry): entry is NamedBackupScanEntry => entry !== null,
 				),
 			);
+		}
+		if (
+			totalBackups > 0 &&
+			failedCount === totalBackups &&
+			firstFailedScanError !== undefined
+		) {
+			throw firstFailedScanError;
 		}
 		return {
 			backups: backups.sort(
@@ -1737,6 +1792,9 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataList
 			const path = resolvePath(join(backupRoot, entry.name));
 			const name = entry.name.slice(0, -".json".length);
 			try {
+				if (!(await isReadableNamedBackupPath(path))) {
+					continue;
+				}
 				backups.push(
 					await buildNamedBackupMetadata(name, path, {
 						candidate: createUnloadedBackupCandidate(),
@@ -1782,25 +1840,30 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 function isRetryableFilesystemErrorCode(
 	code: string | undefined,
 ): code is "EPERM" | "EBUSY" | "EAGAIN" {
-	if (code === "EBUSY" || code === "EAGAIN") {
+	if (code === "EAGAIN") {
 		return true;
 	}
-	return code === "EPERM" && process.platform === "win32";
+	return process.platform === "win32" && (code === "EPERM" || code === "EBUSY");
 }
 
 async function retryTransientFilesystemOperation<T>(
 	operation: () => Promise<T>,
 ): Promise<T> {
-	for (let attempt = 0; attempt < 5; attempt += 1) {
+	for (let attempt = 0; attempt < TRANSIENT_FILESYSTEM_MAX_ATTEMPTS; attempt += 1) {
 		try {
 			return await operation();
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
+			if (
+				!isRetryableFilesystemErrorCode(code) ||
+				attempt >= TRANSIENT_FILESYSTEM_MAX_ATTEMPTS - 1
+			) {
 				throw error;
 			}
+			const baseDelayMs = TRANSIENT_FILESYSTEM_BASE_DELAY_MS * 2 ** attempt;
+			const jitterMs = Math.floor(Math.random() * baseDelayMs);
 			await new Promise((resolve) =>
-				setTimeout(resolve, 10 * 2 ** attempt + Math.floor(Math.random() * 10)),
+				setTimeout(resolve, baseDelayMs + jitterMs),
 			);
 		}
 	}
@@ -1846,7 +1909,7 @@ export async function getActionableNamedBackupRestores(
 
 	const currentStorage =
 		options.currentStorage === undefined
-			? await loadAccounts()
+			? await loadAccountsReadOnly()
 			: options.currentStorage;
 	const actionable: BackupRestoreAssessment[] = [];
 	const allAssessments: BackupRestoreAssessment[] = [];
@@ -1949,6 +2012,7 @@ function assessNamedBackupRestoreCandidate(
 	currentStorage: AccountStorageV3 | null,
 ): BackupRestoreAssessment {
 	const currentAccounts = currentStorage?.accounts ?? [];
+	const deduplicatedCurrentAccounts = deduplicateAccounts([...currentAccounts]);
 
 	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {
 		return {
@@ -1963,17 +2027,24 @@ function assessNamedBackupRestoreCandidate(
 		};
 	}
 
-	const mergedAccounts = deduplicateAccounts([
-		...currentAccounts,
+	const deduplicatedIncomingAccounts = deduplicateAccounts([
 		...candidate.normalized.accounts,
+	]);
+	const mergedAccounts = deduplicateAccounts([
+		...deduplicatedCurrentAccounts,
+		...deduplicatedIncomingAccounts,
 	]);
 	const wouldExceedLimit = mergedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS;
 	const imported = wouldExceedLimit
 		? null
-		: mergedAccounts.length - currentAccounts.length;
+		: mergedAccounts.length - deduplicatedCurrentAccounts.length;
 	const skipped = wouldExceedLimit
 		? null
-		: Math.max(0, candidate.normalized.accounts.length - (imported ?? 0));
+		: Math.max(0, deduplicatedIncomingAccounts.length - (imported ?? 0));
+	const changed = !haveEquivalentAccountRows(
+		mergedAccounts,
+		deduplicatedCurrentAccounts,
+	);
 
 	return {
 		backup,
@@ -1982,17 +2053,29 @@ function assessNamedBackupRestoreCandidate(
 		imported,
 		skipped,
 		wouldExceedLimit,
-		eligibleForRestore: !wouldExceedLimit,
+		eligibleForRestore: !wouldExceedLimit && changed,
 		error: wouldExceedLimit
 			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
-			: undefined,
+			: !changed
+				? "All accounts in this backup already exist"
+				: undefined,
 	};
 }
 
 export async function restoreNamedBackup(
 	name: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
-	const backupPath = await resolveNamedBackupRestorePath(name);
+): Promise<ImportAccountsResult> {
+	const assessment = await assessNamedBackupRestore(name);
+	return restoreAssessedNamedBackup(assessment);
+}
+
+export async function restoreAssessedNamedBackup(
+	assessment: Pick<BackupRestoreAssessment, "backup" | "eligibleForRestore" | "error">,
+): Promise<ImportAccountsResult> {
+	if (!assessment.eligibleForRestore) {
+		throw new Error(assessment.error ?? "Backup is not eligible for restore.");
+	}
+	const backupPath = await resolveNamedBackupRestorePath(assessment.backup.name);
 	return importAccounts(backupPath);
 }
 
@@ -2007,6 +2090,44 @@ function parseAndNormalizeStorage(data: unknown): {
 		? (data as { version?: unknown }).version
 		: undefined;
 	return { normalized, storedVersion, schemaErrors };
+}
+
+function canonicalizeComparisonValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((entry) => canonicalizeComparisonValue(entry));
+	}
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+
+	const record = value as Record<string, unknown>;
+	return Object.fromEntries(
+		Object.keys(record)
+			.sort()
+			.map((key) => [key, canonicalizeComparisonValue(record[key])] as const),
+	);
+}
+
+function stableStringifyForComparison(value: unknown): string {
+	return JSON.stringify(canonicalizeComparisonValue(value));
+}
+
+function haveEquivalentAccountRows(
+	left: readonly unknown[],
+	right: readonly unknown[],
+): boolean {
+	if (left.length !== right.length) {
+		return false;
+	}
+	for (let index = 0; index < left.length; index += 1) {
+		if (
+			stableStringifyForComparison(left[index]) !==
+			stableStringifyForComparison(right[index])
+		) {
+			return false;
+		}
+	}
+	return true;
 }
 
 async function loadAccountsFromPath(path: string): Promise<{
@@ -2025,14 +2146,27 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 			loadAccountsFromPath(path),
 		);
 	} catch (error) {
-		return {
-			normalized: null,
-			storedVersion: undefined,
-			schemaErrors: [],
-			error: String(error),
-		};
+		const errorMessage =
+			error instanceof SyntaxError
+				? `Invalid JSON in import file: ${path}`
+				: (error as NodeJS.ErrnoException).code === "ENOENT"
+					? `Import file not found: ${path}`
+					: error instanceof Error
+						? error.message
+						: String(error);
+			return {
+				normalized: null,
+				storedVersion: undefined,
+				schemaErrors: [],
+				error: errorMessage,
+				errorCode:
+					typeof (error as NodeJS.ErrnoException).code === "string"
+						? (error as NodeJS.ErrnoException).code
+						: undefined,
+				errorCause: error,
+			};
+		}
 	}
-}
 
 function equalsNamedBackupEntry(left: string, right: string): boolean {
 	return process.platform === "win32"
@@ -2096,7 +2230,7 @@ async function findExistingNamedBackupPath(
 	return undefined;
 }
 
-async function resolveNamedBackupRestorePath(name: string): Promise<string> {
+export async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	const existingPath = await findExistingNamedBackupPath(name);
 	if (existingPath) {
 		return existingPath;
@@ -2169,10 +2303,13 @@ async function loadAccountsFromJournal(
 
 async function loadAccountsInternal(
 	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
+	options: { allowFilesystemCleanup?: boolean } = {},
 ): Promise<AccountStorageV3 | null> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	await cleanupStaleRotatingBackupArtifacts(path);
+	if (options.allowFilesystemCleanup ?? true) {
+		await cleanupStaleRotatingBackupArtifacts(path);
+	}
 	const migratedLegacyStorage = persistMigration
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;
@@ -2521,7 +2658,10 @@ function cloneAccountStorageForPersistence(
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
-		persist: (storage: AccountStorageV3) => Promise<void>,
+		persist: (
+			storage: AccountStorageV3,
+			options?: SaveAccountsOptions,
+		) => Promise<void>,
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
@@ -2532,8 +2672,11 @@ export async function withAccountStorageTransaction<T>(
 			storagePath,
 		};
 		const current = state.snapshot;
-		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
+		const persist = async (
+			storage: AccountStorageV3,
+			options: SaveAccountsOptions = {},
+		): Promise<void> => {
+			await saveAccountsUnlocked(storage, options);
 			state.snapshot = storage;
 		};
 		return transactionSnapshotContext.run(state, () =>
@@ -2959,7 +3102,10 @@ export async function exportAccounts(
 	const transactionState = transactionSnapshotContext.getStore();
 	const currentStoragePath = getStoragePath();
 	const storage = transactionState?.active
-		? transactionState.storagePath === currentStoragePath
+		? (process.platform === "win32"
+				? transactionState.storagePath?.toLowerCase() ===
+					currentStoragePath?.toLowerCase()
+				: transactionState.storagePath === currentStoragePath)
 			? transactionState.snapshot
 			: (() => {
 					throw new Error(
@@ -3002,15 +3148,20 @@ export async function exportAccounts(
  */
 export async function importAccounts(
 	filePath: string,
-): Promise<{ imported: number; total: number; skipped: number }> {
+): Promise<ImportAccountsResult> {
 	const resolvedPath = resolvePath(filePath);
 
-	// Check file exists with friendly error
-	if (!existsSync(resolvedPath)) {
-		throw new Error(`Import file not found: ${resolvedPath}`);
+	let content: string;
+	try {
+		content = await retryTransientFilesystemOperation(() =>
+			fs.readFile(resolvedPath, "utf-8"),
+		);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			throw new Error(`Import file not found: ${resolvedPath}`);
+		}
+		throw error;
 	}
-
-	const content = await fs.readFile(resolvedPath, "utf-8");
 
 	let imported: unknown;
 	try {
@@ -3028,22 +3179,40 @@ export async function importAccounts(
 		imported: importedCount,
 		total,
 		skipped: skippedCount,
+		changed,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
 		const existingAccounts = existing?.accounts ?? [];
+		const existingDeduplicatedAccounts = deduplicateAccounts([
+			...existingAccounts,
+		]);
+		const incomingDeduplicatedAccounts = deduplicateAccounts([
+			...normalized.accounts,
+		]);
 		const existingActiveIndex = existing?.activeIndex ?? 0;
-
-		const merged = [...existingAccounts, ...normalized.accounts];
-
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccounts(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
-			}
+		const deduplicatedAccounts = deduplicateAccounts([
+			...existingDeduplicatedAccounts,
+			...incomingDeduplicatedAccounts,
+		]);
+		if (deduplicatedAccounts.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			throw new Error(
+				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduplicatedAccounts.length})`,
+			);
 		}
-
-		const deduplicatedAccounts = deduplicateAccounts(merged);
+		const imported =
+			deduplicatedAccounts.length - existingDeduplicatedAccounts.length;
+		const skipped = Math.max(0, incomingDeduplicatedAccounts.length - imported);
+		const changed = !haveEquivalentAccountRows(
+			deduplicatedAccounts,
+			existingDeduplicatedAccounts,
+		);
+		if (!changed) {
+			return {
+				imported,
+				total: deduplicatedAccounts.length,
+				skipped,
+				changed,
+			};
+		}
 
 		const newStorage: AccountStorageV3 = {
 			version: 3,
@@ -3053,10 +3222,12 @@ export async function importAccounts(
 		};
 
 		await persist(newStorage);
-
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
-		return { imported, total: deduplicatedAccounts.length, skipped };
+		return {
+			imported,
+			total: deduplicatedAccounts.length,
+			skipped,
+			changed,
+		};
 	});
 
 	log.info("Imported accounts", {
@@ -3064,7 +3235,13 @@ export async function importAccounts(
 		imported: importedCount,
 		skipped: skippedCount,
 		total,
+		changed,
 	});
 
-	return { imported: importedCount, total, skipped: skippedCount };
+	return {
+		imported: importedCount,
+		total,
+		skipped: skippedCount,
+		changed,
+	};
 }

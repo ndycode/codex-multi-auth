@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__resetLastLiveAccountSyncSnapshotForTests,
+	__testOnly,
 	getLastLiveAccountSyncSnapshot,
 	LiveAccountSync,
 } from "../lib/live-account-sync.js";
@@ -182,10 +183,86 @@ describe("live-account-sync", () => {
 		first.stop();
 		expect(getLastLiveAccountSyncSnapshot()).toEqual(
 			expect.objectContaining({
-				path: secondStoragePath,
+				path: storagePath,
 				running: false,
 			}),
 		);
+	});
+
+	it("ignores known storage-noise sibling filenames for watch reloads", () => {
+		const targetName = "openai-codex-accounts.json";
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}.cache`,
+			),
+		).toBe(true);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}.bak.rotate.12345.slot-1.tmp`,
+			),
+		).toBe(true);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}${".reset-intent"}`,
+			),
+		).toBe(true);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}.wal`,
+			),
+		).toBe(false);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}.bak`,
+			),
+		).toBe(false);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(targetName, targetName),
+		).toBe(false);
+	});
+
+	it("publishes the most recently updated watcher snapshot, not just the newest instance", async () => {
+		const secondStoragePath = join(workDir, "openai-codex-accounts-quaternary.json");
+		await fs.writeFile(
+			secondStoragePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+		const first = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+		const second = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+
+		await first.syncToPath(storagePath);
+		await second.syncToPath(secondStoragePath);
+
+		const runReload = Reflect.get(first, "runReload") as (
+			reason: "watch" | "poll",
+		) => Promise<void>;
+		await Reflect.apply(
+			runReload as (...args: unknown[]) => unknown,
+			first as object,
+			["poll"],
+		);
+
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: storagePath,
+				running: true,
+			}),
+		);
+
+		second.stop();
+		first.stop();
 	});
 
 	it("reloads when file changes are detected by polling", async () => {
