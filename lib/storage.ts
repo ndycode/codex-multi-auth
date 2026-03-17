@@ -2073,7 +2073,8 @@ export function detectOpencodeAccountPoolPath(): string | null {
 	const candidates = new Set<string>();
 	const explicit = process.env.CODEX_OPENCODE_POOL_PATH;
 	if (explicit?.trim()) {
-		candidates.add(resolvePath(explicit.trim()));
+		const explicitPath = resolvePath(explicit.trim());
+		return existsSync(explicitPath) ? explicitPath : null;
 	}
 
 	const appDataBases = [process.env.LOCALAPPDATA, process.env.APPDATA].filter(
@@ -2385,7 +2386,7 @@ function redactFilesystemDetails(value: string): string {
 	);
 }
 
-function formatSnapshotErrorForLog(error: unknown): string {
+export function formatRedactedFilesystemError(error: unknown): string {
 	const code =
 		typeof (error as NodeJS.ErrnoException | undefined)?.code === "string"
 			? (error as NodeJS.ErrnoException).code
@@ -2425,7 +2426,7 @@ export async function snapshotAccountStorage(
 		log.warn("Failed to create account storage snapshot", {
 			reason,
 			backupName,
-			error: formatSnapshotErrorForLog(error),
+			error: formatRedactedFilesystemError(error),
 		});
 		return null;
 	}
@@ -2436,7 +2437,7 @@ export async function snapshotAccountStorage(
 		log.warn("Failed to enforce account snapshot retention", {
 			reason,
 			backupName,
-			error: formatSnapshotErrorForLog(error),
+			error: formatRedactedFilesystemError(error),
 		});
 	}
 
@@ -2475,6 +2476,10 @@ export async function assessOpencodeAccountPool(
 
 	if (!resolvedPath) {
 		return null;
+	}
+
+	if (equalsResolvedStoragePath(resolvedPath, getStoragePath())) {
+		throw new Error("Import source cannot be the active storage file.");
 	}
 
 	const candidate = await loadBackupCandidate(resolvedPath);
@@ -2820,13 +2825,19 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 			storedVersion: undefined,
 			schemaErrors: [],
 			rawAccounts: [],
-			error: String(error),
+			error: formatRedactedFilesystemError(error),
 			errorCode,
 		};
 	}
 }
 
 function equalsNamedBackupEntry(left: string, right: string): boolean {
+	return process.platform === "win32"
+		? left.toLowerCase() === right.toLowerCase()
+		: left === right;
+}
+
+function equalsResolvedStoragePath(left: string, right: string): boolean {
 	return process.platform === "win32"
 		? left.toLowerCase() === right.toLowerCase()
 		: left === right;
@@ -3835,10 +3846,23 @@ export async function importAccounts(
 	filePath: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
+	if (equalsResolvedStoragePath(resolvedPath, getStoragePath())) {
+		throw new StorageError(
+			"Import source cannot be the active storage file.",
+			"EINVALID",
+			resolvedPath,
+			"Choose a different import file than the active storage file.",
+		);
+	}
 
 	// Check file exists with friendly error
 	if (!existsSync(resolvedPath)) {
-		throw new Error(`Import file not found: ${resolvedPath}`);
+		throw new StorageError(
+			"Import file not found.",
+			"ENOENT",
+			resolvedPath,
+			"Ensure the import file exists and is readable.",
+		);
 	}
 
 	const content = await fs.readFile(resolvedPath, "utf-8");
@@ -3847,7 +3871,12 @@ export async function importAccounts(
 	try {
 		imported = JSON.parse(content);
 	} catch {
-		throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
+		throw new StorageError(
+			"Invalid JSON in import file.",
+			"EINVALID",
+			resolvedPath,
+			"Ensure the import file contains valid exported account JSON.",
+		);
 	}
 
 	const normalized = normalizeAccountStorage(imported);

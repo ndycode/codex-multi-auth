@@ -44,6 +44,7 @@ let historyDirOverride: string | null = null;
 let historyMutex: Promise<void> = Promise.resolve();
 let lastAppendError: string | null = null;
 let lastAppendPaths: SyncHistoryPaths | null = null;
+let historyEntryCountEstimate: number | null = null;
 const pendingHistoryWrites = new Set<Promise<void>>();
 
 function getHistoryDirectory(): string {
@@ -286,11 +287,25 @@ export async function appendSyncHistoryEntry(
 		const paths = getSyncHistoryPaths();
 		lastAppendPaths = paths;
 		await ensureHistoryDir(paths.directory);
+		if (historyEntryCountEstimate === null) {
+			historyEntryCountEstimate = (await loadHistoryEntriesFromDisk(paths)).length;
+		}
 		await fs.appendFile(paths.historyPath, `${serializeEntry(entry)}\n`, {
 			encoding: "utf8",
 			mode: 0o600,
 		});
-		const prunedHistory = await trimHistoryFileIfNeeded(paths);
+		historyEntryCountEstimate += 1;
+		const prunedHistory =
+			historyEntryCountEstimate > MAX_HISTORY_ENTRIES
+				? await trimHistoryFileIfNeeded(paths)
+				: {
+						entries: [],
+						removed: 0,
+						latest: entry,
+					};
+		if (prunedHistory.entries.length > 0) {
+			historyEntryCountEstimate = prunedHistory.entries.length;
+		}
 		await rewriteLatestEntry(prunedHistory.latest ?? entry, paths);
 		lastAppendError = null;
 	});
@@ -378,6 +393,7 @@ export async function pruneSyncHistory(
 		await rewriteLatestEntry(result.latest, paths);
 		lastAppendPaths = paths;
 		lastAppendError = null;
+		historyEntryCountEstimate = result.entries.length;
 		return {
 			removed: result.removed,
 			kept: result.entries.length,
@@ -394,6 +410,7 @@ export function cloneSyncHistoryEntry(
 
 export function configureSyncHistoryForTests(directory: string | null): void {
 	historyDirOverride = directory ? directory.trim() : null;
+	historyEntryCountEstimate = null;
 }
 
 export async function __resetSyncHistoryForTests(): Promise<void> {
@@ -423,6 +440,7 @@ export async function __resetSyncHistoryForTests(): Promise<void> {
 	});
 	lastAppendError = null;
 	lastAppendPaths = null;
+	historyEntryCountEstimate = 0;
 }
 
 export function __getLastSyncHistoryErrorForTests(): string | null {

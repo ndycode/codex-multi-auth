@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { promises as fs, existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
@@ -65,6 +65,7 @@ import {
 	assessNamedBackupRestore,
 	assessOpencodeAccountPool,
 	type BackupRestoreAssessment,
+	formatRedactedFilesystemError,
 	getActionableNamedBackupRestores,
 	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
@@ -4127,7 +4128,8 @@ async function buildLoginMenuHealthSummary(
 		syncSummary = summarizeLatestCodexCliSyncState();
 		doctorSummary = summarizeReadOnlyDoctorState(storage);
 	} catch (error) {
-		console.warn("Failed to build login menu health summary", error);
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(`Failed to build login menu health summary (${errorLabel}).`);
 	}
 	const restoreLabel =
 		actionableRestores.totalBackups > 0
@@ -4158,7 +4160,7 @@ function formatOpencodeImportFailure(error: unknown): string {
 	if (typeof error !== "string") {
 		return "OpenCode account pool is not importable.";
 	}
-	const normalized = collapseWhitespace(error);
+	const normalized = collapseWhitespace(formatRedactedFilesystemError(error));
 	return normalized || "OpenCode account pool is not importable.";
 }
 
@@ -4373,6 +4375,7 @@ async function runAuthLogin(): Promise<number> {
 		const displaySettings = await loadDashboardDisplaySettings();
 		applyUiThemeFromDashboardSettings(displaySettings);
 		const wizardOutcome = await runFirstRunWizard(displaySettings);
+		firstRunWizardShownInLoop = true;
 		if (wizardOutcome === "cancelled") {
 			return 0;
 		}
@@ -4516,40 +4519,55 @@ async function runAuthLogin(): Promise<number> {
 				continue;
 			}
 			if (menuResult.mode === "import-opencode") {
-				const assessment = await assessOpencodeAccountPool({
-					currentStorage,
-				});
-				if (!assessment) {
-					console.log("No OpenCode account pool was detected.");
-					continue;
-				}
-				if (
-					!assessment.backup.valid ||
-					!assessment.eligibleForRestore ||
-					assessment.wouldExceedLimit
-				) {
-					console.log(
-						formatOpencodeImportFailure(assessment.error),
-					);
-					continue;
-				}
-				const confirmed = await confirm(
-					`Import OpenCode accounts from ${assessment.backup.path}?`,
-				);
-				if (!confirmed) {
-					continue;
-				}
-				await runActionPanel(
-					"Import OpenCode Accounts",
-					`Importing from ${assessment.backup.path}`,
-					async () => {
-						const imported = await importAccounts(assessment.backup.path);
+				try {
+					const assessment = await assessOpencodeAccountPool({
+						currentStorage,
+					});
+					if (!assessment) {
+						console.log("No OpenCode account pool was detected.");
+						continue;
+					}
+					if (!assessment.backup.valid || !assessment.eligibleForRestore) {
+						const assessmentErrorLabel =
+							formatOpencodeImportFailure(assessment.error);
+						console.log(assessmentErrorLabel);
+						continue;
+					}
+					if (assessment.wouldExceedLimit) {
 						console.log(
-							`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+							`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
 						);
-					},
-					displaySettings,
-				);
+						continue;
+					}
+					const backupLabel = basename(assessment.backup.path);
+					const confirmed = await confirm(
+						`Import OpenCode accounts from ${backupLabel}?`,
+					);
+					if (!confirmed) {
+						continue;
+					}
+					await runActionPanel(
+						"Import OpenCode Accounts",
+						`Importing from ${backupLabel}`,
+						async () => {
+							const imported = await importAccounts(assessment.backup.path);
+							console.log(
+								`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+							);
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const errorLabel = collapseWhitespace(
+						formatRedactedFilesystemError(error),
+					);
+					const actionLabel =
+						error instanceof Error &&
+						error.message.includes("assessment")
+							? "Import assessment failed"
+							: "Import failed";
+					console.error(`${actionLabel}: ${errorLabel}`);
+				}
 				continue;
 			}
 			if (menuResult.mode === "fresh" && menuResult.deleteAll) {
@@ -4700,6 +4718,10 @@ async function runAuthLogin(): Promise<number> {
 							recoveryPromptAttempted = false;
 						}
 						continue;
+					}
+					if (startedFromMissingStorage) {
+						allowEmptyStorageMenu = true;
+						continue loginFlow;
 					}
 				} catch (error) {
 					if (!promptWasShown) {
