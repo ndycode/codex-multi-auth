@@ -192,7 +192,7 @@ export async function deleteAccountAtIndex(options: {
  */
 export async function deleteSavedAccounts(): Promise<DestructiveActionResult> {
 	return {
-		accountsCleared: await clearAccounts(),
+		accountsCleared: await clearAccounts().catch(() => false),
 		flaggedCleared: false,
 		quotaCacheCleared: false,
 	};

@@ -56,6 +56,26 @@ describe("destructive actions", () => {
 		expect(clearCodexCliStateCacheMock).not.toHaveBeenCalled();
 	});
 
+	it("keeps deleteSavedAccounts best-effort when account cleanup throws", async () => {
+		clearAccountsMock.mockRejectedValueOnce(
+			Object.assign(new Error("marker write failed"), { code: "EPERM" }),
+		);
+
+		const { deleteSavedAccounts } = await import(
+			"../lib/destructive-actions.js"
+		);
+
+		await expect(deleteSavedAccounts()).resolves.toEqual({
+			accountsCleared: false,
+			flaggedCleared: false,
+			quotaCacheCleared: false,
+		});
+		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+		expect(clearFlaggedAccountsMock).not.toHaveBeenCalled();
+		expect(clearQuotaCacheMock).not.toHaveBeenCalled();
+		expect(clearCodexCliStateCacheMock).not.toHaveBeenCalled();
+	});
+
 	it("returns reset results and clears Codex CLI state", async () => {
 		clearAccountsMock.mockResolvedValueOnce(true);
 		clearFlaggedAccountsMock.mockResolvedValueOnce(false);
