@@ -274,12 +274,16 @@ export async function readSyncHistory(
 	await waitForPendingHistoryWrites();
 	try {
 		if (typeof limit === "number" && limit > 0) {
-			return readHistoryTail(getSyncHistoryPaths().historyPath, {
-				kind,
-				limit,
-			});
+			return retryHistoryWrite(() =>
+				readHistoryTail(getSyncHistoryPaths().historyPath, {
+					kind,
+					limit,
+				}),
+			);
 		}
-		const content = await fs.readFile(getSyncHistoryPaths().historyPath, "utf8");
+		const content = await retryHistoryWrite(() =>
+			fs.readFile(getSyncHistoryPaths().historyPath, "utf8"),
+		);
 		const parsed = content
 			.split(/\r?\n/)
 			.map((line) => line.trim())
@@ -301,6 +305,11 @@ export async function readSyncHistory(
 	}
 }
 
+/**
+ * Compatibility export for existing Tier B callers.
+ * Blocks the event loop; prefer readLatestSyncHistory() unless the caller is in
+ * startup-only code where synchronous I/O is acceptable.
+ */
 export function readLatestSyncHistorySync(): SyncHistoryEntry | null {
 	try {
 		const content = readFileSync(getSyncHistoryPaths().latestPath, "utf8");

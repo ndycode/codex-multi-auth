@@ -135,6 +135,126 @@ describe("sync history", () => {
 		expect(readFileSpy).not.toHaveBeenCalled();
 	});
 
+	it("retries transient EBUSY while reading the last matching history entry", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: {
+				outcome: "changed",
+				runAt: 1,
+				sourcePath: "source-1.json",
+				targetPath: "target.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 0,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 1,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		});
+
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const originalOpen = nodeFs.open.bind(nodeFs);
+		let failedOpenAttempts = 0;
+		vi.spyOn(nodeFs, "open").mockImplementation(
+			async (...args: Parameters<typeof nodeFs.open>) => {
+				const [path] = args;
+				if (String(path) === historyPath && failedOpenAttempts < 2) {
+					failedOpenAttempts += 1;
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalOpen(...args);
+			},
+		);
+
+		const history = await readSyncHistory({ kind: "codex-cli-sync", limit: 1 });
+
+		expect(failedOpenAttempts).toBe(2);
+		expect(history).toHaveLength(1);
+		expect(history[0]).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+		});
+	});
+
+	it("retries transient EBUSY while reading the full history file", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: {
+				outcome: "changed",
+				runAt: 1,
+				sourcePath: "source-1.json",
+				targetPath: "target.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 0,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 1,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 2,
+			run: {
+				outcome: "noop",
+				runAt: 2,
+				sourcePath: "source-2.json",
+				targetPath: "target.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 1,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 1,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		});
+
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const originalReadFile = nodeFs.readFile.bind(nodeFs);
+		let failedReadAttempts = 0;
+		vi.spyOn(nodeFs, "readFile").mockImplementation(
+			async (...args: Parameters<typeof nodeFs.readFile>) => {
+				const [path] = args;
+				if (String(path) === historyPath && failedReadAttempts < 2) {
+					failedReadAttempts += 1;
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalReadFile(...args);
+			},
+		);
+
+		const history = await readSyncHistory({ kind: "codex-cli-sync" });
+
+		expect(failedReadAttempts).toBe(2);
+		expect(history).toHaveLength(2);
+		expect(history[0]).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+		});
+		expect(history[1]).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 2,
+		});
+	});
+
 	it("recovers the last codex-cli sync run from history when the latest snapshot is missing", async () => {
 		await appendSyncHistoryEntry({
 			kind: "codex-cli-sync",
