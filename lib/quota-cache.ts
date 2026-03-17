@@ -31,22 +31,20 @@ interface QuotaCacheFile {
 }
 
 const QUOTA_CACHE_FILE_NAME = "quota-cache.json";
-const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
 }
 
-function formatSafeQuotaCacheClearError(error: unknown): string {
+function formatSafeQuotaCacheFsError(error: unknown, fallback: string): string {
 	const message = error instanceof Error ? error.message : String(error);
 	if (!/[\\/]/.test(message)) {
 		return message;
 	}
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string"
-		? `quota cache unlink failed (${code})`
-		: "quota cache unlink failed";
+	return typeof code === "string" ? `${fallback} (${code})` : fallback;
 }
 
 /**
@@ -211,7 +209,7 @@ export async function loadQuotaCache(): Promise<QuotaCacheData> {
 	} catch (error) {
 		logWarn(
 			`Failed to load quota cache from ${getQuotaCacheLabel(quotaCachePath)}: ${
-				error instanceof Error ? error.message : String(error)
+				formatSafeQuotaCacheFsError(error, "quota cache read failed")
 			}`,
 		);
 		return { byAccountId: {}, byEmail: {} };
@@ -276,7 +274,7 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 	} catch (error) {
 		logWarn(
 			`Failed to save quota cache to ${getQuotaCacheLabel(quotaCachePath)}: ${
-				error instanceof Error ? error.message : String(error)
+				formatSafeQuotaCacheFsError(error, "quota cache write failed")
 			}`,
 		);
 	}
@@ -299,7 +297,7 @@ export async function clearQuotaCache(): Promise<boolean> {
 			if (!isRetryableFsError(error) || attempt >= 4) {
 				logWarn(
 					`Failed to clear quota cache ${getQuotaCacheLabel(quotaCachePath)}: ${
-						formatSafeQuotaCacheClearError(error)
+						formatSafeQuotaCacheFsError(error, "quota cache unlink failed")
 					}`,
 				);
 				return false;

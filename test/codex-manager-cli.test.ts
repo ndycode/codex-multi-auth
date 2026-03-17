@@ -3751,6 +3751,99 @@ describe("codex manager cli commands", () => {
 		logSpy.mockRestore();
 	});
 
+	it("waits for an in-flight menu quota refresh before deleting saved accounts", async () => {
+		const now = Date.now();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const fetchStarted = createDeferred<void>();
+		const fetchDeferred = createDeferred<{
+			status: number;
+			model: string;
+			primary: Record<string, never>;
+			secondary: Record<string, never>;
+		}>();
+		const saveStarted = createDeferred<void>();
+		const allowSaveToFinish = createDeferred<void>();
+
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-first",
+					addedAt: now,
+					lastUsed: now,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: true,
+			menuShowFetchStatus: true,
+			menuQuotaTtlMs: 60_000,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		loadQuotaCacheMock.mockResolvedValue({
+			byAccountId: {},
+			byEmail: {},
+		});
+		saveQuotaCacheMock.mockImplementationOnce(async () => {
+			saveStarted.resolve();
+			await allowSaveToFinish.promise;
+		});
+		fetchCodexQuotaSnapshotMock.mockImplementation(async () => {
+			fetchStarted.resolve();
+			return fetchDeferred.promise;
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "fresh", deleteAll: true })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const runPromise = runCodexMultiAuthCli(["auth", "login"]);
+
+		await fetchStarted.promise;
+		await Promise.resolve();
+
+		expect(deleteSavedAccountsMock).not.toHaveBeenCalled();
+
+		fetchDeferred.resolve({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: {},
+			secondary: {},
+		});
+		await saveStarted.promise;
+		expect(deleteSavedAccountsMock).not.toHaveBeenCalled();
+		allowSaveToFinish.resolve();
+
+		const exitCode = await runPromise;
+
+		expect(exitCode).toBe(0);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(deleteSavedAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveQuotaCacheMock.mock.invocationCallOrder[0]).toBeLessThan(
+			deleteSavedAccountsMock.mock.invocationCallOrder[0] ??
+				Number.POSITIVE_INFINITY,
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			"Deleted saved accounts. Saved accounts deleted; flagged/problem accounts, settings, and Codex CLI sync state kept.",
+		);
+		logSpy.mockRestore();
+	});
+
 	it("resets local state when reset mode is chosen", async () => {
 		const now = Date.now();
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

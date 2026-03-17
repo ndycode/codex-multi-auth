@@ -105,7 +105,7 @@ describe("quota cache", () => {
     }
   });
 
-  it.each(["EBUSY", "EPERM"] as const)(
+  it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
     "retries transient %s while clearing cache",
     async (code) => {
       const { clearQuotaCache, getQuotaCachePath, saveQuotaCache } =
@@ -139,7 +139,7 @@ describe("quota cache", () => {
     },
   );
 
-  it.each(["EBUSY", "EPERM"] as const)(
+  it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
     "returns false when clearQuotaCache exhausts %s retries",
     async (code) => {
       vi.resetModules();
@@ -268,7 +268,7 @@ describe("quota cache", () => {
     }
   });
 
-  it.each(["EBUSY", "EPERM"] as const)(
+  it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
     "retries atomic rename on transient %s errors",
     async (code) => {
       const { saveQuotaCache, loadQuotaCache } =
@@ -355,13 +355,17 @@ describe("quota cache", () => {
       await fs.writeFile(getQuotaCachePath(), "{}", "utf8");
 
       const readSpy = vi.spyOn(fs, "readFile");
-      readSpy.mockRejectedValueOnce(new Error("read failed"));
+      readSpy.mockRejectedValueOnce(
+        new Error(`read failed: ${join(tempDir, "quota-cache.json")}`),
+      );
       await loadQuotaCache();
       readSpy.mockRestore();
 
       const renameSpy = vi.spyOn(fs, "rename");
       renameSpy.mockImplementation(async () => {
-        const error = new Error("rename failed") as NodeJS.ErrnoException;
+        const error = new Error(
+          `rename failed: ${join(tempDir, "quota-cache.json.tmp")} -> ${join(tempDir, "quota-cache.json")}`,
+        ) as NodeJS.ErrnoException;
         error.code = "EIO";
         throw error;
       });
@@ -371,6 +375,12 @@ describe("quota cache", () => {
       const logMessages = warnMock.mock.calls.map((args) => String(args[0]));
       expect(
         logMessages.some((message) => message.includes("quota-cache.json")),
+      ).toBe(true);
+      expect(
+        logMessages.some((message) => message.includes("quota cache read failed")),
+      ).toBe(true);
+      expect(
+        logMessages.some((message) => message.includes("quota cache write failed (EIO)")),
       ).toBe(true);
       expect(logMessages.some((message) => message.includes(tempDir))).toBe(
         false,

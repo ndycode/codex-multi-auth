@@ -3978,6 +3978,10 @@ async function runAuthLogin(): Promise<number> {
 							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
 							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
 							async () => {
+								const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+								if (pendingQuotaRefresh) {
+									await pendingQuotaRefresh;
+								}
 								const result = await deleteSavedAccounts();
 								console.log(
 									result.accountsCleared
