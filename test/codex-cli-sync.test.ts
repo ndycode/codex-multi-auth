@@ -528,6 +528,46 @@ describe("codex-cli sync", () => {
 		}
 	});
 
+	it("publishes a redacted error when applyCodexCliSyncToStorage catches a source load failure", async () => {
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+		const loadError = Object.assign(
+			new Error("permission denied at C:/secret/codex/accounts.json"),
+			{ code: "EPERM" },
+		);
+		const loadSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockRejectedValue(loadError);
+
+		try {
+			const result = await applyCodexCliSyncToStorage(current);
+			const lastRun = getLastCodexCliSyncRun();
+
+			expect(result.storage).toBe(current);
+			expect(result.changed).toBe(false);
+			expect(result.pendingRun).toBeNull();
+			expect(lastRun?.outcome).toBe("error");
+			expect(lastRun?.message).toBe("EPERM");
+			expect(lastRun?.message).not.toContain("permission denied");
+			expect(lastRun?.summary.targetAccountCountBefore).toBe(1);
+			expect(lastRun?.summary.targetAccountCountAfter).toBe(1);
+		} finally {
+			loadSpy.mockRestore();
+		}
+	});
+
 	it("preserves the current selection when Codex CLI source has no active marker", async () => {
 		await writeFile(
 			accountsPath,

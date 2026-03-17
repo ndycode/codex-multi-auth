@@ -822,7 +822,7 @@ export async function applyCodexCliSyncToStorage(
 					targetAccountCountBefore: current?.accounts.length ?? 0,
 					targetAccountCountAfter: current?.accounts.length ?? 0,
 				},
-				message: error instanceof Error ? error.message : String(error),
+				message: getRedactedFilesystemErrorLabel(error),
 			}),
 			allocateCodexCliSyncRunRevision(),
 		);

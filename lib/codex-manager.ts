@@ -66,8 +66,6 @@ import {
 	getActionableNamedBackupRestores,
 	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
-	listNamedBackups,
-	NAMED_BACKUP_LIST_CONCURRENCY,
 	restoreAssessedNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
@@ -4371,43 +4369,17 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 		);
 		return [];
 	}
-	let backups: Awaited<ReturnType<typeof listNamedBackups>>;
 	try {
-		backups = await listNamedBackups();
+		const currentStorage = await loadAccounts();
+		const { allAssessments } = await getActionableNamedBackupRestores({
+			currentStorage,
+		});
+		return allAssessments;
 	} catch (error) {
 		const errorLabel = getRedactedFilesystemErrorLabel(error);
 		console.error(`Could not read backup directory (${errorLabel}).`);
 		throw error;
 	}
-	if (backups.length === 0) {
-		return [];
-	}
-
-	const currentStorage = await loadAccounts();
-	const assessments: BackupRestoreAssessment[] = [];
-	for (
-		let index = 0;
-		index < backups.length;
-		index += NAMED_BACKUP_LIST_CONCURRENCY
-	) {
-		const chunk = backups.slice(index, index + NAMED_BACKUP_LIST_CONCURRENCY);
-		const settledAssessments = await Promise.allSettled(
-			chunk.map((backup) =>
-				assessNamedBackupRestore(backup.name, { currentStorage }),
-			),
-		);
-		for (const [resultIndex, result] of settledAssessments.entries()) {
-			if (result.status === "fulfilled") {
-				assessments.push(result.value);
-				continue;
-			}
-			const backupName = chunk[resultIndex]?.name ?? "unknown";
-			const reason = getRedactedFilesystemErrorLabel(result.reason);
-			console.warn(`Skipped backup assessment for "${backupName}" (${reason}).`);
-		}
-	}
-
-	return assessments;
 }
 
 async function runBackupRestoreManager(
@@ -4530,11 +4502,9 @@ async function runBackupRestoreManager(
 				);
 			}
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
 			console.warn(
-				`Backup restored, but Codex CLI auth sync failed: ${
-					collapseWhitespace(message) || "unknown error"
-				}`,
+				`Backup restored, but Codex CLI auth sync failed (${errorLabel}).`,
 			);
 		}
 		return "restored";

@@ -349,10 +349,8 @@ describe("storage", () => {
 					{ accountId: "test", refreshToken: "ref", addedAt: 1, lastUsed: 2 },
 				],
 			};
-			// @ts-expect-error
 			await saveAccounts(storage);
 
-			// @ts-expect-error
 			await exportAccounts(exportPath);
 
 			expect(existsSync(exportPath)).toBe(true);
@@ -363,7 +361,6 @@ describe("storage", () => {
 		it("should fail export if file exists and force is false", async () => {
 			await fs.writeFile(exportPath, "exists");
 
-			// @ts-expect-error
 			await expect(exportAccounts(exportPath, false)).rejects.toThrow(
 				/already exists/,
 			);
@@ -397,6 +394,44 @@ describe("storage", () => {
 			).rejects.toThrow(/different storage path/);
 		});
 
+		it("allows export inside an active transaction when Windows path casing differs", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "transactional-export-win32",
+						refreshToken: "ref-transactional-export-win32",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			const caseVariantStoragePath =
+				testStoragePath.replace(/[a-z]/, (value) => value.toUpperCase()) ??
+				testStoragePath;
+
+			try {
+				await expect(
+					withAccountStorageTransaction(async () => {
+						setStoragePathDirect(caseVariantStoragePath);
+						try {
+							await exportAccounts(exportPath);
+						} finally {
+							setStoragePathDirect(testStoragePath);
+						}
+					}),
+				).resolves.toBeUndefined();
+				expect(existsSync(exportPath)).toBe(true);
+			} finally {
+				platformSpy.mockRestore();
+			}
+		});
+
 		it("should import accounts from a file and merge", async () => {
 			const existing = {
 				version: 3,
@@ -410,7 +445,6 @@ describe("storage", () => {
 					},
 				],
 			};
-			// @ts-expect-error
 			await saveAccounts(existing);
 
 			const toImport = {
@@ -422,7 +456,6 @@ describe("storage", () => {
 			};
 			await fs.writeFile(exportPath, JSON.stringify(toImport));
 
-			// @ts-expect-error
 			await importAccounts(exportPath);
 
 			const loaded = await loadAccounts();
@@ -452,7 +485,6 @@ describe("storage", () => {
 					},
 				],
 			};
-			// @ts-expect-error
 			await saveAccounts(existing);
 
 			await fs.writeFile(
@@ -1050,7 +1082,6 @@ describe("storage", () => {
 			};
 			await fs.writeFile(exportPath, JSON.stringify(toImport));
 
-			// @ts-expect-error
 			await expect(importAccounts(exportPath)).rejects.toThrow(
 				/exceed maximum/,
 			);
