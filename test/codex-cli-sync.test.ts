@@ -1361,7 +1361,7 @@ describe("codex-cli sync", () => {
 				forceRefresh: true,
 			});
 
-			expect(targetStatCalls).toBe(7);
+			expect(targetStatCalls).toBe(SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS);
 			expect(preview.status).toBe("ready");
 			expect(preview.summary.selectionChanged).toBe(true);
 		} finally {
@@ -1880,16 +1880,8 @@ describe("codex-cli sync", () => {
 
 		commitPendingCodexCliSyncRun(first.pendingRun);
 
-		expect(getLastCodexCliSyncRun()).toEqual(
-			expect.objectContaining({
-				outcome: "changed",
-				sourcePath: accountsPath,
-				targetPath: targetStoragePath,
-				summary: expect.objectContaining({
-					addedAccountCount: 1,
-				}),
-			}),
-		);
+		expect(getLastCodexCliSyncRun()?.outcome).toBe("error");
+		expect(getLastCodexCliSyncRun()?.message).toBe("later run failed");
 	});
 
 	it("ignores a duplicate sync-run publish for the same revision", async () => {

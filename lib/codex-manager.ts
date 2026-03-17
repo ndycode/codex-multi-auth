@@ -4375,13 +4375,9 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 	try {
 		backups = await listNamedBackups();
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.error(
-			`Could not read backup directory: ${
-				collapseWhitespace(message) || "unknown error"
-			}`,
-		);
-		return [];
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.error(`Could not read backup directory (${errorLabel}).`);
+		throw error;
 	}
 	if (backups.length === 0) {
 		return [];
@@ -4406,15 +4402,8 @@ async function loadBackupRestoreManagerAssessments(): Promise<
 				continue;
 			}
 			const backupName = chunk[resultIndex]?.name ?? "unknown";
-			const reason =
-				result.reason instanceof Error
-					? result.reason.message
-					: String(result.reason);
-			console.warn(
-				`Skipped backup assessment for "${backupName}": ${
-					collapseWhitespace(reason) || "unknown error"
-				}`,
-			);
+			const reason = getRedactedFilesystemErrorLabel(result.reason);
+			console.warn(`Skipped backup assessment for "${backupName}" (${reason}).`);
 		}
 	}
 
@@ -4433,8 +4422,13 @@ async function runBackupRestoreManager(
 	}
 
 	const backupDir = getNamedBackupsDirectoryPath();
-	const assessments =
-		assessmentsOverride ?? (await loadBackupRestoreManagerAssessments());
+	let assessments: BackupRestoreAssessment[];
+	try {
+		assessments =
+			assessmentsOverride ?? (await loadBackupRestoreManagerAssessments());
+	} catch {
+		return "failed";
+	}
 	if (assessments.length === 0) {
 		console.log(`No named backups found. Place backup files in ${backupDir}.`);
 		return "dismissed";

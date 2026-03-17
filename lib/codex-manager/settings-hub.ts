@@ -11,6 +11,7 @@ import {
 } from "../codex-cli/state.js";
 import {
 	applyCodexCliSyncToStorage,
+	commitCodexCliSyncRunFailure,
 	commitPendingCodexCliSyncRun,
 	type CodexCliSyncPreview,
 	type CodexCliSyncRun,
@@ -2853,9 +2854,14 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 							sourceState,
 						});
 						if (next.changed && next.storage) {
-							await persist(next.storage, {
-								backupEnabled: storageBackupEnabled,
-							});
+							try {
+								await persist(next.storage, {
+									backupEnabled: storageBackupEnabled,
+								});
+							} catch (error) {
+								commitCodexCliSyncRunFailure(next.pendingRun, error);
+								throw error;
+							}
 						}
 						return next;
 					}),
@@ -2871,7 +2877,7 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 				};
 				continue;
 			}
-			if (synced.changed && synced.pendingRun) {
+			if (synced?.changed && synced.pendingRun) {
 				commitPendingCodexCliSyncRun(synced.pendingRun);
 			}
 			({ preview, context, sourceState } = await buildPreviewSafely(

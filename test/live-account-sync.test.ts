@@ -182,10 +182,49 @@ describe("live-account-sync", () => {
 		first.stop();
 		expect(getLastLiveAccountSyncSnapshot()).toEqual(
 			expect.objectContaining({
-				path: secondStoragePath,
+				path: storagePath,
 				running: false,
 			}),
 		);
+	});
+
+	it("publishes the most recently updated watcher snapshot, not just the newest instance", async () => {
+		const secondStoragePath = join(workDir, "openai-codex-accounts-quaternary.json");
+		await fs.writeFile(
+			secondStoragePath,
+			JSON.stringify({ version: 3, activeIndex: 0, accounts: [] }),
+			"utf-8",
+		);
+		const first = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+		const second = new LiveAccountSync(async () => undefined, {
+			pollIntervalMs: 500,
+			debounceMs: 50,
+		});
+
+		await first.syncToPath(storagePath);
+		await second.syncToPath(secondStoragePath);
+
+		const runReload = Reflect.get(first, "runReload") as (
+			reason: "watch" | "poll",
+		) => Promise<void>;
+		await Reflect.apply(
+			runReload as (...args: unknown[]) => unknown,
+			first as object,
+			["poll"],
+		);
+
+		expect(getLastLiveAccountSyncSnapshot()).toEqual(
+			expect.objectContaining({
+				path: storagePath,
+				running: true,
+			}),
+		);
+
+		second.stop();
+		first.stop();
 	});
 
 	it("reloads when file changes are detected by polling", async () => {

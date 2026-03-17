@@ -3765,9 +3765,7 @@ describe("codex manager cli commands", () => {
 			expect(selectMock).not.toHaveBeenCalled();
 			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 			expect(errorSpy).toHaveBeenCalledWith(
-				expect.stringContaining(
-					"Could not read backup directory: EPERM: operation not permitted",
-				),
+				"Could not read backup directory (EPERM).",
 			);
 		} finally {
 			errorSpy.mockRestore();
@@ -3831,9 +3829,7 @@ describe("codex manager cli commands", () => {
 			expect(exitCode).toBe(0);
 			expect(restoreNamedBackupMock).toHaveBeenCalledWith("healthy-backup");
 			expect(warnSpy).toHaveBeenCalledWith(
-				expect.stringContaining(
-					'Skipped backup assessment for "broken-backup": backup directory busy',
-				),
+				'Skipped backup assessment for "broken-backup" (UNKNOWN).',
 			);
 		} finally {
 			warnSpy.mockRestore();
@@ -4994,7 +4990,11 @@ describe("codex manager cli commands", () => {
 		);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
 		expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledTimes(1);
-		expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
+		expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledTimes(1);
+		expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledWith(
+			expect.objectContaining({ revision: 4 }),
+			expect.any(Error),
+		);
 		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(2);
 	});
 
@@ -5406,7 +5406,11 @@ describe("codex manager cli commands", () => {
 		);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(commitPendingCodexCliSyncRunMock).not.toHaveBeenCalled();
-		expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
+		expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledTimes(1);
+		expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledWith(
+			expect.objectContaining({ revision: 3 }),
+			expect.any(Error),
+		);
 		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(1);
 	});
 

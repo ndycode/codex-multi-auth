@@ -218,7 +218,7 @@ export function commitPendingCodexCliSyncRun(
 	if (!markPendingCodexCliSyncRunCompleted(pendingRun.revision)) {
 		return;
 	}
-	publishCodexCliSyncRun(pendingRun.run, allocateCodexCliSyncRunRevision());
+	publishCodexCliSyncRun(pendingRun.run, pendingRun.revision);
 }
 
 export function commitCodexCliSyncRunFailure(
@@ -231,7 +231,7 @@ export function commitCodexCliSyncRunFailure(
 	}
 	publishCodexCliSyncRun(
 		buildSyncRunError(pendingRun.run, error),
-		allocateCodexCliSyncRunRevision(),
+		pendingRun.revision,
 	);
 }
 

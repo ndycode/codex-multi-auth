@@ -52,9 +52,15 @@ async function removeWithRetry(targetPath: string): Promise<void> {
 			await fs.rm(targetPath, { recursive: true, force: true });
 			return;
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
+			const code = ((error as NodeJS.ErrnoException).code ?? "").toUpperCase();
 			if (
-				(code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") ||
+				!(
+					code === "EBUSY" ||
+					code === "EPERM" ||
+					code === "ENOTEMPTY" ||
+					code === "EACCES" ||
+					code === "ETIMEDOUT"
+				) ||
 				attempt === 4
 			) {
 				throw error;
@@ -652,7 +658,7 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 					typeof path === "string" ? path.replaceAll("\\", "/") : String(path);
 				if (
 					path === lockedBackup?.path ||
-					normalizedPath.endsWith("/locked-backup.json")
+					normalizedPath.endsWith("/first-backup.json")
 				) {
 					const error = new Error("resource busy") as NodeJS.ErrnoException;
 					error.code = "EBUSY";
