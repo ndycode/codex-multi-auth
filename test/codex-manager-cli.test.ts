@@ -2227,7 +2227,7 @@ describe("codex manager cli commands", () => {
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).toHaveBeenCalledWith(
-			"Found 2 recoverable backups out of 2 total (2 backups) in /mock/backups. Restore now?",
+			"Found 2 backup options (2 recoverable) out of 2 total (2 backups) in /mock/backups. Restore now?",
 		);
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
@@ -2346,7 +2346,11 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
-		expect(confirmMock).toHaveBeenCalledTimes(2);
+		expect(confirmMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).toHaveBeenNthCalledWith(
+			1,
+			"Found 2 backup options (1 recoverable) out of 2 total (2 backups) in /mock/backups. Restore now?",
+		);
 		const restoreManagerCall = selectMock.mock.calls.find(
 			([, options]) => options?.message === "Restore From Backup",
 		);

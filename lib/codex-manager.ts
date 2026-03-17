@@ -4105,17 +4105,21 @@ async function runAuthLogin(): Promise<number> {
 					const displaySettings = await loadDashboardDisplaySettings();
 					applyUiThemeFromDashboardSettings(displaySettings);
 					const backupDir = getNamedBackupsDirectoryPath();
+					const visibleBackupCount = recoveryState.allAssessments.length;
+					const recoverableBackupCount = recoveryState.assessments.length;
 					const backupLabel =
-						recoveryState.assessments.length === 1
-							? recoveryState.assessments
+						visibleBackupCount === 1
+							? recoveryState.allAssessments
 									.map((assessment) => assessment.backup.name)
 									.join("")
-							: `${recoveryState.assessments.length} backups`;
+							: `${visibleBackupCount} backups`;
 					promptWasShown = true;
 					const restoreNow = await confirm(
-						`Found ${recoveryState.assessments.length} recoverable backup${
-							recoveryState.assessments.length === 1 ? "" : "s"
-						} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Restore now?`,
+						`Found ${visibleBackupCount} backup option${
+							visibleBackupCount === 1 ? "" : "s"
+						} (${recoverableBackupCount} recoverable) out of ${
+							recoveryState.totalBackups
+						} total (${backupLabel}) in ${backupDir}. Restore now?`,
 					);
 					if (restoreNow) {
 						await runBackupRestoreManager(displaySettings, recoveryState.allAssessments);
