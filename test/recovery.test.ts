@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -381,6 +381,42 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 			"startup-fast-path",
 		]);
 		expect(result.assessments[0]?.imported).toBe(1);
+	});
+
+	it("keeps storage cleanup disabled during read-only recovery assessment", async () => {
+		const storage = await import("../lib/storage.js");
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		await storage.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "read-only@example.com",
+					refreshToken: "read-only-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+		await storage.createNamedBackup("startup-read-only");
+		await storage.saveAccounts(emptyStorage);
+
+		const staleArtifactPath = `${storage.getStoragePath()}.bak.rotate.0.tmp`;
+		await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+		const result = await storage.getActionableNamedBackupRestores();
+
+		expect(result.totalBackups).toBe(1);
+		expect(result.assessments.map((item) => item.backup.name)).toEqual([
+			"startup-read-only",
+		]);
+		expect(existsSync(staleArtifactPath)).toBe(true);
 	});
 
 	it("keeps actionable backups when fast-path scan hits EBUSY", async () => {

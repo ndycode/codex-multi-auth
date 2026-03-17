@@ -1570,7 +1570,7 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
 }
 
 export async function loadAccountsReadOnly(): Promise<AccountStorageV3 | null> {
-	return loadAccountsInternal(null);
+	return loadAccountsInternal(null, { allowFilesystemCleanup: false });
 }
 
 export async function getBackupMetadata(): Promise<BackupMetadata> {
@@ -1669,6 +1669,19 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 	};
 }
 
+async function isReadableNamedBackupPath(path: string): Promise<boolean> {
+	try {
+		const stats = await retryTransientFilesystemOperation(() => fs.lstat(path));
+		return stats.isFile() && !stats.isSymbolicLink();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+}
+
 async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	try {
@@ -1678,10 +1691,10 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 		const backupEntries = entries
 			.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
 			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
-			const backups: NamedBackupScanEntry[] = [];
-			const totalBackups = backupEntries.length;
-			let failedCount = 0;
-			let firstFailedScanError: unknown;
+		const backups: NamedBackupScanEntry[] = [];
+		const totalBackups = backupEntries.length;
+		let failedCount = 0;
+		let firstFailedScanError: unknown;
 		for (
 			let index = 0;
 			index < backupEntries.length;
@@ -1697,6 +1710,9 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 						const path = resolvePath(join(backupRoot, entry.name));
 						const name = entry.name.slice(0, -".json".length);
 						try {
+							if (!(await isReadableNamedBackupPath(path))) {
+								return null;
+							}
 							const candidate = await loadBackupCandidate(path);
 							const backup = await buildNamedBackupMetadata(name, path, {
 								candidate,
@@ -1732,17 +1748,17 @@ async function scanNamedBackups(): Promise<NamedBackupScanResult> {
 				),
 			);
 		}
-			if (
-				totalBackups > 0 &&
-				failedCount === totalBackups &&
-				firstFailedScanError !== undefined
-			) {
-				throw firstFailedScanError;
-			}
-			return {
-				backups: backups.sort(
-					(left, right) =>
-						normalizeBackupUpdatedAt(right.backup.updatedAt) -
+		if (
+			totalBackups > 0 &&
+			failedCount === totalBackups &&
+			firstFailedScanError !== undefined
+		) {
+			throw firstFailedScanError;
+		}
+		return {
+			backups: backups.sort(
+				(left, right) =>
+					normalizeBackupUpdatedAt(right.backup.updatedAt) -
 					normalizeBackupUpdatedAt(left.backup.updatedAt),
 			),
 			totalBackups,
@@ -1776,6 +1792,9 @@ async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataList
 			const path = resolvePath(join(backupRoot, entry.name));
 			const name = entry.name.slice(0, -".json".length);
 			try {
+				if (!(await isReadableNamedBackupPath(path))) {
+					continue;
+				}
 				backups.push(
 					await buildNamedBackupMetadata(name, path, {
 						candidate: createUnloadedBackupCandidate(),
@@ -1890,7 +1909,7 @@ export async function getActionableNamedBackupRestores(
 
 	const currentStorage =
 		options.currentStorage === undefined
-			? await loadAccounts()
+			? await loadAccountsReadOnly()
 			: options.currentStorage;
 	const actionable: BackupRestoreAssessment[] = [];
 	const allAssessments: BackupRestoreAssessment[] = [];
@@ -2284,10 +2303,13 @@ async function loadAccountsFromJournal(
 
 async function loadAccountsInternal(
 	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
+	options: { allowFilesystemCleanup?: boolean } = {},
 ): Promise<AccountStorageV3 | null> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	await cleanupStaleRotatingBackupArtifacts(path);
+	if (options.allowFilesystemCleanup ?? true) {
+		await cleanupStaleRotatingBackupArtifacts(path);
+	}
 	const migratedLegacyStorage = persistMigration
 		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
 		: null;

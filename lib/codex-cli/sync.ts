@@ -502,7 +502,8 @@ function shouldApplyCodexCliSelection(
 	);
 	if (codexVersion <= 0) return localVersion <= 0;
 	if (localVersion <= 0) {
-		return persistedLocalTimestamp !== null;
+		// No local state has been persisted yet, so prefer the Codex CLI selection.
+		return true;
 	}
 	// When only source mtime is available, require Codex to be at least as new as the
 	// local selection. A grace window here can overwrite a newer persisted local choice.

@@ -19,11 +19,13 @@ import {
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getFlaggedAccountsPath,
+	getActionableNamedBackupRestores,
 	NAMED_BACKUP_LIST_CONCURRENCY,
 	getStoragePath,
 	importAccounts,
 	listNamedBackups,
 	loadAccounts,
+	loadAccountsReadOnly,
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
 	resolveNamedBackupRestorePath,
@@ -1740,6 +1742,31 @@ describe("storage", () => {
 			},
 		);
 
+		it("keeps stale rotating backup artifacts during read-only loads", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "read-only-storage",
+						refreshToken: "ref-read-only-storage",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const storagePath = getStoragePath();
+			const staleArtifactPath = `${storagePath}.bak.rotate.0.tmp`;
+			await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+
+			const loaded = await loadAccountsReadOnly();
+			expect(loaded?.accounts).toHaveLength(1);
+			expect(existsSync(staleArtifactPath)).toBe(true);
+
+			await loadAccounts();
+			expect(existsSync(staleArtifactPath)).toBe(false);
+		});
+
 		it("ignores symlink-like named backup entries that point outside the backups root", async () => {
 			const backupRoot = join(dirname(testStoragePath), "backups");
 			const externalBackupPath = join(testWorkDir, "outside-backup.json");
@@ -1796,6 +1823,57 @@ describe("storage", () => {
 			}
 		});
 
+		it("skips named backups swapped to symlinks after directory enumeration", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "swapped-after-readdir",
+						refreshToken: "ref-swapped-after-readdir",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const backup = await createNamedBackup("swapped-after-readdir");
+			await clearAccounts();
+
+			const originalLstat = fs.lstat.bind(fs);
+			const lstatSpy = vi.spyOn(fs, "lstat").mockImplementation(
+				(async (...args: Parameters<typeof fs.lstat>) => {
+					const [path] = args;
+					const normalizedPath =
+						typeof path === "string" ? path.replaceAll("\\", "/") : String(path);
+					const normalizedBackupPath = backup.path.replaceAll("\\", "/");
+					if (normalizedPath === normalizedBackupPath) {
+						return {
+							isFile: () => false,
+							isSymbolicLink: () => true,
+						} as Awaited<ReturnType<typeof fs.lstat>>;
+					}
+					return originalLstat(...args);
+				}) as typeof fs.lstat,
+			);
+
+			try {
+				expect(await listNamedBackups()).toEqual([]);
+
+				const assess = vi.fn();
+				const result = await getActionableNamedBackupRestores({
+					assess,
+					currentStorage: null,
+				});
+
+				expect(result.assessments).toEqual([]);
+				expect(result.allAssessments).toEqual([]);
+				expect(result.totalBackups).toBe(1);
+				expect(assess).not.toHaveBeenCalled();
+			} finally {
+				lstatSpy.mockRestore();
+			}
+		});
+
 		it("rethrows unreadable backup directory errors while listing backups", async () => {
 			const readdirSpy = vi.spyOn(fs, "readdir");
 			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
@@ -1821,6 +1899,80 @@ describe("storage", () => {
 			try {
 				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
 				expect(readdirSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
+			}
+		});
+
+		it("retries EPERM backup directory errors on Windows while listing backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list-dir-win32",
+						refreshToken: "ref-retry-list-dir-win32",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-list-dir-win32");
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			let failures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && failures < 2) {
+						failures += 1;
+						const error = new Error(
+							"backup directory locked",
+						) as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							name: "retry-list-dir-win32",
+							valid: true,
+						}),
+					]),
+				);
+				expect(failures).toBe(2);
+				expect(readdirSpy).toHaveBeenCalledTimes(3);
+			} finally {
+				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
+			}
+		});
+
+		it("rethrows EPERM backup directory errors after exhausting Windows retries", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
+				expect(
+					readdirSpy.mock.calls.filter(([path]) => String(path) === backupRoot),
+				).toHaveLength(7);
 			} finally {
 				readdirSpy.mockRestore();
 				platformSpy.mockRestore();

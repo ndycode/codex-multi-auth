@@ -928,6 +928,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
 
 		expect(exitCode).toBe(0);
+		expect(setStoragePathMock).toHaveBeenCalledWith(null);
 		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
 		expect(assessNamedBackupRestoreMock).toHaveBeenCalledWith(
 			"named-backup",
@@ -986,6 +987,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
 
 		expect(exitCode).toBe(1);
+		expect(setStoragePathMock).toHaveBeenCalledWith(null);
 		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(confirmMock).toHaveBeenCalledOnce();
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");

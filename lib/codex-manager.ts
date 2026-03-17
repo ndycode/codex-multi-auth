@@ -4576,6 +4576,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runAuthLogin();
 	}
 	if (command === "restore-backup") {
+		setStoragePath(null);
 		return (await runBackupRestoreManager(startupDisplaySettings)) === "failed"
 			? 1
 			: 0;
