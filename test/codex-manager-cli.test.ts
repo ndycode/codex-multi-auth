@@ -1297,7 +1297,7 @@ describe("codex manager cli commands", () => {
 				accountCount: 0,
 				schemaErrors: ["invalid"],
 				valid: false,
-				loadError: "ENOENT: C:\\Users\\neil\\AppData\\Local\\OpenCode\\openai-codex-accounts.json",
+				loadError: "ENOENT: openai-codex-accounts.json",
 			},
 			currentAccountCount: 0,
 			mergedAccountCount: null,
@@ -1309,7 +1309,7 @@ describe("codex manager cli commands", () => {
 			nextActiveEmail: undefined,
 			nextActiveAccountId: undefined,
 			activeAccountChanged: false,
-			error: "ENOENT: C:\\Users\\neil\\AppData\\Local\\OpenCode\\openai-codex-accounts.json",
+			error: "ENOENT: openai-codex-accounts.json",
 		});
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "import-opencode" })
