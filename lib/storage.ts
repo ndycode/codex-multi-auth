@@ -135,8 +135,11 @@ export interface RotatingBackupMetadata
 	slot: number;
 }
 
-export interface BackupRestoreAssessment {
-	backup: NamedBackupMetadata;
+export interface BackupRestoreAssessment<
+	TBackup extends NamedBackupMetadata | RotatingBackupMetadata =
+		NamedBackupMetadata,
+> {
+	backup: TBackup;
 	currentAccountCount: number;
 	mergedAccountCount: number | null;
 	imported: number | null;
@@ -226,11 +229,13 @@ function normalizeFilesystemPathForComparison(path: string): string {
 	return process.platform === "win32" ? path.toLowerCase() : path;
 }
 
-function buildFailedBackupRestoreAssessment(
-	backup: NamedBackupMetadata,
+function buildFailedBackupRestoreAssessment<
+	TBackup extends NamedBackupMetadata | RotatingBackupMetadata,
+>(
+	backup: TBackup,
 	currentStorage: AccountStorageV3 | null,
 	error: unknown,
-): BackupRestoreAssessment {
+): BackupRestoreAssessment<TBackup> {
 	return {
 		backup,
 		currentAccountCount: currentStorage?.accounts.length ?? 0,
@@ -1945,7 +1950,7 @@ export async function getActionableNamedBackupRestores(
 	if (usesFastPath) {
 		for (const entry of scannedBackups) {
 			try {
-				const assessment = assessNamedBackupRestoreCandidate(
+				const assessment = assessBackupRestoreCandidate(
 					entry.backup,
 					entry.candidate,
 					currentStorage,
@@ -2017,14 +2022,46 @@ export async function assessNamedBackupRestore(
 		options.currentStorage !== undefined
 			? options.currentStorage
 			: await loadAccounts();
-	return assessNamedBackupRestoreCandidate(backup, candidate, currentStorage);
+	return assessBackupRestoreCandidate(backup, candidate, currentStorage);
 }
 
-function assessNamedBackupRestoreCandidate(
-	backup: NamedBackupMetadata,
+export async function assessRotatingBackupRestore(
+	slot: number,
+	options: { currentStorage?: AccountStorageV3 | null } = {},
+): Promise<BackupRestoreAssessment<RotatingBackupMetadata>> {
+	if (!Number.isInteger(slot) || slot < 0) {
+		throw new StorageError(
+			`Invalid rotating backup slot: ${slot}`,
+			"EINVALID",
+			getAccountsBackupPath(getStoragePath()),
+			"Rotating backup restore operations only accept non-negative numeric slots.",
+		);
+	}
+	const backupPath = getAccountsBackupPathAtIndex(getStoragePath(), slot);
+	const candidate = await loadBackupCandidate(backupPath);
+	const metadata = await buildBackupFileMetadata(backupPath, { candidate });
+	const currentStorage =
+		options.currentStorage !== undefined
+			? options.currentStorage
+			: await loadAccounts();
+	return assessBackupRestoreCandidate(
+		{
+			label: formatRotatingBackupLabel(slot),
+			slot,
+			...metadata,
+		},
+		candidate,
+		currentStorage,
+	);
+}
+
+function assessBackupRestoreCandidate<
+	TBackup extends NamedBackupMetadata | RotatingBackupMetadata,
+>(
+	backup: TBackup,
 	candidate: LoadedBackupCandidate,
 	currentStorage: AccountStorageV3 | null,
-): BackupRestoreAssessment {
+): BackupRestoreAssessment<TBackup> {
 	const currentAccounts = currentStorage?.accounts ?? [];
 
 	if (!candidate.normalized || !backup.accountCount || backup.accountCount <= 0) {
@@ -2084,7 +2121,9 @@ export async function restoreRotatingBackup(
 			"Rotating backup restore operations only accept non-negative numeric slots.",
 		);
 	}
-	return importAccounts(getAccountsBackupPathAtIndex(getStoragePath(), slot));
+	return retryTransientFilesystemOperation(() =>
+		importAccounts(getAccountsBackupPathAtIndex(getStoragePath(), slot)),
+	);
 }
 
 function parseAndNormalizeStorage(data: unknown): {

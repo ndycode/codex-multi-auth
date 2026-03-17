@@ -63,6 +63,7 @@ import {
 } from "./quota-cache.js";
 import {
 	assessNamedBackupRestore,
+	assessRotatingBackupRestore,
 	getActionableNamedBackupRestores,
 	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
@@ -4800,6 +4801,24 @@ async function runBackupBrowserManager(
 		}
 		if (action === "restore" && entry?.kind === "rotating") {
 			const backupLabel = entry.label;
+			let latestAssessment;
+			try {
+				latestAssessment = await assessRotatingBackupRestore(entry.backup.slot, {
+					currentStorage: await loadAccounts(),
+				});
+			} catch (error) {
+				const errorLabel = getRedactedFilesystemErrorLabel(error);
+				console.warn(
+					`Failed to re-assess backup "${backupLabel}" before restore (${errorLabel}).`,
+				);
+				return "failed";
+			}
+			if (!latestAssessment.eligibleForRestore) {
+				console.log(
+					latestAssessment.error ?? "Backup is not eligible for restore.",
+				);
+				return "failed";
+			}
 			const confirmed = await confirm(`Restore backup "${backupLabel}"?`);
 			if (!confirmed) {
 				continue;

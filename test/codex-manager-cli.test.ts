@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ACCOUNT_LIMITS } from "../lib/constants.js";
 
 const createAuthorizationFlowMock = vi.fn();
 const exchangeAuthorizationCodeMock = vi.fn();
@@ -13,6 +14,7 @@ const getActionableNamedBackupRestoresMock = vi.fn();
 const listNamedBackupsMock = vi.fn();
 const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
+const assessRotatingBackupRestoreMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
 const restoreRotatingBackupMock = vi.fn();
@@ -138,6 +140,7 @@ vi.mock("../lib/storage.js", async () => {
 		listNamedBackups: listNamedBackupsMock,
 		listRotatingBackups: listRotatingBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
+		assessRotatingBackupRestore: assessRotatingBackupRestoreMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
 		restoreNamedBackup: restoreNamedBackupMock,
 		restoreRotatingBackup: restoreRotatingBackupMock,
@@ -695,6 +698,7 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockReset();
 		listRotatingBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
+		assessRotatingBackupRestoreMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
 		restoreNamedBackupMock.mockReset();
 		restoreRotatingBackupMock.mockReset();
@@ -711,6 +715,28 @@ describe("codex manager cli commands", () => {
 			backup: {
 				name: "named-backup",
 				path: "/mock/backups/named-backup.json",
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		});
+		assessRotatingBackupRestoreMock.mockResolvedValue({
+			backup: {
+				label: "Latest rotating backup (.bak)",
+				slot: 0,
+				path: "/mock/openai-codex-accounts.json.bak",
 				createdAt: null,
 				updatedAt: null,
 				sizeBytes: null,
@@ -1081,8 +1107,58 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
+		expect(assessRotatingBackupRestoreMock).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({ currentStorage: null }),
+		);
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(restoreRotatingBackupMock).toHaveBeenCalledWith(1);
+	});
+
+	it("blocks rotating backup restore when re-assessment says it would exceed the account limit", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const rotatingBackup = {
+			label: "Rotating backup 1 (.bak.1)",
+			slot: 1,
+			path: "/mock/openai-codex-accounts.json.bak.1",
+			createdAt: null,
+			updatedAt: Date.now(),
+			sizeBytes: 256,
+			version: 3,
+			accountCount: 11,
+			schemaErrors: [],
+			valid: true,
+			loadError: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([rotatingBackup]);
+		queueRotatingBackupBrowserSelection(rotatingBackup);
+		assessRotatingBackupRestoreMock.mockResolvedValueOnce({
+			backup: rotatingBackup,
+			currentAccountCount: 0,
+			mergedAccountCount: ACCOUNT_LIMITS.MAX_ACCOUNTS + 1,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: true,
+			eligibleForRestore: false,
+			error: `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+			expect(exitCode).toBe(1);
+			expect(confirmMock).not.toHaveBeenCalled();
+			expect(restoreRotatingBackupMock).not.toHaveBeenCalled();
+			expect(logSpy).toHaveBeenCalledWith(
+				`Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+			);
+		} finally {
+			logSpy.mockRestore();
+		}
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {

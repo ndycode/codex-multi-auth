@@ -28,6 +28,7 @@ import {
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
 	restoreNamedBackup,
+	restoreRotatingBackup,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
 	StorageError,
@@ -4291,6 +4292,68 @@ describe("storage", () => {
 					valid: false,
 				});
 				expect(rotatingBackups[1]?.loadError).toContain("EPERM");
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("retries rotating backup restore after a transient EBUSY read failure", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const rotatingBackupPath = `${testStoragePath}.bak`;
+			await fs.writeFile(
+				rotatingBackupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-restore",
+							refreshToken: "ref-rotating-restore",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalReadFile = fs.readFile.bind(fs) as typeof fs.readFile;
+			let backupReadAttempts = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation((async (
+					...args: Parameters<typeof fs.readFile>
+				) => {
+					const [filePath] = args;
+					if (String(filePath) === rotatingBackupPath) {
+						backupReadAttempts += 1;
+						if (backupReadAttempts === 1) {
+							throw Object.assign(new Error("backup busy"), {
+								code: "EBUSY",
+							});
+						}
+					}
+					return originalReadFile(...args);
+				}) as typeof fs.readFile);
+
+			try {
+				await expect(restoreRotatingBackup(0)).resolves.toEqual({
+					imported: 1,
+					skipped: 0,
+					total: 2,
+				});
+				expect(backupReadAttempts).toBe(2);
 			} finally {
 				readFileSpy.mockRestore();
 			}
