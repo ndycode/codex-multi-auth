@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const clearAccountsMock = vi.fn();
 const clearFlaggedAccountsMock = vi.fn();
 const clearQuotaCacheMock = vi.fn();
 const clearCodexCliStateCacheMock = vi.fn();
@@ -8,6 +7,7 @@ const loadFlaggedAccountsMock = vi.fn();
 const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
 const snapshotAccountStorageMock = vi.fn();
+const snapshotAndClearAccountsMock = vi.fn();
 const withAccountAndFlaggedStorageTransactionMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
 let transactionCurrentStorage: unknown = null;
@@ -25,13 +25,13 @@ vi.mock("../lib/quota-cache.js", () => ({
 }));
 
 vi.mock("../lib/storage.js", () => ({
-	clearAccounts: clearAccountsMock,
 	clearFlaggedAccounts: clearFlaggedAccountsMock,
 	getStoragePath: getStoragePathMock,
 	loadFlaggedAccounts: loadFlaggedAccountsMock,
 	saveAccounts: saveAccountsMock,
 	saveFlaggedAccounts: saveFlaggedAccountsMock,
 	snapshotAccountStorage: snapshotAccountStorageMock,
+	snapshotAndClearAccounts: snapshotAndClearAccountsMock,
 	withAccountAndFlaggedStorageTransaction:
 		withAccountAndFlaggedStorageTransactionMock,
 }));
@@ -40,13 +40,13 @@ describe("destructive actions", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.clearAllMocks();
-		clearAccountsMock.mockResolvedValue(true);
 		clearFlaggedAccountsMock.mockResolvedValue(true);
 		clearQuotaCacheMock.mockResolvedValue(true);
 		loadFlaggedAccountsMock.mockResolvedValue({ version: 1, accounts: [] });
 		saveAccountsMock.mockResolvedValue(undefined);
 		saveFlaggedAccountsMock.mockResolvedValue(undefined);
 		snapshotAccountStorageMock.mockResolvedValue(null);
+		snapshotAndClearAccountsMock.mockResolvedValue(true);
 		transactionCurrentStorage = null;
 		withAccountAndFlaggedStorageTransactionMock.mockImplementation(
 			async (handler) => {
@@ -87,14 +87,8 @@ describe("destructive actions", () => {
 			flaggedCleared: false,
 			quotaCacheCleared: false,
 		});
-		expect(snapshotAccountStorageMock).toHaveBeenCalledWith({
-			reason: "delete-saved-accounts",
-		});
-		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
-		expect(
-			snapshotAccountStorageMock.mock.invocationCallOrder[0],
-		).toBeLessThan(
-			clearAccountsMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		expect(snapshotAndClearAccountsMock).toHaveBeenCalledWith(
+			"delete-saved-accounts",
 		);
 		expect(clearFlaggedAccountsMock).not.toHaveBeenCalled();
 		expect(clearQuotaCacheMock).not.toHaveBeenCalled();
@@ -102,7 +96,7 @@ describe("destructive actions", () => {
 	});
 
 	it("returns reset results and clears Codex CLI state", async () => {
-		clearAccountsMock.mockResolvedValueOnce(true);
+		snapshotAndClearAccountsMock.mockResolvedValueOnce(true);
 		clearFlaggedAccountsMock.mockResolvedValueOnce(false);
 		clearQuotaCacheMock.mockResolvedValueOnce(true);
 
@@ -113,14 +107,8 @@ describe("destructive actions", () => {
 			flaggedCleared: false,
 			quotaCacheCleared: true,
 		});
-		expect(snapshotAccountStorageMock).toHaveBeenCalledWith({
-			reason: "reset-local-state",
-		});
-		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
-		expect(
-			snapshotAccountStorageMock.mock.invocationCallOrder[0],
-		).toBeLessThan(
-			clearAccountsMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		expect(snapshotAndClearAccountsMock).toHaveBeenCalledWith(
+			"reset-local-state",
 		);
 		expect(clearFlaggedAccountsMock).toHaveBeenCalledTimes(1);
 		expect(clearQuotaCacheMock).toHaveBeenCalledTimes(1);
@@ -136,7 +124,9 @@ describe("destructive actions", () => {
 		const { resetLocalState } = await import("../lib/destructive-actions.js");
 
 		await expect(resetLocalState()).rejects.toBe(resetError);
-		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+		expect(snapshotAndClearAccountsMock).toHaveBeenCalledWith(
+			"reset-local-state",
+		);
 		expect(clearFlaggedAccountsMock).toHaveBeenCalledTimes(1);
 		expect(clearQuotaCacheMock).not.toHaveBeenCalled();
 		expect(clearCodexCliStateCacheMock).not.toHaveBeenCalled();

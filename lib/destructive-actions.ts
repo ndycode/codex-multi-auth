@@ -4,12 +4,12 @@ import { clearQuotaCache } from "./quota-cache.js";
 import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
-	clearAccounts,
 	clearFlaggedAccounts,
 	type FlaggedAccountStorageV1,
 	getStoragePath,
 	loadFlaggedAccounts,
 	snapshotAccountStorage,
+	snapshotAndClearAccounts,
 	withAccountAndFlaggedStorageTransaction,
 } from "./storage.js";
 
@@ -162,9 +162,8 @@ export async function deleteAccountAtIndex(options: {
  * Removes the accounts WAL and backups via the underlying storage helper.
  */
 export async function deleteSavedAccounts(): Promise<DestructiveActionResult> {
-	await snapshotAccountStorage({ reason: "delete-saved-accounts" });
 	return {
-		accountsCleared: await clearAccounts(),
+		accountsCleared: await snapshotAndClearAccounts("delete-saved-accounts"),
 		flaggedCleared: false,
 		quotaCacheCleared: false,
 	};
@@ -175,8 +174,7 @@ export async function deleteSavedAccounts(): Promise<DestructiveActionResult> {
  * Keeps unified settings and on-disk Codex CLI sync state; only the in-memory Codex CLI cache is cleared.
  */
 export async function resetLocalState(): Promise<DestructiveActionResult> {
-	await snapshotAccountStorage({ reason: "reset-local-state" });
-	const accountsCleared = await clearAccounts();
+	const accountsCleared = await snapshotAndClearAccounts("reset-local-state");
 	const flaggedCleared = await clearFlaggedAccounts();
 	const quotaCacheCleared = await clearQuotaCache();
 	clearCodexCliStateCache();
