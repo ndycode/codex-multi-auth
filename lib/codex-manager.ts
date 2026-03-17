@@ -4551,7 +4551,7 @@ function buildRestoreAssessmentLines(
 		const parts: string[] = [];
 		if (replacements > 0) {
 			parts.push(
-				`${replacements} replace current${replacements === 1 ? "" : " accounts"}`,
+				`${replacements} current account${replacements === 1 ? "" : "s"} replaced`,
 			);
 		}
 		if (withExisting > 0) {
@@ -4593,6 +4593,21 @@ function canRestoreFromAssessment(
 		((assessment.imported ?? 0) > 0 ||
 			(assessment.replacedExistingCount ?? 0) > 0)
 	);
+}
+
+function formatNamedBackupRestoreResult(
+	result: { imported: number; skipped: number; total: number },
+	assessment: NamedBackupAssessment,
+): string {
+	const replacedCount = assessment.replacedExistingCount ?? 0;
+	if (
+		result.imported === 0 &&
+		replacedCount > 0 &&
+		result.skipped === replacedCount
+	) {
+		return `Replaced ${replacedCount} current account${replacedCount === 1 ? "" : "s"}. Total accounts: ${result.total}.`;
+	}
+	return `Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`;
 }
 
 async function showBackupBrowserDetails(
@@ -4661,8 +4676,8 @@ async function showBackupBrowserDetails(
 	}
 	const action = await select<BackupDetailAction>(
 		[
-			{ label: "Back", value: "back" },
 			{ label: "Preview Restore", value: "preview-restore", color: "green" },
+			{ label: "Back", value: "back" },
 		],
 		{
 			message: "Backup Actions",
@@ -4728,10 +4743,8 @@ async function runBackupRestorePreview(
 			"Restore Backup",
 			`Restoring ${entry.label}`,
 			async () => {
-				const result = await restoreNamedBackup(backupName);
-				console.log(
-					`Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`,
-				);
+				const result = await restoreNamedBackup(backupName, { assessment });
+				console.log(formatNamedBackupRestoreResult(result, assessment));
 			},
 			displaySettings,
 		);
@@ -4963,9 +4976,11 @@ async function runBackupBrowserManager(
 					"Restore Backup",
 					`Restoring ${backupName}`,
 					async () => {
-						const result = await restoreNamedBackup(backupName);
+						const result = await restoreNamedBackup(backupName, {
+							assessment: latestAssessment,
+						});
 						console.log(
-							`Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`,
+							formatNamedBackupRestoreResult(result, latestAssessment),
 						);
 					},
 					displaySettings,

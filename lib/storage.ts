@@ -320,18 +320,6 @@ function getAccountConflictReasons(
 	return [...reasons];
 }
 
-function assessmentHasRestorableChanges(
-	assessment: Pick<
-		BackupRestoreAssessment,
-		"imported" | "replacedExistingCount"
-	>,
-): boolean {
-	return (
-		(assessment.imported ?? 0) > 0 ||
-		(assessment.replacedExistingCount ?? 0) > 0
-	);
-}
-
 function buildFailedBackupRestoreAssessment(
 	backup: NamedBackupMetadata,
 	currentStorage: AccountStorageV3 | null,
@@ -2082,11 +2070,7 @@ export async function getActionableNamedBackupRestores(
 	const actionable: BackupRestoreAssessment[] = [];
 	const allAssessments: BackupRestoreAssessment[] = [];
 	const maybePushActionable = (assessment: BackupRestoreAssessment): void => {
-		if (
-			assessment.eligibleForRestore &&
-			!assessment.wouldExceedLimit &&
-			assessmentHasRestorableChanges(assessment)
-		) {
+		if (assessment.eligibleForRestore) {
 			actionable.push(assessment);
 		}
 	};
@@ -2444,13 +2428,22 @@ function assessNamedBackupRestoreCandidate(
 
 export async function restoreNamedBackup(
 	name: string,
+	options: { assessment?: BackupRestoreAssessment } = {},
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
-	const assessment = await assessNamedBackupRestore(name);
-	if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
-		throw new Error(assessment.error ?? "Backup is not eligible for restore");
+	const candidate = await loadImportableBackupCandidate(backupPath);
+	if (options.assessment !== undefined) {
+		const assessment = assessNamedBackupRestoreCandidate(
+			await buildNamedBackupMetadata(name, backupPath, { candidate }),
+			candidate,
+			await loadAccounts(),
+			candidate.rawAccounts,
+		);
+		if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
+			throw new Error(assessment.error ?? "Backup is not eligible for restore");
+		}
 	}
-	return importAccounts(backupPath);
+	return importNormalizedAccounts(candidate.normalized, backupPath);
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -2466,6 +2459,17 @@ function parseAndNormalizeStorage(data: unknown): {
 	return { normalized, storedVersion, schemaErrors };
 }
 
+function extractRawAccounts(data: unknown): AccountLike[] {
+	return isRecord(data) && Array.isArray(data.accounts)
+		? (data.accounts as unknown[]).filter(
+				(account): account is AccountLike =>
+					isRecord(account) &&
+					typeof account.refreshToken === "string" &&
+					account.refreshToken.trim().length > 0,
+			)
+		: [];
+}
+
 async function loadAccountsFromPath(path: string): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
@@ -2476,16 +2480,96 @@ async function loadAccountsFromPath(path: string): Promise<{
 	const data = JSON.parse(content) as unknown;
 	return {
 		...parseAndNormalizeStorage(data),
-		rawAccounts:
-			isRecord(data) && Array.isArray(data.accounts)
-				? (data.accounts as unknown[]).filter(
-						(account): account is AccountLike =>
-							isRecord(account) &&
-							typeof account.refreshToken === "string" &&
-							account.refreshToken.trim().length > 0,
-					)
-				: [],
+		rawAccounts: extractRawAccounts(data),
 	};
+}
+
+type ImportableBackupCandidate = LoadedBackupCandidate & {
+	normalized: AccountStorageV3;
+	rawAccounts: AccountLike[];
+};
+
+async function loadImportableBackupCandidate(
+	path: string,
+): Promise<ImportableBackupCandidate> {
+	const resolvedPath = resolvePath(path);
+
+	if (!existsSync(resolvedPath)) {
+		throw new Error(`Import file not found: ${resolvedPath}`);
+	}
+
+	return retryTransientFilesystemOperation(async () => {
+		const content = await fs.readFile(resolvedPath, "utf-8");
+
+		let imported: unknown;
+		try {
+			imported = JSON.parse(content);
+		} catch {
+			throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
+		}
+
+		const { normalized, storedVersion, schemaErrors } =
+			parseAndNormalizeStorage(imported);
+		if (!normalized) {
+			throw new Error("Invalid account storage format");
+		}
+
+		return {
+			normalized,
+			storedVersion,
+			schemaErrors,
+			rawAccounts: extractRawAccounts(imported),
+		};
+	});
+}
+
+async function importNormalizedAccounts(
+	normalized: AccountStorageV3,
+	sourcePath: string,
+): Promise<{ imported: number; total: number; skipped: number }> {
+	const {
+		imported: importedCount,
+		total,
+		skipped: skippedCount,
+	} = await withAccountStorageTransaction(async (existing, persist) => {
+		const existingAccounts = existing?.accounts ?? [];
+		const existingActiveIndex = existing?.activeIndex ?? 0;
+
+		const merged = [...existingAccounts, ...normalized.accounts];
+
+		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			const deduped = deduplicateAccounts(merged);
+			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+				throw new Error(
+					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
+				);
+			}
+		}
+
+		const deduplicatedAccounts = deduplicateAccounts(merged);
+
+		const newStorage: AccountStorageV3 = {
+			version: 3,
+			accounts: deduplicatedAccounts,
+			activeIndex: existingActiveIndex,
+			activeIndexByFamily: existing?.activeIndexByFamily,
+		};
+
+		await persist(newStorage);
+
+		const imported = deduplicatedAccounts.length - existingAccounts.length;
+		const skipped = normalized.accounts.length - imported;
+		return { imported, total: deduplicatedAccounts.length, skipped };
+	});
+
+	log.info("Imported accounts", {
+		path: sourcePath,
+		imported: importedCount,
+		skipped: skippedCount,
+		total,
+	});
+
+	return { imported: importedCount, total, skipped: skippedCount };
 }
 
 async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate> {
@@ -3518,67 +3602,6 @@ export async function importAccounts(
 	filePath: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
-
-	// Check file exists with friendly error
-	if (!existsSync(resolvedPath)) {
-		throw new Error(`Import file not found: ${resolvedPath}`);
-	}
-
-	const content = await fs.readFile(resolvedPath, "utf-8");
-
-	let imported: unknown;
-	try {
-		imported = JSON.parse(content);
-	} catch {
-		throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
-	}
-
-	const normalized = normalizeAccountStorage(imported);
-	if (!normalized) {
-		throw new Error("Invalid account storage format");
-	}
-
-	const {
-		imported: importedCount,
-		total,
-		skipped: skippedCount,
-	} = await withAccountStorageTransaction(async (existing, persist) => {
-		const existingAccounts = existing?.accounts ?? [];
-		const existingActiveIndex = existing?.activeIndex ?? 0;
-
-		const merged = [...existingAccounts, ...normalized.accounts];
-
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccounts(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
-			}
-		}
-
-		const deduplicatedAccounts = deduplicateAccounts(merged);
-
-		const newStorage: AccountStorageV3 = {
-			version: 3,
-			accounts: deduplicatedAccounts,
-			activeIndex: existingActiveIndex,
-			activeIndexByFamily: existing?.activeIndexByFamily,
-		};
-
-		await persist(newStorage);
-
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
-		return { imported, total: deduplicatedAccounts.length, skipped };
-	});
-
-	log.info("Imported accounts", {
-		path: resolvedPath,
-		imported: importedCount,
-		skipped: skippedCount,
-		total,
-	});
-
-	return { imported: importedCount, total, skipped: skippedCount };
+	const candidate = await loadImportableBackupCandidate(resolvedPath);
+	return importNormalizedAccounts(candidate.normalized, resolvedPath);
 }

@@ -1298,6 +1298,46 @@ describe("storage", () => {
 			]);
 		});
 
+		it("reuses a prevalidated assessment when restoring a named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("prevalidated-restore");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("prevalidated-restore");
+			const originalReadFile = fs.readFile.bind(fs);
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) =>
+					originalReadFile(...(args as Parameters<typeof fs.readFile>)),
+				);
+
+			try {
+				const restoreResult = await restoreNamedBackup("prevalidated-restore", {
+					assessment,
+				});
+
+				expect(restoreResult.total).toBe(1);
+				const backupReads = readFileSpy.mock.calls.filter(
+					([path]) => String(path) === backup.path,
+				);
+				expect(backupReads).toHaveLength(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
 		it("restores manually named backups that already exist inside the backups directory", async () => {
 			const backupPath = join(
 				dirname(testStoragePath),
@@ -1402,7 +1442,7 @@ describe("storage", () => {
 
 			await expect(
 				restoreNamedBackup("deleted-after-assessment"),
-			).rejects.toThrow(/ENOENT: no such file or directory/);
+			).rejects.toThrow(/Import file not found/);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
@@ -1430,7 +1470,7 @@ describe("storage", () => {
 
 			await expect(
 				restoreNamedBackup("invalid-after-assessment"),
-			).rejects.toThrow(/is not valid JSON/);
+			).rejects.toThrow(/Invalid JSON in import file/);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
@@ -1491,7 +1531,9 @@ describe("storage", () => {
 				})),
 			});
 
-			await expect(restoreNamedBackup("limit-race")).rejects.toThrow(
+			await expect(
+				restoreNamedBackup("limit-race", { assessment: initialAssessment }),
+			).rejects.toThrow(
 				`Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
 			);
 
@@ -1702,6 +1744,54 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup read errors while restoring backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-restore-read",
+						refreshToken: "ref-retry-restore-read",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-restore-read");
+			await clearAccounts();
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"retry-restore-read.json",
+			);
+			const originalReadFile = fs.readFile.bind(fs);
+			let backupReads = 0;
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupPath) {
+						backupReads += 1;
+						if (backupReads === 1 && busyFailures === 0) {
+							busyFailures += 1;
+							const error = new Error("backup read busy") as NodeJS.ErrnoException;
+							error.code = "EBUSY";
+							throw error;
+						}
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const result = await restoreNamedBackup("retry-restore-read");
+				expect(result.total).toBe(1);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
 			}
 		});
 
