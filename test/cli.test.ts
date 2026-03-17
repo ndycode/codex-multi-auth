@@ -155,11 +155,15 @@ describe("CLI Module", () => {
 			mockRl.question
 				.mockResolvedValueOnce("f")
 				.mockResolvedValueOnce("DELETE");
+			const createInterfaceCallsBefore = vi.mocked(createInterface).mock.calls.length;
 
 			const { promptLoginMode } = await import("../lib/cli.js");
 			const result = await promptLoginMode([{ index: 0 }]);
 
 			expect(result).toEqual({ mode: "fresh", deleteAll: true });
+			expect(vi.mocked(createInterface).mock.calls.length).toBe(
+				createInterfaceCallsBefore + 1,
+			);
 		});
 
 		it("returns 'fresh' for 'fresh' input", async () => {
@@ -177,11 +181,15 @@ describe("CLI Module", () => {
 			mockRl.question
 				.mockResolvedValueOnce("reset")
 				.mockResolvedValueOnce("RESET");
+			const createInterfaceCallsBefore = vi.mocked(createInterface).mock.calls.length;
 
 			const { promptLoginMode } = await import("../lib/cli.js");
 			const result = await promptLoginMode([{ index: 0 }]);
 
 			expect(result).toEqual({ mode: "reset" });
+			expect(vi.mocked(createInterface).mock.calls.length).toBe(
+				createInterfaceCallsBefore + 1,
+			);
 		});
 
 		it("cancels fallback delete-all when typed confirmation does not match", async () => {

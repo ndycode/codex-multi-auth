@@ -147,26 +147,34 @@ function warnUnresolvableAccountSelection(account: ExistingAccountInfo): void {
 }
 
 async function promptDeleteAllTypedConfirm(): Promise<boolean> {
-	const rl = createInterface({ input, output });
-	try {
-		const answer = await rl.question(
-			DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.typedConfirm,
-		);
-		return answer.trim() === "DELETE";
-	} finally {
-		rl.close();
-	}
+	return promptTypedConfirm(
+		DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.typedConfirm,
+		"DELETE",
+	);
 }
 
 async function promptResetTypedConfirm(): Promise<boolean> {
-	const rl = createInterface({ input, output });
+	return promptTypedConfirm(
+		DESTRUCTIVE_ACTION_COPY.resetLocalState.typedConfirm,
+		"RESET",
+	);
+}
+
+async function promptTypedConfirm(
+	prompt: string,
+	expected: string,
+	rl?: Pick<ReturnType<typeof createInterface>, "question">,
+): Promise<boolean> {
+	if (rl) {
+		const answer = await rl.question(prompt);
+		return answer.trim() === expected;
+	}
+	const tempRl = createInterface({ input, output });
 	try {
-		const answer = await rl.question(
-			DESTRUCTIVE_ACTION_COPY.resetLocalState.typedConfirm,
-		);
-		return answer.trim() === "RESET";
+		const answer = await tempRl.question(prompt);
+		return answer.trim() === expected;
 	} finally {
-		rl.close();
+		tempRl.close();
 	}
 }
 
@@ -207,14 +215,30 @@ async function promptLoginModeFallback(
 				normalized === "fresh" ||
 				normalized === "clear"
 			) {
-				if (!(await promptDeleteAllTypedConfirm())) {
+				if (
+					!(
+						await promptTypedConfirm(
+							DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.typedConfirm,
+							"DELETE",
+							rl,
+						)
+					)
+				) {
 					console.log("\nDelete saved accounts cancelled.\n");
 					continue;
 				}
 				return { mode: "fresh", deleteAll: true };
 			}
 			if (normalized === "r" || normalized === "reset") {
-				if (!(await promptResetTypedConfirm())) {
+				if (
+					!(
+						await promptTypedConfirm(
+							DESTRUCTIVE_ACTION_COPY.resetLocalState.typedConfirm,
+							"RESET",
+							rl,
+						)
+					)
+				) {
 					console.log("\nReset local state cancelled.\n");
 					continue;
 				}
