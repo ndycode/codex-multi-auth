@@ -418,6 +418,7 @@ const BASELINE_SETTINGS_HUB_PANELS = [
 	"summary-fields",
 	"behavior",
 	"theme",
+	"sync-center",
 	"backend",
 ] as const;
 
@@ -4174,6 +4175,13 @@ describe("codex manager cli commands", () => {
 		expect(menuText).toContain(
 			"Show badges, sorting, and how much detail each account row shows.",
 		);
+		expect(menuText).toContain(
+			"Choose which details appear under each account row.",
+		);
+		expect(menuText).toContain(
+			"Control auto-return timing and background limit refresh behavior.",
+		);
+		expect(menuText).toContain("Pick the base palette and accent color.");
 		expect(menuText).toContain(
 			"Preview and apply one-way sync from Codex CLI account files.",
 		);

@@ -348,13 +348,13 @@ describe("Documentation Integrity", () => {
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.syncCenter}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.experimental}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.backend}`);
-		expect(settingsRef).toContain("## Backend Categories");
-		expect(settingsRef).toContain("### Session & Sync");
-		expect(settingsRef).toContain("### Rotation & Quota");
-		expect(settingsRef).toContain("### Refresh & Recovery");
+		expect(settingsRef).toContain("Backend categories include:");
+		expect(settingsRef).toContain("#### Session & Sync");
+		expect(settingsRef).toContain("#### Rotation & Quota");
+		expect(settingsRef).toContain("#### Refresh & Recovery");
 		expect(settingsRef).toContain("preview is always shown before apply");
 		expect(settingsRef).toContain("Named backup behavior:");
-		expect(settingsRef).toContain("### Performance & Timeouts");
+		expect(settingsRef).toContain("#### Performance & Timeouts");
 		expect(settingsRef).toContain("- `menuShowLastUsed`");
 		expect(settingsRef).toContain("- `menuShowQuotaSummary`");
 		expect(settingsRef).toContain("- `menuShowFetchStatus`");

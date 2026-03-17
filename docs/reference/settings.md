@@ -86,12 +86,6 @@ Before applying sync, it shows:
 - destination-only preservation behavior
 - backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`)
 
-Validation:
-
-- `npm run typecheck`
-- `npm run build`
-- `npm test`
-
 ### Experimental
 
 Experimental currently hosts:
@@ -118,9 +112,9 @@ Named backup behavior:
 
 Expert backend controls stay available without changing the saved settings schema. They are grouped into categories so the default path can stay simpler for day-to-day use.
 
-### Backend Categories
+Backend categories include:
 
-### Session & Sync
+#### Session & Sync
 
 Examples:
 
@@ -132,7 +126,7 @@ Examples:
 - `sessionAffinityMaxEntries`
 - `perProjectAccounts`
 
-### Rotation & Quota
+#### Rotation & Quota
 
 Examples:
 
@@ -144,7 +138,7 @@ Examples:
 - `retryAllAccountsMaxWaitMs`
 - `retryAllAccountsMaxRetries`
 
-### Refresh & Recovery
+#### Refresh & Recovery
 
 Examples:
 
@@ -154,7 +148,7 @@ Examples:
 - `sessionRecovery`
 - `autoResume`
 
-### Performance & Timeouts
+#### Performance & Timeouts
 
 Examples:
 
