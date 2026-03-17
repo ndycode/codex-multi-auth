@@ -171,7 +171,10 @@ export async function deleteAccountAtIndex(options: {
 					"Deleting the account partially failed and rollback also failed.",
 				);
 			}
-			throw originalError;
+			throw asSafeAggregateError(
+				originalError,
+				"Failed to save flagged account storage after deleting an account.",
+			);
 		}
 	}
 
@@ -200,9 +203,9 @@ export async function deleteSavedAccounts(): Promise<DestructiveActionResult> {
  * Keeps unified settings and on-disk Codex CLI sync state; only the in-memory Codex CLI cache is cleared.
  */
 export async function resetLocalState(): Promise<DestructiveActionResult> {
-	const accountsCleared = await clearAccounts();
-	const flaggedCleared = await clearFlaggedAccounts();
-	const quotaCacheCleared = await clearQuotaCache();
+	const accountsCleared = await clearAccounts().catch(() => false);
+	const flaggedCleared = await clearFlaggedAccounts().catch(() => false);
+	const quotaCacheCleared = await clearQuotaCache().catch(() => false);
 	clearCodexCliStateCache();
 	return {
 		accountsCleared,

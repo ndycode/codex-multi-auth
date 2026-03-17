@@ -1186,7 +1186,7 @@ function findCompatibleRefreshTokenMatchIndex<T extends AccountLike>(
 			matchingAccount = account;
 			continue;
 		}
-		const newest: T = selectNewestAccount(matchingAccount, account);
+		const newest: T = selectNewestAccount(matchingAccount ?? undefined, account);
 		if (newest === account) {
 			matchingIndex = i;
 			matchingAccount = account;

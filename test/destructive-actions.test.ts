@@ -74,7 +74,7 @@ describe("destructive actions", () => {
 		expect(clearCodexCliStateCacheMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not clear Codex CLI state when resetLocalState aborts on an exception", async () => {
+	it("keeps resetLocalState best-effort when a clear step throws", async () => {
 		const resetError = Object.assign(new Error("flagged clear failed"), {
 			code: "EPERM",
 		});
@@ -82,11 +82,15 @@ describe("destructive actions", () => {
 
 		const { resetLocalState } = await import("../lib/destructive-actions.js");
 
-		await expect(resetLocalState()).rejects.toBe(resetError);
+		await expect(resetLocalState()).resolves.toEqual({
+			accountsCleared: true,
+			flaggedCleared: false,
+			quotaCacheCleared: true,
+		});
 		expect(clearAccountsMock).toHaveBeenCalledTimes(1);
 		expect(clearFlaggedAccountsMock).toHaveBeenCalledTimes(1);
-		expect(clearQuotaCacheMock).not.toHaveBeenCalled();
-		expect(clearCodexCliStateCacheMock).not.toHaveBeenCalled();
+		expect(clearQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(clearCodexCliStateCacheMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("re-bases active indices before clamping when deleting an earlier account", async () => {
@@ -232,6 +236,62 @@ describe("destructive actions", () => {
 		await expect(deleteAccountAtIndex({ storage, index: 1 })).rejects.toBe(
 			flaggedSaveError,
 		);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+		expect(storage.accounts).toHaveLength(2);
+	});
+
+	it("redacts filesystem paths from flagged-save failures after a successful rollback", async () => {
+		const flaggedSaveError = Object.assign(
+			new Error("EPERM: C:\\Users\\alice\\AppData\\Local\\Codex\\flagged.json"),
+			{ code: "EPERM" },
+		);
+		saveFlaggedAccountsMock.mockRejectedValueOnce(flaggedSaveError);
+		loadFlaggedAccountsMock.mockResolvedValue({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "refresh-remove",
+					addedAt: 1,
+					lastUsed: 1,
+					flaggedAt: 1,
+				},
+			],
+		});
+
+		const { deleteAccountAtIndex } = await import(
+			"../lib/destructive-actions.js"
+		);
+
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-keep",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					refreshToken: "refresh-remove",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+
+		try {
+			await deleteAccountAtIndex({ storage, index: 1 });
+			throw new Error("expected deleteAccountAtIndex to throw");
+		} catch (error) {
+			expect(error).toBeInstanceOf(Error);
+			const safeError = error as NodeJS.ErrnoException;
+			expect(safeError.message).toBe(
+				"Failed to save flagged account storage after deleting an account.",
+			);
+			expect(safeError.code).toBe("EPERM");
+			expect(safeError.message.includes("alice")).toBe(false);
+		}
 		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
 		expect(storage.accounts).toHaveLength(2);
 	});
