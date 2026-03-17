@@ -3078,6 +3078,57 @@ describe("storage", () => {
 			}
 		});
 
+		it("sorts backups with equal unknown timestamps by name", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "beta-backup",
+						refreshToken: "ref-beta-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const betaBackup = await createNamedBackup("beta-backup");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "alpha-backup",
+						refreshToken: "ref-alpha-backup",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			const alphaBackup = await createNamedBackup("alpha-backup");
+			const originalStat = fs.stat.bind(fs);
+			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+				const [path] = args;
+				const stats = await originalStat(...(args as Parameters<typeof fs.stat>));
+				if (String(path) === alphaBackup.path || String(path) === betaBackup.path) {
+					return {
+						...stats,
+						mtimeMs: Number.NaN,
+					} as Awaited<ReturnType<typeof fs.stat>>;
+				}
+				return stats;
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups.map((backup) => backup.name)).toEqual([
+					alphaBackup.name,
+					betaBackup.name,
+				]);
+			} finally {
+				statSpy.mockRestore();
+			}
+		});
+
 		it("reuses freshly listed backup candidates for the first restore assessment", async () => {
 			await saveAccounts({
 				version: 3,

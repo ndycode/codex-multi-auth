@@ -1735,7 +1735,13 @@ export async function listNamedBackups(
 				rightUpdatedAt !== 0
 					? rightUpdatedAt
 					: 0;
-			return rightTime - leftTime;
+			const timeDiff = rightTime - leftTime;
+			if (timeDiff !== 0) {
+				return timeDiff;
+			}
+			return left.name.localeCompare(right.name, undefined, {
+				sensitivity: "base",
+			});
 		});
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
