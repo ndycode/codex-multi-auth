@@ -2182,15 +2182,11 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 	}
 	const requested = normalizedName;
 	const backupRoot = getNamedBackupRoot(getStoragePath());
-	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
-		? requested
-		: `${requested}.json`;
+	const requestedWithExtension = `${requested}.json`;
 	try {
 		return buildNamedBackupPath(normalizedName);
 	} catch (error) {
-		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
-			? requestedWithExtension.slice(0, -".json".length)
-			: requestedWithExtension;
+		const baseName = requestedWithExtension.slice(0, -".json".length);
 		if (
 			requested.length > 0 &&
 			basename(requestedWithExtension) === requestedWithExtension &&

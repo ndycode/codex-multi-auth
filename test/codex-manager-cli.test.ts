@@ -357,6 +357,48 @@ async function configureSuccessfulOAuthFlow(now = Date.now()): Promise<void> {
 	});
 }
 
+function buildNamedBackupBrowserEntry<
+	T extends { backup: { name: string } },
+>(
+	assessment: T,
+	options: {
+		assessment?: T | null;
+		assessmentError?: string;
+		label?: string;
+	} = {},
+): {
+	kind: "named";
+	label: string;
+	backup: T["backup"];
+	assessment: T | null;
+	assessmentError?: string;
+} {
+	const selectedAssessment =
+		options.assessment === undefined ? assessment : options.assessment;
+	return {
+		kind: "named",
+		label: options.label ?? assessment.backup.name,
+		backup: assessment.backup,
+		assessment: selectedAssessment,
+		...(selectedAssessment === null
+			? {
+					assessmentError:
+						options.assessmentError ?? "restore assessment unavailable",
+				}
+			: {}),
+	};
+}
+
+function queueNamedBackupBrowserSelection<T extends { backup: { name: string } }>(
+	assessment: T,
+	detailAction: "restore" | "back" = "restore",
+): ReturnType<typeof buildNamedBackupBrowserEntry<T>> {
+	const entry = buildNamedBackupBrowserEntry(assessment);
+	selectMock.mockResolvedValueOnce({ type: "inspect", entry });
+	selectMock.mockResolvedValueOnce(detailAction);
+	return entry;
+}
+
 type SettingsTestAccount = {
 	email: string;
 	accountId: string;
@@ -913,7 +955,7 @@ describe("codex manager cli commands", () => {
 		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
@@ -970,7 +1012,7 @@ describe("codex manager cli commands", () => {
 		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 		restoreNamedBackupMock.mockRejectedValueOnce(new Error("backup locked"));
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -2016,7 +2058,7 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 		restoreNamedBackupMock.mockImplementation(async () => {
 			storageState = {
 				version: 3,
@@ -2160,13 +2202,17 @@ describe("codex manager cli commands", () => {
 	it("shows all startup-scanned backups in the backup browser before re-prompting", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
+		let loadAccountsCallCount = 0;
 		let storageState = {
 			version: 3,
 			activeIndex: 0,
 			activeIndexByFamily: { codex: 0 },
 			accounts: [],
 		};
-		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		loadAccountsMock.mockImplementation(async () => {
+			loadAccountsCallCount += 1;
+			return structuredClone(storageState);
+		});
 		saveAccountsMock.mockImplementation(async (nextStorage) => {
 			storageState = structuredClone(nextStorage);
 		});
@@ -2218,7 +2264,11 @@ describe("codex manager cli commands", () => {
 			totalBackups: 2,
 		});
 		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-		selectMock.mockResolvedValueOnce({ type: "back" });
+		selectMock.mockImplementationOnce(async (_items, options) => {
+			expect(options).toMatchObject({ message: "Backup Browser" });
+			expect(loadAccountsCallCount).toBe(2);
+			return { type: "back" };
+		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		await configureSuccessfulOAuthFlow(now);
 
@@ -2361,7 +2411,7 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce(false)
 			.mockResolvedValueOnce(false);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		await configureSuccessfulOAuthFlow(now);
 
@@ -2421,7 +2471,7 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce(false);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 		restoreNamedBackupMock.mockRejectedValueOnce(
 			makeErrnoError("resource busy", "EBUSY"),
 		);
@@ -2564,7 +2614,7 @@ describe("codex manager cli commands", () => {
 			totalBackups: 1,
 		});
 		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 		assessNamedBackupRestoreMock.mockRejectedValueOnce(
 			makeErrnoError("resource busy", "EBUSY"),
 		);
@@ -3527,7 +3577,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -3576,7 +3626,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -3638,7 +3688,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -3706,7 +3756,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		try {
@@ -3821,8 +3871,12 @@ describe("codex manager cli commands", () => {
 					}),
 				}),
 			});
-			return { type: "restore", assessment: healthyAssessment };
+			return {
+				type: "inspect",
+				entry: buildNamedBackupBrowserEntry(healthyAssessment),
+			};
 		});
+		selectMock.mockResolvedValueOnce("restore");
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		try {
@@ -3831,7 +3885,7 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(assessNamedBackupRestoreMock).toHaveBeenCalledTimes(3);
-			expect(selectMock).toHaveBeenCalledTimes(1);
+			expect(selectMock).toHaveBeenCalledTimes(2);
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 			expect(confirmMock).toHaveBeenCalledOnce();
 			expect(restoreNamedBackupMock).toHaveBeenCalledWith("healthy-backup");
@@ -3971,10 +4025,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		selectMock.mockResolvedValueOnce({
-			type: "restore",
-			assessment: initialAssessment,
-		});
+		queueNamedBackupBrowserSelection(initialAssessment);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -4050,10 +4101,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		selectMock.mockResolvedValueOnce({
-			type: "restore",
-			assessment: initialAssessment,
-		});
+		queueNamedBackupBrowserSelection(initialAssessment);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -6479,7 +6527,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
+		queueNamedBackupBrowserSelection(assessment);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const runPromise = runCodexMultiAuthCli(["auth", "login"]);

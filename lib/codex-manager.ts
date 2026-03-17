@@ -4406,11 +4406,6 @@ type BackupMenuAction =
 	  }
 	| { type: "back" };
 
-type LegacyBackupRestoreSelection = {
-	type: "restore";
-	assessment: NamedBackupAssessment;
-};
-
 type BackupRestoreManagerResult = "restored" | "dismissed" | "failed";
 
 function hasNamedBackupAssessment(
@@ -4582,12 +4577,14 @@ async function loadBackupBrowserEntries(options: {
 	const { startupAssessments } = options;
 	const rotatingBackups = await listRotatingBackups();
 	let currentStorage: Awaited<ReturnType<typeof loadAccounts>> = null;
-	try {
-		currentStorage = await loadAccounts();
-	} catch (error) {
-		log.warn("Failed to load current storage for backup browser", {
-			error: normalizeBackupAssessmentError(error),
-		});
+	if (!startupAssessments) {
+		try {
+			currentStorage = await loadAccounts();
+		} catch (error) {
+			log.warn("Failed to load current storage for backup browser", {
+				error: normalizeBackupAssessmentError(error),
+			});
+		}
 	}
 	let namedEntries: NamedBackupBrowserEntry[];
 	if (startupAssessments) {
@@ -4742,16 +4739,7 @@ async function runBackupBrowserManager(
 
 		let entry: BackupBrowserEntry | null = null;
 		let action: "back" | "restore" = "back";
-		const legacySelection = selection as unknown as LegacyBackupRestoreSelection;
-		if (legacySelection.type === "restore" && legacySelection.assessment) {
-			entry = {
-				kind: "named",
-				label: legacySelection.assessment.backup.name,
-				backup: legacySelection.assessment.backup,
-				assessment: legacySelection.assessment,
-			};
-			action = "restore";
-		} else if (selection.type === "inspect") {
+		if (selection.type === "inspect") {
 			entry = selection.entry;
 			action = await showBackupBrowserDetails(entry, displaySettings);
 		}
