@@ -3113,7 +3113,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 												Object.assign(workingStorage, deleted.storage);
 												Object.assign(flaggedStorage, deleted.flagged);
 												invalidateAccountManagerCache();
-												const label = `Account ${menuResult.deleteAccountIndex + 1}`;
+												const label =
+													deleted.removedAccount.email?.trim() ||
+													`Account ${menuResult.deleteAccountIndex + 1}`;
 												const flaggedNote =
 													deleted.removedFlaggedCount > 0
 														? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`

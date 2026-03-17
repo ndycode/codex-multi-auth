@@ -3830,7 +3830,8 @@ async function handleManageAction(
 				if (deleted) {
 					Object.assign(storage, deleted.storage);
 					await autoSyncActiveAccountToCodex();
-					const label = `Account ${idx + 1}`;
+					const label =
+						deleted.removedAccount.email?.trim() || `Account ${idx + 1}`;
 					const flaggedNote =
 						deleted.removedFlaggedCount > 0
 							? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`

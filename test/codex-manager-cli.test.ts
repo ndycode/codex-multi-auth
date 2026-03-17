@@ -3390,6 +3390,7 @@ describe("codex manager cli commands", () => {
 
 	it("deletes an account from manage mode and persists storage", async () => {
 		const now = Date.now();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
 			activeIndex: 0,
@@ -3459,6 +3460,8 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(deleteAccountAtIndexMock).toHaveBeenCalledTimes(1);
 		expect(deleteAccountAtIndexMock.mock.calls[0]?.[0]?.index).toBe(1);
+		expect(logSpy).toHaveBeenCalledWith("Deleted second@example.com.");
+		logSpy.mockRestore();
 	});
 
 	it("re-syncs Codex CLI state after deleting the active account from manage mode", async () => {
