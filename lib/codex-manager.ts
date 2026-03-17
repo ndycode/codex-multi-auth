@@ -292,7 +292,7 @@ function printUsage(): void {
 			"  codex auth list",
 			"  codex auth status",
 			"  codex auth switch <index>",
-			"  codex auth best [--json] [--model <model>]",
+			"  codex auth best [--live] [--json] [--model <model>]",
 			"  codex auth check",
 			"  codex auth features",
 			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
@@ -1667,6 +1667,12 @@ interface ForecastCliOptions {
 	model: string;
 }
 
+interface BestCliOptions {
+	live: boolean;
+	json: boolean;
+	model: string;
+}
+
 interface FixCliOptions {
 	dryRun: boolean;
 	json: boolean;
@@ -1699,6 +1705,24 @@ function printForecastUsage(): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+		].join("\n"),
+	);
+}
+
+function printBestUsage(): void {
+	console.log(
+		[
+			"Usage:",
+			"  codex auth best [--live] [--json] [--model <model>]",
+			"",
+			"Options:",
+			"  --live, -l         Probe live quota headers via Codex backend before switching",
+			"  --json, -j         Print machine-readable JSON output",
+			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+			"",
+			"Behavior:",
+			"  - Chooses the healthiest account using forecast scoring",
+			"  - Switches to the recommended account when it is not already active",
 		].join("\n"),
 	);
 }
@@ -1751,6 +1775,47 @@ function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliOptions>
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
 		if (!arg) continue;
+		if (!arg) continue;
+		if (arg === "--live" || arg === "-l") {
+			options.live = true;
+			continue;
+		}
+		if (arg === "--json" || arg === "-j") {
+			options.json = true;
+			continue;
+		}
+		if (arg === "--model" || arg === "-m") {
+			const value = args[i + 1];
+			if (!value) {
+				return { ok: false, message: "Missing value for --model" };
+			}
+			options.model = value;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--model=")) {
+			const value = arg.slice("--model=".length).trim();
+			if (!value) {
+				return { ok: false, message: "Missing value for --model" };
+			}
+			options.model = value;
+			continue;
+		}
+		return { ok: false, message: `Unknown option: ${arg}` };
+	}
+
+	return { ok: true, options };
+}
+
+function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
+	const options: BestCliOptions = {
+		live: false,
+		json: false,
+		model: "gpt-5-codex",
+	};
+
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
 		if (!arg) continue;
 		if (arg === "--live" || arg === "-l") {
 			options.live = true;
@@ -3979,31 +4044,18 @@ async function runSwitch(args: string[]): Promise<number> {
 }
 
 async function runBest(args: string[]): Promise<number> {
-	const options: ForecastCliOptions = {
-		live: true, // Always use live probing like the dashboard's "Best Account" option
-		json: args.includes("--json") || args.includes("-j"),
-		model: "gpt-5-codex",
-	};
-
-	// Parse model if provided
-	for (let i = 0; i < args.length; i += 1) {
-		const arg = args[i];
-		if (!arg) continue;
-		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1];
-			if (value) {
-				options.model = value;
-			}
-			break;
-		}
-		if (arg.startsWith("--model=")) {
-			const value = arg.slice("--model=".length).trim();
-			if (value) {
-				options.model = value;
-			}
-			break;
-		}
+	if (args.includes("--help") || args.includes("-h")) {
+		printBestUsage();
+		return 0;
 	}
+
+	const parsedArgs = parseBestArgs(args);
+	if (!parsedArgs.ok) {
+		console.error(parsedArgs.message);
+		printBestUsage();
+		return 1;
+	}
+	const options = parsedArgs.options;
 
 	setStoragePath(null);
 	const storage = await loadAccounts();
@@ -4019,11 +4071,12 @@ async function runBest(args: string[]): Promise<number> {
 	const now = Date.now();
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
+	let changed = false;
 
-	// Always do live probing (like dashboard's "Best Account" forecast mode)
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 			const account = storage.accounts[i];
-			if (!account || account.enabled === false) continue;
+			if (!account || !options.live) continue;
+			if (account.enabled === false) continue;
 
 			let probeAccessToken = account.accessToken;
 			let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
@@ -4036,8 +4089,36 @@ async function runBest(args: string[]): Promise<number> {
 					});
 					continue;
 				}
-				probeAccessToken = refreshResult.access;
-				probeAccountId = account.accountId ?? extractAccountId(refreshResult.access);
+
+				const refreshedEmail = sanitizeEmail(
+					extractAccountEmail(refreshResult.access, refreshResult.idToken),
+				);
+				const refreshedAccountId = extractAccountId(refreshResult.access);
+
+				if (account.refreshToken !== refreshResult.refresh) {
+					account.refreshToken = refreshResult.refresh;
+					changed = true;
+				}
+				if (account.accessToken !== refreshResult.access) {
+					account.accessToken = refreshResult.access;
+					changed = true;
+				}
+				if (account.expiresAt !== refreshResult.expires) {
+					account.expiresAt = refreshResult.expires;
+					changed = true;
+				}
+				if (refreshedEmail && refreshedEmail !== account.email) {
+					account.email = refreshedEmail;
+					changed = true;
+				}
+				if (refreshedAccountId && refreshedAccountId !== account.accountId) {
+					account.accountId = refreshedAccountId;
+					account.accountIdSource = "token";
+					changed = true;
+				}
+
+				probeAccessToken = account.accessToken;
+				probeAccountId = account.accountId ?? refreshedAccountId;
 			}
 
 			if (!probeAccessToken || !probeAccountId) continue;
@@ -4065,6 +4146,10 @@ async function runBest(args: string[]): Promise<number> {
 
 	const forecastResults = evaluateForecastAccounts(forecastInputs);
 	const recommendation = recommendForecastAccount(forecastResults);
+
+	if (changed) {
+		await saveAccounts(storage);
+	}
 
 	if (recommendation.recommendedIndex === null) {
 		if (options.json) {
@@ -4145,6 +4230,10 @@ async function runBest(args: string[]): Promise<number> {
 			syncRefreshToken = refreshResult.refresh;
 			syncExpiresAt = refreshResult.expires;
 			syncIdToken = refreshResult.idToken;
+		} else {
+			console.warn(
+				`Switch validation refresh failed for account ${parsed}: ${normalizeFailureDetail(refreshResult.message, refreshResult.reason)}.`,
+			);
 		}
 	}
 
