@@ -3,6 +3,7 @@ import { basename, dirname } from "node:path";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("live-account-sync");
+const RESET_MARKER_SUFFIX = ".reset-intent";
 
 export interface LiveAccountSyncOptions {
 	debounceMs?: number;
@@ -86,6 +87,19 @@ function normalizeFsWatchFilename(
 	if (filename === null) return null;
 	if (typeof filename === "string") return filename;
 	return filename.toString("utf-8");
+}
+
+function shouldIgnoreWatchedStorageSibling(
+	targetName: string,
+	filename: string,
+): boolean {
+	if (!filename.startsWith(`${targetName}.`)) return false;
+	const normalized = filename.toLowerCase();
+	return (
+		normalized.includes(".cache") ||
+		normalized.includes(".rotate.") ||
+		normalized.endsWith(RESET_MARKER_SUFFIX)
+	);
 }
 
 /**
@@ -177,7 +191,11 @@ export class LiveAccountSync {
 						return;
 					}
 
-					if (name === targetName || name.startsWith(`${targetName}.`)) {
+					if (
+						name === targetName ||
+						(name.startsWith(`${targetName}.`) &&
+							!shouldIgnoreWatchedStorageSibling(targetName, name))
+					) {
 						this.scheduleReload("watch");
 					}
 				},
@@ -355,3 +373,8 @@ export class LiveAccountSync {
 		} while (this.reloadQueued);
 	}
 }
+
+export const __testOnly = {
+	normalizeFsWatchFilename,
+	shouldIgnoreWatchedStorageSibling,
+};

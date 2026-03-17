@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__resetLastLiveAccountSyncSnapshotForTests,
+	__testOnly,
 	getLastLiveAccountSyncSnapshot,
 	LiveAccountSync,
 } from "../lib/live-account-sync.js";
@@ -186,6 +187,43 @@ describe("live-account-sync", () => {
 				running: false,
 			}),
 		);
+	});
+
+	it("ignores known storage-noise sibling filenames for watch reloads", () => {
+		const targetName = "openai-codex-accounts.json";
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}.cache`,
+			),
+		).toBe(true);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}.bak.rotate.12345.slot-1.tmp`,
+			),
+		).toBe(true);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}${".reset-intent"}`,
+			),
+		).toBe(true);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}.wal`,
+			),
+		).toBe(false);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(
+				targetName,
+				`${targetName}.bak`,
+			),
+		).toBe(false);
+		expect(
+			__testOnly.shouldIgnoreWatchedStorageSibling(targetName, targetName),
+		).toBe(false);
 	});
 
 	it("publishes the most recently updated watcher snapshot, not just the newest instance", async () => {
