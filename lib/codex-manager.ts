@@ -4072,6 +4072,7 @@ async function runBest(args: string[]): Promise<number> {
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
 	const probeIdTokenByIndex = new Map<number, string>();
+	const probeRefreshedIndices = new Set<number>();
 	const probeErrors: string[] = [];
 	let changed = false;
 
@@ -4081,6 +4082,12 @@ async function runBest(args: string[]): Promise<number> {
 		for (const error of probeErrors) {
 			console.log(`  - ${error}`);
 		}
+	};
+
+	const persistProbeChangesIfNeeded = async (): Promise<void> => {
+		if (!changed) return;
+		await saveAccounts(storage);
+		changed = false;
 	};
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
@@ -4129,6 +4136,7 @@ async function runBest(args: string[]): Promise<number> {
 				if (refreshResult.idToken) {
 					probeIdTokenByIndex.set(i, refreshResult.idToken);
 				}
+				probeRefreshedIndices.add(i);
 
 				probeAccessToken = account.accessToken;
 				probeAccountId = account.accountId ?? refreshedAccountId;
@@ -4167,11 +4175,8 @@ async function runBest(args: string[]): Promise<number> {
 	const forecastResults = evaluateForecastAccounts(forecastInputs);
 	const recommendation = recommendForecastAccount(forecastResults);
 
-	if (changed) {
-		await saveAccounts(storage);
-	}
-
 	if (recommendation.recommendedIndex === null) {
+		await persistProbeChangesIfNeeded();
 		if (options.json) {
 			console.log(JSON.stringify({
 				error: recommendation.reason,
@@ -4187,6 +4192,7 @@ async function runBest(args: string[]): Promise<number> {
 	const bestIndex = recommendation.recommendedIndex;
 	const bestAccount = storage.accounts[bestIndex];
 	if (!bestAccount) {
+		await persistProbeChangesIfNeeded();
 		if (options.json) {
 			console.log(JSON.stringify({ error: "Best account not found." }, null, 2));
 		} else {
@@ -4198,6 +4204,26 @@ async function runBest(args: string[]): Promise<number> {
 	// Check if already on best account
 	const currentIndex = resolveActiveIndex(storage, "codex");
 	if (currentIndex === bestIndex) {
+		const shouldSyncCurrentBest =
+			probeRefreshedIndices.has(bestIndex) || probeIdTokenByIndex.has(bestIndex);
+		if (changed) {
+			await persistProbeChangesIfNeeded();
+		}
+		if (shouldSyncCurrentBest) {
+			const synced = await setCodexCliActiveSelection({
+				accountId: bestAccount.accountId,
+				email: bestAccount.email,
+				accessToken: bestAccount.accessToken,
+				refreshToken: bestAccount.refreshToken,
+				expiresAt: bestAccount.expiresAt,
+				...(probeIdTokenByIndex.has(bestIndex)
+					? { idToken: probeIdTokenByIndex.get(bestIndex) }
+					: {}),
+			});
+			if (!synced && !options.json) {
+				console.warn("Codex auth sync did not complete. Multi-auth routing will still use this account.");
+			}
+		}
 		if (options.json) {
 			console.log(JSON.stringify({
 				message: `Already on best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
@@ -4266,6 +4292,7 @@ async function runBest(args: string[]): Promise<number> {
 	bestAccount.lastUsed = switchNow;
 	bestAccount.lastSwitchReason = "best";
 	await saveAccounts(storage);
+	changed = false;
 
 	const synced = await setCodexCliActiveSelection({
 		accountId: bestAccount.accountId,

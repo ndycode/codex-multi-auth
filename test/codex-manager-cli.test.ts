@@ -897,6 +897,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(storageState.accounts[1]?.accessToken).toBe("access-best-next");
@@ -1040,6 +1041,74 @@ describe("codex manager cli commands", () => {
 		);
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(logSpy.mock.calls.some((call) =>
+			String(call[0]).includes("Already on best account 1"),
+		)).toBe(true);
+	});
+
+	it("syncs refreshed current best account during live best check", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "best@example.com",
+					accountId: "acc_best",
+					refreshToken: "refresh-best",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-best-next",
+			refresh: "refresh-best-next",
+			expires: now + 3_600_000,
+			idToken: "id-best-next",
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: {
+				usedPercent: 10,
+				windowMinutes: 300,
+				resetAtMs: now + 1_000,
+			},
+			secondary: {
+				usedPercent: 5,
+				windowMinutes: 10080,
+				resetAtMs: now + 2_000,
+			},
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "best", "--live"]);
+
+		expect(exitCode).toBe(0);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(storageState.accounts[0]?.accessToken).toBe("access-best-next");
+		expect(storageState.accounts[0]?.refreshToken).toBe("refresh-best-next");
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: storageState.accounts[0]?.accountId,
+				email: "best@example.com",
+				accessToken: "access-best-next",
+				refreshToken: "refresh-best-next",
+				expiresAt: now + 3_600_000,
+				idToken: "id-best-next",
+			}),
+		);
 		expect(logSpy.mock.calls.some((call) =>
 			String(call[0]).includes("Already on best account 1"),
 		)).toBe(true);
