@@ -392,6 +392,36 @@ describe("flagged account storage", () => {
 		expect(flagged.accounts).toHaveLength(0);
 	});
 
+	it("clears the legacy flagged file so migration cannot revive state after clear", async () => {
+		const legacyFlaggedPath = join(
+			dirname(getFlaggedAccountsPath()),
+			"openai-codex-blocked-accounts.json",
+		);
+		await fs.mkdir(dirname(legacyFlaggedPath), { recursive: true });
+		await fs.writeFile(
+			legacyFlaggedPath,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "legacy-flagged-refresh",
+						flaggedAt: 1,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		await expect(clearFlaggedAccounts()).resolves.toBe(true);
+
+		const flagged = await loadFlaggedAccounts();
+		expect(existsSync(getFlaggedAccountsPath())).toBe(false);
+		expect(existsSync(legacyFlaggedPath)).toBe(false);
+		expect(flagged.accounts).toHaveLength(0);
+	});
+
 	it("suppresses flagged backup revival when clear only partially deletes backup artifacts", async () => {
 		await saveFlaggedAccounts({
 			version: 1,

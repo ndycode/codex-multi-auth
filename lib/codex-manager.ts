@@ -3817,18 +3817,27 @@ async function handleManageAction(
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
-			const deleted = await deleteAccountAtIndex({
-				storage,
-				index: idx,
-			});
-			if (deleted) {
-				Object.assign(storage, deleted.storage);
-				const label = `Account ${idx + 1}`;
-				const flaggedNote =
-					deleted.removedFlaggedCount > 0
-						? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
-						: "";
-				console.log(`Deleted ${label}.${flaggedNote}`);
+			if (destructiveActionInFlight) {
+				console.log("Another destructive action is already running. Wait for it to finish.");
+				return;
+			}
+			destructiveActionInFlight = true;
+			try {
+				const deleted = await deleteAccountAtIndex({
+					storage,
+					index: idx,
+				});
+				if (deleted) {
+					Object.assign(storage, deleted.storage);
+					const label = `Account ${idx + 1}`;
+					const flaggedNote =
+						deleted.removedFlaggedCount > 0
+							? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
+							: "";
+					console.log(`Deleted ${label}.${flaggedNote}`);
+				}
+			} finally {
+				destructiveActionInFlight = false;
 			}
 		}
 		return;

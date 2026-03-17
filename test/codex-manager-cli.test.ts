@@ -3448,6 +3448,107 @@ describe("codex manager cli commands", () => {
 		expect(deleteAccountAtIndexMock.mock.calls[0]?.[0]?.index).toBe(1);
 	});
 
+	it("skips a second manage delete while another destructive action is already running", async () => {
+		const now = Date.now();
+		const skipMessage =
+			"Another destructive action is already running. Wait for it to finish.";
+		const firstDeleteStarted = createDeferred<void>();
+		const allowFirstDeleteToFinish = createDeferred<void>();
+		const secondMenuAttempted = createDeferred<void>();
+		const skipLogged = createDeferred<void>();
+		const logSpy = vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+			if (message === skipMessage) {
+				skipLogged.resolve();
+			}
+		});
+		let menuPromptCall = 0;
+
+		loadAccountsMock.mockImplementation(async () => ({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		}));
+		promptLoginModeMock.mockImplementation(async () => {
+			menuPromptCall += 1;
+			if (menuPromptCall === 2) {
+				secondMenuAttempted.resolve();
+			}
+			if (menuPromptCall <= 2) {
+				return { mode: "manage", deleteAccountIndex: 1 };
+			}
+			return { mode: "cancel" };
+		});
+		deleteAccountAtIndexMock.mockImplementationOnce(async () => {
+			firstDeleteStarted.resolve();
+			await allowFirstDeleteToFinish.promise;
+			return {
+				storage: {
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							email: "first@example.com",
+							refreshToken: "refresh-first",
+							addedAt: now - 2_000,
+							lastUsed: now - 2_000,
+							enabled: true,
+						},
+					],
+				},
+				flagged: { version: 1, accounts: [] },
+				removedAccount: {
+					refreshToken: "refresh-second",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					accountIdSource: undefined,
+					enabled: true,
+				},
+				removedFlaggedCount: 0,
+			};
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const firstRunPromise = runCodexMultiAuthCli(["auth", "login"]);
+
+		await firstDeleteStarted.promise;
+
+		const secondRunPromise = runCodexMultiAuthCli(["auth", "login"]);
+		await secondMenuAttempted.promise;
+		await skipLogged.promise;
+
+		expect(deleteAccountAtIndexMock).toHaveBeenCalledTimes(1);
+
+		allowFirstDeleteToFinish.resolve();
+
+		const [firstExitCode, secondExitCode] = await Promise.all([
+			firstRunPromise,
+			secondRunPromise,
+		]);
+
+		expect(firstExitCode).toBe(0);
+		expect(secondExitCode).toBe(0);
+		expect(deleteAccountAtIndexMock).toHaveBeenCalledTimes(1);
+		expect(logSpy).toHaveBeenCalledWith(skipMessage);
+		logSpy.mockRestore();
+	});
+
 	it("toggles account enabled state from manage mode", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({

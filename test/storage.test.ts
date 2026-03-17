@@ -1908,6 +1908,36 @@ describe("storage", () => {
 				}
 			},
 		);
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns true when flagged data clears but reset-marker cleanup exhausts retryable %s failures",
+			async (code) => {
+				const flaggedPath = getFlaggedAccountsPath();
+				const markerPath = `${flaggedPath}.reset-intent`;
+				await fs.mkdir(dirname(flaggedPath), { recursive: true });
+				await fs.writeFile(flaggedPath, "{}");
+
+				const realUnlink = fs.unlink.bind(fs);
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === markerPath) {
+							const error = new Error("marker locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return realUnlink(targetPath);
+					});
+
+				try {
+					await expect(clearFlaggedAccounts()).resolves.toBe(true);
+					expect(existsSync(flaggedPath)).toBe(false);
+					expect(existsSync(markerPath)).toBe(true);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 
 	describe("setStoragePath", () => {
@@ -2859,6 +2889,53 @@ describe("storage", () => {
 
 			renameSpy.mockRestore();
 		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"retries transient %s when clearing reset markers after save succeeds",
+			async (code) => {
+				const now = Date.now();
+				const storage = {
+					version: 3 as const,
+					activeIndex: 0,
+					accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+				};
+				const walPath = `${testStoragePath}.wal`;
+				const resetMarkerPath = `${testStoragePath}.reset-intent`;
+				await fs.mkdir(dirname(testStoragePath), { recursive: true });
+				await fs.writeFile(resetMarkerPath, "reset", "utf-8");
+
+				const realUnlink = fs.unlink.bind(fs);
+				let markerFailedOnce = false;
+				let walFailedOnce = false;
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === resetMarkerPath && !markerFailedOnce) {
+							markerFailedOnce = true;
+							const error = new Error("marker locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						if (targetPath === walPath && !walFailedOnce) {
+							walFailedOnce = true;
+							const error = new Error("wal locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return realUnlink(targetPath);
+					});
+
+				try {
+					await expect(saveAccounts(storage)).resolves.toBeUndefined();
+					const loaded = await loadAccounts();
+					expect(loaded?.accounts).toHaveLength(1);
+					expect(existsSync(resetMarkerPath)).toBe(false);
+					expect(existsSync(walPath)).toBe(false);
+				} finally {
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 
 		it("throws after 5 failed EPERM retries", async () => {
 			const now = Date.now();

@@ -1856,13 +1856,13 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 
 		await renameFileWithRetry(tempPath, path);
 		try {
-			await fs.unlink(resetMarkerPath);
+			await unlinkWithRetry(resetMarkerPath);
 		} catch {
 			// Best effort cleanup.
 		}
 		lastAccountsSaveTimestamp = Date.now();
 		try {
-			await fs.unlink(walPath);
+			await unlinkWithRetry(walPath);
 		} catch {
 			// Best effort cleanup.
 		}
@@ -2272,6 +2272,7 @@ export async function saveFlaggedAccounts(
 export async function clearFlaggedAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
+		const legacyPath = getLegacyFlaggedAccountsPath();
 		const markerPath = getIntentionalResetMarkerPath(path);
 		try {
 			await fs.writeFile(markerPath, "reset", {
@@ -2288,14 +2289,14 @@ export async function clearFlaggedAccounts(): Promise<boolean> {
 		}
 		const backupPaths =
 			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		let hadError = false;
-		for (const candidate of [path, ...backupPaths]) {
+		let dataError = false;
+		for (const candidate of new Set([path, legacyPath, ...backupPaths])) {
 			try {
 				await unlinkWithRetry(candidate);
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "ENOENT") {
-					hadError = true;
+					dataError = true;
 					log.error("Failed to clear flagged account storage", {
 						path: candidate,
 						error: String(error),
@@ -2303,7 +2304,7 @@ export async function clearFlaggedAccounts(): Promise<boolean> {
 				}
 			}
 		}
-		if (!hadError) {
+		if (!dataError) {
 			try {
 				await unlinkWithRetry(markerPath);
 			} catch (error) {
@@ -2314,11 +2315,10 @@ export async function clearFlaggedAccounts(): Promise<boolean> {
 						markerPath,
 						error: String(error),
 					});
-					hadError = true;
 				}
 			}
 		}
-		return !hadError;
+		return !dataError;
 	});
 }
 
