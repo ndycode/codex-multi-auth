@@ -481,6 +481,11 @@ async function saveRollbackStorageWithRetry(storage: AccountStorageV3): Promise<
 			) {
 				throw error;
 			}
+			log.warn("Retrying rollback checkpoint save after transient filesystem error", {
+				attempt: attempt + 1,
+				maxAttempts: ROLLBACK_SAVE_MAX_ATTEMPTS,
+				error: getRedactedFilesystemErrorLabel(error),
+			});
 			await sleep(10 * 2 ** attempt);
 		}
 	}
@@ -523,9 +528,10 @@ export async function rollbackLatestCodexCliSync(
 				resolvedPlan.accountCount ?? resolvedPlan.storage.accounts.length,
 		};
 	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
 		return {
 			status: "error",
-			reason: error instanceof Error ? error.message : String(error),
+			reason: `Failed to restore rollback checkpoint [${errorLabel}].`,
 			snapshot: resolvedPlan.snapshot,
 		};
 	}

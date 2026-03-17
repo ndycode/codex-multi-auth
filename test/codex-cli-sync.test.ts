@@ -1811,17 +1811,28 @@ describe("codex-cli sync", () => {
 			run: recordedRun,
 		});
 
-		const saveSpy = vi
-			.spyOn(storageModule, "saveAccounts")
-			.mockRejectedValue(new Error("save busy"));
+		const leakingError = Object.assign(
+			new Error(
+				`EPERM: operation not permitted, open '${join(tempDir, "openai-codex-accounts.json")}'`,
+			),
+			{ code: "EPERM" },
+		);
+		const saveSpy = vi.spyOn(storageModule, "saveAccounts").mockRejectedValue(
+			leakingError,
+		);
 
 		const plan = await getLatestCodexCliSyncRollbackPlan();
 		expect(plan.status).toBe("ready");
 
 		const rollbackResult = await rollbackLatestCodexCliSync(plan);
 		expect(rollbackResult.status).toBe("error");
-		expect(rollbackResult.reason).toBe("save busy");
-		await expect(rollbackLastCodexCliSync()).rejects.toThrow("save busy");
+		expect(rollbackResult.reason).toBe(
+			"Failed to restore rollback checkpoint [EPERM].",
+		);
+		expect(rollbackResult.reason).not.toContain(tempDir);
+		await expect(rollbackLastCodexCliSync()).rejects.toThrow(
+			"Failed to restore rollback checkpoint [EPERM].",
+		);
 
 		saveSpy.mockRestore();
 	});
@@ -1896,6 +1907,128 @@ describe("codex-cli sync", () => {
 		expect(saveSpy).toHaveBeenCalledTimes(2);
 
 		saveSpy.mockRestore();
+	});
+
+	it("logs retried rollback save failures with redacted filesystem labels", async () => {
+		const warnSpy = vi.fn();
+		vi.resetModules();
+		vi.doMock("../lib/logger.js", async () => {
+			const actual = await vi.importActual<typeof import("../lib/logger.js")>(
+				"../lib/logger.js",
+			);
+			return {
+				...actual,
+				createLogger: () => ({
+					debug: vi.fn(),
+					info: vi.fn(),
+					warn: warnSpy,
+					error: vi.fn(),
+					time: () => () => 0,
+					timeEnd: () => undefined,
+				}),
+			};
+		});
+
+		try {
+			const freshStorageModule = await import("../lib/storage.js");
+			const freshStateModule = await import("../lib/codex-cli/state.js");
+			const freshSyncHistoryModule = await import("../lib/sync-history.js");
+			const freshSyncModule = await import("../lib/codex-cli/sync.js");
+
+			freshStorageModule.setStoragePathDirect(targetStoragePath);
+			freshSyncHistoryModule.configureSyncHistoryForTests(join(tempDir, "logs"));
+			await freshSyncHistoryModule.__resetSyncHistoryForTests();
+			freshStateModule.clearCodexCliStateCache();
+			freshSyncModule.__resetLastCodexCliSyncRunForTests();
+
+			const snapshotPath = join(tempDir, "rollback-retry-logged-snapshot.json");
+			await writeFile(
+				snapshotPath,
+				JSON.stringify(
+					{
+						version: 3,
+						accounts: [
+							{
+								accountId: "acc_old",
+								accountIdSource: "token",
+								email: "old@example.com",
+								refreshToken: "refresh-old",
+								accessToken: "access-old",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+						activeIndex: 0,
+						activeIndexByFamily: { codex: 0 },
+					} satisfies AccountStorageV3,
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			await freshSyncHistoryModule.appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: 10,
+				run: {
+					outcome: "changed",
+					runAt: 10,
+					sourcePath: accountsPath,
+					targetPath: targetStoragePath,
+					summary: {
+						sourceAccountCount: 1,
+						targetAccountCountBefore: 1,
+						targetAccountCountAfter: 1,
+						addedAccountCount: 0,
+						updatedAccountCount: 1,
+						unchangedAccountCount: 0,
+						destinationOnlyPreservedCount: 0,
+						selectionChanged: false,
+					},
+					trigger: "manual",
+					rollbackSnapshot: {
+						name: "accounts-codex-cli-sync-snapshot-retry-logged",
+						path: snapshotPath,
+					},
+				},
+			});
+
+			const transientError = Object.assign(
+				new Error(
+					`EPERM: operation not permitted, open '${join(tempDir, "openai-codex-accounts.json")}'`,
+				),
+				{ code: "EPERM" },
+			);
+			const saveSpy = vi
+				.spyOn(freshStorageModule, "saveAccounts")
+				.mockRejectedValueOnce(transientError)
+				.mockResolvedValueOnce(undefined);
+
+			const plan = await freshSyncModule.getLatestCodexCliSyncRollbackPlan();
+			expect(plan.status).toBe("ready");
+
+			const rollbackResult = await freshSyncModule.rollbackLatestCodexCliSync(plan);
+			expect(rollbackResult.status).toBe("restored");
+			expect(saveSpy).toHaveBeenCalledTimes(2);
+			expect(warnSpy).toHaveBeenCalledWith(
+				"Retrying rollback checkpoint save after transient filesystem error",
+				expect.objectContaining({
+					attempt: 1,
+					maxAttempts: 5,
+					error: "EPERM",
+				}),
+			);
+
+			saveSpy.mockRestore();
+		} finally {
+			vi.doUnmock("../lib/logger.js");
+			vi.resetModules();
+			clearCodexCliStateCache();
+			__resetLastCodexCliSyncRunForTests();
+			await __resetSyncHistoryForTests();
+			configureSyncHistoryForTests(join(tempDir, "logs"));
+			storageModule.setStoragePathDirect(targetStoragePath);
+		}
 	});
 
 	it("re-reads Codex CLI state on apply when forceRefresh is requested", async () => {

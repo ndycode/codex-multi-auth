@@ -320,29 +320,13 @@ interface SyncCenterOverviewContext {
 }
 
 async function getSyncCenterRollbackPlan(): Promise<CodexCliSyncRollbackPlan> {
-	if (
-		typeof codexCliSyncModule.getLatestCodexCliSyncRollbackPlan === "function"
-	) {
-		return codexCliSyncModule.getLatestCodexCliSyncRollbackPlan();
-	}
-	return {
-		status: "unavailable",
-		reason: "Rollback checkpoint is unavailable.",
-		snapshot: null,
-	};
+	return codexCliSyncModule.getLatestCodexCliSyncRollbackPlan();
 }
 
 async function runSyncCenterRollback(
 	plan: CodexCliSyncRollbackPlan,
 ): Promise<CodexCliSyncRollbackResult> {
-	if (typeof codexCliSyncModule.rollbackLatestCodexCliSync === "function") {
-		return codexCliSyncModule.rollbackLatestCodexCliSync(plan);
-	}
-	return {
-		status: "unavailable",
-		reason: "Rollback checkpoint is unavailable.",
-		snapshot: plan.snapshot,
-	};
+	return codexCliSyncModule.rollbackLatestCodexCliSync(plan);
 }
 
 type ExperimentalSettingsAction =
