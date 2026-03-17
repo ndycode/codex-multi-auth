@@ -183,6 +183,46 @@ describe("quota cache", () => {
     },
   );
 
+  it("redacts Windows-style paths from clearQuotaCache warnings", async () => {
+    vi.resetModules();
+    const warnMock = vi.fn();
+    vi.doMock("../lib/logger.js", () => ({
+      logWarn: warnMock,
+    }));
+
+    try {
+      const { clearQuotaCache, getQuotaCachePath, saveQuotaCache } =
+        await import("../lib/quota-cache.js");
+      await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+      const quotaCachePath = getQuotaCachePath();
+      const unlinkSpy = vi.spyOn(fs, "unlink");
+      unlinkSpy.mockImplementation(async (...args) => {
+        if (String(args[0]) === quotaCachePath) {
+          const error = new Error(
+            "EPERM: operation not permitted, unlink 'C:\\Users\\alice\\.codex\\multi-auth\\quota-cache.json'",
+          ) as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        }
+        return Promise.resolve();
+      });
+
+      try {
+        await expect(clearQuotaCache()).resolves.toBe(false);
+        const [warning] = warnMock.mock.calls.at(-1) ?? [];
+        expect(warning).toContain(
+          "Failed to clear quota cache quota-cache.json: quota cache unlink failed (EPERM)",
+        );
+        expect(warning).not.toContain("alice");
+        expect(warning).not.toContain("C:\\Users\\alice");
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+    } finally {
+      vi.doUnmock("../lib/logger.js");
+    }
+  });
+
   it("retries transient EBUSY while loading cache", async () => {
     const { loadQuotaCache, getQuotaCachePath } =
       await import("../lib/quota-cache.js");

@@ -38,6 +38,17 @@ function isRetryableFsError(error: unknown): boolean {
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
 }
 
+function formatSafeQuotaCacheClearError(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	if (!/[\\/]/.test(message)) {
+		return message;
+	}
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string"
+		? `quota cache unlink failed (${code})`
+		: "quota cache unlink failed";
+}
+
 /**
  * Normalizes an unknown value to a finite number.
  *
@@ -288,7 +299,7 @@ export async function clearQuotaCache(): Promise<boolean> {
 			if (!isRetryableFsError(error) || attempt >= 4) {
 				logWarn(
 					`Failed to clear quota cache ${getQuotaCacheLabel(quotaCachePath)}: ${
-						error instanceof Error ? error.message : String(error)
+						formatSafeQuotaCacheClearError(error)
 					}`,
 				);
 				return false;
