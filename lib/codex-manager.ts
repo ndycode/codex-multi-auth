@@ -4118,14 +4118,7 @@ async function runAuthLogin(): Promise<number> {
 						} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Restore now?`,
 					);
 					if (restoreNow) {
-						const restoreResult = await runBackupRestoreManager(
-							displaySettings,
-							recoveryState.allAssessments,
-						);
-						if (restoreResult === "dismissed") {
-							pendingRecoveryState = recoveryState;
-							recoveryPromptAttempted = false;
-						}
+						await runBackupRestoreManager(displaySettings, recoveryState.allAssessments);
 						continue;
 					}
 				} catch (error) {

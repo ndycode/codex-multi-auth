@@ -2372,7 +2372,64 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("re-prompts startup recovery after backing out of the backup browser", async () => {
+	it("continues to OAuth after backing out of the backup browser", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		const assessment = {
+			backup: {
+				name: "startup-backup",
+				path: "/mock/backups/startup-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: "",
+		};
+		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
+			assessments: [assessment],
+			allAssessments: [assessment],
+			totalBackups: 2,
+		});
+		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
+		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
+		confirmMock.mockResolvedValueOnce(true);
+		selectMock.mockResolvedValueOnce({ type: "back" });
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		await configureSuccessfulOAuthFlow(now);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).toHaveBeenCalledTimes(1);
+		expect(selectMock).toHaveBeenCalled();
+		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("continues to OAuth after cancelling restore inside the backup browser", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		let storageState = {
@@ -2414,66 +2471,6 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
 		confirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-		selectMock.mockResolvedValueOnce({ type: "back" });
-		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
-		await configureSuccessfulOAuthFlow(now);
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-
-		expect(exitCode).toBe(0);
-		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
-		expect(confirmMock).toHaveBeenCalledTimes(2);
-		expect(selectMock).toHaveBeenCalled();
-		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
-		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
-	});
-
-	it("re-prompts startup recovery after cancelling restore inside the backup browser", async () => {
-		setInteractiveTTY(true);
-		const now = Date.now();
-		let storageState = {
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [],
-		};
-		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
-		saveAccountsMock.mockImplementation(async (nextStorage) => {
-			storageState = structuredClone(nextStorage);
-		});
-		const assessment = {
-			backup: {
-				name: "startup-backup",
-				path: "/mock/backups/startup-backup.json",
-				createdAt: null,
-				updatedAt: now,
-				sizeBytes: 128,
-				version: 3,
-				accountCount: 1,
-				schemaErrors: [],
-				valid: true,
-				loadError: "",
-			},
-			currentAccountCount: 0,
-			mergedAccountCount: 1,
-			imported: 1,
-			skipped: 0,
-			wouldExceedLimit: false,
-			eligibleForRestore: true,
-			error: "",
-		};
-		getActionableNamedBackupRestoresMock.mockResolvedValueOnce({
-			assessments: [assessment],
-			allAssessments: [assessment],
-			totalBackups: 2,
-		});
-		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
-		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
-		confirmMock
-			.mockResolvedValueOnce(true)
-			.mockResolvedValueOnce(false)
-			.mockResolvedValueOnce(false);
 		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		await configureSuccessfulOAuthFlow(now);
@@ -2483,7 +2480,7 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
-		expect(confirmMock).toHaveBeenCalledTimes(3);
+		expect(confirmMock).toHaveBeenCalledTimes(2);
 		expect(selectMock).toHaveBeenCalled();
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 		expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(1);
