@@ -8,6 +8,10 @@ import {
 	type AccountStatus,
 } from "./ui/auth-menu.js";
 import { UI_COPY } from "./ui/copy.js";
+import { confirm } from "./ui/confirm.js";
+import { promptTextInput } from "./ui/prompt.js";
+import { select, type MenuItem } from "./ui/select.js";
+import { getUiRuntimeOptions } from "./ui/runtime.js";
 
 /**
  * Detect if running in host Desktop/TUI mode where readline prompts don't work.
@@ -29,15 +33,26 @@ export async function promptAddAnotherAccount(currentCount: number): Promise<boo
 		return false;
 	}
 
-	const rl = createInterface({ input, output });
-	try {
-		console.log(`\n${UI_COPY.fallback.addAnotherTip}\n`);
-		const answer = await rl.question(UI_COPY.fallback.addAnotherQuestion(currentCount));
-		const normalized = answer.trim().toLowerCase();
-		return normalized === "y" || normalized === "yes";
-	} finally {
-		rl.close();
+	if (!isTTY()) {
+		const rl = createInterface({ input, output });
+		try {
+			console.log(`\n${UI_COPY.fallback.addAnotherTip}\n`);
+			const answer = await rl.question(UI_COPY.fallback.addAnotherQuestion(currentCount));
+			const normalized = answer.trim().toLowerCase();
+			return normalized === "y" || normalized === "yes";
+		} finally {
+			rl.close();
+		}
 	}
+
+	return confirm(
+		`Add another account? (${currentCount} added)`,
+		true,
+		{
+			subtitle: UI_COPY.fallback.addAnotherTip,
+			help: "Enter Select | Esc Back",
+		},
+	);
 }
 
 export type LoginMode =
@@ -128,6 +143,18 @@ function warnUnresolvableAccountSelection(account: ExistingAccountInfo): void {
 }
 
 async function promptDeleteAllTypedConfirm(): Promise<boolean> {
+	if (input.isTTY && output.isTTY) {
+		const answer = await promptTextInput({
+			message: "Reset Accounts",
+			subtitle: "Type DELETE to remove all saved accounts.",
+			promptLabel: "Confirmation",
+			placeholder: "DELETE",
+			help: "Enter Confirm | Esc Back",
+			clearScreen: true,
+		});
+		return answer === "DELETE";
+	}
+
 	const rl = createInterface({ input, output });
 	try {
 		const answer = await rl.question("Type DELETE to remove all saved accounts: ");
@@ -312,6 +339,24 @@ export async function promptAccountSelection(
 
 	if (isNonInteractiveMode()) {
 		return candidates[defaultIndex] ?? candidates[0] ?? null;
+	}
+
+	if (input.isTTY && output.isTTY) {
+		const ui = getUiRuntimeOptions();
+		const items: MenuItem<AccountSelectionCandidate>[] = candidates.map((candidate, index) => ({
+			label: candidate.isDefault ? `${candidate.label} (default)` : candidate.label,
+			value: candidate,
+			color: index === defaultIndex ? "green" : undefined,
+		}));
+		return select(items, {
+			message: options.title ?? "Multiple workspaces detected for this account",
+			subtitle: "Choose which workspace identity to use for this login.",
+			help: "↑↓ Move | Enter Select | Esc Back",
+			clearScreen: true,
+			theme: ui.theme,
+			selectedEmphasis: "minimal",
+			initialCursor: defaultIndex,
+		});
 	}
 
 	const rl = createInterface({ input, output });

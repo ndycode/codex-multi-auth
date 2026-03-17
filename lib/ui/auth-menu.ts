@@ -1,4 +1,3 @@
-import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { ANSI, isTTY } from "./ansi.js";
 import { confirm } from "./confirm.js";
@@ -6,6 +5,7 @@ import { getUiRuntimeOptions } from "./runtime.js";
 import { select, type MenuItem, type SelectDetailPane } from "./select.js";
 import { paintUiText, formatUiBadge, formatUiInlineList, formatUiKeyValue, quotaToneFromLeftPercent } from "./format.js";
 import { UI_COPY, formatCheckFlaggedLabel } from "./copy.js";
+import { promptTextInput } from "./prompt.js";
 
 export type AccountStatus =
 	| "active"
@@ -403,14 +403,17 @@ async function promptSearchQuery(current: string): Promise<string> {
 		return current;
 	}
 
-	const rl = createInterface({ input, output });
-	try {
-		const suffix = current ? ` (${current})` : "";
-		const answer = await rl.question(`Search${suffix} (blank clears): `);
-		return answer.trim().toLowerCase();
-	} finally {
-		rl.close();
-	}
+	const suffix = current ? `Current: ${current}` : undefined;
+	const answer = await promptTextInput({
+		message: "Search Accounts",
+		subtitle: suffix,
+		promptLabel: "Query",
+		placeholder: "Blank clears the filter",
+		initialValue: current,
+		help: "Type to filter | Enter Apply | Esc Back",
+		clearScreen: true,
+	});
+	return answer === null ? current : answer.trim().toLowerCase();
 }
 
 function authMenuFocusKey(action: AuthMenuAction): string {
@@ -688,6 +691,7 @@ export async function showAuthMenu(
 			if (parts.length === 0) return undefined;
 			return parts.join(" | ");
 		};
+		const hasLiveStatusMessage = typeof options.statusMessage === "function";
 		const initialCursor = items.findIndex((item) => {
 			if (item.separator || item.disabled || item.kind === "heading") return false;
 			return authMenuFocusKey(item.value) === focusKey;
@@ -701,7 +705,7 @@ export async function showAuthMenu(
 				"muted",
 			),
 			subtitle: buildSubtitle(),
-			dynamicSubtitle: buildSubtitle,
+			dynamicSubtitle: hasLiveStatusMessage ? buildSubtitle : undefined,
 			help: showDetailedHelp ? detailedHelp : compactHelp,
 			clearScreen: true,
 			layout: splitDashboardLayout ? "split-pane-auto" : "single-column",
@@ -709,7 +713,7 @@ export async function showAuthMenu(
 			selectedEmphasis: "minimal",
 			focusStyle,
 			showHintsForUnselected: showHintsForUnselectedRows,
-			refreshIntervalMs: 200,
+			refreshIntervalMs: hasLiveStatusMessage ? 200 : undefined,
 			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
 			theme: ui.theme,
 			detailPane: splitDashboardLayout

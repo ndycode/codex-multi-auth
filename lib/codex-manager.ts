@@ -1,4 +1,3 @@
-import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { promises as fs, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -76,6 +75,7 @@ import { ANSI } from "./ui/ansi.js";
 import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
+import { promptTextInput, waitForReturnPrompt } from "./ui/prompt.js";
 import { select, type MenuItem } from "./ui/select.js";
 import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, resolveMenuLayoutMode } from "./codex-manager/settings-hub.js";
 
@@ -271,12 +271,6 @@ function formatQuotaSnapshotForDashboard(
 ): string {
 	if (!settings.showQuotaDetails) return "live session OK";
 	return `live session OK (${formatCompactQuotaSnapshot(snapshot)})`;
-}
-
-function isAbortError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	const maybe = error as Error & { code?: string };
-	return maybe.name === "AbortError" || maybe.code === "ABORT_ERR";
 }
 
 function isUserCancelledOAuth(result: TokenResult): boolean {
@@ -960,36 +954,31 @@ async function promptManualCallback(state: string): Promise<string | null> {
 		return null;
 	}
 
-	const rl = createInterface({ input, output });
-	try {
-		console.log("");
-		console.log(stylePromptText(UI_COPY.oauth.pastePrompt, "accent"));
-		const answer = await rl.question("◆  ");
-		if (answer.includes("\u001b")) {
-			return null;
-		}
-		const normalized = answer.trim().toLowerCase();
-		if (
-			normalized.length === 0 ||
-			normalized === "q" ||
-			normalized === "quit" ||
-			normalized === "cancel" ||
-			normalized === "back"
-		) {
-			return null;
-		}
-		const parsed = parseAuthorizationInput(answer);
-		if (!parsed.code) return null;
-		if (parsed.state && parsed.state !== state) return null;
-		return parsed.code;
-	} catch (error) {
-		if (isAbortError(error)) {
-			return null;
-		}
-		throw error;
-	} finally {
-		rl.close();
+	const answer = await promptTextInput({
+		message: UI_COPY.oauth.pastePrompt,
+		subtitle: "Paste the callback URL or the authorization code.",
+		promptLabel: "Callback",
+		placeholder: "Paste callback URL or code",
+		help: "Enter Submit | Esc Back",
+		clearScreen: true,
+	});
+	if (answer === null || answer.includes("\u001b")) {
+		return null;
 	}
+	const normalized = answer.trim().toLowerCase();
+	if (
+		normalized.length === 0 ||
+		normalized === "q" ||
+		normalized === "quit" ||
+		normalized === "cancel" ||
+		normalized === "back"
+	) {
+		return null;
+	}
+	const parsed = parseAuthorizationInput(answer);
+	if (!parsed.code) return null;
+	if (parsed.state && parsed.state !== state) return null;
+	return parsed.code;
 }
 
 type OAuthSignInMode = "browser" | "manual" | "cancel";
@@ -1026,141 +1015,6 @@ async function promptOAuthSignInMode(): Promise<OAuthSignInMode> {
 	return selected ?? "cancel";
 }
 
-interface WaitForReturnOptions {
-	promptText?: string;
-	autoReturnMs?: number;
-	pauseOnAnyKey?: boolean;
-}
-
-async function waitForMenuReturn(options: WaitForReturnOptions = {}): Promise<void> {
-	if (!input.isTTY || !output.isTTY) {
-		return;
-	}
-
-	const promptText = options.promptText ?? UI_COPY.returnFlow.continuePrompt;
-	const autoReturnMs = options.autoReturnMs ?? 0;
-	const pauseOnAnyKey = options.pauseOnAnyKey ?? true;
-
-	try {
-		let chunk: Buffer | string | null;
-		do {
-			chunk = input.read();
-		} while (chunk !== null);
-	} catch {
-		// best effort buffer drain
-	}
-
-	const writeInlineStatus = (message: string): void => {
-		output.write(`\r${ANSI.clearLine}${stylePromptText(message, "muted")}`);
-	};
-
-	const clearInlineStatus = (): void => {
-		output.write(`\r${ANSI.clearLine}`);
-	};
-
-	if (autoReturnMs > 0) {
-		if (!pauseOnAnyKey) {
-			await new Promise<void>((resolve) => setTimeout(resolve, autoReturnMs));
-			return;
-		}
-		const wasRaw = input.isRaw ?? false;
-		const endAt = Date.now() + autoReturnMs;
-		let lastShownSeconds: number | null = null;
-		const renderCountdown = () => {
-			const remainingMs = Math.max(0, endAt - Date.now());
-			const remainingSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
-			if (lastShownSeconds === remainingSeconds) return;
-			lastShownSeconds = remainingSeconds;
-			writeInlineStatus(
-				UI_COPY.returnFlow.autoReturn(remainingSeconds),
-			);
-		};
-		renderCountdown();
-		const pinned = await new Promise<boolean>((resolve) => {
-			let done = false;
-			const interval = setInterval(renderCountdown, 80);
-			let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-				timeout = null;
-				if (!done) {
-					done = true;
-					cleanup();
-					resolve(false);
-				}
-			}, autoReturnMs);
-			const onData = () => {
-				if (done) return;
-				done = true;
-				cleanup();
-				resolve(true);
-			};
-			const cleanup = () => {
-				clearInterval(interval);
-				if (timeout) {
-					clearTimeout(timeout);
-					timeout = null;
-				}
-				input.removeListener("data", onData);
-				try {
-					input.setRawMode(wasRaw);
-				} catch {
-					// best effort restore
-				}
-			};
-			try {
-				input.setRawMode(true);
-			} catch {
-				// if raw mode fails, keep countdown behavior
-			}
-			input.on("data", onData);
-			input.resume();
-		});
-		clearInlineStatus();
-		if (!pinned) {
-			return;
-		}
-		const paused = stylePromptText(UI_COPY.returnFlow.paused, "muted");
-		writeInlineStatus(paused);
-		await new Promise<void>((resolve) => {
-			const wasRaw = input.isRaw ?? false;
-			const onData = () => {
-				cleanup();
-				resolve();
-			};
-			const cleanup = () => {
-				input.removeListener("data", onData);
-				try {
-					input.setRawMode(wasRaw);
-				} catch {
-					// best effort restore
-				}
-			};
-			try {
-				input.setRawMode(true);
-			} catch {
-				// best effort fallback
-			}
-			input.on("data", onData);
-			input.resume();
-		});
-		clearInlineStatus();
-		return;
-	}
-
-	const rl = createInterface({ input, output });
-	try {
-		const question = promptText.length > 0 ? `${stylePromptText(promptText, "muted")} ` : "";
-		output.write(`\r${ANSI.clearLine}`);
-		await rl.question(question);
-	} catch (error) {
-		if (!isAbortError(error)) {
-			throw error;
-		}
-	} finally {
-		rl.close();
-		clearInlineStatus();
-	}
-}
-
 function stringifyLogArgs(args: unknown[]): string {
 	return args
 		.map((value) => {
@@ -1190,7 +1044,6 @@ async function runActionPanel(
 	let running = true;
 	let failed: unknown = null;
 	const captured: string[] = [];
-	const maxVisibleLines = Math.max(8, (output.rows ?? 24) - 8);
 	const previousLog = console.log;
 	const previousWarn = console.warn;
 	const previousError = console.error;
@@ -1204,8 +1057,11 @@ async function runActionPanel(
 		}
 	};
 
-	const render = () => {
-		output.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
+	const renderLines = (rows: number): string[] => {
+		const ui = getUiRuntimeOptions();
+		const border = `${ui.theme.colors.border}+${ui.theme.colors.reset}`;
+		const maxVisibleLines = Math.max(8, rows - 8);
+		const visibleCaptured = captured.slice(-maxVisibleLines);
 		const spinner = running
 			? `${spinnerFrames[frame % spinnerFrames.length] ?? "-"} `
 			: failed
@@ -1216,22 +1072,29 @@ async function runActionPanel(
 			: failed
 				? UI_COPY.returnFlow.failed
 				: UI_COPY.returnFlow.done;
-		previousLog(stylePromptText(title, "accent"));
-		previousLog(stylePromptText(stageText, failed ? "danger" : running ? "accent" : "success"));
-		previousLog("");
-
-		const lines = captured.slice(-maxVisibleLines);
-		for (const line of lines) {
-			previousLog(line);
+		const lines: string[] = [
+			`${border} ${stylePromptText(title, "accent")}`,
+			` ${stylePromptText(stageText, failed ? "danger" : running ? "accent" : "success")}`,
+			"",
+		];
+		for (const line of visibleCaptured) {
+			lines.push(` ${line}`);
 		}
 
-		const remainingLines = Math.max(0, maxVisibleLines - lines.length);
+		const remainingLines = Math.max(0, maxVisibleLines - visibleCaptured.length);
 		for (let i = 0; i < remainingLines; i += 1) {
-			previousLog("");
+			lines.push("");
 		}
-		previousLog("");
-		if (running) previousLog(stylePromptText(UI_COPY.returnFlow.working, "muted"));
-		frame += 1;
+		lines.push("");
+		if (running) {
+			lines.push(` ${stylePromptText(UI_COPY.returnFlow.working, "muted")}`);
+		} else if (failed) {
+			lines.push(` ${stylePromptText(UI_COPY.returnFlow.actionFailedPrompt, "danger")}`);
+		} else {
+			lines.push(` ${stylePromptText(UI_COPY.returnFlow.done, "success")}`);
+		}
+		lines.push(border);
+		return lines;
 	};
 
 	console.log = (...args: unknown[]) => {
@@ -1244,42 +1107,60 @@ async function runActionPanel(
 		capture("x ", args);
 	};
 
-	output.write(ANSI.altScreenOn + ANSI.hide);
-	let timer: ReturnType<typeof setInterval> | null = null;
 	try {
-		render();
-		timer = setInterval(() => {
-			if (!running) return;
-			render();
-		}, 120);
+		const { runInkLineApp } = await import("./ui/ink-host.js");
+		await runInkLineApp<void>({
+			clearScreen: true,
+			initialGuardMs: 120,
+			renderLines: (terminal) => renderLines(terminal.rows),
+			onMount: (controller) => {
+				const timer = setInterval(() => {
+					if (!running) return;
+					frame += 1;
+					controller.rerender();
+				}, 120);
+				let exitTimer: ReturnType<typeof setTimeout> | null = null;
+				void Promise.resolve(action())
+					.catch((error: unknown) => {
+						failed = error;
+						capture("x ", [error instanceof Error ? error.message : String(error)]);
+					})
+					.finally(() => {
+						running = false;
+						controller.rerender();
+						exitTimer = setTimeout(() => {
+							controller.finish(null);
+						}, 120);
+					});
 
-		await action();
-	} catch (error) {
-		failed = error;
-		capture("x ", [error instanceof Error ? error.message : String(error)]);
+				return () => {
+					clearInterval(timer);
+					if (exitTimer) {
+						clearTimeout(exitTimer);
+					}
+				};
+			},
+		});
 	} finally {
-		running = false;
-		if (timer) {
-			clearInterval(timer);
-			timer = null;
-		}
-		render();
 		console.log = previousLog;
 		console.warn = previousWarn;
 		console.error = previousError;
 	}
 
 	if (failed) {
-		await waitForMenuReturn({
-			promptText: UI_COPY.returnFlow.actionFailedPrompt,
+		await waitForReturnPrompt({
+			message: UI_COPY.returnFlow.actionFailedPrompt,
+			clearScreen: false,
 		});
 	} else {
-		await waitForMenuReturn({
+		await waitForReturnPrompt({
+			message: UI_COPY.returnFlow.done,
+			subtitle: title,
 			autoReturnMs: settings?.actionAutoReturnMs ?? 2_000,
 			pauseOnAnyKey: settings?.actionPauseOnKey ?? true,
+			clearScreen: false,
 		});
 	}
-	output.write(ANSI.altScreenOff + ANSI.show + ANSI.clearScreen + ANSI.moveTo(1, 1));
 	if (failed) {
 		throw failed;
 	}

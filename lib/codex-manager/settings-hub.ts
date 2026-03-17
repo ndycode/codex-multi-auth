@@ -27,6 +27,7 @@ import { loadAccounts, normalizeAccountStorage } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
+import { promptTextInput } from "../ui/prompt.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, select } from "../ui/select.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
@@ -2614,78 +2615,92 @@ async function promptExperimentalSettings(
 			continue;
 		}
 		if (action.type === "backup") {
-			const prompt = createInterface({ input, output });
-			try {
-				const backupName = (
-					await prompt.question(UI_COPY.settings.experimentalBackupPrompt)
-				).trim();
-				if (!backupName || backupName.toLowerCase() === "q") {
-					continue;
-				}
+			let backupName: string | undefined;
+			if (typeof input.setRawMode === "function") {
+				backupName = (
+					await promptTextInput({
+						message: UI_COPY.settings.experimentalTitle,
+						subtitle: UI_COPY.settings.experimentalBackupPrompt.trim(),
+						promptLabel: "Backup Name",
+						placeholder: "named-backup",
+						help: "Enter Save | Esc Back",
+						clearScreen: true,
+					})
+				)?.trim();
+			} else {
+				const prompt = createInterface({ input, output });
 				try {
-					const backupResult = await runNamedBackupExport({ name: backupName });
-					const backupLabel =
-						backupResult.kind === "exported"
-							? `Saved backup to ${backupResult.path}`
-							: backupResult.kind === "collision"
-								? `Backup already exists: ${backupResult.path}`
-								: backupResult.error instanceof Error
-									? backupResult.error.message
-									: String(backupResult.error);
-					await select<ExperimentalSettingsAction>(
-						[
-							{
-								label: backupLabel,
-								value: { type: "back" },
-								disabled: true,
-								hideUnavailableSuffix: true,
-								color: backupResult.kind === "exported" ? "green" : "yellow",
-							},
-							{
-								label: UI_COPY.settings.back,
-								value: { type: "back" },
-								color: "red",
-							},
-						],
-						{
-							message: UI_COPY.settings.experimentalTitle,
-							subtitle: UI_COPY.settings.experimentalSubtitle,
-							help: UI_COPY.settings.experimentalHelpStatus,
-							clearScreen: true,
-							theme: ui.theme,
-							selectedEmphasis: "minimal",
-						},
-					);
-				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
-					await select<ExperimentalSettingsAction>(
-						[
-							{
-								label: message,
-								value: { type: "back" },
-								disabled: true,
-								hideUnavailableSuffix: true,
-								color: "yellow",
-							},
-							{
-								label: UI_COPY.settings.back,
-								value: { type: "back" },
-								color: "red",
-							},
-						],
-						{
-							message: UI_COPY.settings.experimentalTitle,
-							subtitle: UI_COPY.settings.experimentalSubtitle,
-							help: UI_COPY.settings.experimentalHelpStatus,
-							clearScreen: true,
-							theme: ui.theme,
-							selectedEmphasis: "minimal",
-						},
-					);
+					backupName = (
+						await prompt.question(UI_COPY.settings.experimentalBackupPrompt)
+					).trim();
+				} finally {
+					prompt.close();
 				}
-			} finally {
-				prompt.close();
+			}
+			if (!backupName || backupName.toLowerCase() === "q") {
+				continue;
+			}
+			try {
+				const backupResult = await runNamedBackupExport({ name: backupName });
+				const backupLabel =
+					backupResult.kind === "exported"
+						? `Saved backup to ${backupResult.path}`
+						: backupResult.kind === "collision"
+							? `Backup already exists: ${backupResult.path}`
+							: backupResult.error instanceof Error
+								? backupResult.error.message
+								: String(backupResult.error);
+				await select<ExperimentalSettingsAction>(
+					[
+						{
+							label: backupLabel,
+							value: { type: "back" },
+							disabled: true,
+							hideUnavailableSuffix: true,
+							color: backupResult.kind === "exported" ? "green" : "yellow",
+						},
+						{
+							label: UI_COPY.settings.back,
+							value: { type: "back" },
+							color: "red",
+						},
+					],
+					{
+						message: UI_COPY.settings.experimentalTitle,
+						subtitle: UI_COPY.settings.experimentalSubtitle,
+						help: UI_COPY.settings.experimentalHelpStatus,
+						clearScreen: true,
+						theme: ui.theme,
+						selectedEmphasis: "minimal",
+					},
+				);
+			} catch (error) {
+				const message =
+					error instanceof Error ? error.message : String(error);
+				await select<ExperimentalSettingsAction>(
+					[
+						{
+							label: message,
+							value: { type: "back" },
+							disabled: true,
+							hideUnavailableSuffix: true,
+							color: "yellow",
+						},
+						{
+							label: UI_COPY.settings.back,
+							value: { type: "back" },
+							color: "red",
+						},
+					],
+					{
+						message: UI_COPY.settings.experimentalTitle,
+						subtitle: UI_COPY.settings.experimentalSubtitle,
+						help: UI_COPY.settings.experimentalHelpStatus,
+						clearScreen: true,
+						theme: ui.theme,
+						selectedEmphasis: "minimal",
+					},
+				);
 			}
 			continue;
 		}
