@@ -3029,7 +3029,6 @@ async function importNormalizedAccounts(
 			await snapshotAccountStorage({
 				reason: snapshotReason,
 				storage: existing,
-				storagePath: getStoragePath(),
 			});
 		}
 		const existingAccounts = existing?.accounts ?? [];
