@@ -121,6 +121,7 @@ let lastCodexCliSyncRunRevision = 0;
 let nextCodexCliSyncRunRevision = 0;
 const activePendingCodexCliSyncRunRevisions = new Set<number>();
 let lastCodexCliSyncHistoryLoadAttempted = false;
+let lastCodexCliSyncRunLoadedFromHistory: CodexCliSyncRun | null = null;
 let lastCodexCliSyncRunLoadPromise: Promise<CodexCliSyncRun | null> | null =
 	null;
 
@@ -250,6 +251,9 @@ export async function loadLastCodexCliSyncRun(): Promise<CodexCliSyncRun | null>
 		return loadedRun ? cloneCodexCliSyncRun(loadedRun) : null;
 	}
 	if (lastCodexCliSyncHistoryLoadAttempted) {
+		if (lastCodexCliSyncRunLoadedFromHistory) {
+			return cloneCodexCliSyncRun(lastCodexCliSyncRunLoadedFromHistory);
+		}
 		return null;
 	}
 	lastCodexCliSyncHistoryLoadAttempted = true;
@@ -266,6 +270,12 @@ export async function loadLastCodexCliSyncRun(): Promise<CodexCliSyncRun | null>
 		return null;
 	})()
 		.catch(() => null)
+		.then((loadedRun) => {
+			lastCodexCliSyncRunLoadedFromHistory = loadedRun
+				? cloneCodexCliSyncRun(loadedRun)
+				: null;
+			return loadedRun;
+		})
 		.finally(() => {
 			lastCodexCliSyncRunLoadPromise = null;
 		});
@@ -315,6 +325,7 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	nextCodexCliSyncRunRevision = 0;
 	activePendingCodexCliSyncRunRevisions.clear();
 	lastCodexCliSyncHistoryLoadAttempted = false;
+	lastCodexCliSyncRunLoadedFromHistory = null;
 	lastCodexCliSyncRunLoadPromise = null;
 }
 

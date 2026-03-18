@@ -1411,6 +1411,76 @@ describe("codex-cli sync", () => {
 		expect(secondResult?.sourcePath).toBe("stale-source.json");
 	});
 
+	it("keeps a late concurrent load aligned with the history result after the promise settles", async () => {
+		const staleEntry = {
+			kind: "codex-cli-sync" as const,
+			recordedAt: 20,
+			run: {
+				outcome: "changed" as const,
+				runAt: 20,
+				sourcePath: "late-source.json",
+				targetPath: targetStoragePath,
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 0,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 1,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: true,
+				},
+			},
+		};
+		await appendSyncHistoryEntry(staleEntry);
+		__resetLastCodexCliSyncRunForTests();
+
+		const historyPaths = getSyncHistoryPaths();
+		const originalReadFile = nodeFs.readFile.bind(nodeFs);
+		let releaseLatestRead: (() => void) | null = null;
+		const latestReadBlocked = new Promise<void>((resolve) => {
+			releaseLatestRead = resolve;
+		});
+		let markLatestReadObserved: (() => void) | null = null;
+		const latestReadObserved = new Promise<void>((resolve) => {
+			markLatestReadObserved = resolve;
+		});
+		let latestReadCount = 0;
+		vi.spyOn(nodeFs, "readFile").mockImplementation(
+			async (...args: Parameters<typeof nodeFs.readFile>) => {
+				const [path, options] = args;
+				if (String(path) === historyPaths.latestPath) {
+					latestReadCount += 1;
+					markLatestReadObserved?.();
+					await latestReadBlocked;
+					return `${JSON.stringify(staleEntry, null, 2)}\n` as Awaited<
+						ReturnType<typeof nodeFs.readFile>
+					>;
+				}
+				return originalReadFile(path, options);
+			},
+		);
+
+		const firstLoad = loadLastCodexCliSyncRun();
+		const secondLoad = loadLastCodexCliSyncRun();
+		await latestReadObserved;
+		releaseLatestRead?.();
+		const lateLoad = Promise.resolve()
+			.then(() => Promise.resolve())
+			.then(() => loadLastCodexCliSyncRun());
+
+		const [firstResult, secondResult, lateResult] = await Promise.all([
+			firstLoad,
+			secondLoad,
+			lateLoad,
+		]);
+
+		expect(latestReadCount).toBe(1);
+		expect(firstResult?.sourcePath).toBe("late-source.json");
+		expect(secondResult?.sourcePath).toBe("late-source.json");
+		expect(lateResult?.sourcePath).toBe("late-source.json");
+	});
+
 	it("does not let stale history hydration overwrite a newer in-memory sync run", async () => {
 		const staleEntry = {
 			kind: "codex-cli-sync" as const,
