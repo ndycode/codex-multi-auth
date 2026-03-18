@@ -1671,6 +1671,7 @@ interface BestCliOptions {
 	live: boolean;
 	json: boolean;
 	model: string;
+	modelProvided: boolean;
 }
 
 interface FixCliOptions {
@@ -1812,6 +1813,7 @@ function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 		live: false,
 		json: false,
 		model: "gpt-5-codex",
+		modelProvided: false,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -1831,6 +1833,7 @@ function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
+			options.modelProvided = true;
 			i += 1;
 			continue;
 		}
@@ -1840,6 +1843,7 @@ function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
+			options.modelProvided = true;
 			continue;
 		}
 		return { ok: false, message: `Unknown option: ${arg}` };
@@ -4083,6 +4087,11 @@ async function runBest(args: string[]): Promise<number> {
 		return 1;
 	}
 	const options = parsedArgs.options;
+	if (options.modelProvided && !options.live) {
+		console.error("--model requires --live for codex auth best");
+		printBestUsage();
+		return 1;
+	}
 
 	setStoragePath(null);
 	const storage = await loadAccounts();

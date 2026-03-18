@@ -576,6 +576,23 @@ describe("codex manager cli commands", () => {
 		expect(logSpy.mock.calls[0]?.[0]).toContain("codex auth best");
 	});
 
+	it("rejects --model without --live before loading accounts", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "best", "--model", "gpt-5.1"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("--model requires --live for codex auth best");
+		expect(loadAccountsMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(fetchCodexQuotaSnapshotMock).not.toHaveBeenCalled();
+		expect(queuedRefreshMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex auth best");
+	});
+
 	it("prints json error when no accounts are configured for best", async () => {
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
@@ -920,11 +937,13 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(queuedRefreshMock).toHaveBeenCalledWith("refresh-best");
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(storageState.accounts[1]?.accessToken).toBe("access-best-next");
 		expect(storageState.accounts[1]?.refreshToken).toBe("refresh-best-next");
+		// extractAccountId is globally mocked to return "acc_test" in this suite.
 		expect(storageState.accounts[1]?.accountId).toBe("acc_test");
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -934,6 +953,149 @@ describe("codex manager cli commands", () => {
 				refreshToken: "refresh-best-next",
 				expiresAt: now + 3_600_000,
 				idToken: "id-best-next",
+			}),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Switched to best account 2"),
+		);
+	});
+
+	it("emits json payload when best live run switches accounts", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "current@example.com",
+					accountId: "acc_current",
+					refreshToken: "refresh-current",
+					accessToken: "access-current",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					coolingDownUntil: now + 60_000,
+					enabled: true,
+				},
+				{
+					email: "best@example.com",
+					accountId: "acc_best",
+					refreshToken: "refresh-best",
+					accessToken: "access-best",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		fetchCodexQuotaSnapshotMock
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 10,
+					windowMinutes: 300,
+					resetAtMs: now + 1_000,
+				},
+				secondary: {
+					usedPercent: 5,
+					windowMinutes: 10080,
+					resetAtMs: now + 2_000,
+				},
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 10,
+					windowMinutes: 300,
+					resetAtMs: now + 1_000,
+				},
+				secondary: {
+					usedPercent: 5,
+					windowMinutes: 10080,
+					resetAtMs: now + 2_000,
+				},
+			});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "best", "--live", "--json"]);
+
+		expect(exitCode).toBe(0);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			message: string;
+			accountIndex: number;
+			reason: string;
+			synced: boolean;
+			wasDisabled: boolean;
+		};
+		expect(payload.message).toContain("Switched to best account");
+		expect(payload.accountIndex).toBe(2);
+		expect(payload.reason).toContain("Lowest risk ready account");
+		expect(payload.synced).toBe(true);
+		expect(payload.wasDisabled).toBe(false);
+	});
+
+	it("switches accounts on offline best selection without probing live quota", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "current@example.com",
+					accountId: "acc_current",
+					refreshToken: "refresh-current",
+					accessToken: "access-current",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					coolingDownUntil: now + 60_000,
+					enabled: true,
+				},
+				{
+					email: "next@example.com",
+					accountId: "acc_next",
+					refreshToken: "refresh-next",
+					accessToken: "access-next",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "best"]);
+
+		expect(exitCode).toBe(0);
+		expect(fetchCodexQuotaSnapshotMock).not.toHaveBeenCalled();
+		expect(queuedRefreshMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(storageState.activeIndex).toBe(1);
+		expect(storageState.activeIndexByFamily.codex).toBe(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_next",
+				email: "next@example.com",
+				accessToken: "access-next",
+				refreshToken: "refresh-next",
+				expiresAt: now + 3_600_000,
 			}),
 		);
 		expect(logSpy).toHaveBeenCalledWith(
