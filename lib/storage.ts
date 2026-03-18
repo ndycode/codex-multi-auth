@@ -1924,7 +1924,11 @@ export async function restoreAssessedNamedBackup(
 			assessment.error ?? "Backup is not eligible for restore.",
 		);
 	}
-	return importAccounts(assessment.backup.path);
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const resolvedPath = await retryTransientNamedBackupPathValidation(() =>
+		assertNamedBackupRestorePath(assessment.backup.path, backupRoot),
+	);
+	return importAccounts(resolvedPath);
 }
 
 function parseAndNormalizeStorage(data: unknown): {

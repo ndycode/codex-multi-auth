@@ -2138,6 +2138,50 @@ describe("storage", () => {
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(1);
 		});
 
+		it("revalidates assessed backup paths before restore import", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "contained-backup",
+						refreshToken: "ref-contained-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await createNamedBackup("contained-backup");
+			await clearAccounts();
+			await fs.writeFile(
+				exportPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "escaped-backup",
+							refreshToken: "ref-escaped-backup",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const assessment = await assessNamedBackupRestore("contained-backup");
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			assessment.backup.path = exportPath;
+
+			await expect(
+				restoreAssessedNamedBackup(assessment),
+			).rejects.toThrow(/escapes backup directory/i);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+		});
+
 		it("throws when a named backup becomes invalid JSON after assessment", async () => {
 			await saveAccounts({
 				version: 3,
