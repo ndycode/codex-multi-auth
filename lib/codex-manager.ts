@@ -4298,6 +4298,11 @@ async function runAuthLogin(): Promise<number> {
 				continue;
 			}
 			if (menuResult.mode === "restore-backup") {
+				if (destructiveActionInFlight) {
+					console.log("Another destructive action is already running. Wait for it to finish.");
+					continue;
+				}
+				destructiveActionInFlight = true;
 				try {
 					const pendingQuotaRefresh = pendingMenuQuotaRefresh;
 					if (pendingQuotaRefresh) {
@@ -4310,6 +4315,8 @@ async function runAuthLogin(): Promise<number> {
 					console.error(
 						`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
 					);
+				} finally {
+					destructiveActionInFlight = false;
 				}
 				continue;
 			}
