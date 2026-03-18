@@ -203,12 +203,13 @@ describe("quota cache", () => {
         },
       },
     };
+    let renameSpy: ReturnType<typeof vi.spyOn> | undefined;
 
     try {
       const { getQuotaCachePath, loadQuotaCache, saveQuotaCache } =
         await import("../lib/quota-cache.js");
       const realRename = fs.rename.bind(fs);
-      const renameSpy = vi.spyOn(fs, "rename");
+      renameSpy = vi.spyOn(fs, "rename");
       let attempts = 0;
       const retryableAttempts = new Map<number, "EBUSY" | "EPERM">([
         [1, "EBUSY"],
@@ -242,8 +243,8 @@ describe("quota cache", () => {
 
       const entries = await fs.readdir(tempDir);
       expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
-      renameSpy.mockRestore();
     } finally {
+      renameSpy?.mockRestore();
       vi.doUnmock("../lib/logger.js");
     }
   });
