@@ -5119,20 +5119,12 @@ describe("codex manager cli commands", () => {
 				slot: 1,
 			},
 		]);
-		listAccountSnapshotsMock.mockResolvedValueOnce([
-			{
-				name: "broken-snapshot",
-				path: join(workDir, "broken-snapshot.json"),
-				valid: false,
-				version: 3,
-				accountCount: 1,
-				createdAt: null,
-				updatedAt: null,
-				sizeBytes: null,
-				schemaErrors: [],
-				loadError: "invalid",
-			},
-		]);
+		listAccountSnapshotsMock.mockRejectedValueOnce(
+			Object.assign(new Error("locked"), { code: "EPERM" }),
+		);
+		getActionableNamedBackupRestoresMock.mockRejectedValueOnce(
+			new Error("locked"),
+		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		try {
@@ -5163,6 +5155,10 @@ describe("codex manager cli commands", () => {
 					}),
 					expect.objectContaining({
 						key: "snapshot-backups",
+						severity: "error",
+					}),
+					expect.objectContaining({
+						key: "named-backup-restores",
 						severity: "error",
 					}),
 				]),

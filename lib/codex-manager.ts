@@ -3536,55 +3536,89 @@ async function runDoctor(args: string[]): Promise<number> {
 		details: walPath,
 	});
 
-	const [rotatingBackups, snapshotBackups] = await Promise.all([
+	const [rotatingBackupsResult, snapshotBackupsResult] = await Promise.allSettled([
 		listRotatingBackups(),
 		listAccountSnapshots(),
 	]);
+	const rotatingBackups =
+		rotatingBackupsResult.status === "fulfilled"
+			? rotatingBackupsResult.value
+			: [];
+	const snapshotBackups =
+		snapshotBackupsResult.status === "fulfilled"
+			? snapshotBackupsResult.value
+			: [];
+	if (rotatingBackupsResult.status === "rejected") {
+		addCheck({
+			key: "rotating-backups",
+			severity: "error",
+			message: "Unable to scan rotating backups",
+			details:
+				rotatingBackupsResult.reason instanceof Error
+					? rotatingBackupsResult.reason.message
+					: String(rotatingBackupsResult.reason),
+		});
+	}
 	const validRotatingBackups = rotatingBackups.filter((backup) => backup.valid);
 	const invalidRotatingBackups = rotatingBackups.filter(
 		(backup) => !backup.valid,
 	);
-	addCheck({
-		key: "rotating-backups",
-		severity:
-			validRotatingBackups.length > 0
-				? "ok"
-				: rotatingBackups.length > 0
-					? "error"
-					: "warn",
-		message:
-			validRotatingBackups.length > 0
-				? `${validRotatingBackups.length} rotating backup(s) available`
-				: rotatingBackups.length > 0
-					? "Rotating backups are unreadable"
-					: "No rotating backups found yet",
-		details:
-			invalidRotatingBackups.length > 0
-				? `${invalidRotatingBackups.length} invalid backup(s); recreate by saving accounts`
-				: dirname(storagePath),
-	});
+	if (rotatingBackupsResult.status === "fulfilled") {
+		addCheck({
+			key: "rotating-backups",
+			severity:
+				validRotatingBackups.length > 0
+					? "ok"
+					: rotatingBackups.length > 0
+						? "error"
+						: "warn",
+			message:
+				validRotatingBackups.length > 0
+					? `${validRotatingBackups.length} rotating backup(s) available`
+					: rotatingBackups.length > 0
+						? "Rotating backups are unreadable"
+						: "No rotating backups found yet",
+			details:
+				invalidRotatingBackups.length > 0
+					? `${invalidRotatingBackups.length} invalid backup(s); recreate by saving accounts`
+					: dirname(storagePath),
+		});
+	}
 
+	if (snapshotBackupsResult.status === "rejected") {
+		addCheck({
+			key: "snapshot-backups",
+			severity: "error",
+			message: "Unable to scan recovery snapshots",
+			details:
+				snapshotBackupsResult.reason instanceof Error
+					? snapshotBackupsResult.reason.message
+					: String(snapshotBackupsResult.reason),
+		});
+	}
 	const validSnapshots = snapshotBackups.filter((snapshot) => snapshot.valid);
 	const invalidSnapshots = snapshotBackups.filter((snapshot) => !snapshot.valid);
-	addCheck({
-		key: "snapshot-backups",
-		severity:
-			validSnapshots.length > 0
-				? "ok"
-				: snapshotBackups.length > 0
-					? "error"
-					: "warn",
-		message:
-			validSnapshots.length > 0
-				? `${validSnapshots.length} recovery snapshot(s) available`
-				: snapshotBackups.length > 0
-					? "Snapshot backups are unreadable"
-					: "No recovery snapshots found",
-		details:
-			invalidSnapshots.length > 0
-				? `${invalidSnapshots.length} invalid snapshot(s); create a fresh snapshot before destructive actions`
-				: getNamedBackupsDirectoryPath(),
-	});
+	if (snapshotBackupsResult.status === "fulfilled") {
+		addCheck({
+			key: "snapshot-backups",
+			severity:
+				validSnapshots.length > 0
+					? "ok"
+					: snapshotBackups.length > 0
+						? "error"
+						: "warn",
+			message:
+				validSnapshots.length > 0
+					? `${validSnapshots.length} recovery snapshot(s) available`
+					: snapshotBackups.length > 0
+						? "Snapshot backups are unreadable"
+						: "No recovery snapshots found",
+			details:
+				invalidSnapshots.length > 0
+					? `${invalidSnapshots.length} invalid snapshot(s); create a fresh snapshot before destructive actions`
+					: getNamedBackupsDirectoryPath(),
+		});
+	}
 
 	addCheck({
 		key: "recovery-chain",
@@ -3739,26 +3773,38 @@ async function runDoctor(args: string[]): Promise<number> {
 		});
 	}
 
-	const actionableNamedBackupRestores = await getActionableNamedBackupRestores({
-		currentStorage: storage,
-	});
-	const actionableBackupCount = actionableNamedBackupRestores.assessments.length;
-	addCheck({
-		key: "named-backup-restores",
-		severity: actionableBackupCount > 0 ? "ok" : "warn",
-		message:
-			actionableBackupCount > 0
-				? `Found ${actionableBackupCount} actionable named backup restore${actionableBackupCount === 1 ? "" : "s"}`
-				: "No actionable named backup restores available",
-		details: [
-			`total backups: ${actionableNamedBackupRestores.totalBackups}`,
-			actionableBackupCount > 0
-				? undefined
-				: `Action: Add or copy a named backup into ${getNamedBackupsDirectoryPath()} before attempting recovery.`,
-		]
-			.filter(Boolean)
-			.join(" | "),
-	});
+	try {
+		const actionableNamedBackupRestores = await getActionableNamedBackupRestores({
+			currentStorage: storage,
+		});
+		const actionableBackupCount = actionableNamedBackupRestores.assessments.length;
+		addCheck({
+			key: "named-backup-restores",
+			severity: actionableBackupCount > 0 ? "ok" : "warn",
+			message:
+				actionableBackupCount > 0
+					? `Found ${actionableBackupCount} actionable named backup restore${actionableBackupCount === 1 ? "" : "s"}`
+					: "No actionable named backup restores available",
+			details: [
+				`total backups: ${actionableNamedBackupRestores.totalBackups}`,
+				actionableBackupCount > 0
+					? undefined
+					: `Action: Add or copy a named backup into ${getNamedBackupsDirectoryPath()} before attempting recovery.`,
+			]
+				.filter(Boolean)
+				.join(" | "),
+		});
+	} catch (error) {
+		addCheck({
+			key: "named-backup-restores",
+			severity: "error",
+			message: "Unable to scan named backup restores",
+			details:
+				error instanceof Error
+					? error.message
+					: String(error),
+		});
+	}
 	let fixChanged = false;
 	let fixActions: DoctorFixAction[] = [];
 	if (options.fix && storage && storage.accounts.length > 0) {
