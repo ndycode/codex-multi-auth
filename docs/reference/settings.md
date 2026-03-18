@@ -1,6 +1,6 @@
 # Settings Reference
 
-Reference for dashboard and backend settings available from `codex auth login` -> `Settings`.
+Reference for the settings surface available from `codex auth login` -> `Settings`.
 
 ---
 
@@ -19,7 +19,11 @@ When `CODEX_MULTI_AUTH_DIR` is set, this root moves accordingly.
 
 ---
 
-## Account List View
+## Everyday Settings
+
+The shipped settings menu starts with `Everyday Settings` and keeps the stable dashboard path separate from advanced operator controls. This is the default path for most users.
+
+### List Appearance
 
 Controls account-row display and sorting behavior:
 
@@ -37,7 +41,7 @@ Controls account-row display and sorting behavior:
 - `menuSortQuickSwitchVisibleRow`
 - `menuLayoutMode`
 
-## Summary Line
+### Details Line
 
 Controls detail-line fields and order:
 
@@ -46,7 +50,7 @@ Controls detail-line fields and order:
 - `limits`
 - `status`
 
-## Menu Behavior
+### Results & Refresh
 
 Controls result-screen and fetch behavior:
 
@@ -56,7 +60,7 @@ Controls result-screen and fetch behavior:
 - `menuShowFetchStatus`
 - `menuQuotaTtlMs`
 
-## Color Theme
+### Colors
 
 Controls display style:
 
@@ -66,7 +70,38 @@ Controls display style:
 
 ---
 
-## Experimental
+## Advanced and Operator Controls
+
+The second top-level section is `Advanced & Operator`. It holds the sync workflow and backend tuning that are useful when you need to inspect or change lower-level behavior.
+
+### Codex CLI Sync
+
+`Codex CLI Sync` is a preview-first sync center for Codex CLI account sync.
+See [upgrade notes](../upgrade.md) for sync workflow changes.
+
+Before applying sync, it shows:
+
+- target path
+- current source path when available
+- last sync result for this session
+- preview summary (adds, updates, destination-only preserved accounts)
+- destination-only preservation behavior
+- backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`)
+
+Workflow notes:
+
+- refresh recomputes the read-only preview from Codex CLI source files
+- apply writes the preview result into the target path
+- sync is one-way, it is not a bidirectional merge
+- target-only accounts are preserved rather than deleted
+
+Validation:
+
+- `npm run typecheck`
+- `npm run build`
+- `npm test`
+
+### Experimental
 
 Experimental currently hosts:
 
@@ -88,7 +123,11 @@ Named backup behavior:
 - rejects separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes
 - fails safely on collisions instead of overwriting by default
 
-## Backend Controls
+### Advanced Backend Controls
+
+`Advanced Backend Controls` stay available without changing the saved settings schema. They are grouped into categories so the everyday path can stay simpler for day-to-day use.
+
+## Backend Categories
 
 ### Session & Sync
 
@@ -178,6 +217,7 @@ For most environments:
 
 - smart sort enabled
 - auto-fetch limits enabled
+- storage backups enabled when you want rollback context for sync and recovery flows
 - live sync enabled
 - session affinity enabled
 - preemptive quota deferral enabled

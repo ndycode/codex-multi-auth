@@ -20,12 +20,13 @@ Compatibility aliases are supported:
 
 | Command | Description |
 | --- | --- |
-| `codex auth login` | Open interactive auth dashboard |
+| `codex auth login` | Open interactive auth dashboard, including login, restore, settings, and diagnostics entry points |
 | `codex auth list` | List saved accounts and active account |
 | `codex auth status` | Print short runtime/account summary |
 | `codex auth switch <index>` | Set active account by index |
 | `codex auth check` | Run quick account health check |
 | `codex auth features` | Print implemented feature summary |
+| `codex auth restore-backup` | Open the backup restore picker directly |
 
 ---
 
@@ -90,15 +91,25 @@ Compatibility aliases are supported:
 
 Settings screen hotkeys are panel-specific:
 
-- Account List View: `Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)`
-- Summary Line: `Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)`
-- Menu Behavior: `Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)`
-- Color Theme: `Enter Select | 1-2 Base | S Save | Q Back (No Save)`
-- Backend Controls: `Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)`
+- List Appearance: `Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)`
+- Details Line: `Enter Toggle | 1-3 Toggle | [ ] Reorder | S Save | Q Back (No Save)`
+- Results & Refresh: `Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)`
+- Colors: `Enter Select | 1-2 Base | S Save | Q Back (No Save)`
+- Advanced Backend Controls: `Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)`
 
 ---
 
 ## Workflow Packs
+
+Interactive dashboard workflows:
+
+- Backup restore: `codex auth login` -> `Restore From Backup`
+- Startup recovery prompt: interactive `codex auth login` TTY flow only, then confirm restore when recoverable named backups are found before OAuth
+- Sync preview and apply: `codex auth login` -> `Settings` -> `Codex CLI Sync`
+- Stable settings path: `codex auth login` -> `Settings` -> `Everyday Settings`
+- Advanced settings path: `codex auth login` -> `Settings` -> `Advanced & Operator`
+
+---
 
 Health and planning:
 
@@ -111,6 +122,7 @@ codex auth report --live --json
 Repair and recovery:
 
 ```bash
+codex auth restore-backup
 codex auth fix --dry-run
 codex auth fix --live --model gpt-5-codex
 codex auth doctor --fix

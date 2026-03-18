@@ -6,6 +6,7 @@ import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
+	getNamedBackupRoot,
 	resolveNamedBackupPath,
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -46,6 +47,8 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const ROTATING_BACKUP_STALE_ARTIFACT_MAX_AGE_MS = 60_000;
+export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
@@ -114,6 +117,300 @@ export type RestoreAssessment = {
 	backupMetadata: BackupMetadata;
 };
 
+export interface NamedBackupMetadata {
+	name: string;
+	path: string;
+	createdAt: number | null;
+	updatedAt: number | null;
+	sizeBytes: number | null;
+	version: number | null;
+	accountCount: number | null;
+	schemaErrors: string[];
+	valid: boolean;
+	loadError?: string;
+}
+
+export interface RotatingBackupMetadata
+	extends Omit<NamedBackupMetadata, "name"> {
+	label: string;
+	slot: number;
+}
+
+export interface BackupRestoreAccountPreview {
+	index: number;
+	email?: string;
+	accountId?: string;
+}
+
+export interface BackupRestoreConflictDetail {
+	backupIndex: number;
+	backupEmail?: string;
+	backupAccountId?: string;
+	currentIndex: number;
+	currentEmail?: string;
+	currentAccountId?: string;
+	reasons: Array<"accountId" | "refreshToken" | "email">;
+	resolution: "backup-kept" | "current-kept";
+}
+
+export interface BackupRestoreActiveAccountPreview {
+	current: BackupRestoreAccountPreview | null;
+	next: BackupRestoreAccountPreview | null;
+	outcome: "unchanged" | "changed" | "cleared" | "blocked";
+	changed: boolean;
+}
+
+export interface BackupRestoreConflictPreview {
+	conflict: BackupRestoreConflictDetail;
+	backup: BackupRestoreAccountPreview | null;
+	current: BackupRestoreAccountPreview | null;
+}
+
+export interface NamedBackupRestorePreview {
+	conflicts: BackupRestoreConflictPreview[];
+	activeAccount: BackupRestoreActiveAccountPreview;
+}
+
+export interface BackupRestoreAssessment {
+	backup: NamedBackupMetadata;
+	backupAccountCount?: number | null;
+	dedupedBackupAccountCount?: number | null;
+	conflictsWithinBackup?: number | null;
+	conflictsWithExisting?: number | null;
+	overlappingAccountConflicts?: BackupRestoreConflictDetail[] | null;
+	replacedExistingCount?: number | null;
+	keptExistingCount?: number | null;
+	keptBackupCount?: number | null;
+	currentAccountCount: number;
+	mergedAccountCount: number | null;
+	imported: number | null;
+	skipped: number | null;
+	wouldExceedLimit: boolean;
+	eligibleForRestore: boolean;
+	nextActiveIndex?: number | null;
+	nextActiveEmail?: string;
+	nextActiveAccountId?: string;
+	currentActiveIndex?: number | null;
+	currentActiveEmail?: string;
+	currentActiveAccountId?: string;
+	activeAccountOutcome?: "unchanged" | "changed" | "cleared" | "blocked";
+	activeAccountChanged?: boolean;
+	activeAccountPreview?: BackupRestoreActiveAccountPreview;
+	namedBackupRestorePreview?: NamedBackupRestorePreview | null;
+	error?: string;
+}
+
+export interface ActionableNamedBackupRecoveries {
+	assessments: BackupRestoreAssessment[];
+	allAssessments: BackupRestoreAssessment[];
+	totalBackups: number;
+}
+
+export type AccountSnapshotReason =
+	| "delete-account"
+	| "delete-saved-accounts"
+	| "reset-local-state"
+	| "import-accounts"
+	| "codex-cli-sync";
+
+export type AccountSnapshotFailurePolicy = "warn" | "error";
+
+export interface AccountSnapshotOptions {
+	reason: AccountSnapshotReason;
+	now?: number;
+	force?: boolean;
+	failurePolicy?: AccountSnapshotFailurePolicy;
+	createBackup?: typeof createNamedBackup;
+	storage?: AccountStorageV3 | null;
+	storagePath?: string;
+}
+
+interface LoadedBackupCandidate {
+	normalized: AccountStorageV3 | null;
+	storedVersion: unknown;
+	schemaErrors: string[];
+	rawAccounts?: AccountLike[];
+	error?: string;
+	errorCode?: string;
+}
+
+interface NamedBackupScanEntry {
+	backup: NamedBackupMetadata;
+	candidate: LoadedBackupCandidate;
+}
+
+interface NamedBackupScanResult {
+	backups: NamedBackupScanEntry[];
+	totalBackups: number;
+}
+
+interface NamedBackupMetadataListingResult {
+	backups: NamedBackupMetadata[];
+	totalBackups: number;
+}
+
+function createUnloadedBackupCandidate(): LoadedBackupCandidate {
+	return {
+		normalized: null,
+		storedVersion: null,
+		schemaErrors: [],
+		rawAccounts: [],
+	};
+}
+
+export function getRedactedFilesystemErrorLabel(error: unknown): string {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (typeof code === "string" && code.trim().length > 0) {
+		return code;
+	}
+	if (error instanceof Error && error.name && error.name !== "Error") {
+		return error.name;
+	}
+	return "UNKNOWN";
+}
+
+function normalizeBackupLookupName(rawName: string): string {
+	const trimmed = rawName.trim().replace(/\.(json|bak)$/i, "");
+	if (!trimmed) {
+		throw new StorageError(
+			`Invalid backup name: ${rawName}`,
+			"EINVALID",
+			getNamedBackupRoot(getStoragePath()),
+			"Named backup restore operations only accept backup names from the backups directory.",
+		);
+	}
+	const hasPathSeparator = /[\\/]/.test(trimmed);
+	const hasDrivePrefix = /^[a-zA-Z]:/.test(trimmed);
+	const segments = trimmed.split(/[\\/]+/).filter(Boolean);
+	if (
+		hasPathSeparator ||
+		hasDrivePrefix ||
+		segments.some((segment) => segment === "." || segment === "..")
+	) {
+		throw new StorageError(
+			`Invalid backup name: ${rawName}`,
+			"EINVALID",
+			getNamedBackupRoot(getStoragePath()),
+			"Named backup restore operations only accept backup names from the backups directory.",
+		);
+	}
+	return trimmed;
+}
+
+function clampActiveIndexForPreview(
+	currentIndex: number,
+	accounts: AccountLike[],
+): number | null {
+	if (accounts.length === 0) return null;
+	if (!Number.isFinite(currentIndex)) return null;
+	return Math.max(0, Math.min(currentIndex, accounts.length - 1));
+}
+
+function toBackupRestoreAccountPreview(
+	account: AccountLike | null | undefined,
+	index: number | null,
+): BackupRestoreAccountPreview | null {
+	if (!account || index === null) return null;
+	return {
+		index,
+		email: account.email,
+		accountId: account.accountId,
+	};
+}
+
+function getAccountConflictReasons(
+	left: AccountLike,
+	right: AccountLike,
+): BackupRestoreConflictDetail["reasons"] {
+	const reasons = new Set<BackupRestoreConflictDetail["reasons"][number]>();
+	if (left.accountId && right.accountId && left.accountId === right.accountId) {
+		reasons.add("accountId");
+	}
+	if (
+		left.refreshToken &&
+		right.refreshToken &&
+		left.refreshToken === right.refreshToken
+	) {
+		reasons.add("refreshToken");
+	}
+	const leftEmail = normalizeEmailKey(left.email);
+	if (leftEmail && leftEmail === normalizeEmailKey(right.email)) {
+		reasons.add("email");
+	}
+	return [...reasons];
+}
+
+function buildFailedBackupRestoreAssessment(
+	backup: NamedBackupMetadata,
+	currentStorage: AccountStorageV3 | null,
+	error: unknown,
+): BackupRestoreAssessment {
+	const currentAccounts = currentStorage?.accounts ?? [];
+	const currentActiveIndex = clampActiveIndexForPreview(
+		currentStorage?.activeIndex ?? 0,
+		currentAccounts,
+	);
+	return {
+		backup,
+		backupAccountCount: backup.accountCount,
+		dedupedBackupAccountCount: backup.accountCount,
+		conflictsWithinBackup: null,
+		conflictsWithExisting: null,
+		overlappingAccountConflicts: null,
+		replacedExistingCount: null,
+		keptExistingCount: null,
+		keptBackupCount: null,
+		currentAccountCount: currentAccounts.length,
+		mergedAccountCount: null,
+		imported: null,
+		skipped: null,
+		wouldExceedLimit: false,
+		eligibleForRestore: false,
+		nextActiveIndex: null,
+		currentActiveIndex,
+		currentActiveEmail:
+			currentActiveIndex === null
+				? undefined
+				: currentAccounts[currentActiveIndex]?.email,
+		currentActiveAccountId:
+			currentActiveIndex === null
+				? undefined
+				: currentAccounts[currentActiveIndex]?.accountId,
+		activeAccountOutcome: "blocked",
+		activeAccountChanged: false,
+		activeAccountPreview: {
+			current: toBackupRestoreAccountPreview(
+				currentActiveIndex === null ? null : currentAccounts[currentActiveIndex],
+				currentActiveIndex,
+			),
+			next: null,
+			outcome: "blocked",
+			changed: false,
+		},
+		namedBackupRestorePreview: {
+			conflicts: [],
+			activeAccount: {
+				current: toBackupRestoreAccountPreview(
+					currentActiveIndex === null
+						? null
+						: currentAccounts[currentActiveIndex],
+					currentActiveIndex,
+				),
+				next: null,
+				outcome: "blocked",
+				changed: false,
+			},
+		},
+		error: getRedactedFilesystemErrorLabel(error),
+	};
+}
+
+function normalizeBackupUpdatedAt(updatedAt: number | null | undefined): number {
+	return typeof updatedAt === "number" && Number.isFinite(updatedAt) && updatedAt !== 0
+		? updatedAt
+		: 0;
+}
+
 /**
  * Custom error class for storage operations with platform-aware hints.
  */
@@ -168,6 +465,7 @@ let storageMutex: Promise<void> = Promise.resolve();
 const transactionSnapshotContext = new AsyncLocalStorage<{
 	snapshot: AccountStorageV3 | null;
 	active: boolean;
+	storagePath: string;
 }>();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -177,6 +475,26 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 		releaseLock = resolve;
 	});
 	return previousMutex.then(fn).finally(() => releaseLock());
+}
+
+async function unlinkWithRetry(path: string): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.unlink(path);
+			return;
+		} catch (error) {
+			const unlinkError = error as NodeJS.ErrnoException;
+			const code = unlinkError.code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (isRetryableFilesystemErrorCode(code) && attempt < 4) {
+				await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+				continue;
+			}
+			throw unlinkError;
+		}
+	}
 }
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
@@ -269,6 +587,10 @@ let currentProjectRoot: string | null = null;
 
 export function setStorageBackupEnabled(enabled: boolean): void {
 	storageBackupEnabled = enabled;
+}
+
+export function isStorageBackupEnabled(): boolean {
+	return storageBackupEnabled;
 }
 
 function getAccountsBackupPath(path: string): string {
@@ -472,14 +794,34 @@ async function cleanupStaleRotatingBackupArtifacts(
 	path: string,
 ): Promise<void> {
 	const directoryPath = dirname(path);
+	const staleCutoff = Date.now() - ROTATING_BACKUP_STALE_ARTIFACT_MAX_AGE_MS;
 	try {
 		const directoryEntries = await fs.readdir(directoryPath, {
 			withFileTypes: true,
 		});
-		const staleArtifacts = directoryEntries
+		const staleArtifacts = (
+			await Promise.all(
+				directoryEntries
 			.filter((entry) => entry.isFile())
 			.map((entry) => join(directoryPath, entry.name))
-			.filter((entryPath) => isRotatingBackupTempArtifact(path, entryPath));
+			.filter((entryPath) => isRotatingBackupTempArtifact(path, entryPath))
+			.map(async (entryPath) => {
+				try {
+					const stats = await fs.stat(entryPath);
+					return stats.mtimeMs <= staleCutoff ? entryPath : null;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (code !== "ENOENT") {
+						log.warn("Failed to inspect rotating backup artifact", {
+							path: entryPath,
+							error: String(error),
+						});
+					}
+					return null;
+				}
+			}),
+			)
+		).filter((entryPath): entryPath is string => entryPath !== null);
 
 		for (const staleArtifactPath of staleArtifacts) {
 			try {
@@ -1531,6 +1873,777 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 	};
 }
 
+async function scanNamedBackups(): Promise<NamedBackupScanResult> {
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	try {
+		const entries = await retryTransientFilesystemOperation(() =>
+			fs.readdir(backupRoot, { withFileTypes: true }),
+		);
+		const backupEntries = entries
+			.filter((entry) => entry.isFile() && !entry.isSymbolicLink())
+			.filter((entry) => entry.name.toLowerCase().endsWith(".json"));
+		const backups: NamedBackupScanEntry[] = [];
+		const totalBackups = backupEntries.length;
+		for (
+			let index = 0;
+			index < backupEntries.length;
+			index += NAMED_BACKUP_LIST_CONCURRENCY
+		) {
+			const chunk = backupEntries.slice(
+				index,
+				index + NAMED_BACKUP_LIST_CONCURRENCY,
+			);
+			backups.push(
+				...(await Promise.all(
+					chunk.map(async (entry) => {
+						const path = resolvePath(join(backupRoot, entry.name));
+						const name = entry.name.slice(0, -".json".length);
+						try {
+							const candidate = await loadBackupCandidate(path);
+							const backup = await buildNamedBackupMetadata(name, path, {
+								candidate,
+							});
+							return { backup, candidate };
+						} catch (error) {
+							const code = (error as NodeJS.ErrnoException).code;
+							if (code !== "ENOENT") {
+								log.warn("Failed to scan named backup", {
+									name,
+									path,
+									error: String(error),
+								});
+							}
+							return null;
+						}
+					}),
+				)).filter(
+					(entry): entry is NamedBackupScanEntry => entry !== null,
+				),
+			);
+		}
+		return {
+			backups: backups.sort(
+				(left, right) =>
+					normalizeBackupUpdatedAt(right.backup.updatedAt) -
+					normalizeBackupUpdatedAt(left.backup.updatedAt),
+			),
+			totalBackups,
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return { backups: [], totalBackups: 0 };
+		}
+		log.warn("Failed to list named backups", {
+			path: backupRoot,
+			error: String(error),
+		});
+		throw error;
+	}
+}
+
+async function listNamedBackupsWithoutLoading(): Promise<NamedBackupMetadataListingResult> {
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	try {
+		const entries = await retryTransientFilesystemOperation(() =>
+			fs.readdir(backupRoot, { withFileTypes: true }),
+		);
+		const backups: NamedBackupMetadata[] = [];
+		let totalBackups = 0;
+		for (const entry of entries) {
+			if (!entry.isFile() || entry.isSymbolicLink()) continue;
+			if (!entry.name.toLowerCase().endsWith(".json")) continue;
+			totalBackups += 1;
+
+			const path = resolvePath(join(backupRoot, entry.name));
+			const name = entry.name.slice(0, -".json".length);
+			try {
+				backups.push(
+					await buildNamedBackupMetadata(name, path, {
+						candidate: createUnloadedBackupCandidate(),
+					}),
+				);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.warn("Failed to build named backup metadata", {
+						name,
+						path,
+						error: String(error),
+					});
+				}
+			}
+		}
+
+		return {
+			backups: backups.sort(
+				(left, right) =>
+					normalizeBackupUpdatedAt(right.updatedAt) -
+					normalizeBackupUpdatedAt(left.updatedAt),
+			),
+			totalBackups,
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to list named backups", {
+				path: backupRoot,
+				error: String(error),
+			});
+		}
+		return { backups: [], totalBackups: 0 };
+	}
+}
+
+export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
+	const scanResult = await scanNamedBackups();
+	return scanResult.backups.map((entry) => entry.backup);
+}
+
+export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
+	let storagePath: string | null = null;
+	try {
+		storagePath = getStoragePath();
+		const candidates =
+			await getAccountsBackupRecoveryCandidatesWithDiscovery(storagePath);
+		const backups: RotatingBackupMetadata[] = [];
+
+		for (const candidatePath of candidates) {
+			const slot = parseRotatingBackupSlot(storagePath, candidatePath);
+			if (slot === null) {
+				continue;
+			}
+
+			const candidate = await loadBackupCandidate(candidatePath);
+			if (!candidate.normalized && candidate.errorCode === "ENOENT") {
+				continue;
+			}
+			const metadata = await buildBackupFileMetadata(candidatePath, {
+				candidate,
+			});
+			backups.push({
+				label: formatRotatingBackupLabel(slot),
+				slot,
+				...metadata,
+			});
+		}
+
+		return backups.sort((a, b) => a.slot - b.slot);
+	} catch (error) {
+		log.warn("Failed to list rotating backups", {
+			path: storagePath ?? "<unresolved>",
+			error: String(error),
+		});
+		return [];
+	}
+}
+
+function isRetryableFilesystemErrorCode(
+	code: string | undefined,
+): code is "EPERM" | "EBUSY" | "EAGAIN" {
+	if (code === "EBUSY" || code === "EAGAIN") {
+		return true;
+	}
+	return code === "EPERM" && process.platform === "win32";
+}
+
+async function retryTransientFilesystemOperation<T>(
+	operation: () => Promise<T>,
+): Promise<T> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (!isRetryableFilesystemErrorCode(code) || attempt === 4) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, 10 * 2 ** attempt + Math.floor(Math.random() * 10)),
+			);
+		}
+	}
+
+	throw new Error("Retry loop exhausted unexpectedly");
+}
+
+export function getNamedBackupsDirectoryPath(): string {
+	return getNamedBackupRoot(getStoragePath());
+}
+
+async function scanNamedBackupsForActionableRestores(): Promise<NamedBackupScanResult> {
+	try {
+		return await scanNamedBackups();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to list named backups", {
+				path: getNamedBackupRoot(getStoragePath()),
+				error: String(error),
+			});
+		}
+		return { backups: [], totalBackups: 0 };
+	}
+}
+
+export async function getActionableNamedBackupRestores(
+	options: {
+		currentStorage?: AccountStorageV3 | null;
+		backups?: NamedBackupMetadata[];
+		assess?: typeof assessNamedBackupRestore;
+	} = {},
+): Promise<ActionableNamedBackupRecoveries> {
+	const usesFastPath =
+		options.backups === undefined && options.assess === undefined;
+	const scannedBackupResult = usesFastPath
+		? await scanNamedBackupsForActionableRestores()
+		: { backups: [], totalBackups: 0 };
+	const listedBackupResult =
+		!usesFastPath && options.backups === undefined
+			? await listNamedBackupsWithoutLoading()
+			: { backups: [], totalBackups: 0 };
+	const scannedBackups = scannedBackupResult.backups;
+	const backups =
+		options.backups ??
+		(usesFastPath
+			? scannedBackups.map((entry) => entry.backup)
+			: listedBackupResult.backups);
+	const totalBackups = usesFastPath
+		? scannedBackupResult.totalBackups
+		: options.backups?.length ?? listedBackupResult.totalBackups;
+	if (totalBackups === 0) {
+		return { assessments: [], allAssessments: [], totalBackups: 0 };
+	}
+	if (usesFastPath && scannedBackups.length === 0) {
+		return { assessments: [], allAssessments: [], totalBackups };
+	}
+
+	const currentStorage =
+		options.currentStorage === undefined
+			? await loadAccounts()
+			: options.currentStorage;
+	const actionable: BackupRestoreAssessment[] = [];
+	const allAssessments: BackupRestoreAssessment[] = [];
+	const maybePushActionable = (assessment: BackupRestoreAssessment): void => {
+		if (assessment.eligibleForRestore) {
+			actionable.push(assessment);
+		}
+	};
+	const recordAssessment = (assessment: BackupRestoreAssessment): void => {
+		allAssessments.push(assessment);
+		maybePushActionable(assessment);
+	};
+
+	if (usesFastPath) {
+		for (const entry of scannedBackups) {
+			try {
+				const assessment = assessNamedBackupRestoreCandidate(
+					entry.backup,
+					entry.candidate,
+					currentStorage,
+				);
+				recordAssessment(assessment);
+			} catch (error) {
+				log.warn("Failed to assess named backup restore candidate", {
+					name: entry.backup.name,
+					path: entry.backup.path,
+					error: String(error),
+				});
+				allAssessments.push(
+					buildFailedBackupRestoreAssessment(
+						entry.backup,
+						currentStorage,
+						error,
+					),
+				);
+			}
+		}
+		return { assessments: actionable, allAssessments, totalBackups };
+	}
+
+	const assess = options.assess ?? assessNamedBackupRestore;
+	for (const backup of backups) {
+		try {
+			const assessment = await assess(backup.name, { currentStorage });
+			recordAssessment(assessment);
+		} catch (error) {
+			log.warn("Failed to assess named backup restore candidate", {
+				name: backup.name,
+				path: backup.path,
+				error: String(error),
+			});
+			allAssessments.push(
+				buildFailedBackupRestoreAssessment(backup, currentStorage, error),
+			);
+		}
+	}
+
+	return { assessments: actionable, allAssessments, totalBackups };
+}
+
+export async function createNamedBackup(
+	name: string,
+	options: {
+		force?: boolean;
+		storage?: AccountStorageV3;
+		storagePath?: string;
+	} = {},
+): Promise<NamedBackupMetadata> {
+	if (options.storage) {
+		return writeNamedBackupFromStorage(name, options.storage, options);
+	}
+	const backupPath = await exportNamedBackup(name, options);
+	const candidate = await loadBackupCandidate(backupPath);
+	return buildNamedBackupMetadata(
+		basename(backupPath).slice(0, -".json".length),
+		backupPath,
+		{ candidate },
+	);
+}
+
+async function writeNamedBackupFromStorage(
+	name: string,
+	storage: AccountStorageV3,
+	options: {
+		force?: boolean;
+		storagePath?: string;
+	} = {},
+): Promise<NamedBackupMetadata> {
+	const storagePath = options.storagePath ?? getStoragePath();
+	const backupPath = resolveNamedBackupPath(name, storagePath);
+	if (!options.force && existsSync(backupPath)) {
+		throw new Error(`File already exists: ${backupPath}`);
+	}
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${backupPath}.${uniqueSuffix}.tmp`;
+	const content = JSON.stringify(
+		{
+			version: storage.version,
+			accounts: storage.accounts,
+			activeIndex: storage.activeIndex,
+			activeIndexByFamily: storage.activeIndexByFamily,
+		},
+		null,
+		2,
+	);
+	await retryTransientFilesystemOperation(() =>
+		fs.mkdir(dirname(backupPath), { recursive: true }),
+	);
+	try {
+		await retryTransientFilesystemOperation(() =>
+			fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 }),
+		);
+		if (options.force) {
+			await unlinkWithRetry(backupPath);
+		}
+		await renameFileWithRetry(tempPath, backupPath);
+	} catch (error) {
+		try {
+			await unlinkWithRetry(tempPath);
+		} catch {
+			// Ignore temp cleanup failures after a failed staged backup write.
+		}
+		throw error;
+	}
+	return buildNamedBackupMetadata(name, backupPath);
+}
+
+function formatTimestampForSnapshot(timestamp: number): string {
+	const date = new Date(timestamp);
+	const pad = (value: number): string => value.toString().padStart(2, "0");
+	const milliseconds = date.getUTCMilliseconds().toString().padStart(3, "0");
+	const year = date.getUTCFullYear();
+	const month = pad(date.getUTCMonth() + 1);
+	const day = pad(date.getUTCDate());
+	const hours = pad(date.getUTCHours());
+	const minutes = pad(date.getUTCMinutes());
+	const seconds = pad(date.getUTCSeconds());
+	return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}_${milliseconds}`;
+}
+
+function buildAccountSnapshotName(
+	reason: AccountSnapshotReason,
+	timestamp: number,
+): string {
+	return `accounts-${reason}-snapshot-${formatTimestampForSnapshot(timestamp)}`;
+}
+
+function extractPathTail(pathValue: string): string {
+	const segments = pathValue.split(/[\\/]+/).filter(Boolean);
+	return segments.at(-1) ?? pathValue;
+}
+
+function redactFilesystemDetails(value: string): string {
+	return value.replace(
+		/(?:[A-Za-z]:)?[\\/][^"'`\r\n]+(?:[\\/][^"'`\r\n]+)+/g,
+		(pathValue) => extractPathTail(pathValue),
+	);
+}
+
+function formatSnapshotErrorForLog(error: unknown): string {
+	const code =
+		typeof (error as NodeJS.ErrnoException | undefined)?.code === "string"
+			? (error as NodeJS.ErrnoException).code
+			: undefined;
+	const rawMessage =
+		error instanceof Error ? error.message : String(error ?? "unknown error");
+	const redactedMessage = redactFilesystemDetails(rawMessage);
+	if (code && !redactedMessage.includes(code)) {
+		return `${code}: ${redactedMessage}`;
+	}
+	return redactedMessage;
+}
+
+export async function snapshotAccountStorage(
+	options: AccountSnapshotOptions,
+): Promise<NamedBackupMetadata | null> {
+	const transactionState = transactionSnapshotContext.getStore();
+	const {
+		reason,
+		now = Date.now(),
+		force = true,
+		failurePolicy = "warn",
+		createBackup = createNamedBackup,
+		storagePath,
+	} = options;
+	const resolvedStoragePath =
+		storagePath ??
+		(transactionState?.active ? transactionState.storagePath : undefined);
+	const currentStorage =
+		options.storage !== undefined ? options.storage : await loadAccounts();
+	if (!currentStorage || currentStorage.accounts.length === 0) {
+		return null;
+	}
+
+	const backupName = buildAccountSnapshotName(reason, now);
+	try {
+		return await createBackup(backupName, {
+			force,
+			storage: currentStorage,
+			storagePath: resolvedStoragePath,
+		});
+	} catch (error) {
+		if (failurePolicy === "error") {
+			throw error;
+		}
+		log.warn("Failed to create account storage snapshot", {
+			reason,
+			backupName,
+			error: formatSnapshotErrorForLog(error),
+		});
+		return null;
+	}
+}
+
+export async function assessNamedBackupRestore(
+	name: string,
+	options: { currentStorage?: AccountStorageV3 | null } = {},
+): Promise<BackupRestoreAssessment> {
+	const backupPath = await resolveNamedBackupRestorePath(name);
+	const candidate = await loadBackupCandidate(backupPath);
+	const backup = await buildNamedBackupMetadata(
+		basename(backupPath).slice(0, -".json".length),
+		backupPath,
+		{ candidate },
+	);
+	const currentStorage =
+		options.currentStorage !== undefined
+			? options.currentStorage
+			: await loadAccounts();
+	return assessNamedBackupRestoreCandidate(
+		backup,
+		candidate,
+		currentStorage,
+		candidate.rawAccounts ?? [],
+	);
+}
+
+function assessNamedBackupRestoreCandidate(
+	backup: NamedBackupMetadata,
+	candidate: LoadedBackupCandidate,
+	currentStorage: AccountStorageV3 | null,
+	rawBackupAccounts: AccountLike[] = [],
+): BackupRestoreAssessment {
+	const currentAccounts = currentStorage?.accounts ?? [];
+	const currentActiveIndex = clampActiveIndexForPreview(
+		currentStorage?.activeIndex ?? 0,
+		currentAccounts,
+	);
+	const backupAccounts =
+		rawBackupAccounts.length > 0
+			? rawBackupAccounts
+			: (candidate.normalized?.accounts ?? []);
+	const backupAccountCount = backupAccounts.length;
+
+	if (!candidate.normalized || backupAccountCount <= 0) {
+		return {
+			backup,
+			backupAccountCount,
+			dedupedBackupAccountCount: null,
+			conflictsWithinBackup: null,
+			conflictsWithExisting: null,
+			overlappingAccountConflicts: null,
+			replacedExistingCount: null,
+			keptExistingCount: null,
+			keptBackupCount: null,
+			currentAccountCount: currentAccounts.length,
+			mergedAccountCount: null,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: false,
+			eligibleForRestore: false,
+			nextActiveIndex: null,
+			currentActiveIndex,
+			currentActiveEmail:
+				currentActiveIndex === null
+					? undefined
+					: currentAccounts[currentActiveIndex]?.email,
+			currentActiveAccountId:
+				currentActiveIndex === null
+					? undefined
+					: currentAccounts[currentActiveIndex]?.accountId,
+			activeAccountOutcome: "blocked",
+			activeAccountChanged: false,
+			activeAccountPreview: {
+				current: toBackupRestoreAccountPreview(
+					currentActiveIndex === null ? null : currentAccounts[currentActiveIndex],
+					currentActiveIndex,
+				),
+				next: null,
+				outcome: "blocked",
+				changed: false,
+			},
+			namedBackupRestorePreview: {
+				conflicts: [],
+				activeAccount: {
+					current: toBackupRestoreAccountPreview(
+						currentActiveIndex === null
+							? null
+							: currentAccounts[currentActiveIndex],
+						currentActiveIndex,
+					),
+					next: null,
+					outcome: "blocked",
+					changed: false,
+				},
+			},
+			error: backup.loadError ?? "Backup is empty or invalid",
+		};
+	}
+
+	const dedupedBackupAccounts = deduplicateAccountsByEmail(
+		deduplicateAccounts(backupAccounts),
+	);
+	const dedupedBackupAccountCount = dedupedBackupAccounts.length;
+	const conflictsWithinBackup = Math.max(
+		0,
+		backupAccountCount - dedupedBackupAccountCount,
+	);
+
+	type TaggedAccount = AccountLike & {
+		__source: "current" | "backup";
+		__index: number;
+	};
+
+	const taggedCurrent: TaggedAccount[] = currentAccounts.map((account, index) => ({
+		...account,
+		__source: "current",
+		__index: index,
+	}));
+	const taggedBackup: TaggedAccount[] = backupAccounts.map((account, index) => ({
+		...account,
+		__source: "backup",
+		__index: index,
+	}));
+
+	const mergedTagged = deduplicateAccountsByEmail(
+		deduplicateAccounts([...taggedCurrent, ...taggedBackup]),
+	);
+	const mergedAccounts = mergedTagged.map(
+		({ __source: _source, __index: _index, ...account }) => account,
+	);
+	const mergedAccountCount = mergedAccounts.length;
+	const keptBackupCount = mergedTagged.filter(
+		(account) => account.__source === "backup",
+	).length;
+	const keptExistingCount = mergedTagged.length - keptBackupCount;
+	const replacedExistingCount = Math.max(
+		0,
+		currentAccounts.length - keptExistingCount,
+	);
+	const conflictsWithExisting = Math.max(
+		0,
+		dedupedBackupAccountCount - keptBackupCount,
+	);
+	const wouldExceedLimit = mergedAccountCount > ACCOUNT_LIMITS.MAX_ACCOUNTS;
+	const imported = wouldExceedLimit
+		? null
+		: Math.max(0, keptBackupCount - replacedExistingCount);
+	const skipped = wouldExceedLimit
+		? null
+		: Math.max(
+				0,
+				backupAccountCount -
+					(imported ?? 0) -
+					replacedExistingCount,
+			);
+
+	const currentActiveAccount =
+		currentActiveIndex === null ? null : currentAccounts[currentActiveIndex];
+	const nextActiveIndex = wouldExceedLimit
+		? null
+		: clampActiveIndexForPreview(
+				currentStorage?.activeIndex ?? 0,
+				mergedAccounts,
+			);
+	const nextActiveAccount =
+		nextActiveIndex === null ? null : mergedAccounts[nextActiveIndex];
+
+	const keptBackupIndices = new Set(
+		mergedTagged
+			.filter((account) => account.__source === "backup")
+			.map((account) => account.__index),
+	);
+	const dedupedBackupIndexByAccount = new Map(
+		dedupedBackupAccounts.map((account) => [
+			account,
+			backupAccounts.indexOf(account),
+		]),
+	);
+	const overlappingAccountConflicts = dedupedBackupAccounts.flatMap(
+		(account) => {
+			const backupIndex = dedupedBackupIndexByAccount.get(account);
+			if (backupIndex === undefined || backupIndex < 0) return [];
+			const resolution: BackupRestoreConflictDetail["resolution"] =
+				keptBackupIndices.has(backupIndex) ? "backup-kept" : "current-kept";
+			return currentAccounts.flatMap((currentAccount, currentIndex) => {
+				const reasons = getAccountConflictReasons(account, currentAccount);
+				if (reasons.length === 0) return [];
+				return [
+					{
+						backupIndex,
+						backupEmail: account.email,
+						backupAccountId: account.accountId,
+						currentIndex,
+						currentEmail: currentAccount.email,
+						currentAccountId: currentAccount.accountId,
+						reasons,
+						resolution,
+					},
+				];
+			});
+		},
+	);
+	const conflictPreviews: BackupRestoreConflictPreview[] =
+		overlappingAccountConflicts.map((conflict) => ({
+			conflict,
+			backup: toBackupRestoreAccountPreview(
+				backupAccounts[conflict.backupIndex],
+				conflict.backupIndex,
+			),
+			current: toBackupRestoreAccountPreview(
+				currentAccounts[conflict.currentIndex],
+				conflict.currentIndex,
+			),
+		}));
+
+	let activeAccountOutcome: BackupRestoreAssessment["activeAccountOutcome"] =
+		wouldExceedLimit ? "blocked" : "unchanged";
+	let activeAccountChanged = false;
+	if (!wouldExceedLimit) {
+		if (currentActiveAccount && !nextActiveAccount) {
+			activeAccountOutcome = "cleared";
+			activeAccountChanged = true;
+		} else if (nextActiveAccount && !currentActiveAccount) {
+			activeAccountOutcome = "changed";
+			activeAccountChanged = true;
+		} else if (nextActiveAccount && currentActiveAccount) {
+			const sameAccount =
+				nextActiveAccount.refreshToken === currentActiveAccount.refreshToken ||
+				(nextActiveAccount.accountId &&
+					nextActiveAccount.accountId === currentActiveAccount.accountId) ||
+				(normalizeEmailKey(nextActiveAccount.email) &&
+					normalizeEmailKey(nextActiveAccount.email) ===
+						normalizeEmailKey(currentActiveAccount.email));
+			activeAccountOutcome = sameAccount ? "unchanged" : "changed";
+			activeAccountChanged = !sameAccount;
+		}
+	}
+
+	const activeAccountPreview: BackupRestoreActiveAccountPreview = {
+		current: toBackupRestoreAccountPreview(
+			currentActiveAccount,
+			currentActiveIndex,
+		),
+		next: toBackupRestoreAccountPreview(nextActiveAccount, nextActiveIndex),
+		outcome: activeAccountOutcome ?? "blocked",
+		changed: activeAccountChanged,
+	};
+	const hasRestorableChanges =
+		!wouldExceedLimit &&
+		((imported ?? 0) > 0 || replacedExistingCount > 0);
+	const error =
+		wouldExceedLimit
+			? `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
+			: hasRestorableChanges
+				? undefined
+				: "Backup would not change any accounts";
+
+	return {
+		backup,
+		backupAccountCount,
+		dedupedBackupAccountCount,
+		conflictsWithinBackup,
+		conflictsWithExisting,
+		overlappingAccountConflicts,
+		replacedExistingCount,
+		keptExistingCount,
+		keptBackupCount,
+		currentAccountCount: currentAccounts.length,
+		mergedAccountCount,
+		imported,
+		skipped,
+		wouldExceedLimit,
+		eligibleForRestore: hasRestorableChanges,
+		nextActiveIndex,
+		nextActiveEmail: nextActiveAccount?.email,
+		nextActiveAccountId: nextActiveAccount?.accountId,
+		currentActiveIndex,
+		currentActiveEmail: currentActiveAccount?.email,
+		currentActiveAccountId: currentActiveAccount?.accountId,
+		activeAccountOutcome: activeAccountOutcome ?? "blocked",
+		activeAccountChanged,
+		activeAccountPreview,
+		namedBackupRestorePreview: {
+			conflicts: conflictPreviews,
+			activeAccount: activeAccountPreview,
+		},
+		error,
+	};
+}
+
+export async function restoreNamedBackup(
+	name: string,
+	_options: { assessment?: BackupRestoreAssessment } = {},
+): Promise<{ imported: number; total: number; skipped: number }> {
+	const backupPath = await resolveNamedBackupRestorePath(name);
+	const candidate = await loadImportableBackupCandidate(backupPath);
+	const assessment = assessNamedBackupRestoreCandidate(
+		await buildNamedBackupMetadata(name, backupPath, { candidate }),
+		candidate,
+		await loadAccounts(),
+		candidate.rawAccounts,
+	);
+	if (!assessment.eligibleForRestore) {
+		throw new Error(assessment.error ?? "Backup is not eligible for restore");
+	}
+	return importNormalizedAccounts(candidate.normalized, backupPath, {
+		replacedExistingCount: assessment.replacedExistingCount ?? 0,
+		snapshotReason: "import-accounts",
+		snapshotFailurePolicy: "error",
+	});
+}
+
 function parseAndNormalizeStorage(data: unknown): {
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
@@ -1544,14 +2657,245 @@ function parseAndNormalizeStorage(data: unknown): {
 	return { normalized, storedVersion, schemaErrors };
 }
 
+function extractRawAccounts(data: unknown): AccountLike[] {
+	return isRecord(data) && Array.isArray(data.accounts)
+		? (data.accounts as unknown[]).filter(
+				(account): account is AccountLike =>
+					isRecord(account) &&
+					typeof account.refreshToken === "string" &&
+					account.refreshToken.trim().length > 0,
+			)
+		: [];
+}
+
 async function loadAccountsFromPath(path: string): Promise<{
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
+	rawAccounts: AccountLike[];
 }> {
 	const content = await fs.readFile(path, "utf-8");
 	const data = JSON.parse(content) as unknown;
-	return parseAndNormalizeStorage(data);
+	return {
+		...parseAndNormalizeStorage(data),
+		rawAccounts: extractRawAccounts(data),
+	};
+}
+
+type ImportableBackupCandidate = LoadedBackupCandidate & {
+	normalized: AccountStorageV3;
+	rawAccounts: AccountLike[];
+};
+
+async function loadImportableBackupCandidate(
+	path: string,
+): Promise<ImportableBackupCandidate> {
+	const resolvedPath = resolvePath(path);
+
+	if (!existsSync(resolvedPath)) {
+		throw new Error(`Import file not found: ${resolvedPath}`);
+	}
+
+	return retryTransientFilesystemOperation(async () => {
+		const content = await fs.readFile(resolvedPath, "utf-8");
+
+		let imported: unknown;
+		try {
+			imported = JSON.parse(content);
+		} catch {
+			throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
+		}
+
+		const { normalized, storedVersion, schemaErrors } =
+			parseAndNormalizeStorage(imported);
+		if (!normalized) {
+			throw new Error("Invalid account storage format");
+		}
+
+		return {
+			normalized,
+			storedVersion,
+			schemaErrors,
+			rawAccounts: extractRawAccounts(imported),
+		};
+	});
+}
+
+async function importNormalizedAccounts(
+	normalized: AccountStorageV3,
+	sourcePath: string,
+	options: {
+		replacedExistingCount?: number;
+		snapshotReason?: AccountSnapshotReason;
+		snapshotFailurePolicy?: AccountSnapshotFailurePolicy;
+	} = {},
+): Promise<{ imported: number; total: number; skipped: number }> {
+	const { snapshotReason, snapshotFailurePolicy = "warn" } = options;
+	const {
+		imported: importedCount,
+		total,
+		skipped: skippedCount,
+	} = await withAccountStorageTransaction(async (existing, persist) => {
+		const existingAccounts = existing?.accounts ?? [];
+		const existingActiveIndex = existing?.activeIndex ?? 0;
+
+		const merged = [...existingAccounts, ...normalized.accounts];
+
+		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			const deduped = deduplicateAccounts(merged);
+			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+				throw new Error(
+					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
+				);
+			}
+		}
+
+		if (snapshotReason) {
+			await snapshotAccountStorage({
+				reason: snapshotReason,
+				failurePolicy: snapshotFailurePolicy,
+				storage: existing,
+			});
+		}
+
+		const deduplicatedAccounts = deduplicateAccounts(merged);
+
+		const newStorage: AccountStorageV3 = {
+			version: 3,
+			accounts: deduplicatedAccounts,
+			activeIndex: existingActiveIndex,
+			activeIndexByFamily: existing?.activeIndexByFamily,
+		};
+
+		await persist(newStorage);
+
+		const imported = deduplicatedAccounts.length - existingAccounts.length;
+		const skipped = Math.max(0, normalized.accounts.length - imported);
+		return { imported, total: deduplicatedAccounts.length, skipped };
+	});
+
+	log.info("Imported accounts", {
+		path: sourcePath,
+		imported: importedCount,
+		skipped: skippedCount,
+		total,
+	});
+
+	return { imported: importedCount, total, skipped: skippedCount };
+}
+
+async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate> {
+	try {
+		return await retryTransientFilesystemOperation(() =>
+			loadAccountsFromPath(path),
+		);
+	} catch (error) {
+		const errorCode =
+			typeof (error as NodeJS.ErrnoException).code === "string"
+				? (error as NodeJS.ErrnoException).code
+				: undefined;
+		return {
+			normalized: null,
+			storedVersion: undefined,
+			schemaErrors: [],
+			rawAccounts: [],
+			error: String(error),
+			errorCode,
+		};
+	}
+}
+
+function equalsNamedBackupEntry(left: string, right: string): boolean {
+	return process.platform === "win32"
+		? left.toLowerCase() === right.toLowerCase()
+		: left === right;
+}
+
+function stripNamedBackupJsonExtension(name: string): string {
+	return name.toLowerCase().endsWith(".json")
+		? name.slice(0, -".json".length)
+		: name;
+}
+
+async function findExistingNamedBackupPath(
+	name: string,
+): Promise<string | undefined> {
+	const requested = (name ?? "").trim();
+	if (!requested) {
+		return undefined;
+	}
+
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
+		? requested
+		: `${requested}.json`;
+	const requestedBaseName = stripNamedBackupJsonExtension(requestedWithExtension);
+
+	try {
+		const entries = await retryTransientFilesystemOperation(() =>
+			fs.readdir(backupRoot, { withFileTypes: true }),
+		);
+		for (const entry of entries) {
+			if (!entry.name.toLowerCase().endsWith(".json")) continue;
+			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
+			const matchesRequestedEntry =
+				equalsNamedBackupEntry(entry.name, requested) ||
+				equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
+				equalsNamedBackupEntry(entryBaseName, requestedBaseName);
+			if (!matchesRequestedEntry) {
+				continue;
+			}
+			if (entry.isSymbolicLink() || !entry.isFile()) {
+				throw new Error(
+					`Named backup "${entryBaseName}" is not a regular backup file`,
+				);
+			}
+			return resolvePath(join(backupRoot, entry.name));
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return undefined;
+		}
+		log.warn("Failed to read named backup directory", {
+			path: backupRoot,
+			error: String(error),
+		});
+		throw error;
+	}
+
+	return undefined;
+}
+
+async function resolveNamedBackupRestorePath(name: string): Promise<string> {
+	const normalizedName = normalizeBackupLookupName(name);
+	const existingPath = await findExistingNamedBackupPath(normalizedName);
+	if (existingPath) {
+		return existingPath;
+	}
+	const requested = normalizedName;
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
+		? requested
+		: `${requested}.json`;
+	try {
+		return buildNamedBackupPath(normalizedName);
+	} catch (error) {
+		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
+			? requestedWithExtension.slice(0, -".json".length)
+			: requestedWithExtension;
+		if (
+			requested.length > 0 &&
+			basename(requestedWithExtension) === requestedWithExtension &&
+			!requestedWithExtension.includes("..") &&
+			!/^[A-Za-z0-9_-]+$/.test(baseName)
+		) {
+			throw new Error(
+				`Import file not found: ${resolvePath(join(backupRoot, requestedWithExtension))}`,
+			);
+		}
+		throw error;
+	}
 }
 
 async function loadAccountsFromJournal(
@@ -1762,12 +3106,107 @@ async function loadAccountsInternal(
 	}
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
-	const path = getStoragePath();
+async function buildNamedBackupMetadata(
+	name: string,
+	path: string,
+	opts: { candidate?: LoadedBackupCandidate } = {},
+): Promise<NamedBackupMetadata> {
+	const metadata = await buildBackupFileMetadata(path, opts);
+	return {
+		name,
+		...metadata,
+	};
+}
+
+async function buildBackupFileMetadata(
+	path: string,
+	opts: { candidate?: LoadedBackupCandidate } = {},
+): Promise<Omit<NamedBackupMetadata, "name">> {
+	const candidate = opts.candidate ?? (await loadBackupCandidate(path));
+	let stats: {
+		size?: number;
+		mtimeMs?: number;
+		birthtimeMs?: number;
+		ctimeMs?: number;
+	} | null = null;
+	try {
+		stats = await retryTransientFilesystemOperation(() => fs.stat(path));
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to stat named backup", { path, error: String(error) });
+		}
+	}
+
+	const version =
+		candidate.normalized?.version ??
+		(typeof candidate.storedVersion === "number"
+			? candidate.storedVersion
+			: null);
+	const accountCount = candidate.normalized?.accounts.length ?? null;
+	const createdAt = stats?.birthtimeMs ?? stats?.ctimeMs ?? null;
+	const updatedAt = stats?.mtimeMs ?? null;
+
+	return {
+		path,
+		createdAt,
+		updatedAt,
+		sizeBytes: typeof stats?.size === "number" ? stats.size : null,
+		version,
+		accountCount,
+		schemaErrors: candidate.schemaErrors,
+		valid: !!candidate.normalized,
+		loadError: candidate.error,
+	};
+}
+
+function parseRotatingBackupSlot(
+	storagePath: string,
+	candidatePath: string,
+): number | null {
+	const latestBackupPath = getAccountsBackupPath(storagePath);
+	if (candidatePath === latestBackupPath) {
+		return 0;
+	}
+
+	const slotMatch = candidatePath.match(/\.bak\.(\d+)$/i);
+	if (!slotMatch) {
+		return null;
+	}
+
+	const parsed = Number.parseInt(slotMatch[1] ?? "", 10);
+	if (!Number.isFinite(parsed) || parsed < 1) {
+		return null;
+	}
+
+	return parsed;
+}
+
+function formatRotatingBackupLabel(slot: number): string {
+	return slot === 0
+		? "Latest rotating backup (.bak)"
+		: `Rotating backup ${slot} (.bak.${slot})`;
+}
+
+/**
+ * Optional per-call overrides for account storage persistence.
+ * When omitted, `saveAccounts` uses the module-level backup policy.
+ */
+export interface SaveAccountsOptions {
+	backupEnabled?: boolean;
+	storagePath?: string;
+}
+
+async function saveAccountsUnlocked(
+	storage: AccountStorageV3,
+	options: SaveAccountsOptions = {},
+): Promise<void> {
+	const path = options.storagePath ?? getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
 	const walPath = getAccountsWalPath(path);
+	const backupEnabled = options.backupEnabled ?? storageBackupEnabled;
 
 	try {
 		await fs.mkdir(dirname(path), { recursive: true });
@@ -1799,7 +3238,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			}
 		}
 
-		if (storageBackupEnabled && existsSync(path)) {
+		if (backupEnabled && existsSync(path)) {
 			try {
 				await createRotatingAccountsBackup(path);
 			} catch (backupError) {
@@ -1834,34 +3273,19 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			throw emptyError;
 		}
 
-		// Retry rename with exponential backoff for Windows EPERM/EBUSY
-		let lastError: NodeJS.ErrnoException | null = null;
-		for (let attempt = 0; attempt < 5; attempt++) {
-			try {
-				await fs.rename(tempPath, path);
-				try {
-					await fs.unlink(resetMarkerPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				lastAccountsSaveTimestamp = Date.now();
-				try {
-					await fs.unlink(walPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				return;
-			} catch (renameError) {
-				const code = (renameError as NodeJS.ErrnoException).code;
-				if (code === "EPERM" || code === "EBUSY") {
-					lastError = renameError as NodeJS.ErrnoException;
-					await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
-					continue;
-				}
-				throw renameError;
-			}
+		await renameFileWithRetry(tempPath, path);
+		try {
+			await fs.unlink(resetMarkerPath);
+		} catch {
+			// Best effort cleanup.
 		}
-		if (lastError) throw lastError;
+		lastAccountsSaveTimestamp = Date.now();
+		try {
+			await fs.unlink(walPath);
+		} catch {
+			// Best effort cleanup.
+		}
+		return;
 	} catch (error) {
 		try {
 			await fs.unlink(tempPath);
@@ -1912,13 +3336,17 @@ export async function withAccountStorageTransaction<T>(
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
+			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
+			await saveAccountsUnlocked(storage, {
+				storagePath: state.storagePath,
+			});
 			state.snapshot = storage;
 		};
 		return transactionSnapshotContext.run(state, () =>
@@ -1937,9 +3365,11 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
+			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (
@@ -1948,13 +3378,19 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
-			await saveAccountsUnlocked(nextAccounts);
+			await saveAccountsUnlocked(nextAccounts, {
+				storagePath: state.storagePath,
+			});
 			try {
-				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				await saveFlaggedAccountsUnlocked(flaggedStorage, {
+					storagePath: state.storagePath,
+				});
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
-					await saveAccountsUnlocked(previousAccounts);
+					await saveAccountsUnlocked(previousAccounts, {
+						storagePath: state.storagePath,
+					});
 					state.snapshot = previousAccounts;
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
@@ -1984,11 +3420,83 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
  * Creates the Codex multi-auth storage directory if it doesn't exist.
  * Verifies file was written correctly and provides detailed error messages.
  * @param storage - Account storage data to save
+ * @param options - Optional per-call persistence overrides. Set `backupEnabled`
+ * to override the module-level backup policy for this save only.
  * @throws StorageError with platform-aware hints on failure
  */
-export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
+export async function saveAccounts(
+	storage: AccountStorageV3,
+	options: SaveAccountsOptions = {},
+): Promise<void> {
 	return withStorageLock(async () => {
-		await saveAccountsUnlocked(storage);
+		await saveAccountsUnlocked(storage, options);
+	});
+}
+
+async function clearAccountsUnlocked(storagePath: string): Promise<boolean> {
+	const resetMarkerPath = getIntentionalResetMarkerPath(storagePath);
+	const walPath = getAccountsWalPath(storagePath);
+	const backupPaths =
+		await getAccountsBackupRecoveryCandidatesWithDiscovery(storagePath);
+	const legacyPaths = Array.from(
+		new Set(
+			[currentLegacyProjectStoragePath, currentLegacyWorktreeStoragePath].filter(
+				(candidate): candidate is string =>
+					typeof candidate === "string" && candidate.length > 0,
+			),
+		),
+	);
+	await retryTransientFilesystemOperation(() =>
+		fs.mkdir(dirname(resetMarkerPath), { recursive: true }),
+	);
+	await retryTransientFilesystemOperation(() =>
+		fs.writeFile(
+			resetMarkerPath,
+			JSON.stringify({ version: 1, createdAt: Date.now() }),
+			{ encoding: "utf-8", mode: 0o600 },
+		),
+	);
+	let hadError = false;
+	const clearPath = async (targetPath: string): Promise<void> => {
+		try {
+			await unlinkWithRetry(targetPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				hadError = true;
+				log.error("Failed to clear account storage artifact", {
+					path: extractPathTail(targetPath),
+					error: formatSnapshotErrorForLog(error),
+				});
+			}
+		}
+	};
+
+	try {
+		const artifacts = Array.from(
+			new Set([storagePath, walPath, ...backupPaths, ...legacyPaths]),
+		);
+		await Promise.all(artifacts.map(clearPath));
+	} catch {
+		// Individual path cleanup is already best-effort with per-artifact logging.
+	}
+
+	return !hadError;
+}
+
+export async function snapshotAndClearAccounts(
+	reason: AccountSnapshotReason,
+): Promise<boolean> {
+	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
+		const currentStorage = await loadAccountsInternal(saveAccountsUnlocked);
+		await snapshotAccountStorage({
+			reason,
+			failurePolicy: "error",
+			storage: currentStorage,
+			storagePath,
+		});
+		return clearAccountsUnlocked(storagePath);
 	});
 }
 
@@ -1996,41 +3504,9 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * Deletes the account storage file from disk.
  * Silently ignores if file doesn't exist.
  */
-export async function clearAccounts(): Promise<void> {
+export async function clearAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
-		const path = getStoragePath();
-		const resetMarkerPath = getIntentionalResetMarkerPath(path);
-		const walPath = getAccountsWalPath(path);
-		const backupPaths =
-			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		await fs.writeFile(
-			resetMarkerPath,
-			JSON.stringify({ version: 1, createdAt: Date.now() }),
-			{ encoding: "utf-8", mode: 0o600 },
-		);
-		const clearPath = async (targetPath: string): Promise<void> => {
-			try {
-				await fs.unlink(targetPath);
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					log.error("Failed to clear account storage artifact", {
-						path: targetPath,
-						error: String(error),
-					});
-				}
-			}
-		};
-
-		try {
-			await Promise.all([
-				clearPath(path),
-				clearPath(walPath),
-				...backupPaths.map(clearPath),
-			]);
-		} catch {
-			// Individual path cleanup is already best-effort with per-artifact logging.
-		}
+		return clearAccountsUnlocked(getStoragePath());
 	});
 }
 
@@ -2208,8 +3684,12 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 
 async function saveFlaggedAccountsUnlocked(
 	storage: FlaggedAccountStorageV1,
+	options: { storagePath?: string } = {},
 ): Promise<void> {
-	const path = getFlaggedAccountsPath();
+	const path = join(
+		dirname(options.storagePath ?? getStoragePath()),
+		FLAGGED_ACCOUNTS_FILE_NAME,
+	);
 	const markerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -2258,7 +3738,7 @@ export async function saveFlaggedAccounts(
 	});
 }
 
-export async function clearFlaggedAccounts(): Promise<void> {
+export async function clearFlaggedAccounts(): Promise<boolean> {
 	return withStorageLock(async () => {
 		const path = getFlaggedAccountsPath();
 		const markerPath = getIntentionalResetMarkerPath(path);
@@ -2277,22 +3757,41 @@ export async function clearFlaggedAccounts(): Promise<void> {
 		}
 		const backupPaths =
 			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		for (const candidate of [path, ...backupPaths, markerPath]) {
+		let hadError = false;
+		let primaryCleared = true;
+		for (const candidate of [path, ...backupPaths]) {
 			try {
-				await fs.unlink(candidate);
+				await unlinkWithRetry(candidate);
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "ENOENT") {
+					hadError = true;
+					if (candidate === path) {
+						primaryCleared = false;
+					}
 					log.error("Failed to clear flagged account storage", {
 						path: candidate,
 						error: String(error),
 					});
-					if (candidate === path) {
-						throw error;
-					}
 				}
 			}
 		}
+		if (primaryCleared) {
+			try {
+				await unlinkWithRetry(markerPath);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					log.error("Failed to clear flagged reset marker", {
+						path,
+						markerPath,
+						error: String(error),
+					});
+					hadError = true;
+				}
+			}
+		}
+		return !hadError;
 	});
 }
 
@@ -2314,11 +3813,16 @@ export async function exportAccounts(
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
+	const currentStoragePath = getStoragePath();
 	const storage = transactionState?.active
-		? transactionState.snapshot
-		: await withAccountStorageTransaction((current) =>
-				Promise.resolve(current),
-			);
+		? transactionState.storagePath === currentStoragePath
+			? transactionState.snapshot
+			: (() => {
+					throw new Error(
+						"exportAccounts called inside an active transaction for a different storage path",
+					);
+				})()
+		: await withAccountStorageTransaction((current) => Promise.resolve(current));
 	if (!storage || storage.accounts.length === 0) {
 		throw new Error("No accounts to export");
 	}
@@ -2356,67 +3860,9 @@ export async function importAccounts(
 	filePath: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
-
-	// Check file exists with friendly error
-	if (!existsSync(resolvedPath)) {
-		throw new Error(`Import file not found: ${resolvedPath}`);
-	}
-
-	const content = await fs.readFile(resolvedPath, "utf-8");
-
-	let imported: unknown;
-	try {
-		imported = JSON.parse(content);
-	} catch {
-		throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
-	}
-
-	const normalized = normalizeAccountStorage(imported);
-	if (!normalized) {
-		throw new Error("Invalid account storage format");
-	}
-
-	const {
-		imported: importedCount,
-		total,
-		skipped: skippedCount,
-	} = await withAccountStorageTransaction(async (existing, persist) => {
-		const existingAccounts = existing?.accounts ?? [];
-		const existingActiveIndex = existing?.activeIndex ?? 0;
-
-		const merged = [...existingAccounts, ...normalized.accounts];
-
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccounts(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
-			}
-		}
-
-		const deduplicatedAccounts = deduplicateAccounts(merged);
-
-		const newStorage: AccountStorageV3 = {
-			version: 3,
-			accounts: deduplicatedAccounts,
-			activeIndex: existingActiveIndex,
-			activeIndexByFamily: existing?.activeIndexByFamily,
-		};
-
-		await persist(newStorage);
-
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
-		return { imported, total: deduplicatedAccounts.length, skipped };
+	const candidate = await loadImportableBackupCandidate(resolvedPath);
+	return importNormalizedAccounts(candidate.normalized, resolvedPath, {
+		snapshotReason: "import-accounts",
+		snapshotFailurePolicy: "error",
 	});
-
-	log.info("Imported accounts", {
-		path: resolvedPath,
-		imported: importedCount,
-		skipped: skippedCount,
-		total,
-	});
-
-	return { imported: importedCount, total, skipped: skippedCount };
 }

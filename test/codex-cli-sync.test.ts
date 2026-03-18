@@ -1,14 +1,33 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountStorageV3 } from "../lib/storage.js";
+import * as storageModule from "../lib/storage.js";
 import * as codexCliState from "../lib/codex-cli/state.js";
 import { clearCodexCliStateCache } from "../lib/codex-cli/state.js";
+import type { CodexCliSyncRun } from "../lib/codex-cli/sync.js";
 import {
+	__resetLastCodexCliSyncRunForTests,
+	applyCodexCliSyncToStorage,
+	commitCodexCliSyncRunFailure,
+	commitPendingCodexCliSyncRun,
 	getActiveSelectionForFamily,
+	getLastCodexCliSyncRun,
+	getLatestCodexCliSyncRollbackPlan,
+	previewCodexCliSync,
+	rollbackLastCodexCliSync,
+	rollbackLatestCodexCliSync,
+	SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS,
 	syncAccountStorageFromCodexCli,
 } from "../lib/codex-cli/sync.js";
+import {
+	__resetSyncHistoryForTests,
+	appendSyncHistoryEntry,
+	configureSyncHistoryForTests,
+	readSyncHistory,
+} from "../lib/sync-history.js";
+import * as writerModule from "../lib/codex-cli/writer.js";
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 
@@ -40,6 +59,7 @@ describe("codex-cli sync", () => {
 	let accountsPath: string;
 	let authPath: string;
 	let configPath: string;
+	let targetStoragePath: string;
 	let previousPath: string | undefined;
 	let previousAuthPath: string | undefined;
 	let previousConfigPath: string | undefined;
@@ -57,16 +77,24 @@ describe("codex-cli sync", () => {
 		accountsPath = join(tempDir, "accounts.json");
 		authPath = join(tempDir, "auth.json");
 		configPath = join(tempDir, "config.toml");
+		targetStoragePath = join(tempDir, "openai-codex-accounts.json");
+		configureSyncHistoryForTests(join(tempDir, "logs"));
+		await __resetSyncHistoryForTests();
 		process.env.CODEX_CLI_ACCOUNTS_PATH = accountsPath;
 		process.env.CODEX_CLI_AUTH_PATH = authPath;
 		process.env.CODEX_CLI_CONFIG_PATH = configPath;
 		process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "1";
 		process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "1";
+		vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
 		clearCodexCliStateCache();
+		__resetLastCodexCliSyncRunForTests();
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
+		vi.resetModules();
 		clearCodexCliStateCache();
+		__resetLastCodexCliSyncRunForTests();
 		if (previousPath === undefined) delete process.env.CODEX_CLI_ACCOUNTS_PATH;
 		else process.env.CODEX_CLI_ACCOUNTS_PATH = previousPath;
 		if (previousAuthPath === undefined) delete process.env.CODEX_CLI_AUTH_PATH;
@@ -84,6 +112,8 @@ describe("codex-cli sync", () => {
 			process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE =
 				previousEnforceFileStore;
 		}
+		await __resetSyncHistoryForTests();
+		configureSyncHistoryForTests(null);
 		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
@@ -235,6 +265,2593 @@ describe("codex-cli sync", () => {
 		const result = await syncAccountStorageFromCodexCli(current);
 		expect(result.changed).toBe(true);
 		expect(result.storage?.activeIndex).toBe(0);
+	});
+
+	it("previews one-way manual sync changes without mutating canonical storage", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_c",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a-new",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_c",
+							email: "c@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-c",
+									refresh_token: "refresh-c",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a-old",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const snapshot = JSON.parse(JSON.stringify(current)) as AccountStorageV3;
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+			storageBackupEnabled: true,
+		});
+
+		expect(preview.status).toBe("ready");
+		expect(preview.sourcePath).toBe(accountsPath);
+		expect(preview.summary.addedAccountCount).toBe(1);
+		expect(preview.summary.updatedAccountCount).toBe(1);
+		expect(preview.summary.destinationOnlyPreservedCount).toBe(1);
+		expect(preview.summary.selectionChanged).toBe(true);
+		expect(preview.backup.enabled).toBe(true);
+		expect(preview.backup.rollbackPaths).toContain(`${preview.targetPath}.bak`);
+		expect(preview.backup.rollbackPaths).toContain(`${preview.targetPath}.wal`);
+		const serializedPreview = JSON.stringify(preview);
+		expect(serializedPreview).not.toContain("access-a-new");
+		expect(serializedPreview).not.toContain("refresh-a");
+		expect(serializedPreview).not.toContain("access-c");
+		expect(serializedPreview).not.toContain("refresh-c");
+		expect(current).toEqual(snapshot);
+	});
+
+	it("skips ambiguous duplicate-email source matches instead of overwriting a local account", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							email: "dup@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-new",
+									refresh_token: "refresh-new",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "dup@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					email: "dup@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			forceRefresh: true,
+		});
+
+		expect(result.changed).toBe(false);
+		expect(result.pendingRun).toBeNull();
+		expect(result.storage?.accounts).toEqual(current.accounts);
+	});
+
+	it("skips ambiguous duplicate-accountId source matches instead of overwriting a local account", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							accountId: "shared-id",
+							auth: {
+								tokens: {
+									access_token: "access-new",
+									refresh_token: "refresh-new",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "shared-id",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "shared-id",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			forceRefresh: true,
+		});
+
+		expect(result.changed).toBe(false);
+		expect(result.pendingRun).toBeNull();
+		expect(result.storage?.accounts).toEqual(current.accounts);
+	});
+
+	it("reports skipped ambiguous source snapshots in the preview summary", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							accountId: "shared-id",
+							auth: {
+								tokens: {
+									access_token: "access-new",
+									refresh_token: "refresh-new",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "shared-id",
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "shared-id",
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+		});
+
+		expect(preview.status).toBe("noop");
+		expect(preview.summary.sourceAccountCount).toBe(1);
+		expect(preview.statusDetail).toContain("1 source account skipped");
+	});
+
+	it("preserves the current selection when Codex CLI source has no active marker", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+		});
+
+		expect(preview.status).toBe("noop");
+		expect(preview.summary.selectionChanged).toBe(false);
+	});
+
+	it("preserves a newer persisted local selection after restart when the target mtime is only 500ms newer", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const sourceTime = new Date("2026-03-13T00:00:00.000Z");
+		const targetTime = new Date("2026-03-13T00:00:00.500Z");
+		await utimes(accountsPath, sourceTime, sourceTime);
+		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
+		await utimes(targetStoragePath, targetTime, targetTime);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+		});
+
+		expect(preview.status).toBe("noop");
+		expect(preview.summary.selectionChanged).toBe(false);
+	});
+
+	it("preserves a newer persisted local selection on apply when the target mtime is only 500ms newer", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const sourceTime = new Date("2026-03-13T00:00:00.000Z");
+		const targetTime = new Date("2026-03-13T00:00:00.500Z");
+		await utimes(accountsPath, sourceTime, sourceTime);
+		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
+		await utimes(targetStoragePath, targetTime, targetTime);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			forceRefresh: true,
+		});
+
+		expect(result.changed).toBe(false);
+		expect(result.pendingRun).toBeNull();
+		expect(result.storage?.activeIndex).toBe(1);
+		expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
+	});
+
+	it("preserves a newer local selection when Codex state has no timestamp metadata", async () => {
+		const state = {
+			path: accountsPath,
+			activeAccountId: "acc_a",
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					accessToken: "access-a",
+					refreshToken: "refresh-a",
+					isActive: true,
+				},
+				{
+					accountId: "acc_b",
+					email: "b@example.com",
+					accessToken: "access-b",
+					refreshToken: "refresh-b",
+				},
+			],
+		};
+		const targetTime = new Date("2026-03-13T00:00:05.000Z");
+		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
+		await utimes(targetStoragePath, targetTime, targetTime);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+		const loadStateSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockResolvedValue(state);
+
+		try {
+			const current: AccountStorageV3 = {
+				version: 3,
+				accounts: [
+					{
+						accountId: "acc_a",
+						accountIdSource: "token",
+						email: "a@example.com",
+						refreshToken: "refresh-a",
+						accessToken: "access-a",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "acc_b",
+						accountIdSource: "token",
+						email: "b@example.com",
+						refreshToken: "refresh-b",
+						accessToken: "access-b",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+			};
+
+			const preview = await previewCodexCliSync(current, {
+				forceRefresh: true,
+			});
+
+			expect(preview.status).toBe("noop");
+			expect(preview.summary.selectionChanged).toBe(false);
+		} finally {
+			loadStateSpy.mockRestore();
+		}
+	});
+
+	it("preserves the local selection when the persisted target timestamp is temporarily unreadable", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+		vi.spyOn(storageModule, "getStoragePath").mockReturnValue("\0busy-target");
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh: true,
+		});
+
+		expect(preview.status).toBe("noop");
+		expect(preview.summary.selectionChanged).toBe(false);
+	});
+
+	it.each(["EBUSY", "EPERM"] as const)(
+		"preserves the local selection when reading the persisted target timestamp fails with %s",
+		async (code) => {
+			await writeFile(
+				accountsPath,
+				JSON.stringify(
+					{
+						activeAccountId: "acc_a",
+						accounts: [
+							{
+								accountId: "acc_a",
+								email: "a@example.com",
+								auth: {
+									tokens: {
+										access_token: "access-a",
+										refresh_token: "refresh-a",
+									},
+								},
+							},
+							{
+								accountId: "acc_b",
+								email: "b@example.com",
+								auth: {
+									tokens: {
+										access_token: "access-b",
+										refresh_token: "refresh-b",
+									},
+								},
+							},
+						],
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+			vi.spyOn(
+				writerModule,
+				"getLastCodexCliSelectionWriteTimestamp",
+			).mockReturnValue(0);
+			vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
+			const statError = new Error(`${code.toLowerCase()} target`) as NodeJS.ErrnoException;
+			statError.code = code;
+			const nodeFs = await import("node:fs");
+			const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+			let targetStatCalls = 0;
+			const statSpy = vi
+				.spyOn(nodeFs.promises, "stat")
+				.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+					if (args[0] === targetStoragePath) {
+						targetStatCalls += 1;
+						throw statError;
+					}
+					return originalStat(...args);
+				});
+
+			const current: AccountStorageV3 = {
+				version: 3,
+				accounts: [
+					{
+						accountId: "acc_a",
+						accountIdSource: "token",
+						email: "a@example.com",
+						refreshToken: "refresh-a",
+						accessToken: "access-a",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "acc_b",
+						accountIdSource: "token",
+						email: "b@example.com",
+						refreshToken: "refresh-b",
+						accessToken: "access-b",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+			};
+
+			try {
+				const preview = await previewCodexCliSync(current, {
+					forceRefresh: true,
+				});
+
+				expect(preview.status).toBe("noop");
+				expect(preview.summary.selectionChanged).toBe(false);
+				expect(targetStatCalls).toBe(SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS);
+			} finally {
+				statSpy.mockRestore();
+			}
+		},
+	);
+
+	it.each(["EBUSY", "EPERM"] as const)(
+		"does not let zero-version Codex state overwrite local selection when the target timestamp is unreadable with %s",
+		async (code) => {
+			const sourceState = {
+				path: accountsPath,
+				activeAccountId: "acc_a",
+				accounts: [
+					{
+						accountId: "acc_a",
+						email: "a@example.com",
+						accessToken: "access-a",
+						refreshToken: "refresh-a",
+						isActive: true,
+					},
+					{
+						accountId: "acc_b",
+						email: "b@example.com",
+						accessToken: "access-b",
+						refreshToken: "refresh-b",
+					},
+				],
+			};
+
+			vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+			vi.spyOn(
+				writerModule,
+				"getLastCodexCliSelectionWriteTimestamp",
+			).mockReturnValue(0);
+			vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
+			const nodeFs = await import("node:fs");
+			const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+			let targetStatCalls = 0;
+			const statSpy = vi
+				.spyOn(nodeFs.promises, "stat")
+				.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+					if (args[0] === targetStoragePath) {
+						targetStatCalls += 1;
+						const error = new Error(`${code.toLowerCase()} target`) as NodeJS.ErrnoException;
+						error.code = code;
+						throw error;
+					}
+					return originalStat(...args);
+				});
+
+			const current: AccountStorageV3 = {
+				version: 3,
+				accounts: [
+					{
+						accountId: "acc_a",
+						accountIdSource: "token",
+						email: "a@example.com",
+						refreshToken: "refresh-a",
+						accessToken: "access-a",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "acc_b",
+						accountIdSource: "token",
+						email: "b@example.com",
+						refreshToken: "refresh-b",
+						accessToken: "access-b",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+			};
+
+			try {
+				const result = await applyCodexCliSyncToStorage(current, {
+					sourceState,
+				});
+
+				expect(result.changed).toBe(false);
+				expect(result.pendingRun).toBeNull();
+				expect(result.storage?.activeIndex).toBe(1);
+				expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
+				expect(targetStatCalls).toBe(SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS);
+			} finally {
+				statSpy.mockRestore();
+			}
+		},
+	);
+
+	it.each(["EBUSY", "EPERM"] as const)(
+		"logs exhausted retries when reading the persisted target timestamp fails with %s",
+		async (code) => {
+			const debugSpy = vi.fn();
+			vi.resetModules();
+			vi.doMock("../lib/logger.js", async () => {
+				const actual = await vi.importActual<typeof import("../lib/logger.js")>(
+					"../lib/logger.js",
+				);
+				return {
+					...actual,
+					createLogger: () => ({
+						debug: debugSpy,
+						info: vi.fn(),
+						warn: vi.fn(),
+						error: vi.fn(),
+						time: () => () => 0,
+						timeEnd: () => undefined,
+					}),
+				};
+			});
+
+			try {
+				const freshStorageModule = await import("../lib/storage.js");
+				const freshStateModule = await import("../lib/codex-cli/state.js");
+				const freshWriterModule = await import("../lib/codex-cli/writer.js");
+				const freshSyncModule = await import("../lib/codex-cli/sync.js");
+				freshStateModule.clearCodexCliStateCache();
+				freshSyncModule.__resetLastCodexCliSyncRunForTests();
+
+				await writeFile(
+					accountsPath,
+					JSON.stringify(
+						{
+							activeAccountId: "acc_a",
+							accounts: [
+								{
+									accountId: "acc_a",
+									email: "a@example.com",
+									auth: {
+										tokens: {
+											access_token: "access-a",
+											refresh_token: "refresh-a",
+										},
+									},
+								},
+							],
+						},
+						null,
+						2,
+					),
+					"utf-8",
+				);
+
+				vi.spyOn(freshStorageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+				vi.spyOn(
+					freshWriterModule,
+					"getLastCodexCliSelectionWriteTimestamp",
+				).mockReturnValue(0);
+				vi.spyOn(freshStorageModule, "getStoragePath").mockReturnValue(targetStoragePath);
+
+				const nodeFs = await import("node:fs");
+				const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+				const statSpy = vi
+					.spyOn(nodeFs.promises, "stat")
+					.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+						if (args[0] === targetStoragePath) {
+							const error = new Error(`${code.toLowerCase()} target`) as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return originalStat(...args);
+					});
+
+				const current: AccountStorageV3 = {
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_a",
+							accountIdSource: "token",
+							email: "a@example.com",
+							refreshToken: "refresh-a",
+							accessToken: "access-a",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				};
+
+				try {
+					const preview = await freshSyncModule.previewCodexCliSync(current, {
+						forceRefresh: true,
+					});
+
+					expect(preview.status).toBe("noop");
+					expect(debugSpy).toHaveBeenCalledWith(
+						"Exhausted retries reading persisted local selection timestamp",
+						{
+							error: `${code.toLowerCase()} target`,
+						},
+					);
+				} finally {
+					statSpy.mockRestore();
+				}
+			} finally {
+				vi.doUnmock("../lib/logger.js");
+				vi.resetModules();
+			}
+		},
+	);
+
+	it("retries a transient persisted-target EBUSY before applying the Codex selection", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_a",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const sourceTime = new Date("2026-03-13T00:00:05.000Z");
+		const targetTime = new Date("2026-03-13T00:00:00.000Z");
+		await utimes(accountsPath, sourceTime, sourceTime);
+		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
+		await utimes(targetStoragePath, targetTime, targetTime);
+
+		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
+		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
+			0,
+		);
+		vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
+
+		const nodeFs = await import("node:fs");
+		const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+		let targetStatCalls = 0;
+		const statSpy = vi
+			.spyOn(nodeFs.promises, "stat")
+			.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+				if (args[0] === targetStoragePath) {
+					targetStatCalls += 1;
+					if (targetStatCalls === 1) {
+						const error = new Error("busy target") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+				}
+				return originalStat(...args);
+			});
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					accountIdSource: "token",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		};
+
+		try {
+			const preview = await previewCodexCliSync(current, {
+				forceRefresh: true,
+			});
+
+			expect(targetStatCalls).toBe(2);
+			expect(preview.status).toBe("ready");
+			expect(preview.summary.selectionChanged).toBe(true);
+		} finally {
+			statSpy.mockRestore();
+		}
+	});
+
+	it("records a changed manual sync only after the caller commits persistence", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current);
+		expect(result.changed).toBe(true);
+		expect(result.pendingRun).not.toBeNull();
+		expect(result.storage?.accounts).toHaveLength(2);
+		expect(getLastCodexCliSyncRun()).toBeNull();
+
+		commitPendingCodexCliSyncRun(result.pendingRun);
+
+		const lastRun = getLastCodexCliSyncRun();
+		expect(lastRun?.outcome).toBe("changed");
+		expect(lastRun?.sourcePath).toBe(accountsPath);
+		expect(lastRun?.summary.addedAccountCount).toBe(1);
+		expect(lastRun?.summary.destinationOnlyPreservedCount).toBe(1);
+		const history = await readSyncHistory({ kind: "codex-cli-sync" });
+		const lastHistory = history.at(-1);
+		expect(lastHistory?.kind).toBe("codex-cli-sync");
+		if (lastHistory?.kind === "codex-cli-sync") {
+			expect(lastHistory.run.outcome).toBe("changed");
+			expect(lastHistory.run.summary.addedAccountCount).toBe(1);
+		}
+		__resetLastCodexCliSyncRunForTests();
+		const persisted = getLastCodexCliSyncRun();
+		expect(persisted?.outcome).toBe("changed");
+		expect(persisted?.summary.addedAccountCount).toBe(1);
+	});
+
+	it("records rollback snapshot metadata for manual applies", async () => {
+		const snapshotSpy = vi.spyOn(storageModule, "snapshotAccountStorage");
+		snapshotSpy.mockResolvedValue({
+			name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_001",
+			path: join(tempDir, "rollback-snapshot.json"),
+			createdAt: 1,
+			updatedAt: 1,
+			sizeBytes: 128,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: [],
+			valid: true,
+		});
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			trigger: "manual",
+			sourceState: {
+				path: accountsPath,
+				activeAccountId: "acc_b",
+				accounts: [
+					{
+						accountId: "acc_b",
+						email: "b@example.com",
+						accessToken: "access-b",
+						refreshToken: "refresh-b",
+						isActive: true,
+					},
+				],
+			},
+		});
+
+		expect(result.changed).toBe(true);
+		expect(snapshotSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "codex-cli-sync",
+				failurePolicy: "warn",
+				storage: current,
+				storagePath: targetStoragePath,
+			}),
+		);
+		expect(result.pendingRun?.run.trigger).toBe("manual");
+		expect(result.pendingRun?.run.rollbackSnapshot).toEqual({
+			name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_001",
+			path: join(tempDir, "rollback-snapshot.json"),
+		});
+		if (result.storage) {
+			await storageModule.saveAccounts(result.storage);
+		}
+		commitPendingCodexCliSyncRun(result.pendingRun);
+
+		const lastRun = getLastCodexCliSyncRun();
+		expect(lastRun?.trigger).toBe("manual");
+		expect(lastRun?.rollbackSnapshot).toEqual({
+			name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_001",
+			path: join(tempDir, "rollback-snapshot.json"),
+		});
+
+		const history = await readSyncHistory({ kind: "codex-cli-sync" });
+		expect(history.at(-1)?.run.trigger).toBe("manual");
+		expect(history.at(-1)?.run.rollbackSnapshot).toEqual({
+			name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_001",
+			path: join(tempDir, "rollback-snapshot.json"),
+		});
+	});
+
+	it("does not snapshot manual sync runs when nothing would change", async () => {
+		const snapshotSpy = vi.spyOn(storageModule, "snapshotAccountStorage");
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			trigger: "manual",
+			sourceState: {
+				path: accountsPath,
+				activeAccountId: "acc_a",
+				accounts: [
+					{
+						accountId: "acc_a",
+						email: "a@example.com",
+						accessToken: "access-a",
+						refreshToken: "refresh-a",
+						isActive: true,
+					},
+				],
+			},
+		});
+
+		expect(result.changed).toBe(false);
+		expect(result.pendingRun).toBeNull();
+		expect(snapshotSpy).not.toHaveBeenCalled();
+		expect(getLastCodexCliSyncRun()?.trigger).toBe("manual");
+		expect(getLastCodexCliSyncRun()?.rollbackSnapshot).toBeNull();
+	});
+
+	it("restores the latest manual apply even when newer runs do not have checkpoints", async () => {
+		const snapshotPath = join(tempDir, "rollback-snapshot.json");
+		const snapshotStorage: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_old",
+					accountIdSource: "token",
+					email: "old@example.com",
+					refreshToken: "refresh-old",
+					accessToken: "access-old",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+		await writeFile(snapshotPath, JSON.stringify(snapshotStorage, null, 2), "utf-8");
+
+		await storageModule.saveAccounts({
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_new",
+					accountIdSource: "token",
+					email: "new@example.com",
+					refreshToken: "refresh-new",
+					accessToken: "access-new",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		});
+
+		const summary = {
+			sourceAccountCount: 1,
+			targetAccountCountBefore: 1,
+			targetAccountCountAfter: 1,
+			addedAccountCount: 0,
+			updatedAccountCount: 1,
+			unchangedAccountCount: 0,
+			destinationOnlyPreservedCount: 0,
+			selectionChanged: false,
+		};
+		const manualChangedRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary,
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_002",
+				path: snapshotPath,
+			},
+		};
+		const automaticRun: CodexCliSyncRun = {
+			outcome: "noop",
+			runAt: 20,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: { ...summary, updatedAccountCount: 0, unchangedAccountCount: 1 },
+			trigger: "automatic",
+			rollbackSnapshot: null,
+		};
+		const manualNoopRun: CodexCliSyncRun = {
+			outcome: "noop",
+			runAt: 30,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: { ...summary, updatedAccountCount: 0, unchangedAccountCount: 1 },
+			trigger: "manual",
+			rollbackSnapshot: null,
+		};
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: manualChangedRun.runAt,
+			run: manualChangedRun,
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: automaticRun.runAt,
+			run: automaticRun,
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: manualNoopRun.runAt,
+			run: manualNoopRun,
+		});
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("ready");
+		expect(plan.snapshot).toEqual(manualChangedRun.rollbackSnapshot);
+
+		const rollbackResult = await rollbackLastCodexCliSync();
+		expect(rollbackResult.status).toBe("restored");
+		expect(rollbackResult.snapshot).toEqual(manualChangedRun.rollbackSnapshot);
+
+		const restored = await storageModule.loadAccounts();
+		expect(restored?.accounts).toHaveLength(1);
+		expect(restored?.accounts[0]?.refreshToken).toBe("refresh-old");
+
+		expect(getLastCodexCliSyncRun()).toMatchObject({
+			outcome: "changed",
+			trigger: "manual",
+			targetPath: targetStoragePath,
+			rollbackSnapshot: null,
+			message: expect.stringContaining("Rollback restored checkpoint:"),
+		});
+
+		const history = await readSyncHistory({ kind: "codex-cli-sync" });
+		expect(history.at(-1)).toMatchObject({
+			kind: "codex-cli-sync",
+			run: expect.objectContaining({
+				outcome: "changed",
+				trigger: "manual",
+				targetPath: targetStoragePath,
+				rollbackSnapshot: null,
+				message: expect.stringContaining("Rollback restored checkpoint:"),
+			}),
+		});
+
+		const followUpPlan = await getLatestCodexCliSyncRollbackPlan();
+		expect(followUpPlan.status).toBe("unavailable");
+		expect(followUpPlan.reason).toBe(
+			"No manual Codex CLI apply with a rollback checkpoint is available.",
+		);
+	});
+
+	it("prefers an older checkpointed manual apply when the newest manual apply has no checkpoint", async () => {
+		const snapshotPath = join(tempDir, "rollback-snapshot-manual-changed.json");
+		await writeFile(
+			snapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old_manual",
+							accountIdSource: "token",
+							email: "old-manual@example.com",
+							refreshToken: "refresh-old-manual",
+							accessToken: "access-old-manual",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const summary = {
+			sourceAccountCount: 1,
+			targetAccountCountBefore: 1,
+			targetAccountCountAfter: 1,
+			addedAccountCount: 0,
+			updatedAccountCount: 1,
+			unchangedAccountCount: 0,
+			destinationOnlyPreservedCount: 0,
+			selectionChanged: false,
+		};
+		const olderCheckpointedManualRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary,
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_010",
+				path: snapshotPath,
+			},
+		};
+		const newestManualRunWithoutCheckpoint: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 20,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary,
+			trigger: "manual",
+			rollbackSnapshot: null,
+		};
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: olderCheckpointedManualRun.runAt,
+			run: olderCheckpointedManualRun,
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: newestManualRunWithoutCheckpoint.runAt,
+			run: newestManualRunWithoutCheckpoint,
+		});
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("ready");
+		expect(plan.snapshot).toEqual(olderCheckpointedManualRun.rollbackSnapshot);
+
+		const rollbackResult = await rollbackLastCodexCliSync();
+		expect(rollbackResult.status).toBe("restored");
+		expect(rollbackResult.snapshot).toEqual(olderCheckpointedManualRun.rollbackSnapshot);
+	});
+
+	it("ignores rollback candidates recorded for a different target path", async () => {
+		const matchingSnapshotPath = join(tempDir, "rollback-target-match.json");
+		const otherSnapshotPath = join(tempDir, "rollback-target-other.json");
+		await writeFile(
+			matchingSnapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_match",
+							accountIdSource: "token",
+							email: "match@example.com",
+							refreshToken: "refresh-match",
+							accessToken: "access-match",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+		await writeFile(
+			otherSnapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_other",
+							accountIdSource: "token",
+							email: "other@example.com",
+							refreshToken: "refresh-other",
+							accessToken: "access-other",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const matchingRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-target-match",
+				path: matchingSnapshotPath,
+			},
+		};
+		const otherTargetRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 20,
+			sourcePath: accountsPath,
+			targetPath: join(tempDir, "other-target", "openai-codex-accounts.json"),
+			summary: {
+				...matchingRun.summary,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-target-other",
+				path: otherSnapshotPath,
+			},
+		};
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: matchingRun.runAt,
+			run: matchingRun,
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: otherTargetRun.runAt,
+			run: otherTargetRun,
+		});
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("ready");
+		expect(plan.snapshot).toEqual(matchingRun.rollbackSnapshot);
+	});
+
+	it.each([
+		["null checkpoint", null],
+		[
+			"blank checkpoint path",
+			{
+				name: "accounts-codex-cli-sync-snapshot-invalid",
+				path: "   ",
+			},
+		],
+	] satisfies Array<
+		[
+			string,
+			{ name: string; path: string } | null,
+		]
+	>)(
+		"falls back to the newest valid rollback checkpoint when a newer manual change has a %s",
+		async (_label, invalidSnapshot) => {
+			const snapshotPath = join(tempDir, "rollback-fallback-snapshot.json");
+			await writeFile(
+				snapshotPath,
+				JSON.stringify(
+					{
+						version: 3,
+						accounts: [
+							{
+								accountId: "acc_old",
+								accountIdSource: "token",
+								email: "old@example.com",
+								refreshToken: "refresh-old",
+								accessToken: "access-old",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+						activeIndex: 0,
+						activeIndexByFamily: { codex: 0 },
+					} satisfies AccountStorageV3,
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			const summary = {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			};
+			const validRun: CodexCliSyncRun = {
+				outcome: "changed",
+				runAt: 10,
+				sourcePath: accountsPath,
+				targetPath: targetStoragePath,
+				summary,
+				trigger: "manual",
+				rollbackSnapshot: {
+					name: "accounts-codex-cli-sync-snapshot-valid",
+					path: snapshotPath,
+				},
+			};
+			const newerInvalidRun: CodexCliSyncRun = {
+				outcome: "changed",
+				runAt: 20,
+				sourcePath: accountsPath,
+				targetPath: targetStoragePath,
+				summary,
+				trigger: "manual",
+				rollbackSnapshot: invalidSnapshot,
+			};
+
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: validRun.runAt,
+				run: validRun,
+			});
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: newerInvalidRun.runAt,
+				run: newerInvalidRun,
+			});
+
+			const plan = await getLatestCodexCliSyncRollbackPlan();
+			expect(plan.status).toBe("ready");
+			expect(plan.snapshot).toEqual(validRun.rollbackSnapshot);
+		},
+	);
+
+	it("marks the rollback plan unavailable when the checkpoint file is missing", async () => {
+		const missingRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-missing",
+				path: join(tempDir, "missing-rollback-snapshot.json"),
+			},
+		};
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: missingRun.runAt,
+			run: missingRun,
+		});
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("unavailable");
+		expect(plan.reason).toContain("missing");
+		expect(plan.reason).toContain(missingRun.rollbackSnapshot?.name ?? "");
+		expect(plan.reason).not.toContain(missingRun.rollbackSnapshot?.path ?? "");
+
+		const rollbackResult = await rollbackLatestCodexCliSync(plan);
+		expect(rollbackResult.status).toBe("unavailable");
+		expect(rollbackResult.reason).toContain("missing");
+		expect(rollbackResult.reason).not.toContain(
+			missingRun.rollbackSnapshot?.path ?? "",
+		);
+	});
+
+	it.each([
+		["snapshot name", /name/i],
+		["snapshot path", /path/i],
+	] satisfies Array<[string, RegExp]>)(
+		"rejects rollback when the recorded %s is blank",
+		async (field, messagePattern) => {
+			const invalidRun: CodexCliSyncRun = {
+				outcome: "changed",
+				runAt: 10,
+				sourcePath: accountsPath,
+				targetPath: targetStoragePath,
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 1,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 0,
+					updatedAccountCount: 1,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+				trigger: "manual",
+				rollbackSnapshot:
+					field === "snapshot name"
+						? {
+								name: "",
+								path: join(tempDir, "rollback-snapshot.json"),
+							}
+						: {
+								name: "accounts-codex-cli-sync-snapshot-invalid",
+								path: "",
+							},
+			};
+
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: invalidRun.runAt,
+				run: invalidRun,
+			});
+
+			const plan = await getLatestCodexCliSyncRollbackPlan();
+			expect(plan.status).toBe("unavailable");
+			expect(plan.reason).toMatch(messagePattern);
+			await expect(rollbackLastCodexCliSync()).rejects.toThrow(messagePattern);
+		},
+	);
+
+	it("fails closed when rollback history cannot be read", async () => {
+		const readError = Object.assign(new Error("history busy"), {
+			code: "EBUSY",
+		});
+		vi.resetModules();
+		vi.doMock("../lib/sync-history.js", async () => {
+			const actual = await vi.importActual<typeof import("../lib/sync-history.js")>(
+				"../lib/sync-history.js",
+			);
+			return {
+				...actual,
+				readSyncHistory: vi.fn().mockRejectedValue(readError),
+			};
+		});
+
+		try {
+			const freshSyncModule = await import("../lib/codex-cli/sync.js");
+			freshSyncModule.__resetLastCodexCliSyncRunForTests();
+
+			await expect(freshSyncModule.getLatestCodexCliSyncRollbackPlan()).resolves.toEqual({
+				status: "unavailable",
+				reason: "Rollback history is unavailable [EBUSY].",
+				snapshot: null,
+			});
+		} finally {
+			vi.doUnmock("../lib/sync-history.js");
+			vi.resetModules();
+			clearCodexCliStateCache();
+			__resetLastCodexCliSyncRunForTests();
+			await __resetSyncHistoryForTests();
+			configureSyncHistoryForTests(join(tempDir, "logs"));
+			storageModule.setStoragePathDirect(targetStoragePath);
+		}
+	});
+
+	it("surfaces rollback save failures through both rollback APIs", async () => {
+		const snapshotPath = join(tempDir, "rollback-error-snapshot.json");
+		await writeFile(
+			snapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old",
+							accountIdSource: "token",
+							email: "old@example.com",
+							refreshToken: "refresh-old",
+							accessToken: "access-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const recordedRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-error",
+				path: snapshotPath,
+			},
+		};
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: recordedRun.runAt,
+			run: recordedRun,
+		});
+
+		const leakingError = Object.assign(
+			new Error(
+				`EPERM: operation not permitted, open '${join(tempDir, "openai-codex-accounts.json")}'`,
+			),
+			{ code: "EPERM" },
+		);
+		const saveSpy = vi.spyOn(storageModule, "saveAccounts").mockRejectedValue(
+			leakingError,
+		);
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("ready");
+
+		const rollbackResult = await rollbackLatestCodexCliSync(plan);
+		expect(rollbackResult.status).toBe("error");
+		expect(rollbackResult.reason).toBe(
+			"Failed to restore rollback checkpoint [EPERM].",
+		);
+		expect(rollbackResult.reason).not.toContain(tempDir);
+		await expect(rollbackLastCodexCliSync()).rejects.toThrow(
+			"Failed to restore rollback checkpoint [EPERM].",
+		);
+
+		saveSpy.mockRestore();
+	});
+
+	it("retries transient rollback save failures before succeeding", async () => {
+		const snapshotPath = join(tempDir, "rollback-retry-snapshot.json");
+		await writeFile(
+			snapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old",
+							accountIdSource: "token",
+							email: "old@example.com",
+							refreshToken: "refresh-old",
+							accessToken: "access-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const recordedRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-retry",
+				path: snapshotPath,
+			},
+		};
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: recordedRun.runAt,
+			run: recordedRun,
+		});
+
+		const transientError = Object.assign(new Error("save busy"), {
+			code: "EBUSY",
+		});
+		const saveSpy = vi
+			.spyOn(storageModule, "saveAccounts")
+			.mockRejectedValueOnce(transientError)
+			.mockResolvedValueOnce(undefined);
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("ready");
+
+		const rollbackResult = await rollbackLatestCodexCliSync(plan);
+		expect(rollbackResult.status).toBe("restored");
+		expect(saveSpy).toHaveBeenCalledTimes(2);
+
+		saveSpy.mockRestore();
+	});
+
+	it("shares an in-flight rollback restore across concurrent callers", async () => {
+		let resolveSave: (() => void) | undefined;
+		const inFlightSave = new Promise<void>((resolve) => {
+			resolveSave = resolve;
+		});
+		const saveSpy = vi
+			.spyOn(storageModule, "saveAccounts")
+			.mockImplementation(() => inFlightSave);
+
+		try {
+			const plan = {
+				status: "ready" as const,
+				reason: "Restores 1 account from rollback checkpoint.",
+				snapshot: {
+					name: "accounts-codex-cli-sync-snapshot-shared",
+					path: join(tempDir, "rollback-shared-snapshot.json"),
+				},
+				storage: {
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old",
+							accountIdSource: "token" as const,
+							email: "old@example.com",
+							refreshToken: "refresh-old",
+							accessToken: "access-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				accountCount: 1,
+			};
+
+			const firstRollback = rollbackLatestCodexCliSync(plan);
+			const secondRollback = rollbackLatestCodexCliSync(plan);
+
+			expect(saveSpy).toHaveBeenCalledTimes(1);
+
+			resolveSave?.();
+
+			const [firstResult, secondResult] = await Promise.all([
+				firstRollback,
+				secondRollback,
+			]);
+			expect(firstResult).toEqual(secondResult);
+			expect(firstResult).toMatchObject({
+				status: "restored",
+				accountCount: 1,
+				snapshot: plan.snapshot,
+			});
+			expect(getLastCodexCliSyncRun()?.message).toContain(plan.snapshot.name);
+		} finally {
+			saveSpy.mockRestore();
+		}
+	});
+
+	it("logs retried rollback save failures with redacted filesystem labels", async () => {
+		const warnSpy = vi.fn();
+		vi.resetModules();
+		vi.doMock("../lib/logger.js", async () => {
+			const actual = await vi.importActual<typeof import("../lib/logger.js")>(
+				"../lib/logger.js",
+			);
+			return {
+				...actual,
+				createLogger: () => ({
+					debug: vi.fn(),
+					info: vi.fn(),
+					warn: warnSpy,
+					error: vi.fn(),
+					time: () => () => 0,
+					timeEnd: () => undefined,
+				}),
+			};
+		});
+
+		try {
+			const freshStorageModule = await import("../lib/storage.js");
+			const freshStateModule = await import("../lib/codex-cli/state.js");
+			const freshSyncHistoryModule = await import("../lib/sync-history.js");
+			const freshSyncModule = await import("../lib/codex-cli/sync.js");
+
+			freshStorageModule.setStoragePathDirect(targetStoragePath);
+			freshSyncHistoryModule.configureSyncHistoryForTests(join(tempDir, "logs"));
+			await freshSyncHistoryModule.__resetSyncHistoryForTests();
+			freshStateModule.clearCodexCliStateCache();
+			freshSyncModule.__resetLastCodexCliSyncRunForTests();
+
+			const snapshotPath = join(tempDir, "rollback-retry-logged-snapshot.json");
+			await writeFile(
+				snapshotPath,
+				JSON.stringify(
+					{
+						version: 3,
+						accounts: [
+							{
+								accountId: "acc_old",
+								accountIdSource: "token",
+								email: "old@example.com",
+								refreshToken: "refresh-old",
+								accessToken: "access-old",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+						activeIndex: 0,
+						activeIndexByFamily: { codex: 0 },
+					} satisfies AccountStorageV3,
+					null,
+					2,
+				),
+				"utf-8",
+			);
+
+			await freshSyncHistoryModule.appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: 10,
+				run: {
+					outcome: "changed",
+					runAt: 10,
+					sourcePath: accountsPath,
+					targetPath: targetStoragePath,
+					summary: {
+						sourceAccountCount: 1,
+						targetAccountCountBefore: 1,
+						targetAccountCountAfter: 1,
+						addedAccountCount: 0,
+						updatedAccountCount: 1,
+						unchangedAccountCount: 0,
+						destinationOnlyPreservedCount: 0,
+						selectionChanged: false,
+					},
+					trigger: "manual",
+					rollbackSnapshot: {
+						name: "accounts-codex-cli-sync-snapshot-retry-logged",
+						path: snapshotPath,
+					},
+				},
+			});
+
+			const transientError = Object.assign(
+				new Error(
+					`EPERM: operation not permitted, open '${join(tempDir, "openai-codex-accounts.json")}'`,
+				),
+				{ code: "EPERM" },
+			);
+			const saveSpy = vi
+				.spyOn(freshStorageModule, "saveAccounts")
+				.mockRejectedValueOnce(transientError)
+				.mockResolvedValueOnce(undefined);
+
+			const plan = await freshSyncModule.getLatestCodexCliSyncRollbackPlan();
+			expect(plan.status).toBe("ready");
+
+			const rollbackResult = await freshSyncModule.rollbackLatestCodexCliSync(plan);
+			expect(rollbackResult.status).toBe("restored");
+			expect(saveSpy).toHaveBeenCalledTimes(2);
+			expect(warnSpy).toHaveBeenCalledWith(
+				"Retrying rollback checkpoint save after transient filesystem error",
+				expect.objectContaining({
+					attempt: 1,
+					maxAttempts: 5,
+					error: "EPERM",
+				}),
+			);
+
+			saveSpy.mockRestore();
+		} finally {
+			vi.doUnmock("../lib/logger.js");
+			vi.resetModules();
+			clearCodexCliStateCache();
+			__resetLastCodexCliSyncRunForTests();
+			await __resetSyncHistoryForTests();
+			configureSyncHistoryForTests(join(tempDir, "logs"));
+			storageModule.setStoragePathDirect(targetStoragePath);
+		}
+	});
+
+	it("re-reads Codex CLI state on apply when forceRefresh is requested", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		await previewCodexCliSync(current, { forceRefresh: true });
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_c",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+						{
+							accountId: "acc_c",
+							email: "c@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-c",
+									refresh_token: "refresh-c",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const loadSpy = vi.spyOn(codexCliState, "loadCodexCliState");
+		try {
+			const result = await applyCodexCliSyncToStorage(current, {
+				forceRefresh: true,
+			});
+			expect(loadSpy).toHaveBeenCalledWith(
+				expect.objectContaining({ forceRefresh: true }),
+			);
+			expect(result.changed).toBe(true);
+			expect(result.storage?.accounts.map((account) => account.accountId)).toEqual([
+				"acc_a",
+				"acc_b",
+				"acc_c",
+			]);
+			expect(result.storage?.activeIndex).toBe(2);
+		} finally {
+			loadSpy.mockRestore();
+		}
+	});
+
+	it("preserves explicit per-family selections when Codex CLI updates the global selection", async () => {
+		const alternateFamily = MODEL_FAMILIES.find((family) => family !== "codex");
+		expect(alternateFamily).toBeDefined();
+		if (!alternateFamily) {
+			return;
+		}
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_a",
+							email: "a@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-a",
+									refresh_token: "refresh-a",
+								},
+							},
+						},
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+						{
+							accountId: "acc_c",
+							email: "c@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-c",
+									refresh_token: "refresh-c",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_b",
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					accountId: "acc_c",
+					email: "c@example.com",
+					refreshToken: "refresh-c",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: {
+				codex: 0,
+				[alternateFamily]: 2,
+			},
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			forceRefresh: true,
+		});
+
+		expect(result.changed).toBe(true);
+		expect(result.storage?.activeIndex).toBe(1);
+		expect(result.storage?.activeIndexByFamily?.codex).toBe(1);
+		expect(result.storage?.activeIndexByFamily?.[alternateFamily]).toBe(2);
+	});
+
+	it("forces a fresh Codex CLI state read on apply when forceRefresh is omitted", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		await previewCodexCliSync(current, { forceRefresh: true });
+
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_c",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+						{
+							accountId: "acc_c",
+							email: "c@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-c",
+									refresh_token: "refresh-c",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const loadSpy = vi.spyOn(codexCliState, "loadCodexCliState");
+		try {
+			const result = await applyCodexCliSyncToStorage(current);
+			expect(loadSpy).toHaveBeenCalledWith(
+				expect.objectContaining({ forceRefresh: true }),
+			);
+			expect(result.changed).toBe(true);
+			expect(result.storage?.accounts.map((account) => account.accountId)).toEqual([
+				"acc_a",
+				"acc_b",
+				"acc_c",
+			]);
+			expect(result.storage?.activeIndex).toBe(2);
+		} finally {
+			loadSpy.mockRestore();
+		}
+	});
+
+	it("returns isolated pending runs for concurrent apply attempts", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const [first, second] = await Promise.all([
+			applyCodexCliSyncToStorage(current),
+			applyCodexCliSyncToStorage(current),
+		]);
+
+		expect(first.changed).toBe(true);
+		expect(second.changed).toBe(true);
+		expect(first.pendingRun).not.toBeNull();
+		expect(second.pendingRun).not.toBeNull();
+		expect(first.pendingRun?.revision).not.toBe(second.pendingRun?.revision);
+		expect(first.storage?.accounts.map((account) => account.accountId)).toEqual([
+			"acc_a",
+			"acc_b",
+		]);
+		expect(second.storage?.accounts.map((account) => account.accountId)).toEqual([
+			"acc_a",
+			"acc_b",
+		]);
+		expect(getLastCodexCliSyncRun()).toBeNull();
+	});
+
+	it("records a manual sync save failure over a pending changed run", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current);
+		expect(result.pendingRun).not.toBeNull();
+
+		commitCodexCliSyncRunFailure(result.pendingRun, new Error("save busy"));
+
+		const lastRun = getLastCodexCliSyncRun();
+		expect(lastRun?.outcome).toBe("error");
+		expect(lastRun?.message).toBe("save busy");
+		expect(lastRun?.summary.addedAccountCount).toBe(1);
+	});
+
+	it("keeps the newer pending sync outcome when an older commit finishes later", async () => {
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+		const firstSourceState = {
+			path: accountsPath,
+			activeAccountId: "acc_b",
+			accounts: [
+				{
+					accountId: "acc_b",
+					email: "b@example.com",
+					accessToken: "access-b",
+					refreshToken: "refresh-b",
+					isActive: true,
+				},
+			],
+		};
+		const secondSourceState = {
+			path: accountsPath,
+			activeAccountId: "acc_a",
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					accessToken: "access-a",
+					refreshToken: "refresh-a",
+					isActive: true,
+				},
+			],
+		};
+
+		const first = await applyCodexCliSyncToStorage(current, {
+			sourceState: firstSourceState,
+		});
+		const second = await applyCodexCliSyncToStorage(current, {
+			sourceState: secondSourceState,
+		});
+
+		expect(first.pendingRun).not.toBeNull();
+		expect(second.pendingRun).not.toBeNull();
+
+		commitCodexCliSyncRunFailure(second.pendingRun, new Error("later run failed"));
+		expect(getLastCodexCliSyncRun()?.outcome).toBe("error");
+
+		commitPendingCodexCliSyncRun(first.pendingRun);
+
+		expect(getLastCodexCliSyncRun()).toEqual(
+			expect.objectContaining({
+				outcome: "error",
+				sourcePath: accountsPath,
+				targetPath: targetStoragePath,
+				message: "later run failed",
+			}),
+		);
+	});
+
+	it("ignores a duplicate sync-run publish for the same revision", async () => {
+		await writeFile(
+			accountsPath,
+			JSON.stringify(
+				{
+					activeAccountId: "acc_b",
+					accounts: [
+						{
+							accountId: "acc_b",
+							email: "b@example.com",
+							auth: {
+								tokens: {
+									access_token: "access-b",
+									refresh_token: "refresh-b",
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current);
+		expect(result.pendingRun).not.toBeNull();
+
+		commitPendingCodexCliSyncRun(result.pendingRun);
+		const committedRun = getLastCodexCliSyncRun();
+
+		commitCodexCliSyncRunFailure(
+			result.pendingRun,
+			new Error("should not overwrite committed run"),
+		);
+
+		expect(getLastCodexCliSyncRun()).toEqual(committedRun);
+		expect(getLastCodexCliSyncRun()?.outcome).toBe("changed");
 	});
 
 	it("serializes concurrent active-selection writes to keep accounts/auth aligned", async () => {

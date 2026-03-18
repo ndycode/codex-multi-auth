@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 
+const {
+  commitPendingCodexCliSyncRunMock,
+  commitCodexCliSyncRunFailureMock,
+} = vi.hoisted(() => ({
+  commitPendingCodexCliSyncRunMock: vi.fn(),
+  commitCodexCliSyncRunFailureMock: vi.fn(),
+}));
+
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
   return {
@@ -11,6 +19,8 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
 });
 
 vi.mock("../lib/codex-cli/sync.js", () => ({
+  commitPendingCodexCliSyncRun: commitPendingCodexCliSyncRunMock,
+  commitCodexCliSyncRunFailure: commitCodexCliSyncRunFailureMock,
   syncAccountStorageFromCodexCli: vi.fn(),
 }));
 
@@ -30,11 +40,14 @@ import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 describe("AccountManager loadFromDisk", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    commitPendingCodexCliSyncRunMock.mockReset();
+    commitCodexCliSyncRunFailureMock.mockReset();
     vi.mocked(loadAccounts).mockResolvedValue(null);
     vi.mocked(saveAccounts).mockResolvedValue(undefined);
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: false,
       storage: null,
+      pendingRun: null,
     });
     vi.mocked(loadCodexCliState).mockResolvedValue(null);
     vi.mocked(setCodexCliActiveSelection).mockResolvedValue(undefined);
@@ -42,6 +55,25 @@ describe("AccountManager loadFromDisk", () => {
 
   it("persists Codex CLI source-of-truth storage when sync reports change", async () => {
     const now = Date.now();
+    const pendingRun = {
+      revision: 1,
+      run: {
+        outcome: "changed" as const,
+        runAt: now,
+        sourcePath: "source.json",
+        targetPath: "target.json",
+        summary: {
+          sourceAccountCount: 1,
+          targetAccountCountBefore: 1,
+          targetAccountCountAfter: 2,
+          addedAccountCount: 1,
+          updatedAccountCount: 0,
+          unchangedAccountCount: 0,
+          destinationOnlyPreservedCount: 1,
+          selectionChanged: false,
+        },
+      },
+    };
     const stored = {
       version: 3 as const,
       activeIndex: 0,
@@ -60,17 +92,39 @@ describe("AccountManager loadFromDisk", () => {
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: true,
       storage: synced,
+      pendingRun,
     });
 
     const manager = await AccountManager.loadFromDisk();
 
     expect(saveAccounts).toHaveBeenCalledWith(synced);
+    expect(commitPendingCodexCliSyncRunMock).toHaveBeenCalledWith(pendingRun);
+    expect(commitCodexCliSyncRunFailureMock).not.toHaveBeenCalled();
     expect(manager.getAccountCount()).toBe(2);
     expect(manager.getCurrentAccount()?.refreshToken).toBe("stored-refresh");
   });
 
   it("swallows source-of-truth persist failures and still returns a manager", async () => {
     const now = Date.now();
+    const pendingRun = {
+      revision: 2,
+      run: {
+        outcome: "changed" as const,
+        runAt: now,
+        sourcePath: "source.json",
+        targetPath: "target.json",
+        summary: {
+          sourceAccountCount: 1,
+          targetAccountCountBefore: 0,
+          targetAccountCountAfter: 1,
+          addedAccountCount: 1,
+          updatedAccountCount: 0,
+          unchangedAccountCount: 0,
+          destinationOnlyPreservedCount: 0,
+          selectionChanged: false,
+        },
+      },
+    };
     const synced = {
       version: 3 as const,
       activeIndex: 0,
@@ -80,11 +134,18 @@ describe("AccountManager loadFromDisk", () => {
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: true,
       storage: synced,
+      pendingRun,
     });
-    vi.mocked(saveAccounts).mockRejectedValueOnce(new Error("forced persist failure"));
+    const saveError = new Error("forced persist failure");
+    vi.mocked(saveAccounts).mockRejectedValueOnce(saveError);
 
     const manager = await AccountManager.loadFromDisk();
 
+    expect(commitPendingCodexCliSyncRunMock).not.toHaveBeenCalled();
+    expect(commitCodexCliSyncRunFailureMock).toHaveBeenCalledWith(
+      pendingRun,
+      saveError,
+    );
     expect(manager.getAccountCount()).toBe(1);
     expect(manager.getCurrentAccount()?.refreshToken).toBe("synced-refresh");
   });

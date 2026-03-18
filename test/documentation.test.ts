@@ -288,15 +288,37 @@ describe("Documentation Integrity", () => {
 	it("locks the current Experimental settings menu labels and help text", () => {
 		expect(UI_COPY.settings.title).toBe("Settings");
 		expect(UI_COPY.settings.subtitle).toBe(
-			"Customize menu, behavior, backend, and experiments",
+			"Start with everyday dashboard settings. Advanced operator controls stay separate.",
 		);
 		expect(UI_COPY.settings.help).toBe("↑↓ Move | Enter Select | Q Back");
-		expect(UI_COPY.settings.accountList).toBe("Account List View");
-		expect(UI_COPY.settings.summaryFields).toBe("Summary Line");
-		expect(UI_COPY.settings.behavior).toBe("Menu Behavior");
-		expect(UI_COPY.settings.theme).toBe("Color Theme");
+		expect(UI_COPY.settings.accountList).toBe("List Appearance");
+		expect(UI_COPY.settings.accountListHint).toBe(
+			"Show badges, sorting, and how much detail each account row shows.",
+		);
+		expect(UI_COPY.settings.syncCenter).toBe("Codex CLI Sync");
+		expect(UI_COPY.settings.syncCenterHint).toBe(
+			"Preview and apply one-way sync from Codex CLI account files.",
+		);
+		expect(UI_COPY.settings.summaryFields).toBe("Details Line");
+		expect(UI_COPY.settings.summaryFieldsHint).toBe(
+			"Choose which details appear under each account row.",
+		);
+		expect(UI_COPY.settings.behavior).toBe("Results & Refresh");
+		expect(UI_COPY.settings.behaviorHint).toBe(
+			"Control auto-return timing and background limit refresh behavior.",
+		);
+		expect(UI_COPY.settings.theme).toBe("Colors");
+		expect(UI_COPY.settings.themeHint).toBe(
+			"Pick the base palette and accent color.",
+		);
 		expect(UI_COPY.settings.experimental).toBe("Experimental");
-		expect(UI_COPY.settings.backend).toBe("Backend Controls");
+		expect(UI_COPY.settings.experimentalHint).toBe(
+			"Preview sync and backup actions before they become stable.",
+		);
+		expect(UI_COPY.settings.backend).toBe("Advanced Backend Controls");
+		expect(UI_COPY.settings.backendHint).toBe(
+			"Tune retry, quota, sync, recovery, and timeout internals.",
+		);
 		expect(UI_COPY.settings.accountListHelp).toBe(
 			"Enter Toggle | Number Toggle | M Sort | L Layout | S Save | Q Back (No Save)",
 		);
@@ -317,12 +339,16 @@ describe("Documentation Integrity", () => {
 	it("keeps settings reference sections aligned with current menu labels and backend categories", () => {
 		const settingsRef = read("docs/reference/settings.md");
 
-		expect(settingsRef).toContain(`## ${UI_COPY.settings.accountList}`);
-		expect(settingsRef).toContain(`## ${UI_COPY.settings.summaryFields}`);
-		expect(settingsRef).toContain(`## ${UI_COPY.settings.behavior}`);
-		expect(settingsRef).toContain(`## ${UI_COPY.settings.theme}`);
-		expect(settingsRef).toContain(`## ${UI_COPY.settings.experimental}`);
-		expect(settingsRef).toContain(`## ${UI_COPY.settings.backend}`);
+		expect(settingsRef).toContain("## Everyday Settings");
+		expect(settingsRef).toContain(`### ${UI_COPY.settings.accountList}`);
+		expect(settingsRef).toContain(`### ${UI_COPY.settings.summaryFields}`);
+		expect(settingsRef).toContain(`### ${UI_COPY.settings.behavior}`);
+		expect(settingsRef).toContain(`### ${UI_COPY.settings.theme}`);
+		expect(settingsRef).toContain("## Advanced and Operator Controls");
+		expect(settingsRef).toContain(`### ${UI_COPY.settings.syncCenter}`);
+		expect(settingsRef).toContain(`### ${UI_COPY.settings.experimental}`);
+		expect(settingsRef).toContain(`### ${UI_COPY.settings.backend}`);
+		expect(settingsRef).toContain("## Backend Categories");
 		expect(settingsRef).toContain("### Session & Sync");
 		expect(settingsRef).toContain("### Rotation & Quota");
 		expect(settingsRef).toContain("### Refresh & Recovery");

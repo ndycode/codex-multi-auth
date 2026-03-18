@@ -625,7 +625,7 @@ describe("storage recovery paths", () => {
 		).toBe(false);
 	});
 
-	it("cleans up stale staged backup artifacts during load", async () => {
+	it("cleans up only stale staged backup artifacts during load", async () => {
 		await fs.writeFile(
 			storagePath,
 			JSON.stringify({
@@ -643,8 +643,12 @@ describe("storage recovery paths", () => {
 		];
 		for (const staleArtifactPath of staleArtifacts) {
 			await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+			await fs.utimes(staleArtifactPath, new Date(0), new Date(0));
 			expect(existsSync(staleArtifactPath)).toBe(true);
 		}
+		const freshArtifactPath = `${storagePath}.bak.rotate.54321.fresh.latest.tmp`;
+		await fs.writeFile(freshArtifactPath, "fresh", "utf-8");
+		expect(existsSync(freshArtifactPath)).toBe(true);
 		const unrelatedArtifactPath = `${storagePath}.rotate.12345.abc123.latest.tmp`;
 		await fs.writeFile(unrelatedArtifactPath, "keep", "utf-8");
 		expect(existsSync(unrelatedArtifactPath)).toBe(true);
@@ -656,6 +660,7 @@ describe("storage recovery paths", () => {
 		for (const staleArtifactPath of staleArtifacts) {
 			expect(existsSync(staleArtifactPath)).toBe(false);
 		}
+		expect(existsSync(freshArtifactPath)).toBe(true);
 		expect(existsSync(unrelatedArtifactPath)).toBe(true);
 	});
 
@@ -719,6 +724,8 @@ describe("storage recovery paths", () => {
 		);
 
 		await fs.writeFile(`${storagePath}.cache`, "noise", "utf-8");
+		const cacheMtime = new Date(Date.now() - 5_000);
+		await fs.utimes(`${storagePath}.cache`, cacheMtime, cacheMtime);
 		await fs.writeFile(
 			`${storagePath}.manual-meta-checkpoint`,
 			JSON.stringify({
@@ -735,12 +742,20 @@ describe("storage recovery paths", () => {
 			}),
 			"utf-8",
 		);
+		const manualCheckpointMtime = new Date(Date.now() + 5_000);
+		await fs.utimes(
+			`${storagePath}.manual-meta-checkpoint`,
+			manualCheckpointMtime,
+			manualCheckpointMtime,
+		);
 
 		const metadata = await getBackupMetadata();
 		const accountSnapshots = metadata.accounts.snapshots;
 		const cacheEntries = accountSnapshots.filter((snapshot) => snapshot.path.endsWith(".cache"));
 		expect(cacheEntries).toHaveLength(0);
-		expect(metadata.accounts.latestValidPath).toBe(`${storagePath}.manual-meta-checkpoint`);
+		expect(metadata.accounts.latestValidPath).toBe(
+			`${storagePath}.manual-meta-checkpoint`,
+		);
 		const discovered = accountSnapshots.find((snapshot) => snapshot.path.endsWith("manual-meta-checkpoint"));
 		expect(discovered?.kind).toBe("accounts-discovered-backup");
 		expect(discovered?.valid).toBe(true);
@@ -761,7 +776,6 @@ describe("storage recovery paths", () => {
 			}),
 			"utf-8",
 		);
-		await new Promise((resolve) => setTimeout(resolve, 20));
 		await fs.writeFile(
 			newerManualPath,
 			JSON.stringify({
@@ -771,6 +785,11 @@ describe("storage recovery paths", () => {
 			}),
 			"utf-8",
 		);
+		const baseMtimeMs = Date.now() - 60_000;
+		const olderManualMtime = new Date(baseMtimeMs);
+		const newerManualMtime = new Date(baseMtimeMs + 10_000);
+		await fs.utimes(olderManualPath, olderManualMtime, olderManualMtime);
+		await fs.utimes(newerManualPath, newerManualMtime, newerManualMtime);
 
 		const metadata = await getBackupMetadata();
 		expect(metadata.accounts.latestValidPath).toBe(newerManualPath);

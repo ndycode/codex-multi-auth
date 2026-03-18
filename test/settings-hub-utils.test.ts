@@ -16,6 +16,45 @@ import {
 import type { MenuItem } from "../lib/ui/select.js";
 
 type SettingsHubTestApi = {
+	buildSyncCenterOverview: (
+		preview: {
+			status: "ready" | "noop" | "disabled" | "unavailable" | "error";
+			statusDetail: string;
+			sourcePath: string | null;
+			targetPath: string;
+			summary: {
+				addedAccountCount: number;
+				updatedAccountCount: number;
+				destinationOnlyPreservedCount: number;
+				targetAccountCountAfter: number;
+				selectionChanged: boolean;
+			};
+			backup: {
+				enabled: boolean;
+				rollbackPaths: string[];
+			};
+			lastSync: {
+				outcome: "changed" | "noop" | "disabled" | "unavailable" | "error";
+				runAt: number;
+				message?: string;
+			} | null;
+		},
+		context?: {
+			accountsPath: string;
+			authPath: string;
+			configPath: string;
+			sourceAccountCount: number | null;
+			liveSync: {
+				path: string | null;
+				running: boolean;
+				lastKnownMtimeMs: number | null;
+				lastSyncAt: number | null;
+				reloadCount: number;
+				errorCount: number;
+			};
+			syncEnabled: boolean;
+		},
+	) => Array<{ label: string; hint?: string }>;
 	clampBackendNumber: (settingKey: string, value: number) => number;
 	formatMenuLayoutMode: (mode: "compact-details" | "expanded-rows") => string;
 	cloneDashboardSettings: (
@@ -71,6 +110,7 @@ type SettingsHubTestApi = {
 	promptExperimentalSettings: (
 		initial: PluginConfig,
 	) => Promise<PluginConfig | null>;
+	promptSyncCenter: (config: PluginConfig) => Promise<void>;
 };
 
 type UiRuntimeOptions = ReturnType<typeof getUiRuntimeOptions>;
@@ -205,6 +245,176 @@ describe("settings-hub utility coverage", () => {
 		);
 	});
 
+	it("builds sync-center overview text with preservation and rollback details", async () => {
+		const api = await loadSettingsHubTestApi();
+		const overview = api.buildSyncCenterOverview(
+			{
+				status: "ready",
+				statusDetail: "Preview ready",
+				sourcePath: "/tmp/source/accounts.json",
+				targetPath: "/tmp/target/openai-codex-accounts.json",
+				summary: {
+					addedAccountCount: 1,
+					updatedAccountCount: 2,
+					destinationOnlyPreservedCount: 3,
+					targetAccountCountAfter: 6,
+					selectionChanged: true,
+				},
+				backup: {
+					enabled: true,
+					rollbackPaths: [
+						"/tmp/target/openai-codex-accounts.json.bak",
+						"/tmp/target/openai-codex-accounts.json.wal",
+					],
+				},
+				lastSync: {
+					outcome: "changed",
+					runAt: Date.parse("2026-03-01T00:00:00.000Z"),
+				},
+			},
+			{
+				accountsPath: "/tmp/source/accounts.json",
+				authPath: "/tmp/source/auth.json",
+				configPath: "/tmp/source/config.toml",
+				sourceAccountCount: 1,
+				liveSync: {
+					path: "/tmp/target/openai-codex-accounts.json",
+					running: true,
+					lastKnownMtimeMs: Date.parse("2026-03-01T00:01:00.000Z"),
+					lastSyncAt: Date.parse("2026-03-01T00:02:00.000Z"),
+					reloadCount: 2,
+					errorCount: 0,
+				},
+				syncEnabled: true,
+			},
+		);
+
+		expect(overview[0]?.label).toContain("Status: ready");
+		expect(overview[1]?.hint).toContain("/tmp/source/accounts.json");
+		expect(overview[2]?.hint).toContain("/tmp/source/auth.json");
+		expect(overview[2]?.hint).toContain("/tmp/source/config.toml");
+		expect(overview[3]?.label).toContain("Live watcher: running");
+		expect(overview[4]?.label).toContain("Preview mode: read-only until apply");
+		expect(overview[4]?.hint).toContain("latest preview snapshot");
+		expect(overview[4]?.hint).toContain("refresh before apply");
+		expect(overview[5]?.label).toContain(
+			"add 1 | update 2 | preserve 3 | after 6",
+		);
+		expect(overview[6]?.hint).toContain("activeAccountId first");
+		expect(overview[7]?.hint).toContain("never deletes");
+		expect(overview[8]?.hint).toContain(".bak");
+		expect(overview[8]?.hint).toContain(".wal");
+	});
+
+	it.each([
+		{
+			outcome: "disabled" as const,
+			statusLabel: "Status: disabled",
+			lastSyncLabel: "Last sync: disabled",
+		},
+		{
+			outcome: "unavailable" as const,
+			statusLabel: "Status: unavailable",
+			lastSyncLabel: "Last sync: source missing",
+		},
+		{
+			outcome: "error" as const,
+			statusLabel: "Status: error",
+			lastSyncLabel: "Last sync: error: save busy",
+			message: "save busy",
+		},
+	])(
+		"formats sync-center overview status text for $outcome last-sync outcomes",
+		async ({ outcome, statusLabel, lastSyncLabel, message }) => {
+			const api = await loadSettingsHubTestApi();
+			const overview = api.buildSyncCenterOverview(
+				{
+					status: outcome,
+					statusDetail: `Status ${outcome}`,
+					sourcePath: null,
+					targetPath: "/tmp/target/openai-codex-accounts.json",
+					summary: {
+						addedAccountCount: 0,
+						updatedAccountCount: 0,
+						destinationOnlyPreservedCount: 0,
+						targetAccountCountAfter: 0,
+						selectionChanged: false,
+					},
+					backup: {
+						enabled: false,
+						rollbackPaths: [],
+					},
+					lastSync: {
+						outcome,
+						runAt: Date.parse("2026-03-01T00:00:00.000Z"),
+						message,
+					},
+				},
+				{
+					accountsPath: "/tmp/source/accounts.json",
+					authPath: "/tmp/source/auth.json",
+					configPath: "/tmp/source/config.toml",
+					sourceAccountCount: null,
+					liveSync: {
+						path: null,
+						running: false,
+						lastKnownMtimeMs: null,
+						lastSyncAt: null,
+						reloadCount: 0,
+						errorCount: 0,
+					},
+					syncEnabled: outcome !== "disabled",
+				},
+			);
+
+			expect(overview[0]?.label).toContain(statusLabel);
+			expect(overview[0]?.hint).toContain(lastSyncLabel);
+		},
+	);
+
+	it("matches windows-style source paths when labeling the active sync source", async () => {
+		const api = await loadSettingsHubTestApi();
+		const overview = api.buildSyncCenterOverview(
+			{
+				status: "ready",
+				statusDetail: "Preview ready",
+				sourcePath: "C:\\Users\\Neil\\.codex\\Accounts.json",
+				targetPath: "C:\\Users\\Neil\\.codex\\openai-codex-accounts.json",
+				summary: {
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					destinationOnlyPreservedCount: 1,
+					targetAccountCountAfter: 1,
+					selectionChanged: false,
+				},
+				backup: {
+					enabled: true,
+					rollbackPaths: [
+						"C:\\Users\\Neil\\.codex\\openai-codex-accounts.json.bak",
+					],
+				},
+				lastSync: null,
+			},
+			{
+				accountsPath: "c:/users/neil/.codex/accounts.json",
+				authPath: "c:/users/neil/.codex/auth.json",
+				configPath: "c:/users/neil/.codex/config.toml",
+				sourceAccountCount: 1,
+				liveSync: {
+					path: null,
+					running: false,
+					lastKnownMtimeMs: null,
+					lastSyncAt: null,
+					reloadCount: 0,
+					errorCount: 0,
+				},
+				syncEnabled: true,
+			},
+		);
+
+		expect(overview[2]?.label).toContain("accounts.json active");
+	});
+
 	it("formats layout mode labels", async () => {
 		const api = await loadSettingsHubTestApi();
 		expect(api.formatMenuLayoutMode("expanded-rows")).toBe("Expanded Rows");
@@ -283,6 +493,128 @@ describe("settings-hub utility coverage", () => {
 		);
 		expect(result).toBe("ok");
 		expect(attempts).toBe(3);
+	});
+
+	it("retries sync-center preview loading when loadAccounts hits a retryable lock", async () => {
+		const api = await loadSettingsHubTestApi();
+		const storageModule = await import("../lib/storage.js");
+		const codexCliState = await import("../lib/codex-cli/state.js");
+		let loadAttempts = 0;
+		const loadAccountsSpy = vi
+			.spyOn(storageModule, "loadAccounts")
+			.mockImplementation(async () => {
+				loadAttempts += 1;
+				if (loadAttempts === 1) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return {
+					version: 3,
+					accounts: [],
+					activeIndex: 0,
+					activeIndexByFamily: {},
+				};
+			});
+		const loadStateSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockResolvedValue({
+				path: "/tmp/source/accounts.json",
+				accounts: [],
+			});
+
+		queueSelectResults({ type: "back" });
+
+		try {
+			await api.promptSyncCenter({});
+			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+			expect(loadStateSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			loadAccountsSpy.mockRestore();
+			loadStateSpy.mockRestore();
+		}
+	});
+
+	it("retries sync-center preview loading when loadCodexCliState hits a retryable lock", async () => {
+		const api = await loadSettingsHubTestApi();
+		const storageModule = await import("../lib/storage.js");
+		const codexCliState = await import("../lib/codex-cli/state.js");
+		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+		let loadStateAttempts = 0;
+		const loadStateSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockImplementation(async () => {
+				loadStateAttempts += 1;
+				if (loadStateAttempts === 1) {
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return {
+					path: "/tmp/source/accounts.json",
+					accounts: [],
+				};
+			});
+
+		queueSelectResults({ type: "back" });
+
+		try {
+			await api.promptSyncCenter({});
+			expect(loadStateSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			loadAccountsSpy.mockRestore();
+			loadStateSpy.mockRestore();
+		}
+	});
+
+	it("retries sync-center preview loading when loadCodexCliState returns 429 once", async () => {
+		const api = await loadSettingsHubTestApi();
+		const storageModule = await import("../lib/storage.js");
+		const codexCliState = await import("../lib/codex-cli/state.js");
+		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+		const retryAfterMs = 1;
+		let loadStateAttempts = 0;
+		const loadStateSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockImplementation(async () => {
+				loadStateAttempts += 1;
+				if (loadStateAttempts === 1) {
+					const error = new Error("rate limited") as Error & {
+						status: number;
+						retryAfterMs: number;
+					};
+					error.status = 429;
+					error.retryAfterMs = retryAfterMs;
+					throw error;
+				}
+				return {
+					path: "/tmp/source/accounts.json",
+					accounts: [],
+				};
+			});
+
+		queueSelectResults({ type: "back" });
+
+		try {
+			await api.promptSyncCenter({});
+
+			expect(loadStateSpy).toHaveBeenCalledTimes(2);
+			expect(loadAccountsSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			loadAccountsSpy.mockRestore();
+			loadStateSpy.mockRestore();
+		}
 	});
 
 	it("propagates non-retryable filesystem errors immediately", async () => {

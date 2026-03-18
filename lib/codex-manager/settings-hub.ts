@@ -2,7 +2,30 @@ import { promises as fs } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
+	type CodexCliState,
+	getCodexCliAccountsPath,
+	getCodexCliAuthPath,
+	getCodexCliConfigPath,
+	isCodexCliSyncEnabled,
+	loadCodexCliState,
+} from "../codex-cli/state.js";
+import {
+	applyCodexCliSyncToStorage,
+	commitCodexCliSyncRunFailure,
+	commitPendingCodexCliSyncRun,
+	type CodexCliSyncPreview,
+	type CodexCliSyncRollbackPlan,
+	type CodexCliSyncRollbackResult,
+	type CodexCliSyncRun,
+	type CodexCliSyncSummary,
+	formatRollbackPaths,
+	getLastCodexCliSyncRun,
+	previewCodexCliSync,
+} from "../codex-cli/sync.js";
+import * as codexCliSyncModule from "../codex-cli/sync.js";
+import {
 	getDefaultPluginConfig,
+	getStorageBackupEnabled,
 	loadPluginConfig,
 	savePluginConfig,
 } from "../config.js";
@@ -18,12 +41,21 @@ import {
 	saveDashboardDisplaySettings,
 } from "../dashboard-settings.js";
 import {
+	getLastLiveAccountSyncSnapshot,
+	type LiveAccountSyncSnapshot,
+} from "../live-account-sync.js";
+import {
 	applyOcChatgptSync,
 	planOcChatgptSync,
 	runNamedBackupExport,
 } from "../oc-chatgpt-orchestrator.js";
 import { detectOcChatgptMultiAuthTarget } from "../oc-chatgpt-target-detection.js";
-import { loadAccounts, normalizeAccountStorage } from "../storage.js";
+import {
+	getStoragePath,
+	loadAccounts,
+	normalizeAccountStorage,
+	saveAccounts,
+} from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
@@ -264,12 +296,38 @@ type BackendSettingsHubAction =
 
 type SettingsHubAction =
 	| { type: "account-list" }
+	| { type: "sync-center" }
 	| { type: "summary-fields" }
 	| { type: "behavior" }
 	| { type: "theme" }
 	| { type: "experimental" }
 	| { type: "backend" }
 	| { type: "back" };
+
+type SyncCenterAction =
+	| { type: "refresh" }
+	| { type: "apply" }
+	| { type: "rollback" }
+	| { type: "back" };
+
+interface SyncCenterOverviewContext {
+	accountsPath: string;
+	authPath: string;
+	configPath: string;
+	sourceAccountCount: number | null;
+	liveSync: LiveAccountSyncSnapshot;
+	syncEnabled: boolean;
+}
+
+async function getSyncCenterRollbackPlan(): Promise<CodexCliSyncRollbackPlan> {
+	return codexCliSyncModule.getLatestCodexCliSyncRollbackPlan();
+}
+
+async function runSyncCenterRollback(
+	plan: CodexCliSyncRollbackPlan,
+): Promise<CodexCliSyncRollbackResult> {
+	return codexCliSyncModule.rollbackLatestCodexCliSync(plan);
+}
 
 type ExperimentalSettingsAction =
 	| { type: "sync" }
@@ -280,7 +338,6 @@ type ExperimentalSettingsAction =
 	| { type: "apply" }
 	| { type: "save" }
 	| { type: "back" };
-
 const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
 	{
 		key: "liveAccountSync",
@@ -782,7 +839,6 @@ async function readFileWithRetry(path: string): Promise<string> {
 		}
 	}
 }
-
 async function persistBackendConfigSelection(
 	selected: PluginConfig,
 	scope: string,
@@ -1237,6 +1293,163 @@ function formatMenuQuotaTtl(ttlMs: number): string {
 	return `${ttlMs}ms`;
 }
 
+function formatSyncRunTime(run: CodexCliSyncRun | null): string {
+	if (!run) return "No sync applied in this session.";
+	return new Date(run.runAt).toISOString().replace("T", " ");
+}
+
+function formatSyncRunOutcome(run: CodexCliSyncRun | null): string {
+	if (!run) return "none";
+	if (run.outcome === "changed") return "applied changes";
+	if (run.outcome === "noop") return "already aligned";
+	if (run.outcome === "disabled") return "disabled";
+	if (run.outcome === "unavailable") return "source missing";
+	return run.message ? `error: ${run.message}` : "error";
+}
+
+function formatSyncSummary(summary: CodexCliSyncSummary): string {
+	return [
+		`add ${summary.addedAccountCount}`,
+		`update ${summary.updatedAccountCount}`,
+		`preserve ${summary.destinationOnlyPreservedCount}`,
+		`after ${summary.targetAccountCountAfter}`,
+	].join(" | ");
+}
+
+function formatSyncTimestamp(timestamp: number | null | undefined): string {
+	if (
+		typeof timestamp !== "number" ||
+		!Number.isFinite(timestamp) ||
+		timestamp <= 0
+	) {
+		return "none";
+	}
+	return new Date(timestamp).toISOString().replace("T", " ");
+}
+
+function formatSyncMtime(mtimeMs: number | null): string {
+	if (
+		typeof mtimeMs !== "number" ||
+		!Number.isFinite(mtimeMs) ||
+		mtimeMs <= 0
+	) {
+		return "unknown";
+	}
+	return new Date(Math.round(mtimeMs)).toISOString().replace("T", " ");
+}
+
+function resolveSyncCenterContext(
+	sourceAccountCount: number | null,
+): SyncCenterOverviewContext {
+	return {
+		accountsPath: getCodexCliAccountsPath(),
+		authPath: getCodexCliAuthPath(),
+		configPath: getCodexCliConfigPath(),
+		sourceAccountCount,
+		liveSync: getLastLiveAccountSyncSnapshot(),
+		syncEnabled: isCodexCliSyncEnabled(),
+	};
+}
+
+function formatSyncSourceLabel(
+	preview: CodexCliSyncPreview,
+	context: SyncCenterOverviewContext,
+): string {
+	const normalizedSourcePath = normalizePathForComparison(preview.sourcePath);
+	const normalizedAccountsPath = normalizePathForComparison(context.accountsPath);
+	const normalizedAuthPath = normalizePathForComparison(context.authPath);
+	if (!context.syncEnabled) return "disabled by environment override";
+	if (!normalizedSourcePath) return "not available";
+	if (normalizedSourcePath === normalizedAccountsPath)
+		return "accounts.json active";
+	if (normalizedSourcePath === normalizedAuthPath)
+		return "auth.json fallback active";
+	return "custom source path active";
+}
+
+function normalizePathForComparison(
+	path: string | null | undefined,
+): string | null {
+	if (typeof path !== "string" || path.length === 0) {
+		return null;
+	}
+	const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+	const trimmed =
+		normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+	const isWindowsPath = path.includes("\\") || /^[a-z]:\//i.test(trimmed);
+	return isWindowsPath ? trimmed.toLowerCase() : trimmed;
+}
+
+function buildSyncCenterOverview(
+	preview: CodexCliSyncPreview,
+	context: SyncCenterOverviewContext = resolveSyncCenterContext(null),
+): Array<{ label: string; hint?: string }> {
+	const lastSync = preview.lastSync;
+	const activeSourceLabel = formatSyncSourceLabel(preview, context);
+	const liveSync = context.liveSync;
+	const liveSyncLabel = liveSync.running ? "running" : "idle";
+	const liveSyncHint = liveSync.running
+		? `Watching ${liveSync.path ?? preview.targetPath}. Reloads ${liveSync.reloadCount}, errors ${liveSync.errorCount}, last reload ${formatSyncTimestamp(liveSync.lastSyncAt)}, last seen mtime ${formatSyncMtime(liveSync.lastKnownMtimeMs)}.`
+		: `No live watcher is active in this process. When plugin mode runs with live sync enabled, it watches ${preview.targetPath} and reloads accounts after file changes.`;
+	const sourceStateHint = [
+		`Active source: ${activeSourceLabel}.`,
+		`Accounts path: ${context.accountsPath}`,
+		`Auth path: ${context.authPath}`,
+		`Config path: ${context.configPath}`,
+		context.sourceAccountCount !== null
+			? `Visible source accounts: ${context.sourceAccountCount}.`
+			: "No readable Codex CLI source is visible right now.",
+	].join("\n");
+	const selectionHint = preview.summary.selectionChanged
+		? "When the Codex CLI source is newer, target selection follows activeAccountId first, then activeEmail or the active snapshot email. If local storage or a local Codex selection write is newer, the target keeps the local selection."
+		: "Selection precedence stays accountId first, then email, with newer local target state preserving its own active selection instead of being overwritten.";
+	return [
+		{
+			label: `Status: ${preview.status}`,
+			hint: `${preview.statusDetail}\nLast sync: ${formatSyncRunOutcome(lastSync)} at ${formatSyncRunTime(lastSync)}`,
+		},
+		{
+			label: `Target path: ${preview.targetPath}`,
+			hint: preview.sourcePath
+				? `Source path: ${preview.sourcePath}`
+				: "Source path: not available",
+		},
+		{
+			label: `Codex CLI source visibility: ${activeSourceLabel}`,
+			hint: sourceStateHint,
+		},
+		{
+			label: `Live watcher: ${liveSyncLabel}`,
+			hint: liveSyncHint,
+		},
+		{
+			label: "Preview mode: read-only until apply",
+			hint: "Refresh only re-reads the Codex CLI source and recomputes the one-way result. Apply writes the latest preview snapshot into the target path; refresh before apply if the Codex CLI files may have changed. It does not create a bidirectional merge.",
+		},
+		{
+			label: `Preview summary: ${formatSyncSummary(preview.summary)}`,
+			hint: preview.summary.selectionChanged
+				? "Active selection also updates to match the current Codex CLI source when that source is newer."
+				: "Active selection already matches the one-way sync result.",
+		},
+		{
+			label:
+				"Selection precedence: accountId -> email -> preserve newer local choice",
+			hint: selectionHint,
+		},
+		{
+			label: `Destination-only preservation: keep ${preview.summary.destinationOnlyPreservedCount} target-only account(s)`,
+			hint: "One-way sync never deletes accounts that exist only in the target storage.",
+		},
+		{
+			label: `Pre-sync backup and rollback: ${preview.backup.enabled ? "enabled" : "disabled"}`,
+			hint: preview.backup.enabled
+				? `Before apply, target writes can create ${preview.backup.rollbackPaths.join(", ")} so rollback has explicit recovery context if the sync result is not what you expected.`
+				: "Storage backups are currently disabled, so apply writes rely on the direct target write only.",
+		},
+	];
+}
+
 function clampBackendNumberForTests(settingKey: string, value: number): number {
 	const option = BACKEND_NUMBER_OPTION_BY_KEY.get(
 		settingKey as BackendNumberSettingKey,
@@ -1277,6 +1490,7 @@ const __testOnly = {
 	clampBackendNumber: clampBackendNumberForTests,
 	formatMenuLayoutMode,
 	cloneDashboardSettings,
+	buildSyncCenterOverview,
 	withQueuedRetry: withQueuedRetryForTests,
 	loadExperimentalSyncTarget,
 	promptExperimentalSettings,
@@ -1291,6 +1505,7 @@ const __testOnly = {
 	promptBehaviorSettings,
 	promptThemeSettings,
 	promptBackendSettings,
+	promptSyncCenter,
 };
 
 /* c8 ignore start - interactive prompt flows are covered by integration tests */
@@ -2474,6 +2689,258 @@ async function promptBackendSettings(
 	}
 }
 
+async function promptSyncCenter(config: PluginConfig): Promise<void> {
+	if (!input.isTTY || !output.isTTY) return;
+	const ui = getUiRuntimeOptions();
+	const buildPreview = async (
+		forceRefresh = false,
+	): Promise<{
+		preview: CodexCliSyncPreview;
+		context: SyncCenterOverviewContext;
+		sourceState: CodexCliState | null;
+	}> => {
+		const current = await loadAccounts();
+		const sourceState = isCodexCliSyncEnabled()
+			? await loadCodexCliState({ forceRefresh })
+			: null;
+		const preview = await previewCodexCliSync(current, {
+			forceRefresh,
+			sourceState,
+			storageBackupEnabled: getStorageBackupEnabled(config),
+		});
+		return {
+			preview,
+			context: resolveSyncCenterContext(preview.sourceAccountCount),
+			sourceState,
+		};
+	};
+	const buildErrorState = (
+		message: string,
+		previousPreview?: CodexCliSyncPreview,
+	): {
+		preview: CodexCliSyncPreview;
+		context: SyncCenterOverviewContext;
+		sourceState: CodexCliState | null;
+	} => {
+		if (previousPreview) {
+			return {
+				preview: {
+					...previousPreview,
+					lastSync: getLastCodexCliSyncRun(),
+					status: "error",
+					statusDetail: message,
+				},
+				context: resolveSyncCenterContext(previousPreview.sourceAccountCount),
+				sourceState: null,
+			};
+		}
+
+		const targetPath = getStoragePath();
+		const emptySummary: CodexCliSyncSummary = {
+			sourceAccountCount: 0,
+			targetAccountCountBefore: 0,
+			targetAccountCountAfter: 0,
+			addedAccountCount: 0,
+			updatedAccountCount: 0,
+			unchangedAccountCount: 0,
+			destinationOnlyPreservedCount: 0,
+			selectionChanged: false,
+		};
+		return {
+			preview: {
+				status: "error",
+				statusDetail: message,
+				sourcePath: null,
+				sourceAccountCount: null,
+				targetPath,
+				summary: emptySummary,
+				backup: {
+					enabled: getStorageBackupEnabled(config),
+					targetPath,
+					rollbackPaths: formatRollbackPaths(targetPath),
+				},
+				lastSync: getLastCodexCliSyncRun(),
+			},
+			context: resolveSyncCenterContext(null),
+			sourceState: null,
+		};
+	};
+	const buildPreviewSafely = async (
+		forceRefresh = false,
+		previousPreview?: CodexCliSyncPreview,
+	): Promise<{
+		preview: CodexCliSyncPreview;
+		context: SyncCenterOverviewContext;
+		sourceState: CodexCliState | null;
+	}> => {
+		try {
+			return await withQueuedRetry(getStoragePath(), async () =>
+				buildPreview(forceRefresh),
+			);
+		} catch (error) {
+			return buildErrorState(
+				`Failed to refresh sync center: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+				previousPreview,
+			);
+		}
+	};
+
+	let { preview, context, sourceState } = await buildPreviewSafely(true);
+	let rollbackPlan = await getSyncCenterRollbackPlan();
+	while (true) {
+		const overview = buildSyncCenterOverview(preview, context);
+		const items: MenuItem<SyncCenterAction>[] = [
+			{
+				label: UI_COPY.settings.syncCenterOverviewHeading,
+				value: { type: "back" },
+				kind: "heading",
+			},
+			...overview.map((item) => ({
+				label: item.label,
+				hint: item.hint,
+				value: { type: "back" } as SyncCenterAction,
+				disabled: true,
+				color: "green" as const,
+				hideUnavailableSuffix: true,
+			})),
+			{ label: "", value: { type: "back" }, separator: true },
+			{
+				label: UI_COPY.settings.syncCenterActionsHeading,
+				value: { type: "back" },
+				kind: "heading",
+			},
+			{
+				label: UI_COPY.settings.syncCenterApply,
+				hint: "Applies the current preview to the target storage path.",
+				value: { type: "apply" },
+				color: preview.status === "ready" ? "green" : "yellow",
+				disabled: preview.status !== "ready",
+			},
+			{
+				label: UI_COPY.settings.syncCenterRollback,
+				hint: rollbackPlan.reason,
+				value: { type: "rollback" },
+				color: rollbackPlan.status === "ready" ? "green" : "yellow",
+				disabled: rollbackPlan.status !== "ready",
+			},
+			{
+				label: UI_COPY.settings.syncCenterRefresh,
+				hint: "Re-read the source files and rebuild the sync preview.",
+				value: { type: "refresh" },
+				color: "yellow",
+			},
+			{
+				label: UI_COPY.settings.syncCenterBack,
+				value: { type: "back" },
+				color: "red",
+			},
+		];
+
+		const result = await select<SyncCenterAction>(items, {
+			message: UI_COPY.settings.syncCenterTitle,
+			subtitle: UI_COPY.settings.syncCenterSubtitle,
+			help: UI_COPY.settings.syncCenterHelp,
+			clearScreen: true,
+			theme: ui.theme,
+			selectedEmphasis: "minimal",
+			onInput: (raw) => {
+				const lower = raw.toLowerCase();
+				if (lower === "q") return { type: "back" };
+				if (lower === "r") return { type: "refresh" };
+				if (lower === "a" && preview.status === "ready") {
+					return { type: "apply" };
+				}
+				if (lower === "l" && rollbackPlan.status === "ready") {
+					return { type: "rollback" };
+				}
+				return undefined;
+			},
+		});
+
+		if (!result || result.type === "back") return;
+		if (result.type === "refresh") {
+			({ preview, context, sourceState } = await buildPreviewSafely(
+				true,
+				preview,
+			));
+			rollbackPlan = await getSyncCenterRollbackPlan();
+			continue;
+		}
+		if (result.type === "rollback") {
+			const rollbackResult = await withQueuedRetry(preview.targetPath, async () =>
+				runSyncCenterRollback(rollbackPlan),
+			);
+			if (rollbackResult.status !== "restored") {
+				preview = {
+					...preview,
+					status: "error",
+					lastSync: getLastCodexCliSyncRun(),
+					statusDetail: rollbackResult.reason,
+				};
+				rollbackPlan = await getSyncCenterRollbackPlan();
+				continue;
+			}
+			({ preview, context, sourceState } = await buildPreviewSafely(
+				true,
+				preview,
+			));
+			rollbackPlan = await getSyncCenterRollbackPlan();
+			continue;
+		}
+
+		try {
+			const synced = await withQueuedRetry(preview.targetPath, async () => {
+				const current = await loadAccounts();
+				return applyCodexCliSyncToStorage(current, {
+					sourceState,
+					trigger: "manual",
+				});
+			});
+			const storageBackupEnabled = getStorageBackupEnabled(config);
+			if (synced.changed && synced.storage) {
+				const syncedStorage = synced.storage;
+				try {
+					await withQueuedRetry(preview.targetPath, async () =>
+						saveAccounts(syncedStorage, {
+							backupEnabled: storageBackupEnabled,
+						}),
+					);
+					commitPendingCodexCliSyncRun(synced.pendingRun);
+				} catch (error) {
+					commitCodexCliSyncRunFailure(synced.pendingRun, error);
+					preview = {
+						...preview,
+						lastSync: getLastCodexCliSyncRun(),
+						status: "error",
+						statusDetail: `Failed to save synced storage: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					};
+					rollbackPlan = await getSyncCenterRollbackPlan();
+					continue;
+				}
+			}
+			({ preview, context, sourceState } = await buildPreviewSafely(
+				true,
+				preview,
+			));
+			rollbackPlan = await getSyncCenterRollbackPlan();
+		} catch (error) {
+			preview = {
+				...preview,
+				status: "error",
+				lastSync: getLastCodexCliSyncRun(),
+				statusDetail: `Failed to refresh sync center: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			};
+			rollbackPlan = await getSyncCenterRollbackPlan();
+		}
+	}
+}
+
 async function loadExperimentalSyncTarget(): Promise<
 	| {
 			kind: "blocked-ambiguous";
@@ -2878,20 +3345,28 @@ async function promptSettingsHub(
 		},
 		{
 			label: UI_COPY.settings.accountList,
+			hint: UI_COPY.settings.accountListHint,
 			value: { type: "account-list" },
 			color: "green",
 		},
 		{
 			label: UI_COPY.settings.summaryFields,
+			hint: UI_COPY.settings.summaryFieldsHint,
 			value: { type: "summary-fields" },
 			color: "green",
 		},
 		{
 			label: UI_COPY.settings.behavior,
+			hint: UI_COPY.settings.behaviorHint,
 			value: { type: "behavior" },
 			color: "green",
 		},
-		{ label: UI_COPY.settings.theme, value: { type: "theme" }, color: "green" },
+		{
+			label: UI_COPY.settings.theme,
+			hint: UI_COPY.settings.themeHint,
+			value: { type: "theme" },
+			color: "green",
+		},
 		{ label: "", value: { type: "back" }, separator: true },
 		{
 			label: UI_COPY.settings.advancedTitle,
@@ -2899,14 +3374,22 @@ async function promptSettingsHub(
 			kind: "heading",
 		},
 		{
+			label: UI_COPY.settings.syncCenter,
+			hint: UI_COPY.settings.syncCenterHint,
+			value: { type: "sync-center" },
+			color: "yellow",
+		},
+		{
 			label: UI_COPY.settings.experimental,
+			hint: UI_COPY.settings.experimentalHint,
 			value: { type: "experimental" },
 			color: "yellow",
 		},
 		{
 			label: UI_COPY.settings.backend,
+			hint: UI_COPY.settings.backendHint,
 			value: { type: "backend" },
-			color: "green",
+			color: "yellow",
 		},
 		{ label: "", value: { type: "back" }, separator: true },
 		{
@@ -2956,6 +3439,10 @@ async function configureUnifiedSettings(
 		hubFocus = action.type;
 		if (action.type === "account-list") {
 			current = await configureDashboardDisplaySettings(current);
+			continue;
+		}
+		if (action.type === "sync-center") {
+			await promptSyncCenter(backendConfig);
 			continue;
 		}
 		if (action.type === "summary-fields") {

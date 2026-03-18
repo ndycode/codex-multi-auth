@@ -10,7 +10,12 @@ import {
 } from "./auth/auth.js";
 import { startLocalOAuthServer } from "./auth/server.js";
 import { copyTextToClipboard, openBrowserUrl } from "./auth/browser.js";
-import { promptAddAnotherAccount, promptLoginMode, type ExistingAccountInfo } from "./cli.js";
+import {
+	isInteractiveLoginMenuAvailable,
+	promptAddAnotherAccount,
+	promptLoginMode,
+	type ExistingAccountInfo,
+} from "./cli.js";
 import {
 	extractAccountEmail,
 	extractAccountId,
@@ -31,12 +36,19 @@ import {
 	type DashboardAccountSortMode,
 } from "./dashboard-settings.js";
 import {
+	DESTRUCTIVE_ACTION_COPY,
+	deleteAccountAtIndex,
+	deleteSavedAccounts,
+	resetLocalState,
+} from "./destructive-actions.js";
+import {
 	evaluateForecastAccounts,
 	isHardRefreshFailure,
 	recommendForecastAccount,
 	summarizeForecast,
 	type ForecastAccountResult,
 } from "./forecast.js";
+import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	fetchCodexQuotaSnapshot,
@@ -51,7 +63,14 @@ import {
 	type QuotaCacheEntry,
 } from "./quota-cache.js";
 import {
-	clearAccounts,
+	assessNamedBackupRestore,
+	getActionableNamedBackupRestores,
+	getRedactedFilesystemErrorLabel,
+	getNamedBackupsDirectoryPath,
+	listNamedBackups,
+	listRotatingBackups,
+	NAMED_BACKUP_LIST_CONCURRENCY,
+	restoreNamedBackup,
 	findMatchingAccountIndex,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -73,6 +92,7 @@ import {
 } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { ANSI } from "./ui/ansi.js";
+import { confirm } from "./ui/confirm.js";
 import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
@@ -86,6 +106,9 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
+const log = createLogger("codex-manager");
+
+let destructiveActionInFlight = false;
 
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
@@ -117,6 +140,39 @@ function formatReasonLabel(reason: string | undefined): string | undefined {
 	if (!reason) return undefined;
 	const normalized = collapseWhitespace(reason.replace(/_/g, " "));
 	return normalized.length > 0 ? normalized : undefined;
+}
+
+function formatRelativeDateShort(
+	timestamp: number | null | undefined,
+): string | null {
+	if (timestamp === null || timestamp === undefined) return null;
+	const days = Math.floor((Date.now() - timestamp) / 86_400_000);
+	if (days <= 0) return "today";
+	if (days === 1) return "yesterday";
+	if (days < 7) return `${days}d ago`;
+	return new Date(timestamp).toLocaleDateString();
+}
+
+function formatDateTimeLong(timestamp: number | null | undefined): string {
+	if (timestamp === null || timestamp === undefined) return "unknown";
+	return new Date(timestamp).toLocaleString();
+}
+
+function formatFileSize(sizeBytes: number | null | undefined): string {
+	if (
+		typeof sizeBytes !== "number" ||
+		!Number.isFinite(sizeBytes) ||
+		sizeBytes < 0
+	) {
+		return "unknown";
+	}
+	if (sizeBytes < 1024) {
+		return `${sizeBytes} B`;
+	}
+	if (sizeBytes < 1024 * 1024) {
+		return `${(sizeBytes / 1024).toFixed(1)} KB`;
+	}
+	return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function extractErrorMessageFromPayload(payload: unknown): string | undefined {
@@ -298,6 +354,7 @@ function printUsage(): void {
 			"  codex auth best [--live] [--json] [--model <model>]",
 			"  codex auth check",
 			"  codex auth features",
+			"  codex auth restore-backup",
 			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
 			"  codex auth forecast [--live] [--json] [--model <model>]",
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
@@ -3868,10 +3925,6 @@ async function runDoctor(args: string[]): Promise<number> {
 	return summary.error > 0 ? 1 : 0;
 }
 
-async function clearAccountsAndReset(): Promise<void> {
-	await clearAccounts();
-}
-
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
@@ -3885,14 +3938,18 @@ async function handleManageAction(
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
 		if (idx >= 0 && idx < storage.accounts.length) {
-			storage.accounts.splice(idx, 1);
-			storage.activeIndex = 0;
-			storage.activeIndexByFamily = {};
-			for (const family of MODEL_FAMILIES) {
-				storage.activeIndexByFamily[family] = 0;
+			const deleted = await deleteAccountAtIndex({
+				storage,
+				index: idx,
+			});
+			if (deleted) {
+				const label = `Account ${idx + 1}`;
+				const flaggedNote =
+					deleted.removedFlaggedCount > 0
+						? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
+						: "";
+				console.log(`Deleted ${label}.${flaggedNote}`);
 			}
-			await saveAccounts(storage);
-			console.log(`Deleted account ${idx + 1}.`);
 		}
 		return;
 	}
@@ -3928,20 +3985,53 @@ async function handleManageAction(
 	}
 }
 
+type StartupRecoveryAction =
+	| "continue-with-oauth"
+	| "open-empty-storage-menu"
+	| "show-recovery-prompt";
+
+export function resolveStartupRecoveryAction(
+	recoveryState: Awaited<ReturnType<typeof getActionableNamedBackupRestores>>,
+	recoveryScanFailed: boolean,
+): StartupRecoveryAction {
+	if (recoveryState.assessments.length > 0) {
+		return "show-recovery-prompt";
+	}
+	return recoveryScanFailed
+		? "continue-with-oauth"
+		: "open-empty-storage-menu";
+}
+
 async function runAuthLogin(): Promise<number> {
 	setStoragePath(null);
+	let suppressRecoveryPrompt = false;
+	let recoveryPromptAttempted = false;
+	let allowEmptyStorageMenu = false;
+	let pendingRecoveryState: Awaited<
+		ReturnType<typeof getActionableNamedBackupRestores>
+	> | null = null;
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
 	loginFlow:
 	while (true) {
 		let existingStorage = await loadAccounts();
-		if (existingStorage && existingStorage.accounts.length > 0) {
+		const canOpenEmptyStorageMenu =
+			allowEmptyStorageMenu && isInteractiveLoginMenuAvailable();
+		if (
+			(existingStorage && existingStorage.accounts.length > 0) ||
+			canOpenEmptyStorageMenu
+		) {
+			const menuAllowsEmptyStorage = canOpenEmptyStorageMenu;
+			allowEmptyStorageMenu = false;
+			pendingRecoveryState = null;
 			while (true) {
 				existingStorage = await loadAccounts();
 				if (!existingStorage || existingStorage.accounts.length === 0) {
-					break;
+					if (!menuAllowsEmptyStorage) {
+						break;
+					}
 				}
-				const currentStorage = existingStorage;
+				const currentStorage = existingStorage ?? createEmptyAccountStorage();
 				const displaySettings = await loadDashboardDisplaySettings();
 				applyUiThemeFromDashboardSettings(displaySettings);
 				const quotaCache = await loadQuotaCache();
@@ -3971,80 +4061,240 @@ async function runAuthLogin(): Promise<number> {
 							});
 					}
 				}
-				const flaggedStorage = await loadFlaggedAccounts();
+			const flaggedStorage = await loadFlaggedAccounts();
 
-				const menuResult = await promptLoginMode(
-					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
-					{
-						flaggedCount: flaggedStorage.accounts.length,
-						statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
-					},
-				);
+			const menuResult = await promptLoginMode(
+				toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
+				{
+					flaggedCount: flaggedStorage.accounts.length,
+					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
+				},
+			);
 
-				if (menuResult.mode === "cancel") {
-					console.log("Cancelled.");
-					return 0;
-				}
-				if (menuResult.mode === "check") {
-					await runActionPanel("Quick Check", "Checking local session + live status", async () => {
-						await runHealthCheck({ forceRefresh: false, liveProbe: true });
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "deep-check") {
-					await runActionPanel("Deep Check", "Refreshing and testing all accounts", async () => {
-						await runHealthCheck({ forceRefresh: true, liveProbe: true });
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "forecast") {
-					await runActionPanel("Best Account", "Comparing accounts", async () => {
-						await runForecast(["--live"]);
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "fix") {
-					await runActionPanel("Auto-Fix", "Checking and fixing common issues", async () => {
-						await runFix(["--live"]);
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "settings") {
-					await configureUnifiedSettings(displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "verify-flagged") {
-					await runActionPanel("Problem Account Check", "Checking problem accounts", async () => {
-						await runVerifyFlagged([]);
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
-					await runActionPanel("Reset Accounts", "Deleting all saved accounts", async () => {
-						await clearAccountsAndReset();
-						console.log("Cleared saved accounts from active storage. Recovery snapshots remain available.");
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "manage") {
-					const requiresInteractiveOAuth = typeof menuResult.refreshAccountIndex === "number";
-					if (requiresInteractiveOAuth) {
-						await handleManageAction(currentStorage, menuResult);
-						continue;
-					}
-					await runActionPanel("Applying Change", "Updating selected account", async () => {
-						await handleManageAction(currentStorage, menuResult);
-					}, displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "add") {
-					break;
+			if (menuResult.mode === "cancel") {
+				console.log("Cancelled.");
+				return 0;
+			}
+			const modeRequiresDrainedQuotaRefresh =
+				menuResult.mode === "check" ||
+				menuResult.mode === "deep-check" ||
+				menuResult.mode === "forecast" ||
+				menuResult.mode === "fix";
+			if (modeRequiresDrainedQuotaRefresh) {
+				const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+				if (pendingQuotaRefresh) {
+					await pendingQuotaRefresh;
 				}
 			}
+			if (menuResult.mode === "check") {
+				await runActionPanel("Quick Check", "Checking local session + live status", async () => {
+					await runHealthCheck({ forceRefresh: false, liveProbe: true });
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "deep-check") {
+				await runActionPanel("Deep Check", "Refreshing and testing all accounts", async () => {
+					await runHealthCheck({ forceRefresh: true, liveProbe: true });
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "forecast") {
+				await runActionPanel("Best Account", "Comparing accounts", async () => {
+					await runForecast(["--live"]);
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "fix") {
+				await runActionPanel("Auto-Fix", "Checking and fixing common issues", async () => {
+					await runFix(["--live"]);
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "settings") {
+				await configureUnifiedSettings(displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "verify-flagged") {
+				await runActionPanel("Problem Account Check", "Checking problem accounts", async () => {
+					await runVerifyFlagged([]);
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "restore-backup") {
+				try {
+					const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+					if (pendingQuotaRefresh) {
+						await pendingQuotaRefresh;
+					}
+					await runBackupBrowserManager(displaySettings);
+				} catch (error) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					console.error(
+						`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
+					);
+				}
+				continue;
+			}
+			if (menuResult.mode === "fresh" && menuResult.deleteAll) {
+				if (destructiveActionInFlight) {
+					console.log("Another destructive action is already running. Wait for it to finish.");
+					continue;
+				}
+				destructiveActionInFlight = true;
+				try {
+					await runActionPanel(
+						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.label,
+						DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.stage,
+						async () => {
+							const result = await deleteSavedAccounts();
+							console.log(
+								result.accountsCleared
+									? DESTRUCTIVE_ACTION_COPY.deleteSavedAccounts.completed
+									: "Delete saved accounts completed with warnings. Some saved account artifacts could not be removed; see logs.",
+							);
+						},
+						displaySettings,
+					);
+				} finally {
+					destructiveActionInFlight = false;
+				}
+				suppressRecoveryPrompt = true;
+				continue;
+			}
+			if (menuResult.mode === "reset") {
+				if (destructiveActionInFlight) {
+					console.log("Another destructive action is already running. Wait for it to finish.");
+					continue;
+				}
+				destructiveActionInFlight = true;
+				try {
+					await runActionPanel(
+						DESTRUCTIVE_ACTION_COPY.resetLocalState.label,
+						DESTRUCTIVE_ACTION_COPY.resetLocalState.stage,
+						async () => {
+							const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+							if (pendingQuotaRefresh) {
+								await pendingQuotaRefresh;
+							}
+							const result = await resetLocalState();
+							console.log(
+								result.accountsCleared &&
+									result.flaggedCleared &&
+									result.quotaCacheCleared
+									? DESTRUCTIVE_ACTION_COPY.resetLocalState.completed
+									: "Reset local state completed with warnings. Some local artifacts could not be removed; see logs.",
+							);
+						},
+						displaySettings,
+					);
+				} finally {
+					destructiveActionInFlight = false;
+				}
+				suppressRecoveryPrompt = true;
+				continue;
+			}
+			if (menuResult.mode === "manage") {
+				const requiresInteractiveOAuth = typeof menuResult.refreshAccountIndex === "number";
+				if (requiresInteractiveOAuth) {
+					await handleManageAction(currentStorage, menuResult);
+					continue;
+				}
+				await runActionPanel("Applying Change", "Updating selected account", async () => {
+					await handleManageAction(currentStorage, menuResult);
+				}, displaySettings);
+				continue;
+			}
+			if (menuResult.mode === "add") {
+				break;
+			}
 		}
+	}
 
 		const refreshedStorage = await loadAccounts();
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
+		const canPromptForRecovery =
+			!suppressRecoveryPrompt &&
+			!recoveryPromptAttempted &&
+			existingCount === 0 &&
+			isInteractiveLoginMenuAvailable();
+		if (canPromptForRecovery) {
+			recoveryPromptAttempted = true;
+			let recoveryState: Awaited<
+				ReturnType<typeof getActionableNamedBackupRestores>
+			> | null = pendingRecoveryState;
+			pendingRecoveryState = null;
+			if (recoveryState === null) {
+				let recoveryScanFailed = false;
+				let scannedRecoveryState: Awaited<
+					ReturnType<typeof getActionableNamedBackupRestores>
+				>;
+				try {
+					scannedRecoveryState = await getActionableNamedBackupRestores({
+						currentStorage: refreshedStorage,
+					});
+				} catch (error) {
+					recoveryScanFailed = true;
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Startup recovery scan failed (${errorLabel}). Continuing with OAuth.`,
+					);
+					scannedRecoveryState = {
+						assessments: [],
+						allAssessments: [],
+						totalBackups: 0,
+					};
+				}
+				recoveryState = scannedRecoveryState;
+				if (
+					resolveStartupRecoveryAction(scannedRecoveryState, recoveryScanFailed) ===
+					"open-empty-storage-menu"
+				) {
+					allowEmptyStorageMenu = true;
+					continue loginFlow;
+				}
+			}
+			if (recoveryState.assessments.length > 0) {
+				let promptWasShown = false;
+				try {
+					const displaySettings = await loadDashboardDisplaySettings();
+					applyUiThemeFromDashboardSettings(displaySettings);
+					const backupDir = getNamedBackupsDirectoryPath();
+					const backupLabel =
+						recoveryState.assessments.length === 1
+							? recoveryState.assessments
+									.map((assessment) => assessment.backup.name)
+									.join("")
+							: `${recoveryState.assessments.length} backups`;
+					promptWasShown = true;
+					const restoreNow = await confirm(
+						`Found ${recoveryState.assessments.length} recoverable backup${
+							recoveryState.assessments.length === 1 ? "" : "s"
+						} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Open backup browser now?`,
+					);
+					if (restoreNow) {
+						const restoreResult =
+							await runBackupBrowserManager(
+								displaySettings,
+								recoveryState.allAssessments,
+							);
+						if (restoreResult !== "restored") {
+							pendingRecoveryState = recoveryState;
+							recoveryPromptAttempted = false;
+						}
+						continue;
+					}
+				} catch (error) {
+					if (!promptWasShown) {
+						recoveryPromptAttempted = false;
+					}
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Startup recovery prompt failed (${errorLabel}). Continuing with OAuth.`,
+					);
+				}
+			}
+		}
 		let forceNewLogin = existingCount > 0;
 		while (true) {
 			const tokenResult = await runOAuthFlow(forceNewLogin);
@@ -4509,6 +4759,633 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	});
 }
 
+type NamedBackupAssessment = Awaited<
+	ReturnType<typeof assessNamedBackupRestore>
+>;
+type NamedBackupEntry = Awaited<ReturnType<typeof listNamedBackups>>[number];
+type RotatingBackupEntry = Awaited<
+	ReturnType<typeof listRotatingBackups>
+>[number];
+
+type NamedBackupBrowserEntry =
+	| {
+			kind: "named";
+			label: string;
+			backup: NamedBackupEntry;
+			assessment: NamedBackupAssessment;
+			assessmentError?: undefined;
+	  }
+	| {
+			kind: "named";
+			label: string;
+			backup: NamedBackupEntry;
+			assessment: null;
+			assessmentError: string;
+	  };
+
+type BackupBrowserEntry =
+	| NamedBackupBrowserEntry
+	| {
+			kind: "rotating";
+			label: string;
+			backup: RotatingBackupEntry;
+	  };
+
+type BackupMenuAction =
+	| {
+			type: "inspect";
+			entry: BackupBrowserEntry;
+	  }
+	| { type: "back" };
+
+type BackupDetailAction = "back" | "preview-restore";
+type BackupBrowserManagerAction = BackupDetailAction | "legacy-restore";
+
+type LegacyBackupRestoreSelection = {
+	type: "restore";
+	assessment: NamedBackupAssessment;
+};
+
+type BackupRestoreManagerResult = "restored" | "dismissed" | "failed";
+
+function hasNamedBackupAssessment(
+	entry: BackupBrowserEntry,
+): entry is Extract<NamedBackupBrowserEntry, { assessment: NamedBackupAssessment }> {
+	return entry.kind === "named" && entry.assessment !== null;
+}
+
+function normalizeBackupAssessmentError(error: unknown): string {
+	const detail = collapseWhitespace(
+		error instanceof Error ? error.message : String(error),
+	);
+	return detail.length > 0
+		? detail
+		: "Unable to assess restore eligibility";
+}
+
+function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
+	const backup = entry.backup;
+	const lastUpdated = formatRelativeDateShort(backup.updatedAt);
+	const backupType =
+		entry.kind === "named" ? "named" : `rotating slot ${entry.backup.slot}`;
+	const parts = [
+		backupType,
+		backup.valid ? "valid" : "invalid",
+		backup.accountCount !== null
+			? `${backup.accountCount} account${backup.accountCount === 1 ? "" : "s"}`
+			: undefined,
+		lastUpdated ? `updated ${lastUpdated}` : undefined,
+		hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit
+			? `would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS}`
+			: undefined,
+		entry.kind === "named" && entry.assessment === null
+			? "restore assessment unavailable"
+			: undefined,
+		entry.kind === "named" && entry.assessment === null
+			? entry.assessmentError
+			: undefined,
+		backup.loadError,
+	].filter(
+		(value): value is string =>
+			typeof value === "string" && value.trim().length > 0,
+	);
+	return parts.join(" | ");
+}
+
+function backupMenuColor(
+	entry: BackupBrowserEntry,
+): MenuItem<BackupMenuAction>["color"] {
+	if (entry.kind === "named" && entry.assessment === null) {
+		return entry.backup.valid ? "yellow" : "red";
+	}
+	if (hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit) {
+		return "red";
+	}
+	return entry.backup.valid ? "green" : "red";
+}
+
+function buildBackupStatusSummary(entry: BackupBrowserEntry): string {
+	const backup = entry.backup;
+	if (!backup.valid) {
+		return stylePromptText("Invalid backup", "danger");
+	}
+	if (entry.kind === "named" && entry.assessment === null) {
+		return stylePromptText("Restore assessment unavailable", "warning");
+	}
+	if (hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit) {
+		return stylePromptText("Valid file, restore would exceed limit", "warning");
+	}
+	return stylePromptText("Valid backup", "success");
+}
+
+function formatPreviewAccountLabel(
+	email: string | undefined,
+	accountId: string | undefined,
+	index: number | null | undefined,
+): string {
+	const label = email?.trim() || accountId?.trim() || "none";
+	if (index === null || index === undefined) {
+		return label;
+	}
+	return `${label} (#${index + 1})`;
+}
+
+function formatActiveAccountOutcome(
+	assessment: NamedBackupAssessment,
+): string {
+	const nextLabel = formatPreviewAccountLabel(
+		assessment.nextActiveEmail,
+		assessment.nextActiveAccountId,
+		assessment.nextActiveIndex,
+	);
+	const currentLabel = formatPreviewAccountLabel(
+		assessment.currentActiveEmail,
+		assessment.currentActiveAccountId,
+		assessment.currentActiveIndex,
+	);
+	const outcome = assessment.activeAccountOutcome ?? "unchanged";
+	if (outcome === "blocked") {
+		return "Blocked until restore becomes eligible";
+	}
+	if (outcome === "cleared") {
+		return `Would clear active account (currently ${currentLabel})`;
+	}
+	if (outcome === "changed") {
+		return `${nextLabel} (currently ${currentLabel})`;
+	}
+	const changeNote = assessment.activeAccountChanged ? " (would change)" : "";
+	return `${nextLabel}${changeNote}`;
+}
+
+function buildRestoreAssessmentLines(
+	assessment: NamedBackupAssessment,
+): string[] {
+	const backupAccountLabel = (() => {
+		if (
+			assessment.backupAccountCount === null ||
+			assessment.backupAccountCount === undefined
+		) {
+			return "unknown";
+		}
+		if (
+			assessment.dedupedBackupAccountCount !== null &&
+			assessment.dedupedBackupAccountCount !== undefined &&
+			assessment.dedupedBackupAccountCount !== assessment.backupAccountCount
+		) {
+			return `${assessment.backupAccountCount} (deduped ${assessment.dedupedBackupAccountCount})`;
+		}
+		return `${assessment.backupAccountCount}`;
+	})();
+
+	const conflictSummary = (() => {
+		const replacements = assessment.replacedExistingCount ?? 0;
+		const withExisting = assessment.conflictsWithExisting ?? 0;
+		const withinBackup = assessment.conflictsWithinBackup ?? 0;
+		const parts: string[] = [];
+		if (replacements > 0) {
+			parts.push(
+				`${replacements} current account${replacements === 1 ? "" : "s"} replaced`,
+			);
+		}
+		if (withExisting > 0) {
+			parts.push(
+				`${withExisting} duplicate${withExisting === 1 ? "" : "s"} against current`,
+			);
+		}
+		if (withinBackup > 0) {
+			parts.push(
+				`${withinBackup} duplicate${withinBackup === 1 ? "" : "s"} inside backup`,
+			);
+		}
+		return parts.length > 0 ? parts.join(" | ") : "No conflicts detected";
+	})();
+
+	return [
+		`${stylePromptText("Backup accounts:", "muted")} ${backupAccountLabel}`,
+		`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
+		`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
+		`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
+		`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
+		`${stylePromptText("Conflicts:", "muted")} ${conflictSummary}`,
+		`${stylePromptText("Current active:", "muted")} ${formatPreviewAccountLabel(
+			assessment.currentActiveEmail,
+			assessment.currentActiveAccountId,
+			assessment.currentActiveIndex,
+		)}`,
+		`${stylePromptText("Active after restore:", "muted")} ${formatActiveAccountOutcome(assessment)}`,
+		`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.eligibleForRestore ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
+	];
+}
+
+function canRestoreFromAssessment(
+	assessment: NamedBackupAssessment,
+): boolean {
+	return (
+		!assessment.wouldExceedLimit &&
+		assessment.eligibleForRestore &&
+		((assessment.imported ?? 0) > 0 ||
+			(assessment.replacedExistingCount ?? 0) > 0)
+	);
+}
+
+function formatNamedBackupRestoreResult(
+	result: { imported: number; skipped: number; total: number },
+	assessment: NamedBackupAssessment,
+): string {
+	const replacedCount = assessment.replacedExistingCount ?? 0;
+	if (result.imported === 0 && replacedCount > 0 && result.skipped === 0) {
+		return `Replaced ${replacedCount} current account${replacedCount === 1 ? "" : "s"}. Total accounts: ${result.total}.`;
+	}
+	return `Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`;
+}
+
+async function showBackupBrowserDetails(
+	entry: BackupBrowserEntry,
+	displaySettings: DashboardDisplaySettings,
+): Promise<BackupDetailAction> {
+	const backup = entry.backup;
+	const typeLabel =
+		entry.kind === "named"
+			? "Named backup"
+			: `Rotating backup (.bak${entry.backup.slot === 0 ? "" : `.${entry.backup.slot}`})`;
+	const lines = [
+		stylePromptText(entry.label, "accent"),
+		buildBackupStatusSummary(entry),
+		stylePromptText(backup.path, "muted"),
+		"",
+		`${stylePromptText("Type:", "muted")} ${typeLabel}`,
+		`${stylePromptText("Accounts:", "muted")} ${backup.accountCount ?? "unknown"}`,
+		`${stylePromptText("Version:", "muted")} ${backup.version ?? "unknown"}`,
+		`${stylePromptText("Size:", "muted")} ${formatFileSize(backup.sizeBytes)}`,
+		`${stylePromptText("Created:", "muted")} ${formatDateTimeLong(backup.createdAt)}`,
+		`${stylePromptText("Updated:", "muted")} ${formatDateTimeLong(backup.updatedAt)}`,
+	];
+
+	if (entry.kind === "named") {
+		lines.push("", stylePromptText("Restore Assessment", "accent"));
+		if (entry.assessment === null) {
+			lines.push(
+				`${stylePromptText("Eligibility:", "muted")} Unavailable`,
+				`${stylePromptText("Reason:", "muted")} ${entry.assessmentError}`,
+			);
+		} else {
+			lines.push(...buildRestoreAssessmentLines(entry.assessment));
+		}
+	}
+
+	if (backup.schemaErrors.length > 0 || backup.loadError) {
+		lines.push("", stylePromptText("Validation", "accent"));
+		for (const schemaError of backup.schemaErrors.slice(0, 3)) {
+			lines.push(`${stylePromptText("-", "muted")} ${schemaError}`);
+		}
+		if (backup.schemaErrors.length > 3) {
+			lines.push(
+				`${stylePromptText("-", "muted")} ${backup.schemaErrors.length - 3} more schema error${backup.schemaErrors.length - 3 === 1 ? "" : "s"}`,
+			);
+		}
+		if (backup.loadError) {
+			lines.push(`${stylePromptText("-", "muted")} ${backup.loadError}`);
+		}
+	}
+
+	if (output.isTTY) {
+		output.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
+	}
+	for (const line of lines) {
+		console.log(line);
+	}
+	console.log("");
+	if (entry.kind !== "named") {
+		await waitForMenuReturn();
+		return "back";
+	}
+	if (entry.assessment === null || !canRestoreFromAssessment(entry.assessment)) {
+		await waitForMenuReturn();
+		return "back";
+	}
+	const action = await select<BackupDetailAction>(
+		[
+			{ label: "Preview Restore", value: "preview-restore", color: "green" },
+			{ label: "Back", value: "back" },
+		],
+		{
+			message: "Backup Actions",
+			subtitle: entry.label,
+			help: "Enter Preview | Q Back",
+			clearScreen: false,
+			selectedEmphasis: "minimal",
+			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
+			theme: getUiRuntimeOptions().theme,
+		},
+	);
+	return action ?? "back";
+}
+
+async function runBackupRestorePreview(
+	entry: Extract<BackupBrowserEntry, { kind: "named" }>,
+	displaySettings: DashboardDisplaySettings,
+): Promise<BackupRestoreManagerResult> {
+	const backupName = entry.backup.name;
+	let assessment: NamedBackupAssessment;
+	try {
+		assessment = await assessNamedBackupRestore(backupName, {
+			currentStorage: await loadAccounts(),
+		});
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to re-assess backup "${backupName}" before restore (${errorLabel}).`,
+		);
+		return "failed";
+	}
+
+	if (output.isTTY) {
+		output.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
+	}
+	console.log(stylePromptText(`Restore Preview: ${entry.label}`, "accent"));
+	for (const line of buildRestoreAssessmentLines(assessment)) {
+		console.log(line);
+	}
+	console.log("");
+
+	if (!canRestoreFromAssessment(assessment)) {
+		await waitForMenuReturn();
+		return "dismissed";
+	}
+
+	const replacementNote =
+		(assessment.replacedExistingCount ?? 0) > 0
+			? ` Replacing ${assessment.replacedExistingCount} current account${assessment.replacedExistingCount === 1 ? "" : "s"}.`
+			: "";
+	const activeNote = assessment.activeAccountChanged
+		? " Active account would change."
+		: "";
+	const confirmed = await confirm(
+		`Restore ${entry.label}? Import ${assessment.imported ?? 0} new account${assessment.imported === 1 ? "" : "s"} for ${assessment.mergedAccountCount ?? "?"} total.${replacementNote}${activeNote}`,
+	);
+	if (!confirmed) {
+		return "dismissed";
+	}
+
+	try {
+		await runActionPanel(
+			"Restore Backup",
+			`Restoring ${entry.label}`,
+			async () => {
+				const result = await restoreNamedBackup(backupName, { assessment });
+				console.log(formatNamedBackupRestoreResult(result, assessment));
+			},
+			displaySettings,
+		);
+		return "restored";
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(`Failed to restore backup "${backupName}" (${errorLabel}).`);
+		return "dismissed";
+	}
+}
+
+async function loadBackupBrowserEntries(options: {
+	startupAssessments?: NamedBackupAssessment[];
+} = {}): Promise<{
+	namedEntries: NamedBackupBrowserEntry[];
+	rotatingEntries: Extract<BackupBrowserEntry, { kind: "rotating" }>[];
+}> {
+	const { startupAssessments } = options;
+	const rotatingBackups = await listRotatingBackups();
+	let currentStorage: Awaited<ReturnType<typeof loadAccounts>> = null;
+	try {
+		currentStorage = await loadAccounts();
+	} catch (error) {
+		log.warn("Failed to load current storage for backup browser", {
+			error: normalizeBackupAssessmentError(error),
+		});
+	}
+	let namedEntries: NamedBackupBrowserEntry[];
+	if (startupAssessments) {
+		namedEntries = startupAssessments.map((assessment) => ({
+			kind: "named",
+			label: assessment.backup.name,
+			backup: assessment.backup,
+			assessment,
+		}));
+	} else {
+		const namedBackups = await listNamedBackups();
+		namedEntries = [];
+		for (
+			let index = 0;
+			index < namedBackups.length;
+			index += NAMED_BACKUP_LIST_CONCURRENCY
+		) {
+			const chunk = namedBackups.slice(
+				index,
+				index + NAMED_BACKUP_LIST_CONCURRENCY,
+			);
+			const settledEntries = await Promise.all(
+				chunk.map(async (backup) => {
+					try {
+						const assessment = await assessNamedBackupRestore(backup.name, {
+							currentStorage,
+						});
+						return {
+							kind: "named" as const,
+							label: assessment.backup.name,
+							backup: assessment.backup,
+							assessment,
+						};
+					} catch (error) {
+						const assessmentError = normalizeBackupAssessmentError(error);
+						log.warn("Failed to assess named backup for backup browser", {
+							name: backup.name,
+							error: assessmentError,
+						});
+						return {
+							kind: "named" as const,
+							label: backup.name,
+							backup,
+							assessment: null,
+							assessmentError,
+						};
+					}
+				}),
+			);
+			namedEntries.push(...settledEntries);
+		}
+	}
+	return {
+		namedEntries,
+		rotatingEntries: rotatingBackups.map((backup) => ({
+			kind: "rotating",
+			label: backup.label,
+			backup,
+		})),
+	};
+}
+
+async function runBackupBrowserManager(
+	displaySettings: DashboardDisplaySettings,
+	startupAssessments?: NamedBackupAssessment[],
+): Promise<BackupRestoreManagerResult> {
+	const backupDir = getNamedBackupsDirectoryPath();
+	const ui = getUiRuntimeOptions();
+
+	while (true) {
+		let namedEntries: NamedBackupBrowserEntry[];
+		let rotatingEntries: Extract<BackupBrowserEntry, { kind: "rotating" }>[];
+		try {
+			({ namedEntries, rotatingEntries } = await loadBackupBrowserEntries({
+				startupAssessments,
+			}));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(
+				`Could not read backup directory: ${
+					collapseWhitespace(message) || "unknown error"
+				}`,
+			);
+			return "dismissed";
+		}
+		if (namedEntries.length === 0 && rotatingEntries.length === 0) {
+			console.log(
+				`No backups found. Named backups live in ${backupDir}. Rotating backups live next to ${getStoragePath()}.`,
+			);
+			return "dismissed";
+		}
+
+		const items: MenuItem<BackupMenuAction>[] = [
+			{ label: "Named Backups", value: { type: "back" }, kind: "heading" },
+		];
+		if (namedEntries.length === 0) {
+			items.push({
+				label: "No named backups found",
+				value: { type: "back" },
+				disabled: true,
+			});
+		} else {
+			items.push(
+				...namedEntries.map((entry) => ({
+					label: entry.label,
+					hint: buildBackupBrowserHint(entry),
+					value: { type: "inspect" as const, entry },
+					color: backupMenuColor(entry),
+				})),
+			);
+		}
+
+		items.push({ label: "", value: { type: "back" }, separator: true });
+		items.push({
+			label: "Rotating Backups",
+			value: { type: "back" },
+			kind: "heading",
+		});
+		if (rotatingEntries.length === 0) {
+			items.push({
+				label: "No rotating backups found",
+				value: { type: "back" },
+				disabled: true,
+			});
+		} else {
+			items.push(
+				...rotatingEntries.map((entry) => ({
+					label: entry.label,
+					hint: buildBackupBrowserHint(entry),
+					value: { type: "inspect" as const, entry },
+					color: backupMenuColor(entry),
+				})),
+			);
+		}
+
+		items.push({ label: "", value: { type: "back" }, separator: true });
+		items.push({ label: "Back", value: { type: "back" } });
+
+		const selection = await select(items, {
+			message: "Backup Browser",
+			subtitle: `Named: ${backupDir} | Rotating: ${dirname(getStoragePath())}`,
+			help: "Enter Inspect | Q Back",
+			clearScreen: true,
+			selectedEmphasis: "minimal",
+			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
+			theme: ui.theme,
+		});
+
+		if (!selection || selection.type === "back") {
+			return "dismissed";
+		}
+
+		let entry: BackupBrowserEntry | null = null;
+		let action: BackupBrowserManagerAction = "back";
+		const legacySelection = selection as unknown as LegacyBackupRestoreSelection;
+		if (legacySelection.type === "restore" && legacySelection.assessment) {
+			entry = {
+				kind: "named",
+				label: legacySelection.assessment.backup.name,
+				backup: legacySelection.assessment.backup,
+				assessment: legacySelection.assessment,
+			};
+			action = "legacy-restore";
+		} else if (selection.type === "inspect") {
+			entry = selection.entry;
+			action = await showBackupBrowserDetails(entry, displaySettings);
+		}
+
+		if (action === "preview-restore" && entry?.kind === "named") {
+			const previewResult = await runBackupRestorePreview(entry, displaySettings);
+			if (previewResult === "restored") {
+				return "restored";
+			}
+			continue;
+		}
+
+		if (action === "legacy-restore" && entry?.kind === "named") {
+			const backupName = entry.backup.name;
+			let latestAssessment: NamedBackupAssessment;
+			try {
+				latestAssessment = await assessNamedBackupRestore(backupName, {
+					currentStorage: await loadAccounts(),
+				});
+			} catch (error) {
+				const errorLabel = getRedactedFilesystemErrorLabel(error);
+				console.warn(
+					`Failed to re-assess backup "${backupName}" before restore (${errorLabel}).`,
+				);
+				return "failed";
+			}
+			if (!canRestoreFromAssessment(latestAssessment)) {
+				console.log(
+					latestAssessment.error ?? "Backup is not eligible for restore.",
+				);
+				return "failed";
+			}
+			const confirmed = await confirm(`Restore backup "${backupName}"?`);
+			if (!confirmed) {
+				continue;
+			}
+			try {
+				await runActionPanel(
+					"Restore Backup",
+					`Restoring ${backupName}`,
+					async () => {
+						const result = await restoreNamedBackup(backupName, {
+							assessment: latestAssessment,
+						});
+						console.log(
+							formatNamedBackupRestoreResult(result, latestAssessment),
+						);
+					},
+					displaySettings,
+				);
+				return "restored";
+			} catch (restoreError) {
+				const errorLabel = getRedactedFilesystemErrorLabel(restoreError);
+				console.warn(
+					`Failed to restore backup "${backupName}" (${errorLabel}).`,
+				);
+				return "failed";
+			}
+		}
+	}
+}
+
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
@@ -4536,6 +5413,11 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "login") {
 		return runAuthLogin();
+	}
+	if (command === "restore-backup") {
+		return (await runBackupBrowserManager(startupDisplaySettings)) === "failed"
+			? 1
+			: 0;
 	}
 	if (command === "list" || command === "status") {
 		await showAccountStatus();

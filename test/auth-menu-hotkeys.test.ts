@@ -3,6 +3,8 @@ import type { AccountInfo } from "../lib/ui/auth-menu.js";
 
 const selectMock = vi.fn();
 const confirmMock = vi.fn(async () => true);
+const searchQuestionMock = vi.fn();
+const searchCloseMock = vi.fn();
 
 vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
@@ -10,6 +12,13 @@ vi.mock("../lib/ui/select.js", () => ({
 
 vi.mock("../lib/ui/confirm.js", () => ({
 	confirm: confirmMock,
+}));
+
+vi.mock("node:readline/promises", () => ({
+	createInterface: vi.fn(() => ({
+		question: searchQuestionMock,
+		close: searchCloseMock,
+	})),
 }));
 
 function createAccounts(): AccountInfo[] {
@@ -27,6 +36,8 @@ describe("auth-menu hotkeys", () => {
 		vi.resetModules();
 		selectMock.mockReset();
 		confirmMock.mockReset();
+		searchQuestionMock.mockReset();
+		searchCloseMock.mockReset();
 		confirmMock.mockResolvedValue(true);
 		previousCliVersion = process.env.CODEX_MULTI_AUTH_CLI_VERSION;
 		delete process.env.CODEX_MULTI_AUTH_CLI_VERSION;
@@ -138,6 +149,34 @@ describe("auth-menu hotkeys", () => {
 		expect(selectMock).toHaveBeenCalledTimes(2);
 	});
 
+	it("sanitizes search subtitles and status messages", async () => {
+		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+		searchQuestionMock.mockResolvedValueOnce(" \u001b[31mNeedle\u0007 ");
+		selectMock
+			.mockImplementationOnce(
+				async (items: unknown[], options: { onInput?: (...args: unknown[]) => unknown }) => {
+					if (!options.onInput) return null;
+					return options.onInput("/", {
+						cursor: 0,
+						items,
+						requestRerender: () => undefined,
+					});
+				},
+			)
+			.mockResolvedValueOnce({ type: "cancel" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		const result = await showAuthMenu(createAccounts(), {
+			statusMessage: () => "\u001b[32mNeeds\u0000 attention\u0007 ",
+		});
+
+		expect(result).toEqual({ type: "cancel" });
+		expect(searchCloseMock).toHaveBeenCalledTimes(1);
+		const options = selectMock.mock.calls[1]?.[1] as { subtitle?: string };
+		expect(options.subtitle).toBe("Search: needle | Needs attention");
+	});
+
 	it("supports help toggle hotkey (?) and requests rerender", async () => {
 		let rerenderCalls = 0;
 		selectMock.mockImplementationOnce(async (items: unknown[], options: { onInput?: (...args: unknown[]) => unknown }) => {
@@ -196,5 +235,69 @@ describe("auth-menu hotkeys", () => {
 
 		const options = selectMock.mock.calls[0]?.[1] as { message?: string };
 		expect(options?.message).toBe("Accounts Dashboard (v0.1.6)");
+	});
+
+	it("returns delete-all without an extra confirm prompt", async () => {
+		selectMock.mockResolvedValueOnce({ type: "delete-all" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		const result = await showAuthMenu(createAccounts());
+
+		expect(result).toEqual({ type: "delete-all" });
+		expect(confirmMock).not.toHaveBeenCalled();
+	});
+
+	it("returns reset-all without an extra confirm prompt", async () => {
+		selectMock.mockResolvedValueOnce({ type: "reset-all" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		const result = await showAuthMenu(createAccounts());
+
+		expect(result).toEqual({ type: "reset-all" });
+		expect(confirmMock).not.toHaveBeenCalled();
+	});
+
+	it("sanitizes ANSI and control characters in rendered account labels", async () => {
+		const baseTime = 1_700_000_000_000;
+		selectMock.mockResolvedValueOnce({ type: "cancel" });
+
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+		await showAuthMenu([
+			{
+				index: 0,
+				email: "\u001b[31mfirst@example.com\u0000",
+				status: "ok",
+				lastUsed: baseTime,
+			},
+			{
+				index: 1,
+				accountLabel: "\u001b[32mFriendly \r\nLabel\u007f",
+				status: "ok",
+				lastUsed: baseTime,
+			},
+			{
+				index: 2,
+				email: "",
+				accountLabel: " \r\n ",
+				accountId: "\u001b[33macc-id-42\u0007",
+				status: "ok",
+				lastUsed: baseTime,
+			},
+		]);
+
+		const items = (selectMock.mock.calls[0]?.[0] as Array<{
+			label: string;
+			value: { type: string };
+		}>).filter((item) => item.value.type === "select-account");
+		const labels = items.map((item) => item.label);
+		const strippedLabels = labels.map((label) =>
+			label.replace(new RegExp("\\u001b\\[[0-?]*[ -/]*[@-~]", "g"), ""),
+		);
+
+		expect(strippedLabels[0]).toContain("1. first@example.com");
+		expect(strippedLabels[1]).toContain("2. Friendly Label");
+		expect(strippedLabels[2]).toContain("3. acc-id-42");
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional test assertion
+		expect(strippedLabels.join("")).not.toMatch(/[\u0000\u0007\u007f]/);
 	});
 });

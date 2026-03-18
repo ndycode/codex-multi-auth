@@ -49,6 +49,8 @@ Expected flow:
 4. Return to the terminal when the browser step completes.
 5. Confirm the account appears in the saved account list.
 
+If interactive `codex auth login` starts with zero saved accounts and recoverable named backups in your `backups/` directory, the login flow will prompt you to restore before opening OAuth. Confirm to launch the existing restore manager; skip to proceed with a fresh login. The prompt is suppressed in non-interactive/fallback flows and after same-session `fresh` or `reset` actions.
+
 Verify the new account:
 
 ```bash
@@ -67,6 +69,29 @@ When you are done, choose the best account for the next session:
 ```bash
 codex auth forecast --live
 ```
+
+---
+
+## Restore Or Start Fresh
+
+Use the restore path when you already have named backup files and want to recover account state before creating new OAuth sessions.
+
+- Automatic path: run `codex auth login`, then confirm the startup restore prompt when it appears
+- Manual path: run `codex auth login`, then choose `Restore From Backup`
+- Backup location: `~/.codex/multi-auth/backups/<name>.json`
+
+The restore manager shows each backup name, account count, freshness, and whether the restore would exceed the account limit before it lets you apply anything.
+
+---
+
+## Sync And Settings
+
+The settings flow is split into two productized sections:
+
+- `Everyday Settings` for list appearance, details line, results and refresh behavior, and colors
+- `Advanced & Operator` for `Codex CLI Sync`, `Experimental`, and backend tuning
+
+Use `Codex CLI Sync` when you want to preview one-way sync from official Codex CLI account files before applying it. The sync screen shows source and target paths, preview summary, destination-only preservation, and backup rollback paths before apply.
 
 ---
 

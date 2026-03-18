@@ -2,24 +2,41 @@ import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
+import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import {
+	deleteSavedAccounts,
+	resetLocalState,
+} from "../lib/destructive-actions.js";
+import { clearQuotaCache, getQuotaCachePath } from "../lib/quota-cache.js";
+import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
+import {
+	assessNamedBackupRestore,
 	buildNamedBackupPath,
 	clearAccounts,
+	clearFlaggedAccounts,
+	createNamedBackup,
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
 	exportAccounts,
 	exportNamedBackup,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getActionableNamedBackupRestores,
 	getFlaggedAccountsPath,
+	getNamedBackupsDirectoryPath,
+	NAMED_BACKUP_LIST_CONCURRENCY,
 	getStoragePath,
 	importAccounts,
+	listNamedBackups,
+	listRotatingBackups,
 	loadAccounts,
 	loadFlaggedAccounts,
 	normalizeAccountStorage,
+	restoreNamedBackup,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
+	snapshotAccountStorage,
 	StorageError,
 	saveAccounts,
 	setStoragePath,
@@ -325,13 +342,10 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(testWorkDir, { recursive: true, force: true });
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
 		});
 
 		it("should export accounts to a file", async () => {
-			// @ts-expect-error - exportAccounts doesn't exist yet
-			const { exportAccounts } = await import("../lib/storage.js");
-
 			const storage = {
 				version: 3,
 				activeIndex: 0,
@@ -351,8 +365,6 @@ describe("storage", () => {
 		});
 
 		it("should fail export if file exists and force is false", async () => {
-			// @ts-expect-error
-			const { exportAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "exists");
 
 			// @ts-expect-error
@@ -361,10 +373,35 @@ describe("storage", () => {
 			);
 		});
 
-		it("should import accounts from a file and merge", async () => {
-			// @ts-expect-error
-			const { importAccounts } = await import("../lib/storage.js");
+		it("throws when exporting inside an active transaction for a different storage path", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "transactional-export",
+						refreshToken: "ref-transactional-export",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
 
+			const alternateStoragePath = join(testWorkDir, "alternate-accounts.json");
+
+			await expect(
+				withAccountStorageTransaction(async () => {
+					setStoragePathDirect(alternateStoragePath);
+					try {
+						await exportAccounts(exportPath);
+					} finally {
+						setStoragePathDirect(testStoragePath);
+					}
+				}),
+			).rejects.toThrow(/different storage path/);
+		});
+
+		it("should import accounts from a file and merge", async () => {
 			const existing = {
 				version: 3,
 				activeIndex: 0,
@@ -398,7 +435,6 @@ describe("storage", () => {
 		});
 
 		it("should preserve distinct shared-accountId imports when the imported row has no email", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			const existing = {
 				version: 3,
 				activeIndex: 1,
@@ -454,7 +490,6 @@ describe("storage", () => {
 		});
 
 		it("should preserve distinct accountId plus email pairs during import", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -502,7 +537,6 @@ describe("storage", () => {
 		});
 
 		it("should preserve duplicate shared accountId entries when imported rows lack email", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -589,6 +623,75 @@ describe("storage", () => {
 			expect(
 				new Set(loaded?.accounts.map((account) => account.accountId)),
 			).toEqual(new Set(["acct-a", "acct-b"]));
+		});
+
+		it("pins transactional snapshots and account writes to the captured storage path", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-original",
+						refreshToken: "ref-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const alternateStoragePath = join(
+				testWorkDir,
+				"alternate",
+				"alternate-accounts.json",
+			);
+
+			try {
+				await withAccountStorageTransaction(async (current, persist) => {
+					if (!current) {
+						throw new Error("expected existing account storage");
+					}
+
+					setStoragePathDirect(alternateStoragePath);
+					await snapshotAccountStorage({
+						reason: "import-accounts",
+						failurePolicy: "error",
+						storage: current,
+					});
+					await persist({
+						...current,
+						accounts: [
+							...current.accounts,
+							{
+								accountId: "acct-transactional",
+								refreshToken: "ref-transactional",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					});
+				});
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+
+			const saved = JSON.parse(await fs.readFile(testStoragePath, "utf-8"));
+			expect(saved.accounts.map((account: { accountId: string }) => account.accountId))
+				.toEqual(["acct-original", "acct-transactional"]);
+			expect(existsSync(alternateStoragePath)).toBe(false);
+
+			const originalSnapshots = await listNamedBackups();
+			expect(
+				originalSnapshots.some((backup) =>
+					backup.name.startsWith("accounts-import-accounts-snapshot-"),
+				),
+			).toBe(true);
+
+			setStoragePathDirect(alternateStoragePath);
+			try {
+				await expect(listNamedBackups()).resolves.toEqual([]);
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
 		});
 
 		it("rolls back account storage when flagged persistence keeps failing inside the combined transaction", async () => {
@@ -686,6 +789,95 @@ describe("storage", () => {
 					refreshToken: "refresh-flagged",
 				}),
 			);
+		});
+
+		it("pins combined account and flagged writes to the captured storage path", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-original",
+						refreshToken: "ref-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged-original",
+						refreshToken: "ref-flagged-original",
+						flaggedAt: 1,
+					},
+				],
+			});
+
+			const alternateStoragePath = join(
+				testWorkDir,
+				"alternate",
+				"alternate-accounts.json",
+			);
+			const alternateFlaggedPath = join(
+				dirname(alternateStoragePath),
+				"openai-codex-flagged-accounts.json",
+			);
+
+			try {
+				await withAccountAndFlaggedStorageTransaction(
+					async (current, persist) => {
+						if (!current) {
+							throw new Error("expected existing account storage");
+						}
+
+						setStoragePathDirect(alternateStoragePath);
+						await persist(
+							{
+								...current,
+								accounts: [
+									...current.accounts,
+									{
+										accountId: "acct-transactional",
+										refreshToken: "ref-transactional",
+										addedAt: 2,
+										lastUsed: 2,
+									},
+								],
+							},
+							{
+								version: 1,
+								accounts: [
+									{
+										accountId: "acct-flagged-transactional",
+										refreshToken: "ref-flagged-transactional",
+										flaggedAt: 2,
+									},
+								],
+							},
+						);
+					},
+				);
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+
+			const savedAccounts = JSON.parse(await fs.readFile(testStoragePath, "utf-8"));
+			expect(
+				savedAccounts.accounts.map((account: { accountId: string }) => account.accountId),
+			).toEqual(["acct-original", "acct-transactional"]);
+			expect(existsSync(alternateStoragePath)).toBe(false);
+
+			const flagged = await loadFlaggedAccounts();
+			expect(flagged.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "acct-flagged-transactional",
+					refreshToken: "ref-flagged-transactional",
+				}),
+			]);
+			expect(existsSync(alternateFlaggedPath)).toBe(false);
+			expect(getFlaggedAccountsPath()).not.toBe(alternateFlaggedPath);
 		});
 
 		it("surfaces rollback failure when flagged persistence and account rollback both fail", async () => {
@@ -895,9 +1087,6 @@ describe("storage", () => {
 		});
 
 		it("should enforce MAX_ACCOUNTS during import", async () => {
-			// @ts-expect-error
-			const { importAccounts } = await import("../lib/storage.js");
-
 			const manyAccounts = Array.from({ length: 21 }, (_, i) => ({
 				accountId: `acct${i}`,
 				refreshToken: `ref${i}`,
@@ -919,15 +1108,36 @@ describe("storage", () => {
 		});
 
 		it("should fail export when no accounts exist", async () => {
-			const { exportAccounts } = await import("../lib/storage.js");
-			setStoragePathDirect(testStoragePath);
-			await expect(exportAccounts(exportPath)).rejects.toThrow(
-				/No accounts to export/,
+			const isolatedStorageDir = join(
+				testWorkDir,
+				"empty-export-" + Math.random().toString(36).slice(2),
 			);
+			const isolatedStoragePath = join(isolatedStorageDir, "accounts.json");
+			const isolatedExportPath = join(isolatedStorageDir, "export.json");
+			await fs.mkdir(isolatedStorageDir, { recursive: true });
+			vi.resetModules();
+			const isolatedStorageModule = await import("../lib/storage.js");
+			isolatedStorageModule.setStoragePathDirect(isolatedStoragePath);
+			try {
+				await fs.writeFile(
+					isolatedStoragePath,
+					JSON.stringify({
+						version: 3,
+						activeIndex: 0,
+						activeIndexByFamily: {},
+						accounts: [],
+					}),
+				);
+				await expect(
+					isolatedStorageModule.exportAccounts(isolatedExportPath),
+				).rejects.toThrow(/No accounts to export/);
+			} finally {
+				isolatedStorageModule.setStoragePathDirect(null);
+				vi.resetModules();
+			}
 		});
 
 		it("should fail import when file does not exist", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			const nonexistentPath = join(testWorkDir, "nonexistent-file.json");
 			await expect(importAccounts(nonexistentPath)).rejects.toThrow(
 				/Import file not found/,
@@ -935,13 +1145,11 @@ describe("storage", () => {
 		});
 
 		it("should fail import when file contains invalid JSON", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, "not valid json {[");
 			await expect(importAccounts(exportPath)).rejects.toThrow(/Invalid JSON/);
 		});
 
 		it("should fail import when file contains invalid format", async () => {
-			const { importAccounts } = await import("../lib/storage.js");
 			await fs.writeFile(exportPath, JSON.stringify({ invalid: "format" }));
 			await expect(importAccounts(exportPath)).rejects.toThrow(
 				/Invalid account storage format/,
@@ -1071,19 +1279,1922 @@ describe("storage", () => {
 				);
 			});
 		});
+
+		it("creates and lists named backups with metadata", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-backup",
+						refreshToken: "ref-backup",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("backup-2026-03-12");
+			const backups = await listNamedBackups();
+
+			expect(backup.name).toBe("backup-2026-03-12");
+			expect(backups).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						name: "backup-2026-03-12",
+						accountCount: 1,
+						valid: true,
+					}),
+				]),
+			);
+		});
+
+		it("assesses eligibility and restores a named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await createNamedBackup("restore-me");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("restore-me");
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.wouldExceedLimit).toBe(false);
+
+			const restoreResult = await restoreNamedBackup("restore-me");
+			expect(restoreResult.total).toBe(1);
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts[0]?.accountId).toBe("primary");
+		});
+
+		it("creates a pre-restore snapshot before restoring into an existing account pool", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-account",
+						refreshToken: "ref-backup-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("restore-me");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "current-account",
+						refreshToken: "ref-current-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const restoreResult = await restoreNamedBackup("restore-me");
+
+			expect(restoreResult.total).toBe(2);
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-import-accounts-snapshot-"),
+				),
+			).toBe(true);
+		});
+
+		it("honors explicit null currentStorage when assessing a named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-account",
+						refreshToken: "ref-backup-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("explicit-null-current-storage");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "current-account",
+						refreshToken: "ref-current-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore(
+				"explicit-null-current-storage",
+				{ currentStorage: null },
+			);
+
+			expect(assessment.currentAccountCount).toBe(0);
+			expect(assessment.mergedAccountCount).toBe(1);
+			expect(assessment.imported).toBe(1);
+			expect(assessment.skipped).toBe(0);
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.currentActiveIndex).toBeNull();
+			expect(assessment.nextActiveIndex).toBe(0);
+			expect(assessment.activeAccountOutcome).toBe("changed");
+			expect(assessment.activeAccountChanged).toBe(true);
+			expect(assessment.namedBackupRestorePreview?.activeAccount).toMatchObject({
+				outcome: "changed",
+				changed: true,
+				current: null,
+				next: expect.objectContaining({
+					index: 0,
+					accountId: "backup-account",
+				}),
+			});
+		});
+
+		it("allows replace-only named backup restores and exposes preview conflict details", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Replace Only.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							email: "replace@example.com",
+							accountId: "replace-account",
+							refreshToken: "refresh-replaced",
+							addedAt: 20,
+							lastUsed: 20,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						email: "replace@example.com",
+						accountId: "replace-account",
+						refreshToken: "refresh-current",
+						addedAt: 10,
+						lastUsed: 10,
+					},
+				],
+			});
+
+			const assessment = await assessNamedBackupRestore("Replace Only");
+
+			expect(assessment.backupAccountCount).toBe(1);
+			expect(assessment.dedupedBackupAccountCount).toBe(1);
+			expect(assessment.imported).toBe(0);
+			expect(assessment.skipped).toBe(0);
+			expect(assessment.replacedExistingCount).toBe(1);
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.wouldExceedLimit).toBe(false);
+			expect(assessment.activeAccountOutcome).toBe("unchanged");
+			expect(assessment.activeAccountChanged).toBe(false);
+			expect(assessment.namedBackupRestorePreview?.conflicts).toEqual([
+				expect.objectContaining({
+					conflict: expect.objectContaining({
+						backupIndex: 0,
+						currentIndex: 0,
+						resolution: "backup-kept",
+						reasons: expect.arrayContaining(["accountId", "email"]),
+					}),
+				}),
+			]);
+
+			const restoreResult = await restoreNamedBackup("Replace Only");
+			expect(restoreResult).toEqual({ imported: 0, skipped: 1, total: 1 });
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "replace-account",
+					refreshToken: "refresh-replaced",
+				}),
+			]);
+		});
+
+		it("reuses a prevalidated assessment when restoring a named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("prevalidated-restore");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("prevalidated-restore");
+			const originalReadFile = fs.readFile.bind(fs);
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) =>
+					originalReadFile(...(args as Parameters<typeof fs.readFile>)),
+				);
+
+			try {
+				const restoreResult = await restoreNamedBackup("prevalidated-restore", {
+					assessment,
+				});
+
+				expect(restoreResult.total).toBe(1);
+				const backupReads = readFileSpy.mock.calls.filter(
+					([path]) => String(path) === backup.path,
+				);
+				expect(backupReads).toHaveLength(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("restores manually named backups that already exist inside the backups directory", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Manual Backup.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "manual",
+							refreshToken: "ref-manual",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const backups = await listNamedBackups();
+			expect(backups).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "Manual Backup", valid: true }),
+				]),
+			);
+
+			await clearAccounts();
+			const assessment = await assessNamedBackupRestore("Manual Backup");
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.backup.name).toBe("Manual Backup");
+
+			const restoreResult = await restoreNamedBackup("Manual Backup");
+			expect(restoreResult.total).toBe(1);
+		});
+
+		it("restores manually named backups with uppercase JSON extensions", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Manual Backup.JSON",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "manual-uppercase",
+							refreshToken: "ref-manual-uppercase",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const backups = await listNamedBackups();
+			expect(backups).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "Manual Backup", valid: true }),
+				]),
+			);
+
+			await clearAccounts();
+			const assessment = await assessNamedBackupRestore("Manual Backup");
+			expect(assessment.eligibleForRestore).toBe(true);
+			expect(assessment.backup.name).toBe("Manual Backup");
+
+			const restoreResult = await restoreNamedBackup("Manual Backup");
+			expect(restoreResult.total).toBe(1);
+		});
+
+		it("throws when a named backup is deleted after assessment", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "deleted-backup",
+						refreshToken: "ref-deleted-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("deleted-after-assessment");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("deleted-after-assessment");
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			await removeWithRetry(backup.path, { force: true });
+
+			await expect(
+				restoreNamedBackup("deleted-after-assessment"),
+			).rejects.toThrow(/Import file not found/);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+		});
+
+		it("throws when a named backup becomes invalid JSON after assessment", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "invalid-backup",
+						refreshToken: "ref-invalid-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("invalid-after-assessment");
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("invalid-after-assessment");
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			await fs.writeFile(backup.path, "not valid json {[", "utf-8");
+
+			await expect(
+				restoreNamedBackup("invalid-after-assessment"),
+			).rejects.toThrow(/Invalid JSON in import file/);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+		});
+
+		it("reassesses named restores at mutation time when the current pool grows past the limit", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"limit-race.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							email: "from-backup@example.com",
+							accountId: "from-backup",
+							refreshToken: "refresh-from-backup",
+							addedAt: 100,
+							lastUsed: 100,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
+					(_value, index) => ({
+						email: `current-${index}@example.com`,
+						accountId: `current-${index}`,
+						refreshToken: `refresh-current-${index}`,
+						addedAt: index,
+						lastUsed: index,
+					}),
+				),
+			});
+
+			const initialAssessment = await assessNamedBackupRestore("limit-race");
+			expect(initialAssessment.eligibleForRestore).toBe(true);
+			expect(initialAssessment.wouldExceedLimit).toBe(false);
+			expect(initialAssessment.imported).toBe(1);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from({ length: ACCOUNT_LIMITS.MAX_ACCOUNTS }, (_value, index) => ({
+					email: `expanded-${index}@example.com`,
+					accountId: `expanded-${index}`,
+					refreshToken: `refresh-expanded-${index}`,
+					addedAt: index + 1_000,
+					lastUsed: index + 1_000,
+				})),
+			});
+
+			await expect(
+				restoreNamedBackup("limit-race", { assessment: initialAssessment }),
+			).rejects.toThrow(
+				`Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+			);
+
+			const persisted = await loadAccounts();
+			expect(persisted?.accounts).toHaveLength(ACCOUNT_LIMITS.MAX_ACCOUNTS);
+			expect(
+				persisted?.accounts.some(
+					(account) => account.accountId === "from-backup",
+				),
+			).toBe(false);
+		});
+
+		it.each(["../openai-codex-accounts", String.raw`..\openai-codex-accounts`])(
+			"rejects backup names that escape the backups directory: %s",
+			async (input) => {
+				await expect(assessNamedBackupRestore(input)).rejects.toThrow(
+					/invalid backup name/i,
+				);
+				await expect(restoreNamedBackup(input)).rejects.toThrow(
+					/invalid backup name/i,
+				);
+			},
+		);
+
+		it("ignores symlink-like named backup entries that point outside the backups root", async () => {
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const externalBackupPath = join(testWorkDir, "outside-backup.json");
+			await fs.mkdir(backupRoot, { recursive: true });
+			await fs.writeFile(
+				externalBackupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "outside-manual-backup",
+							refreshToken: "ref-outside-manual-backup",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalReaddir = fs.readdir.bind(fs);
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const escapedEntry = {
+				name: "escaped-link.json",
+				isFile: () => true,
+				isSymbolicLink: () => true,
+			} as unknown as Awaited<
+				ReturnType<typeof fs.readdir>
+			>[number];
+			readdirSpy.mockImplementation(async (...args) => {
+				const [path, options] = args;
+				if (
+					String(path) === backupRoot &&
+					typeof options === "object" &&
+					options?.withFileTypes === true
+				) {
+					return [escapedEntry] as Awaited<ReturnType<typeof fs.readdir>>;
+				}
+				return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual([]);
+				await expect(assessNamedBackupRestore("escaped-link")).rejects.toThrow(
+					/not a regular backup file/i,
+				);
+				await expect(restoreNamedBackup("escaped-link")).rejects.toThrow(
+					/not a regular backup file/i,
+				);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("rethrows unreadable backup directory errors while listing backups", async () => {
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("rethrows unreadable backup directory errors after one attempt on non-Windows platforms", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(listNamedBackups()).rejects.toMatchObject({ code: "EPERM" });
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("rethrows unreadable backup directory errors while restoring backups", async () => {
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(restoreNamedBackup("Manual Backup")).rejects.toMatchObject({
+					code: "EPERM",
+				});
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("returns no actionable restores when the fast backup scan hits a locked directory", async () => {
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(getActionableNamedBackupRestores()).resolves.toEqual({
+					assessments: [],
+					allAssessments: [],
+					totalBackups: 0,
+				});
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup directory errors while listing backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list-dir",
+						refreshToken: "ref-retry-list-dir",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-list-dir");
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory busy",
+						) as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ name: "retry-list-dir", valid: true }),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup directory errors while restoring backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-restore-dir",
+						refreshToken: "ref-retry-restore-dir",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-restore-dir");
+			await clearAccounts();
+			const backupRoot = join(dirname(testStoragePath), "backups");
+			const originalReaddir = fs.readdir.bind(fs);
+			let busyFailures = 0;
+			const readdirSpy = vi
+				.spyOn(fs, "readdir")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupRoot && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error(
+							"backup directory busy",
+						) as NodeJS.ErrnoException;
+						error.code = "EAGAIN";
+						throw error;
+					}
+					return originalReaddir(...(args as Parameters<typeof fs.readdir>));
+				});
+
+			try {
+				const result = await restoreNamedBackup("retry-restore-dir");
+				expect(result.total).toBe(1);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup read errors while restoring backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-restore-read",
+						refreshToken: "ref-retry-restore-read",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("retry-restore-read");
+			await clearAccounts();
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"retry-restore-read.json",
+			);
+			const originalReadFile = fs.readFile.bind(fs);
+			let backupReads = 0;
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backupPath) {
+						backupReads += 1;
+						if (backupReads === 1 && busyFailures === 0) {
+							busyFailures += 1;
+							const error = new Error("backup read busy") as NodeJS.ErrnoException;
+							error.code = "EBUSY";
+							throw error;
+						}
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const result = await restoreNamedBackup("retry-restore-read");
+				expect(result.total).toBe(1);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("throws file-not-found when a manually named backup disappears after assessment", async () => {
+			const backupPath = join(
+				dirname(testStoragePath),
+				"backups",
+				"Manual Backup.json",
+			);
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "manual-missing",
+							refreshToken: "ref-manual-missing",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await clearAccounts();
+
+			const assessment = await assessNamedBackupRestore("Manual Backup");
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			await removeWithRetry(backupPath, { force: true });
+
+			await expect(restoreNamedBackup("Manual Backup")).rejects.toThrow(
+				/Import file not found/,
+			);
+		});
+
+		it("retries transient backup read errors while listing backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-read",
+						refreshToken: "ref-retry-read",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const backup = await createNamedBackup("retry-read");
+			const originalReadFile = fs.readFile.bind(fs);
+			let busyFailures = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (String(path) === backup.path && busyFailures === 0) {
+						busyFailures += 1;
+						const error = new Error("backup file busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ name: "retry-read", valid: true }),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup stat errors while listing backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-stat",
+						refreshToken: "ref-retry-stat",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const backup = await createNamedBackup("retry-stat");
+			const originalStat = fs.stat.bind(fs);
+			let busyFailures = 0;
+			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+				const [path] = args;
+				if (String(path) === backup.path && busyFailures === 0) {
+					busyFailures += 1;
+					const error = new Error("backup stat busy") as NodeJS.ErrnoException;
+					error.code = "EAGAIN";
+					throw error;
+				}
+				return originalStat(...(args as Parameters<typeof fs.stat>));
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ name: "retry-stat", valid: true }),
+					]),
+				);
+				expect(busyFailures).toBe(1);
+			} finally {
+				statSpy.mockRestore();
+			}
+		});
+
+		it("sorts backups with invalid timestamps after finite timestamps", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "valid-backup",
+						refreshToken: "ref-valid-backup",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const validBackup = await createNamedBackup("valid-backup");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "nan-backup",
+						refreshToken: "ref-nan-backup",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			const nanBackup = await createNamedBackup("nan-backup");
+			const originalStat = fs.stat.bind(fs);
+			const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+				const [path] = args;
+				const stats = await originalStat(...(args as Parameters<typeof fs.stat>));
+				if (String(path) === nanBackup.path) {
+					return {
+						...stats,
+						mtimeMs: Number.NaN,
+					} as Awaited<ReturnType<typeof fs.stat>>;
+				}
+				return stats;
+			});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups.map((backup) => backup.name)).toEqual([
+					validBackup.name,
+					nanBackup.name,
+				]);
+			} finally {
+				statSpy.mockRestore();
+			}
+		});
+
+		it("limits concurrent backup reads while listing backups", async () => {
+			const backupPaths: string[] = [];
+			for (let index = 0; index < 12; index += 1) {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: `concurrency-${index}`,
+							refreshToken: `ref-concurrency-${index}`,
+							addedAt: index + 1,
+							lastUsed: index + 1,
+						},
+					],
+				});
+				const backup = await createNamedBackup(`concurrency-${index}`);
+				backupPaths.push(backup.path);
+			}
+
+			const originalReadFile = fs.readFile.bind(fs);
+			const delayedPaths = new Set(backupPaths);
+			let activeReads = 0;
+			let peakReads = 0;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (delayedPaths.has(String(path))) {
+						activeReads += 1;
+						peakReads = Math.max(peakReads, activeReads);
+						try {
+							await new Promise((resolve) => setTimeout(resolve, 10));
+							return await originalReadFile(
+								...(args as Parameters<typeof fs.readFile>),
+							);
+						} finally {
+							activeReads -= 1;
+						}
+					}
+					return originalReadFile(...(args as Parameters<typeof fs.readFile>));
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups).toHaveLength(12);
+				expect(peakReads).toBeLessThanOrEqual(
+					NAMED_BACKUP_LIST_CONCURRENCY,
+				);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("serializes concurrent restores so only one succeeds when the limit is tight", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-a-account",
+						refreshToken: "ref-backup-a-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("backup-a");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-b-account",
+						refreshToken: "ref-backup-b-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("backup-b");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS - 1 },
+					(_, index) => ({
+						accountId: `current-${index}`,
+						refreshToken: `ref-current-${index}`,
+						addedAt: index + 1,
+						lastUsed: index + 1,
+					}),
+				),
+			});
+
+			const assessmentA = await assessNamedBackupRestore("backup-a");
+			const assessmentB = await assessNamedBackupRestore("backup-b");
+			expect(assessmentA.eligibleForRestore).toBe(true);
+			expect(assessmentB.eligibleForRestore).toBe(true);
+
+			const results = await Promise.allSettled([
+				restoreNamedBackup("backup-a"),
+				restoreNamedBackup("backup-b"),
+			]);
+			const succeeded = results.filter(
+				(result): result is PromiseFulfilledResult<{
+					imported: number;
+					skipped: number;
+					total: number;
+				}> => result.status === "fulfilled",
+			);
+			const failed = results.filter(
+				(result): result is PromiseRejectedResult => result.status === "rejected",
+			);
+
+			expect(succeeded).toHaveLength(1);
+			expect(failed).toHaveLength(1);
+			expect(String(failed[0]?.reason)).toContain("Import would exceed maximum");
+
+			const restored = await loadAccounts();
+			expect(restored?.accounts).toHaveLength(ACCOUNT_LIMITS.MAX_ACCOUNTS);
+		});
 	});
 
-	describe("filename migration (TDD)", () => {
-		it("should migrate from old filename to new filename", async () => {
-			// This test is tricky because it depends on the internal state of getStoragePath()
-			// which we are about to change.
+	describe("account storage snapshots", () => {
+		const testWorkDir = join(
+			tmpdir(),
+			`codex-snapshot-${Math.random().toString(36).slice(2)}`,
+		);
+		let testStoragePath = "";
 
-			const oldName = "openai-codex-accounts.json";
-			const newName = "codex-accounts.json";
+		beforeEach(async () => {
+			await fs.mkdir(testWorkDir, { recursive: true });
+			testStoragePath = join(testWorkDir, "openai-codex-accounts.json");
+			setStoragePathDirect(testStoragePath);
+		});
 
-			// We'll need to mock/verify that loadAccounts checks for oldName if newName is missing
-			// Since we haven't implemented it yet, this is just a placeholder for the logic
-			expect(true).toBe(true);
+		afterEach(async () => {
+			setStoragePathDirect(null);
+			vi.restoreAllMocks();
+			await removeWithRetry(testWorkDir, { recursive: true, force: true });
+		});
+
+		it("creates deterministic named snapshots with millisecond precision", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const fixedNow = Date.UTC(2024, 0, 2, 3, 4, 5, 123);
+			const snapshot = await snapshotAccountStorage({
+				reason: "delete-saved-accounts",
+				now: fixedNow,
+			});
+
+			expect(snapshot?.name).toBe(
+				"accounts-delete-saved-accounts-snapshot-2024-01-02_03-04-05_123",
+			);
+			expect(snapshot?.path && existsSync(snapshot.path)).toBe(true);
+		});
+
+		it("keeps snapshots unique for two destructive actions in the same second", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const first = await snapshotAccountStorage({
+				reason: "reset-local-state",
+				now: Date.UTC(2024, 0, 2, 3, 4, 5, 7),
+			});
+			const second = await snapshotAccountStorage({
+				reason: "reset-local-state",
+				now: Date.UTC(2024, 0, 2, 3, 4, 5, 8),
+			});
+
+			expect(first?.name).not.toBe(second?.name);
+			const backups = await listNamedBackups();
+			expect(
+				backups.filter((backup) =>
+					backup.name.startsWith("accounts-reset-local-state-snapshot-"),
+				),
+			).toHaveLength(2);
+		});
+
+		it("skips snapshot when no accounts exist", async () => {
+			const snapshot = await snapshotAccountStorage({
+				reason: "delete-saved-accounts",
+			});
+
+			expect(snapshot).toBeNull();
+			expect(existsSync(getNamedBackupsDirectoryPath())).toBe(false);
+		});
+
+		it("returns null on warn policy when snapshot creation fails", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const failingBackup = vi
+				.fn()
+				.mockRejectedValue(new Error("snapshot failed"));
+
+			await expect(
+				snapshotAccountStorage({
+					reason: "reset-local-state",
+					createBackup: failingBackup,
+				}),
+			).resolves.toBeNull();
+		});
+
+		it("redacts filesystem paths from snapshot warning logs", async () => {
+			const warnMock = vi.fn();
+			vi.resetModules();
+			vi.doMock("../lib/logger.js", () => ({
+				createLogger: vi.fn(() => ({
+					debug: vi.fn(),
+					info: vi.fn(),
+					warn: warnMock,
+					error: vi.fn(),
+				})),
+				logWarn: vi.fn(),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(testStoragePath);
+				await isolatedStorageModule.saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "primary",
+							refreshToken: "ref-primary",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
+
+				const leakingPath = join(
+					testWorkDir,
+					"backups",
+					"accounts-reset-local-state-snapshot-2024-01-02_03-04-05_123.json",
+				);
+				const failingBackup = vi.fn().mockRejectedValue(
+					Object.assign(
+						new Error(
+							`EPERM: operation not permitted, open '${leakingPath}'`,
+						),
+						{ code: "EPERM" },
+					),
+				);
+
+				await expect(
+					isolatedStorageModule.snapshotAccountStorage({
+						reason: "reset-local-state",
+						createBackup: failingBackup,
+					}),
+				).resolves.toBeNull();
+
+				const payload = warnMock.mock.calls[0]?.[1] as
+					| { error?: string; backupName?: string }
+					| undefined;
+				expect(payload?.backupName).toContain(
+					"accounts-reset-local-state-snapshot-",
+				);
+				expect(payload?.error).toContain(
+					"accounts-reset-local-state-snapshot-2024-01-02_03-04-05_123.json",
+				);
+				expect(payload?.error).not.toContain(testWorkDir);
+			} finally {
+				vi.doUnmock("../lib/logger.js");
+				vi.resetModules();
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
+		it("propagates snapshot failure when policy is error", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const failingBackup = vi
+				.fn()
+				.mockRejectedValue(new Error("snapshot failed"));
+
+			await expect(
+				snapshotAccountStorage({
+					reason: "reset-local-state",
+					failurePolicy: "error",
+					createBackup: failingBackup,
+				}),
+			).rejects.toThrow(/snapshot failed/);
+		});
+
+		it("writes the provided storage snapshot instead of re-reading live storage", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "live",
+						refreshToken: "ref-live",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const snapshot = await snapshotAccountStorage({
+				reason: "import-accounts",
+				storage: {
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "provided",
+							refreshToken: "ref-provided",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				},
+				storagePath: testStoragePath,
+			});
+
+			expect(snapshot?.path && existsSync(snapshot.path)).toBe(true);
+			const snapshotContent = JSON.parse(
+				await fs.readFile(snapshot!.path, "utf-8"),
+			) as { accounts: Array<{ accountId?: string }> };
+			expect(snapshotContent.accounts).toEqual([
+				expect.objectContaining({ accountId: "provided" }),
+			]);
+			expect((await loadAccounts())?.accounts).toEqual([
+				expect.objectContaining({ accountId: "live" }),
+			]);
+		});
+
+		it("passes the first loaded storage snapshot to createBackup when no storage is provided", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "before-reread",
+						refreshToken: "ref-before-reread",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			let observedStorage:
+				| {
+						accounts: Array<{ accountId?: string }>;
+				  }
+				| undefined;
+
+			const snapshot = await snapshotAccountStorage({
+				reason: "reset-local-state",
+				createBackup: async (name, options) => {
+					observedStorage = options.storage as {
+						accounts: Array<{ accountId?: string }>;
+					};
+					await fs.writeFile(
+						testStoragePath,
+						JSON.stringify({
+							version: 3,
+							activeIndex: 0,
+							accounts: [
+								{
+									accountId: "after-reread",
+									refreshToken: "ref-after-reread",
+									addedAt: 2,
+									lastUsed: 2,
+								},
+							],
+						}),
+						"utf-8",
+					);
+					return {
+						name,
+						path: join(getNamedBackupsDirectoryPath(), `${name}.json`),
+						createdAt: null,
+						updatedAt: null,
+						sizeBytes: null,
+						version: 3,
+						accountCount: options.storage?.accounts.length ?? null,
+						schemaErrors: [],
+						valid: true,
+					};
+				},
+			});
+
+			expect(snapshot?.accountCount).toBe(1);
+			expect(observedStorage?.accounts).toEqual([
+				expect.objectContaining({ accountId: "before-reread" }),
+			]);
+			expect((await loadAccounts())?.accounts).toEqual([
+				expect.objectContaining({ accountId: "after-reread" }),
+			]);
+		});
+
+		it("creates a named snapshot before deleteSavedAccounts", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await deleteSavedAccounts();
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-delete-saved-accounts-snapshot-"),
+				),
+			).toBe(true);
+			expect(await loadAccounts()).toMatchObject({
+				accounts: [],
+				restoreReason: "intentional-reset",
+			});
+		});
+
+		it("clears the pre-delete snapshot before releasing the lock to newer saves", async () => {
+			const originalWriteFile = fs.writeFile.bind(fs);
+			let releaseSnapshotWrite: (() => void) | undefined;
+			const snapshotWriteBlocked = new Promise<void>((resolve) => {
+				releaseSnapshotWrite = resolve;
+			});
+			let snapshotWriteStarted = false;
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (path, data, options) => {
+					if (
+						!snapshotWriteStarted &&
+						String(path).includes("accounts-delete-saved-accounts-snapshot-")
+					) {
+						snapshotWriteStarted = true;
+						await snapshotWriteBlocked;
+					}
+					return originalWriteFile(path, data as never, options as never);
+				});
+
+			try {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "delete-original",
+							refreshToken: "ref-delete-original",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
+
+				const deletePromise = deleteSavedAccounts();
+				await vi.waitFor(() => {
+					expect(snapshotWriteStarted).toBe(true);
+				}, { timeout: 5_000 });
+
+				const concurrentSave = saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "saved-after-delete",
+							refreshToken: "ref-saved-after-delete",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				});
+
+				releaseSnapshotWrite?.();
+
+				await expect(deletePromise).resolves.toMatchObject({
+					accountsCleared: true,
+				});
+				await expect(concurrentSave).resolves.toBeUndefined();
+
+				expect((await loadAccounts())?.accounts).toEqual([
+					expect.objectContaining({ accountId: "saved-after-delete" }),
+				]);
+
+				const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+				expect(
+					entries.some((name) =>
+						name.startsWith("accounts-delete-saved-accounts-snapshot-"),
+					),
+				).toBe(true);
+			} finally {
+				releaseSnapshotWrite?.();
+				writeFileSpy.mockRestore();
+			}
+		});
+
+		it("retries transient EPERM while writing the pre-delete snapshot", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "delete-original",
+						refreshToken: "ref-delete-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const originalPlatform = process.platform;
+			const originalWriteFile = fs.writeFile.bind(fs);
+			let snapshotWriteAttempts = 0;
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (path, data, options) => {
+					if (
+						String(path).includes("accounts-delete-saved-accounts-snapshot-")
+					) {
+						snapshotWriteAttempts += 1;
+						if (snapshotWriteAttempts === 1) {
+							const error = new Error("snapshot locked") as NodeJS.ErrnoException;
+							error.code = "EPERM";
+							throw error;
+						}
+					}
+					return originalWriteFile(path, data as never, options as never);
+				});
+
+			try {
+				Object.defineProperty(process, "platform", { value: "win32" });
+				await expect(deleteSavedAccounts()).resolves.toMatchObject({
+					accountsCleared: true,
+				});
+				expect(snapshotWriteAttempts).toBe(2);
+				const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+				expect(
+					entries.some((name) =>
+						name.startsWith("accounts-delete-saved-accounts-snapshot-"),
+					),
+				).toBe(true);
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform });
+				writeFileSpy.mockRestore();
+			}
+		});
+
+		it("stages the pre-delete snapshot in a temp file before publishing it", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "delete-original",
+						refreshToken: "ref-delete-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const renameSpy = vi.spyOn(fs, "rename");
+
+			try {
+				await expect(deleteSavedAccounts()).resolves.toMatchObject({
+					accountsCleared: true,
+				});
+				expect(
+					renameSpy.mock.calls.some(([sourcePath, destinationPath]) => {
+						const source = String(sourcePath);
+						const destination = String(destinationPath);
+						return (
+							source.includes("accounts-delete-saved-accounts-snapshot-") &&
+							source.endsWith(".tmp") &&
+							destination.includes("accounts-delete-saved-accounts-snapshot-") &&
+							destination.endsWith(".json")
+						);
+					}),
+				).toBe(true);
+				const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+				expect(entries.some((name) => name.endsWith(".tmp"))).toBe(false);
+			} finally {
+				renameSpy.mockRestore();
+			}
+		});
+
+		it("creates a named snapshot before resetLocalState", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await resetLocalState();
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-reset-local-state-snapshot-"),
+				),
+			).toBe(true);
+			expect(await loadAccounts()).toMatchObject({
+				accounts: [],
+				restoreReason: "intentional-reset",
+			});
+		});
+
+		it("creates a snapshot before restoring a named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "current",
+						refreshToken: "ref-current",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("restore-with-snapshot");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "replacement",
+						refreshToken: "ref-replacement",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			await restoreNamedBackup("restore-with-snapshot");
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			const restoreSnapshot = entries.find((name) =>
+				name.startsWith("accounts-import-accounts-snapshot-"),
+			);
+			expect(restoreSnapshot).toBeTruthy();
+			const snapshotContent = JSON.parse(
+				await fs.readFile(
+					join(getNamedBackupsDirectoryPath(), restoreSnapshot!),
+					"utf-8",
+				),
+			);
+			expect(snapshotContent.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "replacement",
+					refreshToken: "ref-replacement",
+				}),
+			]);
+			expect(await loadAccounts()).toMatchObject({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "current",
+						refreshToken: "ref-current",
+					}),
+				]),
+			});
+		});
+
+		it("does not clear accounts when the pre-delete snapshot fails", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const originalWriteFile = fs.writeFile.bind(fs);
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (path, data, options) => {
+					if (
+						String(path).includes("accounts-delete-saved-accounts-snapshot-")
+					) {
+						const error = new Error("snapshot failed") as NodeJS.ErrnoException;
+						error.code = "EROFS";
+						throw error;
+					}
+					return originalWriteFile(path, data, options as never);
+				});
+
+			try {
+				await expect(deleteSavedAccounts()).rejects.toMatchObject({
+					code: "EROFS",
+				});
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+
+			expect(await loadAccounts()).toMatchObject({
+				accounts: [
+					expect.objectContaining({
+						accountId: "primary",
+						refreshToken: "ref-primary",
+					}),
+				],
+			});
+		});
+
+		it("does not restore a named backup when the pre-restore snapshot fails", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "current",
+						refreshToken: "ref-current",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("restore-with-snapshot");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "replacement",
+						refreshToken: "ref-replacement",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const originalPlatform = process.platform;
+			const originalWriteFile = fs.writeFile.bind(fs);
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (path, data, options) => {
+					if (
+						String(path).includes("accounts-import-accounts-snapshot-")
+					) {
+						const error = new Error("snapshot failed") as NodeJS.ErrnoException;
+						error.code = "EROFS";
+						throw error;
+					}
+					return originalWriteFile(path, data as never, options as never);
+				});
+
+			try {
+				Object.defineProperty(process, "platform", { value: "win32" });
+				await expect(
+					restoreNamedBackup("restore-with-snapshot"),
+				).rejects.toMatchObject({
+					code: "EROFS",
+				});
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform });
+				writeFileSpy.mockRestore();
+			}
+
+			expect(await loadAccounts()).toMatchObject({
+				accounts: [
+					expect.objectContaining({
+						accountId: "replacement",
+						refreshToken: "ref-replacement",
+					}),
+				],
+			});
+		});
+
+		it("creates a snapshot before importing into an existing account pool", async () => {
+			const importPath = join(testWorkDir, "import.json");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "imported",
+							refreshToken: "ref-imported",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await importAccounts(importPath);
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-import-accounts-snapshot-"),
+				),
+			).toBe(true);
+			expect((await loadAccounts())?.accounts).toHaveLength(2);
+		});
+
+		it("keeps accounts intact when the pre-import snapshot cannot be written", async () => {
+			const importPath = join(testWorkDir, "locked-import.json");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "imported",
+							refreshToken: "ref-imported",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalWriteFile = fs.writeFile;
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (
+						String(path).includes("accounts-import-accounts-snapshot-")
+					) {
+						const error = new Error("snapshot write failed") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalWriteFile(...args);
+				});
+
+			try {
+				await expect(importAccounts(importPath)).rejects.toThrow(
+					"snapshot write failed",
+				);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+
+			expect((await loadAccounts())?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "existing",
+					refreshToken: "ref-existing",
+				}),
+			]);
+			expect(await fs.readdir(getNamedBackupsDirectoryPath())).toEqual([]);
+		});
+
+		it("keeps accounts intact when the pre-delete snapshot cannot be written", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const originalWriteFile = fs.writeFile;
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (
+						String(path).includes("accounts-delete-saved-accounts-snapshot-")
+					) {
+						const error = new Error("snapshot write failed") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalWriteFile(...args);
+				});
+
+			try {
+				await expect(deleteSavedAccounts()).rejects.toThrow("snapshot write failed");
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+
+			expect((await loadAccounts())?.accounts).toHaveLength(1);
+			expect(await fs.readdir(getNamedBackupsDirectoryPath())).toEqual([]);
+		});
+
+		it("keeps the pre-import snapshot when the import later exceeds the limit", async () => {
+			const importPath = join(testWorkDir, "over-limit-import.json");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: Array.from(
+					{ length: ACCOUNT_LIMITS.MAX_ACCOUNTS },
+					(_value, index) => ({
+						accountId: `existing-${index}`,
+						refreshToken: `ref-existing-${index}`,
+						addedAt: index + 1,
+						lastUsed: index + 1,
+					}),
+				),
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "overflow",
+							refreshToken: "ref-overflow",
+							addedAt: 999,
+							lastUsed: 999,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await expect(importAccounts(importPath)).rejects.toThrow(
+				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+			);
+
+			expect(await listNamedBackups()).toEqual([]);
+			expect(existsSync(getNamedBackupsDirectoryPath())).toBe(false);
+			expect((await loadAccounts())?.accounts).toHaveLength(
+				ACCOUNT_LIMITS.MAX_ACCOUNTS,
+			);
 		});
 	});
 
@@ -1782,6 +3893,190 @@ describe("storage", () => {
 		it("does not throw when file does not exist", async () => {
 			await expect(clearAccounts()).resolves.not.toThrow();
 		});
+
+		it("creates the reset marker parent directory when the storage path is brand new", async () => {
+			const nestedStoragePath = join(
+				testWorkDir,
+				"brand-new",
+				"nested",
+				"accounts.json",
+			);
+			setStoragePathDirect(nestedStoragePath);
+
+			await expect(clearAccounts()).resolves.toBe(true);
+			expect(existsSync(dirname(nestedStoragePath))).toBe(true);
+		});
+
+		it.each(["EPERM", "EBUSY", "EAGAIN"] as const)(
+			"retries transient %s when clearing saved account artifacts",
+			async (code) => {
+				await fs.writeFile(testStoragePath, "{}");
+				const walPath = `${testStoragePath}.wal`;
+				await fs.writeFile(walPath, "{}");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
+
+				const realUnlink = fs.unlink.bind(fs);
+				let failedOnce = false;
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === testStoragePath && !failedOnce) {
+							failedOnce = true;
+							const error = new Error("locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return realUnlink(targetPath);
+					});
+
+				try {
+					await expect(clearAccounts()).resolves.toBe(true);
+					expect(existsSync(testStoragePath)).toBe(false);
+					expect(existsSync(walPath)).toBe(false);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === testStoragePath,
+						),
+					).toHaveLength(2);
+				} finally {
+					platformSpy?.mockRestore();
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+
+		it("does not retry EPERM when clearing saved account artifacts on non-Windows platforms", async () => {
+			await fs.writeFile(testStoragePath, "{}");
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (targetPath === testStoragePath) {
+						const error = new Error("still locked") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					const error = new Error("missing") as NodeJS.ErrnoException;
+					error.code = "ENOENT";
+					throw error;
+				});
+
+			try {
+				await expect(clearAccounts()).resolves.toBe(false);
+				expect(existsSync(testStoragePath)).toBe(true);
+				expect(
+					unlinkSpy.mock.calls.filter(
+						([targetPath]) => targetPath === testStoragePath,
+					),
+				).toHaveLength(1);
+			} finally {
+				platformSpy.mockRestore();
+				unlinkSpy.mockRestore();
+			}
+		});
+	});
+
+	describe("clearFlaggedAccounts", () => {
+		const testWorkDir = join(
+			tmpdir(),
+			"codex-clear-flagged-test-" + Math.random().toString(36).slice(2),
+		);
+		let testStoragePath: string;
+
+		beforeEach(async () => {
+			await fs.mkdir(testWorkDir, { recursive: true });
+			testStoragePath = join(testWorkDir, "accounts.json");
+			setStoragePathDirect(testStoragePath);
+		});
+
+		afterEach(async () => {
+			setStoragePathDirect(null);
+			await fs.rm(testWorkDir, { recursive: true, force: true });
+		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"retries transient %s when clearing flagged account storage",
+			async (code) => {
+				const flaggedPath = getFlaggedAccountsPath();
+				await fs.mkdir(dirname(flaggedPath), { recursive: true });
+				await fs.writeFile(flaggedPath, "{}");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
+
+				const realUnlink = fs.unlink.bind(fs);
+				let failedOnce = false;
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === flaggedPath && !failedOnce) {
+							failedOnce = true;
+							const error = new Error("locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						return realUnlink(targetPath);
+					});
+
+				try {
+					await expect(clearFlaggedAccounts()).resolves.toBe(true);
+					expect(existsSync(flaggedPath)).toBe(false);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === flaggedPath,
+						),
+					).toHaveLength(2);
+				} finally {
+					platformSpy?.mockRestore();
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when clearing flagged account storage exhausts retryable %s failures",
+			async (code) => {
+				const flaggedPath = getFlaggedAccountsPath();
+				await fs.mkdir(dirname(flaggedPath), { recursive: true });
+				await fs.writeFile(flaggedPath, "{}");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
+
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === flaggedPath) {
+							const error = new Error("still locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						const error = new Error("missing") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					});
+
+				try {
+					await expect(clearFlaggedAccounts()).resolves.toBe(false);
+					expect(existsSync(flaggedPath)).toBe(true);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === flaggedPath,
+						),
+					).toHaveLength(5);
+				} finally {
+					platformSpy?.mockRestore();
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 
 	describe("setStoragePath", () => {
@@ -1943,6 +4238,42 @@ describe("storage", () => {
 
 			await expect(clearAccounts()).resolves.not.toThrow();
 		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when clearing saved accounts exhausts retryable %s failures",
+			async (code) => {
+				await fs.writeFile(testStoragePath, "{}");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (targetPath) => {
+						if (targetPath === testStoragePath) {
+							const error = new Error("still locked") as NodeJS.ErrnoException;
+							error.code = code;
+							throw error;
+						}
+						const error = new Error("missing") as NodeJS.ErrnoException;
+						error.code = "ENOENT";
+						throw error;
+					});
+
+				try {
+					await expect(clearAccounts()).resolves.toBe(false);
+					expect(existsSync(testStoragePath)).toBe(true);
+					expect(
+						unlinkSpy.mock.calls.filter(
+							([targetPath]) => targetPath === testStoragePath,
+						),
+					).toHaveLength(5);
+				} finally {
+					platformSpy?.mockRestore();
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 
 	describe("StorageError with cause", () => {
@@ -2356,6 +4687,36 @@ describe("storage", () => {
 			expect(existsSync(legacyWorktreePath)).toBe(false);
 		});
 
+		it("clearAccounts removes legacy project and worktree account files for linked worktrees", async () => {
+			const { worktreeRepo } = await prepareWorktreeFixture();
+
+			setStoragePath(worktreeRepo);
+			const canonicalPath = getStoragePath();
+			const legacyProjectPath = join(worktreeRepo, ".codex", "openai-codex-accounts.json");
+			const legacyWorktreePath = join(
+				getConfigDir(),
+				"projects",
+				getProjectStorageKey(worktreeRepo),
+				"openai-codex-accounts.json",
+			);
+			const storage = buildStorage([accountFromLegacy]);
+
+			await fs.mkdir(dirname(canonicalPath), { recursive: true });
+			await fs.mkdir(dirname(legacyProjectPath), { recursive: true });
+			await fs.mkdir(dirname(legacyWorktreePath), { recursive: true });
+			await Promise.all([
+				fs.writeFile(canonicalPath, JSON.stringify(storage), "utf-8"),
+				fs.writeFile(legacyProjectPath, JSON.stringify(storage), "utf-8"),
+				fs.writeFile(legacyWorktreePath, JSON.stringify(storage), "utf-8"),
+			]);
+
+			await expect(clearAccounts()).resolves.toBe(true);
+
+			expect(existsSync(canonicalPath)).toBe(false);
+			expect(existsSync(legacyProjectPath)).toBe(false);
+			expect(existsSync(legacyWorktreePath)).toBe(false);
+		});
+
 		it("keeps legacy worktree file when migration persist fails", async () => {
 			const { worktreeRepo } = await prepareWorktreeFixture();
 
@@ -2606,11 +4967,13 @@ describe("storage", () => {
 					return originalRename(oldPath as string, newPath as string);
 				});
 
-			await saveAccounts(storage);
-			expect(attemptCount).toBe(2);
-			expect(existsSync(testStoragePath)).toBe(true);
-
-			renameSpy.mockRestore();
+			try {
+				await saveAccounts(storage);
+				expect(attemptCount).toBe(2);
+				expect(existsSync(testStoragePath)).toBe(true);
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("retries on EBUSY and succeeds on third attempt", async () => {
@@ -2635,9 +4998,75 @@ describe("storage", () => {
 					return originalRename(oldPath as string, newPath as string);
 				});
 
+			try {
+				await saveAccounts(storage);
+				expect(attemptCount).toBe(3);
+				expect(existsSync(testStoragePath)).toBe(true);
+			} finally {
+				renameSpy.mockRestore();
+			}
+		});
+
+		it("retries on EAGAIN and cleans up the WAL after rename succeeds", async () => {
+			const now = Date.now();
+			const storage = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+			};
+			const walPath = `${testStoragePath}.wal`;
+
+			const originalRename = fs.rename.bind(fs);
+			let attemptCount = 0;
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (oldPath, newPath) => {
+					attemptCount++;
+					if (attemptCount === 1) {
+						const err = new Error("EAGAIN error") as NodeJS.ErrnoException;
+						err.code = "EAGAIN";
+						throw err;
+					}
+					return originalRename(oldPath as string, newPath as string);
+				});
+
+			try {
+				await saveAccounts(storage);
+				expect(attemptCount).toBe(2);
+				expect(existsSync(testStoragePath)).toBe(true);
+				expect(existsSync(walPath)).toBe(false);
+			} finally {
+				renameSpy.mockRestore();
+			}
+		});
+
+		it("retries on EAGAIN and cleans up the WAL after rename succeeds", async () => {
+			const now = Date.now();
+			const storage = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+			};
+			const walPath = `${testStoragePath}.wal`;
+
+			const originalRename = fs.rename.bind(fs);
+			let attemptCount = 0;
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (oldPath, newPath) => {
+					attemptCount++;
+					if (attemptCount === 1) {
+						const err = new Error("EAGAIN error") as NodeJS.ErrnoException;
+						err.code = "EAGAIN";
+						throw err;
+					}
+					return originalRename(oldPath as string, newPath as string);
+				});
+
 			await saveAccounts(storage);
-			expect(attemptCount).toBe(3);
+			expect(attemptCount).toBe(2);
 			expect(existsSync(testStoragePath)).toBe(true);
+			expect(existsSync(walPath)).toBe(false);
 
 			renameSpy.mockRestore();
 		});
@@ -2658,12 +5087,14 @@ describe("storage", () => {
 				throw err;
 			});
 
-			await expect(saveAccounts(storage)).rejects.toThrow(
-				"Failed to save accounts",
-			);
-			expect(attemptCount).toBe(5);
-
-			renameSpy.mockRestore();
+			try {
+				await expect(saveAccounts(storage)).rejects.toThrow(
+					"Failed to save accounts",
+				);
+				expect(attemptCount).toBe(5);
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("throws immediately on non-EPERM/EBUSY errors", async () => {
@@ -2682,12 +5113,14 @@ describe("storage", () => {
 				throw err;
 			});
 
-			await expect(saveAccounts(storage)).rejects.toThrow(
-				"Failed to save accounts",
-			);
-			expect(attemptCount).toBe(1);
-
-			renameSpy.mockRestore();
+			try {
+				await expect(saveAccounts(storage)).rejects.toThrow(
+					"Failed to save accounts",
+				);
+				expect(attemptCount).toBe(1);
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("throws when temp file is written with size 0", async () => {
@@ -3039,6 +5472,222 @@ describe("storage", () => {
 			expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
 			expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
 		});
+
+		it("lists rotating backups with stable labels and invalid metadata", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(`${testStoragePath}.bak.1`, "{broken-bak", "utf-8");
+
+			const rotatingBackups = await listRotatingBackups();
+			const namedBackups = await listNamedBackups();
+
+			expect(namedBackups).toEqual([]);
+			expect(rotatingBackups).toHaveLength(2);
+			expect(rotatingBackups[0]).toMatchObject({
+				slot: 0,
+				label: "Latest rotating backup (.bak)",
+				valid: true,
+				accountCount: 1,
+			});
+			expect(rotatingBackups[1]).toMatchObject({
+				slot: 1,
+				label: "Rotating backup 1 (.bak.1)",
+				valid: false,
+			});
+			expect(rotatingBackups[1]?.loadError).toBeTruthy();
+		});
+
+		it("skips rotating backups that disappear during load", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.bak.1`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-missing",
+							refreshToken: "ref-rotating-missing",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalReadFile = fs.readFile.bind(fs) as typeof fs.readFile;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation((async (
+					...args: Parameters<typeof fs.readFile>
+				) => {
+					const [filePath] = args;
+					if (String(filePath).endsWith(".bak.1")) {
+						throw Object.assign(
+							new Error("ENOENT: no such file or directory"),
+							{ code: "ENOENT" },
+						);
+					}
+					return originalReadFile(...args);
+				}) as typeof fs.readFile);
+
+			try {
+				await expect(listRotatingBackups()).resolves.toMatchObject([
+					{
+						slot: 0,
+						label: "Latest rotating backup (.bak)",
+						valid: true,
+						accountCount: 1,
+					},
+				]);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
+
+		it("keeps rotating backups visible when a non-ENOENT error mentions an ENOENT path segment", async () => {
+			const storageDir = join(testWorkDir, "ENOENT-project");
+			await fs.mkdir(storageDir, { recursive: true });
+			testStoragePath = join(storageDir, "openai-codex-accounts.json");
+			setStoragePathDirect(testStoragePath);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				`${testStoragePath}.bak`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-good",
+							refreshToken: "ref-rotating-good",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(
+				`${testStoragePath}.bak.1`,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "rotating-locked",
+							refreshToken: "ref-rotating-locked",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const lockedBackupPath = `${testStoragePath}.bak.1`;
+			const originalReadFile = fs.readFile.bind(fs) as typeof fs.readFile;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation((async (
+					...args: Parameters<typeof fs.readFile>
+				) => {
+					const [filePath] = args;
+					if (String(filePath) === lockedBackupPath) {
+						throw Object.assign(
+							new Error(
+								`EPERM: operation not permitted, open '${lockedBackupPath}'`,
+							),
+							{ code: "EPERM" },
+						);
+					}
+					return originalReadFile(...args);
+				}) as typeof fs.readFile);
+
+			try {
+				const rotatingBackups = await listRotatingBackups();
+				expect(rotatingBackups).toHaveLength(2);
+				expect(rotatingBackups[0]).toMatchObject({
+					slot: 0,
+					label: "Latest rotating backup (.bak)",
+					valid: true,
+					accountCount: 1,
+				});
+				expect(rotatingBackups[1]).toMatchObject({
+					slot: 1,
+					label: "Rotating backup 1 (.bak.1)",
+					valid: false,
+				});
+				expect(rotatingBackups[1]?.loadError).toContain("EPERM");
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		});
 	});
 
 	describe("clearAccounts edge cases", () => {
@@ -3095,11 +5744,120 @@ describe("storage", () => {
 					Object.assign(new Error("EACCES error"), { code: "EACCES" }),
 				);
 
-			await clearAccounts();
+			await expect(clearAccounts()).resolves.toBe(false);
 
 			expect(unlinkSpy).toHaveBeenCalled();
 			unlinkSpy.mockRestore();
 		});
+	});
+
+	describe("clearQuotaCache", () => {
+		const tmpRoot = join(
+			tmpdir(),
+			`quota-cache-test-${Math.random().toString(36).slice(2)}`,
+		);
+		let originalDir: string | undefined;
+
+		beforeEach(async () => {
+			originalDir = process.env.CODEX_MULTI_AUTH_DIR;
+			process.env.CODEX_MULTI_AUTH_DIR = tmpRoot;
+			await fs.mkdir(tmpRoot, { recursive: true });
+		});
+
+		afterEach(async () => {
+			if (originalDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
+			else process.env.CODEX_MULTI_AUTH_DIR = originalDir;
+			await fs.rm(tmpRoot, { recursive: true, force: true });
+		});
+
+		it("removes only the quota cache file", async () => {
+			const quotaPath = getQuotaCachePath();
+			const accountsPath = join(tmpRoot, "openai-codex-accounts.json");
+			await fs.mkdir(dirname(quotaPath), { recursive: true });
+			await fs.writeFile(quotaPath, "{}", "utf-8");
+			await fs.writeFile(accountsPath, "{}", "utf-8");
+
+			expect(existsSync(quotaPath)).toBe(true);
+			expect(existsSync(accountsPath)).toBe(true);
+
+			await expect(clearQuotaCache()).resolves.toBe(true);
+
+			expect(existsSync(quotaPath)).toBe(false);
+			expect(existsSync(accountsPath)).toBe(true);
+		});
+
+		it("ignores missing quota cache file", async () => {
+			await expect(clearQuotaCache()).resolves.toBe(true);
+		});
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"retries transient %s when clearing the quota cache",
+			async (code) => {
+				const quotaPath = getQuotaCachePath();
+				await fs.mkdir(dirname(quotaPath), { recursive: true });
+				await fs.writeFile(quotaPath, "{}", "utf-8");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
+
+				const realUnlink = fs.unlink.bind(fs);
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (target) => {
+						if (target === quotaPath && unlinkSpy.mock.calls.length === 1) {
+							const err = new Error("locked") as NodeJS.ErrnoException;
+							err.code = code;
+							throw err;
+						}
+						return realUnlink(target);
+					});
+
+				try {
+					await expect(clearQuotaCache()).resolves.toBe(true);
+					expect(existsSync(quotaPath)).toBe(false);
+					expect(unlinkSpy).toHaveBeenCalledTimes(2);
+				} finally {
+					platformSpy?.mockRestore();
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
+
+		it.each(["EPERM", "EBUSY"] as const)(
+			"returns false when quota-cache clear exhausts retryable %s failures",
+			async (code) => {
+				const quotaPath = getQuotaCachePath();
+				await fs.mkdir(dirname(quotaPath), { recursive: true });
+				await fs.writeFile(quotaPath, "{}", "utf-8");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
+
+				const unlinkSpy = vi
+					.spyOn(fs, "unlink")
+					.mockImplementation(async (target) => {
+						if (target === quotaPath) {
+							const err = new Error("still locked") as NodeJS.ErrnoException;
+							err.code = code;
+							throw err;
+						}
+						const err = new Error("missing") as NodeJS.ErrnoException;
+						err.code = "ENOENT";
+						throw err;
+					});
+
+				try {
+					await expect(clearQuotaCache()).resolves.toBe(false);
+					expect(existsSync(quotaPath)).toBe(true);
+					expect(unlinkSpy).toHaveBeenCalledTimes(5);
+				} finally {
+					platformSpy?.mockRestore();
+					unlinkSpy.mockRestore();
+				}
+			},
+		);
 	});
 });
 
