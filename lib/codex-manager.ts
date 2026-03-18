@@ -4373,9 +4373,13 @@ async function runFirstRunWizard(
 						console.log("No OpenCode account pool was detected.");
 						break;
 					}
-					if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
+					if (!assessment.eligibleForRestore) {
+						console.log(formatOpencodeImportFailure(assessment.error));
+						break;
+					}
+					if (assessment.wouldExceedLimit) {
 						console.log(
-							formatOpencodeImportFailure(assessment.error),
+							`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
 						);
 						break;
 					}
