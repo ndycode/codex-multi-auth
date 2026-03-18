@@ -2181,20 +2181,24 @@ async function writeNamedBackupFromStorage(
 	if (!options.force && existsSync(backupPath)) {
 		throw new Error(`File already exists: ${backupPath}`);
 	}
-	await fs.mkdir(dirname(backupPath), { recursive: true });
-	await fs.writeFile(
-		backupPath,
-		JSON.stringify(
-			{
-				version: storage.version,
-				accounts: storage.accounts,
-				activeIndex: storage.activeIndex,
-				activeIndexByFamily: storage.activeIndexByFamily,
-			},
-			null,
-			2,
+	await retryTransientFilesystemOperation(() =>
+		fs.mkdir(dirname(backupPath), { recursive: true }),
+	);
+	await retryTransientFilesystemOperation(() =>
+		fs.writeFile(
+			backupPath,
+			JSON.stringify(
+				{
+					version: storage.version,
+					accounts: storage.accounts,
+					activeIndex: storage.activeIndex,
+					activeIndexByFamily: storage.activeIndexByFamily,
+				},
+				null,
+				2,
+			),
+			{ encoding: "utf-8", mode: 0o600 },
 		),
-		{ encoding: "utf-8", mode: 0o600 },
 	);
 	return buildNamedBackupMetadata(name, backupPath);
 }
@@ -3395,6 +3399,7 @@ async function clearAccountsUnlocked(storagePath: string): Promise<boolean> {
 			),
 		),
 	);
+	await fs.mkdir(dirname(resetMarkerPath), { recursive: true });
 	await fs.writeFile(
 		resetMarkerPath,
 		JSON.stringify({ version: 1, createdAt: Date.now() }),
@@ -3409,8 +3414,8 @@ async function clearAccountsUnlocked(storagePath: string): Promise<boolean> {
 			if (code !== "ENOENT") {
 				hadError = true;
 				log.error("Failed to clear account storage artifact", {
-					path: targetPath,
-					error: String(error),
+					path: extractPathTail(targetPath),
+					error: formatSnapshotErrorForLog(error),
 				});
 			}
 		}

@@ -24,17 +24,21 @@ vi.mock("../lib/quota-cache.js", () => ({
 	clearQuotaCache: clearQuotaCacheMock,
 }));
 
-vi.mock("../lib/storage.js", () => ({
-	clearFlaggedAccounts: clearFlaggedAccountsMock,
-	getStoragePath: getStoragePathMock,
-	loadFlaggedAccounts: loadFlaggedAccountsMock,
-	saveAccounts: saveAccountsMock,
-	saveFlaggedAccounts: saveFlaggedAccountsMock,
-	snapshotAccountStorage: snapshotAccountStorageMock,
-	snapshotAndClearAccounts: snapshotAndClearAccountsMock,
-	withAccountAndFlaggedStorageTransaction:
-		withAccountAndFlaggedStorageTransactionMock,
-}));
+vi.mock("../lib/storage.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/storage.js")>();
+	return {
+		...actual,
+		clearFlaggedAccounts: clearFlaggedAccountsMock,
+		getStoragePath: getStoragePathMock,
+		loadFlaggedAccounts: loadFlaggedAccountsMock,
+		saveAccounts: saveAccountsMock,
+		saveFlaggedAccounts: saveFlaggedAccountsMock,
+		snapshotAccountStorage: snapshotAccountStorageMock,
+		snapshotAndClearAccounts: snapshotAndClearAccountsMock,
+		withAccountAndFlaggedStorageTransaction:
+			withAccountAndFlaggedStorageTransactionMock,
+	};
+});
 
 describe("destructive actions", () => {
 	beforeEach(() => {
@@ -190,6 +194,49 @@ describe("destructive actions", () => {
 				activeIndexByFamily: { codex: 1, "gpt-5.x": 0 },
 			}),
 		);
+	});
+
+	it("matches the selected delete target by full identity when refresh tokens collide", async () => {
+		const { deleteAccountAtIndex } = await import(
+			"../lib/destructive-actions.js"
+		);
+
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "keep@example.com",
+					accountId: "keep-account",
+					refreshToken: "shared-refresh-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+				{
+					email: "remove@example.com",
+					accountId: "remove-account",
+					refreshToken: "shared-refresh-token",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+		transactionCurrentStorage = structuredClone(storage);
+
+		const deleted = await deleteAccountAtIndex({ storage, index: 1 });
+
+		expect(deleted).not.toBeNull();
+		expect(deleted?.removedAccount).toMatchObject({
+			email: "remove@example.com",
+			accountId: "remove-account",
+		});
+		expect(deleted?.storage.accounts).toEqual([
+			expect.objectContaining({
+				email: "keep@example.com",
+				accountId: "keep-account",
+			}),
+		]);
 	});
 
 	it("reloads flagged storage at delete time so newer flagged entries are preserved", async () => {
