@@ -618,6 +618,76 @@ describe("storage", () => {
 			).toEqual(new Set(["acct-a", "acct-b"]));
 		});
 
+		it("keeps account transactions bound to the original storage path", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary-original",
+						refreshToken: "ref-primary-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const alternateStoragePath = join(testWorkDir, "alternate-accounts.json");
+			setStoragePathDirect(alternateStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "alternate-original",
+						refreshToken: "ref-alternate-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			setStoragePathDirect(testStoragePath);
+
+			await withAccountStorageTransaction(async (current, persist) => {
+				if (!current) {
+					throw new Error("expected existing account storage");
+				}
+				setStoragePathDirect(alternateStoragePath);
+				try {
+					await persist({
+						...current,
+						accounts: [
+							...current.accounts,
+							{
+								accountId: "primary-added",
+								refreshToken: "ref-primary-added",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					});
+				} finally {
+					setStoragePathDirect(testStoragePath);
+				}
+			});
+
+			const primaryLoaded = await loadAccounts();
+			expect(primaryLoaded?.accounts.map((account) => account.accountId)).toEqual([
+				"primary-original",
+				"primary-added",
+			]);
+
+			setStoragePathDirect(alternateStoragePath);
+			try {
+				const alternateLoaded = await loadAccounts();
+				expect(
+					alternateLoaded?.accounts.map((account) => account.accountId),
+				).toEqual(["alternate-original"]);
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
 		it("rolls back account storage when flagged persistence keeps failing inside the combined transaction", async () => {
 			const now = Date.now();
 			await saveAccounts({
@@ -856,6 +926,129 @@ describe("storage", () => {
 				isolatedStorageModule.setStoragePathDirect(null);
 				vi.doUnmock("node:fs");
 				vi.resetModules();
+			}
+		});
+
+		it("keeps combined transactions bound to the original account and flagged storage paths", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "primary-original",
+						email: "primary@example.com",
+						refreshToken: "refresh-primary-original",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "flagged-original",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged-original",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const alternateStoragePath = join(
+				testWorkDir,
+				"alternate-combined",
+				"alternate-combined.json",
+			);
+			setStoragePathDirect(alternateStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "alternate-original",
+						email: "alternate@example.com",
+						refreshToken: "refresh-alternate-original",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "alternate-flagged",
+						email: "alternate-flagged@example.com",
+						refreshToken: "refresh-alternate-flagged",
+						addedAt: now - 500,
+						lastUsed: now - 500,
+						flaggedAt: now - 500,
+					},
+				],
+			});
+			setStoragePathDirect(testStoragePath);
+
+			await withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+				if (!current) {
+					throw new Error("expected existing account storage");
+				}
+				setStoragePathDirect(alternateStoragePath);
+				try {
+					await persist(
+						{
+							...current,
+							accounts: [
+								...current.accounts,
+								{
+									accountId: "primary-added",
+									email: "primary-added@example.com",
+									refreshToken: "refresh-primary-added",
+									addedAt: now,
+									lastUsed: now,
+								},
+							],
+						},
+						{
+							version: 1,
+							accounts: [],
+						},
+					);
+				} finally {
+					setStoragePathDirect(testStoragePath);
+				}
+			});
+
+			const primaryLoaded = await loadAccounts();
+			expect(primaryLoaded?.accounts.map((account) => account.accountId)).toEqual([
+				"primary-original",
+				"primary-added",
+			]);
+			await expect(loadFlaggedAccounts()).resolves.toMatchObject({
+				accounts: [],
+			});
+
+			setStoragePathDirect(alternateStoragePath);
+			try {
+				const alternateLoaded = await loadAccounts();
+				expect(
+					alternateLoaded?.accounts.map((account) => account.accountId),
+				).toEqual(["alternate-original"]);
+				await expect(loadFlaggedAccounts()).resolves.toMatchObject({
+					accounts: [
+						expect.objectContaining({
+							accountId: "alternate-flagged",
+							refreshToken: "refresh-alternate-flagged",
+						}),
+					],
+				});
+			} finally {
+				setStoragePathDirect(testStoragePath);
 			}
 		});
 
@@ -1474,6 +1667,40 @@ describe("storage", () => {
 			await expect(
 				restoreNamedBackup("invalid-after-assessment"),
 			).rejects.toThrow(/Invalid JSON in import file/);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+		});
+
+		it("reassesses named backup contents when a previously previewed backup becomes empty", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "preview-account",
+						refreshToken: "refresh-preview-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const backup = await createNamedBackup("emptied-after-assessment");
+			await clearAccounts();
+			const assessment = await assessNamedBackupRestore("emptied-after-assessment");
+			expect(assessment.eligibleForRestore).toBe(true);
+
+			await fs.writeFile(
+				backup.path,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [],
+				}),
+				"utf-8",
+			);
+
+			await expect(
+				restoreNamedBackup("emptied-after-assessment", { assessment }),
+			).rejects.toThrow(/Backup is empty or invalid/);
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
@@ -2925,6 +3152,65 @@ describe("storage", () => {
 				}
 			},
 		);
+
+		it("removes the flagged reset marker when only backup cleanup fails", async () => {
+			const flaggedPath = getFlaggedAccountsPath();
+			const markerPath = `${flaggedPath}.reset-intent`;
+			const backupPath = `${flaggedPath}.bak`;
+			await fs.mkdir(dirname(flaggedPath), { recursive: true });
+			await fs.writeFile(
+				flaggedPath,
+				JSON.stringify({
+					version: 1,
+					accounts: [
+						{
+							accountId: "flagged-primary",
+							refreshToken: "refresh-flagged-primary",
+							addedAt: 1,
+							lastUsed: 1,
+							flaggedAt: 1,
+						},
+					],
+				}),
+			);
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 1,
+					accounts: [
+						{
+							accountId: "flagged-backup",
+							refreshToken: "refresh-flagged-backup",
+							addedAt: 2,
+							lastUsed: 2,
+							flaggedAt: 2,
+						},
+					],
+				}),
+			);
+
+			const realUnlink = fs.unlink.bind(fs);
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (targetPath === backupPath) {
+						const error = new Error("backup busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return realUnlink(targetPath);
+				});
+
+			try {
+				await expect(clearFlaggedAccounts()).resolves.toBe(false);
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+
+			expect(existsSync(flaggedPath)).toBe(false);
+			expect(existsSync(backupPath)).toBe(true);
+			expect(existsSync(markerPath)).toBe(false);
+		});
 	});
 
 	describe("setStoragePath", () => {

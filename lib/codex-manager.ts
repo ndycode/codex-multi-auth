@@ -4993,11 +4993,7 @@ function formatNamedBackupRestoreResult(
 	assessment: NamedBackupAssessment,
 ): string {
 	const replacedCount = assessment.replacedExistingCount ?? 0;
-	if (
-		result.imported === 0 &&
-		replacedCount > 0 &&
-		result.skipped === replacedCount
-	) {
+	if (result.imported === 0 && replacedCount > 0 && result.skipped === 0) {
 		return `Replaced ${replacedCount} current account${replacedCount === 1 ? "" : "s"}. Total accounts: ${result.total}.`;
 	}
 	return `Imported ${result.imported} account${result.imported === 1 ? "" : "s"}. Skipped ${result.skipped}. Total accounts: ${result.total}.`;
