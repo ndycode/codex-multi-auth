@@ -254,10 +254,10 @@ describe("sync history", () => {
 		const secondAppendGate = new Promise<void>((resolve) => {
 			releaseSecondAppend = resolve;
 		});
-		const originalAppendFile = nodeFs.appendFile;
+		const originalAppendFile = fs.appendFile.bind(fs);
 		let appendCallCount = 0;
-		vi.spyOn(nodeFs, "appendFile").mockImplementation(
-			async (...args: Parameters<typeof nodeFs.appendFile>) => {
+		vi.spyOn(fs, "appendFile").mockImplementation(
+			async (...args: Parameters<typeof fs.appendFile>) => {
 				appendCallCount += 1;
 				if (appendCallCount === 1) {
 					resolveFirstStarted();

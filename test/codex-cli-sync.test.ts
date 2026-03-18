@@ -2787,12 +2787,10 @@ describe("codex-cli sync", () => {
 			if (lastHistory?.kind === "codex-cli-sync") {
 				expect(lastHistory.run).toEqual(
 					expect.objectContaining({
-						outcome: "changed",
+						outcome: "error",
 						sourcePath: accountsPath,
 						targetPath: targetStoragePath,
-						summary: expect.objectContaining({
-							addedAccountCount: 1,
-						}),
+						message: "later run failed",
 					}),
 				);
 			}
