@@ -2889,6 +2889,71 @@ describe("storage", () => {
 			});
 		});
 
+		it("does not restore a named backup when the pre-restore snapshot fails", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "current",
+						refreshToken: "ref-current",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("restore-with-snapshot");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "replacement",
+						refreshToken: "ref-replacement",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const originalPlatform = process.platform;
+			const originalWriteFile = fs.writeFile.bind(fs);
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (path, data, options) => {
+					if (
+						String(path).includes("accounts-import-accounts-snapshot-")
+					) {
+						const error = new Error("snapshot failed") as NodeJS.ErrnoException;
+						error.code = "EROFS";
+						throw error;
+					}
+					return originalWriteFile(path, data as never, options as never);
+				});
+
+			try {
+				Object.defineProperty(process, "platform", { value: "win32" });
+				await expect(
+					restoreNamedBackup("restore-with-snapshot"),
+				).rejects.toMatchObject({
+					code: "EROFS",
+				});
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform });
+				writeFileSpy.mockRestore();
+			}
+
+			expect(await loadAccounts()).toMatchObject({
+				accounts: [
+					expect.objectContaining({
+						accountId: "replacement",
+						refreshToken: "ref-replacement",
+					}),
+				],
+			});
+		});
+
 		it("creates a snapshot before importing into an existing account pool", async () => {
 			const importPath = join(testWorkDir, "import.json");
 
@@ -3789,6 +3854,7 @@ describe("storage", () => {
 			setStoragePathDirect(nestedStoragePath);
 
 			await expect(clearAccounts()).resolves.toBe(true);
+			expect(existsSync(dirname(nestedStoragePath))).toBe(true);
 		});
 
 		it.each(["EPERM", "EBUSY", "EAGAIN"] as const)(
@@ -4799,11 +4865,13 @@ describe("storage", () => {
 					return originalRename(oldPath as string, newPath as string);
 				});
 
-			await saveAccounts(storage);
-			expect(attemptCount).toBe(2);
-			expect(existsSync(testStoragePath)).toBe(true);
-
-			renameSpy.mockRestore();
+			try {
+				await saveAccounts(storage);
+				expect(attemptCount).toBe(2);
+				expect(existsSync(testStoragePath)).toBe(true);
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("retries on EBUSY and succeeds on third attempt", async () => {
@@ -4828,11 +4896,13 @@ describe("storage", () => {
 					return originalRename(oldPath as string, newPath as string);
 				});
 
-			await saveAccounts(storage);
-			expect(attemptCount).toBe(3);
-			expect(existsSync(testStoragePath)).toBe(true);
-
-			renameSpy.mockRestore();
+			try {
+				await saveAccounts(storage);
+				expect(attemptCount).toBe(3);
+				expect(existsSync(testStoragePath)).toBe(true);
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("retries on EAGAIN and cleans up the WAL after rename succeeds", async () => {
@@ -4858,12 +4928,14 @@ describe("storage", () => {
 					return originalRename(oldPath as string, newPath as string);
 				});
 
-			await saveAccounts(storage);
-			expect(attemptCount).toBe(2);
-			expect(existsSync(testStoragePath)).toBe(true);
-			expect(existsSync(walPath)).toBe(false);
-
-			renameSpy.mockRestore();
+			try {
+				await saveAccounts(storage);
+				expect(attemptCount).toBe(2);
+				expect(existsSync(testStoragePath)).toBe(true);
+				expect(existsSync(walPath)).toBe(false);
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("throws after 5 failed EPERM retries", async () => {
@@ -4882,12 +4954,14 @@ describe("storage", () => {
 				throw err;
 			});
 
-			await expect(saveAccounts(storage)).rejects.toThrow(
-				"Failed to save accounts",
-			);
-			expect(attemptCount).toBe(5);
-
-			renameSpy.mockRestore();
+			try {
+				await expect(saveAccounts(storage)).rejects.toThrow(
+					"Failed to save accounts",
+				);
+				expect(attemptCount).toBe(5);
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("throws immediately on non-EPERM/EBUSY errors", async () => {
@@ -4906,12 +4980,14 @@ describe("storage", () => {
 				throw err;
 			});
 
-			await expect(saveAccounts(storage)).rejects.toThrow(
-				"Failed to save accounts",
-			);
-			expect(attemptCount).toBe(1);
-
-			renameSpy.mockRestore();
+			try {
+				await expect(saveAccounts(storage)).rejects.toThrow(
+					"Failed to save accounts",
+				);
+				expect(attemptCount).toBe(1);
+			} finally {
+				renameSpy.mockRestore();
+			}
 		});
 
 		it("throws when temp file is written with size 0", async () => {
