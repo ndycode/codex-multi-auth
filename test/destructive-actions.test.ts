@@ -228,6 +228,32 @@ describe("destructive actions", () => {
 		expect(saveFlaggedAccountsMock).not.toHaveBeenCalled();
 	});
 
+	it("does not delete from stale caller storage when the transaction has no current storage", async () => {
+		const { deleteAccountAtIndex } = await import(
+			"../lib/destructive-actions.js"
+		);
+
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "delete-me",
+					refreshToken: "refresh-delete-me",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		transactionCurrentStorage = null;
+
+		await expect(deleteAccountAtIndex({ storage, index: 0 })).resolves.toBeNull();
+		expect(snapshotAccountStorageMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(saveFlaggedAccountsMock).not.toHaveBeenCalled();
+	});
+
 	it("matches the selected delete target by full identity when refresh tokens collide", async () => {
 		const { deleteAccountAtIndex } = await import(
 			"../lib/destructive-actions.js"

@@ -3786,5 +3786,6 @@ export async function importAccounts(
 	const candidate = await loadImportableBackupCandidate(resolvedPath);
 	return importNormalizedAccounts(candidate.normalized, resolvedPath, {
 		snapshotReason: "import-accounts",
+		snapshotFailurePolicy: "error",
 	});
 }
