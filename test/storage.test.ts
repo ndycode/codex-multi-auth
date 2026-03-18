@@ -2563,6 +2563,7 @@ describe("storage", () => {
 					},
 				],
 			});
+			const originalPlatform = process.platform;
 			const originalWriteFile = fs.writeFile.bind(fs);
 			let snapshotWriteAttempts = 0;
 			const writeFileSpy = vi
@@ -2582,6 +2583,7 @@ describe("storage", () => {
 				});
 
 			try {
+				Object.defineProperty(process, "platform", { value: "win32" });
 				await expect(deleteSavedAccounts()).resolves.toMatchObject({
 					accountsCleared: true,
 				});
@@ -2593,6 +2595,7 @@ describe("storage", () => {
 					),
 				).toBe(true);
 			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform });
 				writeFileSpy.mockRestore();
 			}
 		});
