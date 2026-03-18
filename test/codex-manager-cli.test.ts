@@ -9399,6 +9399,241 @@ describe("codex manager cli commands", () => {
 		},
 	);
 
+	it.each(["EBUSY", "EPERM"])(
+		"skips switch when selected-account reload fails with %s",
+		async (code) => {
+			const now = Date.now();
+			const storage = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "first@example.com",
+						accountId: "acc_first",
+						refreshToken: "refresh-first",
+						accessToken: "access-first",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+					{
+						email: "switch@example.com",
+						accountId: "acc_switch",
+						refreshToken: "refresh-switch",
+						accessToken: "access-switch",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			};
+			let loadCount = 0;
+			let remainingReloadFailures =
+				code === "EBUSY" || (code === "EPERM" && process.platform === "win32")
+					? 5
+					: 1;
+			let failSelectedReload = false;
+			loadAccountsMock.mockImplementation(async () => {
+				loadCount += 1;
+				if (failSelectedReload && remainingReloadFailures > 0) {
+					remainingReloadFailures -= 1;
+					if (remainingReloadFailures === 0) {
+						failSelectedReload = false;
+					}
+					throw makeErrnoError("switch reload failed", code);
+				}
+				return structuredClone(storage);
+			});
+			promptLoginModeMock
+				.mockImplementationOnce(async () => {
+					failSelectedReload = true;
+					return {
+						mode: "manage",
+						switchAccountIndex: 1,
+						selectedAccountNumber: 1,
+					};
+				})
+				.mockResolvedValueOnce({ mode: "cancel" });
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				`Could not reload selected account before action (${code}).`,
+			);
+			expect(loadCount).toBe(
+				code === "EBUSY" || (code === "EPERM" && process.platform === "win32")
+					? 8
+					: 4,
+			);
+			expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+		},
+	);
+
+	it.each(["EBUSY", "EPERM"])(
+		"skips delete when selected-account reload fails with %s",
+		async (code) => {
+			const now = Date.now();
+			const storage = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "first@example.com",
+						accountId: "acc_first",
+						refreshToken: "refresh-first",
+						accessToken: "access-first",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+					{
+						email: "delete@example.com",
+						accountId: "acc_delete",
+						refreshToken: "refresh-delete",
+						accessToken: "access-delete",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			};
+			let loadCount = 0;
+			let remainingReloadFailures =
+				code === "EBUSY" || (code === "EPERM" && process.platform === "win32")
+					? 5
+					: 1;
+			let failSelectedReload = false;
+			loadAccountsMock.mockImplementation(async () => {
+				loadCount += 1;
+				if (failSelectedReload && remainingReloadFailures > 0) {
+					remainingReloadFailures -= 1;
+					if (remainingReloadFailures === 0) {
+						failSelectedReload = false;
+					}
+					throw makeErrnoError("delete reload failed", code);
+				}
+				return structuredClone(storage);
+			});
+			promptLoginModeMock
+				.mockImplementationOnce(async () => {
+					failSelectedReload = true;
+					return {
+						mode: "manage",
+						deleteAccountIndex: 1,
+						selectedAccountNumber: 1,
+					};
+				})
+				.mockResolvedValueOnce({ mode: "cancel" });
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(deleteAccountAtIndexMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				`Could not reload selected account before action (${code}).`,
+			);
+			expect(loadCount).toBe(
+				code === "EBUSY" || (code === "EPERM" && process.platform === "win32")
+					? 8
+					: 4,
+			);
+			expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+		},
+	);
+
+	it.each(["EBUSY", "EPERM"])(
+		"skips toggle when selected-account reload fails with %s",
+		async (code) => {
+			const now = Date.now();
+			const storage = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "first@example.com",
+						accountId: "acc_first",
+						refreshToken: "refresh-first",
+						accessToken: "access-first",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+					{
+						email: "toggle@example.com",
+						accountId: "acc_toggle",
+						refreshToken: "refresh-toggle",
+						accessToken: "access-toggle",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			};
+			let loadCount = 0;
+			let remainingReloadFailures =
+				code === "EBUSY" || (code === "EPERM" && process.platform === "win32")
+					? 5
+					: 1;
+			let failSelectedReload = false;
+			loadAccountsMock.mockImplementation(async () => {
+				loadCount += 1;
+				if (failSelectedReload && remainingReloadFailures > 0) {
+					remainingReloadFailures -= 1;
+					if (remainingReloadFailures === 0) {
+						failSelectedReload = false;
+					}
+					throw makeErrnoError("toggle reload failed", code);
+				}
+				return structuredClone(storage);
+			});
+			promptLoginModeMock
+				.mockImplementationOnce(async () => {
+					failSelectedReload = true;
+					return {
+						mode: "manage",
+						toggleAccountIndex: 1,
+						selectedAccountNumber: 1,
+					};
+				})
+				.mockResolvedValueOnce({ mode: "cancel" });
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				`Could not reload selected account before action (${code}).`,
+			);
+			expect(loadCount).toBe(
+				code === "EBUSY" || (code === "EPERM" && process.platform === "win32")
+					? 8
+					: 4,
+			);
+			expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+		},
+	);
+
 	it("skips destructive work when user cancels from menu", async () => {
 		loadAccountsMock.mockResolvedValue({
 			version: 3,

@@ -4235,11 +4235,20 @@ async function handleManageAction(
 			menuResult,
 			index,
 		);
-		const freshStorage = await loadManageActionStorage(
-			storage,
-			displayAccountNumber,
-			index,
-		);
+		let freshStorage: AccountStorageV3 | null;
+		try {
+			freshStorage = await loadManageActionStorage(
+				storage,
+				displayAccountNumber,
+				index,
+			);
+		} catch (error) {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
+			console.error(
+				`Could not reload selected account before action (${errorLabel}).`,
+			);
+			return;
+		}
 		if (!freshStorage) {
 			return;
 		}
@@ -4256,11 +4265,20 @@ async function handleManageAction(
 			menuResult,
 			idx,
 		);
-		const freshStorage = await loadManageActionStorage(
-			storage,
-			displayAccountNumber,
-			idx,
-		);
+		let freshStorage: AccountStorageV3 | null;
+		try {
+			freshStorage = await loadManageActionStorage(
+				storage,
+				displayAccountNumber,
+				idx,
+			);
+		} catch (error) {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
+			console.error(
+				`Could not reload selected account before action (${errorLabel}).`,
+			);
+			return;
+		}
 		if (!freshStorage) {
 			return;
 		}
@@ -4285,11 +4303,20 @@ async function handleManageAction(
 			menuResult,
 			idx,
 		);
-		const freshStorage = await loadManageActionStorage(
-			storage,
-			displayAccountNumber,
-			idx,
-		);
+		let freshStorage: AccountStorageV3 | null;
+		try {
+			freshStorage = await loadManageActionStorage(
+				storage,
+				displayAccountNumber,
+				idx,
+			);
+		} catch (error) {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
+			console.error(
+				`Could not reload selected account before action (${errorLabel}).`,
+			);
+			return;
+		}
 		if (!freshStorage) {
 			return;
 		}
