@@ -780,8 +780,9 @@ describe("storage recovery paths", () => {
 			}),
 			"utf-8",
 		);
-		const olderManualMtime = new Date(Date.now() - 5_000);
-		const newerManualMtime = new Date(Date.now() + 5_000);
+		const baseMtimeMs = Date.now() - 60_000;
+		const olderManualMtime = new Date(baseMtimeMs);
+		const newerManualMtime = new Date(baseMtimeMs + 10_000);
 		await fs.utimes(olderManualPath, olderManualMtime, olderManualMtime);
 		await fs.utimes(newerManualPath, newerManualMtime, newerManualMtime);
 
