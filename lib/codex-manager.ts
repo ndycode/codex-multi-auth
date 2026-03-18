@@ -4416,29 +4416,38 @@ async function runFirstRunWizard(
 				await runBackupBrowserManager(displaySettings);
 				break;
 			case "import-opencode": {
+				let assessment: BackupRestoreAssessment | null;
 				try {
-					const assessment = await assessOpencodeAccountPool();
-					if (!assessment) {
-						console.log("No OpenCode account pool was detected.");
-						break;
-					}
-					if (!assessment.eligibleForRestore) {
-						console.log(formatOpencodeImportFailure(assessment.error));
-						break;
-					}
-					if (assessment.wouldExceedLimit) {
-						console.log(
-							`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
-						);
-						break;
-					}
-					const backupLabel = basename(assessment.backup.path);
-					const confirmed = await confirm(
-						`Import OpenCode accounts from ${backupLabel}?`,
+					assessment = await assessOpencodeAccountPool();
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Failed to detect OpenCode import source (${errorLabel}).`,
 					);
-					if (!confirmed) {
-						break;
-					}
+					break;
+				}
+				if (!assessment) {
+					console.log("No OpenCode account pool was detected.");
+					break;
+				}
+				if (!assessment.backup.valid || !assessment.eligibleForRestore) {
+					console.log(formatOpencodeImportFailure(assessment.error));
+					break;
+				}
+				if (assessment.wouldExceedLimit) {
+					console.log(
+						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
+					);
+					break;
+				}
+				const backupLabel = basename(assessment.backup.path);
+				const confirmed = await confirm(
+					`Import OpenCode accounts from ${backupLabel}?`,
+				);
+				if (!confirmed) {
+					break;
+				}
+				try {
 					await runActionPanel(
 						"Import OpenCode Accounts",
 						`Importing from ${backupLabel}`,
