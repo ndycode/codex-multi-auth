@@ -4140,14 +4140,7 @@ describe("codex manager cli commands", () => {
 				healthSummary: undefined,
 			}),
 		);
-		expect(
-			warningLines.some((line) =>
-				line.includes(
-					"Failed to load login menu restore health summary state [EBUSY]",
-				) &&
-				!line.includes("alice"),
-			),
-		).toBe(true);
+		expect(warningLines).toHaveLength(0);
 		warnSpy.mockRestore();
 	});
 
