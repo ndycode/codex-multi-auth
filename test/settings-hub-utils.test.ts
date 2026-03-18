@@ -617,6 +617,86 @@ describe("settings-hub utility coverage", () => {
 		}
 	});
 
+	it("keeps sync-center open when rollback throws after retry handling", async () => {
+		const api = await loadSettingsHubTestApi();
+		const storageModule = await import("../lib/storage.js");
+		const codexCliState = await import("../lib/codex-cli/state.js");
+		const codexCliSync = await import("../lib/codex-cli/sync.js");
+		const loadAccountsSpy = vi.spyOn(storageModule, "loadAccounts").mockResolvedValue({
+			version: 3,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+		const loadStateSpy = vi
+			.spyOn(codexCliState, "loadCodexCliState")
+			.mockResolvedValue({
+				path: "/tmp/source/accounts.json",
+				accounts: [],
+			});
+		const previewSpy = vi.spyOn(codexCliSync, "previewCodexCliSync").mockResolvedValue({
+			status: "ready",
+			statusDetail: "Preview ready.",
+			sourcePath: "/tmp/source/accounts.json",
+			sourceAccountCount: 0,
+			targetPath: "/tmp/target/accounts.json",
+			summary: {
+				sourceAccountCount: 0,
+				targetAccountCountBefore: 0,
+				targetAccountCountAfter: 0,
+				addedAccountCount: 0,
+				updatedAccountCount: 0,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			backup: {
+				enabled: true,
+				targetPath: "/tmp/target/accounts.json",
+				rollbackPaths: ["/tmp/target/accounts.json.bak"],
+			},
+			lastSync: null,
+		});
+		const rollbackPlanSpy = vi
+			.spyOn(codexCliSync, "getLatestCodexCliSyncRollbackPlan")
+			.mockResolvedValue({
+				status: "ready",
+				reason: "Rollback is ready.",
+				snapshot: null,
+			} as Awaited<
+				ReturnType<typeof codexCliSync.getLatestCodexCliSyncRollbackPlan>
+			>);
+		const rollbackSpy = vi
+			.spyOn(codexCliSync, "rollbackLatestCodexCliSync")
+			.mockRejectedValue(new Error("rollback busy"));
+
+		let selectCall = 0;
+		selectHandler = async (items) => {
+			selectCall += 1;
+			if (selectCall === 1) return { type: "rollback" };
+			const text = items
+				.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
+				.join("\n");
+			expect(text).toContain("Failed to restore sync checkpoint: rollback busy");
+			return { type: "back" };
+		};
+
+		try {
+			await expect(api.promptSyncCenter({})).resolves.toBeUndefined();
+			expect(rollbackSpy).toHaveBeenCalledTimes(1);
+			expect(rollbackPlanSpy).toHaveBeenCalledTimes(2);
+			expect(previewSpy).toHaveBeenCalledTimes(1);
+			expect(loadAccountsSpy).toHaveBeenCalledTimes(1);
+			expect(loadStateSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			loadAccountsSpy.mockRestore();
+			loadStateSpy.mockRestore();
+			previewSpy.mockRestore();
+			rollbackPlanSpy.mockRestore();
+			rollbackSpy.mockRestore();
+		}
+	});
+
 	it("propagates non-retryable filesystem errors immediately", async () => {
 		const api = await loadSettingsHubTestApi();
 		let attempts = 0;

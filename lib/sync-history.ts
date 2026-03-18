@@ -44,7 +44,7 @@ let historyDirOverride: string | null = null;
 let historyMutex: Promise<void> = Promise.resolve();
 let lastAppendError: string | null = null;
 let lastAppendPaths: SyncHistoryPaths | null = null;
-const pendingHistoryWrites = new Set<Promise<void>>();
+const pendingHistoryWrites = new Set<Promise<unknown>>();
 
 function getHistoryDirectory(): string {
 	return historyDirOverride ?? getCodexLogDir();
@@ -358,7 +358,7 @@ export async function pruneSyncHistory(
 ): Promise<{ removed: number; kept: number; latest: SyncHistoryEntry | null }> {
 	const maxEntries = options.maxEntries ?? MAX_HISTORY_ENTRIES;
 	await waitForPendingHistoryWrites();
-	return withHistoryLock(async () => {
+	const prunePromise = withHistoryLock(async () => {
 		const paths = getSyncHistoryPaths();
 		await ensureHistoryDir(paths.directory);
 		const entries = await loadHistoryEntriesFromDisk(paths);
@@ -383,6 +383,12 @@ export async function pruneSyncHistory(
 			latest: result.latest,
 		};
 	});
+	pendingHistoryWrites.add(prunePromise);
+	try {
+		return await prunePromise;
+	} finally {
+		pendingHistoryWrites.delete(prunePromise);
+	}
 }
 
 export function cloneSyncHistoryEntry(

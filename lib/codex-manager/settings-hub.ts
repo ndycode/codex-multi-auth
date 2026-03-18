@@ -2893,23 +2893,35 @@ async function promptSyncCenter(config: PluginConfig): Promise<void> {
 			continue;
 		}
 		if (result.type === "rollback") {
-			const rollbackResult = await withQueuedRetry(preview.targetPath, async () =>
-				runSyncCenterRollback(rollbackPlan),
-			);
-			if (rollbackResult.status !== "restored") {
+			try {
+				const rollbackResult = await withQueuedRetry(
+					preview.targetPath,
+					async () => runSyncCenterRollback(rollbackPlan),
+				);
+				if (rollbackResult.status !== "restored") {
+					preview = {
+						...preview,
+						status: "error",
+						lastSync: getLastCodexCliSyncRun(),
+						statusDetail: rollbackResult.reason,
+					};
+					rollbackPlan = await getSyncCenterRollbackPlan();
+					continue;
+				}
+				({ preview, context, sourceState } = await buildPreviewSafely(
+					true,
+					preview,
+				));
+			} catch (error) {
 				preview = {
 					...preview,
 					status: "error",
 					lastSync: getLastCodexCliSyncRun(),
-					statusDetail: rollbackResult.reason,
+					statusDetail: `Failed to restore sync checkpoint: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
 				};
-				rollbackPlan = await getSyncCenterRollbackPlan();
-				continue;
 			}
-			({ preview, context, sourceState } = await buildPreviewSafely(
-				true,
-				preview,
-			));
 			rollbackPlan = await getSyncCenterRollbackPlan();
 			continue;
 		}

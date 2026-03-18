@@ -294,4 +294,66 @@ describe("sync history", () => {
 
 		expect(__getLastSyncHistoryErrorForTests()).toBe("append failed");
 	});
+
+	it("waits for in-flight prune writes before async reads continue", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/source-1"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "live-account-sync",
+			recordedAt: 2,
+			reason: "watch",
+			outcome: "success",
+			path: "/live-1",
+			snapshot: createLiveSnapshot(2, "/live-1"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 3,
+			run: createCodexRun(3, "/source-3"),
+		});
+
+		const paths = getSyncHistoryPaths();
+		const originalWriteFile = fs.writeFile.bind(fs);
+		let releaseHistoryWrite: (() => void) | undefined;
+		const historyWriteGate = new Promise<void>((resolve) => {
+			releaseHistoryWrite = resolve;
+		});
+		let blockedHistoryRewrite = false;
+
+		const writeFileSpy = vi.spyOn(fs, "writeFile").mockImplementation(
+			async (...args: Parameters<typeof fs.writeFile>) => {
+				if (!blockedHistoryRewrite && args[0] === paths.historyPath) {
+					blockedHistoryRewrite = true;
+					await historyWriteGate;
+				}
+				return originalWriteFile(...args);
+			},
+		);
+
+		const prunePromise = pruneSyncHistory({ maxEntries: 1 });
+		await vi.waitFor(() => {
+			expect(blockedHistoryRewrite).toBe(true);
+		});
+
+		let readResolved = false;
+		const readPromise = readSyncHistory().then((entries) => {
+			readResolved = true;
+			return entries;
+		});
+
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(readResolved).toBe(false);
+
+		releaseHistoryWrite?.();
+
+		const [history, result] = await Promise.all([readPromise, prunePromise]);
+		writeFileSpy.mockRestore();
+
+		expect(result.latest?.recordedAt).toBe(3);
+		expect(history.map((entry) => entry.recordedAt)).toEqual([2, 3]);
+	});
 });
