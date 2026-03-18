@@ -1143,6 +1143,73 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
+	it("keeps the first-run wizard open when the post-action storage reload fails", async () => {
+		setInteractiveTTY(true);
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		const wizardSpy = vi
+			.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValueOnce({ type: "import-opencode" })
+			.mockResolvedValueOnce({ type: "cancel" });
+		loadAccountsMock
+			.mockResolvedValueOnce(null)
+			.mockRejectedValueOnce(
+				makeErrnoError(
+					"resource busy, open 'C:\\Users\\alice\\AppData\\Local\\OpenCode\\openai-codex-accounts.json'",
+					"EBUSY",
+				),
+			);
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessOpencodeAccountPoolMock.mockResolvedValue({
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "imported@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: true,
+			error: "",
+		});
+		importAccountsMock.mockResolvedValue({ imported: 1, skipped: 0, total: 1 });
+		confirmMock.mockResolvedValueOnce(true);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/.opencode/openai-codex-accounts.json",
+		);
+		expect(wizardSpy).toHaveBeenCalledTimes(2);
+		expect(
+			warnSpy.mock.calls.some(([message]) =>
+				String(message).includes(
+					"Failed to refresh saved accounts after first-run action",
+				),
+			),
+		).toBe(true);
+		expect(
+			warnSpy.mock.calls.every((call) => !String(call[0]).includes("alice")),
+		).toBe(true);
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+	});
+
 	it("keeps the first-run wizard open when OpenCode import probing fails", async () => {
 		setInteractiveTTY(true);
 		const authMenu = await import("../lib/ui/auth-menu.js");

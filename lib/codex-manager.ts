@@ -4281,18 +4281,22 @@ async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 	};
 }
 
+type FirstRunWizardResult =
+	| { outcome: "cancelled" }
+	| { outcome: "continue"; latestStorage: AccountStorageV3 | null };
+
 async function runFirstRunWizard(
 	displaySettings: DashboardDisplaySettings,
-): Promise<"continue" | "cancelled"> {
+): Promise<FirstRunWizardResult> {
 	while (true) {
 		const action = await showFirstRunWizard(await buildFirstRunWizardOptions());
 		switch (action.type) {
 			case "cancel":
 				console.log("Cancelled.");
-				return "cancelled";
+				return { outcome: "cancelled" };
 			case "login":
 			case "skip":
-				return "continue";
+				return { outcome: "continue", latestStorage: null };
 			case "restore":
 				await runBackupBrowserManager(displaySettings);
 				break;
@@ -4352,9 +4356,17 @@ async function runFirstRunWizard(
 				break;
 		}
 
-		const latestStorage = await loadAccounts();
+		let latestStorage: AccountStorageV3 | null = null;
+		try {
+			latestStorage = await loadAccounts();
+		} catch (error) {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
+			console.warn(
+				`Failed to refresh saved accounts after first-run action (${errorLabel}).`,
+			);
+		}
 		if (latestStorage && latestStorage.accounts.length > 0) {
-			return "continue";
+			return { outcome: "continue", latestStorage };
 		}
 	}
 }
@@ -4379,12 +4391,23 @@ async function runAuthLogin(): Promise<number> {
 	if (startedFromMissingStorage) {
 		const displaySettings = await loadDashboardDisplaySettings();
 		applyUiThemeFromDashboardSettings(displaySettings);
-		const wizardOutcome = await runFirstRunWizard(displaySettings);
+		const wizardResult = await runFirstRunWizard(displaySettings);
 		firstRunWizardShownInLoop = true;
-		if (wizardOutcome === "cancelled") {
+		if (wizardResult.outcome === "cancelled") {
 			return 0;
 		}
-		cachedInitialStorage = await loadAccounts();
+		cachedInitialStorage = wizardResult.latestStorage;
+		if (cachedInitialStorage === null) {
+			try {
+				cachedInitialStorage = await loadAccounts();
+			} catch (error) {
+				const errorLabel = getRedactedFilesystemErrorLabel(error);
+				console.warn(
+					`Failed to refresh saved accounts after first-run wizard (${errorLabel}).`,
+				);
+				cachedInitialStorage = null;
+			}
+		}
 		if (cachedInitialStorage && cachedInitialStorage.accounts.length > 0) {
 			return 0;
 		}
@@ -4750,10 +4773,21 @@ async function runAuthLogin(): Promise<number> {
 			const displaySettings = await loadDashboardDisplaySettings();
 			applyUiThemeFromDashboardSettings(displaySettings);
 			const firstRunResult = await runFirstRunWizard(displaySettings);
-			if (firstRunResult === "cancelled") {
+			if (firstRunResult.outcome === "cancelled") {
 				return 0;
 			}
-			const refreshedAfterWizard = await loadAccounts();
+			let refreshedAfterWizard = firstRunResult.latestStorage;
+			if (refreshedAfterWizard === null) {
+				try {
+					refreshedAfterWizard = await loadAccounts();
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Failed to refresh saved accounts after first-run wizard (${errorLabel}).`,
+					);
+					refreshedAfterWizard = null;
+				}
+			}
 			if ((refreshedAfterWizard?.accounts.length ?? 0) > 0) {
 				continue;
 			}
