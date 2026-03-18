@@ -565,7 +565,17 @@ async function saveRollbackStorageWithRetry(storage: AccountStorageV3): Promise<
 }
 
 export async function getLatestCodexCliSyncRollbackPlan(): Promise<CodexCliSyncRollbackPlan> {
-	const lastManualRun = await findLatestManualRollbackRun();
+	let lastManualRun: CodexCliSyncRun | null;
+	try {
+		lastManualRun = await findLatestManualRollbackRun();
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		return {
+			status: "unavailable",
+			reason: `Rollback history is unavailable [${errorLabel}].`,
+			snapshot: null,
+		};
+	}
 	if (!lastManualRun) {
 		return {
 			status: "unavailable",

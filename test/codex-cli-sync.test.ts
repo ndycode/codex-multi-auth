@@ -1890,6 +1890,41 @@ describe("codex-cli sync", () => {
 		},
 	);
 
+	it("fails closed when rollback history cannot be read", async () => {
+		const readError = Object.assign(new Error("history busy"), {
+			code: "EBUSY",
+		});
+		vi.resetModules();
+		vi.doMock("../lib/sync-history.js", async () => {
+			const actual = await vi.importActual<typeof import("../lib/sync-history.js")>(
+				"../lib/sync-history.js",
+			);
+			return {
+				...actual,
+				readSyncHistory: vi.fn().mockRejectedValue(readError),
+			};
+		});
+
+		try {
+			const freshSyncModule = await import("../lib/codex-cli/sync.js");
+			freshSyncModule.__resetLastCodexCliSyncRunForTests();
+
+			await expect(freshSyncModule.getLatestCodexCliSyncRollbackPlan()).resolves.toEqual({
+				status: "unavailable",
+				reason: "Rollback history is unavailable [EBUSY].",
+				snapshot: null,
+			});
+		} finally {
+			vi.doUnmock("../lib/sync-history.js");
+			vi.resetModules();
+			clearCodexCliStateCache();
+			__resetLastCodexCliSyncRunForTests();
+			await __resetSyncHistoryForTests();
+			configureSyncHistoryForTests(join(tempDir, "logs"));
+			storageModule.setStoragePathDirect(targetStoragePath);
+		}
+	});
+
 	it("surfaces rollback save failures through both rollback APIs", async () => {
 		const snapshotPath = join(tempDir, "rollback-error-snapshot.json");
 		await writeFile(
