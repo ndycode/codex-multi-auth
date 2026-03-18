@@ -1173,6 +1173,59 @@ describe("codex manager cli commands", () => {
 		).toBe(true);
 	});
 
+	it("keeps the first-run wizard open when OpenCode import would exceed the account limit", async () => {
+		setInteractiveTTY(true);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		const wizardSpy = vi
+			.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValueOnce({ type: "import-opencode" })
+			.mockResolvedValueOnce({ type: "cancel" });
+		loadAccountsMock.mockResolvedValue(null);
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		const limitAssessment = {
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 3,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 2,
+			mergedAccountCount: 5,
+			imported: 3,
+			skipped: 0,
+			wouldExceedLimit: true,
+			eligibleForRestore: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "existing@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "",
+		};
+		assessOpencodeAccountPoolMock
+			.mockResolvedValueOnce(limitAssessment)
+			.mockResolvedValueOnce(limitAssessment);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(wizardSpy).toHaveBeenCalledTimes(2);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			"Import would exceed the account limit (2 current, 5 after import). Remove accounts first.",
+		);
+	});
+
 	it("offers startup backup browser after first-run login when interactive login starts empty", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
