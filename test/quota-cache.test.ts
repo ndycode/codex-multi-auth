@@ -176,8 +176,11 @@ describe("quota cache", () => {
   );
 
   it("keeps the cache file valid across concurrent save retries", async () => {
-    const { getQuotaCachePath, loadQuotaCache, saveQuotaCache } =
-      await import("../lib/quota-cache.js");
+    vi.resetModules();
+    const warnMock = vi.fn();
+    vi.doMock("../lib/logger.js", () => ({
+      logWarn: warnMock,
+    }));
     const payload = {
       byAccountId: {
         acc_1: {
@@ -200,25 +203,28 @@ describe("quota cache", () => {
         },
       },
     };
-    const realRename = fs.rename.bind(fs);
-    const renameSpy = vi.spyOn(fs, "rename");
-    let attempts = 0;
-    const retryableAttempts = new Map<number, "EBUSY" | "EPERM">([
-      [1, "EBUSY"],
-      [2, "EPERM"],
-      [4, "EBUSY"],
-      [5, "EPERM"],
-    ]);
-    renameSpy.mockImplementation(async (...args) => {
-      attempts += 1;
-      const code = retryableAttempts.get(attempts);
-      if (code) {
-        throw makeErrnoError(`rename failed: ${code}`, code);
-      }
-      return realRename(...args);
-    });
 
     try {
+      const { getQuotaCachePath, loadQuotaCache, saveQuotaCache } =
+        await import("../lib/quota-cache.js");
+      const realRename = fs.rename.bind(fs);
+      const renameSpy = vi.spyOn(fs, "rename");
+      let attempts = 0;
+      const retryableAttempts = new Map<number, "EBUSY" | "EPERM">([
+        [1, "EBUSY"],
+        [2, "EPERM"],
+        [4, "EBUSY"],
+        [5, "EPERM"],
+      ]);
+      renameSpy.mockImplementation(async (...args) => {
+        attempts += 1;
+        const code = retryableAttempts.get(attempts);
+        if (code) {
+          throw makeErrnoError(`rename failed: ${code}`, code);
+        }
+        return realRename(...args);
+      });
+
       await Promise.all(
         Array.from({ length: 4 }, () => saveQuotaCache(payload)),
       );
@@ -232,11 +238,13 @@ describe("quota cache", () => {
       });
       await expect(loadQuotaCache()).resolves.toEqual(payload);
       expect(attempts).toBeGreaterThan(4);
+      expect(warnMock).not.toHaveBeenCalled();
 
       const entries = await fs.readdir(tempDir);
       expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
-    } finally {
       renameSpy.mockRestore();
+    } finally {
+      vi.doUnmock("../lib/logger.js");
     }
   });
 
