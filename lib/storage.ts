@@ -3656,11 +3656,7 @@ async function saveAccountsUnlocked(
 		}
 
 		await renameFileWithRetry(tempPath, path);
-		try {
-			await fs.unlink(resetMarkerPath);
-		} catch {
-			// Best effort cleanup.
-		}
+		await unlinkWithRetry(resetMarkerPath);
 		lastAccountsSaveTimestamp = Date.now();
 		try {
 			await fs.unlink(walPath);

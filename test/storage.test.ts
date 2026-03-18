@@ -5176,6 +5176,45 @@ describe("storage", () => {
 			statSpy.mockRestore();
 		});
 
+		it("throws when a stale reset marker cannot be cleared after a successful save", async () => {
+			const now = Date.now();
+			const storagePath = getStoragePath();
+			const resetMarkerPath = `${storagePath}.reset-intent`;
+			const storage = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+			};
+
+			await fs.mkdir(dirname(storagePath), { recursive: true });
+			await fs.writeFile(resetMarkerPath, "reset", "utf-8");
+
+			const realUnlink = fs.unlink.bind(fs);
+			let markerUnlinkAttempts = 0;
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (String(targetPath) === resetMarkerPath) {
+						markerUnlinkAttempts += 1;
+						const err = new Error("marker locked") as NodeJS.ErrnoException;
+						err.code = "EBUSY";
+						throw err;
+					}
+					return realUnlink(targetPath);
+				});
+
+			try {
+				await expect(saveAccounts(storage)).rejects.toThrow(
+					"Failed to save accounts",
+				);
+				expect(markerUnlinkAttempts).toBe(5);
+				expect(existsSync(resetMarkerPath)).toBe(true);
+				expect(existsSync(storagePath)).toBe(true);
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+		});
+
 		it("retries backup copyFile on transient EBUSY and succeeds", async () => {
 			const now = Date.now();
 			const storage = {
