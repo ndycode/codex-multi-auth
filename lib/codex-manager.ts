@@ -4107,6 +4107,12 @@ function reportUnavailableManageActionAccount(
 	targetIndex: number,
 	totalAccounts: number,
 ): void {
+	if (totalAccounts <= 0) {
+		console.error(
+			`Selected account ${displayAccountNumber} is no longer available (no accounts configured).`,
+		);
+		return;
+	}
 	if (targetIndex < 0 || targetIndex >= totalAccounts) {
 		console.error(
 			`Selected account ${displayAccountNumber} is no longer available (storage position ${targetIndex + 1} is outside 1-${totalAccounts}).`,
@@ -4140,7 +4146,7 @@ async function loadManageActionStorage(
 		return null;
 	}
 
-	if (targetIndex < 0 || targetIndex >= freshStorage.accounts.length) {
+	if (targetIndex >= freshStorage.accounts.length) {
 		reportUnavailableManageActionAccount(
 			displayAccountNumber,
 			targetIndex,

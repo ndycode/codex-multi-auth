@@ -3406,6 +3406,60 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
 	});
 
+	it("reports when the selected dashboard row no longer exists because storage is now empty", async () => {
+		const now = Date.now();
+		const originalStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: Array.from({ length: 29 }, (_, index) => ({
+				email: `account-${index + 1}@example.com`,
+				accountId: `acc_${index + 1}`,
+				refreshToken: `refresh-${index + 1}`,
+				accessToken: `access-${index + 1}`,
+				expiresAt: now + 3_600_000,
+				addedAt: now - 1_000 - index,
+				lastUsed: now - 1_000 - index,
+				enabled: true,
+			})),
+		};
+		const emptyStorage = {
+			...structuredClone(originalStorage),
+			accounts: [],
+			activeIndex: null,
+			activeIndexByFamily: {},
+		};
+		let returnEmpty = false;
+		loadAccountsMock.mockImplementation(async () => {
+			if (returnEmpty) {
+				returnEmpty = false;
+				return structuredClone(emptyStorage);
+			}
+			return structuredClone(originalStorage);
+		});
+		promptLoginModeMock
+			.mockImplementationOnce(async () => {
+				returnEmpty = true;
+				return {
+					mode: "manage" as const,
+					switchAccountIndex: 28,
+					selectedAccountNumber: 1,
+				};
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Selected account 1 is no longer available (no accounts configured).",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
 	it("reports stale switch selections when the chosen storage slot now holds a different account", async () => {
 		const now = Date.now();
 		const originalStorage = {
