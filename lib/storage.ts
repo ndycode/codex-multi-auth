@@ -2590,6 +2590,8 @@ export async function restoreNamedBackup(
 	}
 	return importNormalizedAccounts(candidate.normalized, backupPath, {
 		replacedExistingCount: assessment.replacedExistingCount ?? 0,
+		snapshotReason: "import-accounts",
+		snapshotFailurePolicy: "error",
 	});
 }
 
@@ -2676,9 +2678,10 @@ async function importNormalizedAccounts(
 	options: {
 		replacedExistingCount?: number;
 		snapshotReason?: AccountSnapshotReason;
+		snapshotFailurePolicy?: AccountSnapshotFailurePolicy;
 	} = {},
 ): Promise<{ imported: number; total: number; skipped: number }> {
-	const { snapshotReason } = options;
+	const { snapshotReason, snapshotFailurePolicy = "warn" } = options;
 	const {
 		imported: importedCount,
 		total,
@@ -2687,6 +2690,7 @@ async function importNormalizedAccounts(
 		if (snapshotReason) {
 			await snapshotAccountStorage({
 				reason: snapshotReason,
+				failurePolicy: snapshotFailurePolicy,
 				storage: existing,
 				storagePath: getStoragePath(),
 			});
@@ -3441,6 +3445,7 @@ export async function snapshotAndClearAccounts(
 		const currentStorage = await loadAccountsInternal(saveAccountsUnlocked);
 		await snapshotAccountStorage({
 			reason,
+			failurePolicy: "error",
 			storage: currentStorage,
 			storagePath,
 		});

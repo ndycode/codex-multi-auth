@@ -171,6 +171,7 @@ describe("destructive actions", () => {
 		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(snapshotAccountStorageMock).toHaveBeenCalledWith({
 			reason: "delete-account",
+			failurePolicy: "error",
 			storage,
 			storagePath: "/mock/openai-codex-accounts.json",
 		});
@@ -194,6 +195,37 @@ describe("destructive actions", () => {
 				activeIndexByFamily: { codex: 1, "gpt-5.x": 0 },
 			}),
 		);
+	});
+
+	it("aborts account deletion when the safety snapshot cannot be created", async () => {
+		const { deleteAccountAtIndex } = await import(
+			"../lib/destructive-actions.js"
+		);
+		const snapshotError = Object.assign(new Error("snapshot locked"), {
+			code: "EPERM",
+		});
+		snapshotAccountStorageMock.mockRejectedValueOnce(snapshotError);
+
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "delete-me",
+					refreshToken: "refresh-delete-me",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		transactionCurrentStorage = structuredClone(storage);
+
+		await expect(deleteAccountAtIndex({ storage, index: 0 })).rejects.toBe(
+			snapshotError,
+		);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(saveFlaggedAccountsMock).not.toHaveBeenCalled();
 	});
 
 	it("matches the selected delete target by full identity when refresh tokens collide", async () => {
