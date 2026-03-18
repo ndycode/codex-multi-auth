@@ -2379,7 +2379,19 @@ export async function snapshotAccountStorage(
 		failurePolicy = "warn",
 		createBackup = createNamedBackup,
 	} = options;
-	const currentStorage = await loadAccounts();
+	let currentStorage: AccountStorageV3 | null;
+	try {
+		currentStorage = await loadAccounts();
+	} catch (error) {
+		if (failurePolicy === "error") {
+			throw error;
+		}
+		log.warn("Failed to load account storage before snapshot", {
+			reason,
+			error: formatSnapshotErrorForLog(error),
+		});
+		return null;
+	}
 	if (!currentStorage || currentStorage.accounts.length === 0) {
 		return null;
 	}

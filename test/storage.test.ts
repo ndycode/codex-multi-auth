@@ -2116,6 +2116,38 @@ describe("storage", () => {
 			).resolves.toBeNull();
 		});
 
+		it("returns null on warn policy when loading storage for a snapshot hits a transient read error", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const createBackup = vi.fn();
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockRejectedValueOnce(
+					Object.assign(new Error("storage busy"), { code: "EBUSY" }),
+				);
+
+			await expect(
+				snapshotAccountStorage({
+					reason: "reset-local-state",
+					createBackup,
+				}),
+			).resolves.toBeNull();
+
+			expect(createBackup).not.toHaveBeenCalled();
+			readFileSpy.mockRestore();
+		});
+
 		it("redacts filesystem paths from snapshot warning logs", async () => {
 			const warnMock = vi.fn();
 			vi.resetModules();

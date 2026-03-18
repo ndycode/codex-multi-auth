@@ -9,6 +9,7 @@ import {
 } from "../lib/codex-cli/sync.js";
 import type { LiveAccountSyncSnapshot } from "../lib/live-account-sync.js";
 import {
+	__getLastSyncHistoryErrorForTests,
 	__resetSyncHistoryForTests,
 	appendSyncHistoryEntry,
 	configureSyncHistoryForTests,
@@ -266,5 +267,31 @@ describe("sync history", () => {
 		expect(latestCodex?.recordedAt).toBe(205);
 		expect(latestLive?.recordedAt).toBe(10_000);
 		expect(readLatestSyncHistorySync()?.recordedAt).toBe(10_000);
+	});
+
+	it("preserves the last append error when maintenance pruning succeeds", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/seeded"),
+		});
+		const appendFileSpy = vi
+			.spyOn(fs, "appendFile")
+			.mockRejectedValueOnce(new Error("append failed"));
+
+		await expect(
+			appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: 2,
+				run: createCodexRun(2, "/broken"),
+			}),
+		).rejects.toThrow("append failed");
+		appendFileSpy.mockRestore();
+
+		expect(__getLastSyncHistoryErrorForTests()).toBe("append failed");
+
+		await pruneSyncHistory({ maxEntries: 1 });
+
+		expect(__getLastSyncHistoryErrorForTests()).toBe("append failed");
 	});
 });
