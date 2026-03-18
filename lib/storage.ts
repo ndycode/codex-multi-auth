@@ -3417,11 +3417,15 @@ async function clearAccountsUnlocked(storagePath: string): Promise<boolean> {
 			),
 		),
 	);
-	await fs.mkdir(dirname(resetMarkerPath), { recursive: true });
-	await fs.writeFile(
-		resetMarkerPath,
-		JSON.stringify({ version: 1, createdAt: Date.now() }),
-		{ encoding: "utf-8", mode: 0o600 },
+	await retryTransientFilesystemOperation(() =>
+		fs.mkdir(dirname(resetMarkerPath), { recursive: true }),
+	);
+	await retryTransientFilesystemOperation(() =>
+		fs.writeFile(
+			resetMarkerPath,
+			JSON.stringify({ version: 1, createdAt: Date.now() }),
+			{ encoding: "utf-8", mode: 0o600 },
+		),
 	);
 	let hadError = false;
 	const clearPath = async (targetPath: string): Promise<void> => {
