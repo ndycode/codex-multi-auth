@@ -1374,7 +1374,8 @@ function normalizePathForComparison(
 		collapsed.length > (hasUncPrefix ? 2 : 1)
 			? collapsed.replace(/\/+$/, "")
 			: collapsed;
-	const isWindowsPath = path.includes("\\") || /^[a-z]:\//i.test(trimmed);
+	const isWindowsPath =
+		path.includes("\\") || normalized.startsWith("//") || /^[a-z]:\//i.test(trimmed);
 	return isWindowsPath ? trimmed.toLowerCase() : trimmed;
 }
 

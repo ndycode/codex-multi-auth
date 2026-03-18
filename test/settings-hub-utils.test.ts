@@ -415,14 +415,14 @@ describe("settings-hub utility coverage", () => {
 		expect(overview[2]?.label).toContain("accounts.json active");
 	});
 
-	it("preserves UNC prefixes when labeling the active sync source", async () => {
+	it("matches forward-slash UNC source paths case-insensitively when labeling the active sync source", async () => {
 		const api = await loadSettingsHubTestApi();
 		const overview = api.buildSyncCenterOverview(
 			{
 				status: "ready",
 				statusDetail: "Preview ready",
-				sourcePath: "\\\\Server\\Share\\.codex\\accounts.json",
-				targetPath: "\\\\Server\\Share\\.codex\\openai-codex-accounts.json",
+				sourcePath: "//Server/Share/.codex/Accounts.json",
+				targetPath: "//Server/Share/.codex/openai-codex-accounts.json",
 				summary: {
 					addedAccountCount: 0,
 					updatedAccountCount: 0,
@@ -433,7 +433,7 @@ describe("settings-hub utility coverage", () => {
 				backup: {
 					enabled: true,
 					rollbackPaths: [
-						"\\\\Server\\Share\\.codex\\openai-codex-accounts.json.bak",
+						"//Server/Share/.codex/openai-codex-accounts.json.bak",
 					],
 				},
 				lastSync: null,
