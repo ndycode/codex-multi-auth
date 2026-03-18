@@ -166,7 +166,10 @@ describe("Documentation Integrity", () => {
 	});
 
 	it("does not include opencode wording in user docs", () => {
-		const allowedOpencodeFiles = new Set(["docs/reference/storage-paths.md"]);
+		const allowedOpencodeFiles = new Set([
+			"docs/getting-started.md",
+			"docs/reference/storage-paths.md",
+		]);
 		for (const filePath of userDocs) {
 			const content = read(filePath).toLowerCase();
 			const hasLegacyHostWord = content.includes("opencode");

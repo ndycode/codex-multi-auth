@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { promises as fs, existsSync } from "node:fs";
@@ -3283,6 +3284,14 @@ function getDoctorRefreshTokenKey(
 	return trimmed || undefined;
 }
 
+function getReadOnlyDoctorRefreshTokenFingerprint(
+	refreshToken: unknown,
+): string | undefined {
+	const token = getDoctorRefreshTokenKey(refreshToken);
+	if (!token) return undefined;
+	return createHash("sha256").update(token).digest("hex").slice(0, 12);
+}
+
 function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {
 	let changed = false;
 	const actions: DoctorFixAction[] = [];
@@ -4042,7 +4051,9 @@ function summarizeReadOnlyDoctorState(
 	let placeholderEmailCount = 0;
 	let likelyInvalidRefreshTokenCount = 0;
 	for (const account of storage.accounts) {
-		const token = getDoctorRefreshTokenKey(account.refreshToken);
+		const token = getReadOnlyDoctorRefreshTokenFingerprint(
+			account.refreshToken,
+		);
 		if (token) {
 			if (seenRefreshTokens.has(token)) {
 				duplicateTokenCount += 1;
@@ -4090,9 +4101,41 @@ function summarizeReadOnlyDoctorState(
 	};
 }
 
+function logLoginMenuHealthSummaryWarning(
+	context: string,
+	error: unknown,
+): void {
+	const errorLabel = getRedactedFilesystemErrorLabel(error);
+	console.warn(`${context} [${errorLabel}]`);
+}
+
+function formatLoginMenuRollbackHint(
+	rollbackPlan: Awaited<ReturnType<typeof getLatestCodexCliSyncRollbackPlan>>,
+	rollbackPlanLoadFailed = false,
+): string {
+	if (rollbackPlanLoadFailed) {
+		return "rollback state unavailable";
+	}
+	if (rollbackPlan.status === "ready") {
+		const accountCount = rollbackPlan.accountCount;
+		if (
+			typeof accountCount === "number" &&
+			Number.isFinite(accountCount) &&
+			accountCount >= 0
+		) {
+			return `checkpoint ready for ${Math.trunc(accountCount)} account(s)`;
+		}
+		return "checkpoint ready";
+	}
+	return rollbackPlan.snapshot ? "checkpoint unavailable" : "no rollback checkpoint available";
+}
+
 async function buildLoginMenuHealthSummary(
 	storage: AccountStorageV3,
-): Promise<DashboardHealthSummary> {
+): Promise<DashboardHealthSummary | null> {
+	if (storage.accounts.length === 0) {
+		return null;
+	}
 	const enabledCount = storage.accounts.filter(
 		(account) => account.enabled !== false,
 	).length;
@@ -4108,9 +4151,10 @@ async function buildLoginMenuHealthSummary(
 		ReturnType<typeof getLatestCodexCliSyncRollbackPlan>
 	> = {
 		status: "unavailable",
-		reason: "health summary unavailable",
+		reason: "rollback state unavailable",
 		snapshot: null,
 	};
+	let rollbackPlanLoadFailed = false;
 	let syncSummary = {
 		label: "unknown",
 		hint: "Sync state unavailable.",
@@ -4121,16 +4165,40 @@ async function buildLoginMenuHealthSummary(
 		hint: "Doctor state unavailable.",
 	};
 	try {
-		[actionableRestores, rollbackPlan] = await Promise.all([
-			getActionableNamedBackupRestores({ currentStorage: storage }),
-			getLatestCodexCliSyncRollbackPlan(),
-		]);
+		actionableRestores = await getActionableNamedBackupRestores({
+			currentStorage: storage,
+		});
 	} catch (error) {
-		const errorLabel = getRedactedFilesystemErrorLabel(error);
-		console.warn(`Failed to build login menu health summary (${errorLabel}).`);
+		logLoginMenuHealthSummaryWarning(
+			"Failed to load login menu restore health summary state",
+			error,
+		);
 	}
-	syncSummary = summarizeLatestCodexCliSyncState();
-	doctorSummary = summarizeReadOnlyDoctorState(storage);
+	try {
+		rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+	} catch (error) {
+		rollbackPlanLoadFailed = true;
+		logLoginMenuHealthSummaryWarning(
+			"Failed to load login menu rollback health summary state",
+			error,
+		);
+	}
+	try {
+		syncSummary = summarizeLatestCodexCliSyncState();
+	} catch (error) {
+		logLoginMenuHealthSummaryWarning(
+			"Failed to summarize login menu sync state",
+			error,
+		);
+	}
+	try {
+		doctorSummary = summarizeReadOnlyDoctorState(storage);
+	} catch (error) {
+		logLoginMenuHealthSummaryWarning(
+			"Failed to summarize login menu doctor state",
+			error,
+		);
+	}
 	const restoreLabel =
 		actionableRestores.totalBackups > 0
 			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
@@ -4144,7 +4212,7 @@ async function buildLoginMenuHealthSummary(
 		`Accounts: ${enabledCount} enabled / ${disabledCount} disabled / ${storage.accounts.length} total`,
 		`Sync: ${syncSummary.hint}`,
 		`Restore backups: ${actionableRestores.assessments.length} actionable of ${actionableRestores.totalBackups} total`,
-		`Rollback: ${rollbackPlan.reason}`,
+		`Rollback: ${formatLoginMenuRollbackHint(rollbackPlan, rollbackPlanLoadFailed)}`,
 		`Doctor: ${doctorSummary.hint}`,
 	];
 
@@ -4476,7 +4544,7 @@ async function runAuthLogin(): Promise<number> {
 				toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
 				{
 					flaggedCount: flaggedStorage.accounts.length,
-					healthSummary,
+					healthSummary: healthSummary ?? undefined,
 					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
 				},
 			);
@@ -4547,35 +4615,41 @@ async function runAuthLogin(): Promise<number> {
 				continue;
 			}
 			if (menuResult.mode === "import-opencode") {
-				let importStage: "assessment" | "import" = "assessment";
+				let assessment: BackupRestoreAssessment | null;
 				try {
-					const assessment = await assessOpencodeAccountPool({
+					assessment = await assessOpencodeAccountPool({
 						currentStorage,
 					});
-					if (!assessment) {
-						console.log("No OpenCode account pool was detected.");
-						continue;
-					}
-					if (!assessment.backup.valid || !assessment.eligibleForRestore) {
-						const assessmentErrorLabel =
-							formatOpencodeImportFailure(assessment.error);
-						console.log(assessmentErrorLabel);
-						continue;
-					}
-					if (assessment.wouldExceedLimit) {
-						console.log(
-							`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
-						);
-						continue;
-					}
-					const backupLabel = basename(assessment.backup.path);
-					const confirmed = await confirm(
-						`Import OpenCode accounts from ${backupLabel}?`,
+				} catch (error) {
+					const errorLabel = formatRedactedFilesystemError(error);
+					console.error(`Import assessment failed: ${errorLabel}`);
+					continue;
+				}
+				if (!assessment) {
+					console.log("No OpenCode account pool was detected.");
+					continue;
+				}
+				if (!assessment.backup.valid || !assessment.eligibleForRestore) {
+					const assessmentErrorLabel = assessment.error
+						? formatRedactedFilesystemError(assessment.error)
+						: "OpenCode account pool is not importable.";
+					console.log(assessmentErrorLabel);
+					continue;
+				}
+				if (assessment.wouldExceedLimit) {
+					console.log(
+						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
 					);
-					if (!confirmed) {
-						continue;
-					}
-					importStage = "import";
+					continue;
+				}
+				const backupLabel = basename(assessment.backup.path);
+				const confirmed = await confirm(
+					`Import OpenCode accounts from ${backupLabel}?`,
+				);
+				if (!confirmed) {
+					continue;
+				}
+				try {
 					await runActionPanel(
 						"Import OpenCode Accounts",
 						`Importing from ${backupLabel}`,
@@ -4591,11 +4665,7 @@ async function runAuthLogin(): Promise<number> {
 					const errorLabel = collapseWhitespace(
 						formatRedactedFilesystemError(error),
 					);
-					const actionLabel =
-						importStage === "assessment"
-							? "Import assessment failed"
-							: "Import failed";
-					console.error(`${actionLabel}: ${errorLabel}`);
+					console.error(`Import failed: ${errorLabel}`);
 				}
 				continue;
 			}

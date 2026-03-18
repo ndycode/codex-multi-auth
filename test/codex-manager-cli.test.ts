@@ -1750,7 +1750,7 @@ describe("codex manager cli commands", () => {
 				accountCount: 0,
 				schemaErrors: ["invalid"],
 				valid: false,
-				loadError: "ENOENT: C:\\Users\\neil\\AppData\\Local\\OpenCode\\openai-codex-accounts.json",
+				loadError: "ENOENT: openai-codex-accounts.json",
 			},
 			currentAccountCount: 0,
 			mergedAccountCount: null,
@@ -1762,7 +1762,7 @@ describe("codex manager cli commands", () => {
 			nextActiveEmail: undefined,
 			nextActiveAccountId: undefined,
 			activeAccountChanged: false,
-			error: "ENOENT: C:\\Users\\neil\\AppData\\Local\\OpenCode\\openai-codex-accounts.json",
+			error: "ENOENT: openai-codex-accounts.json",
 		});
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "import-opencode" })
@@ -3182,9 +3182,12 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(2);
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
 		expect(promptLoginModeMock.mock.calls[0]?.[0]).toEqual([]);
+		expect(promptLoginModeMock.mock.calls[0]?.[1]).toMatchObject({
+			healthSummary: undefined,
+		});
 		expect(confirmMock).not.toHaveBeenCalled();
 		expect(selectMock).toHaveBeenCalledTimes(1);
 		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
@@ -4052,7 +4055,9 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				healthSummary: expect.objectContaining({
 					label: expect.stringContaining("Pool 1/2 enabled"),
-					hint: expect.stringContaining("Rollback: Rollback checkpoint ready"),
+					hint: expect.stringContaining(
+						"Rollback: checkpoint ready for 2 account(s)",
+					),
 				}),
 			}),
 		);
@@ -4075,7 +4080,48 @@ describe("codex manager cli commands", () => {
 		getActionableNamedBackupRestoresMock.mockRejectedValue(
 			new Error("EBUSY: C:\\Users\\alice\\AppData\\Local\\Codex\\named-backups"),
 		);
-		getLastCodexCliSyncRunMock.mockReturnValue(null);
+		getLatestCodexCliSyncRollbackPlanMock.mockRejectedValue(
+			new Error("EBUSY rollback at C:\\sensitive\\rollback.json"),
+		);
+		getLastCodexCliSyncRunMock.mockImplementation(() => {
+			throw new Error("EBUSY: resource busy, sync history");
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		const warningOutput = warnSpy.mock.calls.flat().join("\n");
+
+		expect(exitCode).toBe(0);
+		expect(warnSpy).toHaveBeenCalled();
+		expect(warningOutput).toContain(
+			"Failed to load login menu rollback health summary state [UNKNOWN]",
+		);
+		expect(warningOutput).not.toContain("EBUSY");
+		expect(warningOutput).not.toContain("C:\\sensitive\\rollback.json");
+		expect(promptLoginModeMock).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({
+				healthSummary: expect.objectContaining({
+					label: expect.stringMatching(
+						/Pool 1 active[\s\S]*Sync unknown[\s\S]*Doctor 2 warnings/,
+					),
+					hint: expect.stringMatching(
+						/Restore backups: 0 actionable of 0 total[\s\S]*Rollback: rollback state unavailable[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
+					),
+				}),
+			}),
+		);
+	});
+
+	it("omits the health summary and skips health-summary I/O when no accounts are saved", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [],
+		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -4084,19 +4130,21 @@ describe("codex manager cli commands", () => {
 
 		const warningLines = warnSpy.mock.calls.map(flattenMockCallArgs);
 		expect(exitCode).toBe(0);
+		// The single restore scan comes from the startup recovery prompt guard, not the health summary path.
+		expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(1);
+		expect(getLatestCodexCliSyncRollbackPlanMock).not.toHaveBeenCalled();
+		expect(getLastCodexCliSyncRunMock).not.toHaveBeenCalled();
 		expect(promptLoginModeMock).toHaveBeenCalledWith(
 			expect.any(Array),
 			expect.objectContaining({
-				healthSummary: expect.objectContaining({
-					label: expect.stringMatching(
-						/^((?!Sync unknown)(?!Doctor unknown).)*Pool 1 active.*$/s,
-					),
-				}),
+				healthSummary: undefined,
 			}),
 		);
 		expect(
 			warningLines.some((line) =>
-				line.includes("Failed to build login menu health summary") &&
+				line.includes(
+					"Failed to load login menu restore health summary state [EBUSY]",
+				) &&
 				!line.includes("alice"),
 			),
 		).toBe(true);

@@ -4783,7 +4783,9 @@ describe("storage", () => {
 	describe("opencode account pool detection", () => {
 		const originalLocalAppData = process.env.LOCALAPPDATA;
 		const originalAppData = process.env.APPDATA;
+		const originalHome = process.env.HOME;
 		const originalPoolPath = process.env.CODEX_OPENCODE_POOL_PATH;
+		const originalUserProfile = process.env.USERPROFILE;
 		let tempRoot = "";
 		let poolPath = "";
 
@@ -4805,9 +4807,13 @@ describe("storage", () => {
 			else process.env.LOCALAPPDATA = originalLocalAppData;
 			if (originalAppData === undefined) delete process.env.APPDATA;
 			else process.env.APPDATA = originalAppData;
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
 			if (originalPoolPath === undefined)
 				delete process.env.CODEX_OPENCODE_POOL_PATH;
 			else process.env.CODEX_OPENCODE_POOL_PATH = originalPoolPath;
+			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = originalUserProfile;
 			setStoragePathDirect(null);
 			if (tempRoot) {
 				await fs.rm(tempRoot, { recursive: true, force: true });
@@ -4909,6 +4915,40 @@ describe("storage", () => {
 			await expect(assessOpencodeAccountPool()).resolves.toBeNull();
 		});
 
+		it("falls back to homedir when LOCALAPPDATA and APPDATA are not set", async () => {
+			delete process.env.LOCALAPPDATA;
+			delete process.env.APPDATA;
+			const fakeHome = join(tempRoot, "fake-home");
+			const homedirPoolPath = join(
+				fakeHome,
+				".opencode",
+				"openai-codex-accounts.json",
+			);
+			process.env.HOME = fakeHome;
+			process.env.USERPROFILE = fakeHome;
+			await fs.mkdir(dirname(homedirPoolPath), { recursive: true });
+			await fs.writeFile(
+				homedirPoolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "homedir-account",
+							refreshToken: "ref-homedir",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			expect(detectOpencodeAccountPoolPath()).toBe(homedirPoolPath);
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment?.backup.path).toBe(homedirPoolPath);
+			expect(assessment?.eligibleForRestore).toBe(true);
+			expect(assessment?.imported).toBe(1);
+		});
 		it("refuses malformed opencode source before any mutation", async () => {
 			await fs.writeFile(poolPath, "not valid json");
 
