@@ -108,7 +108,10 @@ export async function deleteAccountAtIndex(options: {
 	if (!requestedTarget) return null;
 
 	return withAccountAndFlaggedStorageTransaction(async (current, persist) => {
-		const sourceStorage = current ?? options.storage;
+		if (!current) {
+			return null;
+		}
+		const sourceStorage = current;
 		const targetIndex = findMatchingAccountIndex(
 			sourceStorage.accounts,
 			requestedTarget,

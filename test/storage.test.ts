@@ -3005,6 +3005,70 @@ describe("storage", () => {
 			expect((await loadAccounts())?.accounts).toHaveLength(2);
 		});
 
+		it("keeps accounts intact when the pre-import snapshot cannot be written", async () => {
+			const importPath = join(testWorkDir, "locked-import.json");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await fs.writeFile(
+				importPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "imported",
+							refreshToken: "ref-imported",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			const originalWriteFile = fs.writeFile;
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (
+						String(path).includes("accounts-import-accounts-snapshot-")
+					) {
+						const error = new Error("snapshot write failed") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalWriteFile(...args);
+				});
+
+			try {
+				await expect(importAccounts(importPath)).rejects.toThrow(
+					"snapshot write failed",
+				);
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+
+			expect((await loadAccounts())?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "existing",
+					refreshToken: "ref-existing",
+				}),
+			]);
+			expect(await fs.readdir(getNamedBackupsDirectoryPath())).toEqual([]);
+		});
+
 		it("keeps accounts intact when the pre-delete snapshot cannot be written", async () => {
 			await saveAccounts({
 				version: 3,
