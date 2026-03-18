@@ -608,12 +608,18 @@ function updateQuotaCacheForAccount(
 
 	let changed = false;
 	const accountId = normalizeQuotaAccountId(account.accountId);
-	if (accountId && hasUniqueQuotaAccountId(accounts, account)) {
+	const hasUniqueAccountId =
+		accountId !== null && hasUniqueQuotaAccountId(accounts, account);
+	if (hasUniqueAccountId) {
 		cache.byAccountId[accountId] = nextEntry;
 		changed = true;
 	}
 	const email = normalizeQuotaEmail(account.email);
-	if (email && hasSafeQuotaEmailFallback(emailFallbackState, account)) {
+	if (
+		email &&
+		hasSafeQuotaEmailFallback(emailFallbackState, account) &&
+		!hasUniqueAccountId
+	) {
 		cache.byEmail[email] = nextEntry;
 		changed = true;
 	} else if (email && cache.byEmail[email]) {
@@ -664,6 +670,12 @@ function resolveMenuQuotaProbeInput(
 	) {
 		return null;
 	}
+
+	const canStore =
+		(normalizeQuotaAccountId(account.accountId) !== null &&
+			hasUniqueQuotaAccountId(accounts, account)) ||
+		hasSafeQuotaEmailFallback(emailFallbackState, account);
+	if (!canStore) return null;
 
 	const accessToken = account.accessToken;
 	const accountId = accessToken
@@ -1615,6 +1627,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	const probeModel = options.model?.trim() || "gpt-5-codex";
 	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = liveProbe ? await loadQuotaCache() : null;
+	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
 	setStoragePath(null);
 	const storage = await loadAccounts();
@@ -1670,10 +1683,10 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 							accessToken: currentAccessToken,
 							model: probeModel,
 						});
-						if (quotaCache) {
+						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
-									quotaCache,
+									workingQuotaCache,
 									account,
 									snapshot,
 									storage.accounts,
@@ -1753,10 +1766,10 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 							accessToken: result.access,
 							model: probeModel,
 						});
-						if (quotaCache) {
+						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
-									quotaCache,
+									workingQuotaCache,
 									account,
 									snapshot,
 									storage.accounts,
@@ -1802,8 +1815,8 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	if (!display.showPerAccountRows) {
 		console.log(stylePromptText("Per-account lines are hidden in dashboard settings.", "muted"));
 	}
-	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+	if (workingQuotaCache && quotaCacheChanged) {
+		await saveQuotaCache(workingQuotaCache);
 	}
 
 	if (changed) {
@@ -3067,6 +3080,7 @@ async function runFix(args: string[]): Promise<number> {
 	const options = parsedArgs.options;
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
+	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
 
 	setStoragePath(null);
@@ -3115,10 +3129,10 @@ async function runFix(args: string[]): Promise<number> {
 							accessToken: currentAccessToken,
 							model: options.model,
 						});
-						if (quotaCache) {
+						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
-									quotaCache,
+									workingQuotaCache,
 									account,
 									snapshot,
 									storage.accounts,
@@ -3205,10 +3219,10 @@ async function runFix(args: string[]): Promise<number> {
 							accessToken: refreshResult.access,
 							model: options.model,
 						});
-						if (quotaCache) {
+						if (workingQuotaCache) {
 							quotaCacheChanged =
 								updateQuotaCacheForAccount(
-									quotaCache,
+									workingQuotaCache,
 									account,
 									snapshot,
 									storage.accounts,
@@ -3314,8 +3328,8 @@ async function runFix(args: string[]): Promise<number> {
 	}
 
 	if (options.json) {
-		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+		if (workingQuotaCache && quotaCacheChanged) {
+			await saveQuotaCache(workingQuotaCache);
 		}
 		console.log(
 			JSON.stringify(

@@ -1253,6 +1253,64 @@ describe("codex manager cli commands", () => {
 		).toBe(true);
 	});
 
+	it("does not mutate loaded quota cache when live check account save fails", async () => {
+		const now = Date.now();
+		const originalQuotaCache = {
+			byAccountId: {},
+			byEmail: {},
+		};
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_live",
+					email: "live@example.com",
+					refreshToken: "refresh-live",
+					accessToken: "access-live",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+			],
+		});
+		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
+		saveAccountsMock.mockRejectedValueOnce(new Error("save failed"));
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(runCodexMultiAuthCli(["auth", "check"])).rejects.toThrow(
+			"save failed",
+		);
+		expect(originalQuotaCache).toEqual({
+			byAccountId: {},
+			byEmail: {},
+		});
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
+			byAccountId: {
+				acc_live: {
+					updatedAt: expect.any(Number),
+					status: 200,
+					model: "gpt-5-codex",
+					planType: undefined,
+					primary: {
+						usedPercent: undefined,
+						windowMinutes: undefined,
+						resetAtMs: undefined,
+					},
+					secondary: {
+						usedPercent: undefined,
+						windowMinutes: undefined,
+						resetAtMs: undefined,
+					},
+				},
+			},
+			byEmail: {},
+		});
+	});
+
 	it("runs fix apply mode and returns a switch recommendation", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
@@ -2599,7 +2657,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 		expect(exitCode).toBe(0);
 		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
-		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(3);
 		expect(
 			logSpy.mock.calls.some((call) =>
 				String(call[0]).includes("full refresh test"),
@@ -2634,7 +2692,7 @@ describe("codex manager cli commands", () => {
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 		expect(exitCode).toBe(0);
-		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(3);
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 	});
 
@@ -2677,6 +2735,18 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
+			byAccountId: {
+				acc_a: {
+					updatedAt: expect.any(Number),
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {},
+					secondary: {},
+				},
+			},
+			byEmail: {},
+		});
 	});
 
 	it("writes shared workspace quota cache entries by email without reusing bare accountId keys", async () => {
@@ -3011,12 +3081,8 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
-		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
-		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
-			byAccountId: {},
-			byEmail: {},
-		});
+		expect(fetchCodexQuotaSnapshotMock).not.toHaveBeenCalled();
+		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
 	});
 
 	it("does not reuse email-scoped quota cache entries for mixed same-email accountId rows", async () => {
@@ -3122,7 +3188,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
 			byAccountId: {
@@ -4712,6 +4778,49 @@ describe("codex manager cli commands", () => {
 					report.message.includes("refresh succeeded but live probe failed"),
 			),
 		).toBe(true);
+	});
+
+	it("does not mutate loaded quota cache when live fix account save fails", async () => {
+		const now = Date.now();
+		const originalQuotaCache = {
+			byAccountId: {},
+			byEmail: {},
+		};
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "live-fix@example.com",
+					accountId: "acc_live_fix",
+					refreshToken: "refresh-live-fix",
+					accessToken: "access-live-fix",
+					expiresAt: now - 5_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+			],
+		});
+		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-live-fix-next",
+			refresh: "refresh-live-fix-next",
+			expires: now + 7_200_000,
+		});
+		saveAccountsMock.mockRejectedValueOnce(new Error("save failed"));
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(
+			runCodexMultiAuthCli(["auth", "fix", "--live", "--json"]),
+		).rejects.toThrow("save failed");
+		expect(originalQuotaCache).toEqual({
+			byAccountId: {},
+			byEmail: {},
+		});
+		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
 	});
 
 	it("recomputes live quota fallback state after refresh changes a shared-workspace email", async () => {
