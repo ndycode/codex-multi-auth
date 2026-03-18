@@ -3529,14 +3529,17 @@ async function runDoctor(args: string[]): Promise<number> {
 
 	addCheck({
 		key: "storage-journal",
-		severity: walExists ? "ok" : "warn",
+		severity: walExists ? "warn" : "ok",
 		message: walExists
-			? "Write-ahead journal found"
-			: "Write-ahead journal missing; recovery will rely on backups",
+			? "Write-ahead journal present; the last save may have been interrupted"
+			: "Write-ahead journal cleanly absent after the last save",
 		details: walPath,
 	});
 
-	const rotatingBackups = await listRotatingBackups();
+	const [rotatingBackups, snapshotBackups] = await Promise.all([
+		listRotatingBackups(),
+		listAccountSnapshots(),
+	]);
 	const validRotatingBackups = rotatingBackups.filter((backup) => backup.valid);
 	const invalidRotatingBackups = rotatingBackups.filter(
 		(backup) => !backup.valid,
@@ -3561,7 +3564,6 @@ async function runDoctor(args: string[]): Promise<number> {
 				: dirname(storagePath),
 	});
 
-	const snapshotBackups = await listAccountSnapshots();
 	const validSnapshots = snapshotBackups.filter((snapshot) => snapshot.valid);
 	const invalidSnapshots = snapshotBackups.filter((snapshot) => !snapshot.valid);
 	addCheck({
@@ -3704,8 +3706,10 @@ async function runDoctor(args: string[]): Promise<number> {
 		details: codexCliState?.path,
 	});
 
-	const storage = await loadAccounts();
-	const rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+	const [storage, rollbackPlan] = await Promise.all([
+		loadAccounts(),
+		getLatestCodexCliSyncRollbackPlan(),
+	]);
 	if (rollbackPlan.status === "ready") {
 		const accountCount =
 			rollbackPlan.accountCount ?? rollbackPlan.storage?.accounts.length;

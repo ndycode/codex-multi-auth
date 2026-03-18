@@ -50,6 +50,13 @@ const BACKUP_COPY_BASE_DELAY_MS = 10;
 const ROTATING_BACKUP_STALE_ARTIFACT_MAX_AGE_MS = 60_000;
 export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 export const ACCOUNT_SNAPSHOT_RETENTION_PER_REASON = 3;
+const ACCOUNT_SNAPSHOT_REASONS: ReadonlySet<AccountSnapshotReason> = new Set([
+	"delete-account",
+	"delete-saved-accounts",
+	"reset-local-state",
+	"import-accounts",
+	"codex-cli-sync",
+]);
 const AUTO_SNAPSHOT_NAME_PATTERN =
 	/^accounts-(?<reason>[a-z0-9-]+)-snapshot-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\d{3}$/i;
 const AUTO_SNAPSHOT_TIMESTAMP_PATTERN =
@@ -235,6 +242,8 @@ interface LoadedBackupCandidate {
 	storedVersion: unknown;
 	schemaErrors: string[];
 	rawAccounts?: AccountLike[];
+	backupKind?: "account-snapshot" | "named-backup" | null;
+	snapshotReason?: AccountSnapshotReason | null;
 	error?: string;
 	errorCode?: string;
 }
@@ -260,6 +269,8 @@ function createUnloadedBackupCandidate(): LoadedBackupCandidate {
 		storedVersion: null,
 		schemaErrors: [],
 		rawAccounts: [],
+		backupKind: null,
+		snapshotReason: null,
 	};
 }
 
@@ -2010,8 +2021,10 @@ export async function listNamedBackups(): Promise<NamedBackupMetadata[]> {
 }
 
 export async function listAccountSnapshots(): Promise<NamedBackupMetadata[]> {
-	const backups = await listNamedBackups();
-	return backups.filter((backup) => isAccountSnapshotName(backup.name));
+	const scanResult = await scanNamedBackups();
+	return scanResult.backups
+		.filter((entry) => parseAutoSnapshot(entry.backup, entry.candidate) !== null)
+		.map((entry) => entry.backup);
 }
 
 export async function listRotatingBackups(): Promise<RotatingBackupMetadata[]> {
@@ -2198,7 +2211,9 @@ export async function getActionableNamedBackupRestores(
 export async function createNamedBackup(
 	name: string,
 	options: {
+		backupKind?: "account-snapshot" | "named-backup";
 		force?: boolean;
+		snapshotReason?: AccountSnapshotReason;
 		storage?: AccountStorageV3;
 		storagePath?: string;
 	} = {},
@@ -2219,7 +2234,9 @@ async function writeNamedBackupFromStorage(
 	name: string,
 	storage: AccountStorageV3,
 	options: {
+		backupKind?: "account-snapshot" | "named-backup";
 		force?: boolean;
+		snapshotReason?: AccountSnapshotReason;
 		storagePath?: string;
 	} = {},
 ): Promise<NamedBackupMetadata> {
@@ -2283,12 +2300,44 @@ function buildAccountSnapshotName(
 }
 
 export function isAccountSnapshotName(name: string): boolean {
-	return AUTO_SNAPSHOT_NAME_PATTERN.test(name);
+	return getAccountSnapshotReason(name) !== null;
 }
 
-function getAccountSnapshotReason(name: string): string | null {
+function isAccountSnapshotReason(
+	reason: string,
+): reason is AccountSnapshotReason {
+	return ACCOUNT_SNAPSHOT_REASONS.has(reason as AccountSnapshotReason);
+}
+
+function getAccountSnapshotReason(name: string): AccountSnapshotReason | null {
 	const match = name.match(AUTO_SNAPSHOT_NAME_PATTERN);
-	return match?.groups?.reason?.toLowerCase() ?? null;
+	const reason = match?.groups?.reason?.toLowerCase() ?? null;
+	return reason && isAccountSnapshotReason(reason) ? reason : null;
+}
+
+function extractStoredSnapshotReason(
+	data: unknown,
+): AccountSnapshotReason | null {
+	if (!isRecord(data)) {
+		return null;
+	}
+	const snapshotReason = data.snapshotReason;
+	return typeof snapshotReason === "string" &&
+		isAccountSnapshotReason(snapshotReason)
+		? snapshotReason
+		: null;
+}
+
+function extractStoredBackupKind(
+	data: unknown,
+): "account-snapshot" | "named-backup" | null {
+	if (!isRecord(data)) {
+		return null;
+	}
+	const backupKind = data.backupKind;
+	return backupKind === "account-snapshot" || backupKind === "named-backup"
+		? backupKind
+		: null;
 }
 
 type AutoSnapshotDetails = {
@@ -2300,8 +2349,15 @@ type AutoSnapshotDetails = {
 
 function parseAutoSnapshot(
 	backup: NamedBackupMetadata,
+	candidate?: LoadedBackupCandidate,
 ): AutoSnapshotDetails | null {
-	const reason = getAccountSnapshotReason(backup.name);
+	const reason = candidate === undefined
+		? getAccountSnapshotReason(backup.name)
+		: candidate.backupKind === "account-snapshot"
+			? candidate.snapshotReason ?? null
+			: candidate.backupKind === "named-backup"
+				? null
+				: getAccountSnapshotReason(backup.name);
 	if (!reason) {
 		return null;
 	}
@@ -2326,7 +2382,7 @@ function parseAutoSnapshot(
 }
 
 async function getLatestManualCodexCliRollbackSnapshotNames(): Promise<
-	Set<string>
+	Set<string> | null
 > {
 	try {
 		const syncHistoryModule = await import("./sync-history.js");
@@ -2352,9 +2408,10 @@ async function getLatestManualCodexCliRollbackSnapshotNames(): Promise<
 			return new Set([snapshotName]);
 		}
 	} catch (error) {
-		log.debug("Failed to load rollback snapshot names for retention", {
-			error: String(error),
+		log.warn("Failed to load rollback snapshot names for retention", {
+			error: error instanceof Error ? error.message : String(error),
 		});
+		return null;
 	}
 	return new Set();
 }
@@ -2373,21 +2430,39 @@ export interface AutoSnapshotPruneResult {
 export async function pruneAutoGeneratedSnapshots(
 	options: AutoSnapshotPruneOptions = {},
 ): Promise<AutoSnapshotPruneResult> {
-	const backups = options.backups ?? (await listNamedBackups());
+	const scanResult = options.backups ? null : await scanNamedBackups();
+	const backups =
+		options.backups ??
+		scanResult?.backups.map((entry) => entry.backup) ??
+		[];
 	const keepLatestPerReason = Math.max(
 		1,
 		options.keepLatestPerReason ?? ACCOUNT_SNAPSHOT_RETENTION_PER_REASON,
 	);
 	const preserveNames = new Set(options.preserveNames ?? []);
-	for (const rollbackName of await getLatestManualCodexCliRollbackSnapshotNames()) {
-		preserveNames.add(rollbackName);
-	}
-
 	const autoSnapshots = backups
-		.map((backup) => parseAutoSnapshot(backup))
+		.map((backup) =>
+			parseAutoSnapshot(
+				backup,
+				scanResult?.backups.find((entry) => entry.backup.path === backup.path)
+					?.candidate,
+			),
+		)
 		.filter((snapshot): snapshot is AutoSnapshotDetails => snapshot !== null);
 	if (autoSnapshots.length === 0) {
 		return { pruned: [], kept: [] };
+	}
+
+	const rollbackSnapshotNames =
+		await getLatestManualCodexCliRollbackSnapshotNames();
+	if (rollbackSnapshotNames === null) {
+		return {
+			pruned: [],
+			kept: autoSnapshots.map((snapshot) => snapshot.backup),
+		};
+	}
+	for (const rollbackName of rollbackSnapshotNames) {
+		preserveNames.add(rollbackName);
 	}
 
 	const keepSet = new Set<string>(preserveNames);
@@ -2489,6 +2564,7 @@ export async function snapshotAccountStorage(
 	try {
 		snapshot = await createBackup(backupName, {
 			force,
+			snapshotReason: reason,
 			storage: currentStorage,
 			storagePath: resolvedStoragePath,
 		});
@@ -2855,12 +2931,14 @@ async function loadAccountsFromPath(path: string): Promise<{
 	storedVersion: unknown;
 	schemaErrors: string[];
 	rawAccounts: AccountLike[];
+	snapshotReason: AccountSnapshotReason | null;
 }> {
 	const content = await fs.readFile(path, "utf-8");
 	const data = JSON.parse(content) as unknown;
 	return {
 		...parseAndNormalizeStorage(data),
 		rawAccounts: extractRawAccounts(data),
+		snapshotReason: extractStoredSnapshotReason(data),
 	};
 }
 
@@ -2975,9 +3053,15 @@ async function importNormalizedAccounts(
 
 async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate> {
 	try {
-		return await retryTransientFilesystemOperation(() =>
-			loadAccountsFromPath(path),
-		);
+		const data = JSON.parse(
+			await retryTransientFilesystemOperation(() => fs.readFile(path, "utf-8")),
+		) as unknown;
+		return {
+			...parseAndNormalizeStorage(data),
+			rawAccounts: extractRawAccounts(data),
+			backupKind: extractStoredBackupKind(data),
+			snapshotReason: extractStoredSnapshotReason(data),
+		};
 	} catch (error) {
 		const errorCode =
 			typeof (error as NodeJS.ErrnoException).code === "string"
@@ -2988,6 +3072,8 @@ async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate>
 			storedVersion: undefined,
 			schemaErrors: [],
 			rawAccounts: [],
+			backupKind: null,
+			snapshotReason: null,
 			error: String(error),
 			errorCode,
 		};

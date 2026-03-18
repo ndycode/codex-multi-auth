@@ -394,6 +394,32 @@ describe("sync history", () => {
 		expect(readLatestSyncHistorySync()?.recordedAt).toBe(3);
 	});
 
+	it("retries transient append failures before committing sync history", async () => {
+		const originalAppendFile = fs.appendFile.bind(fs);
+		let failedOnce = false;
+		vi.spyOn(fs, "appendFile").mockImplementation(
+			async (...args: Parameters<typeof fs.appendFile>) => {
+				if (!failedOnce) {
+					failedOnce = true;
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalAppendFile(...args);
+			},
+		);
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 4,
+			run: createCodexRun(4, "/source-4"),
+		});
+
+		expect(failedOnce).toBe(true);
+		expect(readLatestSyncHistorySync()?.recordedAt).toBe(4);
+		expect(await readSyncHistory()).toHaveLength(1);
+	});
+
 	it("retries transient latest-file removal when pruning empty history", async () => {
 		const latestPath = getSyncHistoryPaths().latestPath;
 		await fs.writeFile(

@@ -17,6 +17,7 @@ const RETRYABLE_REMOVE_CODES = new Set([
 	"EACCES",
 ]);
 const RETRYABLE_RENAME_CODES = new Set(["EBUSY", "EPERM", "EACCES"]);
+const RETRYABLE_APPEND_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN"]);
 
 type SyncHistoryKind = "codex-cli-sync" | "live-account-sync";
 
@@ -310,6 +311,31 @@ async function renameHistoryFileWithRetry(
 	}
 }
 
+async function appendHistoryFileWithRetry(
+	targetPath: string,
+	content: string,
+): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.appendFile(targetPath, content, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				!code ||
+				!RETRYABLE_APPEND_CODES.has(code) ||
+				attempt === 4
+			) {
+				throw error;
+			}
+			await waitForHistoryRetry(attempt);
+		}
+	}
+}
+
 async function rewriteLatestEntry(
 	latest: SyncHistoryEntry | null,
 	paths: SyncHistoryPaths,
@@ -367,10 +393,10 @@ export async function appendSyncHistoryEntry(
 		const paths = getSyncHistoryPaths();
 		lastAppendPaths = paths;
 		await ensureHistoryDir(paths.directory);
-		await fs.appendFile(paths.historyPath, `${serializeEntry(entry)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
+		await appendHistoryFileWithRetry(
+			paths.historyPath,
+			`${serializeEntry(entry)}\n`,
+		);
 		const prunedHistory = await trimHistoryFileIfNeeded(paths);
 		await rewriteLatestEntry(prunedHistory.latest ?? entry, paths);
 		lastAppendError = null;

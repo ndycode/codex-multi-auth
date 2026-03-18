@@ -5091,6 +5091,87 @@ describe("codex manager cli commands", () => {
 		expect(checkpoint?.details).toBe("/mock/backups/rollback.json");
 	});
 
+	it("reports storage journal and backup diagnostics in doctor json output", async () => {
+		const workDir = await fs.mkdtemp(join(tmpdir(), "codex-doctor-backups-"));
+		const storagePath = join(workDir, "openai-codex-accounts.json");
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify({ version: 3, accounts: [] }),
+			"utf8",
+		);
+		getStoragePathMock.mockReturnValue(storagePath);
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		getLatestCodexCliSyncRollbackPlanMock.mockResolvedValueOnce({
+			status: "unavailable",
+			reason: "No rollback checkpoint available",
+			snapshot: null,
+		});
+		listRotatingBackupsMock.mockResolvedValueOnce([
+			{
+				name: "broken-rotating-backup",
+				path: join(workDir, "broken-rotating-backup.json"),
+				valid: false,
+				slot: 1,
+			},
+		]);
+		listAccountSnapshotsMock.mockResolvedValueOnce([
+			{
+				name: "broken-snapshot",
+				path: join(workDir, "broken-snapshot.json"),
+				valid: false,
+				version: 3,
+				accountCount: 1,
+				createdAt: null,
+				updatedAt: null,
+				sizeBytes: null,
+				schemaErrors: [],
+				loadError: "invalid",
+			},
+		]);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+			const exitCode = await runCodexMultiAuthCli(["auth", "doctor", "--json"]);
+			expect(exitCode).toBe(1);
+
+			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+				checks: Array<{
+					key: string;
+					severity: string;
+					message?: string;
+					details?: string;
+				}>;
+			};
+			expect(payload.checks).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						key: "storage-journal",
+						severity: "ok",
+						message: "Write-ahead journal cleanly absent after the last save",
+						details: `${storagePath}.wal`,
+					}),
+					expect.objectContaining({
+						key: "rotating-backups",
+						severity: "error",
+					}),
+					expect.objectContaining({
+						key: "snapshot-backups",
+						severity: "error",
+					}),
+				]),
+			);
+		} finally {
+			await removeWithRetry(workDir, { recursive: true, force: true });
+		}
+	});
+
 	it("reports recovery-chain as warn when only the storage file exists", async () => {
 		const storageDir = await fs.mkdtemp(join(tmpdir(), "codex-doctor-storage-"));
 		const storagePath = join(storageDir, "openai-codex-accounts.json");
@@ -5112,9 +5193,13 @@ describe("codex manager cli commands", () => {
 			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
 				checks: Array<{ key: string; severity: string; details?: string }>;
 			};
+			const journal = payload.checks.find((check) => check.key === "storage-journal");
 			const recoveryChain = payload.checks.find(
 				(check) => check.key === "recovery-chain",
 			);
+			expect(journal).toBeDefined();
+			expect(journal?.severity).toBe("ok");
+			expect(journal?.details).toBe(`${storagePath}.wal`);
 			expect(recoveryChain).toBeDefined();
 			expect(recoveryChain?.severity).toBe("warn");
 			expect(recoveryChain?.details).toContain("storage=true");
