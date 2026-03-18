@@ -3156,20 +3156,6 @@ describe("storage", () => {
 		});
 	});
 
-	describe("filename migration (TDD)", () => {
-		it("should migrate from old filename to new filename", async () => {
-			// This test is tricky because it depends on the internal state of getStoragePath()
-			// which we are about to change.
-
-			const oldName = "openai-codex-accounts.json";
-			const newName = "codex-accounts.json";
-
-			// We'll need to mock/verify that loadAccounts checks for oldName if newName is missing
-			// Since we haven't implemented it yet, this is just a placeholder for the logic
-			expect(true).toBe(true);
-		});
-	});
-
 	describe("StorageError and formatStorageErrorHint", () => {
 		describe("StorageError class", () => {
 			it("should store code, path, and hint properties", () => {
