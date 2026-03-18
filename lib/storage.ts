@@ -1171,10 +1171,6 @@ export function getFlaggedAccountsPath(): string {
 	return join(dirname(getStoragePath()), FLAGGED_ACCOUNTS_FILE_NAME);
 }
 
-function getFlaggedAccountsPathForStoragePath(storagePath: string): string {
-	return join(dirname(storagePath), FLAGGED_ACCOUNTS_FILE_NAME);
-}
-
 function getLegacyFlaggedAccountsPath(): string {
 	return join(dirname(getStoragePath()), LEGACY_FLAGGED_ACCOUNTS_FILE_NAME);
 }
@@ -2628,7 +2624,7 @@ function assessNamedBackupRestoreCandidate(
 
 export async function restoreNamedBackup(
 	name: string,
-	options: { assessment?: BackupRestoreAssessment } = {},
+	_options: { assessment?: BackupRestoreAssessment } = {},
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
 	const candidate = await loadImportableBackupCandidate(backupPath);
