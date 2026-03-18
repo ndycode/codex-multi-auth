@@ -2009,6 +2009,76 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		]);
 	});
 
+	it("preserves same-email workspaces when manual login reuses a refresh token", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "workspace-beta";
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-alpha",
+				accountIdSource: "org",
+				accountLabel: "Workspace Alpha [id:alpha]",
+				email: "user@example.com",
+				refreshToken: "shared-refresh",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-verifier-same-refresh", challenge: "persist-challenge-same-refresh" },
+			state: "persist-state-same-refresh",
+			url: "https://auth.openai.com/test?state=persist-state-same-refresh",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-same-refresh",
+			refresh: "shared-refresh",
+			expires: Date.now() + 3600_000,
+			idToken: "id-token-same-refresh",
+		});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-state-same-refresh",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(2);
+		expect(
+			mockStorage.accounts.map((account) => ({
+				accountId: account.accountId,
+				accountIdSource: account.accountIdSource,
+				accountLabel: account.accountLabel,
+				email: account.email,
+				refreshToken: account.refreshToken,
+			})),
+		).toEqual([
+			{
+				accountId: "workspace-alpha",
+				accountIdSource: "org",
+				accountLabel: "Workspace Alpha [id:alpha]",
+				email: "user@example.com",
+				refreshToken: "shared-refresh",
+			},
+			{
+				accountId: "workspace-beta",
+				accountIdSource: "manual",
+				accountLabel: expect.stringContaining("Override [id:"),
+				email: "user@example.com",
+				refreshToken: "shared-refresh",
+			},
+		]);
+	});
+
 	it("preserves duplicate shared accountId entries when a login has no email claim", async () => {
 		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
 		mockStorage.accounts = [

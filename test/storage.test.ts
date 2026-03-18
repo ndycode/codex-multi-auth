@@ -226,6 +226,36 @@ describe("storage", () => {
 			expect(deduplicateAccounts(accounts)).toHaveLength(2);
 		});
 
+		it("does not match a shared refresh token when same-email workspaces have different accountIds", () => {
+			const accounts = [
+				{
+					accountId: "workspace-alpha",
+					email: "shared@example.com",
+					refreshToken: "shared-refresh",
+					lastUsed: 100,
+				},
+			];
+
+			const matchIndex = findMatchingAccountIndex(accounts, {
+				accountId: "workspace-beta",
+				email: "shared@example.com",
+				refreshToken: "shared-refresh",
+			});
+
+			expect(matchIndex).toBeUndefined();
+			expect(
+				deduplicateAccounts([
+					...accounts,
+					{
+						accountId: "workspace-beta",
+						email: "shared@example.com",
+						refreshToken: "shared-refresh",
+						lastUsed: 200,
+					},
+				]),
+			).toHaveLength(2);
+		});
+
 		it("prefers composite accountId plus email matches over safe-email fallbacks", () => {
 			const accounts = [
 				{
