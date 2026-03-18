@@ -2389,17 +2389,31 @@ function matchesSnapshotRetentionTargetPath(
 	targetPath: string | null | undefined,
 	storagePath: string,
 ): boolean {
+	const normalizeRetentionTargetPath = (value: string): string => {
+		const normalizedValue = value.trim();
+		if (!normalizedValue) {
+			return "";
+		}
+		const looksWindowsLike =
+			process.platform === "win32" ||
+			normalizedValue.includes("\\") ||
+			/^[a-z]:[\\/]/i.test(normalizedValue);
+		const normalizedSeparators = looksWindowsLike
+			? normalizedValue.replace(/\\/g, "/")
+			: normalizedValue;
+		return looksWindowsLike
+			? normalizedSeparators.toLowerCase()
+			: normalizedSeparators;
+	};
 	if (typeof targetPath !== "string") {
 		return false;
 	}
-	const normalizedTargetPath = targetPath.trim();
-	const normalizedStoragePath = storagePath.trim();
+	const normalizedTargetPath = normalizeRetentionTargetPath(targetPath);
+	const normalizedStoragePath = normalizeRetentionTargetPath(storagePath);
 	if (!normalizedTargetPath || !normalizedStoragePath) {
 		return false;
 	}
-	return process.platform === "win32"
-		? normalizedTargetPath.toLowerCase() === normalizedStoragePath.toLowerCase()
-		: normalizedTargetPath === normalizedStoragePath;
+	return normalizedTargetPath === normalizedStoragePath;
 }
 
 async function getLatestManualCodexCliRollbackSnapshotNames(
@@ -2430,7 +2444,7 @@ async function getLatestManualCodexCliRollbackSnapshotNames(
 				continue;
 			}
 			const snapshotPath = run.rollbackSnapshot?.path?.trim();
-			if (snapshotPath && !existsSync(snapshotPath)) {
+			if (!snapshotPath || !existsSync(snapshotPath)) {
 				continue;
 			}
 			return new Set([snapshotName]);
