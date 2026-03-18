@@ -1604,6 +1604,85 @@ describe("codex-cli sync", () => {
 		);
 	});
 
+	it("prefers an older checkpointed manual apply when the newest manual apply has no checkpoint", async () => {
+		const snapshotPath = join(tempDir, "rollback-snapshot-manual-changed.json");
+		await writeFile(
+			snapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old_manual",
+							accountIdSource: "token",
+							email: "old-manual@example.com",
+							refreshToken: "refresh-old-manual",
+							accessToken: "access-old-manual",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const summary = {
+			sourceAccountCount: 1,
+			targetAccountCountBefore: 1,
+			targetAccountCountAfter: 1,
+			addedAccountCount: 0,
+			updatedAccountCount: 1,
+			unchangedAccountCount: 0,
+			destinationOnlyPreservedCount: 0,
+			selectionChanged: false,
+		};
+		const olderCheckpointedManualRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary,
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_010",
+				path: snapshotPath,
+			},
+		};
+		const newestManualRunWithoutCheckpoint: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 20,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary,
+			trigger: "manual",
+			rollbackSnapshot: null,
+		};
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: olderCheckpointedManualRun.runAt,
+			run: olderCheckpointedManualRun,
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: newestManualRunWithoutCheckpoint.runAt,
+			run: newestManualRunWithoutCheckpoint,
+		});
+
+		const plan = await getLatestCodexCliSyncRollbackPlan();
+		expect(plan.status).toBe("ready");
+		expect(plan.snapshot).toEqual(olderCheckpointedManualRun.rollbackSnapshot);
+
+		const rollbackResult = await rollbackLastCodexCliSync();
+		expect(rollbackResult.status).toBe("restored");
+		expect(rollbackResult.snapshot).toEqual(olderCheckpointedManualRun.rollbackSnapshot);
+	});
+
 	it("ignores rollback candidates recorded for a different target path", async () => {
 		const matchingSnapshotPath = join(tempDir, "rollback-target-match.json");
 		const otherSnapshotPath = join(tempDir, "rollback-target-other.json");
