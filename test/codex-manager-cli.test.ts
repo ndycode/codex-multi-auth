@@ -591,12 +591,17 @@ describe("codex manager cli commands", () => {
 			],
 		});
 		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
-		saveQuotaCacheMock.mockRejectedValueOnce(new Error("save failed"));
+		saveQuotaCacheMock.mockRejectedValueOnce(
+			makeErrnoError("save failed", "EBUSY"),
+		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		await expect(
 			runCodexMultiAuthCli(["auth", "forecast", "--live", "--json"]),
-		).rejects.toThrow("save failed");
+		).rejects.toMatchObject({
+			code: "EBUSY",
+			message: "save failed",
+		});
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
@@ -1335,12 +1340,15 @@ describe("codex manager cli commands", () => {
 			],
 		});
 		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
-		saveAccountsMock.mockRejectedValueOnce(new Error("save failed"));
+		saveAccountsMock.mockRejectedValueOnce(
+			makeErrnoError("save failed", "EBUSY"),
+		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		await expect(runCodexMultiAuthCli(["auth", "check"])).rejects.toThrow(
-			"save failed",
-		);
+		await expect(runCodexMultiAuthCli(["auth", "check"])).rejects.toMatchObject({
+			code: "EBUSY",
+			message: "save failed",
+		});
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
@@ -3037,7 +3045,7 @@ describe("codex manager cli commands", () => {
 		});
 	});
 
-	it("prunes stale email-scoped quota cache entries when same-email workspaces have no stored accountIds", async () => {
+	it("skips live probe when same-email workspaces still lack stored accountIds", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
@@ -4868,12 +4876,17 @@ describe("codex manager cli commands", () => {
 			refresh: "refresh-live-fix-next",
 			expires: now + 7_200_000,
 		});
-		saveAccountsMock.mockRejectedValueOnce(new Error("save failed"));
+		saveAccountsMock.mockRejectedValueOnce(
+			makeErrnoError("save failed", "EBUSY"),
+		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		await expect(
 			runCodexMultiAuthCli(["auth", "fix", "--live", "--json"]),
-		).rejects.toThrow("save failed");
+		).rejects.toMatchObject({
+			code: "EBUSY",
+			message: "save failed",
+		});
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
