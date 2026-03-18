@@ -4131,6 +4131,33 @@ function reportUnavailableManageActionAccount(
 	console.error(`Selected account ${displayAccountNumber} is no longer available.`);
 }
 
+function isRetryableManageActionReloadCode(
+	code: string | undefined,
+): code is "EPERM" | "EBUSY" | "EAGAIN" {
+	if (code === "EBUSY" || code === "EAGAIN") {
+		return true;
+	}
+	return code === "EPERM" && process.platform === "win32";
+}
+
+async function loadManageActionStorageSnapshot(): Promise<AccountStorageV3 | null> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await loadAccounts();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (!isRetryableManageActionReloadCode(code) || attempt === 4) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, 10 * 2 ** attempt + Math.floor(Math.random() * 10)),
+			);
+		}
+	}
+
+	throw new Error("Manage action storage reload retry loop exhausted unexpectedly");
+}
+
 async function loadManageActionStorage(
 	storage: AccountStorageV3,
 	displayAccountNumber: number,
@@ -4149,7 +4176,7 @@ async function loadManageActionStorage(
 		);
 		return null;
 	}
-	const freshStorage = await loadAccounts();
+	const freshStorage = await loadManageActionStorageSnapshot();
 	if (!freshStorage || freshStorage.accounts.length === 0) {
 		reportUnavailableManageActionAccount(displayAccountNumber, targetIndex, 0);
 		return null;
@@ -4281,11 +4308,20 @@ async function handleManageAction(
 			menuResult,
 			idx,
 		);
-		const freshStorage = await loadManageActionStorage(
-			storage,
-			displayAccountNumber,
-			idx,
-		);
+		let freshStorage: AccountStorageV3 | null;
+		try {
+			freshStorage = await loadManageActionStorage(
+				storage,
+				displayAccountNumber,
+				idx,
+			);
+		} catch (error) {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
+			console.error(
+				`Could not reload selected account before refresh (${errorLabel}).`,
+			);
+			return;
+		}
 		if (!freshStorage) {
 			return;
 		}
@@ -4939,9 +4975,13 @@ async function runSwitch(
 		return 1;
 	}
 	if (targetIndex < 0 || targetIndex >= storage.accounts.length) {
-		console.error(
-			`Selected account ${displayAccountNumber} is no longer available (storage position ${targetIndex + 1} is outside 1-${storage.accounts.length}).`,
-		);
+		if (options.preloadedStorage) {
+			console.error(
+				`Selected account ${displayAccountNumber} is no longer available (storage position ${targetIndex + 1} is outside 1-${storage.accounts.length}).`,
+			);
+		} else {
+			console.error(`Index out of range. Valid range: 1-${storage.accounts.length}.`);
+		}
 		return 1;
 	}
 

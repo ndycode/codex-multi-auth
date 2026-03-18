@@ -3496,6 +3496,44 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("reports direct switch indexes outside the configured range", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "switch", "3"]);
+
+		expect(exitCode).toBe(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith("Index out of range. Valid range: 1-2.");
+	});
+
 	it("autoSyncActiveAccountToCodex syncs active account without refresh when access is valid", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
@@ -9116,6 +9154,250 @@ describe("codex manager cli commands", () => {
 		);
 		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
 	});
+
+	it("reports stale refresh selections when the chosen storage slot now holds a different account", async () => {
+		const now = Date.now();
+		const originalStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc_first",
+					refreshToken: "refresh-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "refresh@example.com",
+					accountId: "acc_refresh",
+					refreshToken: "refresh-refresh",
+					accessToken: "access-refresh",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		const replacedStorage = {
+			...structuredClone(originalStorage),
+			accounts: [
+				structuredClone(originalStorage.accounts[0]),
+				{
+					email: "replacement@example.com",
+					accountId: "acc_replacement",
+					refreshToken: "refresh-replacement",
+					accessToken: "access-replacement",
+					expiresAt: now + 3_600_000,
+					addedAt: now,
+					lastUsed: now,
+					enabled: true,
+				},
+			],
+		};
+		let returnReplaced = false;
+		loadAccountsMock.mockImplementation(async () => {
+			if (returnReplaced) {
+				returnReplaced = false;
+				return structuredClone(replacedStorage);
+			}
+			return structuredClone(originalStorage);
+		});
+		promptLoginModeMock
+			.mockImplementationOnce(async () => {
+				returnReplaced = true;
+				return {
+					mode: "manage" as const,
+					refreshAccountIndex: 1,
+					selectedAccountNumber: 1,
+				};
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const authModule = await import("../lib/auth/auth.js");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(authModule.createAuthorizationFlow).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Selected account 1 is no longer available.",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+	});
+
+	it("retries transient refresh reload races before opening OAuth", async () => {
+		const now = Date.now();
+		const transientCode = process.platform === "win32" ? "EPERM" : "EBUSY";
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc_first",
+					refreshToken: "refresh-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "refresh@example.com",
+					accountId: "acc_refresh",
+					refreshToken: "refresh-second",
+					accessToken: "access-second",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		let loadCount = 0;
+		let failSelectedReload = false;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			if (failSelectedReload) {
+				failSelectedReload = false;
+				throw makeErrnoError("refresh reload busy", transientCode);
+			}
+			return structuredClone(storage);
+		});
+		promptLoginModeMock
+			.mockImplementationOnce(async () => {
+				failSelectedReload = true;
+				return {
+					mode: "manage",
+					refreshAccountIndex: 1,
+					selectedAccountNumber: 1,
+				};
+			})
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const authModule = await import("../lib/auth/auth.js");
+		const browserModule = await import("../lib/auth/browser.js");
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValue({
+			type: "success",
+			access: "access-second-next",
+			refresh: "refresh-second-next",
+			expires: now + 7_200_000,
+			idToken: "id-second-next",
+		});
+		vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+			ready: true,
+			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			close: vi.fn(),
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(loadCount).toBe(6);
+		expect(authModule.createAuthorizationFlow).toHaveBeenCalledTimes(1);
+		expect(authModule.exchangeAuthorizationCode).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		expect(logSpy).toHaveBeenCalledWith("Refreshed account 1.");
+	});
+
+	it.each(["EBUSY", "EPERM"])(
+		"skips refresh when selected-account reload fails with %s",
+		async (code) => {
+			const now = Date.now();
+			const storage = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "first@example.com",
+						accountId: "acc_first",
+						refreshToken: "refresh-first",
+						accessToken: "access-first",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+					{
+						email: "refresh@example.com",
+						accountId: "acc_refresh",
+						refreshToken: "refresh-second",
+						accessToken: "access-second",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			};
+			let loadCount = 0;
+			let remainingReloadFailures =
+				code === "EBUSY" || (code === "EPERM" && process.platform === "win32")
+					? 5
+					: 1;
+			let failSelectedReload = false;
+			loadAccountsMock.mockImplementation(async () => {
+				loadCount += 1;
+				if (failSelectedReload && remainingReloadFailures > 0) {
+					remainingReloadFailures -= 1;
+					if (remainingReloadFailures === 0) {
+						failSelectedReload = false;
+					}
+					throw makeErrnoError("refresh reload failed", code);
+				}
+				return structuredClone(storage);
+			});
+			promptLoginModeMock
+				.mockImplementationOnce(async () => {
+					failSelectedReload = true;
+					return {
+						mode: "manage",
+						refreshAccountIndex: 1,
+						selectedAccountNumber: 1,
+					};
+				})
+				.mockResolvedValueOnce({ mode: "cancel" });
+			const authModule = await import("../lib/auth/auth.js");
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(authModule.createAuthorizationFlow).not.toHaveBeenCalled();
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				`Could not reload selected account before refresh (${code}).`,
+			);
+			expect(loadCount).toBe(
+				code === "EBUSY" || (code === "EPERM" && process.platform === "win32")
+					? 8
+					: 4,
+			);
+			expect(logSpy).toHaveBeenCalledWith("Cancelled.");
+		},
+	);
 
 	it("skips destructive work when user cancels from menu", async () => {
 		loadAccountsMock.mockResolvedValue({
