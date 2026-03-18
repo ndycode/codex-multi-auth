@@ -2712,13 +2712,6 @@ async function importNormalizedAccounts(
 		total,
 		skipped: skippedCount,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
-		if (snapshotReason) {
-			await snapshotAccountStorage({
-				reason: snapshotReason,
-				failurePolicy: snapshotFailurePolicy,
-				storage: existing,
-			});
-		}
 		const existingAccounts = existing?.accounts ?? [];
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
@@ -2731,6 +2724,14 @@ async function importNormalizedAccounts(
 					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
 				);
 			}
+		}
+
+		if (snapshotReason) {
+			await snapshotAccountStorage({
+				reason: snapshotReason,
+				failurePolicy: snapshotFailurePolicy,
+				storage: existing,
+			});
 		}
 
 		const deduplicatedAccounts = deduplicateAccounts(merged);
