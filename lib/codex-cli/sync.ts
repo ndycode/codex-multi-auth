@@ -10,8 +10,8 @@ import {
 	type NamedBackupMetadata,
 	normalizeAccountStorage,
 	normalizeEmailKey,
-	saveAccounts,
 	snapshotAccountStorage,
+	withAccountStorageTransaction,
 } from "../storage.js";
 import {
 	incrementCodexCliMetric,
@@ -460,34 +460,36 @@ export async function getLatestCodexCliSyncRollbackPlan(): Promise<CodexCliSyncR
 export async function rollbackLatestCodexCliSync(
 	plan?: CodexCliSyncRollbackPlan,
 ): Promise<CodexCliSyncRollbackResult> {
-	const resolvedPlan =
-		plan && plan.status === "ready"
-			? plan
-			: await getLatestCodexCliSyncRollbackPlan();
-	if (resolvedPlan.status !== "ready" || !resolvedPlan.storage) {
-		return {
-			status: "unavailable",
-			reason: resolvedPlan.reason,
-			snapshot: resolvedPlan.snapshot,
-		};
-	}
+	return withAccountStorageTransaction(async (_current, persist) => {
+		const resolvedPlan =
+			plan && plan.status === "ready"
+				? plan
+				: await getLatestCodexCliSyncRollbackPlan();
+		if (resolvedPlan.status !== "ready" || !resolvedPlan.storage) {
+			return {
+				status: "unavailable",
+				reason: resolvedPlan.reason,
+				snapshot: resolvedPlan.snapshot,
+			};
+		}
 
-	try {
-		await saveAccounts(resolvedPlan.storage);
-		return {
-			status: "restored",
-			reason: resolvedPlan.reason,
-			snapshot: resolvedPlan.snapshot,
-			accountCount:
-				resolvedPlan.accountCount ?? resolvedPlan.storage.accounts.length,
-		};
-	} catch (error) {
-		return {
-			status: "error",
-			reason: error instanceof Error ? error.message : String(error),
-			snapshot: resolvedPlan.snapshot,
-		};
-	}
+		try {
+			await persist(resolvedPlan.storage);
+			return {
+				status: "restored",
+				reason: resolvedPlan.reason,
+				snapshot: resolvedPlan.snapshot,
+				accountCount:
+					resolvedPlan.accountCount ?? resolvedPlan.storage.accounts.length,
+			};
+		} catch (error) {
+			return {
+				status: "error",
+				reason: error instanceof Error ? error.message : String(error),
+				snapshot: resolvedPlan.snapshot,
+			};
+		}
+	});
 }
 
 export async function rollbackLastCodexCliSync(): Promise<
