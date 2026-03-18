@@ -295,15 +295,15 @@ export async function appendSyncHistoryEntry(
 			mode: 0o600,
 		});
 		historyEntryCountEstimate += 1;
-		const prunedHistory =
-			historyEntryCountEstimate > MAX_HISTORY_ENTRIES
-				? await trimHistoryFileIfNeeded(paths)
-				: {
-						entries: [],
-						removed: 0,
-						latest: entry,
-					};
-		if (prunedHistory.entries.length > 0) {
+		const shouldTrim = historyEntryCountEstimate > MAX_HISTORY_ENTRIES;
+		const prunedHistory = shouldTrim
+			? await trimHistoryFileIfNeeded(paths)
+			: {
+					entries: [],
+					removed: 0,
+					latest: entry,
+				};
+		if (shouldTrim) {
 			historyEntryCountEstimate = prunedHistory.entries.length;
 		}
 		await rewriteLatestEntry(prunedHistory.latest ?? entry, paths);

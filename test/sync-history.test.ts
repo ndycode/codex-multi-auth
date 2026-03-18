@@ -305,6 +305,49 @@ describe("sync history", () => {
 		expect((await readSyncHistory()).length).toBeLessThanOrEqual(200);
 	});
 
+	it("resets the cached append estimate when trim reload finds an externally cleared file", async () => {
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const originalReadFile = fs.readFile.bind(fs);
+		let truncateOnNextTrimRead = false;
+		const readFileSpy = vi
+			.spyOn(fs, "readFile")
+			.mockImplementation(async (path, ...args) => {
+				if (
+					truncateOnNextTrimRead &&
+					path === historyPath
+				) {
+					truncateOnNextTrimRead = false;
+					await fs.writeFile(historyPath, "", "utf8");
+				}
+				return originalReadFile(path, ...args);
+			});
+
+		for (let index = 0; index < 200; index += 1) {
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: index + 1,
+				run: createCodexRun(index + 1, `/codex-${index + 1}`),
+			});
+		}
+
+		truncateOnNextTrimRead = true;
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 201,
+			run: createCodexRun(201, "/codex-201"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 202,
+			run: createCodexRun(202, "/codex-202"),
+		});
+
+		const historyReads = readFileSpy.mock.calls.filter(
+			([target]) => target === historyPath,
+		);
+		expect(historyReads).toHaveLength(1);
+	});
+
 	it("re-reads seeded history after configureSyncHistoryForTests resets the estimate to null", async () => {
 		await appendSyncHistoryEntry({
 			kind: "codex-cli-sync",
