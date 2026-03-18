@@ -1682,9 +1682,11 @@ export async function listNamedBackups(
 			);
 			const chunkResults = await Promise.allSettled(
 				chunk.map(async (entry) => {
-					const path = assertNamedBackupRestorePath(
-						resolvePath(join(backupRoot, entry.name)),
-						backupRoot,
+					const path = await retryTransientNamedBackupPathValidation(() =>
+						assertNamedBackupRestorePath(
+							resolvePath(join(backupRoot, entry.name)),
+							backupRoot,
+						),
 					);
 					const candidate = await loadBackupCandidate(path);
 					candidateCache?.set(path, candidate);
@@ -1779,6 +1781,30 @@ async function retryTransientFilesystemOperation<T>(
 			const code = (error as NodeJS.ErrnoException).code;
 			if (
 				!isRetryableFilesystemErrorCode(code) ||
+				attempt >= TRANSIENT_FILESYSTEM_MAX_ATTEMPTS - 1
+			) {
+				throw error;
+			}
+			const baseDelayMs = TRANSIENT_FILESYSTEM_BASE_DELAY_MS * 2 ** attempt;
+			const jitterMs = Math.floor(Math.random() * baseDelayMs);
+			await new Promise((resolve) =>
+				setTimeout(resolve, baseDelayMs + jitterMs),
+			);
+		}
+		attempt += 1;
+	}
+}
+
+async function retryTransientNamedBackupPathValidation<T>(
+	operation: () => T | Promise<T>,
+): Promise<T> {
+	let attempt = 0;
+	while (true) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (
+				!(error instanceof BackupPathValidationTransientError) ||
 				attempt >= TRANSIENT_FILESYSTEM_MAX_ATTEMPTS - 1
 			) {
 				throw error;
@@ -1900,10 +1926,7 @@ export async function restoreAssessedNamedBackup(
 			assessment.error ?? "Backup is not eligible for restore.",
 		);
 	}
-	const resolvedPath = await resolveNamedBackupRestorePath(
-		assessment.backup.name,
-	);
-	return importAccounts(resolvedPath);
+	return importAccounts(assessment.backup.path);
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -2202,7 +2225,9 @@ export async function resolveNamedBackupRestorePath(name: string): Promise<strin
 	const backupRoot = getNamedBackupRoot(getStoragePath());
 	const existingPath = await findExistingNamedBackupPath(name);
 	if (existingPath) {
-		return assertNamedBackupRestorePath(existingPath, backupRoot);
+		return retryTransientNamedBackupPathValidation(() =>
+			assertNamedBackupRestorePath(existingPath, backupRoot),
+		);
 	}
 	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
 		? requested
@@ -2228,7 +2253,9 @@ export async function resolveNamedBackupRestorePath(name: string): Promise<strin
 		}
 		throw error;
 	}
-	return assertNamedBackupRestorePath(builtPath, backupRoot);
+	return retryTransientNamedBackupPathValidation(() =>
+		assertNamedBackupRestorePath(builtPath, backupRoot),
+	);
 }
 
 async function loadAccountsFromJournal(

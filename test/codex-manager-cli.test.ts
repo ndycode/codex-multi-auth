@@ -17,7 +17,6 @@ const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
 const listNamedBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
-const resolveNamedBackupRestorePathMock = vi.fn();
 const importAccountsMock = vi.fn();
 const restoreAssessedNamedBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
@@ -122,7 +121,7 @@ vi.mock("../lib/storage.js", async () => {
 		listNamedBackups: listNamedBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
-		resolveNamedBackupRestorePath: resolveNamedBackupRestorePathMock,
+		resolveNamedBackupRestorePath: vi.fn(),
 		importAccounts: importAccountsMock,
 		restoreAssessedNamedBackup: restoreAssessedNamedBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
@@ -523,7 +522,6 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
-		resolveNamedBackupRestorePathMock.mockReset();
 		importAccountsMock.mockReset();
 		restoreAssessedNamedBackupMock.mockReset();
 		confirmMock.mockReset();
@@ -550,9 +548,6 @@ describe("codex manager cli commands", () => {
 			error: undefined,
 		});
 		getNamedBackupsDirectoryPathMock.mockReturnValue(MOCK_BACKUP_DIR);
-		resolveNamedBackupRestorePathMock.mockImplementation(async (name: string) =>
-			mockBackupPath(name),
-		);
 		importAccountsMock.mockResolvedValue({
 			imported: 1,
 			skipped: 0,
@@ -560,9 +555,7 @@ describe("codex manager cli commands", () => {
 			changed: true,
 		});
 		restoreAssessedNamedBackupMock.mockImplementation(async (assessment) =>
-			importAccountsMock(
-				await resolveNamedBackupRestorePathMock(assessment.backup.name),
-			),
+			importAccountsMock(assessment.backup.path),
 		);
 		confirmMock.mockResolvedValue(true);
 		withAccountStorageTransactionMock.mockImplementation(
@@ -2756,7 +2749,7 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
-	it("rejects a restore when the backup root changes before the final import path check", async () => {
+	it("rejects a restore when the assessed backup path becomes invalid before import", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
@@ -2799,7 +2792,7 @@ describe("codex manager cli commands", () => {
 		};
 		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
 		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
-		resolveNamedBackupRestorePathMock.mockRejectedValueOnce(
+		importAccountsMock.mockRejectedValueOnce(
 			new Error("Backup path escapes backup directory"),
 		);
 		promptLoginModeMock
@@ -2814,7 +2807,9 @@ describe("codex manager cli commands", () => {
 
 			expect(exitCode).toBe(0);
 			expect(confirmMock).toHaveBeenCalledOnce();
-			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).toHaveBeenCalledWith(
+				mockBackupPath("named-backup"),
+			);
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 			expect(errorSpy).toHaveBeenCalledWith(
 				"Restore failed: Backup path escapes backup directory",

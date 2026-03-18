@@ -2109,7 +2109,7 @@ describe("storage", () => {
 			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
 		});
 
-		it("re-resolves an assessed named backup before the final import", async () => {
+		it("restores an assessed named backup using the validated path captured at assessment time", async () => {
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -2123,7 +2123,7 @@ describe("storage", () => {
 				],
 			});
 
-			const backup = await createNamedBackup("deleted-helper-assessment");
+			await createNamedBackup("deleted-helper-assessment");
 			await clearAccounts();
 
 			const assessment = await assessNamedBackupRestore(
@@ -2131,12 +2131,11 @@ describe("storage", () => {
 			);
 			expect(assessment.eligibleForRestore).toBe(true);
 
-			await removeWithRetry(backup.path, { force: true });
+			assessment.backup.name = "other-backup-name";
 
-			await expect(restoreAssessedNamedBackup(assessment)).rejects.toThrow(
-				/Import file not found/,
-			);
-			expect((await loadAccounts())?.accounts ?? []).toHaveLength(0);
+			const result = await restoreAssessedNamedBackup(assessment);
+			expect(result.imported).toBe(1);
+			expect((await loadAccounts())?.accounts ?? []).toHaveLength(1);
 		});
 
 		it("throws when a named backup becomes invalid JSON after assessment", async () => {
@@ -2472,6 +2471,91 @@ describe("storage", () => {
 				expect(thrown).toBeInstanceOf(Error);
 				expect(isNamedBackupPathValidationTransientError(thrown)).toBe(true);
 				expect(isNamedBackupContainmentError(thrown)).toBe(false);
+			} finally {
+				realpathSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup path validation when resolving a named backup path", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-resolve",
+						refreshToken: "ref-retry-resolve",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("retry-resolve");
+			const resolvedBackupPath = resolve(backup.path);
+			const originalRealpath = __testOnly.namedBackupContainmentFs.realpath;
+			let transientFailuresRemaining = 2;
+			const realpathSpy = vi
+				.spyOn(__testOnly.namedBackupContainmentFs, "realpath")
+				.mockImplementation((path) => {
+					if (
+						String(path) === resolvedBackupPath &&
+						transientFailuresRemaining > 0
+					) {
+						transientFailuresRemaining -= 1;
+						const error = new Error("backup path locked") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalRealpath(path);
+				});
+
+			try {
+				await expect(
+					resolveNamedBackupRestorePath("retry-resolve"),
+				).resolves.toBe(resolvedBackupPath);
+				expect(transientFailuresRemaining).toBe(0);
+			} finally {
+				realpathSpy.mockRestore();
+			}
+		});
+
+		it("retries transient backup path validation while listing named backups", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "retry-list",
+						refreshToken: "ref-retry-list",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const backup = await createNamedBackup("retry-list");
+			const resolvedBackupPath = resolve(backup.path);
+			const originalRealpath = __testOnly.namedBackupContainmentFs.realpath;
+			let transientFailuresRemaining = 2;
+			const realpathSpy = vi
+				.spyOn(__testOnly.namedBackupContainmentFs, "realpath")
+				.mockImplementation((path) => {
+					if (
+						String(path) === resolvedBackupPath &&
+						transientFailuresRemaining > 0
+					) {
+						transientFailuresRemaining -= 1;
+						const error = new Error("backup path locked") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return originalRealpath(path);
+				});
+
+			try {
+				const backups = await listNamedBackups();
+				expect(backups.map((entry) => entry.name)).toContain("retry-list");
+				expect(transientFailuresRemaining).toBe(0);
 			} finally {
 				realpathSpy.mockRestore();
 			}
