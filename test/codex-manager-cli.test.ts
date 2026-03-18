@@ -1240,6 +1240,118 @@ describe("codex manager cli commands", () => {
 		).toBe(true);
 	});
 
+	it("keeps the first-run wizard open when action-time OpenCode assessment fails", async () => {
+		setInteractiveTTY(true);
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		const wizardSpy = vi
+			.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValueOnce({ type: "import-opencode" })
+			.mockResolvedValueOnce({ type: "cancel" });
+		loadAccountsMock.mockResolvedValue(null);
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		assessOpencodeAccountPoolMock
+			.mockResolvedValueOnce({
+				backup: {
+					name: "openai-codex-accounts.json",
+					path: "/mock/.opencode/openai-codex-accounts.json",
+					createdAt: null,
+					updatedAt: Date.now(),
+					sizeBytes: 256,
+					version: 3,
+					accountCount: 1,
+					schemaErrors: [],
+					valid: true,
+					loadError: "",
+				},
+				currentAccountCount: 0,
+				mergedAccountCount: 1,
+				imported: 1,
+				skipped: 0,
+				wouldExceedLimit: false,
+				eligibleForRestore: true,
+				nextActiveIndex: 0,
+				nextActiveEmail: "imported@example.com",
+				nextActiveAccountId: undefined,
+				activeAccountChanged: true,
+				error: "",
+			})
+			.mockRejectedValueOnce(
+				new Error(
+					"EBUSY: C:\\Users\\alice\\AppData\\Local\\opencode\\openai-codex-accounts.json",
+				),
+			);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(wizardSpy).toHaveBeenCalledTimes(2);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Failed to detect OpenCode import source"),
+		);
+		expect(
+			warnSpy.mock.calls.every((call) => !String(call[0]).includes("alice")),
+		).toBe(true);
+		expect(
+			warnSpy.mock.calls.every(
+				(call) => !String(call[0]).includes("OpenCode import failed"),
+			),
+		).toBe(true);
+	});
+
+	it("keeps the first-run wizard open when OpenCode backup assessment is invalid", async () => {
+		setInteractiveTTY(true);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		const wizardSpy = vi
+			.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValueOnce({ type: "import-opencode" })
+			.mockResolvedValueOnce({ type: "cancel" });
+		loadAccountsMock.mockResolvedValue(null);
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([]);
+		const invalidAssessment = {
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: ["invalid"],
+				valid: false,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "imported@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: true,
+			error: "OpenCode backup is invalid.",
+		};
+		assessOpencodeAccountPoolMock.mockResolvedValue(invalidAssessment);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(wizardSpy).toHaveBeenCalledTimes(2);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith("OpenCode backup is invalid.");
+	});
+
 	it("keeps the first-run wizard open when OpenCode import would exceed the account limit", async () => {
 		setInteractiveTTY(true);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
