@@ -1057,6 +1057,46 @@ describe("codex manager cli commands", () => {
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
 
+	it("keeps the first-run wizard open when doctor fails", async () => {
+		setInteractiveTTY(true);
+		const authMenu = await import("../lib/ui/auth-menu.js");
+		const wizardSpy = vi
+			.spyOn(authMenu, "showFirstRunWizard")
+			.mockResolvedValueOnce({ type: "doctor" })
+			.mockResolvedValueOnce({ type: "cancel" });
+		const emptyStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		let loadCount = 0;
+		loadAccountsMock.mockImplementation(async () => {
+			loadCount += 1;
+			return loadCount === 1 ? null : structuredClone(emptyStorage);
+		});
+		loadCodexCliStateMock.mockRejectedValueOnce(
+			makeErrnoError(
+				"resource busy, open 'C:\\Users\\alice\\AppData\\Local\\Codex\\auth.json'",
+				"EBUSY",
+			),
+		);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(wizardSpy).toHaveBeenCalledTimes(2);
+		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Doctor check failed"),
+		);
+		expect(
+			warnSpy.mock.calls.every((call) => !flattenMockCallArgs(call).includes("alice")),
+		).toBe(true);
+	});
+
 	it("imports OpenCode accounts from the first-run wizard", async () => {
 		setInteractiveTTY(true);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

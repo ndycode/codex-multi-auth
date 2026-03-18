@@ -4422,14 +4422,19 @@ async function runFirstRunWizard(
 				await configureUnifiedSettings(displaySettings);
 				break;
 			case "doctor":
-				await runActionPanel(
-					"Doctor",
-					"Checking storage and sync paths",
-					async () => {
-						await runDoctor(["--json"]);
-					},
-					displaySettings,
-				);
+				try {
+					await runActionPanel(
+						"Doctor",
+						"Checking storage and sync paths",
+						async () => {
+							await runDoctor(["--json"]);
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(`Doctor check failed (${errorLabel}).`);
+				}
 				break;
 		}
 
