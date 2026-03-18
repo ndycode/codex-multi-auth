@@ -1733,6 +1733,42 @@ describe("storage", () => {
 			);
 		});
 
+		it("restoreAssessedNamedBackup rechecks restore eligibility at execution time", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "duplicate-helper",
+						email: "duplicate-helper@example.com",
+						refreshToken: "ref-duplicate-helper",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			await createNamedBackup("helper-ineligible-backup");
+
+			const assessment = await assessNamedBackupRestore("helper-ineligible-backup");
+			expect(assessment.eligibleForRestore).toBe(false);
+			expect(assessment.error).toBe("All accounts in this backup already exist");
+
+			await expect(
+				restoreAssessedNamedBackup({
+					backup: assessment.backup,
+					eligibleForRestore: true,
+					error: undefined,
+				}),
+			).rejects.toThrow("All accounts in this backup already exist");
+
+			expect((await loadAccounts())?.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ accountId: "duplicate-helper" }),
+				]),
+			);
+		});
+
 		it("throws when a named backup becomes invalid JSON after assessment", async () => {
 			await saveAccounts({
 				version: 3,

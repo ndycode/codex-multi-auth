@@ -2072,10 +2072,15 @@ export async function restoreNamedBackup(
 export async function restoreAssessedNamedBackup(
 	assessment: Pick<BackupRestoreAssessment, "backup" | "eligibleForRestore" | "error">,
 ): Promise<ImportAccountsResult> {
-	if (!assessment.eligibleForRestore) {
-		throw new Error(assessment.error ?? "Backup is not eligible for restore.");
+	const latestAssessment = await assessNamedBackupRestore(assessment.backup.name);
+	if (!latestAssessment.eligibleForRestore) {
+		throw new Error(
+			latestAssessment.error ?? "Backup is not eligible for restore.",
+		);
 	}
-	const backupPath = await resolveNamedBackupRestorePath(assessment.backup.name);
+	const backupPath = await resolveNamedBackupRestorePath(
+		latestAssessment.backup.name,
+	);
 	return importAccounts(backupPath);
 }
 
