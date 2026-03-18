@@ -3381,6 +3381,190 @@ interface DoctorReadOnlySummary {
 	hint: string;
 }
 
+function getHealthSummaryErrorLabel(error: unknown): string {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (typeof code === "string" && code.trim().length > 0) {
+		return code;
+	}
+	return "UNKNOWN";
+}
+
+function formatCountNoun(
+	count: number | null | undefined,
+	singular: string,
+	plural = `${singular}s`,
+): string {
+	if (typeof count !== "number" || !Number.isFinite(count)) {
+		return `unknown ${plural}`;
+	}
+	return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function summarizeLatestCodexCliSyncState(): DashboardHealthSummary {
+	try {
+		const latestRun = getLastCodexCliSyncRun();
+		if (!latestRun) {
+			return {
+				label: "none",
+				hint: "No recent Codex CLI sync recorded.",
+			};
+		}
+
+		switch (latestRun.outcome) {
+			case "changed":
+				return {
+					label: "changed",
+					hint: `Last ${latestRun.trigger} sync changed ${formatCountNoun(latestRun.summary.addedAccountCount, "account")} at ${formatRelativeDateShort(latestRun.runAt)}.`,
+				};
+			case "noop":
+				return {
+					label: "noop",
+					hint: `Last ${latestRun.trigger} sync found no changes at ${formatRelativeDateShort(latestRun.runAt)}.`,
+				};
+			case "disabled":
+				return {
+					label: "disabled",
+					hint: "Codex CLI sync is disabled.",
+				};
+			case "unavailable":
+			case "error":
+			default:
+				return {
+					label: "none",
+					hint: "No usable Codex CLI sync state is available.",
+				};
+		}
+	} catch (error) {
+		const errorLabel = getHealthSummaryErrorLabel(error);
+		console.warn(
+			`Failed to load login menu sync health summary state [${errorLabel}]`,
+		);
+		return {
+			label: "none",
+			hint: "No recent Codex CLI sync recorded.",
+		};
+	}
+}
+
+function summarizeReadOnlyDoctorState(
+	storage: AccountStorageV3,
+): DoctorReadOnlySummary {
+	const enabledCount = storage.accounts.filter(
+		(account) => account.enabled !== false,
+	).length;
+	if (storage.accounts.length > 0 && enabledCount === 0) {
+		return {
+			severity: "warn",
+			label: "review",
+			hint: "All saved accounts are currently disabled.",
+		};
+	}
+
+	const seenRefreshTokenFingerprints = new Set<string>();
+	for (const account of storage.accounts) {
+		const fingerprint = getReadOnlyDoctorRefreshTokenFingerprint(
+			account.refreshToken,
+		);
+		if (!fingerprint) {
+			continue;
+		}
+		if (seenRefreshTokenFingerprints.has(fingerprint)) {
+			return {
+				severity: "warn",
+				label: "review",
+				hint: "Duplicate refresh-token entries were detected in saved accounts.",
+			};
+		}
+		seenRefreshTokenFingerprints.add(fingerprint);
+	}
+
+	return {
+		severity: "ok",
+		label: "ok",
+		hint: "No read-only doctor issues detected.",
+	};
+}
+
+function formatRollbackHealthHint(
+	rollbackPlan: Awaited<ReturnType<typeof getLatestCodexCliSyncRollbackPlan>>,
+): string {
+	if (rollbackPlan.status === "ready") {
+		const accountCount =
+			rollbackPlan.accountCount ?? rollbackPlan.storage?.accounts.length;
+		return `checkpoint ready for ${accountCount ?? "?"} account(s)`;
+	}
+	return rollbackPlan.reason || "No rollback checkpoint recorded.";
+}
+
+async function buildLoginMenuHealthSummary(
+	storage: AccountStorageV3,
+): Promise<DashboardHealthSummary> {
+	const enabledCount = storage.accounts.filter(
+		(account) => account.enabled !== false,
+	).length;
+	const disabledCount = storage.accounts.length - enabledCount;
+
+	let actionableRestores: Awaited<
+		ReturnType<typeof getActionableNamedBackupRestores>
+	> = {
+		assessments: [],
+		allAssessments: [],
+		totalBackups: 0,
+	};
+	try {
+		actionableRestores = await getActionableNamedBackupRestores({
+			currentStorage: storage,
+		});
+	} catch (error) {
+		const errorLabel = getHealthSummaryErrorLabel(error);
+		console.warn(
+			`Failed to load login menu restore health summary state [${errorLabel}]`,
+		);
+	}
+
+	let rollbackPlan: Awaited<
+		ReturnType<typeof getLatestCodexCliSyncRollbackPlan>
+	> = {
+		status: "unavailable",
+		reason: "No rollback checkpoint recorded.",
+		snapshot: null,
+	};
+	try {
+		rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
+	} catch (error) {
+		const errorLabel = getHealthSummaryErrorLabel(error);
+		console.warn(
+			`Failed to load login menu rollback health summary state [${errorLabel}]`,
+		);
+	}
+
+	const syncSummary = summarizeLatestCodexCliSyncState();
+	const doctorSummary = summarizeReadOnlyDoctorState(storage);
+	const restoreLabel =
+		actionableRestores.totalBackups > 0
+			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
+			: "none";
+	const rollbackLabel = rollbackPlan.status === "ready" ? "ready" : "none";
+	const accountLabel =
+		disabledCount > 0
+			? `${enabledCount}/${storage.accounts.length} enabled`
+			: `${storage.accounts.length} active`;
+	const hintParts = [
+		`Accounts: ${enabledCount} enabled / ${disabledCount} disabled / ${storage.accounts.length} total`,
+		`Sync: ${syncSummary.hint ?? "No recent Codex CLI sync recorded."}`,
+		`Restore backups: ${actionableRestores.assessments.length} actionable of ${actionableRestores.totalBackups} total`,
+		`Rollback: ${formatRollbackHealthHint(rollbackPlan)}`,
+		`Doctor: ${doctorSummary.hint}`,
+	];
+
+	return {
+		label:
+			`Pool ${accountLabel} | Sync ${syncSummary.label} | Restore ${restoreLabel} | ` +
+			`Rollback ${rollbackLabel} | Doctor ${doctorSummary.label}`,
+		hint: hintParts.join(" | "),
+	};
+}
+
 function hasPlaceholderEmail(value: string | undefined): boolean {
 	if (!value) return false;
 	const email = value.trim().toLowerCase();
@@ -4213,7 +4397,7 @@ function formatOpencodeImportFailure(error: unknown): string {
 	if (typeof error !== "string") {
 		return "OpenCode account pool is not importable.";
 	}
-	const normalized = collapseWhitespace(error);
+	const normalized = collapseWhitespace(formatRedactedFilesystemError(error));
 	return normalized || "OpenCode account pool is not importable.";
 }
 
@@ -4312,7 +4496,15 @@ async function handleManageAction(
 		if (!freshStorage) {
 			return;
 		}
-		const account = freshStorage.accounts[idx]!;
+		const account = freshStorage.accounts[idx];
+		if (!account) {
+			reportUnavailableManageActionAccount(
+				displayAccountNumber,
+				idx,
+				freshStorage.accounts.length,
+			);
+			return;
+		}
 		account.enabled = account.enabled === false;
 		await saveAccounts(freshStorage);
 		console.log(
@@ -4535,10 +4727,10 @@ async function runAuthLogin(): Promise<number> {
 		const displaySettings = await loadDashboardDisplaySettings();
 		applyUiThemeFromDashboardSettings(displaySettings);
 		const wizardOutcome = await runFirstRunWizard(displaySettings);
-		if (wizardOutcome === "cancelled") {
+		if (wizardOutcome.outcome === "cancelled") {
 			return 0;
 		}
-		cachedInitialStorage = wizardResult.latestStorage;
+		cachedInitialStorage = wizardOutcome.latestStorage;
 		if (cachedInitialStorage === null) {
 			try {
 				cachedInitialStorage = await loadAccounts();
@@ -4611,34 +4803,40 @@ async function runAuthLogin(): Promise<number> {
 							});
 					}
 				}
-			const flaggedStorage = await loadFlaggedAccounts();
-			const healthSummary = await buildLoginMenuHealthSummary(currentStorage);
+				const flaggedStorage = await loadFlaggedAccounts();
+				const healthSummary =
+					isInteractiveLoginMenuAvailable() &&
+					currentStorage.accounts.length > 0
+						? await buildLoginMenuHealthSummary(currentStorage)
+						: undefined;
 
-			const menuResult = await promptLoginMode(
-				toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
-				{
-					flaggedCount: flaggedStorage.accounts.length,
-					healthSummary: healthSummary ?? undefined,
-					statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
-				},
-			);
+				const menuResult = await promptLoginMode(
+					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
+					{
+						flaggedCount: flaggedStorage.accounts.length,
+						healthSummary,
+						statusMessage: showFetchStatus
+							? () => menuQuotaRefreshStatus
+							: undefined,
+					},
+				);
 
-			if (!menuResult || menuResult.mode === "cancel") {
-				console.log("Cancelled.");
-				return 0;
-			}
-			const modeRequiresDrainedQuotaRefresh =
-				menuResult.mode === "check" ||
-				menuResult.mode === "deep-check" ||
-				menuResult.mode === "forecast" ||
-				menuResult.mode === "fix";
-			if (modeRequiresDrainedQuotaRefresh) {
-				const pendingQuotaRefresh = pendingMenuQuotaRefresh;
-				if (pendingQuotaRefresh) {
-					await pendingQuotaRefresh;
+				if (!menuResult || menuResult.mode === "cancel") {
+					console.log("Cancelled.");
+					return 0;
 				}
-			}
-			if (menuResult.mode === "check") {
+				const modeRequiresDrainedQuotaRefresh =
+					menuResult.mode === "check" ||
+					menuResult.mode === "deep-check" ||
+					menuResult.mode === "forecast" ||
+					menuResult.mode === "fix";
+				if (modeRequiresDrainedQuotaRefresh) {
+					const pendingQuotaRefresh = pendingMenuQuotaRefresh;
+					if (pendingQuotaRefresh) {
+						await pendingQuotaRefresh;
+					}
+				}
+				if (menuResult.mode === "check") {
 				await runActionPanel("Quick Check", "Checking local session + live status", async () => {
 					await runHealthCheck({ forceRefresh: false, liveProbe: true });
 				}, displaySettings);
@@ -4703,25 +4901,15 @@ async function runAuthLogin(): Promise<number> {
 					console.log("No OpenCode account pool was detected.");
 					continue;
 				}
-				if (
-					!assessment.backup.valid ||
-					!assessment.eligibleForRestore ||
-					assessment.wouldExceedLimit
-				) {
+				if (assessment.wouldExceedLimit) {
+					console.log(
+						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
+					);
+					continue;
+				}
+				if (!assessment.backup.valid || !assessment.eligibleForRestore) {
 					console.log(
 						formatOpencodeImportFailure(assessment.error),
-					);
-					continue;
-				}
-				if (assessment.wouldExceedLimit) {
-					console.log(
-						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
-					);
-					continue;
-				}
-				if (assessment.wouldExceedLimit) {
-					console.log(
-						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
 					);
 					continue;
 				}
@@ -4827,13 +5015,14 @@ async function runAuthLogin(): Promise<number> {
 
 		const refreshedStorage = await loadAccounts();
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
-		const canPromptForRecovery =
+		const shouldScanForRecovery =
 			!suppressRecoveryPrompt &&
 			!recoveryPromptAttempted &&
 			existingCount === 0 &&
-			isInteractiveLoginMenuAvailable();
-		if (canPromptForRecovery) {
+			(isInteractiveLoginMenuAvailable() || !output.isTTY);
+		if (shouldScanForRecovery) {
 			recoveryPromptAttempted = true;
+			const isInteractiveRecoveryFlow = isInteractiveLoginMenuAvailable();
 			let recoveryState: Awaited<
 				ReturnType<typeof getActionableNamedBackupRestores>
 			> | null = pendingRecoveryState;
@@ -4863,13 +5052,14 @@ async function runAuthLogin(): Promise<number> {
 				if (
 					resolveStartupRecoveryAction(scannedRecoveryState, recoveryScanFailed) ===
 						"open-empty-storage-menu" &&
+					isInteractiveRecoveryFlow &&
 					!skipEmptyStorageRecoveryMenu
 				) {
 					allowEmptyStorageMenu = true;
 					continue loginFlow;
 				}
 			}
-			if (recoveryState.assessments.length > 0) {
+			if (recoveryState.assessments.length > 0 && isInteractiveRecoveryFlow) {
 				let promptWasShown = false;
 				try {
 					const displaySettings = await loadDashboardDisplaySettings();
@@ -5023,6 +5213,7 @@ async function runSwitch(
 		storage,
 		targetIndex,
 		parsed,
+		displayAccountNumber,
 		switchReason: "rotation",
 	});
 	if (!synced) {
@@ -5032,7 +5223,7 @@ async function runSwitch(
 	}
 
 	console.log(
-		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
+		`Switched to account ${displayAccountNumber}: ${formatAccountLabel(account, displayAccountNumber - 1)}${wasDisabled ? " (re-enabled)" : ""}`,
 	);
 	return 0;
 }
@@ -5041,12 +5232,14 @@ async function persistAndSyncSelectedAccount({
 	storage,
 	targetIndex,
 	parsed,
+	displayAccountNumber,
 	switchReason,
 	initialSyncIdToken,
 }: {
 	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
 	targetIndex: number;
 	parsed: number;
+	displayAccountNumber: number;
 	switchReason: "rotation" | "best";
 	initialSyncIdToken?: string;
 }): Promise<{ synced: boolean; wasDisabled: boolean }> {
@@ -5324,6 +5517,7 @@ async function runBest(args: string[]): Promise<number> {
 		storage,
 		targetIndex,
 		parsed,
+		displayAccountNumber: parsed,
 		switchReason: "best",
 		initialSyncIdToken: probeIdTokenByIndex.get(bestIndex),
 	});
