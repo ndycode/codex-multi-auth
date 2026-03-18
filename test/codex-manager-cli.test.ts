@@ -1045,7 +1045,7 @@ describe("codex manager cli commands", () => {
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 			"named-backup",
-			expect.objectContaining({ assessment: expect.anything() }),
+			expect.objectContaining({ assessment }),
 		);
 	});
 
@@ -1103,7 +1103,7 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledOnce();
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 			"named-backup",
-			expect.objectContaining({ assessment: expect.anything() }),
+			expect.objectContaining({ assessment }),
 		);
 	});
 
@@ -1273,7 +1273,7 @@ describe("codex manager cli commands", () => {
 			);
 			expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 				"named-backup",
-				expect.objectContaining({ assessment: expect.anything() }),
+				expect.objectContaining({ assessment }),
 			);
 			expect(logSpy).toHaveBeenCalledWith(
 				"Replaced 1 current account. Total accounts: 1.",
@@ -3236,7 +3236,7 @@ describe("codex manager cli commands", () => {
 		expect(selectMock).toHaveBeenCalled();
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 			"named-backup",
-			expect.objectContaining({ assessment: expect.anything() }),
+			expect.objectContaining({ assessment }),
 		);
 		expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 	});
@@ -3628,7 +3628,7 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledTimes(3);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 			"startup-backup",
-			expect.objectContaining({ assessment: expect.anything() }),
+			expect.objectContaining({ assessment }),
 		);
 		expect(warnSpy).toHaveBeenCalledWith(
 			'Failed to restore backup "startup-backup" (EBUSY).',
@@ -4739,7 +4739,7 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledOnce();
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 			"named-backup",
-			expect.objectContaining({ assessment: expect.anything() }),
+			expect.objectContaining({ assessment }),
 		);
 	});
 
@@ -4787,7 +4787,7 @@ describe("codex manager cli commands", () => {
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 			"named-backup",
-			expect.objectContaining({ assessment: expect.anything() }),
+			expect.objectContaining({ assessment }),
 		);
 	});
 
@@ -4917,7 +4917,7 @@ describe("codex manager cli commands", () => {
 			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 			expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 				"named-backup",
-				expect.objectContaining({ assessment: expect.anything() }),
+				expect.objectContaining({ assessment }),
 			);
 			expect(warnSpy).toHaveBeenCalledWith(
 				'Failed to restore backup "named-backup" (UNKNOWN).',
@@ -5039,7 +5039,7 @@ describe("codex manager cli commands", () => {
 			expect(confirmMock).toHaveBeenCalledOnce();
 			expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 				"healthy-backup",
-				expect.objectContaining({ assessment: expect.anything() }),
+				expect.objectContaining({ assessment: healthyAssessment }),
 			);
 			expect(createAuthorizationFlowMock).not.toHaveBeenCalled();
 			expect(warnSpy).not.toHaveBeenCalled();
@@ -5230,7 +5230,7 @@ describe("codex manager cli commands", () => {
 		);
 		expect(restoreNamedBackupMock).toHaveBeenCalledWith(
 			"named-backup",
-			expect.objectContaining({ assessment: expect.anything() }),
+			expect.objectContaining({ assessment: refreshedAssessment }),
 		);
 	});
 

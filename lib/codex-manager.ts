@@ -4798,7 +4798,8 @@ type BackupMenuAction =
 	  }
 	| { type: "back" };
 
-type BackupDetailAction = "back" | "preview-restore" | "restore";
+type BackupDetailAction = "back" | "preview-restore";
+type BackupBrowserManagerAction = BackupDetailAction | "legacy-restore";
 
 type LegacyBackupRestoreSelection = {
 	type: "restore";
@@ -5316,7 +5317,7 @@ async function runBackupBrowserManager(
 		}
 
 		let entry: BackupBrowserEntry | null = null;
-		let action: BackupDetailAction = "back";
+		let action: BackupBrowserManagerAction = "back";
 		const legacySelection = selection as unknown as LegacyBackupRestoreSelection;
 		if (legacySelection.type === "restore" && legacySelection.assessment) {
 			entry = {
@@ -5325,7 +5326,7 @@ async function runBackupBrowserManager(
 				backup: legacySelection.assessment.backup,
 				assessment: legacySelection.assessment,
 			};
-			action = "restore";
+			action = "legacy-restore";
 		} else if (selection.type === "inspect") {
 			entry = selection.entry;
 			action = await showBackupBrowserDetails(entry, displaySettings);
@@ -5339,7 +5340,7 @@ async function runBackupBrowserManager(
 			continue;
 		}
 
-		if (action === "restore" && entry?.kind === "named") {
+		if (action === "legacy-restore" && entry?.kind === "named") {
 			const backupName = entry.backup.name;
 			let latestAssessment: NamedBackupAssessment;
 			try {
