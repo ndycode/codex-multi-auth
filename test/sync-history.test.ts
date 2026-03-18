@@ -174,4 +174,106 @@ describe("sync history", () => {
 			});
 		});
 	});
+
+	it("waits for writes queued while history reads are draining", async () => {
+		let releaseFirstAppend!: () => void;
+		let releaseSecondAppend!: () => void;
+		let resolveFirstStarted!: () => void;
+		let resolveSecondStarted!: () => void;
+		const firstAppendStarted = new Promise<void>((resolve) => {
+			resolveFirstStarted = resolve;
+		});
+		const secondAppendStarted = new Promise<void>((resolve) => {
+			resolveSecondStarted = resolve;
+		});
+		const firstAppendGate = new Promise<void>((resolve) => {
+			releaseFirstAppend = resolve;
+		});
+		const secondAppendGate = new Promise<void>((resolve) => {
+			releaseSecondAppend = resolve;
+		});
+		const originalAppendFile = nodeFs.appendFile;
+		let appendCallCount = 0;
+		vi.spyOn(nodeFs, "appendFile").mockImplementation(
+			async (...args: Parameters<typeof nodeFs.appendFile>) => {
+				appendCallCount += 1;
+				if (appendCallCount === 1) {
+					resolveFirstStarted();
+					await firstAppendGate;
+				} else if (appendCallCount === 2) {
+					resolveSecondStarted();
+					await secondAppendGate;
+				}
+				return originalAppendFile(...args);
+			},
+		);
+
+		const firstWrite = appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: {
+				outcome: "changed",
+				runAt: 1,
+				sourcePath: "source-1.json",
+				targetPath: "target-1.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 0,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 1,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: true,
+				},
+			},
+		});
+		await firstAppendStarted;
+
+		let readResolved = false;
+		const readPromise = readSyncHistory({ kind: "codex-cli-sync" }).then((history) => {
+			readResolved = true;
+			return history;
+		});
+
+		const secondWrite = appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 2,
+			run: {
+				outcome: "noop",
+				runAt: 2,
+				sourcePath: "source-2.json",
+				targetPath: "target-2.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 1,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 1,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		});
+		releaseFirstAppend();
+		await secondAppendStarted;
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(readResolved).toBe(false);
+
+		releaseSecondAppend();
+		const history = await readPromise;
+		await firstWrite;
+		await secondWrite;
+
+		expect(history).toHaveLength(2);
+		expect(history.at(-1)).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 2,
+			run: expect.objectContaining({
+				sourcePath: "source-2.json",
+			}),
+		});
+	});
 });

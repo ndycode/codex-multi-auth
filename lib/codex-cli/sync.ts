@@ -153,6 +153,7 @@ let lastCodexCliSyncRunRevision = 0;
 let nextCodexCliSyncRunRevision = 0;
 const activePendingCodexCliSyncRunRevisions = new Set<number>();
 let lastCodexCliSyncHistoryLoadAttempted = false;
+const ROLLBACK_HISTORY_MESSAGE_PREFIX = "Rollback restored checkpoint:";
 
 function createEmptySyncSummary(): CodexCliSyncSummary {
 	return {
@@ -414,17 +415,30 @@ function hasUsableRollbackSnapshot(
 	return Boolean(snapshot?.name.trim() && snapshot.path.trim());
 }
 
+function isRollbackHistoryRun(run: CodexCliSyncRun | null): boolean {
+	return Boolean(run?.message?.startsWith(ROLLBACK_HISTORY_MESSAGE_PREFIX));
+}
+
 async function findLatestManualRollbackRun(): Promise<
 	CodexCliSyncRun | null
 > {
 	const targetPath = getStoragePath();
 	const lastRun = getLastCodexCliSyncRun();
+	const latestRun = lastRun;
 	if (
-		isManualChangedSyncRun(lastRun) &&
-		matchesRollbackTargetPath(lastRun.targetPath, targetPath) &&
-		hasUsableRollbackSnapshot(lastRun.rollbackSnapshot)
+		latestRun &&
+		isRollbackHistoryRun(latestRun) &&
+		matchesRollbackTargetPath(latestRun.targetPath, targetPath)
 	) {
-		return lastRun;
+		return null;
+	}
+	if (
+		latestRun &&
+		isManualChangedSyncRun(latestRun) &&
+		matchesRollbackTargetPath(latestRun.targetPath, targetPath) &&
+		hasUsableRollbackSnapshot(latestRun.rollbackSnapshot)
+	) {
+		return latestRun;
 	}
 
 	const history = await readSyncHistory({
@@ -436,6 +450,13 @@ async function findLatestManualRollbackRun(): Promise<
 		const entry = history[index];
 		if (!entry || entry.kind !== "codex-cli-sync") continue;
 		const run = normalizeCodexCliSyncRun(entry.run);
+		if (
+			run &&
+			isRollbackHistoryRun(run) &&
+			matchesRollbackTargetPath(run.targetPath, targetPath)
+		) {
+			return null;
+		}
 		if (!isManualChangedSyncRun(run)) {
 			continue;
 		}
@@ -569,12 +590,36 @@ export async function rollbackLatestCodexCliSync(
 
 	try {
 		await saveRollbackStorageWithRetry(resolvedPlan.storage);
+		const rollbackSnapshot = resolvedPlan.snapshot;
+		if (!rollbackSnapshot) {
+			return {
+				status: "unavailable",
+				reason: "Rollback checkpoint is unavailable after loading the restore plan.",
+				snapshot: null,
+			};
+		}
+		const restoredAccountCount =
+			resolvedPlan.accountCount ?? resolvedPlan.storage.accounts.length;
+		publishCodexCliSyncRun(
+			createSyncRun({
+				outcome: "changed",
+				sourcePath: null,
+				targetPath: getStoragePath(),
+				summary: {
+					...createEmptySyncSummary(),
+					targetAccountCountBefore: restoredAccountCount,
+					targetAccountCountAfter: restoredAccountCount,
+				},
+				trigger: "manual",
+				message: `${ROLLBACK_HISTORY_MESSAGE_PREFIX} ${rollbackSnapshot.name}`,
+			}),
+			allocateCodexCliSyncRunRevision(),
+		);
 		return {
 			status: "restored",
 			reason: resolvedPlan.reason,
 			snapshot: resolvedPlan.snapshot,
-			accountCount:
-				resolvedPlan.accountCount ?? resolvedPlan.storage.accounts.length,
+			accountCount: restoredAccountCount,
 		};
 	} catch (error) {
 		const errorLabel = getRedactedFilesystemErrorLabel(error);

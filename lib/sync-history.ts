@@ -78,8 +78,9 @@ function withHistoryLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function waitForPendingHistoryWrites(): Promise<void> {
-	if (pendingHistoryWrites.size === 0) return;
-	await Promise.allSettled(Array.from(pendingHistoryWrites));
+	while (pendingHistoryWrites.size > 0) {
+		await Promise.allSettled(Array.from(pendingHistoryWrites));
+	}
 }
 
 async function ensureHistoryDir(directory: string): Promise<void> {

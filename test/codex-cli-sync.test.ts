@@ -1576,6 +1576,32 @@ describe("codex-cli sync", () => {
 		const restored = await storageModule.loadAccounts();
 		expect(restored?.accounts).toHaveLength(1);
 		expect(restored?.accounts[0]?.refreshToken).toBe("refresh-old");
+
+		expect(getLastCodexCliSyncRun()).toMatchObject({
+			outcome: "changed",
+			trigger: "manual",
+			targetPath: targetStoragePath,
+			rollbackSnapshot: null,
+			message: expect.stringContaining("Rollback restored checkpoint:"),
+		});
+
+		const history = await readSyncHistory({ kind: "codex-cli-sync" });
+		expect(history.at(-1)).toMatchObject({
+			kind: "codex-cli-sync",
+			run: expect.objectContaining({
+				outcome: "changed",
+				trigger: "manual",
+				targetPath: targetStoragePath,
+				rollbackSnapshot: null,
+				message: expect.stringContaining("Rollback restored checkpoint:"),
+			}),
+		});
+
+		const followUpPlan = await getLatestCodexCliSyncRollbackPlan();
+		expect(followUpPlan.status).toBe("unavailable");
+		expect(followUpPlan.reason).toBe(
+			"No manual Codex CLI apply with a rollback checkpoint is available.",
+		);
 	});
 
 	it("ignores rollback candidates recorded for a different target path", async () => {
