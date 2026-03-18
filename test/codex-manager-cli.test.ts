@@ -404,21 +404,68 @@ function queueNamedBackupBrowserSelection<T extends { backup: { name: string } }
 	return entry;
 }
 
-function buildRotatingBackupBrowserEntry<T extends { slot: number; label: string }>(
+function buildRotatingBackupBrowserEntry<
+	T extends {
+		slot: number;
+		label: string;
+		accountCount?: number | null;
+	},
+>(
 	backup: T,
+	options: {
+		assessment?: {
+			backup: T;
+			currentAccountCount: number;
+			mergedAccountCount: number | null;
+			imported: number | null;
+			skipped: number | null;
+			wouldExceedLimit: boolean;
+			eligibleForRestore: boolean;
+			error?: string;
+		} | null;
+		assessmentError?: string;
+	} = {},
 ): {
 	kind: "rotating";
 	label: string;
 	backup: T;
+	assessment: NonNullable<typeof options.assessment> | null;
+	assessmentError?: string;
 } {
+	const selectedAssessment =
+		options.assessment === undefined
+			? {
+					backup,
+					currentAccountCount: 0,
+					mergedAccountCount: backup.accountCount ?? 1,
+					imported: backup.accountCount ?? 1,
+					skipped: 0,
+					wouldExceedLimit: false,
+					eligibleForRestore: true,
+					error: undefined,
+				}
+			: options.assessment;
 	return {
 		kind: "rotating",
 		label: backup.label,
 		backup,
+		assessment: selectedAssessment,
+		...(selectedAssessment === null
+			? {
+					assessmentError:
+						options.assessmentError ?? "restore assessment unavailable",
+				}
+			: {}),
 	};
 }
 
-function queueRotatingBackupBrowserSelection<T extends { slot: number; label: string }>(
+function queueRotatingBackupBrowserSelection<
+	T extends {
+		slot: number;
+		label: string;
+		accountCount?: number | null;
+	},
+>(
 	backup: T,
 	detailAction: "restore" | "back" = "restore",
 ): ReturnType<typeof buildRotatingBackupBrowserEntry<T>> {
@@ -1115,7 +1162,7 @@ describe("codex manager cli commands", () => {
 		expect(restoreRotatingBackupMock).toHaveBeenCalledWith(1);
 	});
 
-	it("blocks rotating backup restore when re-assessment says it would exceed the account limit", async () => {
+	it("blocks rotating backup restore when assessment says it would exceed the account limit", async () => {
 		setInteractiveTTY(true);
 		loadAccountsMock.mockResolvedValue(null);
 		const rotatingBackup = {
@@ -1133,7 +1180,16 @@ describe("codex manager cli commands", () => {
 		};
 		listNamedBackupsMock.mockResolvedValue([]);
 		listRotatingBackupsMock.mockResolvedValue([rotatingBackup]);
-		queueRotatingBackupBrowserSelection(rotatingBackup);
+		assessRotatingBackupRestoreMock.mockResolvedValueOnce({
+			backup: rotatingBackup,
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		});
 		assessRotatingBackupRestoreMock.mockResolvedValueOnce({
 			backup: rotatingBackup,
 			currentAccountCount: 0,
@@ -1144,6 +1200,7 @@ describe("codex manager cli commands", () => {
 			eligibleForRestore: false,
 			error: `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
 		});
+		queueRotatingBackupBrowserSelection(rotatingBackup);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
@@ -1159,6 +1216,114 @@ describe("codex manager cli commands", () => {
 		} finally {
 			logSpy.mockRestore();
 		}
+	});
+
+	it("shows rotating backups as blocked in the browser before restore when assessment would exceed the limit", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const rotatingBackup = {
+			label: "Rotating backup 1 (.bak.1)",
+			slot: 1,
+			path: "/mock/openai-codex-accounts.json.bak.1",
+			createdAt: null,
+			updatedAt: Date.now(),
+			sizeBytes: 256,
+			version: 3,
+			accountCount: ACCOUNT_LIMITS.MAX_ACCOUNTS + 1,
+			schemaErrors: [],
+			valid: true,
+			loadError: undefined,
+		};
+		listNamedBackupsMock.mockResolvedValue([]);
+		listRotatingBackupsMock.mockResolvedValue([rotatingBackup]);
+		assessRotatingBackupRestoreMock.mockResolvedValueOnce({
+			backup: rotatingBackup,
+			currentAccountCount: 0,
+			mergedAccountCount: ACCOUNT_LIMITS.MAX_ACCOUNTS + 1,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: true,
+			eligibleForRestore: false,
+			error: `Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+		});
+		selectMock.mockImplementationOnce(async (items, options) => {
+			expect(options).toMatchObject({ message: "Backup Browser" });
+			const rotatingItem = (
+				items as Array<{ label?: string; color?: string; hint?: string }>
+			).find((item) => item.label === rotatingBackup.label);
+			expect(rotatingItem).toMatchObject({
+				color: "red",
+			});
+			expect(rotatingItem?.hint).toContain(
+				`would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS}`,
+			);
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessRotatingBackupRestoreMock).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({ currentStorage: null }),
+		);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(restoreRotatingBackupMock).not.toHaveBeenCalled();
+	});
+
+	it("keeps rotating backups available when named backup listing fails", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue(null);
+		const rotatingBackup = {
+			label: "Rotating backup 1 (.bak.1)",
+			slot: 1,
+			path: "/mock/openai-codex-accounts.json.bak.1",
+			createdAt: null,
+			updatedAt: Date.now(),
+			sizeBytes: 256,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: [],
+			valid: true,
+			loadError: undefined,
+		};
+		listNamedBackupsMock.mockRejectedValueOnce(
+			new Error("named backup directory busy"),
+		);
+		listRotatingBackupsMock.mockResolvedValue([rotatingBackup]);
+		assessRotatingBackupRestoreMock.mockResolvedValueOnce({
+			backup: rotatingBackup,
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: undefined,
+		});
+		selectMock.mockImplementationOnce(async (items, options) => {
+			expect(options).toMatchObject({ message: "Backup Browser" });
+			const labels = (items as Array<{ label?: string }>).map(
+				(item) => item.label ?? "",
+			);
+			expect(labels).toContain("Named Backups");
+			expect(labels).toContain("No named backups found");
+			expect(labels).toContain("Rotating Backups");
+			expect(labels).toContain(rotatingBackup.label);
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
+
+		expect(exitCode).toBe(0);
+		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
+		expect(assessRotatingBackupRestoreMock).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({ currentStorage: null }),
+		);
+		expect(restoreRotatingBackupMock).not.toHaveBeenCalled();
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
@@ -3914,7 +4079,7 @@ describe("codex manager cli commands", () => {
 		}
 	});
 
-	it("catches backup listing failures and returns to the login menu", async () => {
+	it("keeps the login menu recoverable when named backup listing fails", async () => {
 		setInteractiveTTY(true);
 		listNamedBackupsMock.mockRejectedValueOnce(
 			makeErrnoError(
@@ -3925,7 +4090,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "restore-backup" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
 			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -3936,13 +4101,13 @@ describe("codex manager cli commands", () => {
 			expect(assessNamedBackupRestoreMock).not.toHaveBeenCalled();
 			expect(selectMock).not.toHaveBeenCalled();
 			expect(restoreNamedBackupMock).not.toHaveBeenCalled();
-			expect(errorSpy).toHaveBeenCalledWith(
+			expect(logSpy).toHaveBeenCalledWith(
 				expect.stringContaining(
-					"Could not read backup directory: EPERM: operation not permitted",
+					"No backups found. Named backups live in /mock/backups.",
 				),
 			);
 		} finally {
-			errorSpy.mockRestore();
+			logSpy.mockRestore();
 		}
 	});
 

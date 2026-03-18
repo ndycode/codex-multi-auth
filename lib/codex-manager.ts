@@ -4372,6 +4372,9 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 type NamedBackupAssessment = Awaited<
 	ReturnType<typeof assessNamedBackupRestore>
 >;
+type RotatingBackupAssessment = Awaited<
+	ReturnType<typeof assessRotatingBackupRestore>
+>;
 type NamedBackupEntry = Awaited<ReturnType<typeof listNamedBackups>>[number];
 type RotatingBackupEntry = Awaited<
 	ReturnType<typeof listRotatingBackups>
@@ -4399,6 +4402,15 @@ type BackupBrowserEntry =
 			kind: "rotating";
 			label: string;
 			backup: RotatingBackupEntry;
+			assessment: RotatingBackupAssessment;
+			assessmentError?: undefined;
+	  }
+	| {
+			kind: "rotating";
+			label: string;
+			backup: RotatingBackupEntry;
+			assessment: null;
+			assessmentError: string;
 	  };
 
 type BackupMenuAction =
@@ -4417,10 +4429,6 @@ function hasNamedBackupAssessment(
 }
 
 function canRestoreBackupBrowserEntry(entry: BackupBrowserEntry): boolean {
-	if (entry.kind === "rotating") {
-		return entry.backup.valid;
-	}
-
 	return (
 		entry.assessment !== null &&
 		entry.assessment.eligibleForRestore &&
@@ -4437,6 +4445,19 @@ function normalizeBackupAssessmentError(error: unknown): string {
 		: "Unable to assess restore eligibility";
 }
 
+function formatBackupBrowserEligibility(entry: BackupBrowserEntry): string {
+	if (entry.assessment === null) {
+		return "Unavailable";
+	}
+	if (entry.assessment.wouldExceedLimit) {
+		return `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`;
+	}
+	if (entry.assessment.eligibleForRestore) {
+		return "Recoverable";
+	}
+	return entry.assessment.error ?? "Unavailable";
+}
+
 function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
 	const backup = entry.backup;
 	const lastUpdated = formatRelativeDateShort(backup.updatedAt);
@@ -4449,15 +4470,13 @@ function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
 			? `${backup.accountCount} account${backup.accountCount === 1 ? "" : "s"}`
 			: undefined,
 		lastUpdated ? `updated ${lastUpdated}` : undefined,
-		hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit
+		entry.assessment !== null && entry.assessment.wouldExceedLimit
 			? `would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS}`
 			: undefined,
-		entry.kind === "named" && entry.assessment === null
+		entry.assessment === null
 			? "restore assessment unavailable"
 			: undefined,
-		entry.kind === "named" && entry.assessment === null
-			? entry.assessmentError
-			: undefined,
+		entry.assessment === null ? entry.assessmentError : undefined,
 		backup.loadError,
 	].filter(
 		(value): value is string =>
@@ -4469,10 +4488,10 @@ function buildBackupBrowserHint(entry: BackupBrowserEntry): string {
 function backupMenuColor(
 	entry: BackupBrowserEntry,
 ): MenuItem<BackupMenuAction>["color"] {
-	if (entry.kind === "named" && entry.assessment === null) {
+	if (entry.assessment === null) {
 		return entry.backup.valid ? "yellow" : "red";
 	}
-	if (hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit) {
+	if (entry.assessment.wouldExceedLimit) {
 		return "red";
 	}
 	return entry.backup.valid ? "green" : "red";
@@ -4483,10 +4502,10 @@ function buildBackupStatusSummary(entry: BackupBrowserEntry): string {
 	if (!backup.valid) {
 		return stylePromptText("Invalid backup", "danger");
 	}
-	if (entry.kind === "named" && entry.assessment === null) {
+	if (entry.assessment === null) {
 		return stylePromptText("Restore assessment unavailable", "warning");
 	}
-	if (hasNamedBackupAssessment(entry) && entry.assessment.wouldExceedLimit) {
+	if (entry.assessment.wouldExceedLimit) {
 		return stylePromptText("Valid file, restore would exceed limit", "warning");
 	}
 	return stylePromptText("Valid backup", "success");
@@ -4515,23 +4534,21 @@ async function showBackupBrowserDetails(
 		`${stylePromptText("Updated:", "muted")} ${formatDateTimeLong(backup.updatedAt)}`,
 	];
 
-	if (entry.kind === "named") {
-		lines.push("", stylePromptText("Restore Assessment", "accent"));
-		if (entry.assessment === null) {
-			lines.push(
-				`${stylePromptText("Eligibility:", "muted")} Unavailable`,
-				`${stylePromptText("Reason:", "muted")} ${entry.assessmentError}`,
-			);
-		} else {
-			const assessment = entry.assessment;
-			lines.push(
-				`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
-				`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
-				`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
-				`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
-				`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.eligibleForRestore ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
-			);
-		}
+	lines.push("", stylePromptText("Restore Assessment", "accent"));
+	if (entry.assessment === null) {
+		lines.push(
+			`${stylePromptText("Eligibility:", "muted")} Unavailable`,
+			`${stylePromptText("Reason:", "muted")} ${entry.assessmentError}`,
+		);
+	} else {
+		const assessment = entry.assessment;
+		lines.push(
+			`${stylePromptText("Current accounts:", "muted")} ${assessment.currentAccountCount}`,
+			`${stylePromptText("Merged after dedupe:", "muted")} ${assessment.mergedAccountCount ?? "unknown"}`,
+			`${stylePromptText("Would import:", "muted")} ${assessment.imported ?? "unknown"}`,
+			`${stylePromptText("Would skip:", "muted")} ${assessment.skipped ?? "unknown"}`,
+			`${stylePromptText("Eligibility:", "muted")} ${formatBackupBrowserEligibility(entry)}`,
+		);
 	}
 
 	if (backup.schemaErrors.length > 0 || backup.loadError) {
@@ -4587,7 +4604,7 @@ async function loadBackupBrowserEntries(options: {
 	const { startupAssessments } = options;
 	const rotatingBackups = await listRotatingBackups();
 	let currentStorage: Awaited<ReturnType<typeof loadAccounts>> = null;
-	if (!startupAssessments) {
+	if (rotatingBackups.length > 0 || !startupAssessments) {
 		try {
 			currentStorage = await loadAccounts();
 		} catch (error) {
@@ -4605,55 +4622,97 @@ async function loadBackupBrowserEntries(options: {
 			assessment,
 		}));
 	} else {
-		const namedBackups = await listNamedBackups();
 		namedEntries = [];
-		for (
-			let index = 0;
-			index < namedBackups.length;
-			index += NAMED_BACKUP_LIST_CONCURRENCY
-		) {
-			const chunk = namedBackups.slice(
-				index,
-				index + NAMED_BACKUP_LIST_CONCURRENCY,
-			);
-			const settledEntries = await Promise.all(
-				chunk.map(async (backup) => {
-					try {
-						const assessment = await assessNamedBackupRestore(backup.name, {
-							currentStorage,
-						});
-						return {
-							kind: "named" as const,
-							label: assessment.backup.name,
-							backup: assessment.backup,
-							assessment,
-						};
-					} catch (error) {
-						const assessmentError = normalizeBackupAssessmentError(error);
-						log.warn("Failed to assess named backup for backup browser", {
-							name: backup.name,
-							error: assessmentError,
-						});
-						return {
-							kind: "named" as const,
-							label: backup.name,
-							backup,
-							assessment: null,
-							assessmentError,
-						};
-					}
-				}),
-			);
-			namedEntries.push(...settledEntries);
+		try {
+			const namedBackups = await listNamedBackups();
+			for (
+				let index = 0;
+				index < namedBackups.length;
+				index += NAMED_BACKUP_LIST_CONCURRENCY
+			) {
+				const chunk = namedBackups.slice(
+					index,
+					index + NAMED_BACKUP_LIST_CONCURRENCY,
+				);
+				const settledEntries = await Promise.all(
+					chunk.map(async (backup) => {
+						try {
+							const assessment = await assessNamedBackupRestore(backup.name, {
+								currentStorage,
+							});
+							return {
+								kind: "named" as const,
+								label: assessment.backup.name,
+								backup: assessment.backup,
+								assessment,
+							};
+						} catch (error) {
+							const assessmentError = normalizeBackupAssessmentError(error);
+							log.warn("Failed to assess named backup for backup browser", {
+								name: backup.name,
+								error: assessmentError,
+							});
+							return {
+								kind: "named" as const,
+								label: backup.name,
+								backup,
+								assessment: null,
+								assessmentError,
+							};
+						}
+					}),
+				);
+				namedEntries.push(...settledEntries);
+			}
+		} catch (error) {
+			log.warn("Failed to list named backups for backup browser", {
+				error: normalizeBackupAssessmentError(error),
+			});
 		}
+	}
+	const rotatingEntries: Extract<BackupBrowserEntry, { kind: "rotating" }>[] = [];
+	for (
+		let index = 0;
+		index < rotatingBackups.length;
+		index += NAMED_BACKUP_LIST_CONCURRENCY
+	) {
+		const chunk = rotatingBackups.slice(
+			index,
+			index + NAMED_BACKUP_LIST_CONCURRENCY,
+		);
+		const settledEntries = await Promise.all(
+			chunk.map(async (backup) => {
+				try {
+					const assessment = await assessRotatingBackupRestore(backup.slot, {
+						currentStorage,
+					});
+					return {
+						kind: "rotating" as const,
+						label: assessment.backup.label,
+						backup: assessment.backup,
+						assessment,
+					};
+				} catch (error) {
+					const assessmentError = normalizeBackupAssessmentError(error);
+					log.warn("Failed to assess rotating backup for backup browser", {
+						slot: backup.slot,
+						error: assessmentError,
+					});
+					return {
+						kind: "rotating" as const,
+						label: backup.label,
+						backup,
+						assessment: null,
+						assessmentError,
+					};
+				}
+			}),
+		);
+		rotatingEntries.push(...settledEntries);
 	}
 	return {
 		namedEntries,
-		rotatingEntries: rotatingBackups.map((backup) => ({
-			kind: "rotating",
-			label: backup.label,
-			backup,
-		})),
+		rotatingEntries,
 	};
 }
 
@@ -4801,7 +4860,7 @@ async function runBackupBrowserManager(
 		}
 		if (action === "restore" && entry?.kind === "rotating") {
 			const backupLabel = entry.label;
-			let latestAssessment;
+			let latestAssessment: RotatingBackupAssessment;
 			try {
 				latestAssessment = await assessRotatingBackupRestore(entry.backup.slot, {
 					currentStorage: await loadAccounts(),
