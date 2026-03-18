@@ -1112,7 +1112,7 @@ describe("codex manager cli commands", () => {
 		confirmMock.mockResolvedValueOnce(true);
 		restoreNamedBackupMock.mockResolvedValueOnce({
 			imported: 0,
-			skipped: 1,
+			skipped: 0,
 			total: 1,
 		});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

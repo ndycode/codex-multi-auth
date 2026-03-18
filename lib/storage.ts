@@ -1131,6 +1131,10 @@ export function getFlaggedAccountsPath(): string {
 	return join(dirname(getStoragePath()), FLAGGED_ACCOUNTS_FILE_NAME);
 }
 
+function getFlaggedAccountsPathForStoragePath(storagePath: string): string {
+	return join(dirname(storagePath), FLAGGED_ACCOUNTS_FILE_NAME);
+}
+
 function getLegacyFlaggedAccountsPath(): string {
 	return join(dirname(getStoragePath()), LEGACY_FLAGGED_ACCOUNTS_FILE_NAME);
 }
@@ -2432,14 +2436,12 @@ export async function restoreNamedBackup(
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
 	const candidate = await loadImportableBackupCandidate(backupPath);
-	const assessment =
-		options.assessment ??
-		assessNamedBackupRestoreCandidate(
-			await buildNamedBackupMetadata(name, backupPath, { candidate }),
-			candidate,
-			await loadAccounts(),
-			candidate.rawAccounts,
-		);
+	const assessment = assessNamedBackupRestoreCandidate(
+		await buildNamedBackupMetadata(name, backupPath, { candidate }),
+		candidate,
+		await loadAccounts(),
+		candidate.rawAccounts,
+	);
 	if (!assessment.eligibleForRestore) {
 		throw new Error(assessment.error ?? "Backup is not eligible for restore");
 	}
@@ -2990,13 +2992,14 @@ function formatRotatingBackupLabel(slot: number): string {
  */
 export interface SaveAccountsOptions {
 	backupEnabled?: boolean;
+	pathOverride?: string;
 }
 
 async function saveAccountsUnlocked(
 	storage: AccountStorageV3,
 	options: SaveAccountsOptions = {},
 ): Promise<void> {
-	const path = getStoragePath();
+	const path = options.pathOverride ?? getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -3139,7 +3142,9 @@ export async function withAccountStorageTransaction<T>(
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
+			await saveAccountsUnlocked(storage, {
+				pathOverride: state.storagePath,
+			});
 			state.snapshot = storage;
 		};
 		return transactionSnapshotContext.run(state, () =>
@@ -3159,6 +3164,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 ): Promise<T> {
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
+		const flaggedStoragePath = getFlaggedAccountsPathForStoragePath(storagePath);
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
@@ -3171,13 +3177,19 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
-			await saveAccountsUnlocked(nextAccounts);
+			await saveAccountsUnlocked(nextAccounts, {
+				pathOverride: state.storagePath,
+			});
 			try {
-				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				await saveFlaggedAccountsUnlocked(flaggedStorage, {
+					pathOverride: flaggedStoragePath,
+				});
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
-					await saveAccountsUnlocked(previousAccounts);
+					await saveAccountsUnlocked(previousAccounts, {
+						pathOverride: state.storagePath,
+					});
 					state.snapshot = previousAccounts;
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
@@ -3442,8 +3454,9 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 
 async function saveFlaggedAccountsUnlocked(
 	storage: FlaggedAccountStorageV1,
+	options: { pathOverride?: string } = {},
 ): Promise<void> {
-	const path = getFlaggedAccountsPath();
+	const path = options.pathOverride ?? getFlaggedAccountsPath();
 	const markerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -3512,6 +3525,7 @@ export async function clearFlaggedAccounts(): Promise<boolean> {
 		const backupPaths =
 			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
 		let hadError = false;
+		let primaryCleared = true;
 		for (const candidate of [path, ...backupPaths]) {
 			try {
 				await unlinkWithRetry(candidate);
@@ -3519,6 +3533,9 @@ export async function clearFlaggedAccounts(): Promise<boolean> {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "ENOENT") {
 					hadError = true;
+					if (candidate === path) {
+						primaryCleared = false;
+					}
 					log.error("Failed to clear flagged account storage", {
 						path: candidate,
 						error: String(error),
@@ -3526,7 +3543,7 @@ export async function clearFlaggedAccounts(): Promise<boolean> {
 				}
 			}
 		}
-		if (!hadError) {
+		if (primaryCleared) {
 			try {
 				await unlinkWithRetry(markerPath);
 			} catch (error) {
