@@ -11,6 +11,7 @@ const HISTORY_FILE_NAME = "sync-history.ndjson";
 const LATEST_FILE_NAME = "sync-history-latest.json";
 const MAX_HISTORY_ENTRIES = 200;
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
 
 type SyncHistoryKind = "codex-cli-sync" | "live-account-sync";
 
@@ -91,6 +92,27 @@ async function waitForPendingHistoryWrites(): Promise<void> {
 
 async function ensureHistoryDir(directory: string): Promise<void> {
 	await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+}
+
+async function withRetryableHistoryWrite<T>(
+	operation: () => Promise<T>,
+): Promise<T> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				!code ||
+				!RETRYABLE_WRITE_CODES.has(code) ||
+				attempt === 4
+			) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+	throw new Error("Retryable sync-history write loop exhausted unexpectedly.");
 }
 
 function isSyncHistoryEntry(value: unknown): value is SyncHistoryEntry {
@@ -250,13 +272,17 @@ async function rewriteLatestEntry(
 	paths: SyncHistoryPaths,
 ): Promise<void> {
 	if (!latest) {
-		await fs.rm(paths.latestPath, { force: true });
+		await withRetryableHistoryWrite(() =>
+			fs.rm(paths.latestPath, { force: true }),
+		);
 		return;
 	}
-	await fs.writeFile(paths.latestPath, `${JSON.stringify(latest, null, 2)}\n`, {
-		encoding: "utf8",
-		mode: 0o600,
-	});
+	await withRetryableHistoryWrite(() =>
+		fs.writeFile(paths.latestPath, `${JSON.stringify(latest, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		}),
+	);
 }
 
 async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<PrunedSyncHistory> {
@@ -266,16 +292,20 @@ async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<PrunedS
 		return result;
 	}
 	if (result.entries.length === 0) {
-		await fs.rm(paths.historyPath, { force: true });
+		await withRetryableHistoryWrite(() =>
+			fs.rm(paths.historyPath, { force: true }),
+		);
 		return result;
 	}
-	await fs.writeFile(
-		paths.historyPath,
-		`${result.entries.map((entry) => serializeEntry(entry)).join("\n")}\n`,
-		{
-			encoding: "utf8",
-			mode: 0o600,
-		},
+	await withRetryableHistoryWrite(() =>
+		fs.writeFile(
+			paths.historyPath,
+			`${result.entries.map((entry) => serializeEntry(entry)).join("\n")}\n`,
+			{
+				encoding: "utf8",
+				mode: 0o600,
+			},
+		),
 	);
 	return result;
 }
@@ -290,10 +320,12 @@ export async function appendSyncHistoryEntry(
 		if (historyEntryCountEstimate === null) {
 			historyEntryCountEstimate = (await loadHistoryEntriesFromDisk(paths)).length;
 		}
-		await fs.appendFile(paths.historyPath, `${serializeEntry(entry)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
+		await withRetryableHistoryWrite(() =>
+			fs.appendFile(paths.historyPath, `${serializeEntry(entry)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			}),
+		);
 		historyEntryCountEstimate += 1;
 		const shouldTrim = historyEntryCountEstimate > MAX_HISTORY_ENTRIES;
 		const prunedHistory = shouldTrim
@@ -379,15 +411,19 @@ export async function pruneSyncHistory(
 		const entries = await loadHistoryEntriesFromDisk(paths);
 		const result = pruneSyncHistoryEntries(entries, maxEntries);
 		if (result.entries.length === 0) {
-			await fs.rm(paths.historyPath, { force: true });
+			await withRetryableHistoryWrite(() =>
+				fs.rm(paths.historyPath, { force: true }),
+			);
 		} else {
-			await fs.writeFile(
-				paths.historyPath,
-				`${result.entries.map((entry) => serializeEntry(entry)).join("\n")}\n`,
-				{
-					encoding: "utf8",
-					mode: 0o600,
-				},
+			await withRetryableHistoryWrite(() =>
+				fs.writeFile(
+					paths.historyPath,
+					`${result.entries.map((entry) => serializeEntry(entry)).join("\n")}\n`,
+					{
+						encoding: "utf8",
+						mode: 0o600,
+					},
+				),
 			);
 		}
 		await rewriteLatestEntry(result.latest, paths);

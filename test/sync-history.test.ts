@@ -348,6 +348,105 @@ describe("sync history", () => {
 		expect(historyReads).toHaveLength(1);
 	});
 
+	it("retries transient append and latest-write lock errors during append", async () => {
+		const paths = getSyncHistoryPaths();
+		const originalAppendFile = fs.appendFile.bind(fs);
+		const originalWriteFile = fs.writeFile.bind(fs);
+		let appendFailures = 0;
+		let latestFailures = 0;
+		const setTimeoutSpy = vi
+			.spyOn(globalThis, "setTimeout")
+			.mockImplementation(((handler: TimerHandler, _timeout?: number, ...args: unknown[]) => {
+				if (typeof handler !== "function") {
+					throw new Error("Expected function timer handler in sync-history retry test.");
+				}
+				handler(...args);
+				return 0 as ReturnType<typeof setTimeout>;
+			}) as typeof setTimeout);
+		const appendFileSpy = vi
+			.spyOn(fs, "appendFile")
+			.mockImplementation(async (path, data, options) => {
+				if (path === paths.historyPath && appendFailures === 0) {
+					appendFailures += 1;
+					const error = new Error("history locked") as NodeJS.ErrnoException;
+					error.code = "EPERM";
+					throw error;
+				}
+				return originalAppendFile(path, data, options);
+			});
+		const writeFileSpy = vi
+			.spyOn(fs, "writeFile")
+			.mockImplementation(async (path, data, options) => {
+				if (path === paths.latestPath && latestFailures === 0) {
+					latestFailures += 1;
+					const error = new Error("latest locked") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalWriteFile(path, data, options);
+			});
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/retry-append"),
+		});
+
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
+		expect(appendFileSpy.mock.calls.filter(([path]) => path === paths.historyPath)).toHaveLength(2);
+		expect(writeFileSpy.mock.calls.filter(([path]) => path === paths.latestPath)).toHaveLength(2);
+		expect((await readSyncHistory()).map((entry) => entry.recordedAt)).toEqual([1]);
+		expect(readLatestSyncHistorySync()?.recordedAt).toBe(1);
+	});
+
+	it("retries transient trim rewrite lock errors when the history cap is exceeded", async () => {
+		const paths = getSyncHistoryPaths();
+		const originalWriteFile = fs.writeFile.bind(fs);
+		let trimWriteFailures = 0;
+		const setTimeoutSpy = vi
+			.spyOn(globalThis, "setTimeout")
+			.mockImplementation(((handler: TimerHandler, _timeout?: number, ...args: unknown[]) => {
+				if (typeof handler !== "function") {
+					throw new Error("Expected function timer handler in sync-history retry test.");
+				}
+				handler(...args);
+				return 0 as ReturnType<typeof setTimeout>;
+			}) as typeof setTimeout);
+
+		for (let index = 0; index < 200; index += 1) {
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: index + 1,
+				run: createCodexRun(index + 1, `/seed-${index + 1}`),
+			});
+		}
+
+		const writeFileSpy = vi
+			.spyOn(fs, "writeFile")
+			.mockImplementation(async (path, data, options) => {
+				if (path === paths.historyPath && trimWriteFailures === 0) {
+					trimWriteFailures += 1;
+					const error = new Error("trim locked") as NodeJS.ErrnoException;
+					error.code = "EPERM";
+					throw error;
+				}
+				return originalWriteFile(path, data, options);
+			});
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 201,
+			run: createCodexRun(201, "/seed-201"),
+		});
+
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+		expect(writeFileSpy.mock.calls.filter(([path]) => path === paths.historyPath)).toHaveLength(2);
+		const history = await readSyncHistory();
+		expect(history.length).toBeLessThanOrEqual(200);
+		expect(history.at(-1)?.recordedAt).toBe(201);
+		expect(readLatestSyncHistorySync()?.recordedAt).toBe(201);
+	});
+
 	it("re-reads seeded history after configureSyncHistoryForTests resets the estimate to null", async () => {
 		await appendSyncHistoryEntry({
 			kind: "codex-cli-sync",
