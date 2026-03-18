@@ -616,6 +616,24 @@ describe("codex manager cli commands", () => {
 		});
 	});
 
+	it("prints json error when storage is null for best", async () => {
+		loadAccountsMock.mockResolvedValueOnce(null);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "best", "--json"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(queuedRefreshMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toEqual({
+			error: "No accounts configured.",
+		});
+	});
+
 	it("restores healthy flagged accounts into active storage", async () => {
 		const now = Date.now();
 		loadFlaggedAccountsMock.mockResolvedValueOnce({
@@ -1549,6 +1567,7 @@ describe("codex manager cli commands", () => {
 
 		expect(firstExitCode).toBe(0);
 		expect(secondExitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
 		expect(queuedRefreshMock).toHaveBeenCalledTimes(2);
 		expect(refreshNetworkMock).toHaveBeenCalledTimes(1);
 		expect(storageState.accounts[0]?.accessToken).toBe("access-best-next");

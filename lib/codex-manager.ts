@@ -4244,6 +4244,7 @@ async function runBest(args: string[]): Promise<number> {
 			probeRefreshedIndices.has(bestIndex) || probeIdTokenByIndex.has(bestIndex);
 		let alreadyBestSynced: boolean | undefined;
 		if (changed) {
+			bestAccount.lastUsed = now;
 			await persistProbeChangesIfNeeded();
 		}
 		if (shouldSyncCurrentBest) {
