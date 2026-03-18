@@ -1575,6 +1575,116 @@ describe("codex-cli sync", () => {
 		expect(restored?.accounts[0]?.refreshToken).toBe("refresh-old");
 	});
 
+	it("serializes rollbackLastCodexCliSync against concurrent storage writes when it resolves the plan internally", async () => {
+		const snapshotPath = join(tempDir, "rollback-serialized-snapshot.json");
+		await writeFile(
+			snapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old",
+							accountIdSource: "token",
+							email: "old@example.com",
+							refreshToken: "refresh-old",
+							accessToken: "access-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		await storageModule.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_current",
+					accountIdSource: "token",
+					email: "current@example.com",
+					refreshToken: "refresh-current",
+					accessToken: "access-current",
+					addedAt: 10,
+					lastUsed: 10,
+				},
+			],
+		});
+
+		const recordedRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 20,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-serialized",
+				path: snapshotPath,
+			},
+		};
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: recordedRun.runAt,
+			run: recordedRun,
+		});
+
+		const realWithAccountStorageTransaction =
+			storageModule.withAccountStorageTransaction;
+		let concurrentSavePromise: Promise<void> | null = null;
+		const txSpy = vi
+			.spyOn(storageModule, "withAccountStorageTransaction")
+			.mockImplementation(async (handler) =>
+				realWithAccountStorageTransaction(async (current, persist) =>
+					handler(current, async (storage) => {
+						concurrentSavePromise = storageModule.saveAccounts({
+							version: 3,
+							activeIndex: 0,
+							activeIndexByFamily: { codex: 0 },
+							accounts: [
+								{
+									accountId: "acc_concurrent",
+									accountIdSource: "token",
+									email: "concurrent@example.com",
+									refreshToken: "refresh-concurrent",
+									accessToken: "access-concurrent",
+									addedAt: 30,
+									lastUsed: 30,
+								},
+							],
+						});
+						await persist(storage);
+					}),
+				),
+			);
+
+		const rollbackResult = await rollbackLastCodexCliSync();
+		expect(rollbackResult.status).toBe("restored");
+		expect(txSpy).toHaveBeenCalledTimes(1);
+		await concurrentSavePromise;
+
+		const restored = await storageModule.loadAccounts();
+		expect(restored?.accounts).toHaveLength(1);
+		expect(restored?.accounts[0]?.refreshToken).toBe("refresh-concurrent");
+	});
+
 	it("marks the rollback plan unavailable when the checkpoint file is missing", async () => {
 		const missingRun: CodexCliSyncRun = {
 			outcome: "changed",
@@ -1714,9 +1824,14 @@ describe("codex-cli sync", () => {
 			run: recordedRun,
 		});
 
-		const saveSpy = vi
-			.spyOn(storageModule, "saveAccounts")
-			.mockRejectedValue(new Error("save busy"));
+		const txSpy = vi
+			.spyOn(storageModule, "withAccountStorageTransaction")
+			.mockImplementation(async (handler) => {
+				const current = await storageModule.loadAccounts();
+				return handler(current, async () => {
+					throw new Error("save busy");
+				});
+			});
 
 		const plan = await getLatestCodexCliSyncRollbackPlan();
 		expect(plan.status).toBe("ready");
@@ -1726,7 +1841,7 @@ describe("codex-cli sync", () => {
 		expect(rollbackResult.reason).toBe("save busy");
 		await expect(rollbackLastCodexCliSync()).rejects.toThrow("save busy");
 
-		saveSpy.mockRestore();
+		txSpy.mockRestore();
 	});
 
 	it("re-reads Codex CLI state on apply when forceRefresh is requested", async () => {
