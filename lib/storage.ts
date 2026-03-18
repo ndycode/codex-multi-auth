@@ -487,7 +487,7 @@ async function unlinkWithRetry(path: string): Promise<void> {
 			if (code === "ENOENT") {
 				return;
 			}
-			if ((code === "EPERM" || code === "EBUSY" || code === "EAGAIN") && attempt < 4) {
+			if (isRetryableFilesystemErrorCode(code) && attempt < 4) {
 				await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
 				continue;
 			}
@@ -2074,6 +2074,21 @@ export function getNamedBackupsDirectoryPath(): string {
 	return getNamedBackupRoot(getStoragePath());
 }
 
+async function scanNamedBackupsForActionableRestores(): Promise<NamedBackupScanResult> {
+	try {
+		return await scanNamedBackups();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to list named backups", {
+				path: getNamedBackupRoot(getStoragePath()),
+				error: String(error),
+			});
+		}
+		return { backups: [], totalBackups: 0 };
+	}
+}
+
 export async function getActionableNamedBackupRestores(
 	options: {
 		currentStorage?: AccountStorageV3 | null;
@@ -2084,7 +2099,7 @@ export async function getActionableNamedBackupRestores(
 	const usesFastPath =
 		options.backups === undefined && options.assess === undefined;
 	const scannedBackupResult = usesFastPath
-		? await scanNamedBackups()
+		? await scanNamedBackupsForActionableRestores()
 		: { backups: [], totalBackups: 0 };
 	const listedBackupResult =
 		!usesFastPath && options.backups === undefined
@@ -2202,25 +2217,37 @@ async function writeNamedBackupFromStorage(
 	if (!options.force && existsSync(backupPath)) {
 		throw new Error(`File already exists: ${backupPath}`);
 	}
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${backupPath}.${uniqueSuffix}.tmp`;
+	const content = JSON.stringify(
+		{
+			version: storage.version,
+			accounts: storage.accounts,
+			activeIndex: storage.activeIndex,
+			activeIndexByFamily: storage.activeIndexByFamily,
+		},
+		null,
+		2,
+	);
 	await retryTransientFilesystemOperation(() =>
 		fs.mkdir(dirname(backupPath), { recursive: true }),
 	);
-	await retryTransientFilesystemOperation(() =>
-		fs.writeFile(
-			backupPath,
-			JSON.stringify(
-				{
-					version: storage.version,
-					accounts: storage.accounts,
-					activeIndex: storage.activeIndex,
-					activeIndexByFamily: storage.activeIndexByFamily,
-				},
-				null,
-				2,
-			),
-			{ encoding: "utf-8", mode: 0o600 },
-		),
-	);
+	try {
+		await retryTransientFilesystemOperation(() =>
+			fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 }),
+		);
+		if (options.force) {
+			await unlinkWithRetry(backupPath);
+		}
+		await renameFileWithRetry(tempPath, backupPath);
+	} catch (error) {
+		try {
+			await unlinkWithRetry(tempPath);
+		} catch {
+			// Ignore temp cleanup failures after a failed staged backup write.
+		}
+		throw error;
+	}
 	return buildNamedBackupMetadata(name, backupPath);
 }
 
