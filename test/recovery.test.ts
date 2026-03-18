@@ -377,6 +377,24 @@ describe("getActionableNamedBackupRestores (storage-backed paths)", () => {
 		expect(result.assessments[0]?.imported).toBe(1);
 	});
 
+	it("returns no actionable restores when the fast-path backup scan cannot read the directory", async () => {
+		const storage = await import("../lib/storage.js");
+		const readdirSpy = vi.spyOn(fs, "readdir");
+		const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+		error.code = "EPERM";
+		readdirSpy.mockRejectedValue(error);
+
+		try {
+			await expect(storage.getActionableNamedBackupRestores()).resolves.toEqual({
+				assessments: [],
+				allAssessments: [],
+				totalBackups: 0,
+			});
+		} finally {
+			readdirSpy.mockRestore();
+		}
+	});
+
 	it("keeps actionable backups when fast-path scan hits EBUSY", async () => {
 		const storage = await import("../lib/storage.js");
 		const emptyStorage = {

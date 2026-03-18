@@ -22,6 +22,7 @@ import {
 	exportNamedBackup,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getActionableNamedBackupRestores,
 	getFlaggedAccountsPath,
 	getNamedBackupsDirectoryPath,
 	NAMED_BACKUP_LIST_CONCURRENCY,
@@ -1863,6 +1864,23 @@ describe("storage", () => {
 			}
 		});
 
+		it("returns no actionable restores when the fast backup scan hits a locked directory", async () => {
+			const readdirSpy = vi.spyOn(fs, "readdir");
+			const error = new Error("backup directory locked") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			readdirSpy.mockRejectedValue(error);
+
+			try {
+				await expect(getActionableNamedBackupRestores()).resolves.toEqual({
+					assessments: [],
+					allAssessments: [],
+					totalBackups: 0,
+				});
+			} finally {
+				readdirSpy.mockRestore();
+			}
+		});
+
 		it("retries transient backup directory errors while listing backups", async () => {
 			await saveAccounts({
 				version: 3,
@@ -2755,6 +2773,44 @@ describe("storage", () => {
 			} finally {
 				Object.defineProperty(process, "platform", { value: originalPlatform });
 				writeFileSpy.mockRestore();
+			}
+		});
+
+		it("stages the pre-delete snapshot in a temp file before publishing it", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "delete-original",
+						refreshToken: "ref-delete-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const renameSpy = vi.spyOn(fs, "rename");
+
+			try {
+				await expect(deleteSavedAccounts()).resolves.toMatchObject({
+					accountsCleared: true,
+				});
+				expect(
+					renameSpy.mock.calls.some(([sourcePath, destinationPath]) => {
+						const source = String(sourcePath);
+						const destination = String(destinationPath);
+						return (
+							source.includes("accounts-delete-saved-accounts-snapshot-") &&
+							source.endsWith(".tmp") &&
+							destination.includes("accounts-delete-saved-accounts-snapshot-") &&
+							destination.endsWith(".json")
+						);
+					}),
+				).toBe(true);
+				const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+				expect(entries.some((name) => name.endsWith(".tmp"))).toBe(false);
+			} finally {
+				renameSpy.mockRestore();
 			}
 		});
 
@@ -3859,6 +3915,10 @@ describe("storage", () => {
 				await fs.writeFile(testStoragePath, "{}");
 				const walPath = `${testStoragePath}.wal`;
 				await fs.writeFile(walPath, "{}");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
 
 				const realUnlink = fs.unlink.bind(fs);
 				let failedOnce = false;
@@ -3884,10 +3944,43 @@ describe("storage", () => {
 						),
 					).toHaveLength(2);
 				} finally {
+					platformSpy?.mockRestore();
 					unlinkSpy.mockRestore();
 				}
 			},
 		);
+
+		it("does not retry EPERM when clearing saved account artifacts on non-Windows platforms", async () => {
+			await fs.writeFile(testStoragePath, "{}");
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("linux");
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (targetPath === testStoragePath) {
+						const error = new Error("still locked") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					const error = new Error("missing") as NodeJS.ErrnoException;
+					error.code = "ENOENT";
+					throw error;
+				});
+
+			try {
+				await expect(clearAccounts()).resolves.toBe(false);
+				expect(existsSync(testStoragePath)).toBe(true);
+				expect(
+					unlinkSpy.mock.calls.filter(
+						([targetPath]) => targetPath === testStoragePath,
+					),
+				).toHaveLength(1);
+			} finally {
+				platformSpy.mockRestore();
+				unlinkSpy.mockRestore();
+			}
+		});
 	});
 
 	describe("clearFlaggedAccounts", () => {
@@ -3914,6 +4007,10 @@ describe("storage", () => {
 				const flaggedPath = getFlaggedAccountsPath();
 				await fs.mkdir(dirname(flaggedPath), { recursive: true });
 				await fs.writeFile(flaggedPath, "{}");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
 
 				const realUnlink = fs.unlink.bind(fs);
 				let failedOnce = false;
@@ -3938,6 +4035,7 @@ describe("storage", () => {
 						),
 					).toHaveLength(2);
 				} finally {
+					platformSpy?.mockRestore();
 					unlinkSpy.mockRestore();
 				}
 			},
@@ -3949,6 +4047,10 @@ describe("storage", () => {
 				const flaggedPath = getFlaggedAccountsPath();
 				await fs.mkdir(dirname(flaggedPath), { recursive: true });
 				await fs.writeFile(flaggedPath, "{}");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
 
 				const unlinkSpy = vi
 					.spyOn(fs, "unlink")
@@ -3972,6 +4074,7 @@ describe("storage", () => {
 						),
 					).toHaveLength(5);
 				} finally {
+					platformSpy?.mockRestore();
 					unlinkSpy.mockRestore();
 				}
 			},
@@ -4142,6 +4245,10 @@ describe("storage", () => {
 			"returns false when clearing saved accounts exhausts retryable %s failures",
 			async (code) => {
 				await fs.writeFile(testStoragePath, "{}");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
 				const unlinkSpy = vi
 					.spyOn(fs, "unlink")
 					.mockImplementation(async (targetPath) => {
@@ -4164,6 +4271,7 @@ describe("storage", () => {
 						),
 					).toHaveLength(5);
 				} finally {
+					platformSpy?.mockRestore();
 					unlinkSpy.mockRestore();
 				}
 			},
@@ -5659,6 +5767,10 @@ describe("storage", () => {
 				const quotaPath = getQuotaCachePath();
 				await fs.mkdir(dirname(quotaPath), { recursive: true });
 				await fs.writeFile(quotaPath, "{}", "utf-8");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
 
 				const realUnlink = fs.unlink.bind(fs);
 				const unlinkSpy = vi
@@ -5677,6 +5789,7 @@ describe("storage", () => {
 					expect(existsSync(quotaPath)).toBe(false);
 					expect(unlinkSpy).toHaveBeenCalledTimes(2);
 				} finally {
+					platformSpy?.mockRestore();
 					unlinkSpy.mockRestore();
 				}
 			},
@@ -5688,6 +5801,10 @@ describe("storage", () => {
 				const quotaPath = getQuotaCachePath();
 				await fs.mkdir(dirname(quotaPath), { recursive: true });
 				await fs.writeFile(quotaPath, "{}", "utf-8");
+				const platformSpy =
+					code === "EPERM"
+						? vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+						: null;
 
 				const unlinkSpy = vi
 					.spyOn(fs, "unlink")
@@ -5707,6 +5824,7 @@ describe("storage", () => {
 					expect(existsSync(quotaPath)).toBe(true);
 					expect(unlinkSpy).toHaveBeenCalledTimes(5);
 				} finally {
+					platformSpy?.mockRestore();
 					unlinkSpy.mockRestore();
 				}
 			},
