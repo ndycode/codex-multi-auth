@@ -2309,7 +2309,7 @@ describe("storage", () => {
 			).rejects.toThrow(/escapes backup directory/i);
 		});
 
-		it("rejects symlinked backup roots during restore path validation", async () => {
+		it("allows symlinked backup roots when the resolved backup stays contained", async () => {
 			const canonicalBackupRoot = join(testWorkDir, "canonical-backups");
 			const linkedBackupRoot = join(testWorkDir, "linked-backups");
 			const backupPath = join(canonicalBackupRoot, "linked-root.json");
@@ -2341,7 +2341,7 @@ describe("storage", () => {
 					join(linkedBackupRoot, "linked-root.json"),
 					linkedBackupRoot,
 				),
-			).rejects.toThrow(/escapes backup directory/i);
+			).resolves.toBe(resolve(backupPath));
 		});
 
 		it("rethrows realpath containment errors for existing backup paths", async () => {

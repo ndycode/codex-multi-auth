@@ -2157,14 +2157,12 @@ export async function assertNamedBackupRestorePath(
 ): Promise<string> {
 	const resolvedPath = resolvePath(path);
 	const resolvedBackupRoot = resolvePath(backupRoot);
-	let backupRootIsSymlink = false;
 	try {
-		backupRootIsSymlink =
-			(await namedBackupContainmentFs.lstat(resolvedBackupRoot)).isSymbolicLink();
+		await namedBackupContainmentFs.lstat(resolvedBackupRoot);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
-			backupRootIsSymlink = false;
+			// Allow the canonical containment check below to classify missing roots.
 		} else if (isRetryableFilesystemErrorCode(code)) {
 			throw new BackupPathValidationTransientError(
 				"Backup path validation failed. Try again.",
@@ -2173,9 +2171,6 @@ export async function assertNamedBackupRestorePath(
 		} else {
 			throw error;
 		}
-	}
-	if (backupRootIsSymlink) {
-		throw new BackupContainmentError("Backup path escapes backup directory");
 	}
 	const canonicalBackupRoot =
 		await resolvePathForNamedBackupContainment(resolvedBackupRoot);
