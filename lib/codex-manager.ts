@@ -1749,7 +1749,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 				account.enabled = true;
 				changed = true;
 			}
-			if (accountIdentityChanged && liveProbe && quotaCache) {
+			if (accountIdentityChanged && liveProbe && workingQuotaCache) {
 				quotaEmailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
 			}
 			account.lastUsed = Date.now();
@@ -2470,8 +2470,8 @@ async function runForecast(args: string[]): Promise<number> {
 			console.log(`  ${stylePromptText("-", "warning")} ${stylePromptText(error, "muted")}`);
 		}
 	}
-	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+	if (workingQuotaCache && quotaCacheChanged) {
+		await saveQuotaCache(workingQuotaCache);
 	}
 
 	return 0;
@@ -3204,15 +3204,13 @@ async function runFix(args: string[]): Promise<number> {
 				accountChanged = true;
 				accountIdentityChanged = true;
 			}
-			if (!account.accountId && nextAccountId) {
-				account.accountId = nextAccountId;
-				account.accountIdSource = "token";
+			if (applyTokenAccountIdentity(account, nextAccountId)) {
 				accountChanged = true;
 				accountIdentityChanged = true;
 			}
 
 			if (accountChanged) changed = true;
-			if (accountIdentityChanged && options.live && quotaCache) {
+			if (accountIdentityChanged && options.live && workingQuotaCache) {
 				quotaEmailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
 			}
 			if (options.live) {
@@ -3410,8 +3408,8 @@ async function runFix(args: string[]): Promise<number> {
 			console.log(`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
 		}
 	}
-	if (quotaCache && quotaCacheChanged) {
-		await saveQuotaCache(quotaCache);
+	if (workingQuotaCache && quotaCacheChanged) {
+		await saveQuotaCache(workingQuotaCache);
 	}
 
 	if (changed && options.dryRun) {
