@@ -54,6 +54,23 @@ async function removeWithRetry(
 	}
 }
 
+async function waitForAsyncExpectation(
+	expectation: () => Promise<void>,
+	attempts: number = 20,
+): Promise<void> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < attempts; attempt += 1) {
+		try {
+			await expectation();
+			return;
+		} catch (error) {
+			lastError = error;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	}
+	throw lastError;
+}
+
 describe("codex-cli sync", () => {
 	let tempDir: string;
 	let accountsPath: string;
@@ -841,10 +858,32 @@ describe("codex-cli sync", () => {
 		);
 
 		vi.spyOn(storageModule, "getLastAccountsSaveTimestamp").mockReturnValue(0);
-		vi.spyOn(writerModule, "getLastCodexCliSelectionWriteTimestamp").mockReturnValue(
-			0,
-		);
-		vi.spyOn(storageModule, "getStoragePath").mockReturnValue("\0busy-target");
+		vi.spyOn(
+			writerModule,
+			"getLastCodexCliSelectionWriteTimestamp",
+		).mockReturnValue(0);
+		vi.spyOn(storageModule, "getStoragePath").mockReturnValue(targetStoragePath);
+		const sourceTime = new Date("2026-03-13T00:00:00.000Z");
+		const targetTime = new Date("2026-03-13T00:00:00.500Z");
+		await utimes(accountsPath, sourceTime, sourceTime);
+		await writeFile(targetStoragePath, "{\"version\":3}", "utf-8");
+		await utimes(targetStoragePath, targetTime, targetTime);
+		const statError = new Error("ebusy target") as NodeJS.ErrnoException;
+		statError.code = "EBUSY";
+		const nodeFs = await import("node:fs");
+		const originalStat = nodeFs.promises.stat.bind(nodeFs.promises);
+		let targetStatCalls = 0;
+		const statSpy = vi
+			.spyOn(nodeFs.promises, "stat")
+			.mockImplementation(async (...args: Parameters<typeof originalStat>) => {
+				if (args[0] === targetStoragePath) {
+					targetStatCalls += 1;
+					if (targetStatCalls === 1) {
+						throw statError;
+					}
+				}
+				return originalStat(...args);
+			});
 
 		const current: AccountStorageV3 = {
 			version: 3,
@@ -872,12 +911,17 @@ describe("codex-cli sync", () => {
 			activeIndexByFamily: { codex: 1 },
 		};
 
-		const preview = await previewCodexCliSync(current, {
-			forceRefresh: true,
-		});
+		try {
+			const preview = await previewCodexCliSync(current, {
+				forceRefresh: true,
+			});
 
-		expect(preview.status).toBe("noop");
-		expect(preview.summary.selectionChanged).toBe(false);
+			expect(preview.status).toBe("noop");
+			expect(preview.summary.selectionChanged).toBe(false);
+			expect(targetStatCalls).toBe(2);
+		} finally {
+			statSpy.mockRestore();
+		}
 	});
 
 	it.each(["EBUSY", "EPERM"] as const)(
@@ -2247,6 +2291,9 @@ describe("codex-cli sync", () => {
 					error: "EPERM",
 				}),
 			);
+			const serializedWarnCall = JSON.stringify(warnSpy.mock.calls[0]);
+			expect(serializedWarnCall).not.toContain(tempDir);
+			expect(serializedWarnCall).not.toContain("openai-codex-accounts.json");
 
 			saveSpy.mockRestore();
 		} finally {
@@ -2655,6 +2702,17 @@ describe("codex-cli sync", () => {
 		expect(lastRun?.message).toBe("save busy");
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
 		expect(lastRun?.runAt).toBe(123456789);
+		await waitForAsyncExpectation(async () => {
+			const history = await readSyncHistory({ kind: "codex-cli-sync" });
+			const lastHistory = history.at(-1);
+			expect(lastHistory?.kind).toBe("codex-cli-sync");
+			if (lastHistory?.kind === "codex-cli-sync") {
+				expect(lastHistory.run.outcome).toBe("error");
+				expect(lastHistory.run.message).toBe("save busy");
+				expect(lastHistory.run.summary.addedAccountCount).toBe(1);
+				expect(lastHistory.run.runAt).toBe(123456789);
+			}
+		});
 	});
 
 	it("keeps the newer pending sync outcome when an older commit finishes later", async () => {
@@ -2722,6 +2780,23 @@ describe("codex-cli sync", () => {
 				message: "later run failed",
 			}),
 		);
+		await waitForAsyncExpectation(async () => {
+			const history = await readSyncHistory({ kind: "codex-cli-sync" });
+			const lastHistory = history.at(-1);
+			expect(lastHistory?.kind).toBe("codex-cli-sync");
+			if (lastHistory?.kind === "codex-cli-sync") {
+				expect(lastHistory.run).toEqual(
+					expect.objectContaining({
+						outcome: "changed",
+						sourcePath: accountsPath,
+						targetPath: targetStoragePath,
+						summary: expect.objectContaining({
+							addedAccountCount: 1,
+						}),
+					}),
+				);
+			}
+		});
 	});
 
 	it("ignores a duplicate sync-run publish for the same revision", async () => {
@@ -2777,6 +2852,14 @@ describe("codex-cli sync", () => {
 
 		expect(getLastCodexCliSyncRun()).toEqual(committedRun);
 		expect(getLastCodexCliSyncRun()?.outcome).toBe("changed");
+		await waitForAsyncExpectation(async () => {
+			const history = await readSyncHistory({ kind: "codex-cli-sync" });
+			const lastHistory = history.at(-1);
+			expect(lastHistory?.kind).toBe("codex-cli-sync");
+			if (lastHistory?.kind === "codex-cli-sync") {
+				expect(lastHistory.run).toEqual(committedRun);
+			}
+		});
 	});
 
 	it("serializes concurrent active-selection writes to keep accounts/auth aligned", async () => {
