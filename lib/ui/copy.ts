@@ -133,7 +133,7 @@ export const UI_COPY = {
 		syncCenterActionsHeading: "Actions",
 		syncCenterRefresh: "Refresh Preview",
 		syncCenterApply: "Apply Preview To Target",
-		syncCenterRollback: "Rollback Last Apply",
+		syncCenterRollback: "Rollback Last Manual Apply",
 		syncCenterBack: "Back",
 		backendCategoriesHeading: "Categories",
 		backendCategoryTitle: "Backend Category",

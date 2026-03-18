@@ -38,6 +38,7 @@ const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
 export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 4;
 const RETRYABLE_ROLLBACK_SAVE_CODES = new Set(["EBUSY", "EAGAIN"]);
 const ROLLBACK_SAVE_MAX_ATTEMPTS = 5;
+const ROLLBACK_HISTORY_SCAN_LIMIT = 200;
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -179,6 +180,30 @@ function normalizeRollbackSnapshot(
 		name: snapshot.name,
 		path: snapshot.path,
 	};
+}
+
+function normalizePathForComparison(
+	path: string | null | undefined,
+): string | null {
+	if (typeof path !== "string" || path.length === 0) {
+		return null;
+	}
+	const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+	const trimmed =
+		normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+	const isWindowsPath = path.includes("\\") || /^[a-z]:\//i.test(trimmed);
+	return isWindowsPath ? trimmed.toLowerCase() : trimmed;
+}
+
+function matchesRollbackTargetPath(
+	left: string | null | undefined,
+	right: string | null | undefined,
+): boolean {
+	const normalizedLeft = normalizePathForComparison(left);
+	const normalizedRight = normalizePathForComparison(right);
+	return Boolean(
+		normalizedLeft && normalizedRight && normalizedLeft === normalizedRight,
+	);
 }
 
 function normalizeCodexCliSyncRun(
@@ -359,10 +384,18 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	lastCodexCliSyncHistoryLoadAttempted = false;
 }
 
-async function captureRollbackSnapshot(): Promise<CodexCliSyncRollbackSnapshot | null> {
+async function captureRollbackSnapshot(
+	current: AccountStorageV3 | null,
+	targetPath: string,
+): Promise<CodexCliSyncRollbackSnapshot | null> {
+	if (!current) {
+		return null;
+	}
 	const snapshot: NamedBackupMetadata | null = await snapshotAccountStorage({
 		reason: "codex-cli-sync",
 		failurePolicy: "warn",
+		storage: current,
+		storagePath: targetPath,
 	});
 	if (!snapshot) return null;
 	return {
@@ -384,13 +417,29 @@ function hasUsableRollbackSnapshot(
 async function findLatestManualRollbackRun(): Promise<
 	CodexCliSyncRun | null
 > {
-	const history = await readSyncHistory({ kind: "codex-cli-sync" });
+	const targetPath = getStoragePath();
+	const lastRun = getLastCodexCliSyncRun();
+	if (
+		isManualChangedSyncRun(lastRun) &&
+		matchesRollbackTargetPath(lastRun.targetPath, targetPath) &&
+		hasUsableRollbackSnapshot(lastRun.rollbackSnapshot)
+	) {
+		return lastRun;
+	}
+
+	const history = await readSyncHistory({
+		kind: "codex-cli-sync",
+		limit: ROLLBACK_HISTORY_SCAN_LIMIT,
+	});
 	let fallbackRun: CodexCliSyncRun | null = null;
 	for (let index = history.length - 1; index >= 0; index -= 1) {
 		const entry = history[index];
 		if (!entry || entry.kind !== "codex-cli-sync") continue;
 		const run = normalizeCodexCliSyncRun(entry.run);
 		if (!isManualChangedSyncRun(run)) {
+			continue;
+		}
+		if (!matchesRollbackTargetPath(run.targetPath, targetPath)) {
 			continue;
 		}
 		fallbackRun ??= run;
@@ -1083,7 +1132,9 @@ export async function applyCodexCliSyncToStorage(
 		const storage =
 			next.accounts.length === 0 ? (current ?? next) : next;
 		const rollbackSnapshot =
-			trigger === "manual" && changed ? await captureRollbackSnapshot() : null;
+			trigger === "manual" && changed
+				? await captureRollbackSnapshot(current, targetPath)
+				: null;
 		const syncRun = createSyncRun({
 			outcome: changed ? "changed" : "noop",
 			sourcePath: state.path,

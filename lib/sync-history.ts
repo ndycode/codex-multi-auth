@@ -228,7 +228,7 @@ export async function readSyncHistory(
 	await waitForPendingHistoryWrites();
 	try {
 		if (typeof limit === "number" && limit > 0) {
-			return readHistoryTail(getSyncHistoryPaths().historyPath, {
+			return await readHistoryTail(getSyncHistoryPaths().historyPath, {
 				kind,
 				limit,
 			});
