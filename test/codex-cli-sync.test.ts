@@ -2646,6 +2646,7 @@ describe("codex-cli sync", () => {
 
 		const result = await applyCodexCliSyncToStorage(current);
 		expect(result.pendingRun).not.toBeNull();
+		result.pendingRun!.run.runAt = 123456789;
 
 		commitCodexCliSyncRunFailure(result.pendingRun, new Error("save busy"));
 
@@ -2653,6 +2654,7 @@ describe("codex-cli sync", () => {
 		expect(lastRun?.outcome).toBe("error");
 		expect(lastRun?.message).toBe("save busy");
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
+		expect(lastRun?.runAt).toBe(123456789);
 	});
 
 	it("keeps the newer pending sync outcome when an older commit finishes later", async () => {

@@ -2429,6 +2429,10 @@ async function getLatestManualCodexCliRollbackSnapshotNames(
 			if (!snapshotName) {
 				continue;
 			}
+			const snapshotPath = run.rollbackSnapshot?.path?.trim();
+			if (snapshotPath && !existsSync(snapshotPath)) {
+				continue;
+			}
 			return new Set([snapshotName]);
 		}
 	} catch (error) {

@@ -375,10 +375,7 @@ export function commitCodexCliSyncRunFailure(
 	}
 	publishCodexCliSyncRun(
 		buildSyncRunError(
-			{
-				...pendingRun.run,
-				runAt: Date.now(),
-			},
+			pendingRun.run,
 			error,
 		),
 		pendingRun.revision,
