@@ -4783,6 +4783,7 @@ describe("storage", () => {
 	describe("opencode account pool detection", () => {
 		const originalLocalAppData = process.env.LOCALAPPDATA;
 		const originalAppData = process.env.APPDATA;
+		const originalHome = process.env.HOME;
 		const originalPoolPath = process.env.CODEX_OPENCODE_POOL_PATH;
 		const originalUserProfile = process.env.USERPROFILE;
 		let tempRoot = "";
@@ -4806,6 +4807,8 @@ describe("storage", () => {
 			else process.env.LOCALAPPDATA = originalLocalAppData;
 			if (originalAppData === undefined) delete process.env.APPDATA;
 			else process.env.APPDATA = originalAppData;
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
 			if (originalPoolPath === undefined)
 				delete process.env.CODEX_OPENCODE_POOL_PATH;
 			else process.env.CODEX_OPENCODE_POOL_PATH = originalPoolPath;
@@ -4921,6 +4924,7 @@ describe("storage", () => {
 				".opencode",
 				"openai-codex-accounts.json",
 			);
+			process.env.HOME = fakeHome;
 			process.env.USERPROFILE = fakeHome;
 			await fs.mkdir(dirname(homedirPoolPath), { recursive: true });
 			await fs.writeFile(
