@@ -253,7 +253,9 @@ export async function appendSyncHistoryEntry(
 export async function readLatestSyncHistory(): Promise<SyncHistoryEntry | null> {
 	await waitForPendingHistoryWrites();
 	try {
-		const content = await fs.readFile(getSyncHistoryPaths().latestPath, "utf8");
+		const content = await retryHistoryWrite(() =>
+			fs.readFile(getSyncHistoryPaths().latestPath, "utf8"),
+		);
 		const parsed = parseEntry(content);
 		return parsed ? cloneEntry(parsed) : null;
 	} catch (error) {

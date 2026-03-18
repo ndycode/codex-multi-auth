@@ -12,6 +12,7 @@ import {
 	appendSyncHistoryEntry,
 	configureSyncHistoryForTests,
 	getSyncHistoryPaths,
+	readLatestSyncHistory,
 	readSyncHistory,
 } from "../lib/sync-history.js";
 
@@ -289,6 +290,51 @@ describe("sync history", () => {
 				addedAccountCount: 1,
 			}),
 		});
+	});
+
+	it("retries transient EBUSY while reading the latest sync history snapshot", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 7,
+			run: {
+				outcome: "changed",
+				runAt: 7,
+				sourcePath: "source-7.json",
+				targetPath: "target.json",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 0,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 1,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 0,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		});
+
+		const latestPath = getSyncHistoryPaths().latestPath;
+		const originalReadFile = nodeFs.readFile.bind(nodeFs);
+		let failedReadAttempts = 0;
+		vi.spyOn(nodeFs, "readFile").mockImplementation(
+			async (...args: Parameters<typeof nodeFs.readFile>) => {
+				const [path] = args;
+				if (String(path) === latestPath && failedReadAttempts < 2) {
+					failedReadAttempts += 1;
+					const error = new Error("busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalReadFile(...args);
+			},
+		);
+
+		await expect(readLatestSyncHistory()).resolves.toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 7,
+		});
+		expect(failedReadAttempts).toBe(2);
 	});
 
 	it("trims oversized history without re-reading the full history file", async () => {
