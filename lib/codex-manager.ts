@@ -110,8 +110,6 @@ const log = createLogger("codex-manager");
 
 let destructiveActionInFlight = false;
 
-let destructiveActionInFlight = false;
-
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
 	const ui = getUiRuntimeOptions();
@@ -5069,7 +5067,6 @@ async function showBackupBrowserDetails(
 		[
 			{ label: "Preview Restore", value: "preview-restore", color: "green" },
 			{ label: "Back", value: "back" },
-			{ label: "Preview Restore", value: "preview-restore", color: "green" },
 		],
 		{
 			message: "Backup Actions",

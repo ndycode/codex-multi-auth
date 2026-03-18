@@ -2740,13 +2740,6 @@ async function importNormalizedAccounts(
 		total,
 		skipped: skippedCount,
 	} = await withAccountStorageTransaction(async (existing, persist) => {
-		if (snapshotReason) {
-			await snapshotAccountStorage({
-				reason: snapshotReason,
-				storage: existing,
-				storagePath: getStoragePath(),
-			});
-		}
 		const existingAccounts = existing?.accounts ?? [];
 		const existingActiveIndex = existing?.activeIndex ?? 0;
 
@@ -2891,113 +2884,6 @@ async function resolveNamedBackupRestorePath(name: string): Promise<string> {
 		: `${requested}.json`;
 	try {
 		return buildNamedBackupPath(normalizedName);
-	} catch (error) {
-		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
-			? requestedWithExtension.slice(0, -".json".length)
-			: requestedWithExtension;
-		if (
-			requested.length > 0 &&
-			basename(requestedWithExtension) === requestedWithExtension &&
-			!requestedWithExtension.includes("..") &&
-			!/^[A-Za-z0-9_-]+$/.test(baseName)
-		) {
-			throw new Error(
-				`Import file not found: ${resolvePath(join(backupRoot, requestedWithExtension))}`,
-			);
-		}
-		throw error;
-	}
-}
-
-async function loadBackupCandidate(path: string): Promise<LoadedBackupCandidate> {
-	try {
-		return await retryTransientFilesystemOperation(() =>
-			loadAccountsFromPath(path),
-		);
-	} catch (error) {
-		return {
-			normalized: null,
-			storedVersion: undefined,
-			schemaErrors: [],
-			error: String(error),
-		};
-	}
-}
-
-function equalsNamedBackupEntry(left: string, right: string): boolean {
-	return process.platform === "win32"
-		? left.toLowerCase() === right.toLowerCase()
-		: left === right;
-}
-
-function stripNamedBackupJsonExtension(name: string): string {
-	return name.toLowerCase().endsWith(".json")
-		? name.slice(0, -".json".length)
-		: name;
-}
-
-async function findExistingNamedBackupPath(
-	name: string,
-): Promise<string | undefined> {
-	const requested = (name ?? "").trim();
-	if (!requested) {
-		return undefined;
-	}
-
-	const backupRoot = getNamedBackupRoot(getStoragePath());
-	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
-		? requested
-		: `${requested}.json`;
-	const requestedBaseName = stripNamedBackupJsonExtension(requestedWithExtension);
-
-	try {
-		const entries = await retryTransientFilesystemOperation(() =>
-			fs.readdir(backupRoot, { withFileTypes: true }),
-		);
-		for (const entry of entries) {
-			if (!entry.name.toLowerCase().endsWith(".json")) continue;
-			const entryBaseName = stripNamedBackupJsonExtension(entry.name);
-			const matchesRequestedEntry =
-				equalsNamedBackupEntry(entry.name, requested) ||
-				equalsNamedBackupEntry(entry.name, requestedWithExtension) ||
-				equalsNamedBackupEntry(entryBaseName, requestedBaseName);
-			if (!matchesRequestedEntry) {
-				continue;
-			}
-			if (entry.isSymbolicLink() || !entry.isFile()) {
-				throw new Error(
-					`Named backup "${entryBaseName}" is not a regular backup file`,
-				);
-			}
-			return resolvePath(join(backupRoot, entry.name));
-		}
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return undefined;
-		}
-		log.warn("Failed to read named backup directory", {
-			path: backupRoot,
-			error: String(error),
-		});
-		throw error;
-	}
-
-	return undefined;
-}
-
-async function resolveNamedBackupRestorePath(name: string): Promise<string> {
-	const existingPath = await findExistingNamedBackupPath(name);
-	if (existingPath) {
-		return existingPath;
-	}
-	const requested = (name ?? "").trim();
-	const backupRoot = getNamedBackupRoot(getStoragePath());
-	const requestedWithExtension = requested.toLowerCase().endsWith(".json")
-		? requested
-		: `${requested}.json`;
-	try {
-		return buildNamedBackupPath(name);
 	} catch (error) {
 		const baseName = requestedWithExtension.toLowerCase().endsWith(".json")
 			? requestedWithExtension.slice(0, -".json".length)

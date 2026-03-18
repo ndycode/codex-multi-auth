@@ -1351,7 +1351,9 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(1);
 		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(confirmMock).toHaveBeenCalledOnce();
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup", {
+			assessment,
+		});
 	});
 
 	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
@@ -1406,7 +1408,9 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(1);
 		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(confirmMock).toHaveBeenCalledOnce();
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup", {
+			assessment,
+		});
 	});
 
 	it("runs restore preview before applying a replace-only named backup", async () => {
@@ -1566,7 +1570,9 @@ describe("codex manager cli commands", () => {
 		expect(confirmMock).toHaveBeenCalledWith(
 			"Restore named-backup? Import 0 new accounts for 1 total. Replacing 1 current account.",
 		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup");
+		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup", {
+			assessment,
+		});
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
