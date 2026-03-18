@@ -3970,6 +3970,63 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith("Cancelled.");
 	});
 
+	it.each(["EBUSY", "EPERM"])(
+		"does not report a successful switch when saving the validated selection fails with %s",
+		async (code) => {
+			const now = Date.now();
+			const storage = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "first@example.com",
+						accountId: "acc_first",
+						refreshToken: "refresh-first",
+						accessToken: "access-first",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+					{
+						email: "switch@example.com",
+						accountId: "acc_switch",
+						refreshToken: "refresh-switch",
+						accessToken: "access-switch",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			};
+			loadAccountsMock.mockImplementation(async () => structuredClone(storage));
+			saveAccountsMock.mockRejectedValueOnce(
+				makeErrnoError("switch save failed", code),
+			);
+			promptLoginModeMock
+				.mockResolvedValueOnce({
+					mode: "manage",
+					switchAccountIndex: 1,
+					selectedAccountNumber: 1,
+				})
+				.mockResolvedValueOnce({ mode: "cancel" });
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+			await expect(
+				runCodexMultiAuthCli(["auth", "login"]),
+			).rejects.toThrow(`switch save failed`);
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+			expect(logSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining("Switched to account"),
+			);
+		},
+	);
+
 	it("marks newly added login account active so smart sort reflects it immediately", async () => {
 		const now = Date.now();
 		let storageState: {

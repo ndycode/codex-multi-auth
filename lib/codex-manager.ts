@@ -4155,6 +4155,7 @@ async function loadManageActionStorageSnapshot(): Promise<AccountStorageV3 | nul
 		}
 	}
 
+	// Unreachable in practice: the loop above either returns a snapshot or rethrows.
 	throw new Error("Manage action storage reload retry loop exhausted unexpectedly");
 }
 
@@ -4197,15 +4198,6 @@ async function loadManageActionStorage(
 		{ allowUniqueAccountIdFallbackWithoutEmail: true },
 	);
 	if (matchingIndex !== targetIndex) {
-		reportUnavailableManageActionAccount(
-			displayAccountNumber,
-			targetIndex,
-			freshStorage.accounts.length,
-		);
-		return null;
-	}
-
-	if (!freshStorage.accounts[targetIndex]) {
 		reportUnavailableManageActionAccount(
 			displayAccountNumber,
 			targetIndex,
