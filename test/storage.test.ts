@@ -1286,8 +1286,11 @@ describe("storage", () => {
 				}),
 			]);
 
-			const restoreResult = await restoreNamedBackup("Replace Only");
-			expect(restoreResult).toEqual({ imported: 0, skipped: 1, total: 1 });
+			const restoreResult = await restoreNamedBackup("Replace Only", {
+				assessment,
+			});
+			expect(restoreResult).toEqual({ imported: 0, skipped: 0, total: 1 });
+			expect(restoreResult.skipped).toBe(assessment.skipped);
 
 			const restored = await loadAccounts();
 			expect(restored?.accounts).toEqual([
@@ -1534,7 +1537,7 @@ describe("storage", () => {
 			await expect(
 				restoreNamedBackup("limit-race", { assessment: initialAssessment }),
 			).rejects.toThrow(
-				`Restore would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
+				`maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
 			);
 
 			const persisted = await loadAccounts();
@@ -1790,6 +1793,7 @@ describe("storage", () => {
 				const result = await restoreNamedBackup("retry-restore-read");
 				expect(result.total).toBe(1);
 				expect(busyFailures).toBe(1);
+				expect(backupReads).toBe(2);
 			} finally {
 				readFileSpy.mockRestore();
 			}

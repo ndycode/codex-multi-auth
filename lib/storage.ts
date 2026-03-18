@@ -2432,18 +2432,20 @@ export async function restoreNamedBackup(
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
 	const candidate = await loadImportableBackupCandidate(backupPath);
-	if (options.assessment !== undefined) {
-		const assessment = assessNamedBackupRestoreCandidate(
+	const assessment =
+		options.assessment ??
+		assessNamedBackupRestoreCandidate(
 			await buildNamedBackupMetadata(name, backupPath, { candidate }),
 			candidate,
 			await loadAccounts(),
 			candidate.rawAccounts,
 		);
-		if (!assessment.eligibleForRestore || assessment.wouldExceedLimit) {
-			throw new Error(assessment.error ?? "Backup is not eligible for restore");
-		}
+	if (!assessment.eligibleForRestore) {
+		throw new Error(assessment.error ?? "Backup is not eligible for restore");
 	}
-	return importNormalizedAccounts(candidate.normalized, backupPath);
+	return importNormalizedAccounts(candidate.normalized, backupPath, {
+		replacedExistingCount: assessment.replacedExistingCount ?? 0,
+	});
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -2526,6 +2528,7 @@ async function loadImportableBackupCandidate(
 async function importNormalizedAccounts(
 	normalized: AccountStorageV3,
 	sourcePath: string,
+	options: { replacedExistingCount?: number } = {},
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const {
 		imported: importedCount,
@@ -2558,7 +2561,12 @@ async function importNormalizedAccounts(
 		await persist(newStorage);
 
 		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
+		const skipped = Math.max(
+			0,
+			normalized.accounts.length -
+				imported -
+				Math.max(0, options.replacedExistingCount ?? 0),
+		);
 		return { imported, total: deduplicatedAccounts.length, skipped };
 	});
 
