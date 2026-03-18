@@ -483,10 +483,7 @@ function hasSafeQuotaEmailFallback(
 	const state = emailFallbackState.get(email);
 	if (!state) return false;
 	if (state.distinctAccountIds.size > 1) return false;
-	if (state.distinctAccountIds.size === 0) {
-		return state.matchingCount === 1;
-	}
-	return true;
+	return state.matchingCount === 1;
 }
 
 function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
@@ -1625,7 +1622,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		console.log("No accounts configured.");
 		return;
 	}
-	const quotaEmailFallbackState =
+	let quotaEmailFallbackState =
 		liveProbe && quotaCache
 			? buildQuotaEmailFallbackState(storage.accounts)
 			: null;
@@ -1709,6 +1706,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		if (result.type === "success") {
 			const tokenAccountId = extractAccountId(result.access);
 			const nextEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
+			let accountIdentityChanged = false;
 			if (account.refreshToken !== result.refresh) {
 				account.refreshToken = result.refresh;
 				changed = true;
@@ -1724,13 +1722,18 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 			if (nextEmail && nextEmail !== account.email) {
 				account.email = nextEmail;
 				changed = true;
+				accountIdentityChanged = true;
 			}
 			if (applyTokenAccountIdentity(account, tokenAccountId)) {
 				changed = true;
+				accountIdentityChanged = true;
 			}
 			if (account.enabled === false) {
 				account.enabled = true;
 				changed = true;
+			}
+			if (accountIdentityChanged && liveProbe && quotaCache) {
+				quotaEmailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
 			}
 			account.lastUsed = Date.now();
 			if (i === activeIndex) {
@@ -3072,7 +3075,7 @@ async function runFix(args: string[]): Promise<number> {
 		console.log("No accounts configured.");
 		return 0;
 	}
-	const quotaEmailFallbackState =
+	let quotaEmailFallbackState =
 		options.live && quotaCache
 			? buildQuotaEmailFallbackState(storage.accounts)
 			: null;
@@ -3163,6 +3166,7 @@ async function runFix(args: string[]): Promise<number> {
 			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
 			const nextAccountId = extractAccountId(refreshResult.access);
 			let accountChanged = false;
+			let accountIdentityChanged = false;
 
 			if (account.refreshToken !== refreshResult.refresh) {
 				account.refreshToken = refreshResult.refresh;
@@ -3179,14 +3183,19 @@ async function runFix(args: string[]): Promise<number> {
 			if (nextEmail && nextEmail !== account.email) {
 				account.email = nextEmail;
 				accountChanged = true;
+				accountIdentityChanged = true;
 			}
 			if (!account.accountId && nextAccountId) {
 				account.accountId = nextAccountId;
 				account.accountIdSource = "token";
 				accountChanged = true;
+				accountIdentityChanged = true;
 			}
 
 			if (accountChanged) changed = true;
+			if (accountIdentityChanged && options.live && quotaCache) {
+				quotaEmailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
+			}
 			if (options.live) {
 				const probeAccountId = account.accountId ?? nextAccountId;
 				if (probeAccountId) {

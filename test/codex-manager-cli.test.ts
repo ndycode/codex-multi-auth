@@ -2417,7 +2417,7 @@ describe("codex manager cli commands", () => {
 		promptAddAnotherAccountMock.mockResolvedValue(false);
 
 		const authModule = await import("../lib/auth/auth.js");
-		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue({
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
 			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
 			state: "oauth-state",
 			url: "https://auth.openai.com/mock",
@@ -2433,13 +2433,13 @@ describe("codex manager cli commands", () => {
 		const browserModule = await import("../lib/auth/browser.js");
 		vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
 		const serverModule = await import("../lib/auth/server.js");
-		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
 			ready: true,
 			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
 			close: vi.fn(),
 		});
 		const accountsModule = await import("../lib/accounts.js");
-		vi.mocked(accountsModule.extractAccountEmail).mockImplementation(
+		vi.mocked(accountsModule.extractAccountEmail).mockImplementationOnce(
 			() => "user@example.com",
 		);
 		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
@@ -2485,10 +2485,6 @@ describe("codex manager cli commands", () => {
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
-
-		vi.mocked(accountsModule.extractAccountEmail).mockImplementation(
-			() => undefined,
-		);
 	});
 
 	it("updates a unique shared-accountId login when the email claim is missing", async () => {
@@ -2532,12 +2528,12 @@ describe("codex manager cli commands", () => {
 		vi.mocked(accountsModule.extractAccountId).mockImplementation(
 			() => "acc_test",
 		);
-		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValue({
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
 			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
 			state: "oauth-state",
 			url: "https://auth.openai.com/mock",
 		});
-		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValue({
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
 			type: "success",
 			access: "access-new",
 			refresh: "refresh-new",
@@ -2546,7 +2542,7 @@ describe("codex manager cli commands", () => {
 			multiAccount: true,
 		});
 		vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
-		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValue({
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
 			ready: true,
 			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
 			close: vi.fn(),
@@ -3021,10 +3017,133 @@ describe("codex manager cli commands", () => {
 			byAccountId: {},
 			byEmail: {},
 		});
+	});
 
+	it("does not reuse email-scoped quota cache entries for mixed same-email accountId rows", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "owner@example.com",
+					accountId: "workspace-alpha",
+					refreshToken: "refresh-alpha",
+					accessToken: "access-alpha",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "owner@example.com",
+					refreshToken: "refresh-beta",
+					accessToken: "access-beta",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: true,
+			menuSortEnabled: false,
+			menuSortMode: "manual",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		loadQuotaCacheMock.mockResolvedValue({
+			byAccountId: {},
+			byEmail: {
+				"owner@example.com": {
+					updatedAt: now - 5_000,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 99,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 99,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+		});
+		const accountsModule = await import("../lib/accounts.js");
 		vi.mocked(accountsModule.extractAccountId).mockImplementation(
-			() => "acc_test",
+			(accessToken?: string) => {
+				if (accessToken === "access-alpha") return "workspace-alpha";
+				if (accessToken === "access-beta") return "workspace-beta";
+				return "acc_test";
+			},
 		);
+		fetchCodexQuotaSnapshotMock
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 20,
+					windowMinutes: 300,
+					resetAtMs: now + 1_000,
+				},
+				secondary: {
+					usedPercent: 10,
+					windowMinutes: 10080,
+					resetAtMs: now + 2_000,
+				},
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 70,
+					windowMinutes: 300,
+					resetAtMs: now + 3_000,
+				},
+				secondary: {
+					usedPercent: 40,
+					windowMinutes: 10080,
+					resetAtMs: now + 4_000,
+				},
+			});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
+			byAccountId: {
+				"workspace-alpha": {
+					updatedAt: expect.any(Number),
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 20,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 10,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+			byEmail: {},
+		});
 	});
 
 	it("keeps login loop running when settings action is selected", async () => {
@@ -4593,6 +4712,137 @@ describe("codex manager cli commands", () => {
 					report.message.includes("refresh succeeded but live probe failed"),
 			),
 		).toBe(true);
+	});
+
+	it("recomputes live quota fallback state after refresh changes a shared-workspace email", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "alpha@example.com",
+					accountId: "shared-workspace",
+					refreshToken: "refresh-alpha",
+					accessToken: "access-alpha-stale",
+					expiresAt: now - 5_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+				{
+					email: "owner@example.com",
+					accountId: "shared-workspace",
+					refreshToken: "refresh-beta",
+					accessToken: "access-beta",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 4_000,
+					lastUsed: now - 4_000,
+					enabled: true,
+				},
+			],
+		});
+		loadQuotaCacheMock.mockResolvedValue({
+			byAccountId: {},
+			byEmail: {
+				"owner@example.com": {
+					updatedAt: now - 5_000,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 95,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 95,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-alpha-refreshed",
+			refresh: "refresh-alpha-next",
+			expires: now + 7_200_000,
+			idToken: "id-token-alpha",
+		});
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(accountsModule.extractAccountId).mockImplementation(
+			(accessToken?: string) => {
+				if (accessToken === "access-alpha-stale") return "shared-workspace";
+				if (accessToken === "access-alpha-refreshed") return "shared-workspace";
+				if (accessToken === "access-beta") return "shared-workspace";
+				return "acc_test";
+			},
+		);
+		vi.mocked(accountsModule.extractAccountEmail).mockImplementation(
+			(accessToken?: string) => {
+				if (accessToken === "access-alpha-refreshed") return "owner@example.com";
+				return undefined;
+			},
+		);
+		fetchCodexQuotaSnapshotMock
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 20,
+					windowMinutes: 300,
+					resetAtMs: now + 1_000,
+				},
+				secondary: {
+					usedPercent: 10,
+					windowMinutes: 10080,
+					resetAtMs: now + 2_000,
+				},
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 70,
+					windowMinutes: 300,
+					resetAtMs: now + 3_000,
+				},
+				secondary: {
+					usedPercent: 40,
+					windowMinutes: 10080,
+					resetAtMs: now + 4_000,
+				},
+			});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"fix",
+			"--live",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
+			byAccountId: {},
+			byEmail: {},
+		});
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe(
+			"owner@example.com",
+		);
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			reports: Array<{ outcome: string; message: string }>;
+		};
+		expect(
+			payload.reports.filter((report) => report.outcome === "healthy"),
+		).toHaveLength(2);
 	});
 
 	it("deletes an account from manage mode and persists storage", async () => {
