@@ -1325,11 +1325,13 @@ describe("codex-cli sync", () => {
 		expect(result.pendingRun).not.toBeNull();
 		expect(result.storage?.accounts).toHaveLength(2);
 		expect(getLastCodexCliSyncRun()).toBeNull();
+		result.pendingRun!.run.runAt = 123456789;
 
 		commitPendingCodexCliSyncRun(result.pendingRun);
 
 		const lastRun = getLastCodexCliSyncRun();
 		expect(lastRun?.outcome).toBe("changed");
+		expect(lastRun?.runAt).toBe(123456789);
 		expect(lastRun?.sourcePath).toBe(accountsPath);
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
 		expect(lastRun?.summary.destinationOnlyPreservedCount).toBe(1);

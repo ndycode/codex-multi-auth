@@ -350,7 +350,6 @@ export function commitPendingCodexCliSyncRun(
 	publishCodexCliSyncRun(
 		{
 			...pendingRun.run,
-			runAt: Date.now(),
 			rollbackSnapshot: normalizeRollbackSnapshot(
 				pendingRun.run.rollbackSnapshot,
 			),

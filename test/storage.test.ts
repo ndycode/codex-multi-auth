@@ -1086,6 +1086,54 @@ describe("storage", () => {
 			);
 		});
 
+		it("fails flagged saves when the stale reset marker cannot be cleared", async () => {
+			const now = Date.now();
+			const flaggedPath = getFlaggedAccountsPath();
+			const markerPath = `${flaggedPath}.reset-intent`;
+
+			await fs.mkdir(dirname(flaggedPath), { recursive: true });
+			await fs.writeFile(markerPath, "reset", "utf-8");
+
+			const realUnlink = fs.unlink.bind(fs);
+			let markerUnlinkAttempts = 0;
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (String(targetPath) === markerPath) {
+						markerUnlinkAttempts += 1;
+						const error = new Error(
+							"flagged marker locked",
+						) as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return realUnlink(targetPath);
+				});
+
+			try {
+				await expect(
+					saveFlaggedAccounts({
+						version: 1,
+						accounts: [
+							{
+								accountId: "acct-flagged",
+								email: "flagged@example.com",
+								refreshToken: "refresh-flagged-next",
+								addedAt: now,
+								lastUsed: now,
+								flaggedAt: now,
+							},
+						],
+					}),
+				).rejects.toThrow("flagged marker locked");
+				expect(markerUnlinkAttempts).toBe(5);
+				expect(existsSync(markerPath)).toBe(true);
+				expect(existsSync(flaggedPath)).toBe(true);
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+		});
+
 		it("should enforce MAX_ACCOUNTS during import", async () => {
 			const manyAccounts = Array.from({ length: 21 }, (_, i) => ({
 				accountId: `acct${i}`,
@@ -2554,6 +2602,77 @@ describe("storage", () => {
 			expect((await loadAccounts())?.accounts).toEqual([
 				expect.objectContaining({ accountId: "live" }),
 			]);
+		});
+
+		it("enforces snapshot retention against the snapshot storage path", async () => {
+			const customStoragePath = join(
+				testWorkDir,
+				"alternate",
+				"openai-codex-accounts.json",
+			);
+			const customStorage = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "custom",
+						refreshToken: "ref-custom",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			};
+			const defaultStorage = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "default",
+						refreshToken: "ref-default",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			};
+
+			await saveAccounts(defaultStorage);
+
+			for (const millisecond of [1, 2, 3, 4]) {
+				const suffix = String(millisecond).padStart(3, "0");
+				const name = `accounts-reset-local-state-snapshot-2024-01-02_03-04-05_${suffix}`;
+				await createNamedBackup(name, {
+					force: true,
+					snapshotReason: "reset-local-state",
+					storage: defaultStorage,
+					storagePath: testStoragePath,
+				});
+				await createNamedBackup(name, {
+					force: true,
+					snapshotReason: "reset-local-state",
+					storage: customStorage,
+					storagePath: customStoragePath,
+				});
+			}
+
+			await snapshotAccountStorage({
+				reason: "reset-local-state",
+				now: Date.UTC(2024, 0, 2, 3, 4, 5, 5),
+				storage: customStorage,
+				storagePath: customStoragePath,
+			});
+
+			const defaultSnapshots = (
+				await fs.readdir(getNamedBackupsDirectoryPath(testStoragePath))
+			).filter((name) => name.startsWith("accounts-reset-local-state-snapshot-"));
+			const customSnapshots = (
+				await fs.readdir(getNamedBackupsDirectoryPath(customStoragePath))
+			).filter((name) => name.startsWith("accounts-reset-local-state-snapshot-"));
+
+			expect(defaultSnapshots).toHaveLength(4);
+			expect(customSnapshots).toHaveLength(3);
+			expect(customSnapshots).not.toContain(
+				"accounts-reset-local-state-snapshot-2024-01-02_03-04-05_001.json",
+			);
 		});
 
 		it("passes the first loaded storage snapshot to createBackup when no storage is provided", async () => {

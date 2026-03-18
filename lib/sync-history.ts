@@ -175,7 +175,7 @@ async function readHistoryTail(
 		}
 
 		let position = stats.size;
-		let remainder = "";
+		let remainder = Buffer.alloc(0);
 		const chunkSize = 8 * 1024;
 		const matchesNewestFirst: SyncHistoryEntry[] = [];
 
@@ -184,12 +184,20 @@ async function readHistoryTail(
 			const length = position - start;
 			const buffer = Buffer.alloc(length);
 			const { bytesRead } = await handle.read(buffer, 0, length, start);
-			const combined = buffer.toString("utf8", 0, bytesRead) + remainder;
-			const lines = combined.split("\n");
-			remainder = lines.shift() ?? "";
+			const chunk = buffer.subarray(0, bytesRead);
+			const combined =
+				remainder.length > 0 ? Buffer.concat([chunk, remainder]) : chunk;
+			let lineEnd = combined.length;
 
-			for (let index = lines.length - 1; index >= 0; index -= 1) {
-				const line = lines[index]?.trim();
+			for (let index = combined.length - 1; index >= 0; index -= 1) {
+				if (combined[index] !== 0x0a) {
+					continue;
+				}
+				const line = combined
+					.subarray(index + 1, lineEnd)
+					.toString("utf8")
+					.trim();
+				lineEnd = index;
 				if (!line) continue;
 				const entry = parseEntry(line);
 				if (!entry) continue;
@@ -200,10 +208,11 @@ async function readHistoryTail(
 				}
 			}
 
+			remainder = combined.subarray(0, lineEnd);
 			position = start;
 		}
 
-		const leadingLine = remainder.trim();
+		const leadingLine = remainder.toString("utf8").trim();
 		if (matchesNewestFirst.length < limit && leadingLine) {
 			const entry = parseEntry(leadingLine);
 			if (entry && (!kind || entry.kind === kind)) {

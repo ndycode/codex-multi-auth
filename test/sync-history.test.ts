@@ -148,6 +148,61 @@ describe("sync history", () => {
 		expect(readFileSpy).not.toHaveBeenCalled();
 	});
 
+	it("reads tail entries when a multibyte character crosses the chunk boundary", async () => {
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const emoji = "🙂";
+		const paddedMessage = `${"x".repeat(64)}${emoji} split`;
+		let historyContent = "";
+
+		for (let padding = 0; padding < 9000; padding += 1) {
+			const olderEntry = JSON.stringify({
+				kind: "codex-cli-sync",
+				recordedAt: 1,
+				run: {
+					...createCodexRun(1, "/older"),
+					message: paddedMessage,
+				},
+			});
+			const newerEntry = JSON.stringify({
+				kind: "codex-cli-sync",
+				recordedAt: 2,
+				run: createCodexRun(2, `/newer-${"y".repeat(padding)}`),
+			});
+			const candidate = `${olderEntry}\n${newerEntry}\n`;
+			const boundary = Buffer.byteLength(candidate) - 8 * 1024;
+			if (boundary <= 0) {
+				continue;
+			}
+			const emojiStart = Buffer.byteLength(olderEntry.split(emoji)[0] ?? "");
+			const emojiEnd = emojiStart + Buffer.byteLength(emoji);
+			if (boundary > emojiStart && boundary < emojiEnd) {
+				historyContent = candidate;
+				break;
+			}
+		}
+
+		expect(historyContent).not.toBe("");
+		await fs.writeFile(historyPath, historyContent, "utf8");
+
+		const history = await readSyncHistory({ kind: "codex-cli-sync", limit: 2 });
+
+		expect(history).toHaveLength(2);
+		expect(history[0]).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: expect.objectContaining({
+				message: paddedMessage,
+			}),
+		});
+		expect(history[1]).toMatchObject({
+			kind: "codex-cli-sync",
+			recordedAt: 2,
+			run: expect.objectContaining({
+				targetPath: expect.stringContaining("/newer-"),
+			}),
+		});
+	});
+
 	it("recovers the last codex-cli sync run from history when the latest snapshot is missing", async () => {
 		await appendSyncHistoryEntry({
 			kind: "codex-cli-sync",

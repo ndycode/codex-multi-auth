@@ -3623,15 +3623,11 @@ async function runDoctor(args: string[]): Promise<number> {
 	addCheck({
 		key: "recovery-chain",
 		severity:
-			walExists ||
-			validRotatingBackups.length > 0 ||
-			validSnapshots.length > 0
+			validRotatingBackups.length > 0 || validSnapshots.length > 0
 				? "ok"
 				: "warn",
 		message:
-			walExists ||
-			validRotatingBackups.length > 0 ||
-			validSnapshots.length > 0
+			validRotatingBackups.length > 0 || validSnapshots.length > 0
 				? "Recovery artifacts present"
 				: "No recovery artifacts found; create a snapshot or backup before destructive actions",
 		details: `storage=${storageExists}, wal=${walExists}, rotating=${validRotatingBackups.length}, snapshots=${validSnapshots.length}`,
