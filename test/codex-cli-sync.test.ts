@@ -9,6 +9,7 @@ import { clearCodexCliStateCache } from "../lib/codex-cli/state.js";
 import type { CodexCliSyncRun } from "../lib/codex-cli/sync.js";
 import {
 	__resetLastCodexCliSyncRunForTests,
+	__setRollbackSnapshotReaderForTests,
 	applyCodexCliSyncToStorage,
 	commitCodexCliSyncRunFailure,
 	commitPendingCodexCliSyncRun,
@@ -1887,6 +1888,83 @@ describe("codex-cli sync", () => {
 		expect(rollbackResult.reason).not.toContain(
 			missingRun.rollbackSnapshot?.path ?? "",
 		);
+	});
+
+	it("retries transient rollback checkpoint read failures before succeeding", async () => {
+		const snapshotPath = join(tempDir, "rollback-read-retry-snapshot.json");
+		await writeFile(
+			snapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old",
+							accountIdSource: "token",
+							email: "old@example.com",
+							refreshToken: "refresh-old",
+							accessToken: "access-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const recordedRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-read-retry",
+				path: snapshotPath,
+			},
+		};
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: recordedRun.runAt,
+			run: recordedRun,
+		});
+
+		let transientReadInjected = false;
+		try {
+			__setRollbackSnapshotReaderForTests(async (path) => {
+				if (!transientReadInjected && path === snapshotPath) {
+					transientReadInjected = true;
+					throw Object.assign(new Error("checkpoint busy"), {
+						code: "EPERM",
+					});
+				}
+				return readFile(path, "utf-8");
+			});
+
+			const plan = await getLatestCodexCliSyncRollbackPlan();
+			expect(plan.status).toBe("ready");
+			expect(plan.snapshot).toEqual(recordedRun.rollbackSnapshot);
+			if (!transientReadInjected) {
+				throw new Error("expected transient rollback checkpoint read failure");
+			}
+		} finally {
+			__setRollbackSnapshotReaderForTests(null);
+		}
 	});
 
 	it.each([

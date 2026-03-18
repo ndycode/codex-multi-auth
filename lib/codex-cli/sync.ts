@@ -48,6 +48,9 @@ const ROLLBACK_SAVE_MAX_ATTEMPTS = 5;
 const ROLLBACK_HISTORY_SCAN_LIMIT = 200;
 let inFlightCodexCliSyncRollbackPromise: Promise<CodexCliSyncRollbackResult> | null =
 	null;
+let rollbackSnapshotReaderForTests:
+	| ((path: string) => Promise<string>)
+	| null = null;
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -389,6 +392,20 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	activePendingCodexCliSyncRunRevisions.clear();
 	lastCodexCliSyncHistoryLoadAttempted = false;
 	inFlightCodexCliSyncRollbackPromise = null;
+	rollbackSnapshotReaderForTests = null;
+}
+
+export function __setRollbackSnapshotReaderForTests(
+	reader: ((path: string) => Promise<string>) | null,
+): void {
+	rollbackSnapshotReaderForTests = reader;
+}
+
+async function readRollbackSnapshotFile(path: string): Promise<string> {
+	if (rollbackSnapshotReaderForTests) {
+		return rollbackSnapshotReaderForTests(path);
+	}
+	return fs.readFile(path, "utf-8");
 }
 
 async function captureRollbackSnapshot(
@@ -506,7 +523,7 @@ async function loadRollbackSnapshot(
 		let raw = "";
 		for (let attempt = 0; attempt < ROLLBACK_READ_MAX_ATTEMPTS; attempt += 1) {
 			try {
-				raw = await fs.readFile(snapshot.path, "utf-8");
+				raw = await readRollbackSnapshotFile(snapshot.path);
 				break;
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
