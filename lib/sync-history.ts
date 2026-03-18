@@ -18,6 +18,7 @@ const RETRYABLE_REMOVE_CODES = new Set([
 ]);
 const RETRYABLE_RENAME_CODES = new Set(["EBUSY", "EPERM", "EACCES"]);
 const RETRYABLE_APPEND_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN"]);
+const RETRYABLE_READ_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN"]);
 
 type SyncHistoryKind = "codex-cli-sync" | "live-account-sync";
 
@@ -160,6 +161,32 @@ async function loadHistoryEntriesFromDisk(
 		return [];
 	}
 	return parseHistoryContent(content);
+}
+
+async function loadHistoryEntriesFromDiskWithRetry(
+	paths: SyncHistoryPaths,
+): Promise<SyncHistoryEntry[]> {
+	let lastError: unknown = null;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await loadHistoryEntriesFromDisk(paths);
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				!code ||
+				!RETRYABLE_READ_CODES.has(code) ||
+				attempt === 4
+			) {
+				throw error;
+			}
+			await waitForHistoryRetry(attempt);
+		}
+	}
+	if (lastError instanceof Error) {
+		throw lastError;
+	}
+	throw new Error("Failed to load sync history entries.");
 }
 
 async function readHistoryTail(
@@ -379,7 +406,7 @@ async function writeHistoryFileAtomically(
 }
 
 async function trimHistoryFileIfNeeded(paths: SyncHistoryPaths): Promise<PrunedSyncHistory> {
-	const entries = await loadHistoryEntriesFromDisk(paths);
+	const entries = await loadHistoryEntriesFromDiskWithRetry(paths);
 	const result = pruneSyncHistoryEntries(entries, MAX_HISTORY_ENTRIES);
 	if (result.removed === 0) {
 		return result;
@@ -474,7 +501,7 @@ export async function pruneSyncHistory(
 	return trackPendingHistoryWrite(withHistoryLock(async () => {
 		const paths = getSyncHistoryPaths();
 		await ensureHistoryDir(paths.directory);
-		const entries = await loadHistoryEntriesFromDisk(paths);
+		const entries = await loadHistoryEntriesFromDiskWithRetry(paths);
 		const result = pruneSyncHistoryEntries(entries, maxEntries);
 		if (result.entries.length === 0) {
 			await removeHistoryFileWithRetry(paths.historyPath);

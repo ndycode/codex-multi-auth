@@ -10,6 +10,7 @@ import {
 import type { LiveAccountSyncSnapshot } from "../lib/live-account-sync.js";
 import {
 	__resetSyncHistoryForTests,
+	__getLastSyncHistoryErrorForTests,
 	appendSyncHistoryEntry,
 	configureSyncHistoryForTests,
 	getSyncHistoryPaths,
@@ -387,6 +388,106 @@ describe("sync history", () => {
 			3,
 		]);
 		expect(readLatestSyncHistorySync()?.recordedAt).toBe(3);
+	});
+
+	it("retries transient read failures before refreshing the latest sync history entry", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/source-1"),
+		});
+
+		const originalReadFile = fs.readFile.bind(fs);
+		let failedOnce = false;
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+				const [targetPath] = args;
+				if (
+					!failedOnce &&
+					typeof targetPath === "string" &&
+					targetPath.endsWith("sync-history.ndjson")
+				) {
+					failedOnce = true;
+					const error = new Error("locked") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalReadFile(...args);
+			});
+
+		try {
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: 2,
+				run: createCodexRun(2, "/source-2"),
+			});
+
+			expect(failedOnce).toBe(true);
+			expect(__getLastSyncHistoryErrorForTests()).toBeNull();
+			expect(readLatestSyncHistorySync()?.recordedAt).toBe(2);
+			expect((await readSyncHistory()).map((entry) => entry.recordedAt)).toEqual([
+				1,
+				2,
+			]);
+		} finally {
+			readSpy.mockRestore();
+		}
+	});
+
+	it("retries transient read failures before pruning sync history", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/source-1"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "live-account-sync",
+			recordedAt: 2,
+			reason: "watch",
+			outcome: "success",
+			path: "/watch-1",
+			snapshot: createLiveSnapshot(2, "/watch-1"),
+		});
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 3,
+			run: createCodexRun(3, "/source-2"),
+		});
+
+		const originalReadFile = fs.readFile.bind(fs);
+		let failedOnce = false;
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+				const [targetPath] = args;
+				if (
+					!failedOnce &&
+					typeof targetPath === "string" &&
+					targetPath.endsWith("sync-history.ndjson")
+				) {
+					failedOnce = true;
+					const error = new Error("locked") as NodeJS.ErrnoException;
+					error.code = "EPERM";
+					throw error;
+				}
+				return originalReadFile(...args);
+			});
+
+		try {
+			const result = await pruneSyncHistory({ maxEntries: 1 });
+
+			expect(result.kept).toBe(2);
+			expect(failedOnce).toBe(true);
+			expect(__getLastSyncHistoryErrorForTests()).toBeNull();
+			expect(readLatestSyncHistorySync()?.recordedAt).toBe(3);
+			expect((await readSyncHistory()).map((entry) => entry.recordedAt)).toEqual([
+				2,
+				3,
+			]);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("waits for in-flight prune rewrites before serving reads", async () => {
