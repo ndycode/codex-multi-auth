@@ -2,9 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
-	lstatSync,
 	promises as fs,
-	realpathSync,
 	type Dirent,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
@@ -1999,10 +1997,10 @@ function haveEquivalentAccountRows(
 
 const namedBackupContainmentFs = {
 	lstat(path: string) {
-		return lstatSync(path);
+		return fs.lstat(path);
 	},
 	realpath(path: string) {
-		return realpathSync.native(path);
+		return fs.realpath(path);
 	},
 };
 
@@ -2103,13 +2101,13 @@ async function findExistingNamedBackupPath(
 	return undefined;
 }
 
-function resolvePathForNamedBackupContainment(path: string): string {
+async function resolvePathForNamedBackupContainment(path: string): Promise<string> {
 	const resolvedPath = resolvePath(path);
 	let existingPrefix = resolvedPath;
 	const unresolvedSegments: string[] = [];
 	while (true) {
 		try {
-			namedBackupContainmentFs.lstat(existingPrefix);
+			await namedBackupContainmentFs.lstat(existingPrefix);
 			break;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
@@ -2132,7 +2130,8 @@ function resolvePathForNamedBackupContainment(path: string): string {
 		}
 	}
 	try {
-		const canonicalPrefix = namedBackupContainmentFs.realpath(existingPrefix);
+		const canonicalPrefix =
+			await namedBackupContainmentFs.realpath(existingPrefix);
 		return unresolvedSegments.reduce(
 			(currentPath, segment) => join(currentPath, segment),
 			canonicalPrefix,
@@ -2152,16 +2151,16 @@ function resolvePathForNamedBackupContainment(path: string): string {
 	}
 }
 
-export function assertNamedBackupRestorePath(
+export async function assertNamedBackupRestorePath(
 	path: string,
 	backupRoot: string,
-): string {
+): Promise<string> {
 	const resolvedPath = resolvePath(path);
 	const resolvedBackupRoot = resolvePath(backupRoot);
 	let backupRootIsSymlink = false;
 	try {
 		backupRootIsSymlink =
-			namedBackupContainmentFs.lstat(resolvedBackupRoot).isSymbolicLink();
+			(await namedBackupContainmentFs.lstat(resolvedBackupRoot)).isSymbolicLink();
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
@@ -2179,8 +2178,8 @@ export function assertNamedBackupRestorePath(
 		throw new BackupContainmentError("Backup path escapes backup directory");
 	}
 	const canonicalBackupRoot =
-		resolvePathForNamedBackupContainment(resolvedBackupRoot);
-	const containedPath = resolvePathForNamedBackupContainment(resolvedPath);
+		await resolvePathForNamedBackupContainment(resolvedBackupRoot);
+	const containedPath = await resolvePathForNamedBackupContainment(resolvedPath);
 	const relativePath = relative(canonicalBackupRoot, containedPath);
 	const firstSegment = relativePath.split(/[\\/]/)[0];
 	if (

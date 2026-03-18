@@ -2281,12 +2281,12 @@ describe("storage", () => {
 				process.platform === "win32" ? "junction" : "dir",
 			);
 
-			expect(() =>
+			await expect(
 				assertNamedBackupRestorePath(
 					join(linkedRoot, "escape.json"),
 					backupRoot,
 				),
-			).toThrow(/escapes backup directory/i);
+			).rejects.toThrow(/escapes backup directory/i);
 		});
 
 		it("rejects missing files beneath symlinked backup subdirectories", async () => {
@@ -2301,12 +2301,12 @@ describe("storage", () => {
 				process.platform === "win32" ? "junction" : "dir",
 			);
 
-			expect(() =>
+			await expect(
 				assertNamedBackupRestorePath(
 					join(linkedRoot, "missing.json"),
 					backupRoot,
 				),
-			).toThrow(/escapes backup directory/i);
+			).rejects.toThrow(/escapes backup directory/i);
 		});
 
 		it("rejects symlinked backup roots during restore path validation", async () => {
@@ -2336,12 +2336,12 @@ describe("storage", () => {
 				process.platform === "win32" ? "junction" : "dir",
 			);
 
-			expect(() =>
+			await expect(
 				assertNamedBackupRestorePath(
 					join(linkedBackupRoot, "linked-root.json"),
 					linkedBackupRoot,
 				),
-			).toThrow(/escapes backup directory/i);
+			).rejects.toThrow(/escapes backup directory/i);
 		});
 
 		it("rethrows realpath containment errors for existing backup paths", async () => {
@@ -2380,9 +2380,9 @@ describe("storage", () => {
 				});
 
 			try {
-				expect(() =>
+				await expect(
 					assertNamedBackupRestorePath(backupPath, backupRoot),
-				).toThrow("Backup path validation failed. Try again.");
+				).rejects.toThrow("Backup path validation failed. Try again.");
 			} finally {
 				realpathSpy.mockRestore();
 			}
@@ -2409,9 +2409,9 @@ describe("storage", () => {
 				});
 
 			try {
-				expect(() =>
+				await expect(
 					assertNamedBackupRestorePath(backupPath, backupRoot),
-				).toThrow("Backup path validation failed. Try again.");
+				).rejects.toThrow("Backup path validation failed. Try again.");
 			} finally {
 				realpathSpy.mockRestore();
 			}
@@ -2434,9 +2434,9 @@ describe("storage", () => {
 				});
 
 			try {
-				expect(() =>
+				await expect(
 					assertNamedBackupRestorePath(backupPath, backupRoot),
-				).toThrow("Backup path validation failed. Try again.");
+				).rejects.toThrow("Backup path validation failed. Try again.");
 			} finally {
 				lstatSpy.mockRestore();
 			}
@@ -2464,7 +2464,7 @@ describe("storage", () => {
 			try {
 				let thrown: unknown;
 				try {
-					assertNamedBackupRestorePath(backupPath, backupRoot);
+					await assertNamedBackupRestorePath(backupPath, backupRoot);
 				} catch (error) {
 					thrown = error;
 				}
