@@ -1426,7 +1426,7 @@ describe("storage", () => {
 			expect(restored?.accounts[0]?.accountId).toBe("primary");
 		});
 
-		it("marks identical named backups as already restored", async () => {
+		it("rejects duplicate-only named backups as ineligible restore no-ops", async () => {
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -1447,12 +1447,9 @@ describe("storage", () => {
 			expect(assessment.skipped).toBe(1);
 			expect(assessment.eligibleForRestore).toBe(false);
 			expect(assessment.error).toBe("All accounts in this backup already exist");
-			await expect(restoreNamedBackup("already-restored")).resolves.toEqual({
-				imported: 0,
-				skipped: 1,
-				total: 1,
-				changed: false,
-			});
+			await expect(restoreNamedBackup("already-restored")).rejects.toThrow(
+				"All accounts in this backup already exist",
+			);
 		});
 
 		it("honors explicit null currentStorage when assessing a named backup", async () => {
@@ -1764,6 +1761,9 @@ describe("storage", () => {
 		});
 
 		it("retries transient backup directory errors while listing backups", async () => {
+			const platformSpy = vi
+				.spyOn(process, "platform", "get")
+				.mockReturnValue("win32");
 			await saveAccounts({
 				version: 3,
 				activeIndex: 0,
@@ -1805,6 +1805,7 @@ describe("storage", () => {
 				expect(busyFailures).toBe(1);
 			} finally {
 				readdirSpy.mockRestore();
+				platformSpy.mockRestore();
 			}
 		});
 

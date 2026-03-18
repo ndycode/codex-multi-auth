@@ -2046,6 +2046,13 @@ export async function restoreNamedBackup(
 	name: string,
 ): Promise<ImportAccountsResult> {
 	const backupPath = await resolveNamedBackupRestorePath(name);
+	const assessment = await assessNamedBackupRestore(name);
+	if (!assessment.eligibleForRestore) {
+		if (assessment.backup.loadError) {
+			return importAccounts(backupPath);
+		}
+		throw new Error(assessment.error ?? "Backup is not eligible for restore.");
+	}
 	return importAccounts(backupPath);
 }
 
