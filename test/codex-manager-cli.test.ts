@@ -567,6 +567,64 @@ describe("codex manager cli commands", () => {
 		expect(payload.recommendation.recommendedIndex).toBe(0);
 	});
 
+	it("does not mutate loaded quota cache when live forecast save fails", async () => {
+		const now = Date.now();
+		const originalQuotaCache = {
+			byAccountId: {},
+			byEmail: {},
+		};
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "forecast@example.com",
+					accountId: "acc_forecast",
+					refreshToken: "refresh-forecast",
+					accessToken: "access-forecast",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
+		saveQuotaCacheMock.mockRejectedValueOnce(new Error("save failed"));
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(
+			runCodexMultiAuthCli(["auth", "forecast", "--live", "--json"]),
+		).rejects.toThrow("save failed");
+		expect(originalQuotaCache).toEqual({
+			byAccountId: {},
+			byEmail: {},
+		});
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(saveQuotaCacheMock).toHaveBeenCalledWith({
+			byAccountId: {
+				acc_forecast: {
+					updatedAt: expect.any(Number),
+					status: 200,
+					model: "gpt-5-codex",
+					planType: undefined,
+					primary: {
+						usedPercent: undefined,
+						windowMinutes: undefined,
+						resetAtMs: undefined,
+					},
+					secondary: {
+						usedPercent: undefined,
+						windowMinutes: undefined,
+						resetAtMs: undefined,
+					},
+				},
+			},
+			byEmail: {},
+		});
+	});
+
 	it("prints implemented 41-feature matrix", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});

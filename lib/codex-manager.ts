@@ -482,6 +482,8 @@ function hasSafeQuotaEmailFallback(
 	if (!email) return false;
 	const state = emailFallbackState.get(email);
 	if (!state) return false;
+	// size > 1 only matters when multiple accounts share the same email but
+	// disagree on accountId; a single matching account already implies size <= 1.
 	if (state.distinctAccountIds.size > 1) return false;
 	return state.matchingCount === 1;
 }
@@ -630,6 +632,8 @@ function updateQuotaCacheForAccount(
 }
 
 function cloneQuotaCacheData(cache: QuotaCacheData): QuotaCacheData {
+	// Shallow spreading is safe because quota cache entries are always replaced,
+	// never mutated in-place.
 	return {
 		byAccountId: { ...cache.byAccountId },
 		byEmail: { ...cache.byEmail },
@@ -2290,6 +2294,7 @@ async function runForecast(args: string[]): Promise<number> {
 	const options = parsedArgs.options;
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
+	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
 
 	setStoragePath(null);
@@ -2341,12 +2346,12 @@ async function runForecast(args: string[]): Promise<number> {
 				model: options.model,
 			});
 			liveQuotaByIndex.set(i, liveQuota);
-			if (quotaCache) {
+			if (workingQuotaCache) {
 				const account = storage.accounts[i];
 				if (account) {
 					quotaCacheChanged =
 						updateQuotaCacheForAccount(
-							quotaCache,
+							workingQuotaCache,
 							account,
 							liveQuota,
 							storage.accounts,
@@ -2376,8 +2381,8 @@ async function runForecast(args: string[]): Promise<number> {
 	const recommendation = recommendForecastAccount(forecastResults);
 
 	if (options.json) {
-		if (quotaCache && quotaCacheChanged) {
-			await saveQuotaCache(quotaCache);
+		if (workingQuotaCache && quotaCacheChanged) {
+			await saveQuotaCache(workingQuotaCache);
 		}
 		console.log(
 			JSON.stringify(
