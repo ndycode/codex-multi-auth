@@ -5,6 +5,7 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	clearFlaggedAccounts,
+	findMatchingAccountIndex,
 	type FlaggedAccountStorageV1,
 	getStoragePath,
 	loadFlaggedAccounts,
@@ -108,10 +109,11 @@ export async function deleteAccountAtIndex(options: {
 
 	return withAccountAndFlaggedStorageTransaction(async (current, persist) => {
 		const sourceStorage = current ?? options.storage;
-		const targetIndex = sourceStorage.accounts.findIndex(
-			(account) => account.refreshToken === requestedTarget.refreshToken,
+		const targetIndex = findMatchingAccountIndex(
+			sourceStorage.accounts,
+			requestedTarget,
 		);
-		if (targetIndex < 0) {
+		if (targetIndex === undefined || targetIndex < 0) {
 			return null;
 		}
 		const target = sourceStorage.accounts[targetIndex];

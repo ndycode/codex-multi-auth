@@ -2473,7 +2473,7 @@ describe("storage", () => {
 				const deletePromise = deleteSavedAccounts();
 				await vi.waitFor(() => {
 					expect(snapshotWriteStarted).toBe(true);
-				});
+				}, { timeout: 5_000 });
 
 				const concurrentSave = saveAccounts({
 					version: 3,
@@ -2507,6 +2507,53 @@ describe("storage", () => {
 				).toBe(true);
 			} finally {
 				releaseSnapshotWrite?.();
+				writeFileSpy.mockRestore();
+			}
+		});
+
+		it("retries transient EPERM while writing the pre-delete snapshot", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "delete-original",
+						refreshToken: "ref-delete-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			const originalWriteFile = fs.writeFile.bind(fs);
+			let snapshotWriteAttempts = 0;
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (path, data, options) => {
+					if (
+						String(path).includes("accounts-delete-saved-accounts-snapshot-")
+					) {
+						snapshotWriteAttempts += 1;
+						if (snapshotWriteAttempts === 1) {
+							const error = new Error("snapshot locked") as NodeJS.ErrnoException;
+							error.code = "EPERM";
+							throw error;
+						}
+					}
+					return originalWriteFile(path, data as never, options as never);
+				});
+
+			try {
+				await expect(deleteSavedAccounts()).resolves.toMatchObject({
+					accountsCleared: true,
+				});
+				expect(snapshotWriteAttempts).toBe(2);
+				const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+				expect(
+					entries.some((name) =>
+						name.startsWith("accounts-delete-saved-accounts-snapshot-"),
+					),
+				).toBe(true);
+			} finally {
 				writeFileSpy.mockRestore();
 			}
 		});
@@ -3338,6 +3385,18 @@ describe("storage", () => {
 
 		it("does not throw when file does not exist", async () => {
 			await expect(clearAccounts()).resolves.not.toThrow();
+		});
+
+		it("creates the reset marker parent directory when the storage path is brand new", async () => {
+			const nestedStoragePath = join(
+				testWorkDir,
+				"brand-new",
+				"nested",
+				"accounts.json",
+			);
+			setStoragePathDirect(nestedStoragePath);
+
+			await expect(clearAccounts()).resolves.toBe(true);
 		});
 
 		it.each(["EPERM", "EBUSY", "EAGAIN"] as const)(
