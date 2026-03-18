@@ -7,7 +7,6 @@ import {
 	clearFlaggedAccounts,
 	findMatchingAccountIndex,
 	type FlaggedAccountStorageV1,
-	getStoragePath,
 	loadFlaggedAccounts,
 	snapshotAccountStorage,
 	snapshotAndClearAccounts,
@@ -129,7 +128,6 @@ export async function deleteAccountAtIndex(options: {
 			reason: "delete-account",
 			failurePolicy: "error",
 			storage: sourceStorage,
-			storagePath: getStoragePath(),
 		});
 
 		const nextStorage: AccountStorageV3 = {

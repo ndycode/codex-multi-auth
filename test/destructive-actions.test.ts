@@ -173,7 +173,6 @@ describe("destructive actions", () => {
 			reason: "delete-account",
 			failurePolicy: "error",
 			storage,
-			storagePath: "/mock/openai-codex-accounts.json",
 		});
 		expect(
 			snapshotAccountStorageMock.mock.invocationCallOrder[0],

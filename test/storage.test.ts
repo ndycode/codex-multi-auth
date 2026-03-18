@@ -3136,12 +3136,8 @@ describe("storage", () => {
 				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`,
 			);
 
-			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
-			expect(
-				entries.some((name) =>
-					name.startsWith("accounts-import-accounts-snapshot-"),
-				),
-			).toBe(true);
+			expect(await listNamedBackups()).toEqual([]);
+			expect(existsSync(getNamedBackupsDirectoryPath())).toBe(false);
 			expect((await loadAccounts())?.accounts).toHaveLength(
 				ACCOUNT_LIMITS.MAX_ACCOUNTS,
 			);
