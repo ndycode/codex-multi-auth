@@ -2042,6 +2042,65 @@ describe("codex-cli sync", () => {
 		saveSpy.mockRestore();
 	});
 
+	it("shares an in-flight rollback restore across concurrent callers", async () => {
+		let resolveSave: (() => void) | undefined;
+		const inFlightSave = new Promise<void>((resolve) => {
+			resolveSave = resolve;
+		});
+		const saveSpy = vi
+			.spyOn(storageModule, "saveAccounts")
+			.mockImplementation(() => inFlightSave);
+
+		try {
+			const plan = {
+				status: "ready" as const,
+				reason: "Restores 1 account from rollback checkpoint.",
+				snapshot: {
+					name: "accounts-codex-cli-sync-snapshot-shared",
+					path: join(tempDir, "rollback-shared-snapshot.json"),
+				},
+				storage: {
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_old",
+							accountIdSource: "token" as const,
+							email: "old@example.com",
+							refreshToken: "refresh-old",
+							accessToken: "access-old",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				accountCount: 1,
+			};
+
+			const firstRollback = rollbackLatestCodexCliSync(plan);
+			const secondRollback = rollbackLatestCodexCliSync(plan);
+
+			expect(saveSpy).toHaveBeenCalledTimes(1);
+
+			resolveSave?.();
+
+			const [firstResult, secondResult] = await Promise.all([
+				firstRollback,
+				secondRollback,
+			]);
+			expect(firstResult).toEqual(secondResult);
+			expect(firstResult).toMatchObject({
+				status: "restored",
+				accountCount: 1,
+				snapshot: plan.snapshot,
+			});
+			expect(getLastCodexCliSyncRun()?.message).toContain(plan.snapshot.name);
+		} finally {
+			saveSpy.mockRestore();
+		}
+	});
+
 	it("logs retried rollback save failures with redacted filesystem labels", async () => {
 		const warnSpy = vi.fn();
 		vi.resetModules();
@@ -2559,7 +2618,7 @@ describe("codex-cli sync", () => {
 		expect(lastRun?.summary.addedAccountCount).toBe(1);
 	});
 
-	it("publishes the completion that finishes last even when it started earlier", async () => {
+	it("keeps the newer pending sync outcome when an older commit finishes later", async () => {
 		const current: AccountStorageV3 = {
 			version: 3,
 			accounts: [
@@ -2618,12 +2677,10 @@ describe("codex-cli sync", () => {
 
 		expect(getLastCodexCliSyncRun()).toEqual(
 			expect.objectContaining({
-				outcome: "changed",
+				outcome: "error",
 				sourcePath: accountsPath,
 				targetPath: targetStoragePath,
-				summary: expect.objectContaining({
-					addedAccountCount: 1,
-				}),
+				message: "later run failed",
 			}),
 		);
 	});

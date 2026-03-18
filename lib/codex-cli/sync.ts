@@ -39,6 +39,8 @@ export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 4;
 const RETRYABLE_ROLLBACK_SAVE_CODES = new Set(["EBUSY", "EAGAIN"]);
 const ROLLBACK_SAVE_MAX_ATTEMPTS = 5;
 const ROLLBACK_HISTORY_SCAN_LIMIT = 200;
+let inFlightCodexCliSyncRollbackPromise: Promise<CodexCliSyncRollbackResult> | null =
+	null;
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -353,7 +355,7 @@ export function commitPendingCodexCliSyncRun(
 				pendingRun.run.rollbackSnapshot,
 			),
 		},
-		allocateCodexCliSyncRunRevision(),
+		pendingRun.revision,
 	);
 }
 
@@ -373,7 +375,7 @@ export function commitCodexCliSyncRunFailure(
 			},
 			error,
 		),
-		allocateCodexCliSyncRunRevision(),
+		pendingRun.revision,
 	);
 }
 
@@ -383,6 +385,7 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 	nextCodexCliSyncRunRevision = 0;
 	activePendingCodexCliSyncRunRevisions.clear();
 	lastCodexCliSyncHistoryLoadAttempted = false;
+	inFlightCodexCliSyncRollbackPromise = null;
 }
 
 async function captureRollbackSnapshot(
@@ -588,47 +591,63 @@ export async function rollbackLatestCodexCliSync(
 		};
 	}
 
-	try {
-		await saveRollbackStorageWithRetry(resolvedPlan.storage);
-		const rollbackSnapshot = resolvedPlan.snapshot;
-		if (!rollbackSnapshot) {
+	if (inFlightCodexCliSyncRollbackPromise) {
+		return inFlightCodexCliSyncRollbackPromise;
+	}
+
+	const rollbackStorage = resolvedPlan.storage;
+	const rollbackSnapshot = resolvedPlan.snapshot;
+	const rollbackReason = resolvedPlan.reason;
+	const restoredAccountCount =
+		resolvedPlan.accountCount ?? rollbackStorage.accounts.length;
+
+	const rollbackPromise = (async (): Promise<CodexCliSyncRollbackResult> => {
+		try {
+			await saveRollbackStorageWithRetry(rollbackStorage);
+			if (!rollbackSnapshot) {
+				return {
+					status: "unavailable",
+					reason: "Rollback checkpoint is unavailable after loading the restore plan.",
+					snapshot: null,
+				};
+			}
+			publishCodexCliSyncRun(
+				createSyncRun({
+					outcome: "changed",
+					sourcePath: null,
+					targetPath: getStoragePath(),
+					summary: {
+						...createEmptySyncSummary(),
+						targetAccountCountBefore: restoredAccountCount,
+						targetAccountCountAfter: restoredAccountCount,
+					},
+					trigger: "manual",
+					message: `${ROLLBACK_HISTORY_MESSAGE_PREFIX} ${rollbackSnapshot.name}`,
+				}),
+				allocateCodexCliSyncRunRevision(),
+			);
 			return {
-				status: "unavailable",
-				reason: "Rollback checkpoint is unavailable after loading the restore plan.",
-				snapshot: null,
+				status: "restored",
+				reason: rollbackReason,
+				snapshot: rollbackSnapshot,
+				accountCount: restoredAccountCount,
+			};
+		} catch (error) {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
+			return {
+				status: "error",
+				reason: `Failed to restore rollback checkpoint [${errorLabel}].`,
+				snapshot: rollbackSnapshot,
 			};
 		}
-		const restoredAccountCount =
-			resolvedPlan.accountCount ?? resolvedPlan.storage.accounts.length;
-		publishCodexCliSyncRun(
-			createSyncRun({
-				outcome: "changed",
-				sourcePath: null,
-				targetPath: getStoragePath(),
-				summary: {
-					...createEmptySyncSummary(),
-					targetAccountCountBefore: restoredAccountCount,
-					targetAccountCountAfter: restoredAccountCount,
-				},
-				trigger: "manual",
-				message: `${ROLLBACK_HISTORY_MESSAGE_PREFIX} ${rollbackSnapshot.name}`,
-			}),
-			allocateCodexCliSyncRunRevision(),
-		);
-		return {
-			status: "restored",
-			reason: resolvedPlan.reason,
-			snapshot: resolvedPlan.snapshot,
-			accountCount: restoredAccountCount,
-		};
-	} catch (error) {
-		const errorLabel = getRedactedFilesystemErrorLabel(error);
-		return {
-			status: "error",
-			reason: `Failed to restore rollback checkpoint [${errorLabel}].`,
-			snapshot: resolvedPlan.snapshot,
-		};
-	}
+	})();
+	inFlightCodexCliSyncRollbackPromise = rollbackPromise;
+	void rollbackPromise.finally(() => {
+		if (inFlightCodexCliSyncRollbackPromise === rollbackPromise) {
+			inFlightCodexCliSyncRollbackPromise = null;
+		}
+	});
+	return rollbackPromise;
 }
 
 export async function rollbackLastCodexCliSync(): Promise<
