@@ -624,6 +624,75 @@ describe("storage", () => {
 			).toEqual(new Set(["acct-a", "acct-b"]));
 		});
 
+		it("pins transactional snapshots and account writes to the captured storage path", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-original",
+						refreshToken: "ref-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const alternateStoragePath = join(
+				testWorkDir,
+				"alternate",
+				"alternate-accounts.json",
+			);
+
+			try {
+				await withAccountStorageTransaction(async (current, persist) => {
+					if (!current) {
+						throw new Error("expected existing account storage");
+					}
+
+					setStoragePathDirect(alternateStoragePath);
+					await snapshotAccountStorage({
+						reason: "import-accounts",
+						failurePolicy: "error",
+						storage: current,
+					});
+					await persist({
+						...current,
+						accounts: [
+							...current.accounts,
+							{
+								accountId: "acct-transactional",
+								refreshToken: "ref-transactional",
+								addedAt: 2,
+								lastUsed: 2,
+							},
+						],
+					});
+				});
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+
+			const saved = JSON.parse(await fs.readFile(testStoragePath, "utf-8"));
+			expect(saved.accounts.map((account: { accountId: string }) => account.accountId))
+				.toEqual(["acct-original", "acct-transactional"]);
+			expect(existsSync(alternateStoragePath)).toBe(false);
+
+			const originalSnapshots = await listNamedBackups();
+			expect(
+				originalSnapshots.some((backup) =>
+					backup.name.startsWith("accounts-import-accounts-snapshot-"),
+				),
+			).toBe(true);
+
+			setStoragePathDirect(alternateStoragePath);
+			try {
+				await expect(listNamedBackups()).resolves.toEqual([]);
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
 		it("rolls back account storage when flagged persistence keeps failing inside the combined transaction", async () => {
 			const now = Date.now();
 			await saveAccounts({
@@ -719,6 +788,95 @@ describe("storage", () => {
 					refreshToken: "refresh-flagged",
 				}),
 			);
+		});
+
+		it("pins combined account and flagged writes to the captured storage path", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-original",
+						refreshToken: "ref-original",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged-original",
+						refreshToken: "ref-flagged-original",
+						flaggedAt: 1,
+					},
+				],
+			});
+
+			const alternateStoragePath = join(
+				testWorkDir,
+				"alternate",
+				"alternate-accounts.json",
+			);
+			const alternateFlaggedPath = join(
+				dirname(alternateStoragePath),
+				"openai-codex-flagged-accounts.json",
+			);
+
+			try {
+				await withAccountAndFlaggedStorageTransaction(
+					async (current, persist) => {
+						if (!current) {
+							throw new Error("expected existing account storage");
+						}
+
+						setStoragePathDirect(alternateStoragePath);
+						await persist(
+							{
+								...current,
+								accounts: [
+									...current.accounts,
+									{
+										accountId: "acct-transactional",
+										refreshToken: "ref-transactional",
+										addedAt: 2,
+										lastUsed: 2,
+									},
+								],
+							},
+							{
+								version: 1,
+								accounts: [
+									{
+										accountId: "acct-flagged-transactional",
+										refreshToken: "ref-flagged-transactional",
+										flaggedAt: 2,
+									},
+								],
+							},
+						);
+					},
+				);
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+
+			const savedAccounts = JSON.parse(await fs.readFile(testStoragePath, "utf-8"));
+			expect(
+				savedAccounts.accounts.map((account: { accountId: string }) => account.accountId),
+			).toEqual(["acct-original", "acct-transactional"]);
+			expect(existsSync(alternateStoragePath)).toBe(false);
+
+			const flagged = await loadFlaggedAccounts();
+			expect(flagged.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "acct-flagged-transactional",
+					refreshToken: "ref-flagged-transactional",
+				}),
+			]);
+			expect(existsSync(alternateFlaggedPath)).toBe(false);
+			expect(getFlaggedAccountsPath()).not.toBe(alternateFlaggedPath);
 		});
 
 		it("surfaces rollback failure when flagged persistence and account rollback both fail", async () => {

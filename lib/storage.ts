@@ -2269,6 +2269,7 @@ function formatSnapshotErrorForLog(error: unknown): string {
 export async function snapshotAccountStorage(
 	options: AccountSnapshotOptions,
 ): Promise<NamedBackupMetadata | null> {
+	const transactionState = transactionSnapshotContext.getStore();
 	const {
 		reason,
 		now = Date.now(),
@@ -2277,6 +2278,9 @@ export async function snapshotAccountStorage(
 		createBackup = createNamedBackup,
 		storagePath,
 	} = options;
+	const resolvedStoragePath =
+		storagePath ??
+		(transactionState?.active ? transactionState.storagePath : undefined);
 	const currentStorage =
 		options.storage !== undefined ? options.storage : await loadAccounts();
 	if (!currentStorage || currentStorage.accounts.length === 0) {
@@ -2288,7 +2292,7 @@ export async function snapshotAccountStorage(
 		return await createBackup(backupName, {
 			force,
 			storage: currentStorage,
-			storagePath,
+			storagePath: resolvedStoragePath,
 		});
 	} catch (error) {
 		if (failurePolicy === "error") {
@@ -2709,7 +2713,6 @@ async function importNormalizedAccounts(
 				reason: snapshotReason,
 				failurePolicy: snapshotFailurePolicy,
 				storage: existing,
-				storagePath: getStoragePath(),
 			});
 		}
 		const existingAccounts = existing?.accounts ?? [];
@@ -3162,13 +3165,14 @@ function formatRotatingBackupLabel(slot: number): string {
  */
 export interface SaveAccountsOptions {
 	backupEnabled?: boolean;
+	storagePath?: string;
 }
 
 async function saveAccountsUnlocked(
 	storage: AccountStorageV3,
 	options: SaveAccountsOptions = {},
 ): Promise<void> {
-	const path = getStoragePath();
+	const path = options.storagePath ?? getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -3311,7 +3315,9 @@ export async function withAccountStorageTransaction<T>(
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
+			await saveAccountsUnlocked(storage, {
+				storagePath: state.storagePath,
+			});
 			state.snapshot = storage;
 		};
 		return transactionSnapshotContext.run(state, () =>
@@ -3343,13 +3349,19 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
-			await saveAccountsUnlocked(nextAccounts);
+			await saveAccountsUnlocked(nextAccounts, {
+				storagePath: state.storagePath,
+			});
 			try {
-				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				await saveFlaggedAccountsUnlocked(flaggedStorage, {
+					storagePath: state.storagePath,
+				});
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
-					await saveAccountsUnlocked(previousAccounts);
+					await saveAccountsUnlocked(previousAccounts, {
+						storagePath: state.storagePath,
+					});
 					state.snapshot = previousAccounts;
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
@@ -3636,8 +3648,12 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 
 async function saveFlaggedAccountsUnlocked(
 	storage: FlaggedAccountStorageV1,
+	options: { storagePath?: string } = {},
 ): Promise<void> {
-	const path = getFlaggedAccountsPath();
+	const path = join(
+		dirname(options.storagePath ?? getStoragePath()),
+		FLAGGED_ACCOUNTS_FILE_NAME,
+	);
 	const markerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
