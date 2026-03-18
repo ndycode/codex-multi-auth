@@ -1397,7 +1397,7 @@ describe("codex-cli sync", () => {
 		expect(result.changed).toBe(true);
 		expect(snapshotSpy).toHaveBeenCalledWith({
 			reason: "codex-cli-sync",
-			failurePolicy: "warn",
+			failurePolicy: "error",
 		});
 		expect(result.pendingRun?.run.trigger).toBe("manual");
 		expect(result.pendingRun?.run.rollbackSnapshot).toEqual({
@@ -1422,6 +1422,66 @@ describe("codex-cli sync", () => {
 		expect(history.at(-1)?.run.rollbackSnapshot).toEqual({
 			name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_001",
 			path: join(tempDir, "rollback-snapshot.json"),
+		});
+	});
+
+	it("retries transient rollback snapshot capture for manual applies", async () => {
+		const transientError = new Error("snapshot busy") as NodeJS.ErrnoException;
+		transientError.code = "EBUSY";
+		const snapshotSpy = vi
+			.spyOn(storageModule, "snapshotAccountStorage")
+			.mockRejectedValueOnce(transientError)
+			.mockResolvedValueOnce({
+				name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_002",
+				path: join(tempDir, "rollback-snapshot-retry.json"),
+				createdAt: 1,
+				updatedAt: 1,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+			});
+
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [
+				{
+					accountId: "acc_a",
+					accountIdSource: "token",
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+
+		const result = await applyCodexCliSyncToStorage(current, {
+			trigger: "manual",
+			sourceState: {
+				path: accountsPath,
+				activeAccountId: "acc_b",
+				accounts: [
+					{
+						accountId: "acc_b",
+						email: "b@example.com",
+						accessToken: "access-b",
+						refreshToken: "refresh-b",
+						isActive: true,
+					},
+				],
+			},
+		});
+
+		expect(result.changed).toBe(true);
+		expect(snapshotSpy).toHaveBeenCalledTimes(2);
+		expect(result.pendingRun?.run.rollbackSnapshot).toEqual({
+			name: "accounts-codex-cli-sync-snapshot-2026-03-16_00-00-00_002",
+			path: join(tempDir, "rollback-snapshot-retry.json"),
 		});
 	});
 
@@ -1721,6 +1781,86 @@ describe("codex-cli sync", () => {
 		const rollbackResult = await rollbackLatestCodexCliSync(plan);
 		expect(rollbackResult.status).toBe("unavailable");
 		expect(rollbackResult.reason).toContain("missing");
+	});
+
+	it("retries transient rollback checkpoint reads before returning a ready plan", async () => {
+		const snapshotPath = join(tempDir, "rollback-read-retry.json");
+		await writeFile(
+			snapshotPath,
+			JSON.stringify(
+				{
+					version: 3,
+					accounts: [
+						{
+							accountId: "acc_retry",
+							accountIdSource: "token",
+							email: "retry@example.com",
+							refreshToken: "refresh-retry",
+							accessToken: "access-retry",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+				} satisfies AccountStorageV3,
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const recordedRun: CodexCliSyncRun = {
+			outcome: "changed",
+			runAt: 10,
+			sourcePath: accountsPath,
+			targetPath: targetStoragePath,
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			trigger: "manual",
+			rollbackSnapshot: {
+				name: "accounts-codex-cli-sync-snapshot-read-retry",
+				path: snapshotPath,
+			},
+		};
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: recordedRun.runAt,
+			run: recordedRun,
+		});
+
+		const fsModule = await import("node:fs");
+		const originalReadFile = fsModule.promises.readFile;
+		let failuresRemaining = 1;
+		const readFileSpy = vi
+			.spyOn(fsModule.promises, "readFile")
+			.mockImplementation(async (...args) => {
+				if (String(args[0]) === snapshotPath && failuresRemaining > 0) {
+					failuresRemaining -= 1;
+					const error = new Error("rollback busy") as NodeJS.ErrnoException;
+					error.code = "EBUSY";
+					throw error;
+				}
+				return originalReadFile(...args);
+			});
+
+		try {
+			const plan = await getLatestCodexCliSyncRollbackPlan();
+			expect(plan.status).toBe("ready");
+			expect(plan.snapshot).toEqual(recordedRun.rollbackSnapshot);
+			expect(plan.accountCount).toBe(1);
+			expect(failuresRemaining).toBe(0);
+		} finally {
+			readFileSpy.mockRestore();
+		}
 	});
 
 	it.each([

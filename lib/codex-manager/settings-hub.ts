@@ -323,7 +323,15 @@ async function getSyncCenterRollbackPlan(): Promise<CodexCliSyncRollbackPlan> {
 	if (
 		typeof codexCliSyncModule.getLatestCodexCliSyncRollbackPlan === "function"
 	) {
-		return codexCliSyncModule.getLatestCodexCliSyncRollbackPlan();
+		try {
+			return await codexCliSyncModule.getLatestCodexCliSyncRollbackPlan();
+		} catch {
+			return {
+				status: "unavailable",
+				reason: "Rollback checkpoint is unavailable.",
+				snapshot: null,
+			};
+		}
 	}
 	return {
 		status: "unavailable",

@@ -35,6 +35,39 @@ import {
 const log = createLogger("codex-cli-sync");
 const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
 export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 4;
+const RETRYABLE_ROLLBACK_IO_CODES = new Set(["EBUSY", "EAGAIN"]);
+const ROLLBACK_IO_MAX_ATTEMPTS = 4;
+const ROLLBACK_IO_BASE_DELAY_MS = 10;
+
+function isRetryableRollbackIoErrorCode(
+	code: string | undefined,
+): code is "EBUSY" | "EAGAIN" | "EPERM" {
+	if (code && RETRYABLE_ROLLBACK_IO_CODES.has(code)) {
+		return true;
+	}
+	return code === "EPERM" && process.platform === "win32";
+}
+
+async function retryTransientRollbackIo<T>(
+	operation: () => Promise<T>,
+): Promise<T> {
+	let attempt = 0;
+	while (true) {
+		try {
+			return await operation();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				!isRetryableRollbackIoErrorCode(code) ||
+				attempt >= ROLLBACK_IO_MAX_ATTEMPTS - 1
+			) {
+				throw error;
+			}
+			await sleep(ROLLBACK_IO_BASE_DELAY_MS * 2 ** attempt);
+		}
+		attempt += 1;
+	}
+}
 
 function createEmptyStorage(): AccountStorageV3 {
 	return {
@@ -357,15 +390,25 @@ export function __resetLastCodexCliSyncRunForTests(): void {
 }
 
 async function captureRollbackSnapshot(): Promise<CodexCliSyncRollbackSnapshot | null> {
-	const snapshot: NamedBackupMetadata | null = await snapshotAccountStorage({
-		reason: "codex-cli-sync",
-		failurePolicy: "warn",
-	});
-	if (!snapshot) return null;
-	return {
-		name: snapshot.name,
-		path: snapshot.path,
-	};
+	try {
+		const snapshot: NamedBackupMetadata | null =
+			await retryTransientRollbackIo(() =>
+				snapshotAccountStorage({
+					reason: "codex-cli-sync",
+					failurePolicy: "error",
+				}),
+			);
+		if (!snapshot) return null;
+		return {
+			name: snapshot.name,
+			path: snapshot.path,
+		};
+	} catch (error) {
+		log.warn("Failed to capture Codex CLI rollback snapshot", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
 }
 
 function isManualChangedSyncRun(run: CodexCliSyncRun | null): run is CodexCliSyncRun {
@@ -413,7 +456,9 @@ async function loadRollbackSnapshot(
 	}
 
 	try {
-		const raw = await fs.readFile(snapshot.path, "utf-8");
+		const raw = await retryTransientRollbackIo(() =>
+			fs.readFile(snapshot.path, "utf-8"),
+		);
 		const parsed = JSON.parse(raw) as unknown;
 		const normalized = normalizeAccountStorage(parsed);
 		if (!normalized) {

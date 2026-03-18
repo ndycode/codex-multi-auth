@@ -4985,6 +4985,72 @@ describe("codex manager cli commands", () => {
 		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps sync-center recoverable when rollback plan loading fails", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const storage = createSettingsStorage(now);
+		loadAccountsMock.mockResolvedValue(storage);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "settings" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		previewCodexCliSyncMock.mockResolvedValue({
+			status: "ready",
+			statusDetail: "Preview ready.",
+			sourcePath: "/mock/codex/accounts.json",
+			sourceAccountCount: 1,
+			targetPath: "/mock/openai-codex-accounts.json",
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 0,
+				unchangedAccountCount: 1,
+				destinationOnlyPreservedCount: 0,
+				selectionChanged: false,
+			},
+			backup: {
+				enabled: true,
+				targetPath: "/mock/openai-codex-accounts.json",
+				rollbackPaths: ["/mock/openai-codex-accounts.json.bak"],
+			},
+			lastSync: null,
+		});
+		getLatestCodexCliSyncRollbackPlanMock.mockRejectedValue(
+			Object.assign(new Error("rollback busy"), { code: "EBUSY" }),
+		);
+
+		let selectCall = 0;
+		selectMock.mockImplementation(async (items) => {
+			selectCall += 1;
+			if (selectCall === 1) return { type: "sync-center" };
+			if (selectCall === 2) {
+				const text = (items as Array<{ label?: string; hint?: string }>)
+					.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
+					.join("\n");
+				expect(text).toContain("Status: ready");
+				expect(text).toContain("Rollback checkpoint is unavailable.");
+				return { type: "refresh" };
+			}
+			if (selectCall === 3) {
+				const text = (items as Array<{ label?: string; hint?: string }>)
+					.map((item) => `${item.label ?? ""}\n${item.hint ?? ""}`)
+					.join("\n");
+				expect(text).toContain("Rollback checkpoint is unavailable.");
+				return { type: "back" };
+			}
+			return { type: "back" };
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(previewCodexCliSyncMock).toHaveBeenCalledTimes(2);
+		expect(getLatestCodexCliSyncRollbackPlanMock).toHaveBeenCalledTimes(4);
+		expect(applyCodexCliSyncToStorageMock).not.toHaveBeenCalled();
+	});
+
 	it("keeps sync-center recoverable when refresh preview rebuild fails", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
