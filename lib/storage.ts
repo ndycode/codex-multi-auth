@@ -3905,6 +3905,7 @@ export async function snapshotAndClearAccounts(
 			failurePolicy: "error",
 			storage: currentStorage,
 			storagePath,
+			failurePolicy: "error",
 		});
 		return clearAccountsUnlocked(storagePath);
 	});

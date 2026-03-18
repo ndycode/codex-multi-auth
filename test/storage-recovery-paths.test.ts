@@ -15,6 +15,7 @@ import {
 	setStorageBackupEnabled,
 	setStoragePathDirect,
 	snapshotAccountStorage,
+	snapshotAndClearAccounts,
 	clearAccounts,
 	getRestoreAssessment,
 } from "../lib/storage.js";
@@ -59,6 +60,58 @@ describe("storage recovery paths", () => {
 		setStoragePathDirect(null);
 		setStorageBackupEnabled(true);
 		await removeWithRetry(workDir, { recursive: true, force: true });
+	});
+
+	it("aborts snapshotAndClearAccounts when snapshot capture fails", async () => {
+		await saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acc-keep",
+					accountIdSource: "token",
+					email: "keep@example.com",
+					refreshToken: "refresh-keep",
+					accessToken: "access-keep",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		const originalWriteFile = fs.writeFile.bind(fs);
+		const writeFileSpy = vi
+			.spyOn(fs, "writeFile")
+			.mockImplementation(async (path, data, options) => {
+				if (String(path).includes("accounts-reset-local-state-snapshot-")) {
+					const error = new Error("snapshot write denied") as NodeJS.ErrnoException;
+					error.code = "EACCES";
+					throw error;
+				}
+				return originalWriteFile(path as never, data as never, options as never);
+			});
+
+		try {
+			await expect(
+				snapshotAndClearAccounts("reset-local-state"),
+			).rejects.toMatchObject({ code: "EACCES" });
+
+			const persisted = await loadAccounts();
+			expect(persisted?.accounts).toHaveLength(1);
+			expect(persisted?.accounts[0]?.refreshToken).toBe("refresh-keep");
+
+			const backupsDir = getNamedBackupsDirectoryPath();
+			const backupEntries = existsSync(backupsDir)
+				? await fs.readdir(backupsDir)
+				: [];
+			expect(
+				backupEntries.some((name) =>
+					name.startsWith("accounts-reset-local-state-snapshot-"),
+				),
+			).toBe(false);
+		} finally {
+			writeFileSpy.mockRestore();
+		}
 	});
 
 	it("recovers from WAL journal when primary storage is unreadable", async () => {
