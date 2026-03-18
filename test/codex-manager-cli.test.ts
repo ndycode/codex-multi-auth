@@ -3421,6 +3421,7 @@ describe("codex manager cli commands", () => {
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
 			.mockResolvedValueOnce({ mode: "cancel" });
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
 		deleteAccountAtIndexMock.mockResolvedValueOnce({
 			storage: {
 				version: 3,
@@ -3585,7 +3586,12 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
 			.mockResolvedValueOnce({ mode: "cancel" });
 		deleteAccountAtIndexMock.mockRejectedValueOnce(
-			new Error("Failed to save flagged account storage after deleting an account."),
+			Object.assign(
+				new Error(
+					"EPERM: operation not permitted, rename 'C:\\Users\\neil\\.codex\\flagged.json'",
+				),
+				{ code: "EPERM" },
+			),
 		);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -3593,9 +3599,99 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(deleteAccountAtIndexMock).toHaveBeenCalledTimes(1);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith("Failed to delete account (EPERM). Please retry.");
+		logSpy.mockRestore();
+	});
+
+	it("warns when manage delete succeeds but Codex CLI active selection cannot be synced", async () => {
+		const now = Date.now();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-first",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					accountId: "acc-second",
+					accessToken: "access-second",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-second",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		deleteAccountAtIndexMock.mockImplementationOnce(async () => {
+			storageState = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "second@example.com",
+						accountId: "acc-second",
+						accessToken: "access-second",
+						expiresAt: now + 3_600_000,
+						refreshToken: "refresh-second",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			};
+			return {
+				storage: structuredClone(storageState),
+				flagged: { version: 1, accounts: [] },
+				removedAccount: {
+					email: "first@example.com",
+					accountId: "acc-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					refreshToken: "refresh-first",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					accountIdSource: undefined,
+					enabled: true,
+				},
+				removedFlaggedCount: 0,
+			};
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(false);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(deleteAccountAtIndexMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc-second",
+				email: "second@example.com",
+				accessToken: "access-second",
+				refreshToken: "refresh-second",
+				expiresAt: now + 3_600_000,
+			}),
+		);
 		expect(logSpy).toHaveBeenCalledWith(
-			"Failed to delete account: Failed to save flagged account storage after deleting an account.",
+			"Deleted first@example.com. Codex CLI active selection could not be synced; run `codex auth fix` if needed.",
 		);
 		logSpy.mockRestore();
 	});

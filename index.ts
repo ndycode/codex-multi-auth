@@ -3124,8 +3124,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 													console.log(`\nDeleted ${label}.${flaggedNote}\n`);
 												}
 											} catch (error) {
+												const code = (error as NodeJS.ErrnoException | undefined)
+													?.code;
 												console.log(
-													`\nFailed to delete account: ${error instanceof Error ? error.message : String(error)}\n`,
+													code
+														? `\nFailed to delete account (${code}). Please retry.\n`
+														: "\nFailed to delete account. Please retry.\n",
 												);
 											}
 											continue;

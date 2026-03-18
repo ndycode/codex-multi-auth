@@ -3830,18 +3830,27 @@ async function handleManageAction(
 					});
 					if (deleted) {
 						Object.assign(storage, deleted.storage);
-						await autoSyncActiveAccountToCodex();
 						const label =
 							deleted.removedAccount.email?.trim() || `Account ${idx + 1}`;
 						const flaggedNote =
 							deleted.removedFlaggedCount > 0
 								? ` Removed ${deleted.removedFlaggedCount} matching problem account${deleted.removedFlaggedCount === 1 ? "" : "s"}.`
 								: "";
-						console.log(`Deleted ${label}.${flaggedNote}`);
+						const synced = await autoSyncActiveAccountToCodex();
+						if (synced) {
+							console.log(`Deleted ${label}.${flaggedNote}`);
+						} else {
+							console.log(
+								`Deleted ${label}.${flaggedNote} Codex CLI active selection could not be synced; run \`codex auth fix\` if needed.`,
+							);
+						}
 					}
 				} catch (error) {
+					const code = (error as NodeJS.ErrnoException | undefined)?.code;
 					console.log(
-						`Failed to delete account: ${error instanceof Error ? error.message : String(error)}`,
+						code
+							? `Failed to delete account (${code}). Please retry.`
+							: "Failed to delete account. Please retry.",
 					);
 				}
 			} finally {
