@@ -1299,6 +1299,80 @@ describe("codex manager cli commands", () => {
 		)).toBe(true);
 	});
 
+	it("reports synced=false in already-best json output when live sync fails", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "best@example.com",
+					accountId: "acc_best",
+					refreshToken: "refresh-best",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-best-next",
+			refresh: "refresh-best-next",
+			expires: now + 3_600_000,
+			idToken: "id-best-next",
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: {
+				usedPercent: 10,
+				windowMinutes: 300,
+				resetAtMs: now + 1_000,
+			},
+			secondary: {
+				usedPercent: 5,
+				windowMinutes: 10080,
+				resetAtMs: now + 2_000,
+			},
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(false);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "best", "--live", "--json"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: storageState.accounts[0]?.accountId,
+				email: "best@example.com",
+				accessToken: "access-best-next",
+				refreshToken: "refresh-best-next",
+				expiresAt: now + 3_600_000,
+				idToken: "id-best-next",
+			}),
+		);
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			message: string;
+			accountIndex: number;
+			reason: string;
+			synced?: boolean;
+		};
+		expect(payload.message).toContain("Already on best account");
+		expect(payload.accountIndex).toBe(1);
+		expect(typeof payload.reason).toBe("string");
+		expect(payload.synced).toBe(false);
+		expect(warnSpy).not.toHaveBeenCalled();
+	});
+
 	it("reports 429 pressure when the current best account is delayed by live quota", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({

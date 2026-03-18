@@ -4242,11 +4242,12 @@ async function runBest(args: string[]): Promise<number> {
 	if (currentIndex === bestIndex) {
 		const shouldSyncCurrentBest =
 			probeRefreshedIndices.has(bestIndex) || probeIdTokenByIndex.has(bestIndex);
+		let alreadyBestSynced: boolean | undefined;
 		if (changed) {
 			await persistProbeChangesIfNeeded();
 		}
 		if (shouldSyncCurrentBest) {
-			const synced = await setCodexCliActiveSelection({
+			alreadyBestSynced = await setCodexCliActiveSelection({
 				accountId: bestAccount.accountId,
 				email: bestAccount.email,
 				accessToken: bestAccount.accessToken,
@@ -4256,7 +4257,7 @@ async function runBest(args: string[]): Promise<number> {
 					? { idToken: probeIdTokenByIndex.get(bestIndex) }
 					: {}),
 			});
-			if (!synced && !options.json) {
+			if (!alreadyBestSynced && !options.json) {
 				console.warn("Codex auth sync did not complete. Multi-auth routing will still use this account.");
 			}
 		}
@@ -4265,6 +4266,7 @@ async function runBest(args: string[]): Promise<number> {
 				message: `Already on best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
 				accountIndex: bestIndex + 1,
 				reason: recommendation.reason,
+				...(alreadyBestSynced !== undefined ? { synced: alreadyBestSynced } : {}),
 				...(probeErrors.length > 0 ? { probeErrors } : {}),
 			}, null, 2));
 		} else {
