@@ -625,7 +625,7 @@ describe("storage recovery paths", () => {
 		).toBe(false);
 	});
 
-	it("cleans up stale staged backup artifacts during load", async () => {
+	it("cleans up only stale staged backup artifacts during load", async () => {
 		await fs.writeFile(
 			storagePath,
 			JSON.stringify({
@@ -643,8 +643,12 @@ describe("storage recovery paths", () => {
 		];
 		for (const staleArtifactPath of staleArtifacts) {
 			await fs.writeFile(staleArtifactPath, "stale", "utf-8");
+			await fs.utimes(staleArtifactPath, new Date(0), new Date(0));
 			expect(existsSync(staleArtifactPath)).toBe(true);
 		}
+		const freshArtifactPath = `${storagePath}.bak.rotate.54321.fresh.latest.tmp`;
+		await fs.writeFile(freshArtifactPath, "fresh", "utf-8");
+		expect(existsSync(freshArtifactPath)).toBe(true);
 		const unrelatedArtifactPath = `${storagePath}.rotate.12345.abc123.latest.tmp`;
 		await fs.writeFile(unrelatedArtifactPath, "keep", "utf-8");
 		expect(existsSync(unrelatedArtifactPath)).toBe(true);
@@ -656,6 +660,7 @@ describe("storage recovery paths", () => {
 		for (const staleArtifactPath of staleArtifacts) {
 			expect(existsSync(staleArtifactPath)).toBe(false);
 		}
+		expect(existsSync(freshArtifactPath)).toBe(true);
 		expect(existsSync(unrelatedArtifactPath)).toBe(true);
 	});
 

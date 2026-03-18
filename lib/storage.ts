@@ -47,6 +47,7 @@ const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
+const ROTATING_BACKUP_STALE_ARTIFACT_MAX_AGE_MS = 60_000;
 export const NAMED_BACKUP_LIST_CONCURRENCY = 8;
 const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
@@ -792,14 +793,34 @@ async function cleanupStaleRotatingBackupArtifacts(
 	path: string,
 ): Promise<void> {
 	const directoryPath = dirname(path);
+	const staleCutoff = Date.now() - ROTATING_BACKUP_STALE_ARTIFACT_MAX_AGE_MS;
 	try {
 		const directoryEntries = await fs.readdir(directoryPath, {
 			withFileTypes: true,
 		});
-		const staleArtifacts = directoryEntries
+		const staleArtifacts = (
+			await Promise.all(
+				directoryEntries
 			.filter((entry) => entry.isFile())
 			.map((entry) => join(directoryPath, entry.name))
-			.filter((entryPath) => isRotatingBackupTempArtifact(path, entryPath));
+			.filter((entryPath) => isRotatingBackupTempArtifact(path, entryPath))
+			.map(async (entryPath) => {
+				try {
+					const stats = await fs.stat(entryPath);
+					return stats.mtimeMs <= staleCutoff ? entryPath : null;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (code !== "ENOENT") {
+						log.warn("Failed to inspect rotating backup artifact", {
+							path: entryPath,
+							error: String(error),
+						});
+					}
+					return null;
+				}
+			}),
+			)
+		).filter((entryPath): entryPath is string => entryPath !== null);
 
 		for (const staleArtifactPath of staleArtifacts) {
 			try {
