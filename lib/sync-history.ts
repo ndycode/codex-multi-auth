@@ -189,12 +189,39 @@ async function loadHistoryEntriesFromDiskWithRetry(
 	throw new Error("Failed to load sync history entries.");
 }
 
+async function openHistoryFileWithRetry(
+	historyPath: string,
+): Promise<Awaited<ReturnType<typeof fs.open>>> {
+	let lastError: unknown = null;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return await fs.open(historyPath, "r");
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				code === "ENOENT" ||
+				!code ||
+				!RETRYABLE_READ_CODES.has(code) ||
+				attempt === 4
+			) {
+				throw error;
+			}
+			await waitForHistoryRetry(attempt);
+		}
+	}
+	if (lastError instanceof Error) {
+		throw lastError;
+	}
+	throw new Error("Failed to open sync history file.");
+}
+
 async function readHistoryTail(
 	historyPath: string,
 	options: { limit: number; kind?: SyncHistoryKind },
 ): Promise<SyncHistoryEntry[]> {
 	const { kind, limit } = options;
-	const handle = await fs.open(historyPath, "r");
+	const handle = await openHistoryFileWithRetry(historyPath);
 	try {
 		const stats = await handle.stat();
 		if (stats.size === 0) {
@@ -461,7 +488,7 @@ export async function readSyncHistory(
 				limit,
 			});
 		}
-		const parsed = await loadHistoryEntriesFromDisk(paths);
+		const parsed = await loadHistoryEntriesFromDiskWithRetry(paths);
 		const filtered = kind
 			? parsed.filter((entry) => entry.kind === kind)
 			: parsed;

@@ -36,6 +36,13 @@ import {
 const log = createLogger("codex-cli-sync");
 const RETRYABLE_SELECTION_TIMESTAMP_CODES = new Set(["EBUSY", "EPERM"]);
 export const SELECTION_TIMESTAMP_READ_MAX_ATTEMPTS = 4;
+const RETRYABLE_ROLLBACK_READ_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EACCES",
+	"EAGAIN",
+]);
+const ROLLBACK_READ_MAX_ATTEMPTS = 5;
 const RETRYABLE_ROLLBACK_SAVE_CODES = new Set(["EBUSY", "EAGAIN"]);
 const ROLLBACK_SAVE_MAX_ATTEMPTS = 5;
 const ROLLBACK_HISTORY_SCAN_LIMIT = 200;
@@ -499,7 +506,32 @@ async function loadRollbackSnapshot(
 	}
 
 	try {
-		const raw = await fs.readFile(snapshot.path, "utf-8");
+		let raw = "";
+		for (let attempt = 0; attempt < ROLLBACK_READ_MAX_ATTEMPTS; attempt += 1) {
+			try {
+				raw = await fs.readFile(snapshot.path, "utf-8");
+				break;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (
+					code === "ENOENT" ||
+					!code ||
+					!RETRYABLE_ROLLBACK_READ_CODES.has(code) ||
+					attempt + 1 >= ROLLBACK_READ_MAX_ATTEMPTS
+				) {
+					throw error;
+				}
+				log.warn(
+					"Retrying rollback checkpoint read after transient filesystem error",
+					{
+						attempt: attempt + 1,
+						maxAttempts: ROLLBACK_READ_MAX_ATTEMPTS,
+						error: getRedactedFilesystemErrorLabel(error),
+					},
+				);
+				await sleep(10 * 2 ** attempt);
+			}
+		}
 		const parsed = JSON.parse(raw) as unknown;
 		const normalized = normalizeAccountStorage(parsed);
 		if (!normalized) {

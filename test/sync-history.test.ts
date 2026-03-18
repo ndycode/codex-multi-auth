@@ -576,6 +576,70 @@ describe("sync history", () => {
 		expect(await readSyncHistory()).toHaveLength(1);
 	});
 
+	it("retries transient full-history read failures before succeeding", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 4,
+			run: createCodexRun(4, "/source-4"),
+		});
+
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const originalReadFile = fs.readFile.bind(fs);
+		let failedOnce = false;
+		vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			if (
+				!failedOnce &&
+				typeof targetPath === "string" &&
+				targetPath === historyPath
+			) {
+				failedOnce = true;
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			}
+			return originalReadFile(...args);
+		});
+
+		const history = await readSyncHistory();
+
+		expect(failedOnce).toBe(true);
+		expect(history).toHaveLength(1);
+		expect(history[0]?.recordedAt).toBe(4);
+	});
+
+	it("retries transient tail-open failures before reading recent history", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 5,
+			run: createCodexRun(5, "/source-5"),
+		});
+
+		const historyPath = getSyncHistoryPaths().historyPath;
+		const originalOpen = fs.open.bind(fs);
+		let failedOnce = false;
+		vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			if (
+				!failedOnce &&
+				typeof targetPath === "string" &&
+				targetPath === historyPath
+			) {
+				failedOnce = true;
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			}
+			return originalOpen(...args);
+		});
+
+		const history = await readSyncHistory({ limit: 1 });
+
+		expect(failedOnce).toBe(true);
+		expect(history).toHaveLength(1);
+		expect(history[0]?.recordedAt).toBe(5);
+	});
+
 	it("retries transient latest-file removal when pruning empty history", async () => {
 		const latestPath = getSyncHistoryPaths().latestPath;
 		await fs.writeFile(
