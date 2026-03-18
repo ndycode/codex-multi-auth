@@ -2773,12 +2773,7 @@ async function importNormalizedAccounts(
 		await persist(newStorage);
 
 		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = Math.max(
-			0,
-			normalized.accounts.length -
-				imported -
-				Math.max(0, options.replacedExistingCount ?? 0),
-		);
+		const skipped = Math.max(0, normalized.accounts.length - imported);
 		return { imported, total: deduplicatedAccounts.length, skipped };
 	});
 
