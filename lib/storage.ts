@@ -2586,7 +2586,10 @@ export async function restoreNamedBackup(
 			throw new Error(assessment.error ?? "Backup is not eligible for restore");
 		}
 	}
-	return importNormalizedAccounts(candidate.normalized, backupPath);
+	return importNormalizedAccounts(candidate.normalized, backupPath, {
+		snapshotReason: "import-accounts",
+		snapshotFailurePolicy: "error",
+	});
 }
 
 function parseAndNormalizeStorage(data: unknown): {
@@ -2669,9 +2672,12 @@ async function loadImportableBackupCandidate(
 async function importNormalizedAccounts(
 	normalized: AccountStorageV3,
 	sourcePath: string,
-	options: { snapshotReason?: AccountSnapshotReason } = {},
+	options: {
+		snapshotReason?: AccountSnapshotReason;
+		snapshotFailurePolicy?: AccountSnapshotFailurePolicy;
+	} = {},
 ): Promise<{ imported: number; total: number; skipped: number }> {
-	const { snapshotReason } = options;
+	const { snapshotReason, snapshotFailurePolicy = "warn" } = options;
 	const {
 		imported: importedCount,
 		total,
@@ -2680,6 +2686,7 @@ async function importNormalizedAccounts(
 		if (snapshotReason) {
 			await snapshotAccountStorage({
 				reason: snapshotReason,
+				failurePolicy: snapshotFailurePolicy,
 				storage: existing,
 				storagePath: getStoragePath(),
 			});
@@ -3419,6 +3426,7 @@ export async function snapshotAndClearAccounts(
 		const currentStorage = await loadAccountsInternal(saveAccountsUnlocked);
 		await snapshotAccountStorage({
 			reason,
+			failurePolicy: "error",
 			storage: currentStorage,
 			storagePath,
 		});

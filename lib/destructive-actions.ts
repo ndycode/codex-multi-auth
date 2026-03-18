@@ -124,6 +124,7 @@ export async function deleteAccountAtIndex(options: {
 		const flagged = await loadFlaggedAccounts();
 		await snapshotAccountStorage({
 			reason: "delete-account",
+			failurePolicy: "error",
 			storage: sourceStorage,
 			storagePath: getStoragePath(),
 		});

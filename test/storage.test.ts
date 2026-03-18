@@ -1178,6 +1178,45 @@ describe("storage", () => {
 			expect(restored?.accounts[0]?.accountId).toBe("primary");
 		});
 
+		it("creates a pre-restore snapshot before restoring into an existing account pool", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "backup-account",
+						refreshToken: "ref-backup-account",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("restore-me");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "current-account",
+						refreshToken: "ref-current-account",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			const restoreResult = await restoreNamedBackup("restore-me");
+
+			expect(restoreResult.total).toBe(2);
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			expect(
+				entries.some((name) =>
+					name.startsWith("accounts-import-accounts-snapshot-"),
+				),
+			).toBe(true);
+		});
+
 		it("honors explicit null currentStorage when assessing a named backup", async () => {
 			await saveAccounts({
 				version: 3,
@@ -2586,6 +2625,109 @@ describe("storage", () => {
 			});
 		});
 
+		it("creates a snapshot before restoring a named backup", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "current",
+						refreshToken: "ref-current",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			await createNamedBackup("restore-with-snapshot");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "replacement",
+						refreshToken: "ref-replacement",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			await restoreNamedBackup("restore-with-snapshot");
+
+			const entries = await fs.readdir(getNamedBackupsDirectoryPath());
+			const restoreSnapshot = entries.find((name) =>
+				name.startsWith("accounts-import-accounts-snapshot-"),
+			);
+			expect(restoreSnapshot).toBeTruthy();
+			const snapshotContent = JSON.parse(
+				await fs.readFile(
+					join(getNamedBackupsDirectoryPath(), restoreSnapshot!),
+					"utf-8",
+				),
+			);
+			expect(snapshotContent.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "replacement",
+					refreshToken: "ref-replacement",
+				}),
+			]);
+			expect(await loadAccounts()).toMatchObject({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "current",
+						refreshToken: "ref-current",
+					}),
+				]),
+			});
+		});
+
+		it("does not clear accounts when the pre-delete snapshot fails", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "primary",
+						refreshToken: "ref-primary",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const originalWriteFile = fs.writeFile.bind(fs);
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (path, data, options) => {
+					if (
+						String(path).includes("accounts-delete-saved-accounts-snapshot-")
+					) {
+						const error = new Error("snapshot failed") as NodeJS.ErrnoException;
+						error.code = "EROFS";
+						throw error;
+					}
+					return originalWriteFile(path, data, options as never);
+				});
+
+			try {
+				await expect(deleteSavedAccounts()).rejects.toMatchObject({
+					code: "EROFS",
+				});
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+
+			expect(await loadAccounts()).toMatchObject({
+				accounts: [
+					expect.objectContaining({
+						accountId: "primary",
+						refreshToken: "ref-primary",
+					}),
+				],
+			});
+		});
+
 		it("creates a snapshot before importing into an existing account pool", async () => {
 			const importPath = join(testWorkDir, "import.json");
 
@@ -2627,6 +2769,45 @@ describe("storage", () => {
 				),
 			).toBe(true);
 			expect((await loadAccounts())?.accounts).toHaveLength(2);
+		});
+
+		it("keeps accounts intact when the pre-delete snapshot cannot be written", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "existing",
+						refreshToken: "ref-existing",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const originalWriteFile = fs.writeFile;
+			const writeFileSpy = vi
+				.spyOn(fs, "writeFile")
+				.mockImplementation(async (...args) => {
+					const [path] = args;
+					if (
+						String(path).includes("accounts-delete-saved-accounts-snapshot-")
+					) {
+						const error = new Error("snapshot write failed") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return originalWriteFile(...args);
+				});
+
+			try {
+				await expect(deleteSavedAccounts()).rejects.toThrow("snapshot write failed");
+			} finally {
+				writeFileSpy.mockRestore();
+			}
+
+			expect((await loadAccounts())?.accounts).toHaveLength(1);
+			expect(await fs.readdir(getNamedBackupsDirectoryPath())).toEqual([]);
 		});
 
 		it("keeps the pre-import snapshot when the import later exceeds the limit", async () => {
