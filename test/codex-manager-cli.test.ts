@@ -5474,4 +5474,79 @@ describe("codex manager cli commands", () => {
 		expect(saveDashboardDisplaySettingsMock).not.toHaveBeenCalled();
 		expect(savePluginConfigMock).not.toHaveBeenCalled();
 	});
+
+	it("retries startup recovery after the prompt throws before it is shown", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		const assessment = {
+			backup: {
+				name: "startup-backup",
+				path: "/mock/backups/startup-backup.json",
+				createdAt: null,
+				updatedAt: now,
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: 1,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			error: "",
+		};
+		getActionableNamedBackupRestoresMock.mockResolvedValue({
+			assessments: [assessment],
+			allAssessments: [assessment],
+			totalBackups: 1,
+		});
+		confirmMock
+			.mockRejectedValueOnce(
+				makeErrnoError(
+					"no such file or directory, open '/mock/settings.json'",
+					"ENOENT",
+				),
+			)
+			.mockResolvedValueOnce(false);
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+		await configureSuccessfulOAuthFlow(now);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const firstExitCode = await runCodexMultiAuthCli(["auth", "login"]);
+			storageState = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [],
+			};
+			const secondExitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(firstExitCode).toBe(0);
+			expect(secondExitCode).toBe(0);
+			expect(getActionableNamedBackupRestoresMock).toHaveBeenCalledTimes(2);
+			expect(confirmMock).toHaveBeenCalledTimes(2);
+			expect(createAuthorizationFlowMock).toHaveBeenCalledTimes(2);
+			expect(warnSpy).toHaveBeenCalledWith(
+				"Startup recovery prompt failed (ENOENT). Continuing with OAuth.",
+			);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
 });

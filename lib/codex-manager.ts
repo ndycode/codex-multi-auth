@@ -4113,12 +4113,12 @@ async function runAuthLogin(): Promise<number> {
 									.map((assessment) => assessment.backup.name)
 									.join("")
 							: `${recoveryState.assessments.length} backups`;
-					promptWasShown = true;
 					const restoreNow = await confirm(
 						`Found ${recoveryState.assessments.length} recoverable backup${
 							recoveryState.assessments.length === 1 ? "" : "s"
 						} out of ${recoveryState.totalBackups} total (${backupLabel}) in ${backupDir}. Restore now?`,
 					);
+					promptWasShown = true;
 					if (restoreNow) {
 						const restoreResult = await runBackupRestoreManager(
 							displaySettings,
