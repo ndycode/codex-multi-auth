@@ -1,6 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve as resolvePath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import {
@@ -13,16 +13,19 @@ import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
 	assessNamedBackupRestore,
 	buildNamedBackupPath,
+	assessOpencodeAccountPool,
 	clearAccounts,
 	clearFlaggedAccounts,
 	createNamedBackup,
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
+	detectOpencodeAccountPoolPath,
 	exportAccounts,
 	exportNamedBackup,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getActionableNamedBackupRestores,
+	formatRedactedFilesystemError,
 	getFlaggedAccountsPath,
 	getNamedBackupsDirectoryPath,
 	NAMED_BACKUP_LIST_CONCURRENCY,
@@ -1147,6 +1150,27 @@ describe("storage", () => {
 		it("should fail import when file contains invalid JSON", async () => {
 			await fs.writeFile(exportPath, "not valid json {[");
 			await expect(importAccounts(exportPath)).rejects.toThrow(/Invalid JSON/);
+		});
+
+		it("should fail import when file is the active storage file", async () => {
+			await fs.writeFile(
+				testStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "current-account",
+							refreshToken: "ref-current",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			await expect(importAccounts(testStoragePath)).rejects.toThrow(
+				/Import source cannot be the active storage file/,
+			);
 		});
 
 		it("should fail import when file contains invalid format", async () => {
@@ -5687,6 +5711,269 @@ describe("storage", () => {
 			} finally {
 				readFileSpy.mockRestore();
 			}
+		});
+	});
+
+	describe("opencode account pool detection", () => {
+		const originalLocalAppData = process.env.LOCALAPPDATA;
+		const originalAppData = process.env.APPDATA;
+		const originalHome = process.env.HOME;
+		const originalPoolPath = process.env.CODEX_OPENCODE_POOL_PATH;
+		const originalUserProfile = process.env.USERPROFILE;
+		let tempRoot = "";
+		let poolPath = "";
+
+		beforeEach(async () => {
+			tempRoot = join(
+				tmpdir(),
+				"opencode-pool-" + Math.random().toString(36).slice(2),
+			);
+			poolPath = join(tempRoot, "OpenCode", "openai-codex-accounts.json");
+			process.env.LOCALAPPDATA = tempRoot;
+			process.env.APPDATA = tempRoot;
+			delete process.env.CODEX_OPENCODE_POOL_PATH;
+			await fs.mkdir(dirname(poolPath), { recursive: true });
+			setStoragePathDirect(join(tempRoot, "current-storage.json"));
+		});
+
+		afterEach(async () => {
+			if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = originalLocalAppData;
+			if (originalAppData === undefined) delete process.env.APPDATA;
+			else process.env.APPDATA = originalAppData;
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+			if (originalPoolPath === undefined)
+				delete process.env.CODEX_OPENCODE_POOL_PATH;
+			else process.env.CODEX_OPENCODE_POOL_PATH = originalPoolPath;
+			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = originalUserProfile;
+			setStoragePathDirect(null);
+			if (tempRoot) {
+				await fs.rm(tempRoot, { recursive: true, force: true });
+			}
+		});
+
+		it("detects and assesses a valid opencode pool source", async () => {
+			const poolStorage = {
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "pool-account",
+						refreshToken: "ref-pool",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			};
+			await fs.writeFile(poolPath, JSON.stringify(poolStorage));
+
+			const detected = detectOpencodeAccountPoolPath();
+			expect(detected).toBe(poolPath);
+
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment).not.toBeNull();
+			expect(assessment?.backup.path).toBe(poolPath);
+			expect(assessment?.backup.valid).toBe(true);
+			expect(assessment?.eligibleForRestore).toBe(true);
+			expect(assessment?.imported).toBe(1);
+		});
+
+		it("prefers an explicit CODEX_OPENCODE_POOL_PATH override", async () => {
+			const explicitPoolPath = join(tempRoot, "explicit", "pool.json");
+			await fs.mkdir(dirname(explicitPoolPath), { recursive: true });
+			await fs.writeFile(
+				explicitPoolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "explicit-account",
+							refreshToken: "ref-explicit",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			await fs.writeFile(
+				poolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "fallback-account",
+							refreshToken: "ref-fallback",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			process.env.CODEX_OPENCODE_POOL_PATH = `  ${explicitPoolPath}  `;
+
+			const detected = detectOpencodeAccountPoolPath();
+			expect(detected).toBe(explicitPoolPath);
+
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment?.backup.path).toBe(explicitPoolPath);
+			expect(assessment?.imported).toBe(1);
+		});
+
+		it("does not fall back to auto-detection when an explicit CODEX_OPENCODE_POOL_PATH override is missing", async () => {
+			await fs.writeFile(
+				poolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "fallback-account",
+							refreshToken: "ref-fallback",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			process.env.CODEX_OPENCODE_POOL_PATH = join(
+				tempRoot,
+				"explicit",
+				"missing-pool.json",
+			);
+
+			expect(detectOpencodeAccountPoolPath()).toBeNull();
+			await expect(assessOpencodeAccountPool()).resolves.toBeNull();
+		});
+
+		it("falls back to homedir when LOCALAPPDATA and APPDATA are not set", async () => {
+			delete process.env.LOCALAPPDATA;
+			delete process.env.APPDATA;
+			const fakeHome = join(tempRoot, "fake-home");
+			const homedirPoolPath = join(
+				fakeHome,
+				".opencode",
+				"openai-codex-accounts.json",
+			);
+			process.env.HOME = fakeHome;
+			process.env.USERPROFILE = fakeHome;
+			await fs.mkdir(dirname(homedirPoolPath), { recursive: true });
+			await fs.writeFile(
+				homedirPoolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "homedir-account",
+							refreshToken: "ref-homedir",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			expect(detectOpencodeAccountPoolPath()).toBe(homedirPoolPath);
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment?.backup.path).toBe(homedirPoolPath);
+			expect(assessment?.eligibleForRestore).toBe(true);
+			expect(assessment?.imported).toBe(1);
+		});
+
+		it("resolves relative app data candidates before detection", async () => {
+			const relativeBase = relative(
+				process.cwd(),
+				join(tempRoot, "relative-appdata"),
+			);
+			const resolvedPoolPath = resolvePath(
+				join(relativeBase, "OpenCode", "openai-codex-accounts.json"),
+			);
+			delete process.env.LOCALAPPDATA;
+			process.env.APPDATA = relativeBase;
+			await fs.mkdir(dirname(resolvedPoolPath), { recursive: true });
+			await fs.writeFile(
+				resolvedPoolPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "relative-appdata-account",
+							refreshToken: "ref-relative",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			expect(detectOpencodeAccountPoolPath()).toBe(resolvedPoolPath);
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment?.backup.path).toBe(resolvedPoolPath);
+			expect(assessment?.eligibleForRestore).toBe(true);
+			expect(assessment?.imported).toBe(1);
+		});
+
+		it("redacts single-segment filesystem paths in error messages", async () => {
+			const error = new Error(
+				"EPERM: operation not permitted, open 'C:\\accounts.json'",
+			) as NodeJS.ErrnoException;
+			error.code = "EPERM";
+
+			expect(formatRedactedFilesystemError(error)).toBe(
+				"EPERM: operation not permitted, open 'accounts.json'",
+			);
+		});
+
+		it("refuses malformed opencode source before any mutation", async () => {
+			await fs.writeFile(poolPath, "not valid json");
+
+			const detected = detectOpencodeAccountPoolPath();
+			expect(detected).toBe(poolPath);
+
+			const assessment = await assessOpencodeAccountPool();
+			expect(assessment).not.toBeNull();
+			expect(assessment?.backup.valid).toBe(false);
+			expect(assessment?.eligibleForRestore).toBe(false);
+			expect(assessment?.imported).toBeNull();
+			const current = await loadAccounts();
+			expect(current).toMatchObject({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [],
+				restoreEligible: true,
+				restoreReason: "missing-storage",
+			});
+		});
+
+		it("rejects using the active storage file as the opencode import source", async () => {
+			const activeStoragePath = getStoragePath();
+			await fs.writeFile(
+				activeStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "current-account",
+							refreshToken: "ref-current",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+			process.env.CODEX_OPENCODE_POOL_PATH = activeStoragePath;
+
+			expect(detectOpencodeAccountPoolPath()).toBe(activeStoragePath);
+			await expect(assessOpencodeAccountPool()).rejects.toThrow(
+				"Import source cannot be the active storage file.",
+			);
 		});
 	});
 

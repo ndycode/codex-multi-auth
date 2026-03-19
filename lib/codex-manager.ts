@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { promises as fs, existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
@@ -65,9 +65,13 @@ import {
 } from "./quota-cache.js";
 import {
 	assessNamedBackupRestore,
+	assessOpencodeAccountPool,
+	type BackupRestoreAssessment,
+	formatRedactedFilesystemError,
 	getActionableNamedBackupRestores,
 	getRedactedFilesystemErrorLabel,
 	getNamedBackupsDirectoryPath,
+	importAccounts,
 	listNamedBackups,
 	listRotatingBackups,
 	NAMED_BACKUP_LIST_CONCURRENCY,
@@ -4445,6 +4449,58 @@ async function runAuthLogin(): Promise<number> {
 					console.error(
 						`Restore failed: ${collapseWhitespace(message) || "unknown error"}`,
 					);
+				}
+				continue;
+			}
+			if (menuResult.mode === "import-opencode") {
+				let assessment: BackupRestoreAssessment | null;
+				try {
+					assessment = await assessOpencodeAccountPool({
+						currentStorage,
+					});
+				} catch (error) {
+					const errorLabel = formatRedactedFilesystemError(error);
+					console.error(`Import assessment failed: ${errorLabel}`);
+					continue;
+				}
+				if (!assessment) {
+					console.log("No OpenCode account pool was detected.");
+					continue;
+				}
+				if (!assessment.backup.valid || !assessment.eligibleForRestore) {
+					const assessmentErrorLabel =
+						assessment.error || "OpenCode account pool is not importable.";
+					console.log(assessmentErrorLabel);
+					continue;
+				}
+				if (assessment.wouldExceedLimit) {
+					console.log(
+						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
+					);
+					continue;
+				}
+				const backupLabel = basename(assessment.backup.path);
+				const confirmed = await confirm(
+					`Import OpenCode accounts from ${backupLabel}?`,
+				);
+				if (!confirmed) {
+					continue;
+				}
+				try {
+					await runActionPanel(
+						"Import OpenCode Accounts",
+						`Importing from ${backupLabel}`,
+						async () => {
+							const imported = await importAccounts(assessment.backup.path);
+							console.log(
+								`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+							);
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const errorLabel = formatRedactedFilesystemError(error);
+					console.error(`Import failed: ${errorLabel}`);
 				}
 				continue;
 			}

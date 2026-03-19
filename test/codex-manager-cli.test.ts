@@ -13,7 +13,9 @@ const getActionableNamedBackupRestoresMock = vi.fn();
 const listNamedBackupsMock = vi.fn();
 const listRotatingBackupsMock = vi.fn();
 const assessNamedBackupRestoreMock = vi.fn();
+const assessOpencodeAccountPoolMock = vi.fn();
 const getNamedBackupsDirectoryPathMock = vi.fn();
+const importAccountsMock = vi.fn();
 const restoreNamedBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
@@ -152,7 +154,9 @@ vi.mock("../lib/storage.js", async () => {
 		listNamedBackups: listNamedBackupsMock,
 		listRotatingBackups: listRotatingBackupsMock,
 		assessNamedBackupRestore: assessNamedBackupRestoreMock,
+		assessOpencodeAccountPool: assessOpencodeAccountPoolMock,
 		getNamedBackupsDirectoryPath: getNamedBackupsDirectoryPathMock,
+		importAccounts: importAccountsMock,
 		restoreNamedBackup: restoreNamedBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,
@@ -646,7 +650,9 @@ describe("codex manager cli commands", () => {
 		listNamedBackupsMock.mockReset();
 		listRotatingBackupsMock.mockReset();
 		assessNamedBackupRestoreMock.mockReset();
+		assessOpencodeAccountPoolMock.mockReset();
 		getNamedBackupsDirectoryPathMock.mockReset();
+		importAccountsMock.mockReset();
 		restoreNamedBackupMock.mockReset();
 		confirmMock.mockReset();
 		getActionableNamedBackupRestoresMock.mockReset();
@@ -678,7 +684,13 @@ describe("codex manager cli commands", () => {
 			eligibleForRestore: true,
 			error: undefined,
 		});
+		assessOpencodeAccountPoolMock.mockResolvedValue(null);
 		getNamedBackupsDirectoryPathMock.mockReturnValue("/mock/backups");
+		importAccountsMock.mockResolvedValue({
+			imported: 0,
+			skipped: 0,
+			total: 0,
+		});
 		restoreNamedBackupMock.mockResolvedValue({
 			imported: 1,
 			skipped: 0,
@@ -1065,6 +1077,54 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("imports opencode accounts from the login menu", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		assessOpencodeAccountPoolMock.mockResolvedValue({
+			backup: {
+				name: "OpenCode account pool",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: undefined,
+			},
+			eligibleForRestore: true,
+			wouldExceedLimit: false,
+			error: undefined,
+		});
+		importAccountsMock.mockResolvedValue({
+			imported: 1,
+			skipped: 0,
+			total: 2,
+		});
+		confirmMock.mockResolvedValueOnce(true);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/.opencode/openai-codex-accounts.json",
+		);
+		expect(confirmMock).toHaveBeenCalledWith(
+			"Import OpenCode accounts from openai-codex-accounts.json?",
+		);
+	});
+
 	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
@@ -1123,6 +1183,341 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("skips OpenCode import when confirmation is declined", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "existing-refresh",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		});
+		assessOpencodeAccountPoolMock.mockResolvedValue({
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "existing@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "",
+		});
+		importAccountsMock.mockResolvedValue({
+			imported: 1,
+			skipped: 0,
+			total: 2,
+		});
+		confirmMock.mockResolvedValueOnce(false);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).toHaveBeenCalledOnce();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns to the dashboard when OpenCode import fails", async () => {
+		setInteractiveTTY(true);
+		const currentStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "existing-refresh",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(currentStorage);
+		const assessment = {
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "existing@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "",
+		};
+		assessOpencodeAccountPoolMock.mockResolvedValue(assessment);
+		const importError = makeErrnoError(
+			"operation not permitted, open 'C:\\Users\\alice\\AppData\\Local\\OpenCode\\openai-codex-accounts.json'",
+			"EPERM",
+		);
+		importAccountsMock.mockRejectedValueOnce(importError);
+		confirmMock.mockResolvedValueOnce(true);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(importAccountsMock).toHaveBeenCalledWith(
+			"/mock/.opencode/openai-codex-accounts.json",
+		);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Import failed: EPERM: operation not permitted, open 'openai-codex-accounts.json'",
+		);
+		expect(
+			errorSpy.mock.calls.some(([message]) =>
+				String(message).includes("C:\\Users\\alice\\AppData\\Local\\OpenCode"),
+			),
+		).toBe(false);
+		errorSpy.mockRestore();
+	});
+
+	it("returns to the dashboard when OpenCode import assessment fails", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		assessOpencodeAccountPoolMock.mockRejectedValueOnce(
+			makeErrnoError("assessment locked", "EPERM"),
+		);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Import assessment failed: EPERM: assessment locked",
+		);
+		errorSpy.mockRestore();
+	});
+
+	it("returns to the dashboard when no OpenCode account pool is detected", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		assessOpencodeAccountPoolMock.mockResolvedValueOnce(null);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(logSpy).toHaveBeenCalledWith(
+			"No OpenCode account pool was detected.",
+		);
+		logSpy.mockRestore();
+	});
+
+	it.each([
+		{
+			label: "would exceed the account limit",
+			expectedLog:
+				"Import would exceed the account limit (2 current, 5 after import). Remove accounts first.",
+			assessment: {
+				backup: {
+					name: "openai-codex-accounts.json",
+					path: "/mock/.opencode/openai-codex-accounts.json",
+					createdAt: null,
+					updatedAt: Date.now(),
+					sizeBytes: 256,
+					version: 3,
+					accountCount: 3,
+					schemaErrors: [],
+					valid: true,
+					loadError: "",
+				},
+				currentAccountCount: 2,
+				mergedAccountCount: 5,
+				imported: 3,
+				skipped: 0,
+				wouldExceedLimit: true,
+				eligibleForRestore: true,
+				nextActiveIndex: 0,
+				nextActiveEmail: "existing@example.com",
+				nextActiveAccountId: undefined,
+				activeAccountChanged: false,
+				error: "",
+			},
+		},
+		{
+			label: "is not eligible for restore",
+			expectedLog: "OpenCode account pool is not importable.",
+			assessment: {
+				backup: {
+					name: "openai-codex-accounts.json",
+					path: "/mock/.opencode/openai-codex-accounts.json",
+					createdAt: null,
+					updatedAt: Date.now(),
+					sizeBytes: 256,
+					version: 3,
+					accountCount: 1,
+					schemaErrors: [],
+					valid: true,
+					loadError: "",
+				},
+				currentAccountCount: 1,
+				mergedAccountCount: null,
+				imported: null,
+				skipped: null,
+				wouldExceedLimit: false,
+				eligibleForRestore: false,
+				nextActiveIndex: null,
+				nextActiveEmail: undefined,
+				nextActiveAccountId: undefined,
+				activeAccountChanged: false,
+				error: "OpenCode account pool is not importable.",
+			},
+		},
+	])(
+		"skips confirmation and import when the OpenCode assessment $label",
+		async ({ assessment, expectedLog }) => {
+			setInteractiveTTY(true);
+			loadAccountsMock.mockResolvedValue({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "existing@example.com",
+						refreshToken: "existing-refresh",
+						addedAt: Date.now(),
+						lastUsed: Date.now(),
+					},
+				],
+			});
+			assessOpencodeAccountPoolMock.mockResolvedValue(assessment);
+			promptLoginModeMock
+				.mockResolvedValueOnce({ mode: "import-opencode" })
+				.mockResolvedValueOnce({ mode: "cancel" });
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+			const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+			expect(exitCode).toBe(0);
+			expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+			expect(confirmMock).not.toHaveBeenCalled();
+			expect(importAccountsMock).not.toHaveBeenCalled();
+			expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+			expect(logSpy).toHaveBeenCalledWith(expectedLog);
+			logSpy.mockRestore();
+		},
+	);
+
+	it("redacts filesystem details when the OpenCode assessment is invalid", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		assessOpencodeAccountPoolMock.mockResolvedValue({
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 0,
+				schemaErrors: ["invalid"],
+				valid: false,
+				loadError: "ENOENT: openai-codex-accounts.json",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: null,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: false,
+			eligibleForRestore: false,
+			nextActiveIndex: null,
+			nextActiveEmail: undefined,
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "ENOENT: openai-codex-accounts.json",
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			"ENOENT: openai-codex-accounts.json",
+		);
+		logSpy.mockRestore();
+	});
 	it("runs restore preview before applying a replace-only named backup", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
@@ -1297,282 +1692,6 @@ describe("codex manager cli commands", () => {
 		} finally {
 			logSpy.mockRestore();
 		}
-	});
-
-	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
-		setInteractiveTTY(true);
-		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "settings@example.com",
-					accountId: "acc_settings",
-					refreshToken: "refresh-settings",
-					accessToken: "access-settings",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		const assessment = {
-			backup: {
-				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
-				createdAt: null,
-				updatedAt: now,
-				sizeBytes: 128,
-				version: 3,
-				accountCount: 1,
-				schemaErrors: [],
-				valid: true,
-				loadError: undefined,
-			},
-			currentAccountCount: 1,
-			mergedAccountCount: 2,
-			imported: 1,
-			skipped: 0,
-			wouldExceedLimit: false,
-			eligibleForRestore: true,
-			error: undefined,
-		};
-		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
-		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
-		restoreNamedBackupMock.mockRejectedValueOnce(new Error("backup locked"));
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
-
-		expect(exitCode).toBe(1);
-		expect(promptLoginModeMock).not.toHaveBeenCalled();
-		expect(confirmMock).toHaveBeenCalledOnce();
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup", {
-			assessment,
-		});
-	});
-
-	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
-		setInteractiveTTY(true);
-		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "settings@example.com",
-					accountId: "acc_settings",
-					refreshToken: "refresh-settings",
-					accessToken: "access-settings",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
-					enabled: true,
-				},
-			],
-		});
-		const assessment = {
-			backup: {
-				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
-				createdAt: null,
-				updatedAt: now,
-				sizeBytes: 128,
-				version: 3,
-				accountCount: 1,
-				schemaErrors: [],
-				valid: true,
-				loadError: undefined,
-			},
-			currentAccountCount: 1,
-			mergedAccountCount: 2,
-			imported: 1,
-			skipped: 0,
-			wouldExceedLimit: false,
-			eligibleForRestore: true,
-			error: undefined,
-		};
-		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
-		assessNamedBackupRestoreMock.mockResolvedValue(assessment);
-		selectMock.mockResolvedValueOnce({ type: "restore", assessment });
-		restoreNamedBackupMock.mockRejectedValueOnce(new Error("backup locked"));
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
-
-		expect(exitCode).toBe(1);
-		expect(promptLoginModeMock).not.toHaveBeenCalled();
-		expect(confirmMock).toHaveBeenCalledOnce();
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup", {
-			assessment,
-		});
-	});
-
-	it("runs restore preview before applying a replace-only named backup", async () => {
-		setInteractiveTTY(true);
-		const now = Date.now();
-		loadAccountsMock.mockResolvedValue({
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [
-				{
-					email: "current@example.com",
-					accountId: "current-account",
-					refreshToken: "refresh-current",
-					accessToken: "access-current",
-					expiresAt: now + 3_600_000,
-					addedAt: now - 2_000,
-					lastUsed: now - 2_000,
-					enabled: true,
-				},
-			],
-		});
-		const assessment = {
-			backup: {
-				name: "named-backup",
-				path: "/mock/backups/named-backup.json",
-				createdAt: null,
-				updatedAt: now,
-				sizeBytes: 128,
-				version: 3,
-				accountCount: 1,
-				schemaErrors: [],
-				valid: true,
-				loadError: undefined,
-			},
-			backupAccountCount: 1,
-			dedupedBackupAccountCount: 1,
-			conflictsWithinBackup: 0,
-			conflictsWithExisting: 0,
-			replacedExistingCount: 1,
-			keptExistingCount: 0,
-			keptBackupCount: 1,
-			currentAccountCount: 1,
-			mergedAccountCount: 1,
-			imported: 0,
-			skipped: 0,
-			wouldExceedLimit: false,
-			eligibleForRestore: true,
-			nextActiveIndex: 0,
-			nextActiveEmail: "current@example.com",
-			nextActiveAccountId: "current-account",
-			currentActiveIndex: 0,
-			currentActiveEmail: "current@example.com",
-			currentActiveAccountId: "current-account",
-			activeAccountOutcome: "unchanged",
-			activeAccountChanged: false,
-			activeAccountPreview: {
-				current: {
-					index: 0,
-					email: "current@example.com",
-					accountId: "current-account",
-				},
-				next: {
-					index: 0,
-					email: "current@example.com",
-					accountId: "current-account",
-				},
-				outcome: "unchanged",
-				changed: false,
-			},
-			namedBackupRestorePreview: {
-				conflicts: [
-					{
-						conflict: {
-							backupIndex: 0,
-							currentIndex: 0,
-							reasons: ["accountId", "email"],
-							resolution: "backup-kept",
-						},
-						backup: {
-							index: 0,
-							email: "current@example.com",
-							accountId: "current-account",
-						},
-						current: {
-							index: 0,
-							email: "current@example.com",
-							accountId: "current-account",
-						},
-					},
-				],
-				activeAccount: {
-					current: {
-						index: 0,
-						email: "current@example.com",
-						accountId: "current-account",
-					},
-					next: {
-						index: 0,
-						email: "current@example.com",
-						accountId: "current-account",
-					},
-					outcome: "unchanged",
-					changed: false,
-				},
-			},
-			error: undefined,
-		};
-		listNamedBackupsMock.mockResolvedValue([assessment.backup]);
-		assessNamedBackupRestoreMock
-			.mockResolvedValueOnce(assessment)
-			.mockResolvedValueOnce(assessment);
-		selectMock
-			.mockResolvedValueOnce({
-				type: "inspect",
-				entry: {
-					kind: "named",
-					label: assessment.backup.name,
-					backup: assessment.backup,
-					assessment,
-				},
-			})
-			.mockResolvedValueOnce("preview-restore");
-		confirmMock.mockResolvedValueOnce(true);
-
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli(["auth", "restore-backup"]);
-
-		expect(exitCode).toBe(0);
-		expect(listNamedBackupsMock).toHaveBeenCalledTimes(1);
-		expect(selectMock).toHaveBeenCalledTimes(2);
-		expect(selectMock.mock.calls[0]?.[1]).toMatchObject({
-			message: "Backup Browser",
-		});
-		expect(selectMock.mock.calls[1]?.[1]).toMatchObject({
-			message: "Backup Actions",
-			subtitle: "named-backup",
-		});
-		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-			1,
-			"named-backup",
-			expect.objectContaining({
-				currentStorage: expect.objectContaining({
-					accounts: expect.any(Array),
-				}),
-			}),
-		);
-		expect(assessNamedBackupRestoreMock).toHaveBeenNthCalledWith(
-			2,
-			"named-backup",
-			expect.objectContaining({
-				currentStorage: expect.objectContaining({
-					accounts: expect.any(Array),
-				}),
-			}),
-		);
-		expect(confirmMock).toHaveBeenCalledWith(
-			"Restore named-backup? Import 0 new accounts for 1 total. Replacing 1 current account.",
-		);
-		expect(restoreNamedBackupMock).toHaveBeenCalledWith("named-backup", {
-			assessment,
-		});
 	});
 
 	it("restores healthy flagged accounts into active storage", async () => {
