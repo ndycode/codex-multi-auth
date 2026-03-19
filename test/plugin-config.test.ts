@@ -823,6 +823,12 @@ describe('Plugin Configuration', () => {
 			delete process.env.CODEX_AUTH_DIRECT_CLI_INJECTION;
 		});
 
+		it('honors env true over config false', () => {
+			process.env.CODEX_AUTH_DIRECT_CLI_INJECTION = '1';
+			expect(getCodexCliDirectInjection({ codexCliDirectInjection: false })).toBe(true);
+			delete process.env.CODEX_AUTH_DIRECT_CLI_INJECTION;
+		});
+
 		it('honors config false when no env override is present', () => {
 			delete process.env.CODEX_AUTH_DIRECT_CLI_INJECTION;
 			expect(getCodexCliDirectInjection({ codexCliDirectInjection: false })).toBe(false);

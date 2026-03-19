@@ -159,7 +159,7 @@ describe("AccountManager loadFromDisk", () => {
     expect(saveAccounts).not.toHaveBeenCalled();
   });
 
-  it("syncCodexCliActiveSelectionForIndex ignores invalid indices and syncs a valid one", async () => {
+  it("syncCodexCliActiveSelectionForIndex ignores invalid or disabled entries and syncs a valid one", async () => {
     const now = Date.now();
     const manager = new AccountManager(undefined, {
       version: 3 as const,
@@ -174,12 +174,23 @@ describe("AccountManager loadFromDisk", () => {
           addedAt: now,
           lastUsed: now,
         } as never,
+        {
+          refreshToken: "refresh-2",
+          accountId: "acct-2",
+          email: "two@example.com",
+          accessToken: "access-2",
+          expiresAt: now + 10_000,
+          addedAt: now + 1,
+          lastUsed: now,
+          enabled: false,
+        } as never,
       ],
     });
 
     await expect(manager.syncCodexCliActiveSelectionForIndex(Number.NaN)).resolves.toBe(false);
     await expect(manager.syncCodexCliActiveSelectionForIndex(-1)).resolves.toBe(false);
     await expect(manager.syncCodexCliActiveSelectionForIndex(9)).resolves.toBe(false);
+    await expect(manager.syncCodexCliActiveSelectionForIndex(1)).resolves.toBe(false);
     expect(setCodexCliActiveSelection).not.toHaveBeenCalled();
 
     await expect(manager.syncCodexCliActiveSelectionForIndex(0)).resolves.toBe(true);

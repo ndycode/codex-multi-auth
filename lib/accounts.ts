@@ -393,6 +393,7 @@ export class AccountManager {
 		if (index < 0 || index >= this.accounts.length) return false;
 		const account = this.accounts[index];
 		if (!account) return false;
+		if (account.enabled === false) return false;
 		return setCodexCliActiveSelection({
 			accountId: account.accountId,
 			email: account.email,

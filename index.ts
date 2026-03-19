@@ -1020,35 +1020,36 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				// Reload immediately after the persisted selection change so the cached
 				// manager cannot keep stale active-index state, even on the first manual
 				// selection before any request path has populated the cache.
-				const activeAccountManager = await reloadAccountManagerFromDisk();
-				if (activeAccountManager && codexCliDirectInjectionEnabledForEvent) {
+				await reloadAccountManagerFromDisk();
+				if (codexCliDirectInjectionEnabledForEvent) {
 					const synced = await queueCodexCliSelectionSync({
 						generation: manualSelectionGeneration,
 						runSync: async ({ isStale }) => {
 							if (isStale()) {
 								return false;
 							}
-						try {
-							return await activeAccountManager.syncCodexCliActiveSelectionForIndex(
-								index,
-							);
-						} catch (error) {
-							logWarn(
-								`[${PLUGIN_NAME}] Codex CLI selection sync failed for manual account selection`,
-								{
-									accountIndex: index,
-									code:
-										error &&
-										typeof error === "object" &&
-										"code" in error
-											? String((error as NodeJS.ErrnoException).code ?? "")
-											: "",
-									error:
-										error instanceof Error ? error.message : String(error),
-								},
-							);
-							return false;
-						}
+							const activeAccountManager = await reloadAccountManagerFromDisk();
+							try {
+								return await activeAccountManager.syncCodexCliActiveSelectionForIndex(
+									index,
+								);
+							} catch (error) {
+								logWarn(
+									`[${PLUGIN_NAME}] Codex CLI selection sync failed for manual account selection`,
+									{
+										accountIndex: index,
+										code:
+											error &&
+											typeof error === "object" &&
+											"code" in error
+												? String((error as NodeJS.ErrnoException).code ?? "")
+												: "",
+										error:
+											error instanceof Error ? error.message : String(error),
+									},
+								);
+								return false;
+							}
 						},
 					});
 					if (synced && codexCliSelectionGeneration === manualSelectionGeneration) {
@@ -1259,35 +1260,60 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					if (!codexCliDirectInjectionEnabled) {
 						return false;
 					}
-					const signature = buildCodexCliSelectionSignature(account);
 					const selectionGenerationAtQueueTime =
 						options?.generation ?? codexCliSelectionGeneration;
 					const runSync = async (context: {
 						isStale: () => boolean;
 					}): Promise<boolean> => {
+						const clearCachedSelection = (
+							cachedIndex: number,
+							cachedSignature: string,
+						): void => {
+							if (
+								lastCodexCliActiveSyncIndex === cachedIndex &&
+								lastCodexCliActiveSyncSignature === cachedSignature
+							) {
+								lastCodexCliActiveSyncIndex = null;
+								lastCodexCliActiveSyncSignature = null;
+							}
+						};
 						if (context.isStale()) {
 							return false;
 						}
+						const activeAccountManager = cachedAccountManager ?? accountManager;
+						const liveAccount =
+							account.addedAt === undefined
+								? activeAccountManager.getAccountByIndex(account.index)
+								: activeAccountManager
+										.getAccountsSnapshot()
+										.find((candidate) => candidate.addedAt === account.addedAt) ??
+									null;
+						if (!liveAccount) {
+							return false;
+						}
+						const liveSignature = buildCodexCliSelectionSignature(liveAccount);
 						if (
 							!options?.force &&
-							lastCodexCliActiveSyncIndex === account.index &&
-							lastCodexCliActiveSyncSignature === signature
+							lastCodexCliActiveSyncIndex === liveAccount.index &&
+							lastCodexCliActiveSyncSignature === liveSignature
 						) {
 							return true;
 						}
-						const activeAccountManager = cachedAccountManager ?? accountManager;
 						let synced = false;
 						try {
 							synced =
 								await activeAccountManager.syncCodexCliActiveSelectionForIndex(
-									account.index,
+									liveAccount.index,
 								);
 						} catch (error) {
+							if (options?.force) {
+								clearCachedSelection(liveAccount.index, liveSignature);
+							}
 							logWarn(
 								`[${PLUGIN_NAME}] Codex CLI selection sync failed`,
 								{
-									accountIndex: account.index,
-									signature,
+									accountIndex: liveAccount.index,
+									signature: liveSignature,
 									code:
 										error &&
 										typeof error === "object" &&
@@ -1300,9 +1326,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							);
 							return false;
 						}
+						if (!synced && options?.force) {
+							clearCachedSelection(liveAccount.index, liveSignature);
+						}
 						if (synced && !context.isStale()) {
-							lastCodexCliActiveSyncIndex = account.index;
-							lastCodexCliActiveSyncSignature = signature;
+							lastCodexCliActiveSyncIndex = liveAccount.index;
+							lastCodexCliActiveSyncSignature = liveSignature;
 						}
 						return synced;
 					};
