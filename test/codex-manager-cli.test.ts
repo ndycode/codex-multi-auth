@@ -1080,6 +1080,66 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("skips OpenCode import when confirmation is declined", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "existing@example.com",
+					refreshToken: "existing-refresh",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		});
+		assessOpencodeAccountPoolMock.mockResolvedValue({
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "/mock/.opencode/openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 256,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 1,
+			mergedAccountCount: 2,
+			imported: 1,
+			skipped: 0,
+			wouldExceedLimit: false,
+			eligibleForRestore: true,
+			nextActiveIndex: 0,
+			nextActiveEmail: "existing@example.com",
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "",
+		});
+		importAccountsMock.mockResolvedValue({
+			imported: 1,
+			skipped: 0,
+			total: 2,
+		});
+		confirmMock.mockResolvedValueOnce(false);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).toHaveBeenCalledOnce();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("returns to the dashboard when OpenCode import fails", async () => {
 		setInteractiveTTY(true);
 		const currentStorage = {
@@ -1180,6 +1240,34 @@ describe("codex manager cli commands", () => {
 			"Import assessment failed: EPERM: assessment locked",
 		);
 		errorSpy.mockRestore();
+	});
+
+	it("returns to the dashboard when no OpenCode account pool is detected", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		assessOpencodeAccountPoolMock.mockResolvedValueOnce(null);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(logSpy).toHaveBeenCalledWith(
+			"No OpenCode account pool was detected.",
+		);
+		logSpy.mockRestore();
 	});
 
 	it.each([
