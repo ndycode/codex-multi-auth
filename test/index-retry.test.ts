@@ -127,12 +127,19 @@ vi.mock("../lib/accounts.js", async () => {
 			storedEmail?: string;
 			accessToken?: string;
 		}) => {
+			const tokenUtilsModule = tokenUtils as typeof import("../lib/auth/token-utils.js");
 			const tokenAccountId = accessToken ? "account-1" : undefined;
+			const tokenEmail = tokenUtilsModule.sanitizeEmail(
+				tokenUtilsModule.extractAccountEmail(accessToken, undefined),
+			);
+			const sanitizedStoredEmail = tokenUtilsModule.sanitizeEmail(storedEmail);
 			return {
-				accountId: (
-					tokenUtils as typeof import("../lib/auth/token-utils.js")
-				).resolveRequestAccountId(storedAccountId, source as never, tokenAccountId),
-				email: storedEmail ?? "user@example.com",
+				accountId: tokenUtilsModule.resolveRequestAccountId(
+					storedAccountId,
+					source as never,
+					tokenAccountId,
+				),
+				email: tokenEmail ?? sanitizedStoredEmail ?? "user@example.com",
 				tokenAccountId,
 			};
 		},

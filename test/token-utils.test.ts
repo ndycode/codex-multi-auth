@@ -755,7 +755,66 @@ describe("Token Utils Module", () => {
 			});
 		});
 
+		it("follows token identities when the binding is id_token-derived", () => {
+			mockedDecodeJWT.mockImplementation((token?: string) => {
+				if (token === "access-token") {
+					return {
+						[JWT_CLAIM_PATH]: {
+							chatgpt_account_id: "acc_id_token",
+						},
+					};
+				}
+				if (token === "id-token") {
+					return {
+						email: "id-token@example.com",
+					};
+				}
+				return null;
+			});
+
+			expect(
+				resolveRuntimeRequestIdentity({
+					storedAccountId: "workspace-alpha",
+					source: "id_token",
+					storedEmail: "stored@example.com",
+					accessToken: "access-token",
+					idToken: "id-token",
+				}),
+			).toEqual({
+				accountId: "acc_id_token",
+				email: "id-token@example.com",
+				tokenAccountId: "acc_id_token",
+			});
+		});
+
+		it("falls back to the token accountId when token-derived routing has no stored accountId", () => {
+			mockedDecodeJWT.mockImplementation((token?: string) => {
+				if (token === "access-token") {
+					return {
+						[JWT_CLAIM_PATH]: {
+							chatgpt_account_id: "acc_live",
+							email: "live@example.com",
+						},
+					};
+				}
+				return null;
+			});
+
+			expect(
+				resolveRuntimeRequestIdentity({
+					source: "token",
+					storedEmail: "stored@example.com",
+					accessToken: "access-token",
+				}),
+			).toEqual({
+				accountId: "acc_live",
+				email: "live@example.com",
+				tokenAccountId: "acc_live",
+			});
+		});
+
 		it("falls back to sanitized stored email when the live token has none", () => {
+			mockedDecodeJWT.mockReturnValue(null);
 			expect(
 				resolveRuntimeRequestIdentity({
 					storedAccountId: "workspace-alpha",
