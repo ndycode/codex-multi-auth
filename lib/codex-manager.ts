@@ -25,6 +25,12 @@ import {
 } from "./accounts.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
+	getPreemptiveQuotaEnabled,
+	getPreemptiveQuotaRemainingPercent5h,
+	getPreemptiveQuotaRemainingPercent7d,
+	loadPluginConfig,
+} from "./config.js";
+import {
 	loadDashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 	type DashboardDisplaySettings,
@@ -85,6 +91,10 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
 };
+export interface DirectCliInjectionSyncResult {
+	synced: boolean;
+	label?: string;
+}
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 
 function stylePromptText(text: string, tone: PromptTone): string {
@@ -111,6 +121,36 @@ function stylePromptText(text: string, tone: PromptTone): string {
 
 function collapseWhitespace(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
+}
+
+function quotaRemainingPercent(usedPercent: number | undefined): number | undefined {
+	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
+		return undefined;
+	}
+	return Math.max(0, Math.min(100, 100 - usedPercent));
+}
+
+function isQuotaNearExhaustion(
+	snapshot: CodexQuotaSnapshot,
+	thresholds: { primaryRemainingPct: number; secondaryRemainingPct: number },
+): boolean {
+	if (snapshot.status === 429) {
+		return true;
+	}
+
+	const primaryRemaining = quotaRemainingPercent(snapshot.primary.usedPercent);
+	if (
+		typeof primaryRemaining === "number" &&
+		primaryRemaining <= thresholds.primaryRemainingPct
+	) {
+		return true;
+	}
+
+	const secondaryRemaining = quotaRemainingPercent(snapshot.secondary.usedPercent);
+	return (
+		typeof secondaryRemaining === "number" &&
+		secondaryRemaining <= thresholds.secondaryRemainingPct
+	);
 }
 
 function formatReasonLabel(reason: string | undefined): string | undefined {
@@ -4390,6 +4430,73 @@ async function persistAndSyncSelectedAccount({
 	return { synced, wasDisabled };
 }
 
+async function prepareAccountForLiveSync(
+	account: AccountMetadataV3,
+	now: number,
+): Promise<{
+	accessToken?: string;
+	refreshToken?: string;
+	expiresAt?: number;
+	idToken?: string;
+	refreshFailure?: TokenFailure;
+	changed: boolean;
+}> {
+	let syncAccessToken = account.accessToken;
+	let syncRefreshToken = account.refreshToken;
+	let syncExpiresAt = account.expiresAt;
+	let syncIdToken: string | undefined;
+	let changed = false;
+
+	if (!hasUsableAccessToken(account, now)) {
+		const refreshResult = await queuedRefresh(account.refreshToken);
+		if (refreshResult.type === "success") {
+			const tokenAccountId = extractAccountId(refreshResult.access);
+			const nextEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
+			if (account.refreshToken !== refreshResult.refresh) {
+				account.refreshToken = refreshResult.refresh;
+				changed = true;
+			}
+			if (account.accessToken !== refreshResult.access) {
+				account.accessToken = refreshResult.access;
+				changed = true;
+			}
+			if (account.expiresAt !== refreshResult.expires) {
+				account.expiresAt = refreshResult.expires;
+				changed = true;
+			}
+			if (nextEmail && nextEmail !== account.email) {
+				account.email = nextEmail;
+				changed = true;
+			}
+			if (applyTokenAccountIdentity(account, tokenAccountId)) {
+				changed = true;
+			}
+			syncAccessToken = refreshResult.access;
+			syncRefreshToken = refreshResult.refresh;
+			syncExpiresAt = refreshResult.expires;
+			syncIdToken = refreshResult.idToken;
+		} else {
+			return {
+				accessToken: syncAccessToken,
+				refreshToken: syncRefreshToken,
+				expiresAt: syncExpiresAt,
+				refreshFailure: refreshResult,
+				changed,
+			};
+		}
+	}
+
+	return {
+		accessToken: syncAccessToken,
+		refreshToken: syncRefreshToken,
+		expiresAt: syncExpiresAt,
+		idToken: syncIdToken,
+		changed,
+	};
+}
+
 async function runBest(args: string[]): Promise<number> {
 	if (args.includes("--help") || args.includes("-h")) {
 		printBestUsage();
@@ -4624,73 +4731,229 @@ async function runBest(args: string[]): Promise<number> {
 	return 0;
 }
 
-export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
+export async function autoPrepareCodexLaunchAccount(): Promise<DirectCliInjectionSyncResult> {
 	setStoragePath(null);
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
-		return false;
+		return { synced: false };
 	}
 
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	if (activeIndex < 0 || activeIndex >= storage.accounts.length) {
-		return false;
+		return { synced: false };
+	}
+
+	const activeAccount = storage.accounts[activeIndex];
+	if (!activeAccount) {
+		return { synced: false };
+	}
+
+	const pluginConfig = loadPluginConfig();
+	const preemptiveEnabled = getPreemptiveQuotaEnabled(pluginConfig);
+	const thresholds = {
+		primaryRemainingPct: getPreemptiveQuotaRemainingPercent5h(pluginConfig),
+		secondaryRemainingPct: getPreemptiveQuotaRemainingPercent7d(pluginConfig),
+	};
+
+	const now = Date.now();
+	let changed = false;
+	const refreshFailures = new Map<number, TokenFailure>();
+	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
+	const probeIdTokenByIndex = new Map<number, string>();
+
+	const preparedActive = await prepareAccountForLiveSync(activeAccount, now);
+	if (preparedActive.changed) {
+		changed = true;
+	}
+	if (preparedActive.refreshFailure) {
+		refreshFailures.set(activeIndex, {
+			...preparedActive.refreshFailure,
+			message: normalizeFailureDetail(
+				preparedActive.refreshFailure.message,
+				preparedActive.refreshFailure.reason,
+			),
+		});
+	}
+
+	const activeAccountId = activeAccount.accountId ?? extractAccountId(preparedActive.accessToken);
+	let currentQuotaNearExhaustion = false;
+	if (
+		preemptiveEnabled &&
+		!preparedActive.refreshFailure &&
+		preparedActive.accessToken &&
+		activeAccountId
+	) {
+		try {
+			const activeQuota = await fetchCodexQuotaSnapshot({
+				accountId: activeAccountId,
+				accessToken: preparedActive.accessToken,
+			});
+			liveQuotaByIndex.set(activeIndex, activeQuota);
+			if (preparedActive.idToken) {
+				probeIdTokenByIndex.set(activeIndex, preparedActive.idToken);
+			}
+			currentQuotaNearExhaustion = isQuotaNearExhaustion(activeQuota, thresholds);
+		} catch {
+			currentQuotaNearExhaustion = false;
+		}
+	}
+
+	if (!preemptiveEnabled || !currentQuotaNearExhaustion) {
+		if (changed) {
+			await saveAccounts(storage);
+		}
+		const synced = await setCodexCliActiveSelection({
+			accountId: activeAccount.accountId,
+			email: activeAccount.email,
+			accessToken: preparedActive.accessToken,
+			refreshToken: preparedActive.refreshToken,
+			expiresAt: preparedActive.expiresAt,
+			...(preparedActive.idToken ? { idToken: preparedActive.idToken } : {}),
+		});
+		return synced
+			? { synced: true, label: formatAccountLabel(activeAccount, activeIndex) }
+			: { synced: false };
+	}
+
+	for (let i = 0; i < storage.accounts.length; i += 1) {
+		if (i === activeIndex) continue;
+		const account = storage.accounts[i];
+		if (!account || account.enabled === false) continue;
+
+		const prepared = await prepareAccountForLiveSync(account, now);
+		if (prepared.changed) {
+			changed = true;
+		}
+		if (prepared.refreshFailure) {
+			refreshFailures.set(i, {
+				...prepared.refreshFailure,
+				message: normalizeFailureDetail(
+					prepared.refreshFailure.message,
+					prepared.refreshFailure.reason,
+				),
+			});
+			continue;
+		}
+
+		const accountId = account.accountId ?? extractAccountId(prepared.accessToken);
+		if (!prepared.accessToken || !accountId) {
+			continue;
+		}
+
+		try {
+			const liveQuota = await fetchCodexQuotaSnapshot({
+				accountId,
+				accessToken: prepared.accessToken,
+			});
+			liveQuotaByIndex.set(i, liveQuota);
+			if (prepared.idToken) {
+				probeIdTokenByIndex.set(i, prepared.idToken);
+			}
+		} catch {
+			// Fall back to non-live signals for this account.
+		}
+	}
+
+	const forecastInputs = storage.accounts.map((account, index) => ({
+		index,
+		account,
+		isCurrent: index === activeIndex,
+		now,
+		refreshFailure: refreshFailures.get(index),
+		liveQuota: liveQuotaByIndex.get(index),
+	}));
+	const recommendation = recommendForecastAccount(
+		evaluateForecastAccounts(forecastInputs),
+	);
+
+	if (recommendation.recommendedIndex === null) {
+		if (changed) {
+			await saveAccounts(storage);
+		}
+		const synced = await setCodexCliActiveSelection({
+			accountId: activeAccount.accountId,
+			email: activeAccount.email,
+			accessToken: preparedActive.accessToken,
+			refreshToken: preparedActive.refreshToken,
+			expiresAt: preparedActive.expiresAt,
+			...(preparedActive.idToken ? { idToken: preparedActive.idToken } : {}),
+		});
+		return synced
+			? { synced: true, label: formatAccountLabel(activeAccount, activeIndex) }
+			: { synced: false };
+	}
+
+	if (recommendation.recommendedIndex === activeIndex) {
+		if (changed) {
+			await saveAccounts(storage);
+		}
+		const synced = await setCodexCliActiveSelection({
+			accountId: activeAccount.accountId,
+			email: activeAccount.email,
+			accessToken: preparedActive.accessToken,
+			refreshToken: preparedActive.refreshToken,
+			expiresAt: preparedActive.expiresAt,
+			...(preparedActive.idToken ? { idToken: preparedActive.idToken } : {}),
+		});
+		return synced
+			? { synced: true, label: formatAccountLabel(activeAccount, activeIndex) }
+			: { synced: false };
+	}
+
+	const targetIndex = recommendation.recommendedIndex;
+	const account = storage.accounts[targetIndex];
+	if (!account) {
+		if (changed) {
+			await saveAccounts(storage);
+		}
+		return { synced: false };
+	}
+
+	const { synced } = await persistAndSyncSelectedAccount({
+		storage,
+		targetIndex,
+		parsed: targetIndex + 1,
+		switchReason: "best",
+		initialSyncIdToken: probeIdTokenByIndex.get(targetIndex),
+	});
+	return synced
+		? { synced: true, label: formatAccountLabel(account, targetIndex) }
+		: { synced: false };
+}
+
+export async function autoSyncActiveAccountToCodex(): Promise<DirectCliInjectionSyncResult> {
+	setStoragePath(null);
+	const storage = await loadAccounts();
+	if (!storage || storage.accounts.length === 0) {
+		return { synced: false };
+	}
+
+	const activeIndex = resolveActiveIndex(storage, "codex");
+	if (activeIndex < 0 || activeIndex >= storage.accounts.length) {
+		return { synced: false };
 	}
 
 	const account = storage.accounts[activeIndex];
 	if (!account) {
-		return false;
+		return { synced: false };
 	}
 
 	const now = Date.now();
-	let syncAccessToken = account.accessToken;
-	let syncRefreshToken = account.refreshToken;
-	let syncExpiresAt = account.expiresAt;
-	let syncIdToken: string | undefined;
-	let changed = false;
+	const prepared = await prepareAccountForLiveSync(account, now);
 
-	if (!hasUsableAccessToken(account, now)) {
-		const refreshResult = await queuedRefresh(account.refreshToken);
-		if (refreshResult.type === "success") {
-			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-				changed = true;
-			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-				changed = true;
-			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-				changed = true;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-				changed = true;
-			}
-			if (applyTokenAccountIdentity(account, tokenAccountId)) {
-				changed = true;
-			}
-			syncAccessToken = refreshResult.access;
-			syncRefreshToken = refreshResult.refresh;
-			syncExpiresAt = refreshResult.expires;
-			syncIdToken = refreshResult.idToken;
-		}
-	}
-
-	if (changed) {
+	if (prepared.changed) {
 		await saveAccounts(storage);
 	}
 
-	return setCodexCliActiveSelection({
+	const synced = await setCodexCliActiveSelection({
 		accountId: account.accountId,
 		email: account.email,
-		accessToken: syncAccessToken,
-		refreshToken: syncRefreshToken,
-		expiresAt: syncExpiresAt,
-		...(syncIdToken ? { idToken: syncIdToken } : {}),
+		accessToken: prepared.accessToken,
+		refreshToken: prepared.refreshToken,
+		expiresAt: prepared.expiresAt,
+		...(prepared.idToken ? { idToken: prepared.idToken } : {}),
 	});
+	return synced ? { synced: true, label: formatAccountLabel(account, activeIndex) } : { synced: false };
 }
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {

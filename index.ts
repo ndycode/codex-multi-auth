@@ -118,6 +118,7 @@ import {
 	lookupCodexCliTokensByEmail,
 	isCodexCliSyncEnabled,
 } from "./lib/accounts.js";
+import { announceDirectCliInjection } from "./lib/ui/direct-cli-injection.js";
 import {
 	getStoragePath,
 	loadAccounts,
@@ -934,6 +935,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			index: number,
 		): Promise<boolean> => {
 			if (!isDirectCliInjectionEnabled()) return Promise.resolve(false);
+			const account = accountManager.getAccountByIndex(index);
+			if (!account) return Promise.resolve(false);
 			const queuedSync = codexCliActiveSyncChain.then(async (): Promise<boolean> => {
 				if (lastCodexCliActiveSyncIndex === index) return true;
 				const previousIndex = lastCodexCliActiveSyncIndex;
@@ -944,6 +947,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						lastCodexCliActiveSyncIndex = previousIndex;
 						return false;
 					}
+					announceDirectCliInjection(formatAccountLabel(account, index), {
+						banner: false,
+						title: true,
+					});
 					return true;
 				} catch (error) {
 					lastCodexCliActiveSyncIndex = previousIndex;

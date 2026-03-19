@@ -7,6 +7,7 @@ import { basename, delimiter, dirname, join, resolve as resolvePath } from "node
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+import { announceDirectCliInjection } from "../dist/lib/ui/direct-cli-injection.js";
 
 function hydrateCliVersionEnv() {
 	try {
@@ -47,20 +48,34 @@ async function loadRunCodexMultiAuthCli() {
 
 async function autoSyncManagerActiveSelectionIfEnabled() {
 	const enabled = (process.env.CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP ?? "1").trim() !== "0";
-	if (!enabled) return;
+	if (!enabled) return { synced: false };
 
 	try {
 		const mod = await import("../dist/lib/codex-manager.js");
-		if (typeof mod.autoSyncActiveAccountToCodex !== "function") {
-			return;
+		const prepareSelection =
+			typeof mod.autoPrepareCodexLaunchAccount === "function"
+				? mod.autoPrepareCodexLaunchAccount
+				: typeof mod.autoSyncActiveAccountToCodex === "function"
+					? mod.autoSyncActiveAccountToCodex
+					: null;
+		if (!prepareSelection) {
+			return { synced: false };
 		}
-		await mod.autoSyncActiveAccountToCodex();
+		const result = await prepareSelection();
+		if (typeof result === "boolean") {
+			return { synced: result };
+		}
+		if (result && typeof result === "object") {
+			return result;
+		}
+		return { synced: false };
 	} catch (error) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
 			// Non-auth command path should keep forwarding even if dist is missing.
-			return;
+			return { synced: false };
 		}
 		// Best effort only: never block official Codex startup on sync failure.
+		return { synced: false };
 	}
 }
 
@@ -524,7 +539,10 @@ async function main() {
 		return 1;
 	}
 
-	await autoSyncManagerActiveSelectionIfEnabled();
+	const syncResult = await autoSyncManagerActiveSelectionIfEnabled();
+	if (syncResult.synced && typeof syncResult.label === "string" && syncResult.label.trim().length > 0) {
+		announceDirectCliInjection(syncResult.label);
+	}
 	const forwardArgs = buildForwardArgs(rawArgs);
 	return forwardToRealCodex(realCodexBin, forwardArgs);
 }

@@ -2704,6 +2704,135 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("autoPrepareCodexLaunchAccount keeps the current account when live quota is healthy", async () => {
+		const now = Date.now();
+		loadPluginConfigMock.mockReturnValue({
+			preemptiveQuotaEnabled: true,
+			preemptiveQuotaRemainingPercent5h: 10,
+			preemptiveQuotaRemainingPercent7d: 5,
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: { usedPercent: 80, windowMinutes: 300 },
+			secondary: { usedPercent: 20, windowMinutes: 10080 },
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const { autoPrepareCodexLaunchAccount } = await import(
+			"../lib/codex-manager.js"
+		);
+		const syncResult = await autoPrepareCodexLaunchAccount();
+
+		expect(syncResult).toEqual({
+			synced: true,
+			label: "1. a@example.com",
+		});
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_a",
+				email: "a@example.com",
+				accessToken: "access-a",
+				refreshToken: "refresh-a",
+			}),
+		);
+	});
+
+	it("autoPrepareCodexLaunchAccount switches to the best account when the current quota is near exhaustion", async () => {
+		const now = Date.now();
+		loadPluginConfigMock.mockReturnValue({
+			preemptiveQuotaEnabled: true,
+			preemptiveQuotaRemainingPercent5h: 10,
+			preemptiveQuotaRemainingPercent7d: 5,
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "b@example.com",
+					accountId: "acc_b",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		fetchCodexQuotaSnapshotMock
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: { usedPercent: 92, windowMinutes: 300 },
+				secondary: { usedPercent: 30, windowMinutes: 10080 },
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: { usedPercent: 25, windowMinutes: 300 },
+				secondary: { usedPercent: 10, windowMinutes: 10080 },
+			});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const { autoPrepareCodexLaunchAccount } = await import(
+			"../lib/codex-manager.js"
+		);
+		const syncResult = await autoPrepareCodexLaunchAccount();
+
+		expect(syncResult).toEqual({
+			synced: true,
+			label: "2. b@example.com",
+		});
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+			}),
+		);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_b",
+				email: "b@example.com",
+				accessToken: "access-b",
+				refreshToken: "refresh-b",
+			}),
+		);
+	});
+
 	it("autoSyncActiveAccountToCodex syncs active account without refresh when access is valid", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
@@ -2728,9 +2857,12 @@ describe("codex manager cli commands", () => {
 		const { autoSyncActiveAccountToCodex } = await import(
 			"../lib/codex-manager.js"
 		);
-		const synced = await autoSyncActiveAccountToCodex();
+		const syncResult = await autoSyncActiveAccountToCodex();
 
-		expect(synced).toBe(true);
+		expect(syncResult).toEqual({
+			synced: true,
+			label: "1. a@example.com",
+		});
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
@@ -2779,9 +2911,12 @@ describe("codex manager cli commands", () => {
 		const { autoSyncActiveAccountToCodex } = await import(
 			"../lib/codex-manager.js"
 		);
-		const synced = await autoSyncActiveAccountToCodex();
+		const syncResult = await autoSyncActiveAccountToCodex();
 
-		expect(synced).toBe(true);
+		expect(syncResult).toEqual({
+			synced: true,
+			label: "1. a@example.com",
+		});
 		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0] as {

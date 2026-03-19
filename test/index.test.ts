@@ -294,6 +294,7 @@ const withAccountStorageTransactionMock = vi.fn(
 );
 
 const syncCodexCliSelectionMock = vi.fn(async (_index: number) => {});
+const announceDirectCliInjectionMock = vi.fn(() => true);
 
 vi.mock("../lib/storage.js", async () => {
 	const actual = await vi.importActual("../lib/storage.js");
@@ -350,6 +351,16 @@ vi.mock("../lib/accounts.js", () => {
 
 		getCurrentOrNextForFamilyHybrid() {
 			return this.accounts[0] ?? null;
+		}
+
+		getAccountByIndex(index: number) {
+			const fallbackAccount = this.accounts[0];
+			if (!fallbackAccount) return null;
+			return this.accounts[index] ?? {
+				...fallbackAccount,
+				index,
+				email: undefined,
+			};
 		}
 
 		recordSuccess() {}
@@ -425,6 +436,10 @@ vi.mock("../lib/accounts.js", () => {
 		isCodexCliSyncEnabled: () => true,
 	};
 });
+
+vi.mock("../lib/ui/direct-cli-injection.js", () => ({
+	announceDirectCliInjection: announceDirectCliInjectionMock,
+}));
 
 type ToolExecute<T = void> = { execute: (args: T) => Promise<string> };
 type PluginType = {
@@ -710,6 +725,28 @@ describe("OpenAIOAuthPlugin", () => {
 			} finally {
 				vi.mocked(configModule.getLiveAccountSync).mockReturnValue(false);
 			}
+		});
+
+		it("announces direct CLI injection after startup sync", async () => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(true);
+			announceDirectCliInjectionMock.mockClear();
+			syncCodexCliSelectionMock.mockResolvedValueOnce(true);
+
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(announceDirectCliInjectionMock).toHaveBeenCalledWith("Account 1", {
+				banner: false,
+				title: true,
+			});
 		});
 	});
 
@@ -1139,6 +1176,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		);
 
 		const { sdk } = await setupPlugin();
+		announceDirectCliInjectionMock.mockClear();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
 			body: JSON.stringify({ model: "gpt-5.1" }),
@@ -1718,6 +1756,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 					}
 					return null;
 				},
+				getAccountByIndex: (index: number) => [accountOne, accountTwo][index] ?? null,
 				toAuthDetails: (account: { accountId?: string }) => ({
 					type: "oauth" as const,
 					access: `access-${account.accountId ?? "unknown"}`,
@@ -2498,6 +2537,7 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		await plugin.auth.loader(getAuth, { options: {}, models: {} });
 		loadFromDiskSpy.mockClear();
 		syncCodexCliSelectionMock.mockClear();
+		announceDirectCliInjectionMock.mockClear();
 
 		await plugin.event({
 			event: { type: "account.select", properties: { index: 1 } },
@@ -2505,6 +2545,10 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 
 		expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+		expect(announceDirectCliInjectionMock).toHaveBeenCalledWith("Account 2", {
+			banner: false,
+			title: true,
+		});
 		expect(loadFromDiskSpy.mock.invocationCallOrder[0]).toBeLessThan(
 			syncCodexCliSelectionMock.mock.invocationCallOrder[0],
 		);

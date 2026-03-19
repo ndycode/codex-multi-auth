@@ -57,6 +57,13 @@ vi.mock("../lib/accounts.js", () => {
 			return this.getCurrentOrNextForFamily();
 		}
 
+		getAccountByIndex(index: number) {
+			if (index === 0) {
+				return { index: 0, accountId: "account-1", email: "user@example.com" };
+			}
+			return { index, accountId: `account-${index + 1}`, email: undefined };
+		}
+
 		recordSuccess() {}
 
 		recordRateLimit() {}

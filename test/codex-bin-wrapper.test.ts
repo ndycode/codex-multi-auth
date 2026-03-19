@@ -57,6 +57,24 @@ function createWrapperFixture(): string {
 		join(repoRootDir, "scripts", "codex-routing.js"),
 		join(scriptDir, "codex-routing.js"),
 	);
+	const helperDir = join(fixtureRoot, "dist", "lib", "ui");
+	mkdirSync(helperDir, { recursive: true });
+	writeFileSync(
+		join(helperDir, "direct-cli-injection.js"),
+		[
+			"export function announceDirectCliInjection(label, options = {}) {",
+			'\tconst signal = `${label} injected`;',
+			"\tif (options.banner !== false) {",
+			'\t\t(process.stderr ?? console).write?.(`BANNER:${signal}\\n`);',
+			"\t}",
+			"\tif (options.title !== false) {",
+			'\t\t(process.stdout ?? console).write?.(`TITLE:${signal}\\x07`);',
+			"\t}",
+			"\treturn true;",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
 	return fixtureRoot;
 }
 
@@ -72,6 +90,23 @@ function createFakeCodexBin(rootDir: string): string {
 		"utf8",
 	);
 	return fakeBin;
+}
+
+function createStartupSyncFixture(rootDir: string, label: string): void {
+	const distLibDir = join(rootDir, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(
+		join(distLibDir, "codex-manager.js"),
+		[
+			"export async function autoPrepareCodexLaunchAccount() {",
+			`\treturn { synced: true, label: ${JSON.stringify(label)} };`,
+			"}",
+			"export async function autoSyncActiveAccountToCodex() {",
+			`\treturn { synced: true, label: ${JSON.stringify(label)} };`,
+			"}",
+		].join("\n"),
+		"utf8",
+	);
 }
 
 function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
@@ -204,6 +239,20 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:--version");
+	});
+
+	it("emits startup banner and title after direct injection sync", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		createStartupSyncFixture(fixtureRoot, "Account 1");
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(combinedOutput(result)).toContain("BANNER:Account 1 injected");
+		expect(combinedOutput(result)).toContain("TITLE:Account 1 injected");
+		expect(result.stdout).toContain("FORWARDED:exec status");
 	});
 
 	it("injects file auth store forwarding for wrapped real cli invocations by default", () => {
@@ -357,6 +406,31 @@ describe("codex bin wrapper", () => {
 			copyFileSync(
 				join(repoRootDir, "scripts", "codex-routing.js"),
 				join(scriptDir, "codex-routing.js"),
+			);
+			const helperDir = join(
+				globalShimDir,
+				"node_modules",
+				"codex-multi-auth",
+				"dist",
+				"lib",
+				"ui",
+			);
+			mkdirSync(helperDir, { recursive: true });
+			writeFileSync(
+				join(helperDir, "direct-cli-injection.js"),
+				[
+					"export function announceDirectCliInjection(label, options = {}) {",
+					'\tconst signal = `${label} injected`;',
+					"\tif (options.banner !== false) {",
+					'\t\t(process.stderr ?? console).write?.(`BANNER:${signal}\\n`);',
+					"\t}",
+					"\tif (options.title !== false) {",
+					'\t\t(process.stdout ?? console).write?.(`TITLE:${signal}\\x07`);',
+					"\t}",
+					"\treturn true;",
+					"}",
+				].join("\n"),
+				"utf8",
 			);
 			writeFileSync(
 				join(globalShimDir, "codex-multi-auth.cmd"),
