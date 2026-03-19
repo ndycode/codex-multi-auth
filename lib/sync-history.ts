@@ -11,6 +11,14 @@ const HISTORY_FILE_NAME = "sync-history.ndjson";
 const LATEST_FILE_NAME = "sync-history-latest.json";
 const MAX_HISTORY_ENTRIES = 200;
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const RETRYABLE_LATEST_READ_CODES = new Set(["EBUSY", "EPERM", "EACCES"]);
+
+function sleepSync(ms: number): void {
+	if (!Number.isFinite(ms) || ms <= 0) {
+		return;
+	}
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 type SyncHistoryKind = "codex-cli-sync" | "live-account-sync";
 
@@ -257,19 +265,30 @@ export async function readSyncHistory(
 }
 
 export function readLatestSyncHistorySync(): SyncHistoryEntry | null {
-	try {
-		const content = readFileSync(getSyncHistoryPaths().latestPath, "utf8");
-		const parsed = parseEntry(content);
-		return parsed ? cloneEntry(parsed) : null;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.debug("Failed to read latest sync history", {
-				error: error instanceof Error ? error.message : String(error),
-			});
+	for (let attempt = 0; attempt < 4; attempt += 1) {
+		try {
+			const content = readFileSync(getSyncHistoryPaths().latestPath, "utf8");
+			const parsed = parseEntry(content);
+			return parsed ? cloneEntry(parsed) : null;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				code &&
+				RETRYABLE_LATEST_READ_CODES.has(code) &&
+				attempt < 3
+			) {
+				sleepSync(10 * 2 ** attempt);
+				continue;
+			}
+			if (code !== "ENOENT") {
+				log.debug("Failed to read latest sync history", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			return null;
 		}
-		return null;
 	}
+	return null;
 }
 
 export function cloneSyncHistoryEntry(

@@ -175,6 +175,64 @@ describe("sync history", () => {
 		});
 	});
 
+	it("retries transient EBUSY errors when reading the latest sync snapshot", async () => {
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 21,
+			run: {
+				outcome: "disabled",
+				runAt: 21,
+				sourcePath: "source.json",
+				targetPath: "target.json",
+				message: "  disabled by policy  ",
+				summary: {
+					sourceAccountCount: 1,
+					targetAccountCountBefore: 1,
+					targetAccountCountAfter: 1,
+					addedAccountCount: 0,
+					updatedAccountCount: 0,
+					unchangedAccountCount: 1,
+					destinationOnlyPreservedCount: 0,
+					selectionChanged: false,
+				},
+			},
+		});
+
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			let firstRead = true;
+			return {
+				...actual,
+				readFileSync: vi.fn((...args: Parameters<typeof actual.readFileSync>) => {
+					if (firstRead) {
+						firstRead = false;
+						const busyError = new Error("busy") as NodeJS.ErrnoException;
+						busyError.code = "EBUSY";
+						throw busyError;
+					}
+					return actual.readFileSync(...args);
+				}),
+			};
+		});
+
+		try {
+			const isolatedSyncHistoryModule = await import("../lib/sync-history.js");
+			isolatedSyncHistoryModule.configureSyncHistoryForTests(join(workDir, "logs"));
+			expect(isolatedSyncHistoryModule.readLatestSyncHistorySync()).toMatchObject({
+				kind: "codex-cli-sync",
+				recordedAt: 21,
+				run: expect.objectContaining({
+					outcome: "disabled",
+					message: "  disabled by policy  ",
+				}),
+			});
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
+	});
+
 	it("waits for writes queued while history reads are draining", async () => {
 		let releaseFirstAppend!: () => void;
 		let releaseSecondAppend!: () => void;

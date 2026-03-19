@@ -4563,6 +4563,90 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("shows sync none when no Codex CLI sync result has been recorded yet", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "sync-none@example.com",
+					refreshToken: "refresh-none",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		});
+		getLastCodexCliSyncRunMock.mockReturnValue(null);
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({
+				healthSummary: expect.objectContaining({
+					label: expect.stringContaining("Sync none"),
+					hint: expect.stringContaining(
+						"Sync: No Codex CLI sync result recorded yet.",
+					),
+				}),
+			}),
+		);
+	});
+
+	it("surfaces unavailable sync results with trimmed message details", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "sync-unavailable@example.com",
+					refreshToken: "refresh-unavailable",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		});
+		getLastCodexCliSyncRunMock.mockReturnValue({
+			outcome: "unavailable",
+			runAt: Date.now(),
+			sourcePath: "source.json",
+			targetPath: "target.json",
+			message: "  blocked by filesystem lock  ",
+			summary: {
+				sourceAccountCount: 1,
+				targetAccountCountBefore: 1,
+				targetAccountCountAfter: 1,
+				addedAccountCount: 0,
+				updatedAccountCount: 1,
+				unchangedAccountCount: 0,
+				destinationOnlyPreservedCount: 2,
+				selectionChanged: false,
+			},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({
+				healthSummary: expect.objectContaining({
+					label: expect.stringMatching(/Sync unavailable today/),
+					hint: expect.stringMatching(
+						/Sync: Latest sync unavailable today \| update 1 \| preserve 2 \| blocked by filesystem lock/,
+					),
+				}),
+			}),
+		);
+	});
+
 	it("omits the health summary and skips health-summary I/O when no accounts are saved", async () => {
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
