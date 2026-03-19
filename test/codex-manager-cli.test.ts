@@ -1125,6 +1125,58 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("skips OpenCode import when the detected pool resolves to the active storage file", async () => {
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		assessOpencodeAccountPoolMock.mockResolvedValue({
+			backup: {
+				name: "openai-codex-accounts.json",
+				path: "C:\\mock\\openai-codex-accounts.json",
+				createdAt: null,
+				updatedAt: Date.now(),
+				sizeBytes: 128,
+				version: 3,
+				accountCount: 1,
+				schemaErrors: [],
+				valid: true,
+				loadError: "",
+			},
+			currentAccountCount: 0,
+			mergedAccountCount: null,
+			imported: null,
+			skipped: null,
+			wouldExceedLimit: false,
+			eligibleForRestore: false,
+			nextActiveIndex: null,
+			nextActiveEmail: undefined,
+			nextActiveAccountId: undefined,
+			activeAccountChanged: false,
+			error: "Import source cannot be the active storage file.",
+		});
+		getStoragePathMock.mockReturnValue("c:/mock/openai-codex-accounts.json");
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "import-opencode" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
+		expect(confirmMock).not.toHaveBeenCalled();
+		expect(importAccountsMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			"Import source cannot be the active storage file.",
+		);
+		logSpy.mockRestore();
+	});
+
 	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
@@ -1488,7 +1540,8 @@ describe("codex manager cli commands", () => {
 				accountCount: 0,
 				schemaErrors: ["invalid"],
 				valid: false,
-				loadError: "ENOENT: openai-codex-accounts.json",
+				loadError:
+					"ENOENT: C:\\Users\\alice\\AppData\\Local\\OpenCode\\openai-codex-accounts.json",
 			},
 			currentAccountCount: 0,
 			mergedAccountCount: null,
@@ -1500,7 +1553,8 @@ describe("codex manager cli commands", () => {
 			nextActiveEmail: undefined,
 			nextActiveAccountId: undefined,
 			activeAccountChanged: false,
-			error: "ENOENT: openai-codex-accounts.json",
+			error:
+				"ENOENT: C:\\Users\\alice\\AppData\\Local\\OpenCode\\openai-codex-accounts.json",
 		});
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "import-opencode" })
@@ -1516,6 +1570,11 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith(
 			"ENOENT: openai-codex-accounts.json",
 		);
+		expect(
+			logSpy.mock.calls.some(([message]) =>
+				String(message).includes("C:\\Users\\alice\\AppData\\Local\\OpenCode"),
+			),
+		).toBe(false);
 		logSpy.mockRestore();
 	});
 	it("runs restore preview before applying a replace-only named backup", async () => {

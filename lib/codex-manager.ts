@@ -4468,8 +4468,9 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 				if (!assessment.backup.valid || !assessment.eligibleForRestore) {
-					const assessmentErrorLabel =
-						assessment.error || "OpenCode account pool is not importable.";
+					const assessmentErrorLabel = formatRedactedFilesystemError(
+						assessment.error || "OpenCode account pool is not importable.",
+					);
 					console.log(assessmentErrorLabel);
 					continue;
 				}
