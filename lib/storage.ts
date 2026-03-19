@@ -2090,8 +2090,13 @@ export function detectOpencodeAccountPoolPath(): string | null {
 		(base): base is string => !!base && base.trim().length > 0,
 	);
 	for (const base of appDataBases) {
-		candidates.add(join(base, "OpenCode", ACCOUNTS_FILE_NAME));
-		candidates.add(join(base, "opencode", ACCOUNTS_FILE_NAME));
+		for (const candidateBase of ["OpenCode", "opencode"]) {
+			try {
+				candidates.add(resolvePath(join(base, candidateBase, ACCOUNTS_FILE_NAME)));
+			} catch {
+				// Ignore env paths outside the supported roots and continue probing others.
+			}
+		}
 	}
 
 	const home = homedir();

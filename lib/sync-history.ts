@@ -10,6 +10,7 @@ const log = createLogger("sync-history");
 const HISTORY_FILE_NAME = "sync-history.ndjson";
 const LATEST_FILE_NAME = "sync-history-latest.json";
 const MAX_HISTORY_ENTRIES = 200;
+const HISTORY_TRIM_RELOAD_BUFFER = 20;
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
 
@@ -318,7 +319,11 @@ export async function appendSyncHistoryEntry(
 		const paths = getSyncHistoryPaths();
 		lastAppendPaths = paths;
 		await ensureHistoryDir(paths.directory);
-		if (historyEntryCountEstimate === null) {
+		if (
+			historyEntryCountEstimate === null ||
+			historyEntryCountEstimate >=
+				MAX_HISTORY_ENTRIES - HISTORY_TRIM_RELOAD_BUFFER
+		) {
 			historyEntryCountEstimate = (await loadHistoryEntriesFromDisk(paths)).length;
 		}
 		await withRetryableHistoryWrite(() =>

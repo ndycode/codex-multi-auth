@@ -268,11 +268,11 @@ describe("sync history", () => {
 		expect(readLatestSyncHistorySync()?.recordedAt).toBe(10_000);
 	});
 
-	it("skips trim reads while append count stays within the default cap", async () => {
+	it("skips trim reads until the reload guard band is reached", async () => {
 		const historyPath = getSyncHistoryPaths().historyPath;
 		const readFileSpy = vi.spyOn(fs, "readFile");
 
-		for (let index = 0; index < 200; index += 1) {
+		for (let index = 0; index < 179; index += 1) {
 			await appendSyncHistoryEntry({
 				kind: "codex-cli-sync",
 				recordedAt: index + 1,
@@ -301,7 +301,39 @@ describe("sync history", () => {
 		const historyReads = readFileSpy.mock.calls.filter(
 			([target]) => target === historyPath,
 		);
-		expect(historyReads).toHaveLength(1);
+		expect(historyReads.length).toBeGreaterThan(0);
+		expect((await readSyncHistory()).length).toBeLessThanOrEqual(200);
+	});
+
+	it("reloads near the trim threshold before appending when external writes grew the file", async () => {
+		const historyPath = getSyncHistoryPaths().historyPath;
+
+		for (let index = 0; index < 181; index += 1) {
+			await appendSyncHistoryEntry({
+				kind: "codex-cli-sync",
+				recordedAt: index + 1,
+				run: createCodexRun(index + 1, `/codex-${index + 1}`),
+			});
+		}
+
+		const existingLines = (await fs.readFile(historyPath, "utf8"))
+			.split("\n")
+			.filter((line) => line.length > 0);
+		const replayLine = existingLines.at(-1);
+		expect(replayLine).toBeTruthy();
+
+		await fs.appendFile(
+			historyPath,
+			Array.from({ length: 25 }, () => replayLine).join("\n") + "\n",
+			"utf8",
+		);
+
+		await appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 999,
+			run: createCodexRun(999, "/codex-999"),
+		});
+
 		expect((await readSyncHistory()).length).toBeLessThanOrEqual(200);
 	});
 
@@ -345,7 +377,11 @@ describe("sync history", () => {
 		const historyReads = readFileSpy.mock.calls.filter(
 			([target]) => target === historyPath,
 		);
-		expect(historyReads).toHaveLength(1);
+		expect(historyReads.length).toBeGreaterThan(0);
+		expect((await readSyncHistory()).map((entry) => entry.recordedAt)).toEqual([
+			201,
+			202,
+		]);
 	});
 
 	it("waits for writes queued while history reads are draining", async () => {

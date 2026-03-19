@@ -1,6 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import {
@@ -5881,6 +5881,43 @@ describe("storage", () => {
 			const assessment = await assessOpencodeAccountPool();
 			expect(assessment?.backup.path).toBe(explicitPoolPath);
 			expect(assessment?.imported).toBe(1);
+		});
+
+		it("normalizes relative app data candidates before probing", async () => {
+			process.env.LOCALAPPDATA = "relative-appdata";
+			delete process.env.APPDATA;
+			const existsSyncMock = vi.fn().mockReturnValue(false);
+			vi.resetModules();
+			vi.doMock("node:fs", async () => {
+				const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+				return {
+					...actual,
+					existsSync: existsSyncMock,
+				};
+			});
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				expect(isolatedStorageModule.detectOpencodeAccountPoolPath()).toBeNull();
+
+				const candidate = existsSyncMock.mock.calls.find(([path]) =>
+					String(path).endsWith(
+						join("OpenCode", "openai-codex-accounts.json"),
+					),
+				)?.[0];
+				expect(typeof candidate).toBe("string");
+				expect(candidate).toBe(
+					resolve(
+						"relative-appdata",
+						"OpenCode",
+						"openai-codex-accounts.json",
+					),
+				);
+			} finally {
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+				setStoragePathDirect(join(tempRoot, "current-storage.json"));
+			}
 		});
 
 		it("does not fall back to auto-detection when an explicit CODEX_OPENCODE_POOL_PATH override is missing", async () => {
