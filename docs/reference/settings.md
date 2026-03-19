@@ -103,6 +103,8 @@ Examples:
 - `sessionAffinityMaxEntries`
 - `perProjectAccounts`
 
+`codexCliDirectInjection` defaults to `true`. Use `CODEX_AUTH_DIRECT_CLI_INJECTION=0` to disable direct Codex CLI token injection without editing JSON, or `CODEX_AUTH_DIRECT_CLI_INJECTION=1` to force it on.
+
 ### Rotation & Quota
 
 Examples:
@@ -155,6 +157,7 @@ Common operator overrides:
 - `CODEX_TUI_GLYPHS`
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
+- `CODEX_AUTH_DIRECT_CLI_INJECTION` toggles `codexCliDirectInjection` (`0` disables direct CLI injection, `1` enables it; default `1`)
 
 ---
 

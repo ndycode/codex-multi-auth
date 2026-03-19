@@ -932,17 +932,32 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const syncCodexCliSelectionIfNeeded = (
 			accountManager: AccountManager,
 			index: number,
-		): Promise<void> => {
-			if (!isDirectCliInjectionEnabled()) return Promise.resolve();
-			const queuedSync = codexCliActiveSyncChain.then(async () => {
-				if (lastCodexCliActiveSyncIndex === index) return;
-				const synced = await accountManager.syncCodexCliActiveSelectionForIndex(index);
-				if (synced !== false) {
-					lastCodexCliActiveSyncIndex = index;
+		): Promise<boolean> => {
+			if (!isDirectCliInjectionEnabled()) return Promise.resolve(false);
+			const queuedSync = codexCliActiveSyncChain.then(async (): Promise<boolean> => {
+				if (lastCodexCliActiveSyncIndex === index) return true;
+				const previousIndex = lastCodexCliActiveSyncIndex;
+				lastCodexCliActiveSyncIndex = index;
+				try {
+					const synced = await accountManager.syncCodexCliActiveSelectionForIndex(index);
+					if (synced === false) {
+						lastCodexCliActiveSyncIndex = previousIndex;
+						return false;
+					}
+					return true;
+				} catch (error) {
+					lastCodexCliActiveSyncIndex = previousIndex;
+					throw error;
 				}
 			});
-			codexCliActiveSyncChain = queuedSync.catch(() => {});
-			return queuedSync.catch(() => {});
+			const settledSync = queuedSync.catch((error) => {
+				logWarn(
+					`[${PLUGIN_NAME}] Codex CLI sync error: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return false;
+			});
+			codexCliActiveSyncChain = settledSync.then(() => undefined);
+			return settledSync;
 		};
 
         // Event handler for session recovery and account selection
@@ -980,18 +995,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         storage.activeIndexByFamily[family] = index;
                                 }
 
-                                await saveAccounts(storage);
-				if (cachedAccountManager && isDirectCliInjectionEnabled()) {
-					await syncCodexCliSelectionIfNeeded(cachedAccountManager, index);
-				}
-
+                                 await saveAccounts(storage);
 				// Reload manager from disk so we don't overwrite newer rotated
 				// refresh tokens with stale in-memory state.
+				let accountManagerForSync: AccountManager | null = null;
 				if (cachedAccountManager) {
-					await reloadAccountManagerFromDisk();
+					accountManagerForSync = await reloadAccountManagerFromDisk();
+				}
+				if (accountManagerForSync && isDirectCliInjectionEnabled()) {
+					await syncCodexCliSelectionIfNeeded(accountManagerForSync, index);
 				}
 
-                                await showToast(`Switched to account ${index + 1}`, "info");
+                                 await showToast(`Switched to account ${index + 1}`, "info");
                         }
                 }
           } catch (error) {
@@ -1593,6 +1608,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);
 								if (quotaDeferral.defer) {
 									const quotaWaitMs = Math.max(1, quotaDeferral.waitMs);
+									preemptiveQuotaScheduler.markRateLimited(quotaScheduleKey, quotaWaitMs);
 									accountManager.markRateLimitedWithReason(
 										account,
 										quotaWaitMs,
@@ -1602,10 +1618,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									);
 									accountManager.recordRateLimit(account, modelFamily, model);
 									runtimeMetrics.accountRotations++;
-									runtimeMetrics.lastError =
-										quotaWaitMs > 0
-											? `Preemptive quota deferral for account ${account.index + 1}`
-											: `Preemptive quota rotation for account ${account.index + 1}`;
+									runtimeMetrics.lastError = `Preemptive quota deferral for account ${account.index + 1}`;
 									accountManager.saveToDiskDebounced();
 									continue;
 								}

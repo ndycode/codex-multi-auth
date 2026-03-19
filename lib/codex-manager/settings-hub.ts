@@ -2546,22 +2546,22 @@ async function promptExperimentalSettings(
 					color: "green",
 				},
 				{
-					label: UI_COPY.settings.experimentalDirectCliInjection,
+					label: `${formatDashboardSettingState(draft.codexCliDirectInjection ?? true)} ${UI_COPY.settings.experimentalDirectCliInjection}`,
 					value: { type: "toggle-direct-cli-injection" },
 					color: "green",
 				},
 				{
-					label: UI_COPY.settings.experimentalManualSessionLock,
+					label: `${formatDashboardSettingState(draft.sessionAffinity ?? true)} ${UI_COPY.settings.experimentalManualSessionLock}`,
 					value: { type: "toggle-session-affinity" },
 					color: "yellow",
 				},
 				{
-					label: UI_COPY.settings.experimentalPoolFallback,
+					label: `${formatDashboardSettingState(draft.retryAllAccountsRateLimited ?? true)} ${UI_COPY.settings.experimentalPoolFallback}`,
 					value: { type: "toggle-pool-retry" },
 					color: "green",
 				},
 				{
-					label: UI_COPY.settings.experimentalQuotaRotation,
+					label: `${formatDashboardSettingState(draft.preemptiveQuotaEnabled ?? true)} ${UI_COPY.settings.experimentalQuotaRotation}`,
 					value: { type: "toggle-preemptive-quota" },
 					color: "yellow",
 				},

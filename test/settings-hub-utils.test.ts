@@ -562,6 +562,22 @@ describe("settings-hub utility coverage", () => {
 			}),
 		);
 	});
+
+	it("toggles preemptive quota directly from experimental settings", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+
+		queueSelectResults({ type: "toggle-preemptive-quota" }, { type: "save" });
+
+		const selected = await api.promptExperimentalSettings(defaults);
+		expect(selected).toEqual(
+			expect.objectContaining({
+				preemptiveQuotaEnabled: !(defaults.preemptiveQuotaEnabled ?? true),
+			}),
+		);
+	});
+
 	it("returns null for promptBackendSettings cancel without mutating runtime state", async () => {
 		const api = await loadSettingsHubTestApi();
 		const configModule = await import("../lib/config.js");

@@ -1184,6 +1184,24 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		}
 	});
 
+	it("retries post-success direct injection sync when the pre-request sync returns false", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+		);
+		syncCodexCliSelectionMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(2);
+		expect(syncCodexCliSelectionMock).toHaveBeenNthCalledWith(1, 0);
+		expect(syncCodexCliSelectionMock).toHaveBeenNthCalledWith(2, 0);
+	});
+
 	it("uses the refreshed token email when checking entitlement blocks", async () => {
 		mockStorage.accounts = [
 			{
@@ -2460,6 +2478,36 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		});
 
 		expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("reloads account manager before direct cli injection on account.select", async () => {
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const { AccountManager } = await import("../lib/accounts.js");
+		const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		await plugin.auth.loader(getAuth, { options: {}, models: {} });
+		loadFromDiskSpy.mockClear();
+		syncCodexCliSelectionMock.mockClear();
+
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+
+		expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+		expect(loadFromDiskSpy.mock.invocationCallOrder[0]).toBeLessThan(
+			syncCodexCliSelectionMock.mock.invocationCallOrder[0],
+		);
 	});
 
 	it("handles openai.account.select with openai provider", async () => {

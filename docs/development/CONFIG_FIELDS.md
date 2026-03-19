@@ -89,6 +89,8 @@ Used only for host plugin mode through the host runtime config file.
 | `liveAccountSyncDebounceMs` | `250` |
 | `liveAccountSyncPollMs` | `2000` |
 
+`codexCliDirectInjection` also honors `CODEX_AUTH_DIRECT_CLI_INJECTION`. The default is `1`; set it to `0` to disable direct Codex CLI token injection without editing the JSON config.
+
 ### Session Affinity
 
 | Key | Default |
@@ -196,6 +198,7 @@ Used only for host plugin mode through the host runtime config file.
 | `CODEX_TUI_GLYPHS` | TUI glyph mode |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
+| `CODEX_AUTH_DIRECT_CLI_INJECTION` | Override `codexCliDirectInjection` (`0` disable, `1` enable) |
 | `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |
 | `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force official Codex binary path |
 | `CODEX_MULTI_AUTH_BYPASS` | Bypass local auth handling |
