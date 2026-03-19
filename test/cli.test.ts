@@ -728,6 +728,20 @@ describe("CLI Module", () => {
 			});
 		});
 
+		it("returns import-opencode for fallback import aliases", async () => {
+			const { promptLoginMode } = await import("../lib/cli.js");
+
+			mockRl.question.mockResolvedValueOnce("i");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "import-opencode",
+			});
+
+			mockRl.question.mockResolvedValueOnce("import-opencode");
+			await expect(promptLoginMode([{ index: 0 }])).resolves.toEqual({
+				mode: "import-opencode",
+			});
+		});
+
 		it("evaluates CODEX_TUI/CODEX_DESKTOP/TERM_PROGRAM/ELECTRON branches when TTY is true", async () => {
 			delete process.env.FORCE_INTERACTIVE_MODE;
 			const { stdin, stdout } = await import("node:process");

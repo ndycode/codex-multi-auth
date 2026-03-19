@@ -62,6 +62,7 @@ export type LoginMode =
 	| "check"
 	| "deep-check"
 	| "verify-flagged"
+	| "import-opencode"
 	| "restore-backup"
 	| "cancel";
 
@@ -247,6 +248,9 @@ async function promptLoginModeFallback(
 				normalized === "restore-backup"
 			) {
 				return { mode: "restore-backup" };
+			}
+			if (normalized === "i" || normalized === "import-opencode") {
+				return { mode: "import-opencode" };
 			}
 			if (normalized === "q" || normalized === "quit")
 				return { mode: "cancel" };
