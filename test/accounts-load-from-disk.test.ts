@@ -19,7 +19,7 @@ vi.mock("../lib/codex-cli/state.js", () => ({
 }));
 
 vi.mock("../lib/codex-cli/writer.js", () => ({
-  setCodexCliActiveSelection: vi.fn().mockResolvedValue(undefined),
+  setCodexCliActiveSelection: vi.fn().mockResolvedValue(true),
 }));
 
 import { loadAccounts, saveAccounts } from "../lib/storage.js";
@@ -37,7 +37,7 @@ describe("AccountManager loadFromDisk", () => {
       storage: null,
     });
     vi.mocked(loadCodexCliState).mockResolvedValue(null);
-    vi.mocked(setCodexCliActiveSelection).mockResolvedValue(undefined);
+    vi.mocked(setCodexCliActiveSelection).mockResolvedValue(true);
   });
 
   it("persists Codex CLI source-of-truth storage when sync reports change", async () => {
@@ -181,7 +181,7 @@ describe("AccountManager loadFromDisk", () => {
     await manager.syncCodexCliActiveSelectionForIndex(9);
     expect(setCodexCliActiveSelection).not.toHaveBeenCalled();
 
-    await manager.syncCodexCliActiveSelectionForIndex(0);
+    await expect(manager.syncCodexCliActiveSelectionForIndex(0)).resolves.toBe(true);
     expect(setCodexCliActiveSelection).toHaveBeenCalledTimes(1);
     expect(setCodexCliActiveSelection).toHaveBeenCalledWith(
       expect.objectContaining({

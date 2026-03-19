@@ -389,12 +389,12 @@ export class AccountManager {
 		return account;
 	}
 
-	async syncCodexCliActiveSelectionForIndex(index: number): Promise<void> {
-		if (!Number.isFinite(index)) return;
-		if (index < 0 || index >= this.accounts.length) return;
+	async syncCodexCliActiveSelectionForIndex(index: number): Promise<boolean> {
+		if (!Number.isFinite(index)) return false;
+		if (index < 0 || index >= this.accounts.length) return false;
 		const account = this.accounts[index];
-		if (!account) return;
-		await setCodexCliActiveSelection({
+		if (!account) return false;
+		return setCodexCliActiveSelection({
 			accountId: account.accountId,
 			email: account.email,
 			accessToken: account.access,

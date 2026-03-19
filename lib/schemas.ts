@@ -42,6 +42,7 @@ export const PluginConfigSchema = z.object({
 	fetchTimeoutMs: z.number().min(1_000).optional(),
 	streamStallTimeoutMs: z.number().min(1_000).optional(),
 	liveAccountSync: z.boolean().optional(),
+	codexCliDirectInjection: z.boolean().optional(),
 	liveAccountSyncDebounceMs: z.number().min(50).optional(),
 	liveAccountSyncPollMs: z.number().min(500).optional(),
 	sessionAffinity: z.boolean().optional(),

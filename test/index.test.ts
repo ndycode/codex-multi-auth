@@ -93,6 +93,7 @@ vi.mock("../lib/config.js", () => ({
 	getFetchTimeoutMs: () => 60000,
 	getStreamStallTimeoutMs: () => 45000,
 	getLiveAccountSync: vi.fn(() => false),
+	getCodexCliDirectInjection: vi.fn(() => true),
 	getLiveAccountSyncDebounceMs: () => 250,
 	getLiveAccountSyncPollMs: () => 2000,
 	getSessionAffinity: () => false,
@@ -105,7 +106,7 @@ vi.mock("../lib/config.js", () => ({
 	getServerErrorCooldownMs: () => 0,
 	getStorageBackupEnabled: () => true,
 	getPreemptiveQuotaEnabled: () => true,
-	getPreemptiveQuotaRemainingPercent5h: () => 5,
+	getPreemptiveQuotaRemainingPercent5h: () => 10,
 	getPreemptiveQuotaRemainingPercent7d: () => 5,
 	getPreemptiveQuotaMaxDeferralMs: () => 2 * 60 * 60_000,
 	getCodexTuiV2: () => false,
@@ -292,7 +293,7 @@ const withAccountStorageTransactionMock = vi.fn(
 	},
 );
 
-const syncCodexCliSelectionMock = vi.fn(async (_index: number) => {});
+const syncCodexCliSelectionMock = vi.fn(async (_index: number) => true);
 
 vi.mock("../lib/storage.js", async () => {
 	const actual = await vi.importActual("../lib/storage.js");
@@ -1141,6 +1142,59 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
 	});
 
+	it("injects the next account before a skipped account path settles", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const accountOne = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user1@example.com",
+			refreshToken: "refresh-1",
+		};
+		const accountTwo = {
+			index: 1,
+			accountId: "acc-2",
+			email: "user2@example.com",
+			refreshToken: "refresh-2",
+		};
+		vi.spyOn(AccountManager.prototype, "getAccountCount").mockReturnValue(2);
+		vi.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
+			.mockImplementationOnce(() => accountOne)
+			.mockImplementationOnce(() => accountTwo)
+			.mockImplementation(() => null);
+		vi.spyOn(AccountManager.prototype, "consumeToken")
+			.mockReturnValueOnce(false)
+			.mockReturnValueOnce(true);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
+	});
+
+	it("skips automatic CLI injection when direct injection is disabled", async () => {
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValueOnce(false);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+	});
+
 	it("uses the refreshed token email when checking entitlement blocks", async () => {
 		mockStorage.accounts = [
 			{
@@ -1182,7 +1236,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(503);
 		expect(await response.text()).toContain("server errors or auth issues");
-		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
 	});
 
 	it("does not penalize account health when fetch is aborted by user", async () => {

@@ -687,5 +687,39 @@ describe("settings-hub utility coverage", () => {
 			});
 			expect(selected?.proactiveRefreshIntervalMs).toBe(60_000);
 		});
+
+		it("toggles direct injection and opens rotation quota controls from experimental settings", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "toggle-direct-cli-injection" },
+				{ type: "toggle-session-affinity" },
+				{ type: "toggle-pool-retry" },
+				{ type: "open-rotation-quota" },
+				{ type: "toggle", key: "preemptiveQuotaEnabled" },
+				{
+					type: "bump",
+					key: "preemptiveQuotaRemainingPercent5h",
+					direction: 1,
+				},
+				{ type: "back" },
+				{ type: "save" },
+			);
+			const selected = await api.promptExperimentalSettings({
+				codexCliDirectInjection: true,
+				sessionAffinity: true,
+				retryAllAccountsRateLimited: true,
+				preemptiveQuotaEnabled: true,
+				preemptiveQuotaRemainingPercent5h: 10,
+			});
+			expect(selected).toEqual(
+				expect.objectContaining({
+					codexCliDirectInjection: false,
+					sessionAffinity: false,
+					retryAllAccountsRateLimited: false,
+					preemptiveQuotaEnabled: false,
+					preemptiveQuotaRemainingPercent5h: 11,
+				}),
+			);
+		});
 	});
 });

@@ -17,6 +17,7 @@ import {
 	getUnsupportedCodexFallbackChain,
 	getFetchTimeoutMs,
 	getStreamStallTimeoutMs,
+	getCodexCliDirectInjection,
 	getPreemptiveQuotaEnabled,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
@@ -67,8 +68,55 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS',
+		'CODEX_AUTH_DIRECT_CLI_INJECTION',
 	] as const;
 	const originalEnv: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
+	const expectedDefaultConfig = (): PluginConfig => ({
+		codexMode: true,
+		codexTuiV2: true,
+		codexTuiColorProfile: 'truecolor',
+		codexTuiGlyphMode: 'ascii',
+		fastSession: false,
+		fastSessionStrategy: 'hybrid',
+		fastSessionMaxInputItems: 30,
+		retryAllAccountsRateLimited: true,
+		retryAllAccountsMaxWaitMs: 0,
+		retryAllAccountsMaxRetries: Infinity,
+		unsupportedCodexPolicy: 'strict',
+		fallbackOnUnsupportedCodexModel: false,
+		fallbackToGpt52OnUnsupportedGpt53: true,
+		unsupportedCodexFallbackChain: {},
+		tokenRefreshSkewMs: 60_000,
+		rateLimitToastDebounceMs: 60_000,
+		toastDurationMs: 5_000,
+		perProjectAccounts: true,
+		sessionRecovery: true,
+		autoResume: true,
+		parallelProbing: false,
+		parallelProbingMaxConcurrency: 2,
+		emptyResponseMaxRetries: 2,
+		emptyResponseRetryDelayMs: 1_000,
+		pidOffsetEnabled: false,
+		fetchTimeoutMs: 60_000,
+		streamStallTimeoutMs: 45_000,
+		liveAccountSync: true,
+		codexCliDirectInjection: true,
+		liveAccountSyncDebounceMs: 250,
+		liveAccountSyncPollMs: 2_000,
+		sessionAffinity: true,
+		sessionAffinityTtlMs: 20 * 60_000,
+		sessionAffinityMaxEntries: 512,
+		proactiveRefreshGuardian: true,
+		proactiveRefreshIntervalMs: 60_000,
+		proactiveRefreshBufferMs: 5 * 60_000,
+		networkErrorCooldownMs: 6_000,
+		serverErrorCooldownMs: 4_000,
+		storageBackupEnabled: true,
+		preemptiveQuotaEnabled: true,
+		preemptiveQuotaRemainingPercent5h: 10,
+		preemptiveQuotaRemainingPercent7d: 5,
+		preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+	});
 
 	beforeEach(() => {
 		for (const key of envKeys) {
@@ -95,51 +143,7 @@ describe('Plugin Configuration', () => {
 
 			const config = loadPluginConfig();
 
-			expect(config).toEqual({
-				codexMode: true,
-				codexTuiV2: true,
-				codexTuiColorProfile: 'truecolor',
-				codexTuiGlyphMode: 'ascii',
-				fastSession: false,
-				fastSessionStrategy: 'hybrid',
-				fastSessionMaxInputItems: 30,
-				retryAllAccountsRateLimited: true,
-				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
-				unsupportedCodexPolicy: 'strict',
-				fallbackOnUnsupportedCodexModel: false,
-				fallbackToGpt52OnUnsupportedGpt53: true,
-				unsupportedCodexFallbackChain: {},
-				tokenRefreshSkewMs: 60_000,
-				rateLimitToastDebounceMs: 60_000,
-				toastDurationMs: 5_000,
-				perProjectAccounts: true,
-				sessionRecovery: true,
-				autoResume: true,
-				parallelProbing: false,
-				parallelProbingMaxConcurrency: 2,
-				emptyResponseMaxRetries: 2,
-				emptyResponseRetryDelayMs: 1_000,
-				pidOffsetEnabled: false,
-				fetchTimeoutMs: 60_000,
-				streamStallTimeoutMs: 45_000,
-				liveAccountSync: true,
-				liveAccountSyncDebounceMs: 250,
-				liveAccountSyncPollMs: 2_000,
-				sessionAffinity: true,
-				sessionAffinityTtlMs: 20 * 60_000,
-				sessionAffinityMaxEntries: 512,
-				proactiveRefreshGuardian: true,
-				proactiveRefreshIntervalMs: 60_000,
-				proactiveRefreshBufferMs: 5 * 60_000,
-				networkErrorCooldownMs: 6_000,
-				serverErrorCooldownMs: 4_000,
-				storageBackupEnabled: true,
-				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
-				preemptiveQuotaRemainingPercent7d: 5,
-				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-			});
+			expect(config).toEqual(expectedDefaultConfig());
 			// existsSync is called with multiple candidate config paths (primary + legacy fallbacks)
 			expect(mockExistsSync).toHaveBeenCalled();
 			expect(mockExistsSync.mock.calls.some(([p]) =>
@@ -154,49 +158,8 @@ describe('Plugin Configuration', () => {
 			const config = loadPluginConfig();
 
 			expect(config).toEqual({
+				...expectedDefaultConfig(),
 				codexMode: false,
-				codexTuiV2: true,
-				codexTuiColorProfile: 'truecolor',
-				codexTuiGlyphMode: 'ascii',
-				fastSession: false,
-				fastSessionStrategy: 'hybrid',
-				fastSessionMaxInputItems: 30,
-				retryAllAccountsRateLimited: true,
-				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
-				unsupportedCodexPolicy: 'strict',
-				fallbackOnUnsupportedCodexModel: false,
-				fallbackToGpt52OnUnsupportedGpt53: true,
-				unsupportedCodexFallbackChain: {},
-				tokenRefreshSkewMs: 60_000,
-				rateLimitToastDebounceMs: 60_000,
-				toastDurationMs: 5_000,
-				perProjectAccounts: true,
-				sessionRecovery: true,
-				autoResume: true,
-				parallelProbing: false,
-				parallelProbingMaxConcurrency: 2,
-				emptyResponseMaxRetries: 2,
-				emptyResponseRetryDelayMs: 1_000,
-				pidOffsetEnabled: false,
-				fetchTimeoutMs: 60_000,
-				streamStallTimeoutMs: 45_000,
-				liveAccountSync: true,
-				liveAccountSyncDebounceMs: 250,
-				liveAccountSyncPollMs: 2_000,
-				sessionAffinity: true,
-				sessionAffinityTtlMs: 20 * 60_000,
-				sessionAffinityMaxEntries: 512,
-				proactiveRefreshGuardian: true,
-				proactiveRefreshIntervalMs: 60_000,
-				proactiveRefreshBufferMs: 5 * 60_000,
-				networkErrorCooldownMs: 6_000,
-				serverErrorCooldownMs: 4_000,
-				storageBackupEnabled: true,
-				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
-				preemptiveQuotaRemainingPercent7d: 5,
-				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
 		});
 
@@ -408,51 +371,7 @@ describe('Plugin Configuration', () => {
 
 			const config = loadPluginConfig();
 
-			expect(config).toEqual({
-				codexMode: true,
-				codexTuiV2: true,
-				codexTuiColorProfile: 'truecolor',
-				codexTuiGlyphMode: 'ascii',
-				fastSession: false,
-				fastSessionStrategy: 'hybrid',
-				fastSessionMaxInputItems: 30,
-				retryAllAccountsRateLimited: true,
-				retryAllAccountsMaxWaitMs: 0,
-				retryAllAccountsMaxRetries: Infinity,
-				unsupportedCodexPolicy: 'strict',
-				fallbackOnUnsupportedCodexModel: false,
-				fallbackToGpt52OnUnsupportedGpt53: true,
-				unsupportedCodexFallbackChain: {},
-				tokenRefreshSkewMs: 60_000,
-				rateLimitToastDebounceMs: 60_000,
-				toastDurationMs: 5_000,
-				perProjectAccounts: true,
-				sessionRecovery: true,
-				autoResume: true,
-				parallelProbing: false,
-				parallelProbingMaxConcurrency: 2,
-				emptyResponseMaxRetries: 2,
-				emptyResponseRetryDelayMs: 1_000,
-				pidOffsetEnabled: false,
-				fetchTimeoutMs: 60_000,
-				streamStallTimeoutMs: 45_000,
-				liveAccountSync: true,
-				liveAccountSyncDebounceMs: 250,
-				liveAccountSyncPollMs: 2_000,
-				sessionAffinity: true,
-				sessionAffinityTtlMs: 20 * 60_000,
-				sessionAffinityMaxEntries: 512,
-				proactiveRefreshGuardian: true,
-				proactiveRefreshIntervalMs: 60_000,
-				proactiveRefreshBufferMs: 5 * 60_000,
-				networkErrorCooldownMs: 6_000,
-				serverErrorCooldownMs: 4_000,
-				storageBackupEnabled: true,
-				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
-				preemptiveQuotaRemainingPercent7d: 5,
-				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-			});
+			expect(config).toEqual(expectedDefaultConfig());
 		});
 
 		it('should parse UTF-8 BOM-prefixed config files', () => {
@@ -472,51 +391,7 @@ describe('Plugin Configuration', () => {
 		mockLogWarn.mockClear();
 		const config = loadPluginConfig();
 
-	expect(config).toEqual({
-		codexMode: true,
-		codexTuiV2: true,
-		codexTuiColorProfile: 'truecolor',
-		codexTuiGlyphMode: 'ascii',
-		fastSession: false,
-		fastSessionStrategy: 'hybrid',
-		fastSessionMaxInputItems: 30,
-		retryAllAccountsRateLimited: true,
-		retryAllAccountsMaxWaitMs: 0,
-		retryAllAccountsMaxRetries: Infinity,
-		unsupportedCodexPolicy: 'strict',
-		fallbackOnUnsupportedCodexModel: false,
-		fallbackToGpt52OnUnsupportedGpt53: true,
-		unsupportedCodexFallbackChain: {},
-		tokenRefreshSkewMs: 60_000,
-		rateLimitToastDebounceMs: 60_000,
-		toastDurationMs: 5_000,
-		perProjectAccounts: true,
-		sessionRecovery: true,
-		autoResume: true,
-		parallelProbing: false,
-		parallelProbingMaxConcurrency: 2,
-		emptyResponseMaxRetries: 2,
-		emptyResponseRetryDelayMs: 1_000,
-		pidOffsetEnabled: false,
-		fetchTimeoutMs: 60_000,
-		streamStallTimeoutMs: 45_000,
-				liveAccountSync: true,
-				liveAccountSyncDebounceMs: 250,
-				liveAccountSyncPollMs: 2_000,
-				sessionAffinity: true,
-				sessionAffinityTtlMs: 20 * 60_000,
-				sessionAffinityMaxEntries: 512,
-				proactiveRefreshGuardian: true,
-				proactiveRefreshIntervalMs: 60_000,
-				proactiveRefreshBufferMs: 5 * 60_000,
-				networkErrorCooldownMs: 6_000,
-				serverErrorCooldownMs: 4_000,
-				storageBackupEnabled: true,
-				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
-				preemptiveQuotaRemainingPercent7d: 5,
-				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-	});
+	expect(config).toEqual(expectedDefaultConfig());
 		expect(mockLogWarn).toHaveBeenCalled();
 	});
 
@@ -530,51 +405,7 @@ describe('Plugin Configuration', () => {
 		mockLogWarn.mockClear();
 		const config = loadPluginConfig();
 
-		expect(config).toEqual({
-			codexMode: true,
-			codexTuiV2: true,
-			codexTuiColorProfile: 'truecolor',
-			codexTuiGlyphMode: 'ascii',
-			fastSession: false,
-			fastSessionStrategy: 'hybrid',
-			fastSessionMaxInputItems: 30,
-			retryAllAccountsRateLimited: true,
-			retryAllAccountsMaxWaitMs: 0,
-			retryAllAccountsMaxRetries: Infinity,
-			unsupportedCodexPolicy: 'strict',
-			fallbackOnUnsupportedCodexModel: false,
-			fallbackToGpt52OnUnsupportedGpt53: true,
-			unsupportedCodexFallbackChain: {},
-			tokenRefreshSkewMs: 60_000,
-			rateLimitToastDebounceMs: 60_000,
-			toastDurationMs: 5_000,
-			perProjectAccounts: true,
-			sessionRecovery: true,
-			autoResume: true,
-			parallelProbing: false,
-			parallelProbingMaxConcurrency: 2,
-			emptyResponseMaxRetries: 2,
-			emptyResponseRetryDelayMs: 1_000,
-			pidOffsetEnabled: false,
-			fetchTimeoutMs: 60_000,
-			streamStallTimeoutMs: 45_000,
-				liveAccountSync: true,
-				liveAccountSyncDebounceMs: 250,
-				liveAccountSyncPollMs: 2_000,
-				sessionAffinity: true,
-				sessionAffinityTtlMs: 20 * 60_000,
-				sessionAffinityMaxEntries: 512,
-				proactiveRefreshGuardian: true,
-				proactiveRefreshIntervalMs: 60_000,
-				proactiveRefreshBufferMs: 5 * 60_000,
-				networkErrorCooldownMs: 6_000,
-				serverErrorCooldownMs: 4_000,
-				storageBackupEnabled: true,
-				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
-				preemptiveQuotaRemainingPercent7d: 5,
-				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-		});
+		expect(config).toEqual(expectedDefaultConfig());
 		expect(mockLogWarn).toHaveBeenCalled();
 	});
 
@@ -964,7 +795,7 @@ describe('Plugin Configuration', () => {
 	describe('preemptive quota settings', () => {
 		it('should use default thresholds', () => {
 			expect(getPreemptiveQuotaEnabled({})).toBe(true);
-			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(5);
+			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(10);
 			expect(getPreemptiveQuotaRemainingPercent7d({})).toBe(5);
 			expect(getPreemptiveQuotaMaxDeferralMs({})).toBe(2 * 60 * 60_000);
 		});
@@ -978,6 +809,18 @@ describe('Plugin Configuration', () => {
 			expect(getPreemptiveQuotaRemainingPercent5h({ preemptiveQuotaRemainingPercent5h: 1 })).toBe(9);
 			expect(getPreemptiveQuotaRemainingPercent7d({ preemptiveQuotaRemainingPercent7d: 2 })).toBe(11);
 			expect(getPreemptiveQuotaMaxDeferralMs({ preemptiveQuotaMaxDeferralMs: 2_000 })).toBe(123000);
+		});
+	});
+
+	describe('direct cli injection setting', () => {
+		it('defaults to enabled', () => {
+			expect(getCodexCliDirectInjection({})).toBe(true);
+		});
+
+		it('prioritizes environment override', () => {
+			process.env.CODEX_AUTH_DIRECT_CLI_INJECTION = '0';
+			expect(getCodexCliDirectInjection({ codexCliDirectInjection: true })).toBe(false);
+			delete process.env.CODEX_AUTH_DIRECT_CLI_INJECTION;
 		});
 	});
 });

@@ -63,6 +63,7 @@ import {
 	getCodexTuiColorProfile,
 	getCodexTuiGlyphMode,
 	getLiveAccountSync,
+	getCodexCliDirectInjection,
 	getLiveAccountSyncDebounceMs,
 	getLiveAccountSyncPollMs,
 	getSessionAffinity,
@@ -227,6 +228,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let loaderMutex: Promise<void> | null = null;
 	let startupPrewarmTriggered = false;
 	let lastCodexCliActiveSyncIndex: number | null = null;
+	let lastCodexCliActiveSyncSignature: string | null = null;
 	let perProjectStorageWarningShown = false;
 	let liveAccountSync: LiveAccountSync | null = null;
 	let liveAccountSyncPath: string | null = null;
@@ -964,6 +966,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
 				}
 				lastCodexCliActiveSyncIndex = index;
+				lastCodexCliActiveSyncSignature = null;
 
 				// Reload manager from disk so we don't overwrite newer rotated
 				// refresh tokens with stale in-memory state.
@@ -1107,6 +1110,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				);
 				const maxSameAccountRetries =
 					failoverMode === "conservative" ? 2 : failoverMode === "balanced" ? 1 : 0;
+				const codexCliDirectInjectionEnabled =
+					getCodexCliDirectInjection(pluginConfig);
 
 				const sessionRecoveryEnabled = getSessionRecovery(pluginConfig);
 				const autoResumeEnabled = getAutoResume(pluginConfig);
@@ -1152,6 +1157,41 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}).catch((err) => {
 				logDebug(`Update check failed: ${err instanceof Error ? err.message : String(err)}`);
 			});
+
+				const buildCodexCliSelectionSignature = (
+					account: { index: number; accountId?: string; email?: string; expires?: number },
+				): string =>
+					[
+						account.index,
+						account.accountId?.trim() ?? "",
+						account.email?.trim().toLowerCase() ?? "",
+						typeof account.expires === "number" ? account.expires : "",
+					].join("|");
+
+				const syncCodexCliSelectionNow = async (
+					account: { index: number; accountId?: string; email?: string; expires?: number },
+					options?: { force?: boolean },
+				): Promise<boolean> => {
+					if (!codexCliDirectInjectionEnabled) {
+						return false;
+					}
+					const signature = buildCodexCliSelectionSignature(account);
+					if (
+						!options?.force &&
+						lastCodexCliActiveSyncIndex === account.index &&
+						lastCodexCliActiveSyncSignature === signature
+					) {
+						return true;
+					}
+					const synced = await accountManager.syncCodexCliActiveSelectionForIndex(
+						account.index,
+					);
+					if (synced) {
+						lastCodexCliActiveSyncIndex = account.index;
+						lastCodexCliActiveSyncSignature = signature;
+					}
+					return synced;
+				};
 
 
 				// Return SDK configuration
@@ -1442,6 +1482,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							);
 
 											let accountAuth = accountManager.toAuthDetails(account) as OAuthAuthDetails;
+											let accountAuthRefreshed = false;
 								try {
 						if (shouldRefreshToken(accountAuth, tokenRefreshSkewMs)) {
 							accountAuth = (await refreshAndUpdateToken(
@@ -1451,6 +1492,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							accountManager.updateFromAuth(account, accountAuth);
 							accountManager.clearAuthFailures(account);
 							accountManager.saveToDiskDebounced();
+							accountAuthRefreshed = true;
 						}
 			} catch (err) {
 				logDebug(`[${PLUGIN_NAME}] Auth refresh failed for account: ${(err as Error)?.message ?? String(err)}`);
@@ -1536,6 +1578,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 												);
 												continue;
 											}
+
+											await syncCodexCliSelectionNow(account, {
+												force: accountAuthRefreshed,
+											});
 
 											if (
 												accountCount > 1 &&
@@ -2195,6 +2241,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 													sessionAffinityKey,
 													fallbackAccount.index,
 												);
+												await syncCodexCliSelectionNow(fallbackAccount, {
+													force: true,
+												});
 											}
 
 											logInfo(
@@ -2312,10 +2361,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						);
 					runtimeMetrics.successfulRequests++;
 					runtimeMetrics.lastError = null;
-					if (lastCodexCliActiveSyncIndex !== successAccountForResponse.index) {
-						void accountManager.syncCodexCliActiveSelectionForIndex(successAccountForResponse.index);
-						lastCodexCliActiveSyncIndex = successAccountForResponse.index;
-					}
+					await syncCodexCliSelectionNow(successAccountForResponse);
 						return successResponse;
 																								}
 										if (retryNextAccountBeforeFallback) {
