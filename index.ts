@@ -109,6 +109,7 @@ import {
         formatAccountLabel,
         formatCooldown,
         formatWaitTime,
+        resolveRuntimeRequestIdentity,
         sanitizeEmail,
         selectBestAccountCandidate,
         shouldUpdateAccountIdFromToken,
@@ -1496,12 +1497,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 
 				const hadAccountId = !!account.accountId;
-					const tokenAccountId = extractAccountId(accountAuth.access);
-					const accountId = resolveRequestAccountId(
-						account.accountId,
-						account.accountIdSource,
-						tokenAccountId,
-					);
+					const runtimeIdentity = resolveRuntimeRequestIdentity({
+						storedAccountId: account.accountId,
+						source: account.accountIdSource,
+						storedEmail: account.email,
+						accessToken: accountAuth.access,
+						idToken: accountAuth.idToken,
+					});
+					const tokenAccountId = runtimeIdentity.tokenAccountId;
+					const accountId = runtimeIdentity.accountId;
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
@@ -1511,8 +1515,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							accountManager.saveToDiskDebounced();
 							continue;
 						}
-											const resolvedEmail =
-												extractAccountEmail(accountAuth.access) ?? account.email;
+											const resolvedEmail = runtimeIdentity.email;
 											const entitlementAccountKey = resolveEntitlementAccountKey({
 												accountId: account.accountId ?? accountId,
 												email: resolvedEmail,
@@ -2101,14 +2104,35 @@ while (attempted.size < Math.max(1, accountCount)) {
 											continue;
 										}
 
-										const fallbackTokenAccountId = extractAccountId(fallbackAuth.access);
-										const fallbackAccountId = resolveRequestAccountId(
-											fallbackAccount.accountId,
-											fallbackAccount.accountIdSource,
-											fallbackTokenAccountId,
-										);
+										const fallbackRuntimeIdentity = resolveRuntimeRequestIdentity({
+											storedAccountId: fallbackAccount.accountId,
+											source: fallbackAccount.accountIdSource,
+											storedEmail: fallbackAccount.email,
+											accessToken: fallbackAuth.access,
+											idToken: fallbackAuth.idToken,
+										});
+										const fallbackTokenAccountId = fallbackRuntimeIdentity.tokenAccountId;
+										const fallbackAccountId = fallbackRuntimeIdentity.accountId;
 										if (!fallbackAccountId) {
 											continue;
+										}
+										const fallbackResolvedEmail = fallbackRuntimeIdentity.email;
+										const fallbackEntitlementAccountKey = resolveEntitlementAccountKey({
+											accountId: fallbackAccount.accountId ?? fallbackAccountId,
+											email: fallbackResolvedEmail,
+											refreshToken: fallbackAccount.refreshToken,
+											index: fallbackAccount.index,
+										});
+										fallbackAccount.accountId = fallbackAccountId;
+										if (
+											!fallbackAccount.accountIdSource &&
+											fallbackTokenAccountId &&
+											fallbackAccountId === fallbackTokenAccountId
+										) {
+											fallbackAccount.accountIdSource = "token";
+										}
+										if (fallbackResolvedEmail) {
+											fallbackAccount.email = fallbackResolvedEmail;
 										}
 
 										if (!accountManager.consumeToken(fallbackAccount, modelFamily, model)) {
@@ -2155,7 +2179,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											);
 											if (fallbackSnapshot) {
 												preemptiveQuotaScheduler.update(
-													`${resolveEntitlementAccountKey(fallbackAccount)}:${model ?? modelFamily}`,
+													`${fallbackEntitlementAccountKey}:${model ?? modelFamily}`,
 													fallbackSnapshot,
 												);
 											}
@@ -2180,7 +2204,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 													accountManager.recordFailure(fallbackAccount, modelFamily, model);
 												}
 												capabilityPolicyStore.recordFailure(
-													resolveEntitlementAccountKey(fallbackAccount),
+													fallbackEntitlementAccountKey,
 													capabilityModelKey,
 												);
 												continue;
@@ -2206,7 +2230,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											accountManager.refundToken(fallbackAccount, modelFamily, model);
 											accountManager.recordFailure(fallbackAccount, modelFamily, model);
 											capabilityPolicyStore.recordFailure(
-												resolveEntitlementAccountKey(fallbackAccount),
+												fallbackEntitlementAccountKey,
 												capabilityModelKey,
 											);
 											logWarn(

@@ -30,6 +30,7 @@ export {
 	extractAccountEmail,
 	getAccountIdCandidates,
 	selectBestAccountCandidate,
+	resolveRuntimeRequestIdentity,
 	shouldUpdateAccountIdFromToken,
 	resolveRequestAccountId,
 	sanitizeEmail,

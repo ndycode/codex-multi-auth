@@ -35,7 +35,8 @@ vi.mock("../lib/request/request-transformer.js", () => ({
 	applyFastSessionDefaults: <T>(config: T) => config,
 }));
 
-vi.mock("../lib/accounts.js", () => {
+vi.mock("../lib/accounts.js", async () => {
+	const tokenUtils = await vi.importActual("../lib/auth/token-utils.js");
 	class AccountManager {
 		private calls = 0;
 
@@ -114,7 +115,29 @@ vi.mock("../lib/accounts.js", () => {
 		extractAccountEmail: () => "user@example.com",
 		extractAccountId: () => "account-1",
 		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
-		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
+		resolveRuntimeRequestIdentity: ({
+			storedAccountId,
+			source,
+			storedEmail,
+			accessToken,
+		}: {
+			storedAccountId?: string;
+			source?: string;
+			storedEmail?: string;
+			accessToken?: string;
+		}) => {
+			const tokenAccountId = accessToken ? "account-1" : undefined;
+			return {
+				accountId: (
+					tokenUtils as typeof import("../lib/auth/token-utils.js")
+				).resolveRequestAccountId(storedAccountId, source as never, tokenAccountId),
+				email: storedEmail ?? "user@example.com",
+				tokenAccountId,
+			};
+		},
+		resolveRequestAccountId: (
+			tokenUtils as typeof import("../lib/auth/token-utils.js")
+		).resolveRequestAccountId,
 		formatAccountLabel: (_account: any, index: number) => `Account ${index + 1}`,
 		formatCooldown: (ms: number) => `${ms}ms`,
 		formatWaitTime: (ms: number) => `${ms}ms`,

@@ -325,7 +325,8 @@ vi.mock("../lib/storage.js", async () => {
 const extractAccountEmailMock = vi.fn(() => "user@example.com");
 const extractAccountIdMock = vi.fn(() => "account-1");
 
-vi.mock("../lib/accounts.js", () => {
+vi.mock("../lib/accounts.js", async () => {
+	const tokenUtils = await vi.importActual("../lib/auth/token-utils.js");
 	class MockAccountManager {
 		private accounts = [
 			{
@@ -410,7 +411,31 @@ vi.mock("../lib/accounts.js", () => {
 		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
 		extractAccountEmail: extractAccountEmailMock,
 		extractAccountId: extractAccountIdMock,
-		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
+		resolveRuntimeRequestIdentity: ({
+			storedAccountId,
+			source,
+			storedEmail,
+			accessToken,
+			idToken,
+		}: {
+			storedAccountId?: string;
+			source?: string;
+			storedEmail?: string;
+			accessToken?: string;
+			idToken?: string;
+		}) => {
+			const tokenAccountId = extractAccountIdMock(accessToken);
+			return {
+				accountId: (
+					tokenUtils as typeof import("../lib/auth/token-utils.js")
+				).resolveRequestAccountId(storedAccountId, source as never, tokenAccountId),
+				email: extractAccountEmailMock(accessToken, idToken) ?? storedEmail,
+				tokenAccountId,
+			};
+		},
+		resolveRequestAccountId: (
+			tokenUtils as typeof import("../lib/auth/token-utils.js")
+		).resolveRequestAccountId,
 		formatAccountLabel: (_account: unknown, index: number) => `Account ${index + 1}`,
 		formatCooldown: () => null,
 		formatWaitTime: (ms: number) => `${Math.round(ms / 1000)}s`,
@@ -1145,6 +1170,57 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		return { plugin, sdk, mockClient };
 	};
 
+	const buildRoutingManager = (
+		accounts: Array<{
+			index: number;
+			accountId?: string;
+			accountIdSource?: string;
+			email?: string;
+			refreshToken: string;
+			accessToken?: string;
+			idToken?: string;
+		}>,
+	) => {
+		let selection = 0;
+		return {
+			getAccountCount: () => accounts.length,
+			getCurrentOrNextForFamilyHybrid: () => accounts[selection++] ?? null,
+			getCurrentOrNextForFamily: () => accounts[selection++] ?? null,
+			getAccountByIndex: (index: number) => accounts[index] ?? null,
+			getAccountsSnapshot: () => accounts,
+			isAccountAvailableForFamily: (index: number) => Boolean(accounts[index]),
+			toAuthDetails: (account: (typeof accounts)[number]) => ({
+				type: "oauth" as const,
+				access: account.accessToken ?? `access-${account.accountId ?? account.index}`,
+				refresh: account.refreshToken,
+				expires: Date.now() + 60_000,
+				...(account.idToken ? { idToken: account.idToken } : {}),
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async (index: number) =>
+				syncCodexCliSelectionMock(index),
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: (index: number) => accounts[index] ?? null,
+		};
+	};
+
 	it("returns success response for successful fetch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
@@ -1188,6 +1264,145 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			"account:acc-1::email:fresh@example.com",
 			"gpt-5.1",
 		);
+	});
+
+	it.each([
+		["org", "workspace-alpha"],
+		["manual", "workspace-beta"],
+	] as const)(
+		"preserves %s-selected workspace in primary request routing",
+		async (accountIdSource, expectedAccountId) => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			const manager = buildRoutingManager([
+				{
+					index: 0,
+					accountId: expectedAccountId,
+					accountIdSource,
+					email: "owner@example.com",
+					refreshToken: "refresh-1",
+					accessToken: "access-primary",
+				},
+			]);
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+			extractAccountIdMock.mockReturnValueOnce("token-personal");
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+				(_init, accountId, accessToken) =>
+					new Headers({
+						"x-test-account-id": String(accountId),
+						"x-test-access-token": String(accessToken),
+					}),
+			);
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+			const { sdk } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			expect(response.status).toBe(200);
+			const headers = new Headers(
+				vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers,
+			);
+			expect(headers.get("x-test-account-id")).toBe(expectedAccountId);
+			expect(headers.get("x-test-access-token")).toBe("access-primary");
+		},
+	);
+
+	it("keeps token-derived routing on the refreshed token accountId", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "workspace-alpha",
+				accountIdSource: "token",
+				email: "owner@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-primary",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock.mockReturnValueOnce("token-personal");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		const headers = new Headers(
+			vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers,
+		);
+		expect(headers.get("x-test-account-id")).toBe("token-personal");
+	});
+
+	it("preserves stored workspace routing after a first-account network failure", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-personal-fallback");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+		const thirdHeaders = new Headers(
+			vi.mocked(globalThis.fetch).mock.calls[2]?.[1]?.headers,
+		);
+		expect(thirdHeaders.get("x-test-account-id")).toBe("workspace-fallback");
+		expect(thirdHeaders.get("x-test-access-token")).toBe("access-beta");
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
 	});
 
 	it("handles network errors and rotates to next account", async () => {

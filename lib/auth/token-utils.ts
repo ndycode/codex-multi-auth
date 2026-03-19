@@ -383,6 +383,37 @@ export function resolveRequestAccountId(
 	return tokenAccountId ?? storedAccountId;
 }
 
+export interface RuntimeRequestIdentity {
+	accountId?: string;
+	email?: string;
+	tokenAccountId?: string;
+}
+
+/**
+ * Resolve the live request identity for an account using the stored workspace binding
+ * plus the freshest token-derived hints available for this request.
+ */
+export function resolveRuntimeRequestIdentity(input: {
+	storedAccountId?: string;
+	source?: AccountIdSource;
+	storedEmail?: string;
+	accessToken?: string;
+	idToken?: string;
+}): RuntimeRequestIdentity {
+	const tokenAccountId = extractAccountId(input.accessToken);
+	return {
+		accountId: resolveRequestAccountId(
+			input.storedAccountId,
+			input.source,
+			tokenAccountId,
+		),
+		email:
+			sanitizeEmail(extractAccountEmail(input.accessToken, input.idToken)) ??
+			sanitizeEmail(input.storedEmail),
+		tokenAccountId,
+	};
+}
+
 /**
  * Sanitizes an email address by trimming whitespace and lowercasing.
  * @param email - Email string to sanitize
