@@ -348,6 +348,49 @@ describe("sync history", () => {
 		expect(historyReads).toHaveLength(1);
 	});
 
+	it("waits for writes queued while history reads are draining", async () => {
+		const paths = getSyncHistoryPaths();
+		const originalAppendFile = fs.appendFile.bind(fs);
+		let appendCalls = 0;
+		let releaseFirstAppend: (() => void) | null = null;
+		let secondAppendPromise: Promise<void> | null = null;
+		const firstAppendGate = new Promise<void>((resolve) => {
+			releaseFirstAppend = resolve;
+		});
+		const appendFileSpy = vi.spyOn(fs, "appendFile").mockImplementation(
+			async (path, data, options) => {
+				if (path === paths.historyPath && appendCalls === 0) {
+					appendCalls += 1;
+					queueMicrotask(() => {
+						secondAppendPromise = appendSyncHistoryEntry({
+							kind: "codex-cli-sync",
+							recordedAt: 2,
+							run: createCodexRun(2, "/sync-history-second"),
+						});
+					});
+					await firstAppendGate;
+				}
+				return originalAppendFile(path, data, options);
+			},
+		);
+
+		const firstAppendPromise = appendSyncHistoryEntry({
+			kind: "codex-cli-sync",
+			recordedAt: 1,
+			run: createCodexRun(1, "/sync-history-first"),
+		});
+		const readPromise = readSyncHistory();
+		await Promise.resolve();
+		releaseFirstAppend?.();
+
+		await firstAppendPromise;
+		await secondAppendPromise;
+		const history = await readPromise;
+
+		expect(history.map((entry) => entry.recordedAt)).toEqual([1, 2]);
+		expect(appendFileSpy).toHaveBeenCalled();
+	});
+
 	it("retries transient append and latest-write lock errors during append", async () => {
 		const paths = getSyncHistoryPaths();
 		const originalAppendFile = fs.appendFile.bind(fs);

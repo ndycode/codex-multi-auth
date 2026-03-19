@@ -2509,6 +2509,67 @@ describe("storage", () => {
 			}
 		});
 
+		it("redacts shallow filesystem paths from snapshot warning logs", async () => {
+			const warnMock = vi.fn();
+			vi.resetModules();
+			vi.doMock("../lib/logger.js", () => ({
+				createLogger: vi.fn(() => ({
+					debug: vi.fn(),
+					info: vi.fn(),
+					warn: warnMock,
+					error: vi.fn(),
+				})),
+				logWarn: vi.fn(),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(testStoragePath);
+				await isolatedStorageModule.saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "primary",
+							refreshToken: "ref-primary",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				});
+
+				const leakingPath = `C:\\token.json`;
+				const failingBackup = vi.fn().mockRejectedValue(
+					Object.assign(
+						new Error(
+							`EPERM: operation not permitted, open '${leakingPath}'`,
+						),
+						{ code: "EPERM" },
+					),
+				);
+
+				await expect(
+					isolatedStorageModule.snapshotAccountStorage({
+						reason: "reset-local-state",
+						createBackup: failingBackup,
+					}),
+				).resolves.toBeNull();
+
+				const payload = warnMock.mock.calls[0]?.[1] as
+					| { error?: string; backupName?: string }
+					| undefined;
+				expect(payload?.backupName).toContain(
+					"accounts-reset-local-state-snapshot-",
+				);
+				expect(payload?.error).toContain("token.json");
+				expect(payload?.error).not.toContain("C:\\");
+			} finally {
+				vi.doUnmock("../lib/logger.js");
+				vi.resetModules();
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
 		it("propagates snapshot failure when policy is error", async () => {
 			await saveAccounts({
 				version: 3,

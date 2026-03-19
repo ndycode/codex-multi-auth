@@ -2453,7 +2453,7 @@ function extractPathTail(pathValue: string): string {
 
 function redactFilesystemDetails(value: string): string {
 	return value.replace(
-		/(?:[A-Za-z]:)?[\\/][^"'`\r\n]+(?:[\\/][^"'`\r\n]+)+/g,
+		/(?:[A-Za-z]:)?[\\/][^"'`\r\n]+(?:[\\/][^"'`\r\n]+)*/g,
 		(pathValue) => extractPathTail(pathValue),
 	);
 }

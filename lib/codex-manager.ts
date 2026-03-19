@@ -103,6 +103,7 @@ import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { ANSI } from "./ui/ansi.js";
 import {
 	type FirstRunWizardOptions,
+	type FirstRunWizardAction,
 	showFirstRunWizard,
 } from "./ui/auth-menu.js";
 import { confirm } from "./ui/confirm.js";
@@ -4351,7 +4352,11 @@ async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
 
 type FirstRunWizardResult =
 	| { outcome: "cancelled" }
-	| { outcome: "continue"; latestStorage: AccountStorageV3 | null };
+	| {
+			outcome: "continue";
+			latestStorage: AccountStorageV3 | null;
+			firstAction: FirstRunWizardAction["type"];
+	  };
 
 async function runFirstRunWizard(
 	displaySettings: DashboardDisplaySettings,
@@ -4364,7 +4369,7 @@ async function runFirstRunWizard(
 				return { outcome: "cancelled" };
 			case "login":
 			case "skip":
-				return { outcome: "continue", latestStorage: null };
+				return { outcome: "continue", latestStorage: null, firstAction: action.type };
 			case "restore":
 				await runBackupBrowserManager(displaySettings);
 				break;
@@ -4448,7 +4453,7 @@ async function runFirstRunWizard(
 			);
 		}
 		if (latestStorage && latestStorage.accounts.length > 0) {
-			return { outcome: "continue", latestStorage };
+			return { outcome: "continue", latestStorage, firstAction: action.type };
 		}
 	}
 }
@@ -4474,7 +4479,9 @@ async function runAuthLogin(): Promise<number> {
 		const displaySettings = await loadDashboardDisplaySettings();
 		applyUiThemeFromDashboardSettings(displaySettings);
 		const wizardResult = await runFirstRunWizard(displaySettings);
-		firstRunWizardShownInLoop = true;
+		firstRunWizardShownInLoop =
+			wizardResult.outcome === "continue" &&
+			(wizardResult.firstAction === "login" || wizardResult.firstAction === "skip");
 		if (wizardResult.outcome === "cancelled") {
 			return 0;
 		}
