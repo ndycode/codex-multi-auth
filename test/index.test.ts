@@ -1276,6 +1276,41 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		).toEqual([0, 1]);
 	});
 
+	it("does not let an in-flight request restore an older CLI selection after a manual switch", async () => {
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+
+		let resolveFetch: (() => void) | null = null;
+		globalThis.fetch = vi.fn().mockImplementation(
+			() =>
+				new Promise<Response>((resolve) => {
+					resolveFetch = () =>
+						resolve(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+				}),
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		const requestPromise = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		await vi.waitFor(() => expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1));
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
+
+		resolveFetch?.();
+		const response = await requestPromise;
+
+		expect(response.status).toBe(200);
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
+	});
+
 	it("times out a stalled CLI sync so later requests can continue", async () => {
 		vi.useFakeTimers();
 		try {
@@ -1898,19 +1933,23 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 	it("skips automatic CLI injection when direct injection is disabled", async () => {
 		const configModule = await import("../lib/config.js");
-		vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValueOnce(false);
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
-		);
+		vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(false);
+		try {
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
 
-		const { sdk } = await setupPlugin();
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
-		});
+			const { sdk } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
 
-		expect(response.status).toBe(200);
-		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+			expect(response.status).toBe(200);
+			expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+		} finally {
+			vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(true);
+		}
 	});
 
 	it("skips failover CLI injection when direct injection is disabled", async () => {
@@ -1923,7 +1962,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		try {
 			vi.resetModules();
 			const configModule = await import("../lib/config.js");
-			vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValueOnce(false);
+			vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(false);
 			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
 				(_init, _accountId, accessToken) =>
@@ -2004,6 +2043,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect(response.status).toBe(200);
 			expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
 		} finally {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(true);
 			vi.doUnmock("../lib/request/stream-failover.js");
 			vi.resetModules();
 		}
@@ -3335,14 +3376,23 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		});
 	});
 
-	it("ignores account.select when cachedAccountManager is null", async () => {
+	it("persists account.select when the cache is empty", async () => {
+		vi.resetModules();
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+
 		await plugin.event({
 			event: { type: "account.select", properties: { index: 0 } },
 		});
+
+		expect(mockStorage.activeIndex).toBe(0);
+		expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(0);
 	});
 
 	it("handles non-numeric index gracefully", async () => {

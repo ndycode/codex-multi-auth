@@ -928,9 +928,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		};
 
 		const CODEX_CLI_SELECTION_SYNC_TIMEOUT_MS = 5_000;
+		let codexCliSelectionGeneration = 0;
 
-		const queueCodexCliSelectionSync = async (
-			runSync: (context: { isStale: () => boolean }) => Promise<boolean>,
+		const queueCodexCliSelectionSync = async ({
+			generation,
+			runSync,
+		}: {
+			generation: number;
+			runSync: (context: { isStale: () => boolean }) => Promise<boolean>;
+		},
 		): Promise<boolean> => {
 			const priorSync = codexCliSelectionSyncQueue;
 			let releaseSyncQueue!: () => void;
@@ -944,7 +950,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				try {
 					return await Promise.race([
 						runSync({
-							isStale: () => syncTimedOut,
+							isStale: () =>
+								syncTimedOut || codexCliSelectionGeneration !== generation,
 						}),
 						new Promise<boolean>((resolve) => {
 							timeoutHandle = setTimeout(() => {
@@ -1006,17 +1013,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         storage.activeIndexByFamily[family] = index;
                                 }
 
-                                await saveAccounts(storage);
-				if (cachedAccountManager) {
-					// Reload manager from disk so we don't overwrite newer rotated
-					// refresh tokens with stale in-memory state.
-					await reloadAccountManagerFromDisk();
-				}
-				const activeAccountManager = cachedAccountManager;
 				const codexCliDirectInjectionEnabledForEvent =
 					getCodexCliDirectInjection(loadPluginConfig());
+				await saveAccounts(storage);
+				const manualSelectionGeneration = ++codexCliSelectionGeneration;
+				let activeAccountManager = cachedAccountManager;
+				if (cachedAccountManager || codexCliDirectInjectionEnabledForEvent) {
+					// Reload manager from disk so we don't overwrite newer rotated
+					// refresh tokens with stale in-memory state, and so the first
+					// manual switch can still inject into Codex CLI.
+					activeAccountManager = await reloadAccountManagerFromDisk();
+				}
 				if (activeAccountManager && codexCliDirectInjectionEnabledForEvent) {
-					const synced = await queueCodexCliSelectionSync(async () => {
+					const synced = await queueCodexCliSelectionSync({
+						generation: manualSelectionGeneration,
+						runSync: async () => {
 						try {
 							return await activeAccountManager.syncCodexCliActiveSelectionForIndex(
 								index,
@@ -1038,8 +1049,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							);
 							return false;
 						}
+						},
 					});
-					if (synced) {
+					if (synced && codexCliSelectionGeneration === manualSelectionGeneration) {
 						lastCodexCliActiveSyncIndex = index;
 						lastCodexCliActiveSyncSignature = null;
 					}
@@ -1242,15 +1254,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						index: number;
 						addedAt?: number;
 					},
-					options?: { force?: boolean },
+					options?: { force?: boolean; generation?: number },
 				): Promise<boolean> => {
 					if (!codexCliDirectInjectionEnabled) {
 						return false;
 					}
 					const signature = buildCodexCliSelectionSignature(account);
+					const selectionGenerationAtQueueTime =
+						options?.generation ?? codexCliSelectionGeneration;
 					const runSync = async (context: {
 						isStale: () => boolean;
 					}): Promise<boolean> => {
+						if (context.isStale()) {
+							return false;
+						}
 						if (
 							!options?.force &&
 							lastCodexCliActiveSyncIndex === account.index &&
@@ -1258,10 +1275,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						) {
 							return true;
 						}
+						const activeAccountManager = cachedAccountManager ?? accountManager;
 						let synced = false;
 						try {
 							synced =
-								await accountManager.syncCodexCliActiveSelectionForIndex(
+								await activeAccountManager.syncCodexCliActiveSelectionForIndex(
 									account.index,
 								);
 						} catch (error) {
@@ -1288,7 +1306,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						}
 						return synced;
 					};
-					return await queueCodexCliSelectionSync(runSync);
+					return await queueCodexCliSelectionSync({
+						generation: selectionGenerationAtQueueTime,
+						runSync,
+					});
 				};
 
 
@@ -1430,6 +1451,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							const requestCorrelationId = setCorrelationId(
 								threadIdCandidate ? `${threadIdCandidate}:${Date.now()}` : undefined,
 							);
+							const cliSelectionGenerationForRequest = codexCliSelectionGeneration;
 							runtimeMetrics.lastRequestAt = Date.now();
 
 					const abortSignal = requestInit?.signal ?? init?.signal ?? null;
@@ -1733,6 +1755,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									}
 									await syncCodexCliSelectionNow(account, {
 										force: accountAuthRefreshed,
+										generation: cliSelectionGenerationForRequest,
 									});
 
 							let sameAccountRetryCount = 0;
@@ -2347,6 +2370,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											) {
 												await syncCodexCliSelectionNow(fallbackAccount, {
 													force: true,
+													generation: cliSelectionGenerationForRequest,
 												});
 											}
 
@@ -2465,7 +2489,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 						);
 					runtimeMetrics.successfulRequests++;
 					runtimeMetrics.lastError = null;
-					await syncCodexCliSelectionNow(successAccountForResponse);
+					await syncCodexCliSelectionNow(successAccountForResponse, {
+						generation: cliSelectionGenerationForRequest,
+					});
 						return successResponse;
 																								}
 										if (retryNextAccountBeforeFallback) {
