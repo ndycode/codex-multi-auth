@@ -1250,11 +1250,19 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 
 		await syncStarted;
-		const eventPromise = plugin.event({
-			event: { type: "account.select", properties: { index: 1 } },
-		});
+		let eventResolved = false;
+		const eventPromise = plugin
+			.event({
+				event: { type: "account.select", properties: { index: 1 } },
+			})
+			.then(() => {
+				eventResolved = true;
+			});
 
 		await vi.waitFor(() => expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1));
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(eventResolved).toBe(false);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
 		resolveSync?.();
 
 		const response = await requestPromise;
