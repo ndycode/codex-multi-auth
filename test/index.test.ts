@@ -395,6 +395,10 @@ vi.mock("../lib/accounts.js", () => {
 
 		markToastShown() {}
 
+		getActiveIndex() {
+			return mockStorage.activeIndex;
+		}
+
 		setActiveIndex(index: number) {
 			return this.accounts[index] ?? null;
 		}
@@ -677,6 +681,7 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.apiKey).toBeDefined();
 			expect(result.baseURL).toBeDefined();
 			expect(result.fetch).toBeDefined();
+			expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
 		});
 
 		it("serializes live sync setup when loader is called concurrently", async () => {
@@ -1274,8 +1279,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect(response.status).toBe(200);
 			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 			expect(consumeSpy).toHaveBeenCalledTimes(2);
-			expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1);
-			expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+			expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(2);
+			expect(syncCodexCliSelectionMock).toHaveBeenNthCalledWith(1, 0);
+			expect(syncCodexCliSelectionMock).toHaveBeenNthCalledWith(2, 1);
 			countSpy.mockRestore();
 			selectionSpy.mockRestore();
 			consumeSpy.mockRestore();
@@ -1678,6 +1684,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				removeAccount: () => {},
 				recordFailure: () => {},
 				recordSuccess: () => {},
+				getActiveIndex: () => 0,
 				getMinWaitTimeForFamily: () => 0,
 				shouldShowAccountToast: () => false,
 				markToastShown: () => {},

@@ -1070,6 +1070,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						await accountManager.saveToDisk();
 					}
 
+					if (isDirectCliInjectionEnabled()) {
+						const activeIndex = accountManager.getActiveIndex();
+						if (activeIndex >= 0) {
+							await syncCodexCliSelectionIfNeeded(accountManager, activeIndex);
+						}
+					}
+
 					if (accountManager.getAccountCount() === 0) {
 						logDebug(
 							`[${PLUGIN_NAME}] No OAuth accounts available (run codex login)`,
