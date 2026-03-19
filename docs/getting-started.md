@@ -78,7 +78,7 @@ Use the restore path when you already have named backup files and want to recove
 
 - Automatic path: run `codex auth login`, then confirm the startup restore prompt when it appears
 - Manual path: run `codex auth login`, then choose `Restore From Backup`
-- Backup location: `~/.codex/multi-auth/backups/<name>.json`
+- Backup location: `~/.codex/multi-auth/backups/<name>.json` (or `C:\Users\<User>\.codex\multi-auth\backups\<name>.json` on Windows; override with `CODEX_MULTI_AUTH_DIR`)
 
 The restore manager shows each backup name, account count, freshness, and whether the restore would exceed the account limit before it lets you apply anything.
 

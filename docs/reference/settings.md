@@ -70,15 +70,13 @@ Controls display style:
 
 ---
 
-## Advanced and Operator Controls
+## Advanced & Operator
 
 The second top-level section is `Advanced & Operator`. It holds the sync workflow and backend tuning that are useful when you need to inspect or change lower-level behavior.
 
 ### Codex CLI Sync
 
 `Codex CLI Sync` is a preview-first sync center for Codex CLI account sync.
-See [upgrade notes](../upgrade.md) for sync workflow changes.
-
 Before applying sync, it shows:
 
 - target path
@@ -86,7 +84,7 @@ Before applying sync, it shows:
 - last sync result for this session
 - preview summary (adds, updates, destination-only preserved accounts)
 - destination-only preservation behavior
-- backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`)
+- backup and rollback context (`.bak`, `.bak.1`, `.bak.2`, `.wal`) when storage backups are enabled
 
 Workflow notes:
 
@@ -94,12 +92,6 @@ Workflow notes:
 - apply writes the preview result into the target path
 - sync is one-way, it is not a bidirectional merge
 - target-only accounts are preserved rather than deleted
-
-Validation:
-
-- `npm run typecheck`
-- `npm run build`
-- `npm test`
 
 ### Experimental
 

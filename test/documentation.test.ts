@@ -344,7 +344,7 @@ describe("Documentation Integrity", () => {
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.summaryFields}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.behavior}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.theme}`);
-		expect(settingsRef).toContain("## Advanced and Operator Controls");
+		expect(settingsRef).toContain("## Advanced & Operator");
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.syncCenter}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.experimental}`);
 		expect(settingsRef).toContain(`### ${UI_COPY.settings.backend}`);
@@ -359,6 +359,26 @@ describe("Documentation Integrity", () => {
 		expect(settingsRef).toContain("- `menuShowQuotaSummary`");
 		expect(settingsRef).toContain("- `menuShowFetchStatus`");
 		expect(settingsRef).toContain("- `menuStatuslineFields`");
+	});
+
+	it("keeps getting-started and troubleshooting docs aligned with current restore and sync flows", () => {
+		const gettingStarted = read("docs/getting-started.md");
+		const troubleshooting = read("docs/troubleshooting.md");
+
+		expect(gettingStarted).toContain("## Restore Or Start Fresh");
+		expect(gettingStarted).toContain("## Sync And Settings");
+		expect(gettingStarted).toContain("Restore From Backup");
+		expect(gettingStarted).toContain(
+			"C:\\Users\\<User>\\.codex\\multi-auth\\backups\\<name>.json",
+		);
+		expect(troubleshooting).toContain("## Backup Restore Problems");
+		expect(troubleshooting).toContain("## Codex CLI Sync Problems");
+		expect(troubleshooting).toContain(
+			"`codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync`",
+		);
+		expect(troubleshooting).toContain(
+			"`codex auth login` -> `Settings` -> `Advanced & Operator` -> `Advanced Backend Controls`",
+		);
 	});
 
 	it("keeps changelog aligned with canonical 0.x release policy", () => {

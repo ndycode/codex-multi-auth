@@ -63,8 +63,8 @@ npm i -g codex-multi-auth
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| You expected a restore prompt but went straight to OAuth | No recoverable named backups were found, the terminal is non-interactive, or the flow is skipping restore after an intentional reset | Put named backup files in `~/.codex/multi-auth/backups/`, then rerun `codex auth login` in an interactive terminal |
-| `Restore From Backup` says no backups were found | The named backup directory is empty or the files are elsewhere | Place backup files in `~/.codex/multi-auth/backups/` and retry |
+| You expected a restore prompt but went straight to OAuth | No recoverable named backups were found, the terminal is non-interactive, or the flow is skipping restore after an intentional reset | Verify the active backup root (`$CODEX_MULTI_AUTH_DIR/backups` or `%CODEX_MULTI_AUTH_DIR%\backups`; default examples: `~/.codex/multi-auth/backups/` and `C:\Users\<User>\.codex\multi-auth\backups\`), then rerun `codex auth login` in an interactive terminal |
+| `Restore From Backup` says no backups were found | The named backup directory is empty or the files are elsewhere under the active data root | Place backup files in the active backup root (`$CODEX_MULTI_AUTH_DIR/backups` or `%CODEX_MULTI_AUTH_DIR%\backups`) and retry |
 | A backup is listed but cannot be selected | The backup is invalid or would exceed the account limit | Trim current accounts first or choose a different backup |
 | Restore succeeded but some rows were skipped | Deduping kept the existing matching account state | Run `codex auth list` and `codex auth check` to review the merged result |
 
@@ -82,12 +82,12 @@ npm i -g codex-multi-auth
 
 ## Codex CLI Sync Problems
 
-Use `codex auth login` -> `Settings` -> `Codex CLI Sync` when you want to inspect sync state before applying it.
+Use `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync` when you want to inspect sync state before applying it.
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | Sync preview looks one-way | This is the shipped behavior | Review the preview, then apply only if the target result is what you want |
-| A target-only account would be lost | The sync center preserves destination-only accounts instead of deleting them | Recheck the preview summary before apply |
+| You want to confirm target-only accounts are preserved | The sync center preserves destination-only accounts instead of deleting them | Recheck the preview summary before apply |
 | You want rollback context before syncing | Backup support is disabled in current settings | Enable storage backups in advanced settings, then refresh the sync preview |
 | Active selection does not match expectation | Preview kept the newer local choice or updated from Codex CLI based on selection precedence | Refresh preview and review the selection summary before apply |
 
@@ -117,8 +117,8 @@ codex auth doctor --json
 
 Interactive diagnostics path:
 
-- `codex auth login` -> `Settings` -> `Codex CLI Sync` for preview-based sync diagnostics
-- `codex auth login` -> `Settings` -> `Advanced Backend Controls` for sync, retry, quota, recovery, and timeout tuning
+- `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Codex CLI Sync` for preview-based sync diagnostics
+- `codex auth login` -> `Settings` -> `Advanced & Operator` -> `Advanced Backend Controls` for sync, retry, quota, recovery, and timeout tuning
 
 ---
 
