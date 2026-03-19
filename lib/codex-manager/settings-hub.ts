@@ -2553,7 +2553,7 @@ async function promptExperimentalSettings(
 					color: "green",
 				},
 				{
-					label: `${formatDashboardSettingState(draft.codexCliDirectInjection === true)} ${UI_COPY.settings.experimentalDirectCliInjection}`,
+					label: `${formatDashboardSettingState(draft.codexCliDirectInjection !== false)} ${UI_COPY.settings.experimentalDirectCliInjection}`,
 					value: { type: "toggle-direct-cli-injection" },
 					color: "green",
 				},
@@ -2641,7 +2641,7 @@ async function promptExperimentalSettings(
 		if (action.type === "toggle-direct-cli-injection") {
 			draft = {
 				...draft,
-				codexCliDirectInjection: !draft.codexCliDirectInjection,
+				codexCliDirectInjection: !(draft.codexCliDirectInjection !== false),
 			};
 			continue;
 		}

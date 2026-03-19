@@ -945,6 +945,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						runSync(),
 						new Promise<boolean>((resolve) => {
 							timeoutHandle = setTimeout(() => {
+								// The underlying write cannot be cancelled once started; timing out only
+								// unblocks later queued sync attempts and lets the detached write finish.
 								logWarn(
 									`[${PLUGIN_NAME}] Codex CLI selection sync timed out`,
 									{

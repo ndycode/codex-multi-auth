@@ -1216,6 +1216,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(firstResponse.status).toBe(200);
 		expect(secondResponse.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1);
 	});
 

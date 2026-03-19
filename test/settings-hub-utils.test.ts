@@ -724,5 +724,15 @@ describe("settings-hub utility coverage", () => {
 				}),
 			);
 		});
+
+		it("treats missing direct injection config as enabled before toggling it off", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "toggle-direct-cli-injection" },
+				{ type: "save" },
+			);
+			const selected = await api.promptExperimentalSettings({});
+			expect(selected?.codexCliDirectInjection).toBe(false);
+		});
 	});
 });
