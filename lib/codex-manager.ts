@@ -4208,11 +4208,13 @@ async function buildLoginMenuHealthSummary(
 			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
 			: "none";
 	const rollbackLabel =
-		rollbackPlan.status === "ready"
-			? "ready"
-			: rollbackHint.toLowerCase().includes("unavailable")
-				? "unavailable"
-				: "none";
+		rollbackPlanLoadFailed
+			? "unavailable"
+			: rollbackPlan.status === "ready"
+				? "ready"
+				: rollbackPlan.snapshot
+					? "unavailable"
+					: "none";
 	const accountLabel =
 		disabledCount > 0
 			? `${enabledCount}/${storage.accounts.length} enabled`

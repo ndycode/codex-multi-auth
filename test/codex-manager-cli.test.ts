@@ -4437,7 +4437,7 @@ describe("codex manager cli commands", () => {
 				{
 					email: "disabled@example.com",
 					accountId: "acc_disabled",
-					refreshToken: "refresh-disabled",
+					refreshToken: "refresh-enabled",
 					accessToken: "access-disabled",
 					expiresAt: now + 3_600_000,
 					addedAt: now - 1_000,
@@ -4498,10 +4498,10 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				healthSummary: expect.objectContaining({
 					label: expect.stringMatching(
-						/Pool 1\/2 enabled[\s\S]*Sync changed[\s\S]*Restore 1\/2 ready[\s\S]*Rollback ready[\s\S]*Doctor 3 warnings/,
+						/Pool 1\/2 enabled[\s\S]*Sync changed[\s\S]*Restore 1\/2 ready[\s\S]*Rollback ready[\s\S]*Doctor 4 warnings/,
 					),
 					hint: expect.stringMatching(
-						/Sync: Latest sync changed today \| add 1 \| selection changed[\s\S]*Restore backups: 1 actionable of 2 total[\s\S]*Rollback: checkpoint ready for 2 account\(s\)/,
+						/Sync: Latest sync changed today \| add 1 \| selection changed[\s\S]*Restore backups: 1 actionable of 2 total[\s\S]*Rollback: checkpoint ready for 2 account\(s\)[\s\S]*Doctor: 1 disabled \| 1 duplicate token \| 2 placeholder emails \| 2 invalid refresh tokens/,
 					),
 				}),
 			}),
@@ -4523,13 +4523,15 @@ describe("codex manager cli commands", () => {
 			],
 		});
 		getActionableNamedBackupRestoresMock.mockRejectedValue(
-			new Error("EBUSY backups"),
+			makeErrnoError("resource busy", "EBUSY"),
 		);
-		getLatestCodexCliSyncRollbackPlanMock.mockRejectedValue(
-			new Error("EBUSY rollback at C:\\sensitive\\rollback.json"),
-		);
+		const rollbackBusyError = makeErrnoError("resource busy", "EBUSY");
+		rollbackBusyError.path = "C:\\sensitive\\rollback.json";
+		getLatestCodexCliSyncRollbackPlanMock.mockRejectedValue(rollbackBusyError);
 		getLastCodexCliSyncRunMock.mockImplementation(() => {
-			throw new Error("EBUSY: resource busy, sync history");
+			const syncBusyError = makeErrnoError("resource busy", "EBUSY");
+			syncBusyError.path = "C:\\sensitive\\sync-history.json";
+			throw syncBusyError;
 		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -4541,10 +4543,11 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(warnSpy).toHaveBeenCalled();
 		expect(warningOutput).toContain(
-			"Failed to load login menu rollback health summary state [UNKNOWN]",
+			"Failed to load login menu rollback health summary state",
 		);
-		expect(warningOutput).not.toContain("EBUSY");
+		expect(warningOutput).toContain("EBUSY");
 		expect(warningOutput).not.toContain("C:\\sensitive\\rollback.json");
+		expect(warningOutput).not.toContain("C:\\sensitive\\sync-history.json");
 		expect(promptLoginModeMock).toHaveBeenCalledWith(
 			expect.any(Array),
 			expect.objectContaining({
