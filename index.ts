@@ -930,10 +930,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const CODEX_CLI_SELECTION_SYNC_TIMEOUT_MS = 5_000;
 
 		const queueCodexCliSelectionSync = async (
-			runSync: () => Promise<boolean>,
+			runSync: (context: { isStale: () => boolean }) => Promise<boolean>,
 		): Promise<boolean> => {
 			const priorSync = codexCliSelectionSyncQueue;
 			let releaseSyncQueue!: () => void;
+			let syncTimedOut = false;
 			codexCliSelectionSyncQueue = new Promise<void>((resolve) => {
 				releaseSyncQueue = resolve;
 			});
@@ -942,9 +943,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				let timeoutHandle: NodeJS.Timeout | null = null;
 				try {
 					return await Promise.race([
-						runSync(),
+						runSync({
+							isStale: () => syncTimedOut,
+						}),
 						new Promise<boolean>((resolve) => {
 							timeoutHandle = setTimeout(() => {
+								syncTimedOut = true;
 								// The underlying write cannot be cancelled once started; timing out only
 								// unblocks later queued sync attempts and lets the detached write finish.
 								logWarn(
@@ -1003,7 +1007,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 }
 
                                 await saveAccounts(storage);
-				if (cachedAccountManager) {
+				const codexCliDirectInjectionEnabledForEvent =
+					getCodexCliDirectInjection(loadPluginConfig());
+				if (cachedAccountManager && codexCliDirectInjectionEnabledForEvent) {
 					const synced = await queueCodexCliSelectionSync(async () => {
 						const freshManager = await reloadAccountManagerFromDisk();
 						try {
@@ -1235,7 +1241,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						return false;
 					}
 					const signature = buildCodexCliSelectionSignature(account);
-					const runSync = async (): Promise<boolean> => {
+					const runSync = async (context: {
+						isStale: () => boolean;
+					}): Promise<boolean> => {
 						if (
 							!options?.force &&
 							lastCodexCliActiveSyncIndex === account.index &&
@@ -1267,7 +1275,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							);
 							return false;
 						}
-						if (synced) {
+						if (synced && !context.isStale()) {
 							lastCodexCliActiveSyncIndex = account.index;
 							lastCodexCliActiveSyncSignature = signature;
 						}
@@ -2206,12 +2214,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (!fallbackAccount) continue;
 
 										let fallbackAuth = accountManager.toAuthDetails(fallbackAccount) as OAuthAuthDetails;
+										let fallbackAuthRefreshed = false;
 										try {
 											if (shouldRefreshToken(fallbackAuth, tokenRefreshSkewMs)) {
 												fallbackAuth = (await refreshAndUpdateToken(
 													fallbackAuth,
 													client,
 												)) as OAuthAuthDetails;
+												fallbackAuthRefreshed = true;
 												accountManager.updateFromAuth(fallbackAccount, fallbackAuth);
 												accountManager.clearAuthFailures(fallbackAccount);
 												accountManager.saveToDiskDebounced();
@@ -2323,6 +2333,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 													sessionAffinityKey,
 													fallbackAccount.index,
 												);
+											}
+											if (
+												fallbackAccount.index !== account.index ||
+												fallbackAuthRefreshed
+											) {
 												await syncCodexCliSelectionNow(fallbackAccount, {
 													force: true,
 												});

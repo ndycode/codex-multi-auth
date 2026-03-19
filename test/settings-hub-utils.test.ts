@@ -754,5 +754,37 @@ describe("settings-hub utility coverage", () => {
 				}),
 			);
 		});
+
+		it("supports the experimental rotation quota o shortcut", async () => {
+			const api = await loadSettingsHubTestApi();
+			let observedShortcutResult: unknown;
+			let callCount = 0;
+			selectHandler = async (_items, options) => {
+				callCount += 1;
+				if (callCount === 1) {
+					observedShortcutResult = (options as {
+						onInput?: (raw: string) => unknown;
+					}).onInput?.("o");
+					return observedShortcutResult;
+				}
+				if (callCount === 2) {
+					return { type: "back" };
+				}
+				return { type: "save" };
+			};
+
+			const selected = await api.promptExperimentalSettings({
+				preemptiveQuotaEnabled: true,
+				preemptiveQuotaRemainingPercent5h: 10,
+			});
+
+			expect(observedShortcutResult).toEqual({ type: "open-rotation-quota" });
+			expect(selected).toEqual(
+				expect.objectContaining({
+					preemptiveQuotaEnabled: true,
+					preemptiveQuotaRemainingPercent5h: 10,
+				}),
+			);
+		});
 	});
 });
