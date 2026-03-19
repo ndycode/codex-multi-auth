@@ -61,12 +61,13 @@ const detectOcChatgptMultiAuthTargetMock = vi.fn();
 const normalizeAccountStorageMock = vi.fn((value) => value);
 const withAccountStorageTransactionMock = vi.fn();
 const withAccountAndFlaggedStorageTransactionMock = vi.fn();
+const loggerWarnMock = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
 		debug: vi.fn(),
 		info: vi.fn(),
-		warn: vi.fn(),
+		warn: loggerWarnMock,
 		error: vi.fn(),
 	})),
 	logWarn: vi.fn(),
@@ -4534,14 +4535,12 @@ describe("codex manager cli commands", () => {
 			throw syncBusyError;
 		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
-		const warningOutput = warnSpy.mock.calls.flat().join("\n");
+		const warningOutput = loggerWarnMock.mock.calls.flat().join("\n");
 
 		expect(exitCode).toBe(0);
-		expect(warnSpy).toHaveBeenCalled();
+		expect(loggerWarnMock).toHaveBeenCalled();
 		expect(warningOutput).toContain(
 			"Failed to load login menu rollback health summary state",
 		);
@@ -4557,6 +4556,44 @@ describe("codex manager cli commands", () => {
 					),
 					hint: expect.stringMatching(
 						/Restore backups: state unavailable[\s\S]*Rollback: rollback state unavailable[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
+					),
+				}),
+			}),
+		);
+	});
+
+	it("surfaces rollback unavailable results instead of collapsing them into none", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "rollback-unavailable@example.com",
+					refreshToken: "refresh-rollback-unavailable",
+					addedAt: Date.now(),
+					lastUsed: Date.now(),
+				},
+			],
+		});
+		getLatestCodexCliSyncRollbackPlanMock.mockResolvedValue({
+			status: "unavailable",
+			reason: "  rollback state unavailable due to filesystem lock  ",
+			snapshot: null,
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.objectContaining({
+				healthSummary: expect.objectContaining({
+					label: expect.stringMatching(/Rollback unavailable/),
+					hint: expect.stringMatching(
+						/Rollback: rollback state unavailable due to filesystem lock/,
 					),
 				}),
 			}),

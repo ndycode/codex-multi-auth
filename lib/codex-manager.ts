@@ -4098,7 +4098,7 @@ function logLoginMenuHealthSummaryWarning(
 	error: unknown,
 ): void {
 	const errorLabel = getRedactedFilesystemErrorLabel(error);
-	console.warn(`${context} [${errorLabel}]`);
+	log.warn(`${context} [${errorLabel}]`);
 }
 
 function formatLoginMenuRollbackHint(
@@ -4118,6 +4118,10 @@ function formatLoginMenuRollbackHint(
 			return `checkpoint ready for ${Math.trunc(accountCount)} account(s)`;
 		}
 		return "checkpoint ready";
+	}
+	const reason = collapseWhitespace(rollbackPlan.reason);
+	if (reason.toLowerCase().includes("unavailable")) {
+		return reason;
 	}
 	return rollbackPlan.snapshot ? "checkpoint unavailable" : "no rollback checkpoint available";
 }
@@ -4201,6 +4205,10 @@ async function buildLoginMenuHealthSummary(
 		rollbackPlan,
 		rollbackPlanLoadFailed,
 	);
+	const rollbackUnavailable =
+		rollbackPlanLoadFailed ||
+		rollbackPlan.snapshot !== null ||
+		collapseWhitespace(rollbackPlan.reason).toLowerCase().includes("unavailable");
 	const restoreLabel =
 		restoreStateUnavailable
 			? "unavailable"
@@ -4208,13 +4216,11 @@ async function buildLoginMenuHealthSummary(
 			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
 			: "none";
 	const rollbackLabel =
-		rollbackPlanLoadFailed
-			? "unavailable"
-			: rollbackPlan.status === "ready"
-				? "ready"
-				: rollbackPlan.snapshot
-					? "unavailable"
-					: "none";
+		rollbackPlan.status === "ready"
+			? "ready"
+			: rollbackUnavailable
+				? "unavailable"
+				: "none";
 	const accountLabel =
 		disabledCount > 0
 			? `${enabledCount}/${storage.accounts.length} enabled`
@@ -4373,8 +4379,10 @@ async function runAuthLogin(): Promise<number> {
 							});
 					}
 				}
-			const flaggedStorage = await loadFlaggedAccounts();
-			const healthSummary = await buildLoginMenuHealthSummary(currentStorage);
+			const [flaggedStorage, healthSummary] = await Promise.all([
+				loadFlaggedAccounts(),
+				buildLoginMenuHealthSummary(currentStorage),
+			]);
 
 			const menuResult = await promptLoginMode(
 				toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
