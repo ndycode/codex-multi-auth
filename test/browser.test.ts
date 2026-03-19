@@ -43,6 +43,7 @@ describe("auth browser utilities", () => {
 	const originalPath = process.env.PATH;
 	const originalPathExt = process.env.PATHEXT;
 	const originalNoBrowser = process.env.CODEX_AUTH_NO_BROWSER;
+	const originalBrowser = process.env.BROWSER;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -61,6 +62,8 @@ describe("auth browser utilities", () => {
 		else process.env.PATHEXT = originalPathExt;
 		if (originalNoBrowser === undefined) delete process.env.CODEX_AUTH_NO_BROWSER;
 		else process.env.CODEX_AUTH_NO_BROWSER = originalNoBrowser;
+		if (originalBrowser === undefined) delete process.env.BROWSER;
+		else process.env.BROWSER = originalBrowser;
 	});
 
 	it("returns platform opener command", () => {
@@ -81,6 +84,45 @@ describe("auth browser utilities", () => {
 			expect(mockedSpawn).not.toHaveBeenCalled();
 		});
 
+		it("treats false-like CODEX_AUTH_NO_BROWSER values as opt-in browser launch", () => {
+			Object.defineProperty(process, "platform", { value: "darwin" });
+			process.env.PATH = "/usr/bin";
+			process.env.CODEX_AUTH_NO_BROWSER = "false";
+			mockedExistsSync.mockImplementation(
+				(candidate) => typeof candidate === "string" && candidate.endsWith("open"),
+			);
+			mockedStatSync.mockReturnValue({
+				isFile: () => true,
+				mode: 0o755,
+			} as unknown as ReturnType<typeof fs.statSync>);
+
+			expect(isBrowserLaunchSuppressed()).toBe(false);
+			expect(openBrowserUrl("https://example.com")).toBe(true);
+			expect(mockedSpawn).toHaveBeenCalledWith(
+				"open",
+				["https://example.com"],
+				{ stdio: "ignore", shell: false },
+			);
+		});
+
+		it("lets explicit false-like CODEX_AUTH_NO_BROWSER override a disabling BROWSER value", () => {
+			process.env.CODEX_AUTH_NO_BROWSER = "0";
+			process.env.BROWSER = "none";
+
+			expect(isBrowserLaunchSuppressed()).toBe(false);
+			expect(openBrowserUrl("https://example.com")).toBe(false);
+			expect(mockedSpawn).not.toHaveBeenCalled();
+		});
+
+		it("keeps suppression enabled when CODEX_AUTH_NO_BROWSER is truthy even if BROWSER is also disabled", () => {
+			process.env.CODEX_AUTH_NO_BROWSER = "true";
+			process.env.BROWSER = "none";
+
+			expect(isBrowserLaunchSuppressed()).toBe(true);
+			expect(openBrowserUrl("https://example.com")).toBe(false);
+			expect(mockedSpawn).not.toHaveBeenCalled();
+		});
+		
 		it("returns false on win32 when powershell.exe is unavailable", () => {
 			Object.defineProperty(process, "platform", { value: "win32" });
 			process.env.PATH = "C:\\missing";

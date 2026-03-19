@@ -9,6 +9,7 @@ import path from "node:path";
 import { PLATFORM_OPENERS } from "../constants.js";
 
 const BROWSER_DISABLED_VALUES = new Set(["0", "false", "no", "off", "none"]);
+const NO_BROWSER_TRUTHY_VALUES = new Set(["1", "true", "yes", "on"]);
 
 /**
  * Gets the platform-specific command to open a URL in the default browser
@@ -23,8 +24,8 @@ export function getBrowserOpener(): string {
 
 export function isBrowserLaunchSuppressed(): boolean {
 	const explicitNoBrowser = (process.env.CODEX_AUTH_NO_BROWSER ?? "").trim().toLowerCase();
-	if (explicitNoBrowser === "1" || BROWSER_DISABLED_VALUES.has(explicitNoBrowser)) {
-		return true;
+	if (explicitNoBrowser.length > 0) {
+		return NO_BROWSER_TRUTHY_VALUES.has(explicitNoBrowser);
 	}
 
 	const browserSetting = (process.env.BROWSER ?? "").trim().toLowerCase();
