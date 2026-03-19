@@ -99,8 +99,8 @@
 		"typescript": "^5"
 	},
 	"devDependencies": {
-		"@fast-check/vitest": "^0.2.4",
 		"@codex-ai/sdk": "file:vendor/codex-ai-sdk",
+		"@fast-check/vitest": "^0.2.4",
 		"@types/node": "^25.3.0",
 		"@typescript-eslint/eslint-plugin": "^8.56.0",
 		"@typescript-eslint/parser": "^8.56.0",
@@ -115,9 +115,10 @@
 		"vitest": "^4.0.18"
 	},
 	"dependencies": {
-		"@openauthjs/openauth": "^0.4.3",
 		"@codex-ai/plugin": "file:vendor/codex-ai-plugin",
+		"@openauthjs/openauth": "^0.4.3",
 		"hono": "4.12.6",
+		"undici": "^6.24.1",
 		"zod": "^4.3.6"
 	},
 	"overrides": {

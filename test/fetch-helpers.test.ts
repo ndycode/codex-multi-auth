@@ -5,6 +5,8 @@ import {
     refreshAndUpdateToken,
     extractRequestUrl,
     rewriteUrlForCodex,
+    resolveProxyUrlForRequest,
+    applyProxyCompatibleInit,
     createCodexHeaders,
     handleErrorResponse,
     handleSuccessResponse,
@@ -167,6 +169,92 @@ describe('Fetch Helpers Module', () => {
 
 		it('should throw for invalid URL input', () => {
 			expect(() => rewriteUrlForCodex('not-a-valid-url')).toThrow(TypeError);
+		});
+	});
+
+	describe('proxy-compatible init helpers', () => {
+		it('prefers lowercase proxy env values over uppercase ones', () => {
+			const env = {
+				HTTPS_PROXY: 'http://uppercase-proxy:8080',
+				https_proxy: 'http://lowercase-proxy:8080',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('https://api.openai.com/v1/chat', env)).toBe(
+				'http://lowercase-proxy:8080',
+			);
+		});
+
+		it('falls back to HTTP_PROXY for https requests when HTTPS_PROXY is unset', () => {
+			const env = {
+				HTTP_PROXY: 'http://shared-proxy:8080',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('https://api.openai.com/v1/chat', env)).toBe(
+				'http://shared-proxy:8080',
+			);
+		});
+
+		it('bypasses the proxy when NO_PROXY matches the request host', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+				NO_PROXY: 'api.openai.com,.internal.example',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('https://api.openai.com/v1/chat', env)).toBeUndefined();
+			expect(resolveProxyUrlForRequest('https://service.internal.example/v1/chat', env)).toBeUndefined();
+		});
+
+		it('attaches a shared dispatcher when proxy env is configured', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+			} as NodeJS.ProcessEnv;
+
+			const first = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+				method: 'POST',
+			}, env);
+			const second = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+				method: 'POST',
+			}, env);
+
+			expect(first.dispatcher).toBeDefined();
+			expect(second.dispatcher).toBe(first.dispatcher);
+		});
+
+		it('preserves an explicit dispatcher without replacing it', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+			} as NodeJS.ProcessEnv;
+			const dispatcher = { dispatch: vi.fn() } as unknown as RequestInit['dispatcher'];
+
+			const result = applyProxyCompatibleInit(
+				'https://api.openai.com/v1/chat',
+				{
+					method: 'POST',
+					dispatcher,
+				},
+				env,
+			);
+
+			expect(result.dispatcher).toBe(dispatcher);
+		});
+
+		it('does not override an explicit agent flag with proxy transport', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+			} as NodeJS.ProcessEnv;
+			const agent = { kind: 'custom-agent' };
+
+			const result = applyProxyCompatibleInit(
+				'https://api.openai.com/v1/chat',
+				{
+					method: 'POST',
+					agent,
+				},
+				env,
+			);
+
+			expect(result.agent).toBe(agent);
+			expect(result.dispatcher).toBeUndefined();
 		});
 	});
 

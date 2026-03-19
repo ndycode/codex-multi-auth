@@ -21,6 +21,7 @@ vi.mock("@codex-ai/plugin/tool", () => {
 vi.mock("../lib/request/fetch-helpers.js", () => ({
 	extractRequestUrl: (input: any) => (typeof input === "string" ? input : String(input)),
 	rewriteUrlForCodex: (url: string) => url,
+	applyProxyCompatibleInit: (_url: string, init: RequestInit) => init,
 	transformRequestForCodex: async (init: any) => ({ updatedInit: init, body: { model: "gpt-5.1" } }),
 	shouldRefreshToken: () => false,
 	refreshAndUpdateToken: async (auth: any) => auth,

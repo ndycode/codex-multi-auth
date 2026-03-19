@@ -201,6 +201,7 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 	vi.mock("../lib/request/fetch-helpers.js", () => ({
 		extractRequestUrl: (input: unknown) => (typeof input === "string" ? input : String(input)),
 		rewriteUrlForCodex: (url: string) => url,
+		applyProxyCompatibleInit: vi.fn((_url: string, init: RequestInit) => init),
 		transformRequestForCodex: vi.fn(async (init: unknown) => ({
 		updatedInit: init,
 		body: { model: "gpt-5.1" },
@@ -1403,6 +1404,74 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(thirdHeaders.get("x-test-account-id")).toBe("workspace-fallback");
 		expect(thirdHeaders.get("x-test-access-token")).toBe("access-beta");
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+	});
+
+	it("attaches proxy dispatcher returned by the helper to the primary upstream request", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const proxyDispatcher = { kind: "proxy-dispatcher" };
+		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation((_url, init) => ({
+			...(init ?? {}),
+			dispatcher: proxyDispatcher,
+		}));
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(vi.mocked(fetchHelpers.applyProxyCompatibleInit)).toHaveBeenCalled();
+		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
+		expect(firstInit.dispatcher).toBe(proxyDispatcher);
+	});
+
+	it("preserves proxy dispatcher on fallback retry requests", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const proxyDispatcher = { kind: "proxy-dispatcher" };
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation((_url, init) => ({
+			...(init ?? {}),
+			dispatcher: proxyDispatcher,
+		}));
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(vi.mocked(fetchHelpers.applyProxyCompatibleInit)).toHaveBeenCalledTimes(3);
+		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
+		expect(thirdInit.dispatcher).toBe(proxyDispatcher);
 	});
 
 	it("handles network errors and rotates to next account", async () => {

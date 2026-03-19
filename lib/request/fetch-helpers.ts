@@ -4,6 +4,7 @@
  */
 
 import type { Auth, CodexClient } from "@codex-ai/sdk";
+import { ProxyAgent } from "undici";
 import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
@@ -59,6 +60,12 @@ const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 const CREATE_CODEX_HEADERS_PARAM_KEYS = new Set(["init", "accountId", "accessToken", "opts"]);
+const DEFAULT_PROXY_PORTS: Record<string, number> = {
+	"http:": 80,
+	"https:": 443,
+};
+type ProxyDispatcher = NonNullable<RequestInit["dispatcher"]>;
+const sharedProxyDispatchers = new Map<string, ProxyDispatcher>();
 
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
@@ -313,6 +320,10 @@ export interface CreateCodexHeadersOptions {
 	promptCacheKey?: string;
 }
 
+export interface ProxyCompatibleRequestInit extends RequestInit {
+	agent?: unknown;
+}
+
 export interface CreateCodexHeadersParams {
 	init?: RequestInit;
 	accountId: string;
@@ -416,6 +427,122 @@ export function rewriteUrlForCodex(url: string): string {
 	parsedUrl.pathname = normalizedPath;
 
 	return parsedUrl.toString();
+}
+
+function hasOwnEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(env, key);
+}
+
+function resolveProxyEnvValue(
+	env: NodeJS.ProcessEnv,
+	lowerKey: string,
+	upperKey: string,
+): string | undefined {
+	if (hasOwnEnvKey(env, lowerKey)) {
+		const value = env[lowerKey]?.trim();
+		return value ? value : undefined;
+	}
+
+	const value = env[upperKey]?.trim();
+	return value ? value : undefined;
+}
+
+function parseNoProxyEntries(noProxyValue: string): Array<{ hostname: string; port: number }> {
+	return noProxyValue
+		.split(/[,\s]/)
+		.map((entry) => entry.trim())
+		.filter(Boolean)
+		.map((entry) => {
+			const parsed = entry.match(/^(.+):(\d+)$/);
+			const hostname = parsed?.[1] ?? entry;
+			const portText = parsed?.[2];
+			return {
+				hostname: hostname.toLowerCase(),
+				port: portText ? Number.parseInt(portText, 10) : 0,
+			};
+		});
+}
+
+function shouldBypassProxyForUrl(url: URL, noProxyValue: string | undefined): boolean {
+	if (!noProxyValue) return false;
+	if (noProxyValue === "*") return true;
+
+	const hostname = url.host.replace(/:\d*$/, "").toLowerCase();
+	const port = Number.parseInt(url.port, 10) || DEFAULT_PROXY_PORTS[url.protocol] || 0;
+
+	for (const entry of parseNoProxyEntries(noProxyValue)) {
+		if (entry.port && entry.port !== port) continue;
+
+		if (!/^[.*]/.test(entry.hostname)) {
+			if (hostname === entry.hostname) {
+				return true;
+			}
+			continue;
+		}
+
+		if (hostname.endsWith(entry.hostname.replace(/^\*/, ""))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+export function resolveProxyUrlForRequest(
+	url: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	const parsed = new URL(url);
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		return undefined;
+	}
+
+	const httpProxy = resolveProxyEnvValue(env, "http_proxy", "HTTP_PROXY");
+	const httpsProxy = resolveProxyEnvValue(env, "https_proxy", "HTTPS_PROXY");
+	if (!httpProxy && !httpsProxy) {
+		return undefined;
+	}
+
+	const noProxy = resolveProxyEnvValue(env, "no_proxy", "NO_PROXY");
+	if (shouldBypassProxyForUrl(parsed, noProxy)) {
+		return undefined;
+	}
+
+	return parsed.protocol === "https:"
+		? (httpsProxy ?? httpProxy)
+		: httpProxy;
+}
+
+function getSharedProxyDispatcher(proxyUrl: string): ProxyDispatcher {
+	const existing = sharedProxyDispatchers.get(proxyUrl);
+	if (existing) {
+		return existing;
+	}
+
+	const dispatcher = new ProxyAgent(proxyUrl) as unknown as ProxyDispatcher;
+	sharedProxyDispatchers.set(proxyUrl, dispatcher);
+	return dispatcher;
+}
+
+export function applyProxyCompatibleInit(
+	url: string,
+	init?: ProxyCompatibleRequestInit,
+	env: NodeJS.ProcessEnv = process.env,
+): ProxyCompatibleRequestInit {
+	const resolvedInit = init ?? {};
+	if (resolvedInit.dispatcher || resolvedInit.agent) {
+		return resolvedInit;
+	}
+
+	const proxyUrl = resolveProxyUrlForRequest(url, env);
+	if (!proxyUrl) {
+		return resolvedInit;
+	}
+
+	return {
+		...resolvedInit,
+		dispatcher: getSharedProxyDispatcher(proxyUrl),
+	};
 }
 
 /**
