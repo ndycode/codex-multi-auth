@@ -84,6 +84,7 @@ Used only for host plugin mode through the host runtime config file.
 | --- | --- |
 | `perProjectAccounts` | `true` |
 | `storageBackupEnabled` | `true` |
+| `codexCliDirectInjection` | `true` |
 | `liveAccountSync` | `true` |
 | `liveAccountSyncDebounceMs` | `250` |
 | `liveAccountSyncPollMs` | `2000` |
@@ -115,7 +116,7 @@ Used only for host plugin mode through the host runtime config file.
 | Key | Default |
 | --- | --- |
 | `preemptiveQuotaEnabled` | `true` |
-| `preemptiveQuotaRemainingPercent5h` | `5` |
+| `preemptiveQuotaRemainingPercent5h` | `10` |
 | `preemptiveQuotaRemainingPercent7d` | `5` |
 | `preemptiveQuotaMaxDeferralMs` | `7200000` |
 

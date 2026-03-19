@@ -535,6 +535,33 @@ describe("settings-hub utility coverage", () => {
 			}),
 		);
 	});
+
+	it("exposes direct injection and quota controls through experimental settings", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+
+		queueSelectResults(
+			{ type: "open-rotation-quota" },
+			{ type: "toggle", key: "preemptiveQuotaEnabled" },
+			{ type: "back" },
+			{ type: "toggle-direct-cli-injection" },
+			{ type: "toggle-session-affinity" },
+			{ type: "toggle-pool-retry" },
+			{ type: "save" },
+		);
+
+		const selected = await api.promptExperimentalSettings(defaults);
+		expect(selected).toEqual(
+			expect.objectContaining({
+				codexCliDirectInjection: !(defaults.codexCliDirectInjection ?? true),
+				sessionAffinity: !(defaults.sessionAffinity ?? true),
+				retryAllAccountsRateLimited:
+					!(defaults.retryAllAccountsRateLimited ?? true),
+				preemptiveQuotaEnabled: !(defaults.preemptiveQuotaEnabled ?? true),
+			}),
+		);
+	});
 	it("returns null for promptBackendSettings cancel without mutating runtime state", async () => {
 		const api = await loadSettingsHubTestApi();
 		const configModule = await import("../lib/config.js");

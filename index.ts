@@ -63,6 +63,7 @@ import {
 	getCodexTuiColorProfile,
 	getCodexTuiGlyphMode,
 	getLiveAccountSync,
+	getCodexCliDirectInjection,
 	getLiveAccountSyncDebounceMs,
 	getLiveAccountSyncPollMs,
 	getSessionAffinity,
@@ -924,6 +925,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			});
 		};
 
+		const isDirectCliInjectionEnabled = (): boolean =>
+			getCodexCliDirectInjection(loadPluginConfig());
+
+		const syncCodexCliSelectionIfNeeded = async (
+			accountManager: AccountManager,
+			index: number,
+		): Promise<void> => {
+			if (!isDirectCliInjectionEnabled()) return;
+			if (lastCodexCliActiveSyncIndex === index) return;
+			const synced = await accountManager.syncCodexCliActiveSelectionForIndex(index);
+			if (synced !== false) {
+				lastCodexCliActiveSyncIndex = index;
+			}
+		};
+
         // Event handler for session recovery and account selection
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
           try {
@@ -960,10 +976,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 }
 
                                 await saveAccounts(storage);
-				if (cachedAccountManager) {
-					await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
+				if (cachedAccountManager && isDirectCliInjectionEnabled()) {
+					const synced = await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
+					if (synced !== false) {
+						lastCodexCliActiveSyncIndex = index;
+					}
 				}
-				lastCodexCliActiveSyncIndex = index;
 
 				// Reload manager from disk so we don't overwrite newer rotated
 				// refresh tokens with stale in-memory state.
@@ -1564,7 +1582,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								const quotaScheduleKey = `${entitlementAccountKey}:${model ?? modelFamily}`;
 								const capabilityModelKey = model ?? modelFamily;
 								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);
-								if (quotaDeferral.defer && quotaDeferral.waitMs > 0) {
+								if (quotaDeferral.defer) {
 									accountManager.markRateLimitedWithReason(
 										account,
 										quotaDeferral.waitMs,
@@ -1574,7 +1592,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 									);
 									accountManager.recordRateLimit(account, modelFamily, model);
 									runtimeMetrics.accountRotations++;
-									runtimeMetrics.lastError = `Preemptive quota deferral for account ${account.index + 1}`;
+									runtimeMetrics.lastError =
+										quotaDeferral.waitMs > 0
+											? `Preemptive quota deferral for account ${account.index + 1}`
+											: `Preemptive quota rotation for account ${account.index + 1}`;
 									accountManager.saveToDiskDebounced();
 									continue;
 								}
@@ -1591,6 +1612,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 										);
 										continue;
 									}
+
+								await syncCodexCliSelectionIfNeeded(accountManager, account.index);
 
 							let sameAccountRetryCount = 0;
 							let successAccountForResponse = account;
@@ -2313,8 +2336,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 					runtimeMetrics.successfulRequests++;
 					runtimeMetrics.lastError = null;
 					if (lastCodexCliActiveSyncIndex !== successAccountForResponse.index) {
-						void accountManager.syncCodexCliActiveSelectionForIndex(successAccountForResponse.index);
-						lastCodexCliActiveSyncIndex = successAccountForResponse.index;
+						await syncCodexCliSelectionIfNeeded(
+							accountManager,
+							successAccountForResponse.index,
+						);
 					}
 						return successResponse;
 																								}

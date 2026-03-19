@@ -17,6 +17,7 @@ import {
 	getUnsupportedCodexFallbackChain,
 	getFetchTimeoutMs,
 	getStreamStallTimeoutMs,
+	getCodexCliDirectInjection,
 	getPreemptiveQuotaEnabled,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
@@ -64,6 +65,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL',
 		'CODEX_AUTH_FALLBACK_GPT53_TO_GPT52',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED',
+		'CODEX_AUTH_DIRECT_CLI_INJECTION',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS',
@@ -124,6 +126,7 @@ describe('Plugin Configuration', () => {
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
 				liveAccountSync: true,
+				codexCliDirectInjection: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
 				sessionAffinity: true,
@@ -136,7 +139,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
@@ -182,6 +185,7 @@ describe('Plugin Configuration', () => {
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
 				liveAccountSync: true,
+				codexCliDirectInjection: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
 				sessionAffinity: true,
@@ -194,7 +198,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
@@ -437,6 +441,7 @@ describe('Plugin Configuration', () => {
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
 				liveAccountSync: true,
+				codexCliDirectInjection: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
 				sessionAffinity: true,
@@ -449,7 +454,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
@@ -498,9 +503,10 @@ describe('Plugin Configuration', () => {
 		emptyResponseMaxRetries: 2,
 		emptyResponseRetryDelayMs: 1_000,
 		pidOffsetEnabled: false,
-		fetchTimeoutMs: 60_000,
-		streamStallTimeoutMs: 45_000,
+				fetchTimeoutMs: 60_000,
+				streamStallTimeoutMs: 45_000,
 				liveAccountSync: true,
+				codexCliDirectInjection: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
 				sessionAffinity: true,
@@ -513,7 +519,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 	});
@@ -556,9 +562,10 @@ describe('Plugin Configuration', () => {
 			emptyResponseMaxRetries: 2,
 			emptyResponseRetryDelayMs: 1_000,
 			pidOffsetEnabled: false,
-			fetchTimeoutMs: 60_000,
-			streamStallTimeoutMs: 45_000,
+				fetchTimeoutMs: 60_000,
+				streamStallTimeoutMs: 45_000,
 				liveAccountSync: true,
+				codexCliDirectInjection: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
 				sessionAffinity: true,
@@ -571,7 +578,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 		});
@@ -964,7 +971,7 @@ describe('Plugin Configuration', () => {
 	describe('preemptive quota settings', () => {
 		it('should use default thresholds', () => {
 			expect(getPreemptiveQuotaEnabled({})).toBe(true);
-			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(5);
+			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(10);
 			expect(getPreemptiveQuotaRemainingPercent7d({})).toBe(5);
 			expect(getPreemptiveQuotaMaxDeferralMs({})).toBe(2 * 60 * 60_000);
 		});
@@ -978,6 +985,19 @@ describe('Plugin Configuration', () => {
 			expect(getPreemptiveQuotaRemainingPercent5h({ preemptiveQuotaRemainingPercent5h: 1 })).toBe(9);
 			expect(getPreemptiveQuotaRemainingPercent7d({ preemptiveQuotaRemainingPercent7d: 2 })).toBe(11);
 			expect(getPreemptiveQuotaMaxDeferralMs({ preemptiveQuotaMaxDeferralMs: 2_000 })).toBe(123000);
+		});
+	});
+
+	describe('direct cli injection settings', () => {
+		it('should use the default direct injection toggle', () => {
+			expect(getCodexCliDirectInjection({})).toBe(true);
+		});
+
+		it('should prioritize environment override for direct injection', () => {
+			process.env.CODEX_AUTH_DIRECT_CLI_INJECTION = '0';
+			expect(getCodexCliDirectInjection({ codexCliDirectInjection: true })).toBe(false);
+			process.env.CODEX_AUTH_DIRECT_CLI_INJECTION = '1';
+			expect(getCodexCliDirectInjection({ codexCliDirectInjection: false })).toBe(true);
 		});
 	});
 });

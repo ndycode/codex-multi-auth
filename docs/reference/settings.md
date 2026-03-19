@@ -95,6 +95,7 @@ Named backup behavior:
 Examples:
 
 - `liveAccountSync`
+- `codexCliDirectInjection`
 - `liveAccountSyncDebounceMs`
 - `liveAccountSyncPollMs`
 - `sessionAffinity`

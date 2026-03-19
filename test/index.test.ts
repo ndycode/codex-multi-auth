@@ -93,6 +93,7 @@ vi.mock("../lib/config.js", () => ({
 	getFetchTimeoutMs: () => 60000,
 	getStreamStallTimeoutMs: () => 45000,
 	getLiveAccountSync: vi.fn(() => false),
+	getCodexCliDirectInjection: vi.fn(() => true),
 	getLiveAccountSyncDebounceMs: () => 250,
 	getLiveAccountSyncPollMs: () => 2000,
 	getSessionAffinity: () => false,
@@ -105,7 +106,7 @@ vi.mock("../lib/config.js", () => ({
 	getServerErrorCooldownMs: () => 0,
 	getStorageBackupEnabled: () => true,
 	getPreemptiveQuotaEnabled: () => true,
-	getPreemptiveQuotaRemainingPercent5h: () => 5,
+	getPreemptiveQuotaRemainingPercent5h: () => 10,
 	getPreemptiveQuotaRemainingPercent7d: () => 5,
 	getPreemptiveQuotaMaxDeferralMs: () => 2 * 60 * 60_000,
 	getCodexTuiV2: () => false,
@@ -1182,7 +1183,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(503);
 		expect(await response.text()).toContain("server errors or auth issues");
-		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1);
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
 	});
 
 	it("does not penalize account health when fetch is aborted by user", async () => {
@@ -1256,9 +1258,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				.spyOn(AccountManager.prototype, "consumeToken")
 				.mockReturnValueOnce(false)
 				.mockReturnValueOnce(true);
-			globalThis.fetch = vi.fn().mockResolvedValue(
-				new Response(JSON.stringify({ content: "from-second-account" }), { status: 200 }),
-			);
+			globalThis.fetch = vi.fn(async () => {
+				expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+				return new Response(JSON.stringify({ content: "from-second-account" }), {
+					status: 200,
+				});
+			});
 
 			const { sdk } = await setupPlugin();
 			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -1269,6 +1274,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect(response.status).toBe(200);
 			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 			expect(consumeSpy).toHaveBeenCalledTimes(2);
+			expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1);
+			expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
 			countSpy.mockRestore();
 			selectionSpy.mockRestore();
 			consumeSpy.mockRestore();

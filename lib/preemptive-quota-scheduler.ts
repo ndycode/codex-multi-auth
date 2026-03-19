@@ -24,7 +24,7 @@ export interface QuotaSchedulerOptions {
 	maxDeferralMs?: number;
 }
 
-const DEFAULT_REMAINING_PERCENT_THRESHOLD = 5;
+const DEFAULT_REMAINING_PERCENT_THRESHOLD = 10;
 const DEFAULT_MAX_DEFERRAL_MS = 2 * 60 * 60_000;
 
 /**
@@ -259,6 +259,9 @@ export class PreemptiveQuotaScheduler {
 			if (bounded > 0) {
 				return { defer: true, waitMs: bounded, reason: "quota-near-exhaustion" };
 			}
+		}
+		if (nearExhausted && snapshot.status !== 429) {
+			return { defer: true, waitMs: 0, reason: "quota-near-exhaustion" };
 		}
 
 		return { defer: false, waitMs: 0 };

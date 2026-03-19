@@ -45,6 +45,7 @@ describe("PluginConfigSchema", () => {
 			fetchTimeoutMs: 60000,
 			streamStallTimeoutMs: 45000,
 			liveAccountSync: true,
+			codexCliDirectInjection: true,
 			liveAccountSyncDebounceMs: 250,
 			liveAccountSyncPollMs: 2000,
 			sessionAffinity: true,
@@ -56,7 +57,7 @@ describe("PluginConfigSchema", () => {
 			networkErrorCooldownMs: 6000,
 			serverErrorCooldownMs: 4000,
 			preemptiveQuotaEnabled: true,
-			preemptiveQuotaRemainingPercent5h: 5,
+			preemptiveQuotaRemainingPercent5h: 10,
 			preemptiveQuotaRemainingPercent7d: 5,
 			preemptiveQuotaMaxDeferralMs: 120_000,
 		};

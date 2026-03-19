@@ -143,6 +143,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	fetchTimeoutMs: 60_000,
 	streamStallTimeoutMs: 45_000,
 	liveAccountSync: true,
+	codexCliDirectInjection: true,
 	liveAccountSyncDebounceMs: 250,
 	liveAccountSyncPollMs: 2_000,
 	sessionAffinity: true,
@@ -155,7 +156,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	serverErrorCooldownMs: 4_000,
 	storageBackupEnabled: true,
 	preemptiveQuotaEnabled: true,
-	preemptiveQuotaRemainingPercent5h: 5,
+	preemptiveQuotaRemainingPercent5h: 10,
 	preemptiveQuotaRemainingPercent7d: 5,
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 };
@@ -819,6 +820,24 @@ export function getLiveAccountSync(pluginConfig: PluginConfig): boolean {
 }
 
 /**
+ * Determine whether Codex CLI active selection should be injected live before requests and on rotation.
+ *
+ * This toggle controls the direct write-through path used to keep a running Codex CLI session following
+ * account rotation without waiting for a restart. The setting is intentionally separate from the live
+ * account file watcher so users can keep the sync loop disabled while still allowing selection injection.
+ *
+ * @param pluginConfig - The plugin configuration object used as the non-environment fallback
+ * @returns `true` if live Codex CLI selection injection is enabled, `false` otherwise
+ */
+export function getCodexCliDirectInjection(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_DIRECT_CLI_INJECTION",
+		pluginConfig.codexCliDirectInjection,
+		true,
+	);
+}
+
+/**
  * Get the debounce interval, in milliseconds, used when synchronizing live accounts.
  *
  * @param pluginConfig - Plugin configuration which may contain an override for the debounce value
@@ -1057,7 +1076,7 @@ export function getPreemptiveQuotaRemainingPercent5h(pluginConfig: PluginConfig)
 	return resolveNumberSetting(
 		"CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT",
 		pluginConfig.preemptiveQuotaRemainingPercent5h,
-		5,
+		10,
 		{ min: 0, max: 100 },
 	);
 }

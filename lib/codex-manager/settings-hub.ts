@@ -274,6 +274,11 @@ type SettingsHubAction =
 type ExperimentalSettingsAction =
 	| { type: "sync" }
 	| { type: "backup" }
+	| { type: "open-rotation-quota" }
+	| { type: "toggle-direct-cli-injection" }
+	| { type: "toggle-session-affinity" }
+	| { type: "toggle-preemptive-quota" }
+	| { type: "toggle-pool-retry" }
 	| { type: "toggle-refresh-guardian" }
 	| { type: "decrease-refresh-interval" }
 	| { type: "increase-refresh-interval" }
@@ -2541,6 +2546,31 @@ async function promptExperimentalSettings(
 					color: "green",
 				},
 				{
+					label: UI_COPY.settings.experimentalDirectCliInjection,
+					value: { type: "toggle-direct-cli-injection" },
+					color: "green",
+				},
+				{
+					label: UI_COPY.settings.experimentalManualSessionLock,
+					value: { type: "toggle-session-affinity" },
+					color: "yellow",
+				},
+				{
+					label: UI_COPY.settings.experimentalPoolFallback,
+					value: { type: "toggle-pool-retry" },
+					color: "green",
+				},
+				{
+					label: UI_COPY.settings.experimentalQuotaRotation,
+					value: { type: "toggle-preemptive-quota" },
+					color: "yellow",
+				},
+				{
+					label: UI_COPY.settings.experimentalRotationQuotaSettings,
+					value: { type: "open-rotation-quota" },
+					color: "green",
+				},
+				{
 					label: `${formatDashboardSettingState(draft.proactiveRefreshGuardian ?? false)} ${UI_COPY.settings.experimentalRefreshGuard}`,
 					value: { type: "toggle-refresh-guardian" },
 					color: "yellow",
@@ -2581,11 +2611,54 @@ async function promptExperimentalSettings(
 				theme: ui.theme,
 				selectedEmphasis: "minimal",
 				onInput: (raw) =>
-					raw.toLowerCase() === "q" ? { type: "back" } : undefined,
+					raw.toLowerCase() === "q"
+						? { type: "back" }
+						: raw.toLowerCase() === "o"
+							? { type: "open-rotation-quota" }
+							: undefined,
 			},
 		);
 		if (!action || action.type === "back") return null;
 		if (action.type === "save") return draft;
+		if (action.type === "open-rotation-quota") {
+			const category = getBackendCategory("rotation-quota");
+			if (!category) continue;
+			const categoryResult = await promptBackendCategorySettings(
+				draft,
+				category,
+				"preemptiveQuotaEnabled",
+			);
+			draft = categoryResult.draft;
+			continue;
+		}
+		if (action.type === "toggle-direct-cli-injection") {
+			draft = {
+				...draft,
+				codexCliDirectInjection: !(draft.codexCliDirectInjection ?? true),
+			};
+			continue;
+		}
+		if (action.type === "toggle-session-affinity") {
+			draft = {
+				...draft,
+				sessionAffinity: !(draft.sessionAffinity ?? true),
+			};
+			continue;
+		}
+		if (action.type === "toggle-preemptive-quota") {
+			draft = {
+				...draft,
+				preemptiveQuotaEnabled: !(draft.preemptiveQuotaEnabled ?? true),
+			};
+			continue;
+		}
+		if (action.type === "toggle-pool-retry") {
+			draft = {
+				...draft,
+				retryAllAccountsRateLimited: !(draft.retryAllAccountsRateLimited ?? true),
+			};
+			continue;
+		}
 		if (action.type === "toggle-refresh-guardian") {
 			draft = {
 				...draft,

@@ -104,6 +104,25 @@ describe("preemptive quota scheduler", () => {
 		expect(decision.reason).toBe("quota-near-exhaustion");
 	});
 
+	it("rotates immediately when usage is near exhaustion without a reset timestamp", () => {
+		const scheduler = new PreemptiveQuotaScheduler({
+			usedPercentThreshold: 90,
+		});
+		scheduler.update("acc:model", {
+			status: 200,
+			primary: {
+				usedPercent: 91,
+			},
+			secondary: {},
+			updatedAt: 10_000,
+		});
+
+		const decision = scheduler.getDeferral("acc:model", 20_000);
+		expect(decision.defer).toBe(true);
+		expect(decision.reason).toBe("quota-near-exhaustion");
+		expect(decision.waitMs).toBe(0);
+	});
+
 	it("prunes expired snapshots", () => {
 		const scheduler = new PreemptiveQuotaScheduler();
 		scheduler.update("a", {
