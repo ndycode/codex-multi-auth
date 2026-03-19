@@ -90,6 +90,7 @@ function createSupervisorRuntimeFixture(
 		configLines?: string[];
 		accountManagerLines?: string[];
 		quotaProbeLines?: string[];
+		storageLines?: string[];
 	},
 ): void {
 	const distLibDir = join(rootDir, "dist", "lib");
@@ -132,6 +133,15 @@ function createSupervisorRuntimeFixture(
 	writeFileSync(
 		join(distLibDir, "quota-probe.js"),
 		(options.quotaProbeLines ?? []).join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(distLibDir, "storage.js"),
+		(options.storageLines ?? [
+			"export function getStoragePath() {",
+			"\treturn process.env.TEST_STORAGE_PATH ?? 'C:/tmp/openai-codex-accounts.json';",
+			"}",
+		]).join("\n"),
 		"utf8",
 	);
 }
@@ -562,39 +572,37 @@ describe("codex bin wrapper", () => {
 				"\t{ index: 0, accountId: 'acc-1', access: 'token-1', refreshToken: 'refresh-1', email: 'one@example.com' },",
 				"\t{ index: 1, accountId: 'acc-2', access: 'token-2', refreshToken: 'refresh-2', email: 'two@example.com' },",
 				"];",
+				"const state = { currentIndex: 0, blockedUntil: new Map() };",
 				"export class AccountManager {",
-				"\tconstructor() {",
-				"\t\tthis.currentIndex = 0;",
-				"\t\tthis.blockedUntil = new Map();",
-				"\t}",
+				"\tconstructor() {}",
 				"\tstatic async loadFromDisk() {",
 				"\t\treturn new AccountManager();",
 				"\t}",
 				"\tgetCurrentAccountForFamily() {",
-				"\t\treturn pool[this.currentIndex] ?? null;",
+				"\t\treturn pool[state.currentIndex] ?? null;",
 				"\t}",
 				"\tgetCurrentOrNextForFamilyHybrid() {",
 				"\t\tfor (const account of pool) {",
-				"\t\t\tconst blockedUntil = this.blockedUntil.get(account.index) ?? 0;",
+				"\t\t\tconst blockedUntil = state.blockedUntil.get(account.index) ?? 0;",
 				"\t\t\tif (blockedUntil <= Date.now()) return account;",
 				"\t\t}",
 				"\t\treturn null;",
 				"\t}",
 				"\tmarkRateLimitedWithReason(account, waitMs) {",
-				"\t\tthis.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
+				"\t\tstate.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
 				"\t}",
 				"\tsetActiveIndex(index) {",
-				"\t\tthis.currentIndex = index;",
+				"\t\tstate.currentIndex = index;",
 				"\t}",
 				"\tasync syncCodexCliActiveSelectionForIndex(index) {",
-				"\t\tthis.currentIndex = index;",
+				"\t\tstate.currentIndex = index;",
 				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `sync:${index}\\n`);",
 				"\t}",
 				"\tasync saveToDisk() {",
-				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${this.currentIndex}\\n`);",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${state.currentIndex}\\n`);",
 				"\t}",
 				"\tgetMinWaitTimeForFamily() {",
-				"\t\tconst waits = Array.from(this.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
+				"\t\tconst waits = Array.from(state.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
 				"\t\treturn waits.length > 0 ? Math.min(...waits) : 0;",
 				"\t}",
 				"}",
@@ -615,6 +623,9 @@ describe("codex bin wrapper", () => {
 			TEST_SELECTION_LOG: selectionLogPath,
 		});
 
+		if (result.status !== 0) {
+			throw new Error(combinedOutput(result));
+		}
 		expect(result.status).toBe(0);
 		expect(readFileSync(launchLogPath, "utf8")).toContain(
 			'exec status -c cli_auth_credentials_store="file"',
@@ -648,39 +659,37 @@ describe("codex bin wrapper", () => {
 				"\t{ index: 0, accountId: 'acc-1', access: 'token-1', refreshToken: 'refresh-1', email: 'one@example.com' },",
 				"\t{ index: 1, accountId: 'acc-2', access: 'token-2', refreshToken: 'refresh-2', email: 'two@example.com' },",
 				"];",
+				"const state = { currentIndex: 0, blockedUntil: new Map() };",
 				"export class AccountManager {",
-				"\tconstructor() {",
-				"\t\tthis.currentIndex = 0;",
-				"\t\tthis.blockedUntil = new Map();",
-				"\t}",
+				"\tconstructor() {}",
 				"\tstatic async loadFromDisk() {",
 				"\t\treturn new AccountManager();",
 				"\t}",
 				"\tgetCurrentAccountForFamily() {",
-				"\t\treturn pool[this.currentIndex] ?? null;",
+				"\t\treturn pool[state.currentIndex] ?? null;",
 				"\t}",
 				"\tgetCurrentOrNextForFamilyHybrid() {",
 				"\t\tfor (const account of pool) {",
-				"\t\t\tconst blockedUntil = this.blockedUntil.get(account.index) ?? 0;",
+				"\t\t\tconst blockedUntil = state.blockedUntil.get(account.index) ?? 0;",
 				"\t\t\tif (blockedUntil <= Date.now()) return account;",
 				"\t\t}",
 				"\t\treturn null;",
 				"\t}",
 				"\tmarkRateLimitedWithReason(account, waitMs) {",
-				"\t\tthis.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
+				"\t\tstate.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
 				"\t}",
 				"\tsetActiveIndex(index) {",
-				"\t\tthis.currentIndex = index;",
+				"\t\tstate.currentIndex = index;",
 				"\t}",
 				"\tasync syncCodexCliActiveSelectionForIndex(index) {",
-				"\t\tthis.currentIndex = index;",
+				"\t\tstate.currentIndex = index;",
 				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `sync:${index}\\n`);",
 				"\t}",
 				"\tasync saveToDisk() {",
-				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${this.currentIndex}\\n`);",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${state.currentIndex}\\n`);",
 				"\t}",
 				"\tgetMinWaitTimeForFamily() {",
-				"\t\tconst waits = Array.from(this.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
+				"\t\tconst waits = Array.from(state.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
 				"\t\treturn waits.length > 0 ? Math.min(...waits) : 0;",
 				"\t}",
 				"}",
@@ -701,6 +710,9 @@ describe("codex bin wrapper", () => {
 			TEST_SELECTION_LOG: selectionLogPath,
 		});
 
+		if (result.status !== 0) {
+			throw new Error(combinedOutput(result));
+		}
 		expect(result.status).toBe(0);
 		expect(readFileSync(launchLogPath, "utf8")).toContain(
 			'exec status -c cli_auth_credentials_store="file"',
@@ -746,39 +758,37 @@ describe("codex bin wrapper", () => {
 				"\t{ index: 0, accountId: 'acc-1', access: 'token-1', refreshToken: 'refresh-1', email: 'one@example.com' },",
 				"\t{ index: 1, accountId: 'acc-2', access: 'token-2', refreshToken: 'refresh-2', email: 'two@example.com' },",
 				"];",
+				"const state = { currentIndex: 0, blockedUntil: new Map() };",
 				"export class AccountManager {",
-				"\tconstructor() {",
-				"\t\tthis.currentIndex = 0;",
-				"\t\tthis.blockedUntil = new Map();",
-				"\t}",
+				"\tconstructor() {}",
 				"\tstatic async loadFromDisk() {",
 				"\t\treturn new AccountManager();",
 				"\t}",
 				"\tgetCurrentAccountForFamily() {",
-				"\t\treturn pool[this.currentIndex] ?? null;",
+				"\t\treturn pool[state.currentIndex] ?? null;",
 				"\t}",
 				"\tgetCurrentOrNextForFamilyHybrid() {",
 				"\t\tfor (const account of pool) {",
-				"\t\t\tconst blockedUntil = this.blockedUntil.get(account.index) ?? 0;",
+				"\t\t\tconst blockedUntil = state.blockedUntil.get(account.index) ?? 0;",
 				"\t\t\tif (blockedUntil <= Date.now()) return account;",
 				"\t\t}",
 				"\t\treturn null;",
 				"\t}",
 				"\tmarkRateLimitedWithReason(account, waitMs) {",
-				"\t\tthis.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
+				"\t\tstate.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
 				"\t}",
 				"\tsetActiveIndex(index) {",
-				"\t\tthis.currentIndex = index;",
+				"\t\tstate.currentIndex = index;",
 				"\t}",
 				"\tasync syncCodexCliActiveSelectionForIndex(index) {",
-				"\t\tthis.currentIndex = index;",
+				"\t\tstate.currentIndex = index;",
 				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `sync:${index}\\n`);",
 				"\t}",
 				"\tasync saveToDisk() {",
-				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${this.currentIndex}\\n`);",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${state.currentIndex}\\n`);",
 				"\t}",
 				"\tgetMinWaitTimeForFamily() {",
-				"\t\tconst waits = Array.from(this.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
+				"\t\tconst waits = Array.from(state.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
 				"\t\treturn waits.length > 0 ? Math.min(...waits) : 0;",
 				"\t}",
 				"}",
@@ -808,6 +818,9 @@ describe("codex bin wrapper", () => {
 			TEST_SELECTION_LOG: selectionLogPath,
 		});
 
+		if (result.status !== 0) {
+			throw new Error(combinedOutput(result));
+		}
 		expect(result.status).toBe(0);
 		expect(readFileSync(selectionLogPath, "utf8")).toContain("sync:1");
 		expect(readFileSync(launchLogPath, "utf8")).toContain(

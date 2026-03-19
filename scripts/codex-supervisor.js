@@ -7,17 +7,39 @@ import {
 	statSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 
 const DEFAULT_POLL_MS = 30_000
 const DEFAULT_IDLE_MS = 5_000
 const DEFAULT_SESSION_CAPTURE_TIMEOUT_MS = 15_000
 const DEFAULT_SIGNAL_TIMEOUT_MS = 5_000
+const DEFAULT_STORAGE_LOCK_WAIT_MS = 10_000
+const DEFAULT_STORAGE_LOCK_POLL_MS = 100
+const DEFAULT_STORAGE_LOCK_TTL_MS = 30_000
 const INTERNAL_RECOVERABLE_COOLDOWN_MS = 60_000
+const RETRYABLE_IO_ERROR_CODES = new Set(["EBUSY", "EPERM", "EMFILE", "ENFILE"])
 
-function sleep(ms) {
-	return new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms, signal) {
+	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve(false)
+			return
+		}
+
+		let settled = false
+		const finish = (completed) => {
+			if (settled) return
+			settled = true
+			clearTimeout(timer)
+			signal?.removeEventListener("abort", onAbort)
+			resolve(completed)
+		}
+		const onAbort = () => finish(false)
+		const timer = setTimeout(() => finish(true), ms)
+
+		signal?.addEventListener("abort", onAbort, { once: true })
+	})
 }
 
 function parseBooleanEnv(name, fallback) {
@@ -73,10 +95,11 @@ async function importIfPresent(specifier) {
 }
 
 async function loadSupervisorRuntime() {
-	const [configModule, accountsModule, quotaModule] = await Promise.all([
+	const [configModule, accountsModule, quotaModule, storageModule] = await Promise.all([
 		importIfPresent("../dist/lib/config.js"),
 		importIfPresent("../dist/lib/accounts.js"),
 		importIfPresent("../dist/lib/quota-probe.js"),
+		importIfPresent("../dist/lib/storage.js"),
 	])
 
 	if (!configModule || !accountsModule?.AccountManager || !quotaModule?.fetchCodexQuotaSnapshot) {
@@ -102,6 +125,7 @@ async function loadSupervisorRuntime() {
 			((pluginConfig) => pluginConfig.preemptiveQuotaRemainingPercent7d ?? 5),
 		AccountManager: accountsModule.AccountManager,
 		fetchCodexQuotaSnapshot: quotaModule.fetchCodexQuotaSnapshot,
+		getStoragePath: storageModule?.getStoragePath,
 	}
 }
 
@@ -160,6 +184,166 @@ async function persistActiveSelection(manager, account) {
 	if (typeof manager.saveToDisk === "function") {
 		await manager.saveToDisk()
 	}
+}
+
+function isRetryableIoError(error) {
+	if (!error || typeof error !== "object" || !("code" in error)) return false
+	return RETRYABLE_IO_ERROR_CODES.has(`${error.code ?? ""}`)
+}
+
+async function safeUnlink(path) {
+	try {
+		await fs.unlink(path)
+		return true
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+			return true
+		}
+		return false
+	}
+}
+
+function getSupervisorStoragePath(runtime) {
+	if (typeof runtime.getStoragePath === "function") {
+		try {
+			const storagePath = runtime.getStoragePath()
+			if (typeof storagePath === "string" && storagePath.trim().length > 0) {
+				return storagePath
+			}
+		} catch {
+			// Fall back to the default Codex home path.
+		}
+	}
+
+	return join(resolveCodexHomeDir(), "multi-auth", "openai-codex-accounts.json")
+}
+
+function getSupervisorStorageLockPath(runtime) {
+	return `${getSupervisorStoragePath(runtime)}.supervisor.lock`
+}
+
+async function readSupervisorLockPayload(lockPath) {
+	try {
+		const raw = await fs.readFile(lockPath, "utf8")
+		return JSON.parse(raw)
+	} catch {
+		return null
+	}
+}
+
+async function isSupervisorLockStale(lockPath, ttlMs) {
+	const now = Date.now()
+	const payload = await readSupervisorLockPayload(lockPath)
+	if (payload && typeof payload.expiresAt === "number" && payload.expiresAt <= now) {
+		return true
+	}
+
+	try {
+		const stat = await fs.stat(lockPath)
+		return now - stat.mtimeMs > ttlMs
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+			return true
+		}
+		return false
+	}
+}
+
+async function withSupervisorStorageLock(runtime, fn) {
+	const lockPath = getSupervisorStorageLockPath(runtime)
+	const lockDir = dirname(lockPath)
+	const waitMs = parseNumberEnv(
+		"CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS",
+		DEFAULT_STORAGE_LOCK_WAIT_MS,
+		0,
+	)
+	const pollMs = parseNumberEnv(
+		"CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS",
+		DEFAULT_STORAGE_LOCK_POLL_MS,
+		25,
+	)
+	const ttlMs = parseNumberEnv(
+		"CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS",
+		DEFAULT_STORAGE_LOCK_TTL_MS,
+		1_000,
+	)
+
+	await fs.mkdir(lockDir, { recursive: true })
+
+	const deadline = Date.now() + waitMs
+	while (true) {
+		try {
+			const handle = await fs.open(lockPath, "wx")
+			try {
+				await handle.writeFile(
+					`${JSON.stringify({
+						pid: process.pid,
+						acquiredAt: Date.now(),
+						expiresAt: Date.now() + ttlMs,
+					})}\n`,
+					"utf8",
+				)
+			} finally {
+				await handle.close()
+			}
+
+			try {
+				return await fn()
+			} finally {
+				await safeUnlink(lockPath)
+			}
+		} catch (error) {
+			const code = error && typeof error === "object" && "code" in error ? `${error.code ?? ""}` : ""
+			if (code !== "EEXIST") {
+				throw error
+			}
+
+			if (await isSupervisorLockStale(lockPath, ttlMs)) {
+				const removed = await safeUnlink(lockPath)
+				if (removed) continue
+			}
+
+			if (Date.now() >= deadline) {
+				throw new Error(`Timed out waiting for supervisor storage lock at ${lockPath}`)
+			}
+
+			await sleep(pollMs)
+		}
+	}
+}
+
+async function withLockedManager(runtime, mutate) {
+	return withSupervisorStorageLock(runtime, async () => {
+		const manager = await runtime.AccountManager.loadFromDisk()
+		return mutate(manager)
+	})
+}
+
+function accountsMatch(candidate, account) {
+	if (!candidate || !account) return false
+	if (candidate.refreshToken && account.refreshToken && candidate.refreshToken === account.refreshToken) {
+		return true
+	}
+	if (candidate.accountId && account.accountId && candidate.accountId === account.accountId) {
+		return true
+	}
+	if (candidate.email && account.email && candidate.email === account.email) {
+		return true
+	}
+	return candidate.index === account.index
+}
+
+function resolveAccountInManager(manager, account) {
+	if (!account) return null
+
+	if (typeof manager.getAccountByIndex === "function") {
+		const direct = manager.getAccountByIndex(account.index)
+		if (direct && accountsMatch(direct, account)) return direct
+	}
+
+	if (typeof manager.getAccountsSnapshot !== "function") return null
+	const accounts = manager.getAccountsSnapshot()
+	return accounts.find((candidate) => accountsMatch(candidate, account)) ?? null
 }
 
 function computeWaitMsFromSnapshot(snapshot) {
@@ -251,32 +435,63 @@ function markAccountUnavailable(manager, account, evaluation) {
 	}
 }
 
-async function ensureLaunchableAccount(manager, runtime, pluginConfig) {
+async function ensureLaunchableAccount(runtime, pluginConfig) {
 	let attempts = 0
 	while (attempts < 32) {
 		attempts += 1
-		const account = pickNextCandidate(manager)
-		if (!account) {
-			const waitMs = getNearestWaitMs(manager)
-			if (waitMs <= 0 || !runtime.getRetryAllAccountsRateLimited(pluginConfig)) {
-				return { ok: false, account: null }
+		const step = await withLockedManager(runtime, async (manager) => {
+			const account = pickNextCandidate(manager)
+			if (!account) {
+				return {
+					kind: "wait",
+					waitMs: getNearestWaitMs(manager),
+					account: null,
+					manager,
+				}
 			}
-			relaunchNotice(`all accounts unavailable, waiting ${Math.ceil(waitMs / 1000)}s for the next eligible window`)
-			await sleep(waitMs)
+
+			const snapshot = await probeAccountSnapshot(runtime, account)
+			const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
+			if (!evaluation.rotate) {
+				await persistActiveSelection(manager, account)
+				return {
+					kind: "ready",
+					waitMs: 0,
+					account,
+					manager,
+					snapshot,
+				}
+			}
+
+			markAccountUnavailable(manager, account, evaluation)
+			if (typeof manager.saveToDisk === "function") {
+				await manager.saveToDisk()
+			}
+			return {
+				kind: "retry",
+				waitMs: 0,
+				account: null,
+				manager,
+			}
+		})
+
+		if (step.kind === "ready") {
+			return {
+				ok: true,
+				...step,
+			}
+		}
+
+		if (step.kind === "retry") {
 			continue
 		}
 
-		const snapshot = await probeAccountSnapshot(runtime, account)
-		const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
-		if (!evaluation.rotate) {
-			await persistActiveSelection(manager, account)
-			return { ok: true, account, snapshot }
+		if (step.waitMs <= 0 || !runtime.getRetryAllAccountsRateLimited(pluginConfig)) {
+			return { ok: false, account: null }
 		}
 
-		markAccountUnavailable(manager, account, evaluation)
-		if (typeof manager.saveToDisk === "function") {
-			await manager.saveToDisk()
-		}
+		relaunchNotice(`all accounts unavailable, waiting ${Math.ceil(step.waitMs / 1000)}s for the next eligible window`)
+		await sleep(step.waitMs)
 	}
 
 	return { ok: false, account: null }
@@ -383,12 +598,13 @@ function findSessionBinding({ cwd, sinceMs, sessionId }) {
 	return null
 }
 
-async function waitForSessionBinding({ cwd, sinceMs, sessionId, timeoutMs }) {
+async function waitForSessionBinding({ cwd, sinceMs, sessionId, timeoutMs, signal }) {
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() <= deadline) {
 		const binding = findSessionBinding({ cwd, sinceMs, sessionId })
 		if (binding) return binding
-		await sleep(100)
+		const slept = await sleep(100, signal)
+		if (!slept) return null
 	}
 	return null
 }
@@ -463,6 +679,7 @@ async function runInteractiveSupervision({
 				: null
 		let requestedRestart = null
 		let monitorActive = true
+		const monitorController = new AbortController()
 
 		const pollMs = parseNumberEnv(
 			"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
@@ -482,14 +699,13 @@ async function runInteractiveSupervision({
 
 		const monitorPromise = (async () => {
 			while (monitorActive) {
-				await sleep(pollMs)
-				if (!monitorActive) break
 				if (!binding) {
 					binding = await waitForSessionBinding({
 						cwd: process.cwd(),
 						sinceMs: launchStartedAt,
 						sessionId: knownSessionId,
 						timeoutMs: captureTimeoutMs,
+						signal: monitorController.signal,
 					})
 					if (binding?.sessionId) {
 						knownSessionId = binding.sessionId
@@ -498,25 +714,31 @@ async function runInteractiveSupervision({
 					binding = await refreshSessionActivity(binding)
 				}
 
-				if (requestedRestart) continue
-
-				const currentAccount = getCurrentAccount(manager)
-				if (!currentAccount) continue
-
-				const snapshot = await probeAccountSnapshot(runtime, currentAccount)
-				const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
-				if (!evaluation.rotate || !binding?.sessionId) continue
-
-				const lastActivityAtMs = binding.lastActivityAtMs ?? launchStartedAt
-				if (Date.now() - lastActivityAtMs < idleMs) continue
-
-				requestedRestart = {
-					reason: evaluation.reason,
-					waitMs: evaluation.waitMs,
-					sessionId: binding.sessionId,
+				if (!requestedRestart) {
+					const currentAccount = getCurrentAccount(manager)
+					if (currentAccount) {
+						const snapshot = await probeAccountSnapshot(runtime, currentAccount)
+						const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
+						if (evaluation.rotate && binding?.sessionId) {
+							const lastActivityAtMs = binding.lastActivityAtMs ?? launchStartedAt
+							if (Date.now() - lastActivityAtMs >= idleMs) {
+								requestedRestart = {
+									reason: evaluation.reason,
+									waitMs: evaluation.waitMs,
+									sessionId: binding.sessionId,
+								}
+								relaunchNotice(`rotating session ${binding.sessionId} because ${evaluation.reason.replace(/-/g, " ")}`)
+								monitorActive = false
+								monitorController.abort()
+								await requestChildRestart(child)
+								continue
+							}
+						}
+					}
 				}
-				relaunchNotice(`rotating session ${binding.sessionId} because ${evaluation.reason.replace(/-/g, " ")}`)
-				await requestChildRestart(child)
+
+				const slept = await sleep(pollMs, monitorController.signal)
+				if (!slept) break
 			}
 		})()
 
@@ -536,6 +758,7 @@ async function runInteractiveSupervision({
 		})
 
 		monitorActive = false
+		monitorController.abort()
 		await monitorPromise
 		binding = binding ?? findSessionBinding({
 			cwd: process.cwd(),
@@ -573,13 +796,20 @@ async function runInteractiveSupervision({
 
 		const currentAccount = getCurrentAccount(manager)
 		if (currentAccount) {
-			markAccountUnavailable(manager, currentAccount, restartDecision)
-			if (typeof manager.saveToDisk === "function") {
-				await manager.saveToDisk()
-			}
+			const refreshed = await withLockedManager(runtime, async (freshManager) => {
+				const targetAccount = resolveAccountInManager(freshManager, currentAccount)
+				if (targetAccount) {
+					markAccountUnavailable(freshManager, targetAccount, restartDecision)
+					if (typeof freshManager.saveToDisk === "function") {
+						await freshManager.saveToDisk()
+					}
+				}
+				return freshManager
+			})
+			manager = refreshed
 		}
 
-		const nextReady = await ensureLaunchableAccount(manager, runtime, pluginConfig)
+		const nextReady = await ensureLaunchableAccount(runtime, pluginConfig)
 		if (!nextReady.ok) {
 			relaunchNotice(
 				`no healthy account available to resume ${restartDecision.sessionId}; recover manually with \`codex resume ${restartDecision.sessionId}\` when quota resets`,
@@ -587,6 +817,7 @@ async function runInteractiveSupervision({
 			return result.exitCode
 		}
 
+		manager = nextReady.manager ?? manager
 		launchArgs = buildResumeArgs(restartDecision.sessionId, buildForwardArgs)
 		knownSessionId = restartDecision.sessionId
 	}
@@ -611,12 +842,7 @@ export async function runCodexSupervisorIfEnabled({
 		return null
 	}
 
-	const manager = await runtime.AccountManager.loadFromDisk()
-	if (!manager) {
-		return null
-	}
-
-	const ready = await ensureLaunchableAccount(manager, runtime, pluginConfig)
+	const ready = await ensureLaunchableAccount(runtime, pluginConfig)
 	if (!ready.ok) {
 		relaunchNotice("no launchable account is currently available")
 		return 1
@@ -633,7 +859,7 @@ export async function runCodexSupervisorIfEnabled({
 		buildForwardArgs,
 		runtime,
 		pluginConfig,
-		manager,
+		manager: ready.manager,
 	})
 }
 
@@ -645,4 +871,7 @@ export const __testOnly = {
 	readResumeSessionId,
 	resolveCodexHomeDir,
 	getSessionsRootDir,
+	sleep,
+	withLockedManager,
+	getSupervisorStorageLockPath,
 }
