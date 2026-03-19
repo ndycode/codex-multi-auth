@@ -687,5 +687,17 @@ describe("settings-hub utility coverage", () => {
 			});
 			expect(selected?.proactiveRefreshIntervalMs).toBe(60_000);
 		});
+
+		it("toggles the codex session supervisor in experimental settings", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "toggle-session-supervisor" },
+				{ type: "save" },
+			);
+			const selected = await api.promptExperimentalSettings({
+				codexCliSessionSupervisor: true,
+			});
+			expect(selected?.codexCliSessionSupervisor).toBe(false);
+		});
 	});
 });

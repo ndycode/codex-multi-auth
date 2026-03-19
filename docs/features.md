@@ -55,6 +55,7 @@ User-facing capability map for `codex-multi-auth`.
 | Account action hotkeys | Per-account set, refresh, toggle, and delete shortcuts |
 | In-dashboard settings hub | Runtime and display tuning without editing files directly |
 | Browser-first OAuth with manual fallback | Works in normal and constrained terminal environments |
+| Interactive session supervisor | Restarts `codex`, `codex resume`, and `codex fork` with `resume <sessionId>` after account rotation |
 
 ---
 

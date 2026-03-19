@@ -17,6 +17,7 @@ import {
 	getUnsupportedCodexFallbackChain,
 	getFetchTimeoutMs,
 	getStreamStallTimeoutMs,
+	getCodexCliSessionSupervisor,
 	getPreemptiveQuotaEnabled,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
@@ -67,6 +68,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS',
+		'CODEX_AUTH_CLI_SESSION_SUPERVISOR',
 	] as const;
 	const originalEnv: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
 
@@ -126,6 +128,7 @@ describe('Plugin Configuration', () => {
 				liveAccountSync: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
+				codexCliSessionSupervisor: true,
 				sessionAffinity: true,
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
@@ -136,7 +139,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
@@ -184,6 +187,7 @@ describe('Plugin Configuration', () => {
 				liveAccountSync: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
+				codexCliSessionSupervisor: true,
 				sessionAffinity: true,
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
@@ -194,7 +198,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
@@ -439,6 +443,7 @@ describe('Plugin Configuration', () => {
 				liveAccountSync: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
+				codexCliSessionSupervisor: true,
 				sessionAffinity: true,
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
@@ -449,7 +454,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 			});
@@ -503,6 +508,7 @@ describe('Plugin Configuration', () => {
 				liveAccountSync: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
+				codexCliSessionSupervisor: true,
 				sessionAffinity: true,
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
@@ -513,7 +519,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 	});
@@ -561,6 +567,7 @@ describe('Plugin Configuration', () => {
 				liveAccountSync: true,
 				liveAccountSyncDebounceMs: 250,
 				liveAccountSyncPollMs: 2_000,
+				codexCliSessionSupervisor: true,
 				sessionAffinity: true,
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
@@ -571,7 +578,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 		});
@@ -962,9 +969,17 @@ describe('Plugin Configuration', () => {
 	});
 
 	describe('preemptive quota settings', () => {
+		it('should enable the codex cli session supervisor by default and honor env override', () => {
+			expect(getCodexCliSessionSupervisor({})).toBe(true);
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '0';
+			expect(getCodexCliSessionSupervisor({ codexCliSessionSupervisor: true })).toBe(false);
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '1';
+			expect(getCodexCliSessionSupervisor({ codexCliSessionSupervisor: false })).toBe(true);
+		});
+
 		it('should use default thresholds', () => {
 			expect(getPreemptiveQuotaEnabled({})).toBe(true);
-			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(5);
+			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(10);
 			expect(getPreemptiveQuotaRemainingPercent7d({})).toBe(5);
 			expect(getPreemptiveQuotaMaxDeferralMs({})).toBe(2 * 60 * 60_000);
 		});

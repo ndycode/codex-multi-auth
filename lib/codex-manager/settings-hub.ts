@@ -274,6 +274,7 @@ type SettingsHubAction =
 type ExperimentalSettingsAction =
 	| { type: "sync" }
 	| { type: "backup" }
+	| { type: "toggle-session-supervisor" }
 	| { type: "toggle-refresh-guardian" }
 	| { type: "decrease-refresh-interval" }
 	| { type: "increase-refresh-interval" }
@@ -2531,6 +2532,11 @@ async function promptExperimentalSettings(
 		const action = await select<ExperimentalSettingsAction>(
 			[
 				{
+					label: `${formatDashboardSettingState(draft.codexCliSessionSupervisor ?? true)} ${UI_COPY.settings.experimentalSessionSupervisor}`,
+					value: { type: "toggle-session-supervisor" },
+					color: "yellow",
+				},
+				{
 					label: UI_COPY.settings.experimentalSync,
 					value: { type: "sync" },
 					color: "yellow",
@@ -2586,6 +2592,13 @@ async function promptExperimentalSettings(
 		);
 		if (!action || action.type === "back") return null;
 		if (action.type === "save") return draft;
+		if (action.type === "toggle-session-supervisor") {
+			draft = {
+				...draft,
+				codexCliSessionSupervisor: !(draft.codexCliSessionSupervisor ?? true),
+			};
+			continue;
+		}
 		if (action.type === "toggle-refresh-guardian") {
 			draft = {
 				...draft,

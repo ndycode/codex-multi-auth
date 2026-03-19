@@ -44,6 +44,7 @@ export const PluginConfigSchema = z.object({
 	liveAccountSync: z.boolean().optional(),
 	liveAccountSyncDebounceMs: z.number().min(50).optional(),
 	liveAccountSyncPollMs: z.number().min(500).optional(),
+	codexCliSessionSupervisor: z.boolean().optional(),
 	sessionAffinity: z.boolean().optional(),
 	sessionAffinityTtlMs: z.number().min(1_000).optional(),
 	sessionAffinityMaxEntries: z.number().min(8).optional(),

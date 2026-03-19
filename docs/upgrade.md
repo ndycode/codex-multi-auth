@@ -62,6 +62,10 @@ After source selection, environment variables still override individual setting 
 For day-to-day operator use, prefer stable overrides documented in [configuration.md](configuration.md).
 For maintainer/debug flows, see advanced/internal controls in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).
 
+Starting with the session-supervisor rollout, interactive `codex`, `codex resume`, and
+`codex fork` launches default to a resumable wrapper path. If you need to disable that
+behavior during rollout or debugging, set `CODEX_AUTH_CLI_SESSION_SUPERVISOR=0`.
+
 ---
 
 ## Legacy Compatibility

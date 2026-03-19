@@ -145,6 +145,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	liveAccountSync: true,
 	liveAccountSyncDebounceMs: 250,
 	liveAccountSyncPollMs: 2_000,
+	codexCliSessionSupervisor: true,
 	sessionAffinity: true,
 	sessionAffinityTtlMs: 20 * 60_000,
 	sessionAffinityMaxEntries: 512,
@@ -155,7 +156,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	serverErrorCooldownMs: 4_000,
 	storageBackupEnabled: true,
 	preemptiveQuotaEnabled: true,
-	preemptiveQuotaRemainingPercent5h: 5,
+	preemptiveQuotaRemainingPercent5h: 10,
 	preemptiveQuotaRemainingPercent7d: 5,
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 };
@@ -858,6 +859,25 @@ export function getLiveAccountSyncPollMs(pluginConfig: PluginConfig): number {
 }
 
 /**
+ * Determines whether the Codex CLI session supervisor is enabled.
+ *
+ * The supervisor wraps interactive official Codex sessions and can relaunch the
+ * CLI with `resume <sessionId>` after account rotation. This accessor is
+ * side-effect free, safe for concurrent reads, and does not expose any token
+ * material.
+ *
+ * @param pluginConfig - The plugin configuration used as the non-environment fallback
+ * @returns `true` if interactive session supervision is enabled, `false` otherwise
+ */
+export function getCodexCliSessionSupervisor(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_CLI_SESSION_SUPERVISOR",
+		pluginConfig.codexCliSessionSupervisor,
+		true,
+	);
+}
+
+/**
  * Indicates whether session affinity is enabled.
  *
  * Reads the `sessionAffinity` value from `pluginConfig` and allows an environment
@@ -1057,7 +1077,7 @@ export function getPreemptiveQuotaRemainingPercent5h(pluginConfig: PluginConfig)
 	return resolveNumberSetting(
 		"CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT",
 		pluginConfig.preemptiveQuotaRemainingPercent5h,
-		5,
+		10,
 		{ min: 0, max: 100 },
 	);
 }

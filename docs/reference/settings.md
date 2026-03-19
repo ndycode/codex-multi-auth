@@ -70,9 +70,17 @@ Controls display style:
 
 Experimental currently hosts:
 
+- interactive Codex session supervision (`codexCliSessionSupervisor`)
 - one-way sync preview and apply into `oc-chatgpt-multi-auth`
 - named local pool backup export with filename prompt
 - refresh guard controls (`proactiveRefreshGuardian`, `proactiveRefreshIntervalMs`)
+
+Supervisor behavior:
+
+- wraps `codex`, `codex resume`, and `codex fork`
+- reuses the active Rotation & Quota thresholds before restarting a live session
+- when rotation is needed, relaunches the official CLI with `resume <sessionId>`
+- non-interactive commands can fail over before launch, but are not replayed after they start
 
 Sync behavior:
 
@@ -152,6 +160,7 @@ Common operator overrides:
 - `CODEX_TUI_V2`
 - `CODEX_TUI_COLOR_PROFILE`
 - `CODEX_TUI_GLYPHS`
+- `CODEX_AUTH_CLI_SESSION_SUPERVISOR`
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
 
@@ -179,6 +188,7 @@ For most environments:
 - smart sort enabled
 - auto-fetch limits enabled
 - live sync enabled
+- Codex session supervisor enabled
 - session affinity enabled
 - preemptive quota deferral enabled
 - proactive refresh guardian enabled

@@ -57,6 +57,10 @@ function createWrapperFixture(): string {
 		join(repoRootDir, "scripts", "codex-routing.js"),
 		join(scriptDir, "codex-routing.js"),
 	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex-supervisor.js"),
+		join(scriptDir, "codex-supervisor.js"),
+	);
 	return fixtureRoot;
 }
 
@@ -78,6 +82,58 @@ function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
 	const fakeBin = join(rootDir, `fake-codex-${createdDirs.length}.js`);
 	writeFileSync(fakeBin, lines.join("\n"), "utf8");
 	return fakeBin;
+}
+
+function createSupervisorRuntimeFixture(
+	rootDir: string,
+	options: {
+		configLines?: string[];
+		accountManagerLines?: string[];
+		quotaProbeLines?: string[];
+	},
+): void {
+	const distLibDir = join(rootDir, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(
+		join(distLibDir, "config.js"),
+		(options.configLines ?? [
+			"export function loadPluginConfig() {",
+			"\treturn {",
+			"\t\tcodexCliSessionSupervisor: true,",
+			"\t\tretryAllAccountsRateLimited: true,",
+			"\t\tpreemptiveQuotaEnabled: true,",
+			"\t\tpreemptiveQuotaRemainingPercent5h: 10,",
+			"\t\tpreemptiveQuotaRemainingPercent7d: 10,",
+			"\t};",
+			"}",
+			"export function getCodexCliSessionSupervisor(pluginConfig) {",
+			"\treturn pluginConfig.codexCliSessionSupervisor !== false;",
+			"}",
+			"export function getRetryAllAccountsRateLimited(pluginConfig) {",
+			"\treturn pluginConfig.retryAllAccountsRateLimited !== false;",
+			"}",
+			"export function getPreemptiveQuotaEnabled(pluginConfig) {",
+			"\treturn pluginConfig.preemptiveQuotaEnabled !== false;",
+			"}",
+			"export function getPreemptiveQuotaRemainingPercent5h(pluginConfig) {",
+			"\treturn pluginConfig.preemptiveQuotaRemainingPercent5h ?? 10;",
+			"}",
+			"export function getPreemptiveQuotaRemainingPercent7d(pluginConfig) {",
+			"\treturn pluginConfig.preemptiveQuotaRemainingPercent7d ?? 10;",
+			"}",
+		]).join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(distLibDir, "accounts.js"),
+		(options.accountManagerLines ?? []).join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(distLibDir, "quota-probe.js"),
+		(options.quotaProbeLines ?? []).join("\n"),
+		"utf8",
+	);
 }
 
 function runWrapper(
@@ -358,6 +414,10 @@ describe("codex bin wrapper", () => {
 				join(repoRootDir, "scripts", "codex-routing.js"),
 				join(scriptDir, "codex-routing.js"),
 			);
+			copyFileSync(
+				join(repoRootDir, "scripts", "codex-supervisor.js"),
+				join(scriptDir, "codex-supervisor.js"),
+			);
 			writeFileSync(
 				join(globalShimDir, "codex-multi-auth.cmd"),
 				"@ECHO OFF\r\nREM real shim\r\n",
@@ -482,6 +542,276 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("Could not locate the official Codex CLI binary");
 		expect(output).toContain(
 			"Install it globally: npm install -g @openai/codex",
+		);
+	});
+
+	it("fails over to the next healthy account before launching non-interactive commands", () => {
+		const fixtureRoot = createWrapperFixture();
+		const launchLogPath = join(fixtureRoot, "launch.log");
+		const selectionLogPath = join(fixtureRoot, "selection.log");
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'import { appendFileSync } from "node:fs";',
+			'appendFileSync(process.env.TEST_LAUNCH_LOG, `${process.argv.slice(2).join(" ")}\\n`);',
+			"process.exit(0);",
+		]);
+		createSupervisorRuntimeFixture(fixtureRoot, {
+			accountManagerLines: [
+				'import { appendFileSync } from "node:fs";',
+				"const pool = [",
+				"\t{ index: 0, accountId: 'acc-1', access: 'token-1', refreshToken: 'refresh-1', email: 'one@example.com' },",
+				"\t{ index: 1, accountId: 'acc-2', access: 'token-2', refreshToken: 'refresh-2', email: 'two@example.com' },",
+				"];",
+				"export class AccountManager {",
+				"\tconstructor() {",
+				"\t\tthis.currentIndex = 0;",
+				"\t\tthis.blockedUntil = new Map();",
+				"\t}",
+				"\tstatic async loadFromDisk() {",
+				"\t\treturn new AccountManager();",
+				"\t}",
+				"\tgetCurrentAccountForFamily() {",
+				"\t\treturn pool[this.currentIndex] ?? null;",
+				"\t}",
+				"\tgetCurrentOrNextForFamilyHybrid() {",
+				"\t\tfor (const account of pool) {",
+				"\t\t\tconst blockedUntil = this.blockedUntil.get(account.index) ?? 0;",
+				"\t\t\tif (blockedUntil <= Date.now()) return account;",
+				"\t\t}",
+				"\t\treturn null;",
+				"\t}",
+				"\tmarkRateLimitedWithReason(account, waitMs) {",
+				"\t\tthis.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
+				"\t}",
+				"\tsetActiveIndex(index) {",
+				"\t\tthis.currentIndex = index;",
+				"\t}",
+				"\tasync syncCodexCliActiveSelectionForIndex(index) {",
+				"\t\tthis.currentIndex = index;",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `sync:${index}\\n`);",
+				"\t}",
+				"\tasync saveToDisk() {",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${this.currentIndex}\\n`);",
+				"\t}",
+				"\tgetMinWaitTimeForFamily() {",
+				"\t\tconst waits = Array.from(this.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
+				"\t\treturn waits.length > 0 ? Math.min(...waits) : 0;",
+				"\t}",
+				"}",
+			],
+			quotaProbeLines: [
+				"export async function fetchCodexQuotaSnapshot({ accountId }) {",
+				"\tif (accountId === 'acc-1') {",
+				"\t\treturn { status: 200, model: 'gpt-5-codex', primary: { usedPercent: 95, resetAtMs: Date.now() + 30_000 }, secondary: { usedPercent: 15, resetAtMs: Date.now() + 30_000 } };",
+				"\t}",
+				"\treturn { status: 200, model: 'gpt-5-codex', primary: { usedPercent: 20, resetAtMs: Date.now() + 30_000 }, secondary: { usedPercent: 10, resetAtMs: Date.now() + 30_000 } };",
+				"}",
+			],
+		});
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			TEST_LAUNCH_LOG: launchLogPath,
+			TEST_SELECTION_LOG: selectionLogPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(launchLogPath, "utf8")).toContain(
+			'exec status -c cli_auth_credentials_store="file"',
+		);
+		expect(readFileSync(selectionLogPath, "utf8")).toContain("sync:1");
+	});
+
+	it("uses the 10 percent 5h fallback when legacy supervisor helpers are missing", () => {
+		const fixtureRoot = createWrapperFixture();
+		const launchLogPath = join(fixtureRoot, "launch.log");
+		const selectionLogPath = join(fixtureRoot, "selection.log");
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'import { appendFileSync } from "node:fs";',
+			'appendFileSync(process.env.TEST_LAUNCH_LOG, `${process.argv.slice(2).join(" ")}\\n`);',
+			"process.exit(0);",
+		]);
+		createSupervisorRuntimeFixture(fixtureRoot, {
+			configLines: [
+				"export function loadPluginConfig() {",
+				"\treturn {",
+				"\t\tcodexCliSessionSupervisor: true,",
+				"\t\tretryAllAccountsRateLimited: true,",
+				"\t\tpreemptiveQuotaEnabled: true,",
+				"\t};",
+				"}",
+			],
+			accountManagerLines: [
+				'import { appendFileSync } from "node:fs";',
+				"const pool = [",
+				"\t{ index: 0, accountId: 'acc-1', access: 'token-1', refreshToken: 'refresh-1', email: 'one@example.com' },",
+				"\t{ index: 1, accountId: 'acc-2', access: 'token-2', refreshToken: 'refresh-2', email: 'two@example.com' },",
+				"];",
+				"export class AccountManager {",
+				"\tconstructor() {",
+				"\t\tthis.currentIndex = 0;",
+				"\t\tthis.blockedUntil = new Map();",
+				"\t}",
+				"\tstatic async loadFromDisk() {",
+				"\t\treturn new AccountManager();",
+				"\t}",
+				"\tgetCurrentAccountForFamily() {",
+				"\t\treturn pool[this.currentIndex] ?? null;",
+				"\t}",
+				"\tgetCurrentOrNextForFamilyHybrid() {",
+				"\t\tfor (const account of pool) {",
+				"\t\t\tconst blockedUntil = this.blockedUntil.get(account.index) ?? 0;",
+				"\t\t\tif (blockedUntil <= Date.now()) return account;",
+				"\t\t}",
+				"\t\treturn null;",
+				"\t}",
+				"\tmarkRateLimitedWithReason(account, waitMs) {",
+				"\t\tthis.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
+				"\t}",
+				"\tsetActiveIndex(index) {",
+				"\t\tthis.currentIndex = index;",
+				"\t}",
+				"\tasync syncCodexCliActiveSelectionForIndex(index) {",
+				"\t\tthis.currentIndex = index;",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `sync:${index}\\n`);",
+				"\t}",
+				"\tasync saveToDisk() {",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${this.currentIndex}\\n`);",
+				"\t}",
+				"\tgetMinWaitTimeForFamily() {",
+				"\t\tconst waits = Array.from(this.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
+				"\t\treturn waits.length > 0 ? Math.min(...waits) : 0;",
+				"\t}",
+				"}",
+			],
+			quotaProbeLines: [
+				"export async function fetchCodexQuotaSnapshot({ accountId }) {",
+				"\tif (accountId === 'acc-1') {",
+				"\t\treturn { status: 200, model: 'gpt-5-codex', primary: { usedPercent: 92, resetAtMs: Date.now() + 30_000 }, secondary: { usedPercent: 15, resetAtMs: Date.now() + 30_000 } };",
+				"\t}",
+				"\treturn { status: 200, model: 'gpt-5-codex', primary: { usedPercent: 20, resetAtMs: Date.now() + 30_000 }, secondary: { usedPercent: 10, resetAtMs: Date.now() + 30_000 } };",
+				"}",
+			],
+		});
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			TEST_LAUNCH_LOG: launchLogPath,
+			TEST_SELECTION_LOG: selectionLogPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(launchLogPath, "utf8")).toContain(
+			'exec status -c cli_auth_credentials_store="file"',
+		);
+		expect(readFileSync(selectionLogPath, "utf8")).toContain("sync:1");
+	});
+
+	it("relaunches interactive sessions with resume after supervisor rotation", async () => {
+		const fixtureRoot = createWrapperFixture();
+		const launchLogPath = join(fixtureRoot, "launch.log");
+		const selectionLogPath = join(fixtureRoot, "selection.log");
+		const sessionsDir = join(fixtureRoot, "sessions");
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";',
+			'import { join } from "node:path";',
+			"const args = process.argv.slice(2);",
+			'appendFileSync(process.env.TEST_LAUNCH_LOG, `${args.join(" ")}\\n`);',
+			"if (args[0] === 'resume') {",
+			"\tprocess.exit(0);",
+			"}",
+			"const sessionDir = join(process.env.CODEX_MULTI_AUTH_CLI_SESSIONS_DIR, '2026', '03', '20');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"writeFileSync(",
+			"\tjoin(sessionDir, 'rollout-session-1.jsonl'),",
+			"\t`${JSON.stringify({ session_meta: { payload: { id: 'session-1', cwd: process.cwd() } } })}\\n`,",
+			"\t'utf8',",
+			");",
+			"let finished = false;",
+			"const finish = (code) => {",
+			"\tif (finished) return;",
+			"\tfinished = true;",
+			"\tprocess.exit(code);",
+			"};",
+			"process.on('SIGINT', () => finish(130));",
+			"setInterval(() => {}, 1000);",
+			"setTimeout(() => finish(0), 20_000);",
+		]);
+		createSupervisorRuntimeFixture(fixtureRoot, {
+			accountManagerLines: [
+				'import { appendFileSync } from "node:fs";',
+				"const pool = [",
+				"\t{ index: 0, accountId: 'acc-1', access: 'token-1', refreshToken: 'refresh-1', email: 'one@example.com' },",
+				"\t{ index: 1, accountId: 'acc-2', access: 'token-2', refreshToken: 'refresh-2', email: 'two@example.com' },",
+				"];",
+				"export class AccountManager {",
+				"\tconstructor() {",
+				"\t\tthis.currentIndex = 0;",
+				"\t\tthis.blockedUntil = new Map();",
+				"\t}",
+				"\tstatic async loadFromDisk() {",
+				"\t\treturn new AccountManager();",
+				"\t}",
+				"\tgetCurrentAccountForFamily() {",
+				"\t\treturn pool[this.currentIndex] ?? null;",
+				"\t}",
+				"\tgetCurrentOrNextForFamilyHybrid() {",
+				"\t\tfor (const account of pool) {",
+				"\t\t\tconst blockedUntil = this.blockedUntil.get(account.index) ?? 0;",
+				"\t\t\tif (blockedUntil <= Date.now()) return account;",
+				"\t\t}",
+				"\t\treturn null;",
+				"\t}",
+				"\tmarkRateLimitedWithReason(account, waitMs) {",
+				"\t\tthis.blockedUntil.set(account.index, Date.now() + Math.max(1, waitMs));",
+				"\t}",
+				"\tsetActiveIndex(index) {",
+				"\t\tthis.currentIndex = index;",
+				"\t}",
+				"\tasync syncCodexCliActiveSelectionForIndex(index) {",
+				"\t\tthis.currentIndex = index;",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `sync:${index}\\n`);",
+				"\t}",
+				"\tasync saveToDisk() {",
+				"\t\tappendFileSync(process.env.TEST_SELECTION_LOG, `save:${this.currentIndex}\\n`);",
+				"\t}",
+				"\tgetMinWaitTimeForFamily() {",
+				"\t\tconst waits = Array.from(this.blockedUntil.values()).map((value) => Math.max(0, value - Date.now())).filter((value) => value > 0);",
+				"\t\treturn waits.length > 0 ? Math.min(...waits) : 0;",
+				"\t}",
+				"}",
+			],
+			quotaProbeLines: [
+				"const calls = new Map();",
+				"export async function fetchCodexQuotaSnapshot({ accountId }) {",
+				"\tconst count = (calls.get(accountId) ?? 0) + 1;",
+				"\tcalls.set(accountId, count);",
+				"\tif (accountId === 'acc-1') {",
+				"\t\tconst usedPercent = count === 1 ? 40 : 95;",
+				"\t\treturn { status: 200, model: 'gpt-5-codex', primary: { usedPercent, resetAtMs: Date.now() + 30_000 }, secondary: { usedPercent: 15, resetAtMs: Date.now() + 30_000 } };",
+				"\t}",
+				"\treturn { status: 200, model: 'gpt-5-codex', primary: { usedPercent: 20, resetAtMs: Date.now() + 30_000 }, secondary: { usedPercent: 10, resetAtMs: Date.now() + 30_000 } };",
+				"}",
+			],
+		});
+
+		const result = await runWrapperAsync(fixtureRoot, [], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_CLI_SESSIONS_DIR: sessionsDir,
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS: "250",
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS: "500",
+			CODEX_AUTH_CLI_SESSION_CAPTURE_TIMEOUT_MS: "2000",
+			CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS: "100",
+			TEST_LAUNCH_LOG: launchLogPath,
+			TEST_SELECTION_LOG: selectionLogPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(selectionLogPath, "utf8")).toContain("sync:1");
+		expect(readFileSync(launchLogPath, "utf8")).toContain(
+			'resume session-1 -c cli_auth_credentials_store="file"',
 		);
 	});
 

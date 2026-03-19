@@ -7,6 +7,7 @@ import { basename, delimiter, dirname, join, resolve as resolvePath } from "node
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+import { runCodexSupervisorIfEnabled } from "./codex-supervisor.js";
 
 function hydrateCliVersionEnv() {
 	try {
@@ -524,8 +525,18 @@ async function main() {
 		return 1;
 	}
 
-	await autoSyncManagerActiveSelectionIfEnabled();
 	const forwardArgs = buildForwardArgs(rawArgs);
+	const supervisedExitCode = await runCodexSupervisorIfEnabled({
+		codexBin: realCodexBin,
+		rawArgs,
+		buildForwardArgs,
+		forwardToRealCodex,
+	});
+	if (supervisedExitCode !== null) {
+		return supervisedExitCode;
+	}
+
+	await autoSyncManagerActiveSelectionIfEnabled();
 	return forwardToRealCodex(realCodexBin, forwardArgs);
 }
 

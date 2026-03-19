@@ -17,11 +17,12 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 - Multi-account OAuth pool with health-aware selection and automatic failover
 - Project-scoped account storage under `~/.codex/multi-auth/projects/<project-key>/...`
 - Interactive dashboard for account actions and settings
-- Experimental settings tab for staged sync, backup, and refresh-guard controls
+- Experimental settings tab for staged supervisor, sync, backup, and refresh-guard controls
 - Forecast, report, fix, and doctor commands for operational safety
 - Flagged account verification and restore flow
 - Session affinity and live account sync controls
 - Proactive refresh and preemptive quota deferral controls
+- Interactive Codex session supervision with `resume <sessionId>` failover on account rotation
 - Codex-oriented request/prompt compatibility with strict runtime handling
 - Stable docs set for install, config, troubleshooting, and upgrade paths
 
@@ -201,6 +202,7 @@ codex auth forecast --live
 
 The Settings menu now includes an `Experimental` section for staged features:
 
+- Codex session supervisor toggle for live interactive failover
 - preview-first sync into `oc-chatgpt-multi-auth`
 - named local pool backup export with filename prompt
 - refresh guard toggle and interval controls moved out of Backend Controls
