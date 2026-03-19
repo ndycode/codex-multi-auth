@@ -192,6 +192,29 @@ describe("AccountManager loadFromDisk", () => {
     );
   });
 
+  it("syncCodexCliActiveSelectionForIndex returns false when CLI selection write fails", async () => {
+    const now = Date.now();
+    const manager = new AccountManager(undefined, {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "refresh-1",
+          accountId: "acct-1",
+          email: "one@example.com",
+          accessToken: "access-1",
+          expiresAt: now + 10_000,
+          addedAt: now,
+          lastUsed: now,
+        } as never,
+      ],
+    });
+
+    vi.mocked(setCodexCliActiveSelection).mockResolvedValueOnce(false);
+
+    await expect(manager.syncCodexCliActiveSelectionForIndex(0)).resolves.toBe(false);
+  });
+
   it("getNextForFamily skips disabled/rate-limited/cooldown accounts", () => {
     const now = Date.now();
     const manager = new AccountManager(undefined, {

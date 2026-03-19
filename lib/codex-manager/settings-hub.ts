@@ -1076,6 +1076,10 @@ function backendSettingsSnapshot(
 	config: PluginConfig,
 ): Record<string, unknown> {
 	const snapshot: Record<string, unknown> = {};
+	snapshot.codexCliDirectInjection =
+		config.codexCliDirectInjection ??
+		BACKEND_DEFAULTS.codexCliDirectInjection ??
+		true;
 	for (const option of BACKEND_TOGGLE_OPTIONS) {
 		snapshot[option.key] =
 			config[option.key] ?? BACKEND_DEFAULTS[option.key] ?? false;
@@ -1176,6 +1180,9 @@ function buildBackendSettingsPreview(
 
 function buildBackendConfigPatch(config: PluginConfig): Partial<PluginConfig> {
 	const patch: Partial<PluginConfig> = {};
+	if (typeof config.codexCliDirectInjection === "boolean") {
+		patch.codexCliDirectInjection = config.codexCliDirectInjection;
+	}
 	for (const option of BACKEND_TOGGLE_OPTIONS) {
 		const value = config[option.key];
 		if (typeof value === "boolean") {

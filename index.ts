@@ -964,15 +964,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
                                 await saveAccounts(storage);
 				if (cachedAccountManager) {
-					await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
-				}
-				lastCodexCliActiveSyncIndex = index;
-				lastCodexCliActiveSyncSignature = null;
-
-				// Reload manager from disk so we don't overwrite newer rotated
-				// refresh tokens with stale in-memory state.
-				if (cachedAccountManager) {
-					await reloadAccountManagerFromDisk();
+					const freshManager = await reloadAccountManagerFromDisk();
+					const synced = await freshManager.syncCodexCliActiveSelectionForIndex(index);
+					if (synced) {
+						lastCodexCliActiveSyncIndex = index;
+						lastCodexCliActiveSyncSignature = null;
+					}
 				}
 
                                 await showToast(`Switched to account ${index + 1}`, "info");
@@ -1160,17 +1157,33 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			});
 
 				const buildCodexCliSelectionSignature = (
-					account: { index: number; accountId?: string; email?: string; expires?: number },
+					account: {
+						index: number;
+						accountId?: string;
+						email?: string;
+						expires?: number;
+						expiresAt?: number;
+					},
 				): string =>
 					[
 						account.index,
 						account.accountId?.trim() ?? "",
 						account.email?.trim().toLowerCase() ?? "",
-						typeof account.expires === "number" ? account.expires : "",
+						typeof account.expires === "number"
+							? account.expires
+							: typeof account.expiresAt === "number"
+								? account.expiresAt
+								: "",
 					].join("|");
 
 				const syncCodexCliSelectionNow = async (
-					account: { index: number; accountId?: string; email?: string; expires?: number },
+					account: {
+						index: number;
+						accountId?: string;
+						email?: string;
+						expires?: number;
+						expiresAt?: number;
+					},
 					options?: { force?: boolean },
 				): Promise<boolean> => {
 					if (!codexCliDirectInjectionEnabled) {

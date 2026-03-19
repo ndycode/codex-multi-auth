@@ -427,16 +427,19 @@ describe("settings-hub utility coverage", () => {
 		const api = await loadSettingsHubTestApi();
 		const configModule = await import("../lib/config.js");
 		const selected = configModule.getDefaultPluginConfig();
+		selected.codexCliDirectInjection = false;
 		selected.fetchTimeoutMs = 12_345;
 		selected.streamStallTimeoutMs = 23_456;
 
 		const saved = await api.persistBackendConfigSelection(selected, "backend");
+		expect(saved.codexCliDirectInjection).toBe(false);
 		expect(saved.fetchTimeoutMs).toBe(12_345);
 		expect(saved.streamStallTimeoutMs).toBe(23_456);
 
 		vi.resetModules();
 		const freshConfigModule = await import("../lib/config.js");
 		const reloaded = freshConfigModule.loadPluginConfig();
+		expect(reloaded.codexCliDirectInjection).toBe(false);
 		expect(reloaded.fetchTimeoutMs).toBe(12_345);
 		expect(reloaded.streamStallTimeoutMs).toBe(23_456);
 	});
