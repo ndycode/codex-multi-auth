@@ -1139,7 +1139,7 @@ function buildBackendSettingsPreview(
 	const threshold5h =
 		config.preemptiveQuotaRemainingPercent5h ??
 		BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent5h ??
-		5;
+		10;
 	const threshold7d =
 		config.preemptiveQuotaRemainingPercent7d ??
 		BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent7d ??

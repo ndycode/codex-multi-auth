@@ -1266,6 +1266,38 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		).toEqual([0, 1]);
 	});
 
+	it("times out a stalled CLI sync so later requests can continue", async () => {
+		vi.useFakeTimers();
+		try {
+			syncCodexCliSelectionMock
+				.mockImplementationOnce(() => new Promise<boolean>(() => {}))
+				.mockResolvedValueOnce(true);
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+			const { sdk } = await setupPlugin();
+			const firstFetch = sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			const secondFetch = sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			const [firstResponse, secondResponse] = await Promise.all([firstFetch, secondFetch]);
+
+			expect(firstResponse.status).toBe(200);
+			expect(secondResponse.status).toBe(200);
+			expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(2);
+			expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("forces CLI reinjection after a token refresh keeps the same signature fields", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		vi.mocked(fetchHelpers.shouldRefreshToken)
@@ -1641,6 +1673,102 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+	});
+
+	it("skips failover CLI injection when direct injection is disabled", async () => {
+		vi.doMock("../lib/request/stream-failover.js", () => ({
+			withStreamingFailover: async (
+				response: Response,
+				failover: (attempt: number, emittedBytes: number) => Promise<Response | null>,
+			) => (await failover(1, 128)) ?? response,
+		}));
+		try {
+			vi.resetModules();
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValueOnce(false);
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+				(_init, _accountId, accessToken) =>
+					new Headers({ "x-test-access-token": String(accessToken) }),
+			);
+			const { AccountManager } = await import("../lib/accounts.js");
+			const accountOne = {
+				index: 0,
+				accountId: "acc-1",
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+				access: "access-account-1",
+				expires: Date.now() + 60_000,
+				addedAt: 1,
+			};
+			const accountTwo = {
+				index: 1,
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+				access: "access-account-2",
+				expires: Date.now() + 60_000,
+				addedAt: 2,
+			};
+			const customManager = {
+				accounts: [accountOne, accountTwo],
+				getCurrentOrNextForFamilyHybrid: vi
+					.fn()
+					.mockReturnValueOnce(accountOne)
+					.mockReturnValueOnce(accountTwo)
+					.mockImplementation(() => null),
+				getAccountCount: () => 2,
+				getAccountsSnapshot: () => [accountOne, accountTwo],
+				isAccountAvailableForFamily: () => true,
+				getAccountByIndex: (index: number) =>
+					index === 0 ? accountOne : index === 1 ? accountTwo : null,
+				toAuthDetails: (account: typeof accountOne) => ({
+					type: "oauth" as const,
+					access: account.access,
+					refresh: account.refreshToken,
+					expires: account.expires,
+					multiAccount: true,
+				}),
+				consumeToken: vi.fn(() => true),
+				updateFromAuth: vi.fn(),
+				clearAuthFailures: vi.fn(),
+				saveToDiskDebounced: vi.fn(),
+				saveToDisk: vi.fn(),
+				hasRefreshToken: vi.fn(() => true),
+				syncCodexCliActiveSelectionForIndex: (index: number) =>
+					syncCodexCliSelectionMock(index),
+				recordFailure: vi.fn(),
+				recordSuccess: vi.fn(),
+				recordRateLimit: vi.fn(),
+				refundToken: vi.fn(),
+				markRateLimitedWithReason: vi.fn(),
+				markSwitched: vi.fn(),
+				shouldShowAccountToast: () => false,
+				markToastShown: vi.fn(),
+				getMinWaitTimeForFamily: () => 0,
+				getCurrentAccountForFamily: () => accountOne,
+			};
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValueOnce(new Response("streaming", { status: 200 }))
+				.mockResolvedValueOnce(new Response("retry later", { status: 429 }))
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ content: "fallback-ok" }), { status: 200 }),
+				);
+
+			const { sdk } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+		} finally {
+			vi.doUnmock("../lib/request/stream-failover.js");
+			vi.resetModules();
+		}
 	});
 
 	it("uses the refreshed token email when checking entitlement blocks", async () => {

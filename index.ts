@@ -927,6 +927,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			});
 		};
 
+		const CODEX_CLI_SELECTION_SYNC_TIMEOUT_MS = 5_000;
+
 		const queueCodexCliSelectionSync = async (
 			runSync: () => Promise<boolean>,
 		): Promise<boolean> => {
@@ -937,7 +939,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			});
 			await priorSync.catch(() => undefined);
 			try {
-				return await runSync();
+				let timeoutHandle: NodeJS.Timeout | null = null;
+				try {
+					return await Promise.race([
+						runSync(),
+						new Promise<boolean>((resolve) => {
+							timeoutHandle = setTimeout(() => {
+								logWarn(
+									`[${PLUGIN_NAME}] Codex CLI selection sync timed out`,
+									{
+										timeoutMs: CODEX_CLI_SELECTION_SYNC_TIMEOUT_MS,
+									},
+								);
+								resolve(false);
+							}, CODEX_CLI_SELECTION_SYNC_TIMEOUT_MS);
+						}),
+					]);
+				} finally {
+					if (timeoutHandle) {
+						clearTimeout(timeoutHandle);
+					}
+				}
 			} finally {
 				releaseSyncQueue();
 			}
