@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+	AccountStorageV3,
+	FlaggedAccountStorageV1,
+} from "../lib/storage.js";
 
 const clearAccountsMock = vi.fn();
 const clearFlaggedAccountsMock = vi.fn();
@@ -215,6 +219,53 @@ describe("destructive actions", () => {
 			version: 1,
 			accounts: [expect.objectContaining({ refreshToken: "refresh-newer" })],
 		});
+	});
+
+	it("keeps flagged accounts intact when the deleted account has no refresh token", async () => {
+		loadFlaggedAccountsMock.mockResolvedValue({
+			version: 1,
+			accounts: [
+				{
+					addedAt: 2,
+					lastUsed: 2,
+					flaggedAt: 2,
+				} as never,
+				{
+					refreshToken: "refresh-keep",
+					addedAt: 3,
+					lastUsed: 3,
+					flaggedAt: 3,
+				},
+			],
+		} as FlaggedAccountStorageV1);
+
+		const { deleteAccountAtIndex } = await import(
+			"../lib/destructive-actions.js"
+		);
+
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					addedAt: 1,
+					lastUsed: 1,
+				} as never,
+				{
+					refreshToken: "refresh-remove",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		} as AccountStorageV3;
+
+		const deleted = await deleteAccountAtIndex({ storage, index: 0 });
+
+		expect(deleted).not.toBeNull();
+		expect(deleted?.removedFlaggedCount).toBe(0);
+		expect(deleted?.flagged.accounts).toHaveLength(2);
+		expect(saveFlaggedAccountsMock).not.toHaveBeenCalled();
 	});
 
 	it("rethrows the original flagged-save failure after a successful rollback", async () => {

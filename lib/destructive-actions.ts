@@ -129,9 +129,15 @@ export async function deleteAccountAtIndex(options: {
 	clampActiveIndices(nextStorage);
 	await saveAccounts(nextStorage);
 
-	const remainingFlagged = flagged.accounts.filter(
-		(account) => account.refreshToken !== target.refreshToken,
-	);
+	const targetRefreshToken =
+		typeof target.refreshToken === "string" && target.refreshToken.trim()
+			? target.refreshToken
+			: undefined;
+	const remainingFlagged = targetRefreshToken
+		? flagged.accounts.filter(
+				(account) => account.refreshToken !== targetRefreshToken,
+			)
+		: flagged.accounts;
 	const removedFlaggedCount = flagged.accounts.length - remainingFlagged.length;
 	let updatedFlagged = flagged;
 	if (removedFlaggedCount > 0) {
