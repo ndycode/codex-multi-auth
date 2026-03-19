@@ -1133,36 +1133,14 @@ describe("codex manager cli commands", () => {
 			activeIndexByFamily: { codex: 0 },
 			accounts: [],
 		});
-		assessOpencodeAccountPoolMock.mockResolvedValue({
-			backup: {
-				name: "openai-codex-accounts.json",
-				path: "C:\\mock\\openai-codex-accounts.json",
-				createdAt: null,
-				updatedAt: Date.now(),
-				sizeBytes: 128,
-				version: 3,
-				accountCount: 1,
-				schemaErrors: [],
-				valid: true,
-				loadError: "",
-			},
-			currentAccountCount: 0,
-			mergedAccountCount: null,
-			imported: null,
-			skipped: null,
-			wouldExceedLimit: false,
-			eligibleForRestore: false,
-			nextActiveIndex: null,
-			nextActiveEmail: undefined,
-			nextActiveAccountId: undefined,
-			activeAccountChanged: false,
-			error: "Import source cannot be the active storage file.",
-		});
+		assessOpencodeAccountPoolMock.mockRejectedValueOnce(
+			new Error("Import source cannot be the active storage file."),
+		);
 		getStoragePathMock.mockReturnValue("c:/mock/openai-codex-accounts.json");
 		promptLoginModeMock
 			.mockResolvedValueOnce({ mode: "import-opencode" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -1171,10 +1149,10 @@ describe("codex manager cli commands", () => {
 		expect(assessOpencodeAccountPoolMock).toHaveBeenCalledTimes(1);
 		expect(confirmMock).not.toHaveBeenCalled();
 		expect(importAccountsMock).not.toHaveBeenCalled();
-		expect(logSpy).toHaveBeenCalledWith(
-			"Import source cannot be the active storage file.",
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Import assessment failed: Import source cannot be the active storage file.",
 		);
-		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 
 	it("returns a non-zero exit code when the direct restore-backup command fails", async () => {
