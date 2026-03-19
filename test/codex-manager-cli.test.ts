@@ -3110,6 +3110,55 @@ describe("codex manager cli commands", () => {
 		expect(storageState.accounts).toHaveLength(1);
 	});
 
+	it("falls back to pasted manual input when Windows-style callback bind fails", async () => {
+		setInteractiveTTY(false);
+		const now = Date.now();
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=oauth-state",
+		);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-eacces",
+			refresh: "refresh-eacces",
+			expires: now + 7_200_000,
+			idToken: "id-token-eacces",
+			multiAccount: true,
+		});
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(serverModule.startLocalOAuthServer).mockRejectedValueOnce(
+			Object.assign(new Error("permission denied"), { code: "EACCES" }),
+		);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptQuestionMock).toHaveBeenCalledWith("");
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(1);
+	});
+
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {
 		const now = Date.now();
 		let storageState = {

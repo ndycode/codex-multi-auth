@@ -564,6 +564,7 @@ describe("OpenAIOAuthPlugin", () => {
 		it("uses manual auth flow when browser launch is globally suppressed", async () => {
 			const browserModule = await import("../lib/auth/browser.js");
 			vi.mocked(browserModule.isBrowserLaunchSuppressed).mockReturnValueOnce(true);
+			const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 			const autoMethod = plugin.auth.methods[0] as unknown as {
 				authorize: (inputs?: Record<string, string>) => Promise<{
 					method: string;
@@ -577,6 +578,7 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(flow.method).toBe("code");
 			expect(flow.instructions).toContain("copy the full redirect URL");
 			expect(flow.validate("invalid-callback-value")).toContain("No authorization code found");
+			expect(openBrowserUrlMock).not.toHaveBeenCalled();
 		});
 
 		it("rejects manual OAuth callbacks with mismatched state", async () => {

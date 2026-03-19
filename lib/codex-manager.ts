@@ -37,6 +37,7 @@ import {
 	summarizeForecast,
 	type ForecastAccountResult,
 } from "./forecast.js";
+import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	fetchCodexQuotaSnapshot,
@@ -86,6 +87,8 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
+
+const log = createLogger("codex-manager");
 
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
@@ -1471,7 +1474,22 @@ async function runOAuthFlow(
 	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
 	try {
 		oauthServer = await startLocalOAuthServer({ state });
-	} catch {
+	} catch (serverError) {
+		log.warn(
+			"Local OAuth callback server unavailable; falling back to manual callback entry.",
+			serverError instanceof Error
+				? {
+					message: serverError.message,
+					stack: serverError.stack,
+					code:
+						typeof serverError === "object" &&
+						serverError !== null &&
+						"code" in serverError
+							? String(serverError.code)
+							: undefined,
+				}
+				: { error: String(serverError) },
+		);
 		oauthServer = null;
 	}
 	let code: string | null = null;
