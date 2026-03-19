@@ -1007,13 +1007,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 }
 
                                 await saveAccounts(storage);
+				if (cachedAccountManager) {
+					// Reload manager from disk so we don't overwrite newer rotated
+					// refresh tokens with stale in-memory state.
+					await reloadAccountManagerFromDisk();
+				}
+				const activeAccountManager = cachedAccountManager;
 				const codexCliDirectInjectionEnabledForEvent =
 					getCodexCliDirectInjection(loadPluginConfig());
-				if (cachedAccountManager && codexCliDirectInjectionEnabledForEvent) {
+				if (activeAccountManager && codexCliDirectInjectionEnabledForEvent) {
 					const synced = await queueCodexCliSelectionSync(async () => {
-						const freshManager = await reloadAccountManagerFromDisk();
 						try {
-							return await freshManager.syncCodexCliActiveSelectionForIndex(index);
+							return await activeAccountManager.syncCodexCliActiveSelectionForIndex(
+								index,
+							);
 						} catch (error) {
 							logWarn(
 								`[${PLUGIN_NAME}] Codex CLI selection sync failed for manual account selection`,

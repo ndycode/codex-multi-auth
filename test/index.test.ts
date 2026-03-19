@@ -1771,19 +1771,20 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
 		];
 		const configModule = await import("../lib/config.js");
-		vi.mocked(configModule.getCodexCliDirectInjection)
-			.mockReturnValueOnce(false)
-			.mockReturnValueOnce(false);
+		vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(false);
+		try {
+			const { plugin } = await setupPlugin();
+			syncCodexCliSelectionMock.mockClear();
+			await plugin.event({
+				event: { type: "account.select", properties: { index: 1 } },
+			});
 
-		const { plugin } = await setupPlugin();
-		syncCodexCliSelectionMock.mockClear();
-		await plugin.event({
-			event: { type: "account.select", properties: { index: 1 } },
-		});
-
-		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
-		expect(mockStorage.activeIndex).toBe(1);
-		expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(1);
+			expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+			expect(mockStorage.activeIndex).toBe(1);
+			expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(1);
+		} finally {
+			vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(true);
+		}
 	});
 
 	it("keeps a recovered failover response when forced CLI reinjection hits transient windows write errors", async () => {
@@ -3280,6 +3281,35 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		expect(loadFromDiskSpy.mock.invocationCallOrder[0]).toBeLessThan(
 			syncCodexCliSelectionMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
 		);
+	});
+
+	it("reloads account manager from disk when handling account.select even if direct injection is disabled", async () => {
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const { AccountManager } = await import("../lib/accounts.js");
+		const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+		const configModule = await import("../lib/config.js");
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		await plugin.auth.loader(getAuth, { options: {}, models: {} });
+		loadFromDiskSpy.mockClear();
+		syncCodexCliSelectionMock.mockClear();
+		vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(false);
+
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+
+		expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
 	});
 
 	it("handles openai.account.select with openai provider", async () => {
