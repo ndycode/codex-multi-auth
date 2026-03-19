@@ -333,6 +333,7 @@ vi.mock("../lib/accounts.js", () => {
 				accountId: "acc-1",
 				email: "user1@example.com",
 				refreshToken: "refresh-1",
+				addedAt: 1,
 			},
 		];
 
@@ -1149,12 +1150,14 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			accountId: "acc-1",
 			email: "user1@example.com",
 			refreshToken: "refresh-1",
+			addedAt: 1,
 		};
 		const accountTwo = {
 			index: 1,
 			accountId: "acc-2",
 			email: "user2@example.com",
 			refreshToken: "refresh-2",
+			addedAt: 2,
 		};
 		vi.spyOn(AccountManager.prototype, "getAccountCount").mockReturnValue(2);
 		vi.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
@@ -1216,6 +1219,53 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("queues manual account selection behind an in-flight CLI sync", async () => {
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+
+		let resolveSync: (() => void) | null = null;
+		let notifySyncStarted: (() => void) | null = null;
+		const syncStarted = new Promise<void>((resolve) => {
+			notifySyncStarted = resolve;
+		});
+		syncCodexCliSelectionMock.mockImplementationOnce(
+			() =>
+				new Promise<boolean>((resolve) => {
+					notifySyncStarted?.();
+					resolveSync = () => resolve(true);
+				}),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		const requestPromise = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		await syncStarted;
+		const eventPromise = plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+
+		await vi.waitFor(() => expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1));
+		resolveSync?.();
+
+		const response = await requestPromise;
+		await eventPromise;
+
+		expect(response.status).toBe(200);
+		expect(
+			syncCodexCliSelectionMock.mock.calls
+				.map((call) => call[0])
+				.slice(0, 2),
+		).toEqual([0, 1]);
+	});
+
 	it("forces CLI reinjection after a token refresh keeps the same signature fields", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		vi.mocked(fetchHelpers.shouldRefreshToken)
@@ -1228,6 +1278,29 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expires: Date.now() + 60_000,
 			multiAccount: true,
 		});
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const firstResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+		const secondResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(firstResponse.status).toBe(200);
+		expect(secondResponse.status).toBe(200);
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 0]);
+	});
+
+	it("retries CLI injection on the next request after a failed write", async () => {
+		syncCodexCliSelectionMock
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce(true);
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
 		);
@@ -1269,6 +1342,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				refreshToken: "refresh-1",
 				access: "access-account-1",
 				expires: Date.now() + 60_000,
+				addedAt: 1,
 			};
 			const accountTwo = {
 				index: 1,
@@ -1277,6 +1351,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				refreshToken: "refresh-2",
 				access: "access-account-2",
 				expires: Date.now() + 60_000,
+				addedAt: 2,
 			};
 			const customManager = {
 				accounts: [accountOne, accountTwo],
@@ -1329,6 +1404,222 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 			expect(response.status).toBe(200);
 			expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
+		} finally {
+			vi.doUnmock("../lib/request/stream-failover.js");
+			vi.resetModules();
+		}
+	});
+
+	it("forces failover CLI reinjection even when the fallback account was previously injected", async () => {
+		vi.doMock("../lib/request/stream-failover.js", () => ({
+			withStreamingFailover: async (
+				response: Response,
+				failover: (attempt: number, emittedBytes: number) => Promise<Response | null>,
+			) => (await failover(1, 128)) ?? response,
+		}));
+		try {
+			vi.resetModules();
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+				(_init, _accountId, accessToken) =>
+					new Headers({ "x-test-access-token": String(accessToken) }),
+			);
+			const { AccountManager } = await import("../lib/accounts.js");
+			const accountOne = {
+				index: 0,
+				accountId: "acc-1",
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+				access: "access-account-1",
+				expires: Date.now() + 60_000,
+				addedAt: 1,
+			};
+			const accountTwo = {
+				index: 1,
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+				access: "access-account-2",
+				expires: Date.now() + 60_000,
+				addedAt: 2,
+			};
+			const currentAccount = vi
+				.fn()
+				.mockReturnValueOnce(accountTwo)
+				.mockReturnValueOnce(accountOne)
+				.mockImplementation(() => null);
+			const customManager = {
+				accounts: [accountOne, accountTwo],
+				getCurrentOrNextForFamilyHybrid: currentAccount,
+				getAccountCount: () => 2,
+				getAccountsSnapshot: () => [accountOne, accountTwo],
+				isAccountAvailableForFamily: () => true,
+				getAccountByIndex: (index: number) =>
+					index === 0 ? accountOne : index === 1 ? accountTwo : null,
+				toAuthDetails: (account: typeof accountOne) => ({
+					type: "oauth" as const,
+					access: account.access,
+					refresh: account.refreshToken,
+					expires: account.expires,
+					multiAccount: true,
+				}),
+				consumeToken: vi.fn(() => true),
+				updateFromAuth: vi.fn(),
+				clearAuthFailures: vi.fn(),
+				saveToDiskDebounced: vi.fn(),
+				saveToDisk: vi.fn(),
+				hasRefreshToken: vi.fn(() => true),
+				syncCodexCliActiveSelectionForIndex: (index: number) =>
+					syncCodexCliSelectionMock(index),
+				recordFailure: vi.fn(),
+				recordSuccess: vi.fn(),
+				recordRateLimit: vi.fn(),
+				refundToken: vi.fn(),
+				markRateLimitedWithReason: vi.fn(),
+				markSwitched: vi.fn(),
+				shouldShowAccountToast: () => false,
+				markToastShown: vi.fn(),
+				getMinWaitTimeForFamily: () => 0,
+				getCurrentAccountForFamily: () => accountOne,
+			};
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
+			syncCodexCliSelectionMock
+				.mockResolvedValueOnce(true)
+				.mockResolvedValueOnce(false)
+				.mockResolvedValueOnce(true);
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ content: "seed" }), { status: 200 }),
+				)
+				.mockResolvedValueOnce(new Response("streaming", { status: 200 }))
+				.mockResolvedValueOnce(new Response("retry later", { status: 429 }))
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ content: "fallback-ok" }), { status: 200 }),
+				);
+
+			const { sdk } = await setupPlugin();
+			const seedResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+			});
+
+			expect(seedResponse.status).toBe(200);
+			expect(response.status).toBe(200);
+			expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([1, 0, 1]);
+		} finally {
+			vi.doUnmock("../lib/request/stream-failover.js");
+			vi.resetModules();
+		}
+	});
+
+	it("keeps a recovered failover response when forced CLI reinjection hits transient windows write errors", async () => {
+		vi.doMock("../lib/request/stream-failover.js", () => ({
+			withStreamingFailover: async (
+				response: Response,
+				failover: (attempt: number, emittedBytes: number) => Promise<Response | null>,
+			) => (await failover(1, 128)) ?? response,
+		}));
+		try {
+			for (const code of ["EACCES", "EBUSY"] as const) {
+				vi.resetModules();
+				const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+				vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+					(_init, _accountId, accessToken) =>
+						new Headers({ "x-test-access-token": String(accessToken) }),
+				);
+				const loggerModule = await import("../lib/logger.js");
+				const { AccountManager } = await import("../lib/accounts.js");
+				const accountOne = {
+					index: 0,
+					accountId: "acc-1",
+					email: "user1@example.com",
+					refreshToken: "refresh-1",
+					access: "access-account-1",
+					expires: Date.now() + 60_000,
+					addedAt: 1,
+				};
+				const accountTwo = {
+					index: 1,
+					accountId: "acc-2",
+					email: "user2@example.com",
+					refreshToken: "refresh-2",
+					access: "access-account-2",
+					expires: Date.now() + 60_000,
+					addedAt: 2,
+				};
+				const customManager = {
+					accounts: [accountOne, accountTwo],
+					getCurrentOrNextForFamilyHybrid: vi
+						.fn()
+						.mockReturnValueOnce(accountOne)
+						.mockReturnValueOnce(accountTwo)
+						.mockImplementation(() => null),
+					getAccountCount: () => 2,
+					getAccountsSnapshot: () => [accountOne, accountTwo],
+					isAccountAvailableForFamily: () => true,
+					getAccountByIndex: (index: number) =>
+						index === 0 ? accountOne : index === 1 ? accountTwo : null,
+					toAuthDetails: (account: typeof accountOne) => ({
+						type: "oauth" as const,
+						access: account.access,
+						refresh: account.refreshToken,
+						expires: account.expires,
+						multiAccount: true,
+					}),
+					consumeToken: vi.fn(() => true),
+					updateFromAuth: vi.fn(),
+					clearAuthFailures: vi.fn(),
+					saveToDiskDebounced: vi.fn(),
+					saveToDisk: vi.fn(),
+					hasRefreshToken: vi.fn(() => true),
+					syncCodexCliActiveSelectionForIndex: (index: number) =>
+						syncCodexCliSelectionMock(index),
+					recordFailure: vi.fn(),
+					recordSuccess: vi.fn(),
+					recordRateLimit: vi.fn(),
+					refundToken: vi.fn(),
+					markRateLimitedWithReason: vi.fn(),
+					markSwitched: vi.fn(),
+					shouldShowAccountToast: () => false,
+					markToastShown: vi.fn(),
+					getMinWaitTimeForFamily: () => 0,
+					getCurrentAccountForFamily: () => accountOne,
+				};
+				vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
+				syncCodexCliSelectionMock.mockReset();
+				syncCodexCliSelectionMock
+					.mockResolvedValueOnce(true)
+					.mockRejectedValueOnce(Object.assign(new Error(`${code} fail`), { code }));
+				vi.mocked(loggerModule.logWarn).mockClear();
+				globalThis.fetch = vi
+					.fn()
+					.mockResolvedValueOnce(new Response("streaming", { status: 200 }))
+					.mockResolvedValueOnce(new Response("retry later", { status: 429 }))
+					.mockResolvedValueOnce(
+						new Response(JSON.stringify({ content: `${code}-ok` }), { status: 200 }),
+					);
+
+				const { sdk } = await setupPlugin();
+				const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+					method: "POST",
+					body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+				});
+
+				expect(response.status).toBe(200);
+				expect(await response.text()).toContain(`${code}-ok`);
+				expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
+					expect.stringContaining("Codex CLI selection sync failed"),
+					expect.objectContaining({
+						accountIndex: 1,
+						code,
+					}),
+				);
+			}
 		} finally {
 			vi.doUnmock("../lib/request/stream-failover.js");
 			vi.resetModules();

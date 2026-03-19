@@ -927,6 +927,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			});
 		};
 
+		const queueCodexCliSelectionSync = async (
+			runSync: () => Promise<boolean>,
+		): Promise<boolean> => {
+			const priorSync = codexCliSelectionSyncQueue;
+			let releaseSyncQueue!: () => void;
+			codexCliSelectionSyncQueue = new Promise<void>((resolve) => {
+				releaseSyncQueue = resolve;
+			});
+			await priorSync.catch(() => undefined);
+			try {
+				return await runSync();
+			} finally {
+				releaseSyncQueue();
+			}
+		};
+
         // Event handler for session recovery and account selection
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
           try {
@@ -964,8 +980,28 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
                                 await saveAccounts(storage);
 				if (cachedAccountManager) {
-					const freshManager = await reloadAccountManagerFromDisk();
-					const synced = await freshManager.syncCodexCliActiveSelectionForIndex(index);
+					const synced = await queueCodexCliSelectionSync(async () => {
+						const freshManager = await reloadAccountManagerFromDisk();
+						try {
+							return await freshManager.syncCodexCliActiveSelectionForIndex(index);
+						} catch (error) {
+							logWarn(
+								`[${PLUGIN_NAME}] Codex CLI selection sync failed for manual account selection`,
+								{
+									accountIndex: index,
+									code:
+										error &&
+										typeof error === "object" &&
+										"code" in error
+											? String((error as NodeJS.ErrnoException).code ?? "")
+											: "",
+									error:
+										error instanceof Error ? error.message : String(error),
+								},
+							);
+							return false;
+						}
+					});
 					if (synced) {
 						lastCodexCliActiveSyncIndex = index;
 						lastCodexCliActiveSyncSignature = null;
@@ -1159,30 +1195,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const buildCodexCliSelectionSignature = (
 					account: {
 						index: number;
-						accountId?: string;
-						email?: string;
-						expires?: number;
-						expiresAt?: number;
+						addedAt?: number;
 					},
 				): string =>
-					[
-						account.index,
-						account.accountId?.trim() ?? "",
-						account.email?.trim().toLowerCase() ?? "",
-						typeof account.expires === "number"
-							? account.expires
-							: typeof account.expiresAt === "number"
-								? account.expiresAt
-								: "",
-					].join("|");
+					[account.index, String(account.addedAt ?? "")].join("|");
 
 				const syncCodexCliSelectionNow = async (
 					account: {
 						index: number;
-						accountId?: string;
-						email?: string;
-						expires?: number;
-						expiresAt?: number;
+						addedAt?: number;
 					},
 					options?: { force?: boolean },
 				): Promise<boolean> => {
@@ -1198,26 +1219,37 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						) {
 							return true;
 						}
-						const synced = await accountManager.syncCodexCliActiveSelectionForIndex(
-							account.index,
-						);
+						let synced = false;
+						try {
+							synced =
+								await accountManager.syncCodexCliActiveSelectionForIndex(
+									account.index,
+								);
+						} catch (error) {
+							logWarn(
+								`[${PLUGIN_NAME}] Codex CLI selection sync failed`,
+								{
+									accountIndex: account.index,
+									signature,
+									code:
+										error &&
+										typeof error === "object" &&
+										"code" in error
+											? String((error as NodeJS.ErrnoException).code ?? "")
+											: "",
+									error:
+										error instanceof Error ? error.message : String(error),
+								},
+							);
+							return false;
+						}
 						if (synced) {
 							lastCodexCliActiveSyncIndex = account.index;
 							lastCodexCliActiveSyncSignature = signature;
 						}
 						return synced;
 					};
-					const priorSync = codexCliSelectionSyncQueue;
-					let releaseSyncQueue!: () => void;
-					codexCliSelectionSyncQueue = new Promise<void>((resolve) => {
-						releaseSyncQueue = resolve;
-					});
-					await priorSync.catch(() => undefined);
-					try {
-						return await runSync();
-					} finally {
-						releaseSyncQueue();
-					}
+					return await queueCodexCliSelectionSync(runSync);
 				};
 
 

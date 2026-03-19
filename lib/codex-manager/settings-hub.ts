@@ -2553,22 +2553,22 @@ async function promptExperimentalSettings(
 					color: "green",
 				},
 				{
-					label: `${formatDashboardSettingState(draft.codexCliDirectInjection ?? true)} ${UI_COPY.settings.experimentalDirectCliInjection}`,
+					label: `${formatDashboardSettingState(draft.codexCliDirectInjection === true)} ${UI_COPY.settings.experimentalDirectCliInjection}`,
 					value: { type: "toggle-direct-cli-injection" },
 					color: "green",
 				},
 				{
-					label: `${formatDashboardSettingState(draft.sessionAffinity ?? true)} ${UI_COPY.settings.experimentalManualSessionLock}`,
+					label: `${formatDashboardSettingState(draft.sessionAffinity === true)} ${UI_COPY.settings.experimentalManualSessionLock}`,
 					value: { type: "toggle-session-affinity" },
 					color: "yellow",
 				},
 				{
-					label: `${formatDashboardSettingState(draft.retryAllAccountsRateLimited ?? true)} ${UI_COPY.settings.experimentalPoolFallback}`,
+					label: `${formatDashboardSettingState(draft.retryAllAccountsRateLimited === true)} ${UI_COPY.settings.experimentalPoolFallback}`,
 					value: { type: "toggle-pool-retry" },
 					color: "green",
 				},
 				{
-					label: `${formatDashboardSettingState(draft.preemptiveQuotaEnabled ?? true)} ${UI_COPY.settings.experimentalQuotaRotation}`,
+					label: `${formatDashboardSettingState(draft.preemptiveQuotaEnabled === true)} ${UI_COPY.settings.experimentalQuotaRotation}`,
 					value: { type: "toggle-preemptive-quota" },
 					color: "yellow",
 				},
@@ -2641,28 +2641,28 @@ async function promptExperimentalSettings(
 		if (action.type === "toggle-direct-cli-injection") {
 			draft = {
 				...draft,
-				codexCliDirectInjection: !(draft.codexCliDirectInjection ?? true),
+				codexCliDirectInjection: !draft.codexCliDirectInjection,
 			};
 			continue;
 		}
 		if (action.type === "toggle-session-affinity") {
 			draft = {
 				...draft,
-				sessionAffinity: !(draft.sessionAffinity ?? true),
+				sessionAffinity: !draft.sessionAffinity,
 			};
 			continue;
 		}
 		if (action.type === "toggle-preemptive-quota") {
 			draft = {
 				...draft,
-				preemptiveQuotaEnabled: !(draft.preemptiveQuotaEnabled ?? true),
+				preemptiveQuotaEnabled: !draft.preemptiveQuotaEnabled,
 			};
 			continue;
 		}
 		if (action.type === "toggle-pool-retry") {
 			draft = {
 				...draft,
-				retryAllAccountsRateLimited: !(draft.retryAllAccountsRateLimited ?? true),
+				retryAllAccountsRateLimited: !draft.retryAllAccountsRateLimited,
 			};
 			continue;
 		}
