@@ -130,6 +130,7 @@ function enrichActiveAccountRecordWithTokens(
 	const selectedIdToken = readTrimmedString(selection.idToken);
 	const accountId = selection.accountId?.trim() || readAccountId(record);
 	const email = normalizeEmail(selection.email) ?? normalizeEmail(record.email);
+	const hasSelectedTokenPair = Boolean(selectedAccess && selectedRefresh);
 
 	const accessToken = selectedAccess ?? currentAccess;
 	const refreshToken = selectedRefresh ?? currentRefresh;
@@ -137,7 +138,10 @@ function enrichActiveAccountRecordWithTokens(
 		return record;
 	}
 
-	const idToken = selectedIdToken ?? currentIdToken ?? accessToken;
+	const idToken =
+		selectedIdToken ??
+		(hasSelectedTokenPair ? undefined : currentIdToken) ??
+		accessToken;
 	const next = { ...record } as Record<string, unknown>;
 
 	next.accessToken = accessToken;
@@ -477,6 +481,11 @@ export async function setCodexCliActiveSelection(
 							}
 						} else {
 							const chosenSelection = extractSelectionFromAccountRecord(chosen);
+							const hasExplicitSelectedTokenPair =
+								typeof selection.accessToken === "string" &&
+								selection.accessToken.trim().length > 0 &&
+								typeof selection.refreshToken === "string" &&
+								selection.refreshToken.trim().length > 0;
 							resolvedSelection = {
 								...resolvedSelection,
 								accountId: resolvedSelection.accountId ?? chosenSelection.accountId,
@@ -484,7 +493,9 @@ export async function setCodexCliActiveSelection(
 								accessToken: resolvedSelection.accessToken ?? chosenSelection.accessToken,
 								refreshToken: resolvedSelection.refreshToken ?? chosenSelection.refreshToken,
 								expiresAt: resolvedSelection.expiresAt ?? chosenSelection.expiresAt,
-								idToken: resolvedSelection.idToken ?? chosenSelection.idToken,
+								idToken:
+									resolvedSelection.idToken ??
+									(hasExplicitSelectedTokenPair ? undefined : chosenSelection.idToken),
 							};
 
 							const next = { ...parsed };

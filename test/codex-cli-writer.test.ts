@@ -507,6 +507,112 @@ describe("codex-cli writer", () => {
     expect(active?.auth?.tokens?.id_token).toBe("fresh-access");
   });
 
+  it("does not leak a stale selected account id_token when explicit fresh tokens are provided", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify(
+        {
+          activeAccountId: "acc_a",
+          activeEmail: "a@example.com",
+          accounts: [
+            {
+              accountId: "acc_a",
+              email: "a@example.com",
+              active: true,
+              auth: {
+                tokens: {
+                  access_token: "access-a",
+                  refresh_token: "refresh-a",
+                  id_token: "access-a",
+                },
+              },
+            },
+            {
+              accountId: "acc_b",
+              email: "b@example.com",
+              active: false,
+              auth: {
+                tokens: {
+                  access_token: "stale-b-access",
+                  refresh_token: "stale-b-refresh",
+                  id_token: "stale-b-id",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify(
+        {
+          auth_mode: "chatgpt",
+          email: "a@example.com",
+          tokens: {
+            account_id: "acc_a",
+            access_token: "access-a",
+            refresh_token: "refresh-a",
+            id_token: "access-a",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const updated = await setCodexCliActiveSelection({
+      accountId: "acc_b",
+      email: "b@example.com",
+      accessToken: "fresh-access",
+      refreshToken: "fresh-refresh",
+    });
+    expect(updated).toBe(true);
+
+    const writtenAccounts = JSON.parse(await readFile(accountsPath, "utf-8")) as {
+      activeAccountId?: string;
+      activeEmail?: string;
+      accounts?: Array<{
+        accountId?: string;
+        email?: string;
+        active?: boolean;
+        auth?: {
+          tokens?: {
+            access_token?: string;
+            refresh_token?: string;
+            id_token?: string;
+          };
+        };
+      }>;
+    };
+    const active = writtenAccounts.accounts?.find((entry) => entry.active === true);
+    expect(writtenAccounts.activeAccountId).toBe("acc_b");
+    expect(writtenAccounts.activeEmail).toBe("b@example.com");
+    expect(active?.accountId).toBe("acc_b");
+    expect(active?.auth?.tokens?.access_token).toBe("fresh-access");
+    expect(active?.auth?.tokens?.refresh_token).toBe("fresh-refresh");
+    expect(active?.auth?.tokens?.id_token).toBe("fresh-access");
+
+    const writtenAuth = JSON.parse(await readFile(authPath, "utf-8")) as {
+      email?: string;
+      tokens?: {
+        account_id?: string;
+        access_token?: string;
+        refresh_token?: string;
+        id_token?: string;
+      };
+    };
+    expect(writtenAuth.email).toBe("b@example.com");
+    expect(writtenAuth.tokens?.account_id).toBe("acc_b");
+    expect(writtenAuth.tokens?.access_token).toBe("fresh-access");
+    expect(writtenAuth.tokens?.refresh_token).toBe("fresh-refresh");
+    expect(writtenAuth.tokens?.id_token).toBe("fresh-access");
+  });
+
   it("surfaces auth-path errors when accounts file is absent", async () => {
     await writeFile(authPath, "{not-json", "utf-8");
 
