@@ -1743,20 +1743,20 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 								// Consume a token before making the request for proactive rate limiting
 								const tokenConsumed = accountManager.consumeToken(account, modelFamily, model);
-									if (!tokenConsumed) {
-										accountManager.recordRateLimit(account, modelFamily, model);
-										runtimeMetrics.accountRotations++;
+								if (!tokenConsumed) {
+									accountManager.recordRateLimit(account, modelFamily, model);
+									runtimeMetrics.accountRotations++;
 									runtimeMetrics.lastError =
 										`Local token bucket depleted for account ${account.index + 1} (${modelFamily}${model ? `:${model}` : ""})`;
-										logWarn(
-											`Skipping account ${account.index + 1}: local token bucket depleted for ${modelFamily}${model ? `:${model}` : ""}`,
-										);
-										continue;
-									}
-									await syncCodexCliSelectionNow(account, {
-										force: accountAuthRefreshed,
-										generation: cliSelectionGenerationForRequest,
-									});
+									logWarn(
+										`Skipping account ${account.index + 1}: local token bucket depleted for ${modelFamily}${model ? `:${model}` : ""}`,
+									);
+									continue;
+								}
+								await syncCodexCliSelectionNow(account, {
+									force: accountAuthRefreshed,
+									generation: cliSelectionGenerationForRequest,
+								});
 
 							let sameAccountRetryCount = 0;
 							let successAccountForResponse = account;

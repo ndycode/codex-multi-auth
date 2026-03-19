@@ -1216,7 +1216,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			.mockImplementationOnce(() => accountOne)
 			.mockImplementationOnce(() => accountTwo)
 			.mockImplementation(() => null);
-		vi.spyOn(AccountManager.prototype, "consumeToken")
+		const consumeSpy = vi.spyOn(AccountManager.prototype, "consumeToken")
 			.mockReturnValueOnce(false)
 			.mockReturnValueOnce(true);
 		globalThis.fetch = vi.fn().mockResolvedValue(
@@ -1230,6 +1230,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 
 		expect(response.status).toBe(200);
+		expect(consumeSpy.mock.invocationCallOrder[1]).toBeLessThan(
+			syncCodexCliSelectionMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
 		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([1]);
 	});
 

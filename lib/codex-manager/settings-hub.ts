@@ -2665,21 +2665,21 @@ async function promptExperimentalSettings(
 		if (action.type === "toggle-session-affinity") {
 			draft = {
 				...draft,
-				sessionAffinity: !draft.sessionAffinity,
+				sessionAffinity: !(draft.sessionAffinity !== false),
 			};
 			continue;
 		}
 		if (action.type === "toggle-preemptive-quota") {
 			draft = {
 				...draft,
-				preemptiveQuotaEnabled: !draft.preemptiveQuotaEnabled,
+				preemptiveQuotaEnabled: !(draft.preemptiveQuotaEnabled !== false),
 			};
 			continue;
 		}
 		if (action.type === "toggle-pool-retry") {
 			draft = {
 				...draft,
-				retryAllAccountsRateLimited: !draft.retryAllAccountsRateLimited,
+				retryAllAccountsRateLimited: !(draft.retryAllAccountsRateLimited !== false),
 			};
 			continue;
 		}

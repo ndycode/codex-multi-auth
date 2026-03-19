@@ -735,6 +735,42 @@ describe("settings-hub utility coverage", () => {
 			expect(selected?.codexCliDirectInjection).toBe(false);
 		});
 
+		it("treats missing session affinity config as enabled before toggling it off", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "toggle-session-affinity" },
+				{ type: "save" },
+			);
+
+			const selected = await api.promptExperimentalSettings({});
+
+			expect(selected?.sessionAffinity).toBe(false);
+		});
+
+		it("treats missing preemptive quota config as enabled before toggling it off", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "toggle-preemptive-quota" },
+				{ type: "save" },
+			);
+
+			const selected = await api.promptExperimentalSettings({});
+
+			expect(selected?.preemptiveQuotaEnabled).toBe(false);
+		});
+
+		it("treats missing pool retry config as enabled before toggling it off", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "toggle-pool-retry" },
+				{ type: "save" },
+			);
+
+			const selected = await api.promptExperimentalSettings({});
+
+			expect(selected?.retryAllAccountsRateLimited).toBe(false);
+		});
+
 		it("shows default-true experimental toggles as enabled when unset", async () => {
 			const api = await loadSettingsHubTestApi();
 			let observedLabels: string[] = [];
