@@ -1017,17 +1017,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					getCodexCliDirectInjection(loadPluginConfig());
 				await saveAccounts(storage);
 				const manualSelectionGeneration = ++codexCliSelectionGeneration;
-				let activeAccountManager = cachedAccountManager;
-				if (cachedAccountManager || codexCliDirectInjectionEnabledForEvent) {
-					// Reload manager from disk so we don't overwrite newer rotated
-					// refresh tokens with stale in-memory state, and so the first
-					// manual switch can still inject into Codex CLI.
-					activeAccountManager = await reloadAccountManagerFromDisk();
-				}
+				// Reload immediately after the persisted selection change so the cached
+				// manager cannot keep stale active-index state, even on the first manual
+				// selection before any request path has populated the cache.
+				const activeAccountManager = await reloadAccountManagerFromDisk();
 				if (activeAccountManager && codexCliDirectInjectionEnabledForEvent) {
 					const synced = await queueCodexCliSelectionSync({
 						generation: manualSelectionGeneration,
-						runSync: async () => {
+						runSync: async ({ isStale }) => {
+							if (isStale()) {
+								return false;
+							}
 						try {
 							return await activeAccountManager.syncCodexCliActiveSelectionForIndex(
 								index,

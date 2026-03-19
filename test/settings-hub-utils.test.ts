@@ -735,6 +735,27 @@ describe("settings-hub utility coverage", () => {
 			expect(selected?.codexCliDirectInjection).toBe(false);
 		});
 
+		it("shows default-true experimental toggles as enabled when unset", async () => {
+			const api = await loadSettingsHubTestApi();
+			let observedLabels: string[] = [];
+			selectHandler = async (items) => {
+				observedLabels = items.map((item) => item.label);
+				return { type: "save" };
+			};
+
+			const selected = await api.promptExperimentalSettings({});
+
+			expect(selected).not.toBeNull();
+			expect(observedLabels).toEqual(
+				expect.arrayContaining([
+					"[x] Direct Codex CLI Injection",
+					"[x] Manual Session Lock",
+					"[x] Retry Whole Pool on Rate Limit",
+					"[x] Auto-Rotate on Quota Pressure",
+				]),
+			);
+		});
+
 		it("preserves experimental toggles when backend settings reset is used", async () => {
 			const api = await loadSettingsHubTestApi();
 			queueSelectResults(
@@ -748,6 +769,9 @@ describe("settings-hub utility coverage", () => {
 				sessionAffinity: false,
 				retryAllAccountsRateLimited: false,
 				preemptiveQuotaEnabled: false,
+				preemptiveQuotaRemainingPercent5h: 25,
+				preemptiveQuotaRemainingPercent7d: 15,
+				preemptiveQuotaMaxDeferralMs: 180_000,
 			});
 			expect(selected).toEqual(
 				expect.objectContaining({
@@ -757,13 +781,17 @@ describe("settings-hub utility coverage", () => {
 					sessionAffinity: false,
 					retryAllAccountsRateLimited: false,
 					preemptiveQuotaEnabled: false,
+					preemptiveQuotaRemainingPercent5h: 25,
+					preemptiveQuotaRemainingPercent7d: 15,
+					preemptiveQuotaMaxDeferralMs: 180_000,
 				}),
 			);
 		});
 
-		it("supports the experimental rotation quota o shortcut", async () => {
+		it("keeps the experimental rotation quota o shortcut scoped to the outer prompt", async () => {
 			const api = await loadSettingsHubTestApi();
 			let observedShortcutResult: unknown;
+			let observedInnerShortcutResult: unknown;
 			let callCount = 0;
 			selectHandler = async (_items, options) => {
 				callCount += 1;
@@ -774,6 +802,9 @@ describe("settings-hub utility coverage", () => {
 					return observedShortcutResult;
 				}
 				if (callCount === 2) {
+					observedInnerShortcutResult = (options as {
+						onInput?: (raw: string) => unknown;
+					}).onInput?.("o");
 					return { type: "back" };
 				}
 				return { type: "save" };
@@ -785,6 +816,7 @@ describe("settings-hub utility coverage", () => {
 			});
 
 			expect(observedShortcutResult).toEqual({ type: "open-rotation-quota" });
+			expect(observedInnerShortcutResult).toBeUndefined();
 			expect(selected).toEqual(
 				expect.objectContaining({
 					preemptiveQuotaEnabled: true,

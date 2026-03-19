@@ -822,6 +822,11 @@ describe('Plugin Configuration', () => {
 			expect(getCodexCliDirectInjection({ codexCliDirectInjection: true })).toBe(false);
 			delete process.env.CODEX_AUTH_DIRECT_CLI_INJECTION;
 		});
+
+		it('honors config false when no env override is present', () => {
+			delete process.env.CODEX_AUTH_DIRECT_CLI_INJECTION;
+			expect(getCodexCliDirectInjection({ codexCliDirectInjection: false })).toBe(false);
+		});
 	});
 });
 

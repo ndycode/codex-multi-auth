@@ -2472,6 +2472,15 @@ async function promptBackendSettings(
 				sessionAffinity: draft.sessionAffinity,
 				retryAllAccountsRateLimited: draft.retryAllAccountsRateLimited,
 				preemptiveQuotaEnabled: draft.preemptiveQuotaEnabled,
+				preemptiveQuotaRemainingPercent5h:
+					draft.preemptiveQuotaRemainingPercent5h ??
+					BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent5h,
+				preemptiveQuotaRemainingPercent7d:
+					draft.preemptiveQuotaRemainingPercent7d ??
+					BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent7d,
+				preemptiveQuotaMaxDeferralMs:
+					draft.preemptiveQuotaMaxDeferralMs ??
+					BACKEND_DEFAULTS.preemptiveQuotaMaxDeferralMs,
 			});
 			for (const category of BACKEND_CATEGORY_OPTIONS) {
 				focusByCategory[category.key] =
@@ -2566,17 +2575,17 @@ async function promptExperimentalSettings(
 					color: "green",
 				},
 				{
-					label: `${formatDashboardSettingState(draft.sessionAffinity === true)} ${UI_COPY.settings.experimentalManualSessionLock}`,
+					label: `${formatDashboardSettingState(draft.sessionAffinity !== false)} ${UI_COPY.settings.experimentalManualSessionLock}`,
 					value: { type: "toggle-session-affinity" },
 					color: "yellow",
 				},
 				{
-					label: `${formatDashboardSettingState(draft.retryAllAccountsRateLimited === true)} ${UI_COPY.settings.experimentalPoolFallback}`,
+					label: `${formatDashboardSettingState(draft.retryAllAccountsRateLimited !== false)} ${UI_COPY.settings.experimentalPoolFallback}`,
 					value: { type: "toggle-pool-retry" },
 					color: "green",
 				},
 				{
-					label: `${formatDashboardSettingState(draft.preemptiveQuotaEnabled === true)} ${UI_COPY.settings.experimentalQuotaRotation}`,
+					label: `${formatDashboardSettingState(draft.preemptiveQuotaEnabled !== false)} ${UI_COPY.settings.experimentalQuotaRotation}`,
 					value: { type: "toggle-preemptive-quota" },
 					color: "yellow",
 				},

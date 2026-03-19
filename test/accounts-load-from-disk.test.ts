@@ -177,8 +177,9 @@ describe("AccountManager loadFromDisk", () => {
       ],
     });
 
-    await manager.syncCodexCliActiveSelectionForIndex(-1);
-    await manager.syncCodexCliActiveSelectionForIndex(9);
+    await expect(manager.syncCodexCliActiveSelectionForIndex(Number.NaN)).resolves.toBe(false);
+    await expect(manager.syncCodexCliActiveSelectionForIndex(-1)).resolves.toBe(false);
+    await expect(manager.syncCodexCliActiveSelectionForIndex(9)).resolves.toBe(false);
     expect(setCodexCliActiveSelection).not.toHaveBeenCalled();
 
     await expect(manager.syncCodexCliActiveSelectionForIndex(0)).resolves.toBe(true);

@@ -295,6 +295,58 @@ const withAccountStorageTransactionMock = vi.fn(
 
 const syncCodexCliSelectionMock = vi.fn(async (_index: number) => true);
 
+type TestAccount = {
+	index: number;
+	accountId: string;
+	email: string;
+	refreshToken: string;
+	access: string;
+	expires: number;
+	addedAt: number;
+};
+
+function buildCustomManager(
+	accountOne: TestAccount,
+	accountTwo: TestAccount,
+	overrides: Record<string, unknown> = {},
+) {
+	return {
+		accounts: [accountOne, accountTwo],
+		getCurrentOrNextForFamilyHybrid: () => accountOne,
+		getAccountCount: () => 2,
+		getAccountsSnapshot: () => [accountOne, accountTwo],
+		isAccountAvailableForFamily: () => true,
+		getAccountByIndex: (index: number) =>
+			index === 0 ? accountOne : index === 1 ? accountTwo : null,
+		toAuthDetails: (account: TestAccount) => ({
+			type: "oauth" as const,
+			access: account.access,
+			refresh: account.refreshToken,
+			expires: account.expires,
+			multiAccount: true,
+		}),
+		consumeToken: vi.fn(() => true),
+		updateFromAuth: vi.fn(),
+		clearAuthFailures: vi.fn(),
+		saveToDiskDebounced: vi.fn(),
+		saveToDisk: vi.fn(),
+		hasRefreshToken: vi.fn(() => true),
+		syncCodexCliActiveSelectionForIndex: (index: number) =>
+			syncCodexCliSelectionMock(index),
+		recordFailure: vi.fn(),
+		recordSuccess: vi.fn(),
+		recordRateLimit: vi.fn(),
+		refundToken: vi.fn(),
+		markRateLimitedWithReason: vi.fn(),
+		markSwitched: vi.fn(),
+		shouldShowAccountToast: () => false,
+		markToastShown: vi.fn(),
+		getMinWaitTimeForFamily: () => 0,
+		getCurrentAccountForFamily: () => accountOne,
+		...overrides,
+	};
+}
+
 vi.mock("../lib/storage.js", async () => {
 	const actual = await vi.importActual("../lib/storage.js");
 	return {
@@ -1276,6 +1328,54 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		).toEqual([0, 1]);
 	});
 
+	it("skips a stale manual account selection sync after a newer selection wins", async () => {
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+
+		let resolveSync: (() => void) | null = null;
+		let notifySyncStarted: (() => void) | null = null;
+		const syncStarted = new Promise<void>((resolve) => {
+			notifySyncStarted = resolve;
+		});
+		syncCodexCliSelectionMock.mockImplementationOnce(
+			() =>
+				new Promise<boolean>((resolve) => {
+					notifySyncStarted?.();
+					resolveSync = () => resolve(true);
+				}),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		const requestPromise = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" } as const),
+		});
+
+		await syncStarted;
+		const firstSelectionPromise = plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+		const secondSelectionPromise = plugin.event({
+			event: { type: "account.select", properties: { index: 0 } },
+		});
+
+		resolveSync?.();
+		const response = await requestPromise;
+		await Promise.all([firstSelectionPromise, secondSelectionPromise]);
+
+		expect(response.status).toBe(200);
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(2);
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([
+			0,
+			0,
+		]);
+	});
+
 	it("does not let an in-flight request restore an older CLI selection after a manual switch", async () => {
 		mockStorage.accounts = [
 			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
@@ -1372,40 +1472,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				.mockReturnValueOnce(accountTwo)
 				.mockReturnValueOnce(accountTwo)
 				.mockImplementation(() => null);
-			const customManager = {
-				accounts: [accountOne, accountTwo],
+			const customManager = buildCustomManager(accountOne, accountTwo, {
 				getCurrentOrNextForFamilyHybrid: currentAccount,
-				getAccountCount: () => 2,
-				getAccountsSnapshot: () => [accountOne, accountTwo],
-				isAccountAvailableForFamily: () => true,
-				getAccountByIndex: (index: number) =>
-					index === 0 ? accountOne : index === 1 ? accountTwo : null,
-				toAuthDetails: (account: typeof accountOne) => ({
-					type: "oauth" as const,
-					access: account.access,
-					refresh: account.refreshToken,
-					expires: account.expires,
-					multiAccount: true,
-				}),
-				consumeToken: vi.fn(() => true),
-				updateFromAuth: vi.fn(),
-				clearAuthFailures: vi.fn(),
-				saveToDiskDebounced: vi.fn(),
-				saveToDisk: vi.fn(),
-				hasRefreshToken: vi.fn(() => true),
-				syncCodexCliActiveSelectionForIndex: (index: number) =>
-					syncCodexCliSelectionMock(index),
-				recordFailure: vi.fn(),
-				recordSuccess: vi.fn(),
-				recordRateLimit: vi.fn(),
-				refundToken: vi.fn(),
-				markRateLimitedWithReason: vi.fn(),
-				markSwitched: vi.fn(),
-				shouldShowAccountToast: () => false,
-				markToastShown: vi.fn(),
-				getMinWaitTimeForFamily: () => 0,
-				getCurrentAccountForFamily: () => accountOne,
-			};
+			});
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
 			syncCodexCliSelectionMock
 				.mockImplementationOnce(
@@ -1547,40 +1616,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				expires: Date.now() + 60_000,
 				addedAt: 2,
 			};
-			const customManager = {
-				accounts: [accountOne, accountTwo],
-				getCurrentOrNextForFamilyHybrid: () => accountOne,
-				getAccountCount: () => 2,
-				getAccountsSnapshot: () => [accountOne, accountTwo],
-				isAccountAvailableForFamily: () => true,
-				getAccountByIndex: (index: number) =>
-					index === 0 ? accountOne : index === 1 ? accountTwo : null,
-				toAuthDetails: (account: typeof accountOne) => ({
-					type: "oauth" as const,
-					access: account.access,
-					refresh: account.refreshToken,
-					expires: account.expires,
-					multiAccount: true,
-				}),
-				consumeToken: vi.fn(() => true),
-				updateFromAuth: vi.fn(),
-				clearAuthFailures: vi.fn(),
-				saveToDiskDebounced: vi.fn(),
-				saveToDisk: vi.fn(),
-				hasRefreshToken: vi.fn(() => true),
-				syncCodexCliActiveSelectionForIndex: (index: number) =>
-					syncCodexCliSelectionMock(index),
-				recordFailure: vi.fn(),
-				recordSuccess: vi.fn(),
-				recordRateLimit: vi.fn(),
-				refundToken: vi.fn(),
-				markRateLimitedWithReason: vi.fn(),
-				markSwitched: vi.fn(),
-				shouldShowAccountToast: () => false,
-				markToastShown: vi.fn(),
-				getMinWaitTimeForFamily: () => 0,
-				getCurrentAccountForFamily: () => accountOne,
-			};
+			const customManager = buildCustomManager(accountOne, accountTwo);
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
 			globalThis.fetch = vi
 				.fn()
@@ -1642,40 +1678,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				.mockReturnValueOnce(accountTwo)
 				.mockReturnValueOnce(accountOne)
 				.mockImplementation(() => null);
-			const customManager = {
-				accounts: [accountOne, accountTwo],
+			const customManager = buildCustomManager(accountOne, accountTwo, {
 				getCurrentOrNextForFamilyHybrid: currentAccount,
-				getAccountCount: () => 2,
-				getAccountsSnapshot: () => [accountOne, accountTwo],
-				isAccountAvailableForFamily: () => true,
-				getAccountByIndex: (index: number) =>
-					index === 0 ? accountOne : index === 1 ? accountTwo : null,
-				toAuthDetails: (account: typeof accountOne) => ({
-					type: "oauth" as const,
-					access: account.access,
-					refresh: account.refreshToken,
-					expires: account.expires,
-					multiAccount: true,
-				}),
-				consumeToken: vi.fn(() => true),
-				updateFromAuth: vi.fn(),
-				clearAuthFailures: vi.fn(),
-				saveToDiskDebounced: vi.fn(),
-				saveToDisk: vi.fn(),
-				hasRefreshToken: vi.fn(() => true),
-				syncCodexCliActiveSelectionForIndex: (index: number) =>
-					syncCodexCliSelectionMock(index),
-				recordFailure: vi.fn(),
-				recordSuccess: vi.fn(),
-				recordRateLimit: vi.fn(),
-				refundToken: vi.fn(),
-				markRateLimitedWithReason: vi.fn(),
-				markSwitched: vi.fn(),
-				shouldShowAccountToast: () => false,
-				markToastShown: vi.fn(),
-				getMinWaitTimeForFamily: () => 0,
-				getCurrentAccountForFamily: () => accountOne,
-			};
+			});
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
 			syncCodexCliSelectionMock
 				.mockResolvedValueOnce(true)
@@ -1745,12 +1750,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				expires: Date.now() + 60_000,
 				addedAt: 1,
 			};
-			const customManager = {
+			const customManager = buildCustomManager(accountOne, accountOne, {
 				accounts: [accountOne],
-				getCurrentOrNextForFamilyHybrid: () => accountOne,
 				getAccountCount: () => 1,
 				getAccountsSnapshot: () => [accountOne],
-				isAccountAvailableForFamily: () => true,
 				getAccountByIndex: (index: number) => (index === 0 ? accountOne : null),
 				toAuthDetails: () => ({
 					type: "oauth" as const,
@@ -1759,25 +1762,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 					expires: accountOne.expires,
 					multiAccount: true,
 				}),
-				consumeToken: vi.fn(() => true),
-				updateFromAuth: vi.fn(),
-				clearAuthFailures: vi.fn(),
-				saveToDiskDebounced: vi.fn(),
-				saveToDisk: vi.fn(),
-				hasRefreshToken: vi.fn(() => true),
-				syncCodexCliActiveSelectionForIndex: (index: number) =>
-					syncCodexCliSelectionMock(index),
-				recordFailure: vi.fn(),
-				recordSuccess: vi.fn(),
-				recordRateLimit: vi.fn(),
-				refundToken: vi.fn(),
-				markRateLimitedWithReason: vi.fn(),
-				markSwitched: vi.fn(),
-				shouldShowAccountToast: () => false,
-				markToastShown: vi.fn(),
-				getMinWaitTimeForFamily: () => 0,
-				getCurrentAccountForFamily: () => accountOne,
-			};
+			});
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
 			globalThis.fetch = vi
 				.fn()
@@ -1857,44 +1842,13 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 					expires: Date.now() + 60_000,
 					addedAt: 2,
 				};
-				const customManager = {
-					accounts: [accountOne, accountTwo],
-					getCurrentOrNextForFamilyHybrid: vi
-						.fn()
-						.mockReturnValueOnce(accountOne)
-						.mockReturnValueOnce(accountTwo)
-						.mockImplementation(() => null),
-					getAccountCount: () => 2,
-					getAccountsSnapshot: () => [accountOne, accountTwo],
-					isAccountAvailableForFamily: () => true,
-					getAccountByIndex: (index: number) =>
-						index === 0 ? accountOne : index === 1 ? accountTwo : null,
-					toAuthDetails: (account: typeof accountOne) => ({
-						type: "oauth" as const,
-						access: account.access,
-						refresh: account.refreshToken,
-						expires: account.expires,
-						multiAccount: true,
-					}),
-					consumeToken: vi.fn(() => true),
-					updateFromAuth: vi.fn(),
-					clearAuthFailures: vi.fn(),
-					saveToDiskDebounced: vi.fn(),
-					saveToDisk: vi.fn(),
-					hasRefreshToken: vi.fn(() => true),
-					syncCodexCliActiveSelectionForIndex: (index: number) =>
-						syncCodexCliSelectionMock(index),
-					recordFailure: vi.fn(),
-					recordSuccess: vi.fn(),
-					recordRateLimit: vi.fn(),
-					refundToken: vi.fn(),
-					markRateLimitedWithReason: vi.fn(),
-					markSwitched: vi.fn(),
-					shouldShowAccountToast: () => false,
-					markToastShown: vi.fn(),
-					getMinWaitTimeForFamily: () => 0,
-					getCurrentAccountForFamily: () => accountOne,
-				};
+			const customManager = buildCustomManager(accountOne, accountTwo, {
+				getCurrentOrNextForFamilyHybrid: vi
+					.fn()
+					.mockReturnValueOnce(accountOne)
+					.mockReturnValueOnce(accountTwo)
+					.mockImplementation(() => null),
+			});
 				vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
 				syncCodexCliSelectionMock.mockClear();
 				syncCodexCliSelectionMock
@@ -1987,44 +1941,13 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				expires: Date.now() + 60_000,
 				addedAt: 2,
 			};
-			const customManager = {
-				accounts: [accountOne, accountTwo],
+			const customManager = buildCustomManager(accountOne, accountTwo, {
 				getCurrentOrNextForFamilyHybrid: vi
 					.fn()
 					.mockReturnValueOnce(accountOne)
 					.mockReturnValueOnce(accountTwo)
 					.mockImplementation(() => null),
-				getAccountCount: () => 2,
-				getAccountsSnapshot: () => [accountOne, accountTwo],
-				isAccountAvailableForFamily: () => true,
-				getAccountByIndex: (index: number) =>
-					index === 0 ? accountOne : index === 1 ? accountTwo : null,
-				toAuthDetails: (account: typeof accountOne) => ({
-					type: "oauth" as const,
-					access: account.access,
-					refresh: account.refreshToken,
-					expires: account.expires,
-					multiAccount: true,
-				}),
-				consumeToken: vi.fn(() => true),
-				updateFromAuth: vi.fn(),
-				clearAuthFailures: vi.fn(),
-				saveToDiskDebounced: vi.fn(),
-				saveToDisk: vi.fn(),
-				hasRefreshToken: vi.fn(() => true),
-				syncCodexCliActiveSelectionForIndex: (index: number) =>
-					syncCodexCliSelectionMock(index),
-				recordFailure: vi.fn(),
-				recordSuccess: vi.fn(),
-				recordRateLimit: vi.fn(),
-				refundToken: vi.fn(),
-				markRateLimitedWithReason: vi.fn(),
-				markSwitched: vi.fn(),
-				shouldShowAccountToast: () => false,
-				markToastShown: vi.fn(),
-				getMinWaitTimeForFamily: () => 0,
-				getCurrentAccountForFamily: () => accountOne,
-			};
+			});
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
 			globalThis.fetch = vi
 				.fn()
@@ -2535,8 +2458,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 			let legacySelection = 0;
 			let fallbackSelection = 0;
-			const customManager = {
-				getAccountCount: () => 2,
+			const customManager = buildCustomManager(accountOne, accountTwo, {
 				getCurrentOrNextForFamilyHybrid: (_family: string, currentModel?: string) => {
 					if (currentModel === "gpt-5-codex") {
 						if (fallbackSelection === 0) {
@@ -2585,7 +2507,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				markToastShown: () => {},
 				setActiveIndex: () => accountOne,
 				getAccountsSnapshot: () => [accountOne, accountTwo],
-			};
+			});
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
 
 			vi.mocked(configModule.getFallbackOnUnsupportedCodexModel).mockReturnValueOnce(true);
@@ -3384,6 +3306,8 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const { AccountManager } = await import("../lib/accounts.js");
+		const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
 
 		mockStorage.accounts = [
 			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
@@ -3391,11 +3315,12 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		];
 
 		await plugin.event({
-			event: { type: "account.select", properties: { index: 0 } },
+			event: { type: "account.select", properties: { index: 1 } },
 		});
 
-		expect(mockStorage.activeIndex).toBe(0);
-		expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(0);
+		expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+		expect(mockStorage.activeIndex).toBe(1);
+		expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(1);
 	});
 
 	it("handles non-numeric index gracefully", async () => {
