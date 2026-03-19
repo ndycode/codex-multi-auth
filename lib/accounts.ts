@@ -385,7 +385,6 @@ export class AccountManager {
 
 		account.lastUsed = nowMs();
 		account.lastSwitchReason = "rotation";
-		void this.syncCodexCliActiveSelectionForIndex(account.index);
 		return account;
 	}
 

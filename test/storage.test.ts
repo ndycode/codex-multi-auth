@@ -951,6 +951,7 @@ describe("storage", () => {
 		it("should fail export when no accounts exist", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
+			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);

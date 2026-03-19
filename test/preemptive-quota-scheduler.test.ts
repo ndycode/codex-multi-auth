@@ -108,6 +108,7 @@ describe("preemptive quota scheduler", () => {
 		const scheduler = new PreemptiveQuotaScheduler({
 			usedPercentThreshold: 90,
 		});
+		const now = 20_000;
 		scheduler.update("acc:model", {
 			status: 200,
 			primary: {
@@ -117,10 +118,13 @@ describe("preemptive quota scheduler", () => {
 			updatedAt: 10_000,
 		});
 
-		const decision = scheduler.getDeferral("acc:model", 20_000);
+		const decision = scheduler.getDeferral("acc:model", now);
 		expect(decision.defer).toBe(true);
 		expect(decision.reason).toBe("quota-near-exhaustion");
-		expect(decision.waitMs).toBe(0);
+		expect(decision.waitMs).toBe(1);
+
+		scheduler.markRateLimited("acc:model", decision.waitMs, now);
+		expect(scheduler.prune(now + decision.waitMs + 1)).toBe(1);
 	});
 
 	it("prunes expired snapshots", () => {

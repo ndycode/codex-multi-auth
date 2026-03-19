@@ -261,7 +261,7 @@ export class PreemptiveQuotaScheduler {
 			}
 		}
 		if (nearExhausted && snapshot.status !== 429) {
-			return { defer: true, waitMs: 0, reason: "quota-near-exhaustion" };
+			return { defer: true, waitMs: 1, reason: "quota-near-exhaustion" };
 		}
 
 		return { defer: false, waitMs: 0 };

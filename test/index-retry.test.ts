@@ -92,6 +92,10 @@ vi.mock("../lib/accounts.js", () => {
 
 		refundToken() {}
 
+		getActiveIndex() {
+			return 0;
+		}
+
 		syncCodexCliActiveSelectionForIndex() {
 			return Promise.resolve();
 		}

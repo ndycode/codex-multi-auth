@@ -228,6 +228,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let loaderMutex: Promise<void> | null = null;
 	let startupPrewarmTriggered = false;
 	let lastCodexCliActiveSyncIndex: number | null = null;
+	let codexCliActiveSyncChain: Promise<void> = Promise.resolve();
 	let perProjectStorageWarningShown = false;
 	let liveAccountSync: LiveAccountSync | null = null;
 	let liveAccountSyncPath: string | null = null;
@@ -928,16 +929,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const isDirectCliInjectionEnabled = (): boolean =>
 			getCodexCliDirectInjection(loadPluginConfig());
 
-		const syncCodexCliSelectionIfNeeded = async (
+		const syncCodexCliSelectionIfNeeded = (
 			accountManager: AccountManager,
 			index: number,
 		): Promise<void> => {
-			if (!isDirectCliInjectionEnabled()) return;
-			if (lastCodexCliActiveSyncIndex === index) return;
-			const synced = await accountManager.syncCodexCliActiveSelectionForIndex(index);
-			if (synced !== false) {
-				lastCodexCliActiveSyncIndex = index;
-			}
+			if (!isDirectCliInjectionEnabled()) return Promise.resolve();
+			const queuedSync = codexCliActiveSyncChain.then(async () => {
+				if (lastCodexCliActiveSyncIndex === index) return;
+				const synced = await accountManager.syncCodexCliActiveSelectionForIndex(index);
+				if (synced !== false) {
+					lastCodexCliActiveSyncIndex = index;
+				}
+			});
+			codexCliActiveSyncChain = queuedSync.catch(() => {});
+			return queuedSync.catch(() => {});
 		};
 
         // Event handler for session recovery and account selection
@@ -977,10 +982,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
                                 await saveAccounts(storage);
 				if (cachedAccountManager && isDirectCliInjectionEnabled()) {
-					const synced = await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
-					if (synced !== false) {
-						lastCodexCliActiveSyncIndex = index;
-					}
+					await syncCodexCliSelectionIfNeeded(cachedAccountManager, index);
 				}
 
 				// Reload manager from disk so we don't overwrite newer rotated
@@ -1590,9 +1592,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 								const capabilityModelKey = model ?? modelFamily;
 								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);
 								if (quotaDeferral.defer) {
+									const quotaWaitMs = Math.max(1, quotaDeferral.waitMs);
 									accountManager.markRateLimitedWithReason(
 										account,
-										quotaDeferral.waitMs,
+										quotaWaitMs,
 										modelFamily,
 										"quota",
 										model,
@@ -1600,7 +1603,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									accountManager.recordRateLimit(account, modelFamily, model);
 									runtimeMetrics.accountRotations++;
 									runtimeMetrics.lastError =
-										quotaDeferral.waitMs > 0
+										quotaWaitMs > 0
 											? `Preemptive quota deferral for account ${account.index + 1}`
 											: `Preemptive quota rotation for account ${account.index + 1}`;
 									accountManager.saveToDiskDebounced();
@@ -2343,7 +2346,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					runtimeMetrics.successfulRequests++;
 					runtimeMetrics.lastError = null;
 					if (lastCodexCliActiveSyncIndex !== successAccountForResponse.index) {
-						await syncCodexCliSelectionIfNeeded(
+						void syncCodexCliSelectionIfNeeded(
 							accountManager,
 							successAccountForResponse.index,
 						);

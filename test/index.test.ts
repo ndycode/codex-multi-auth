@@ -1097,7 +1097,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		syncCodexCliSelectionMock.mockClear();
+		syncCodexCliSelectionMock.mockReset();
+		syncCodexCliSelectionMock.mockImplementation(async (_index: number) => {});
 		mockStorage.accounts = [
 			{
 				accountId: "acc-1",
@@ -1145,6 +1146,42 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
+	});
+
+	it("returns the response before post-success direct injection sync completes", async () => {
+		const configModule = await import("../lib/config.js");
+		const directInjectionMock = vi.mocked(configModule.getCodexCliDirectInjection);
+		directInjectionMock.mockReturnValue(false);
+		try {
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
+
+			const { sdk } = await setupPlugin();
+			directInjectionMock.mockReturnValue(true);
+			syncCodexCliSelectionMock.mockResolvedValueOnce(true);
+			syncCodexCliSelectionMock.mockImplementationOnce(() => new Promise(() => {}));
+
+			let settled = false;
+			const responsePromise = sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			}).then((response) => {
+				settled = true;
+				return response;
+			});
+
+			const raceResult = await Promise.race([
+				responsePromise.then(() => "resolved"),
+				new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
+			]);
+			expect(raceResult).toBe("resolved");
+			expect(settled).toBe(true);
+			await responsePromise;
+			expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
+		} finally {
+			directInjectionMock.mockReturnValue(true);
+		}
 	});
 
 	it("uses the refreshed token email when checking entitlement blocks", async () => {

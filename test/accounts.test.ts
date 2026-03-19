@@ -13,6 +13,8 @@ import {
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 
+const setCodexCliActiveSelectionMock = vi.hoisted(() => vi.fn(async () => true));
+
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
   return {
@@ -20,6 +22,10 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
     saveAccounts: vi.fn().mockResolvedValue(undefined),
   };
 });
+
+vi.mock("../lib/codex-cli/writer.js", () => ({
+  setCodexCliActiveSelection: setCodexCliActiveSelectionMock,
+}));
 
 describe("parseRateLimitReason", () => {
   it("returns quota for quota-related codes", () => {
@@ -630,6 +636,31 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       expect(manager.hasRefreshToken("non-existent")).toBe(false);
       expect(manager.hasRefreshToken("")).toBe(false);
+    });
+  });
+
+  describe("setActiveIndex", () => {
+    beforeEach(() => {
+      setCodexCliActiveSelectionMock.mockClear();
+    });
+
+    it("updates the active account without syncing the Codex CLI automatically", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          { refreshToken: "token-2", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.setActiveIndex(1);
+
+      expect(account?.index).toBe(1);
+      expect(manager.getActiveIndex()).toBe(1);
+      expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
     });
   });
 
