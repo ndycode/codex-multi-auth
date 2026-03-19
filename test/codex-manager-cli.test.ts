@@ -1437,13 +1437,7 @@ describe("codex manager cli commands", () => {
 		expect(restoreNamedBackupMock).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		{ mode: "fresh", action: deleteSavedAccountsMock },
-		{ mode: "reset", action: resetLocalStateMock },
-	] as const)("suppresses startup restore prompt after deliberate $mode action in the same login session", async ({
-		mode,
-		action,
-	}) => {
+	it("returns a locked restore-backup failure without reopening the login prompt", async () => {
 		setInteractiveTTY(true);
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
