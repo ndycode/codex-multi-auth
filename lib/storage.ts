@@ -2,7 +2,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import {
+	basename,
+	dirname,
+	join,
+	resolve as resolveFilesystemPath,
+} from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
@@ -2081,13 +2086,19 @@ export function detectOpencodeAccountPoolPath(): string | null {
 		(base): base is string => !!base && base.trim().length > 0,
 	);
 	for (const base of appDataBases) {
-		candidates.add(join(base, "OpenCode", ACCOUNTS_FILE_NAME));
-		candidates.add(join(base, "opencode", ACCOUNTS_FILE_NAME));
+		candidates.add(
+			resolveFilesystemPath(join(base, "OpenCode", ACCOUNTS_FILE_NAME)),
+		);
+		candidates.add(
+			resolveFilesystemPath(join(base, "opencode", ACCOUNTS_FILE_NAME)),
+		);
 	}
 
 	const home = homedir();
 	if (home) {
-		candidates.add(join(home, ".opencode", ACCOUNTS_FILE_NAME));
+		candidates.add(
+			resolveFilesystemPath(join(home, ".opencode", ACCOUNTS_FILE_NAME)),
+		);
 	}
 
 	for (const candidate of candidates) {
@@ -2381,7 +2392,7 @@ function extractPathTail(pathValue: string): string {
 
 function redactFilesystemDetails(value: string): string {
 	return value.replace(
-		/(?:[A-Za-z]:)?[\\/][^"'`\r\n]+(?:[\\/][^"'`\r\n]+)+/g,
+		/(?:[A-Za-z]:)?[\\/][^"'`\r\n]+(?:[\\/][^"'`\r\n]+)*/g,
 		(pathValue) => extractPathTail(pathValue),
 	);
 }
