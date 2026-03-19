@@ -1076,10 +1076,10 @@ function backendSettingsSnapshot(
 	config: PluginConfig,
 ): Record<string, unknown> {
 	const snapshot: Record<string, unknown> = {};
+	const directInjectionDefault =
+		BACKEND_DEFAULTS.codexCliDirectInjection ?? true;
 	snapshot.codexCliDirectInjection =
-		config.codexCliDirectInjection ??
-		BACKEND_DEFAULTS.codexCliDirectInjection ??
-		true;
+		config.codexCliDirectInjection ?? directInjectionDefault;
 	for (const option of BACKEND_TOGGLE_OPTIONS) {
 		snapshot[option.key] =
 			config[option.key] ?? BACKEND_DEFAULTS[option.key] ?? false;
@@ -2467,6 +2467,8 @@ async function promptBackendSettings(
 			draft = cloneBackendPluginConfig({
 				...BACKEND_DEFAULTS,
 				codexCliDirectInjection: draft.codexCliDirectInjection,
+				proactiveRefreshGuardian: draft.proactiveRefreshGuardian,
+				proactiveRefreshIntervalMs: draft.proactiveRefreshIntervalMs,
 				sessionAffinity: draft.sessionAffinity,
 				retryAllAccountsRateLimited: draft.retryAllAccountsRateLimited,
 				preemptiveQuotaEnabled: draft.preemptiveQuotaEnabled,

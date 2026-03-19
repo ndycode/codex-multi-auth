@@ -743,6 +743,8 @@ describe("settings-hub utility coverage", () => {
 			);
 			const selected = await api.promptBackendSettings({
 				codexCliDirectInjection: false,
+				proactiveRefreshGuardian: false,
+				proactiveRefreshIntervalMs: 120_000,
 				sessionAffinity: false,
 				retryAllAccountsRateLimited: false,
 				preemptiveQuotaEnabled: false,
@@ -750,6 +752,8 @@ describe("settings-hub utility coverage", () => {
 			expect(selected).toEqual(
 				expect.objectContaining({
 					codexCliDirectInjection: false,
+					proactiveRefreshGuardian: false,
+					proactiveRefreshIntervalMs: 120_000,
 					sessionAffinity: false,
 					retryAllAccountsRateLimited: false,
 					preemptiveQuotaEnabled: false,

@@ -3344,13 +3344,16 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		loadFromDiskSpy.mockClear();
 		syncCodexCliSelectionMock.mockClear();
 		vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(false);
+		try {
+			await plugin.event({
+				event: { type: "account.select", properties: { index: 1 } },
+			});
 
-		await plugin.event({
-			event: { type: "account.select", properties: { index: 1 } },
-		});
-
-		expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
-		expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+			expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+			expect(syncCodexCliSelectionMock).not.toHaveBeenCalled();
+		} finally {
+			vi.mocked(configModule.getCodexCliDirectInjection).mockReturnValue(true);
+		}
 	});
 
 	it("handles openai.account.select with openai provider", async () => {
