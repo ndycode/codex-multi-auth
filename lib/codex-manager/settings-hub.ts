@@ -2467,6 +2467,9 @@ async function promptBackendSettings(
 			draft = cloneBackendPluginConfig({
 				...BACKEND_DEFAULTS,
 				codexCliDirectInjection: draft.codexCliDirectInjection,
+				sessionAffinity: draft.sessionAffinity,
+				retryAllAccountsRateLimited: draft.retryAllAccountsRateLimited,
+				preemptiveQuotaEnabled: draft.preemptiveQuotaEnabled,
 			});
 			for (const category of BACKEND_CATEGORY_OPTIONS) {
 				focusByCategory[category.key] =

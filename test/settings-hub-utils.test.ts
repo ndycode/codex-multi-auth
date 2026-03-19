@@ -735,7 +735,7 @@ describe("settings-hub utility coverage", () => {
 			expect(selected?.codexCliDirectInjection).toBe(false);
 		});
 
-		it("preserves direct injection when backend settings reset is used", async () => {
+		it("preserves experimental toggles when backend settings reset is used", async () => {
 			const api = await loadSettingsHubTestApi();
 			queueSelectResults(
 				{ type: "reset" },
@@ -744,13 +744,15 @@ describe("settings-hub utility coverage", () => {
 			const selected = await api.promptBackendSettings({
 				codexCliDirectInjection: false,
 				sessionAffinity: false,
+				retryAllAccountsRateLimited: false,
 				preemptiveQuotaEnabled: false,
 			});
 			expect(selected).toEqual(
 				expect.objectContaining({
 					codexCliDirectInjection: false,
-					sessionAffinity: true,
-					preemptiveQuotaEnabled: true,
+					sessionAffinity: false,
+					retryAllAccountsRateLimited: false,
+					preemptiveQuotaEnabled: false,
 				}),
 			);
 		});
