@@ -161,6 +161,27 @@ export const UI_COPY = {
 			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (u) restore backup, (i) import OpenCode, (f) fresh, (r) reset, (q) back [a/c/b/x/s/d/g/u/i/f/r/q]: ",
 		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, u, i, f, r, q.",
 	},
+	firstRun: {
+		title: "First-Run Setup",
+		subtitle: (storagePath: string) =>
+			`No saved accounts detected. Storage will be created at ${storagePath}.`,
+		backupSummary: (named: number, rotating: number) => {
+			const total = named + rotating;
+			if (total === 0) return "No backups detected yet";
+			if (named > 0 && rotating > 0)
+				return `Named backups: ${named}, rotating backups: ${rotating}`;
+			if (named > 0) return `Named backups: ${named}`;
+			return `Rotating backups: ${rotating}`;
+		},
+		restore: "Open Backup Browser",
+		importOpencode: "Import OpenCode Accounts",
+		login: "Add or Log In",
+		settings: "Open Settings & Sync",
+		doctor: "Run Doctor / Check Paths",
+		skip: "Skip setup and continue",
+		cancel: "Exit",
+		help: "↑↓ Move | Enter Select | Q Exit",
+	},
 } as const;
 
 /**

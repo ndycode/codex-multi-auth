@@ -80,6 +80,22 @@ export type AuthMenuAction =
 	| { type: "delete-all" }
 	| { type: "cancel" };
 
+export interface FirstRunWizardOptions {
+	storagePath: string;
+	namedBackupCount: number;
+	rotatingBackupCount: number;
+	hasOpencodeSource: boolean;
+}
+
+export type FirstRunWizardAction =
+	| { type: "login" }
+	| { type: "restore" }
+	| { type: "import-opencode" }
+	| { type: "settings" }
+	| { type: "doctor" }
+	| { type: "skip" }
+	| { type: "cancel" };
+
 export type AccountAction =
 	| "back"
 	| "delete"
@@ -916,6 +932,49 @@ export async function showAccountDetails(
 		}
 		return action;
 	}
+}
+
+export async function showFirstRunWizard(
+	options: FirstRunWizardOptions,
+): Promise<FirstRunWizardAction> {
+	const ui = getUiRuntimeOptions();
+	const items: MenuItem<FirstRunWizardAction>[] = [
+		{
+			label: UI_COPY.firstRun.restore,
+			hint: UI_COPY.firstRun.backupSummary(
+				options.namedBackupCount,
+				options.rotatingBackupCount,
+			),
+			value: { type: "restore" },
+			color: "yellow",
+		},
+		...(options.hasOpencodeSource
+			? [
+					{
+						label: UI_COPY.firstRun.importOpencode,
+						value: { type: "import-opencode" as const },
+						color: "yellow" as const,
+					},
+				]
+			: []),
+		{ label: UI_COPY.firstRun.login, value: { type: "login" }, color: "green" },
+		{ label: UI_COPY.firstRun.settings, value: { type: "settings" } },
+		{ label: UI_COPY.firstRun.doctor, value: { type: "doctor" } },
+		{ label: UI_COPY.firstRun.skip, value: { type: "skip" } },
+		{ label: UI_COPY.firstRun.cancel, value: { type: "cancel" }, color: "red" },
+	];
+
+	const result = await select(items, {
+		message: UI_COPY.firstRun.title,
+		subtitle: UI_COPY.firstRun.subtitle(options.storagePath),
+		help: UI_COPY.firstRun.help,
+		clearScreen: true,
+		selectedEmphasis: "minimal",
+		focusStyle: ui.v2Enabled ? "chip" : "row-invert",
+		theme: ui.theme,
+	});
+
+	return result ?? { type: "cancel" };
 }
 
 export { isTTY };

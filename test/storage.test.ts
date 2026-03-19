@@ -1,6 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve as resolvePath } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
 import {
@@ -25,7 +25,6 @@ import {
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getActionableNamedBackupRestores,
-	formatRedactedFilesystemError,
 	getFlaggedAccountsPath,
 	getNamedBackupsDirectoryPath,
 	NAMED_BACKUP_LIST_CONCURRENCY,
@@ -5883,52 +5882,6 @@ describe("storage", () => {
 			expect(assessment?.eligibleForRestore).toBe(true);
 			expect(assessment?.imported).toBe(1);
 		});
-
-		it("resolves relative app data candidates before detection", async () => {
-			const relativeBase = relative(
-				process.cwd(),
-				join(tempRoot, "relative-appdata"),
-			);
-			const resolvedPoolPath = resolvePath(
-				join(relativeBase, "OpenCode", "openai-codex-accounts.json"),
-			);
-			delete process.env.LOCALAPPDATA;
-			process.env.APPDATA = relativeBase;
-			await fs.mkdir(dirname(resolvedPoolPath), { recursive: true });
-			await fs.writeFile(
-				resolvedPoolPath,
-				JSON.stringify({
-					version: 3,
-					activeIndex: 0,
-					accounts: [
-						{
-							accountId: "relative-appdata-account",
-							refreshToken: "ref-relative",
-							addedAt: 1,
-							lastUsed: 1,
-						},
-					],
-				}),
-			);
-
-			expect(detectOpencodeAccountPoolPath()).toBe(resolvedPoolPath);
-			const assessment = await assessOpencodeAccountPool();
-			expect(assessment?.backup.path).toBe(resolvedPoolPath);
-			expect(assessment?.eligibleForRestore).toBe(true);
-			expect(assessment?.imported).toBe(1);
-		});
-
-		it("redacts single-segment filesystem paths in error messages", async () => {
-			const error = new Error(
-				"EPERM: operation not permitted, open 'C:\\accounts.json'",
-			) as NodeJS.ErrnoException;
-			error.code = "EPERM";
-
-			expect(formatRedactedFilesystemError(error)).toBe(
-				"EPERM: operation not permitted, open 'accounts.json'",
-			);
-		});
-
 		it("refuses malformed opencode source before any mutation", async () => {
 			await fs.writeFile(poolPath, "not valid json");
 

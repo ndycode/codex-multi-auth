@@ -101,6 +101,10 @@ import {
 } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { ANSI } from "./ui/ansi.js";
+import {
+	type FirstRunWizardOptions,
+	showFirstRunWizard,
+} from "./ui/auth-menu.js";
 import { confirm } from "./ui/confirm.js";
 import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
@@ -1324,7 +1328,7 @@ async function runActionPanel(
 		await action();
 	} catch (error) {
 		failed = error;
-		capture("x ", [error instanceof Error ? error.message : String(error)]);
+		capture("x ", [collapseWhitespace(formatRedactedFilesystemError(error))]);
 	} finally {
 		running = false;
 		if (timer) {
@@ -4220,6 +4224,14 @@ async function buildLoginMenuHealthSummary(
 	};
 }
 
+function formatOpencodeImportFailure(error: unknown): string {
+	if (typeof error !== "string") {
+		return "OpenCode account pool is not importable.";
+	}
+	const normalized = collapseWhitespace(formatRedactedFilesystemError(error));
+	return normalized || "OpenCode account pool is not importable.";
+}
+
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
@@ -4297,6 +4309,150 @@ export function resolveStartupRecoveryAction(
 		: "open-empty-storage-menu";
 }
 
+function shouldShowFirstRunWizard(storage: AccountStorageV3 | null): boolean {
+	return isInteractiveLoginMenuAvailable() && storage === null;
+}
+
+async function buildFirstRunWizardOptions(): Promise<FirstRunWizardOptions> {
+	let namedBackupCount = 0;
+	let rotatingBackupCount = 0;
+	let hasOpencodeSource = false;
+
+	try {
+		const namedBackups = await listNamedBackups();
+		namedBackupCount = namedBackups.length;
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(`Failed to list named backups (${errorLabel}).`);
+	}
+	try {
+		const rotatingBackups = await listRotatingBackups();
+		rotatingBackupCount = rotatingBackups.length;
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(`Failed to list rotating backups (${errorLabel}).`);
+	}
+	try {
+		hasOpencodeSource = (await assessOpencodeAccountPool()) !== null;
+	} catch (error) {
+		const errorLabel = getRedactedFilesystemErrorLabel(error);
+		console.warn(
+			`Failed to detect OpenCode import source (${errorLabel}).`,
+		);
+	}
+
+	return {
+		storagePath: getStoragePath(),
+		namedBackupCount,
+		rotatingBackupCount,
+		hasOpencodeSource,
+	};
+}
+
+type FirstRunWizardResult =
+	| { outcome: "cancelled" }
+	| { outcome: "continue"; latestStorage: AccountStorageV3 | null };
+
+async function runFirstRunWizard(
+	displaySettings: DashboardDisplaySettings,
+): Promise<FirstRunWizardResult> {
+	while (true) {
+		const action = await showFirstRunWizard(await buildFirstRunWizardOptions());
+		switch (action.type) {
+			case "cancel":
+				console.log("Cancelled.");
+				return { outcome: "cancelled" };
+			case "login":
+			case "skip":
+				return { outcome: "continue", latestStorage: null };
+			case "restore":
+				await runBackupBrowserManager(displaySettings);
+				break;
+			case "import-opencode": {
+				let assessment: BackupRestoreAssessment | null;
+				try {
+					assessment = await assessOpencodeAccountPool();
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Failed to detect OpenCode import source (${errorLabel}).`,
+					);
+					break;
+				}
+				if (!assessment) {
+					console.log("No OpenCode account pool was detected.");
+					break;
+				}
+				if (!assessment.backup.valid || !assessment.eligibleForRestore) {
+					console.log(formatOpencodeImportFailure(assessment.error));
+					break;
+				}
+				if (assessment.wouldExceedLimit) {
+					console.log(
+						`Import would exceed the account limit (${assessment.currentAccountCount ?? "?"} current, ${assessment.mergedAccountCount ?? "?"} after import). Remove accounts first.`,
+					);
+					break;
+				}
+				const backupLabel = basename(assessment.backup.path);
+				const confirmed = await confirm(
+					`Import OpenCode accounts from ${backupLabel}?`,
+				);
+				if (!confirmed) {
+					break;
+				}
+				try {
+					await runActionPanel(
+						"Import OpenCode Accounts",
+						`Importing from ${backupLabel}`,
+						async () => {
+							const imported = await importAccounts(assessment.backup.path);
+							console.log(
+								`Imported ${imported.imported} account${imported.imported === 1 ? "" : "s"}. Skipped ${imported.skipped}. Total accounts: ${imported.total}.`,
+							);
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(`OpenCode import failed (${errorLabel}).`);
+				}
+				break;
+			}
+			case "settings":
+				await configureUnifiedSettings(displaySettings);
+				break;
+			case "doctor":
+				try {
+					await runActionPanel(
+						"Doctor",
+						"Checking storage and sync paths",
+						async () => {
+							await runDoctor(["--json"]);
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(`Doctor check failed (${errorLabel}).`);
+				}
+				break;
+		}
+
+		let latestStorage: AccountStorageV3 | null = null;
+		try {
+			latestStorage = await loadAccounts();
+		} catch (error) {
+			const errorLabel = getRedactedFilesystemErrorLabel(error);
+			console.warn(
+				`Failed to refresh saved accounts after first-run action (${errorLabel}).`,
+			);
+		}
+		if (latestStorage && latestStorage.accounts.length > 0) {
+			return { outcome: "continue", latestStorage };
+		}
+	}
+}
+
 async function runAuthLogin(): Promise<number> {
 	setStoragePath(null);
 	let suppressRecoveryPrompt = false;
@@ -4307,9 +4463,47 @@ async function runAuthLogin(): Promise<number> {
 	> | null = null;
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
+	let skipEmptyStorageRecoveryMenu = false;
+	let firstRunWizardShownInLoop = false;
+	const initialStorage = await loadAccounts();
+	const startedFromMissingStorage = shouldShowFirstRunWizard(initialStorage);
+	let cachedInitialStorage: AccountStorageV3 | null | undefined =
+		initialStorage;
+
+	if (startedFromMissingStorage) {
+		const displaySettings = await loadDashboardDisplaySettings();
+		applyUiThemeFromDashboardSettings(displaySettings);
+		const wizardResult = await runFirstRunWizard(displaySettings);
+		firstRunWizardShownInLoop = true;
+		if (wizardResult.outcome === "cancelled") {
+			return 0;
+		}
+		cachedInitialStorage = wizardResult.latestStorage;
+		if (cachedInitialStorage === null) {
+			try {
+				cachedInitialStorage = await loadAccounts();
+			} catch (error) {
+				const errorLabel = getRedactedFilesystemErrorLabel(error);
+				console.warn(
+					`Failed to refresh saved accounts after first-run wizard (${errorLabel}).`,
+				);
+				cachedInitialStorage = null;
+			}
+		}
+		if (!(cachedInitialStorage && cachedInitialStorage.accounts.length > 0)) {
+			skipEmptyStorageRecoveryMenu = true;
+		}
+	}
+
 	loginFlow:
 	while (true) {
-		let existingStorage = await loadAccounts();
+		let existingStorage: AccountStorageV3 | null;
+		if (cachedInitialStorage !== undefined) {
+			existingStorage = cachedInitialStorage;
+			cachedInitialStorage = undefined;
+		} else {
+			existingStorage = await loadAccounts();
+		}
 		const canOpenEmptyStorageMenu =
 			allowEmptyStorageMenu && isInteractiveLoginMenuAvailable();
 		if (
@@ -4368,7 +4562,7 @@ async function runAuthLogin(): Promise<number> {
 				},
 			);
 
-			if (menuResult.mode === "cancel") {
+			if (!menuResult || menuResult.mode === "cancel") {
 				console.log("Cancelled.");
 				return 0;
 			}
@@ -4449,8 +4643,9 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 				if (!assessment.backup.valid || !assessment.eligibleForRestore) {
-					const assessmentErrorLabel =
-						assessment.error || "OpenCode account pool is not importable.";
+					const assessmentErrorLabel = assessment.error
+						? formatRedactedFilesystemError(assessment.error)
+						: "OpenCode account pool is not importable.";
 					console.log(assessmentErrorLabel);
 					continue;
 				}
@@ -4480,7 +4675,9 @@ async function runAuthLogin(): Promise<number> {
 						displaySettings,
 					);
 				} catch (error) {
-					const errorLabel = formatRedactedFilesystemError(error);
+					const errorLabel = collapseWhitespace(
+						formatRedactedFilesystemError(error),
+					);
 					console.error(`Import failed: ${errorLabel}`);
 				}
 				continue;
@@ -4597,7 +4794,8 @@ async function runAuthLogin(): Promise<number> {
 				recoveryState = scannedRecoveryState;
 				if (
 					resolveStartupRecoveryAction(scannedRecoveryState, recoveryScanFailed) ===
-					"open-empty-storage-menu"
+						"open-empty-storage-menu" &&
+					!skipEmptyStorageRecoveryMenu
 				) {
 					allowEmptyStorageMenu = true;
 					continue loginFlow;
@@ -4633,6 +4831,10 @@ async function runAuthLogin(): Promise<number> {
 						}
 						continue;
 					}
+					if (startedFromMissingStorage) {
+						allowEmptyStorageMenu = true;
+						continue loginFlow;
+					}
 				} catch (error) {
 					if (!promptWasShown) {
 						recoveryPromptAttempted = false;
@@ -4642,6 +4844,35 @@ async function runAuthLogin(): Promise<number> {
 						`Startup recovery prompt failed (${errorLabel}). Continuing with OAuth.`,
 					);
 				}
+			}
+		}
+		if (
+			startedFromMissingStorage &&
+			!firstRunWizardShownInLoop &&
+			existingCount === 0 &&
+			isInteractiveLoginMenuAvailable()
+		) {
+			firstRunWizardShownInLoop = true;
+			const displaySettings = await loadDashboardDisplaySettings();
+			applyUiThemeFromDashboardSettings(displaySettings);
+			const firstRunResult = await runFirstRunWizard(displaySettings);
+			if (firstRunResult.outcome === "cancelled") {
+				return 0;
+			}
+			let refreshedAfterWizard = firstRunResult.latestStorage;
+			if (refreshedAfterWizard === null) {
+				try {
+					refreshedAfterWizard = await loadAccounts();
+				} catch (error) {
+					const errorLabel = getRedactedFilesystemErrorLabel(error);
+					console.warn(
+						`Failed to refresh saved accounts after first-run wizard (${errorLabel}).`,
+					);
+					refreshedAfterWizard = null;
+				}
+			}
+			if ((refreshedAfterWizard?.accounts.length ?? 0) > 0) {
+				continue;
 			}
 		}
 		let forceNewLogin = existingCount > 0;
@@ -5322,7 +5553,13 @@ function buildRestoreAssessmentLines(
 			assessment.currentActiveIndex,
 		)}`,
 		`${stylePromptText("Active after restore:", "muted")} ${formatActiveAccountOutcome(assessment)}`,
-		`${stylePromptText("Eligibility:", "muted")} ${assessment.wouldExceedLimit ? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts` : assessment.eligibleForRestore ? "Recoverable" : (assessment.error ?? "Unavailable")}`,
+		`${stylePromptText("Eligibility:", "muted")} ${
+			assessment.wouldExceedLimit
+				? `Would exceed ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts`
+				: assessment.eligibleForRestore
+					? "Recoverable"
+					: assessment.error?.trim() || "Unavailable"
+		}`,
 	];
 }
 
