@@ -12,7 +12,7 @@ const LATEST_FILE_NAME = "sync-history-latest.json";
 const MAX_HISTORY_ENTRIES = 200;
 const HISTORY_TRIM_RELOAD_BUFFER = 20;
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
-const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
+const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM", "EACCES"]);
 
 type SyncHistoryKind = "codex-cli-sync" | "live-account-sync";
 

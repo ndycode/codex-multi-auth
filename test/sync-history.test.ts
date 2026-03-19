@@ -448,7 +448,7 @@ describe("sync history", () => {
 				if (path === paths.historyPath && appendFailures === 0) {
 					appendFailures += 1;
 					const error = new Error("history locked") as NodeJS.ErrnoException;
-					error.code = "EPERM";
+					error.code = "EACCES";
 					throw error;
 				}
 				return originalAppendFile(path, data, options);
