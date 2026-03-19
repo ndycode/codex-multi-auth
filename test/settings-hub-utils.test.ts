@@ -734,5 +734,25 @@ describe("settings-hub utility coverage", () => {
 			const selected = await api.promptExperimentalSettings({});
 			expect(selected?.codexCliDirectInjection).toBe(false);
 		});
+
+		it("preserves direct injection when backend settings reset is used", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "reset" },
+				{ type: "save" },
+			);
+			const selected = await api.promptBackendSettings({
+				codexCliDirectInjection: false,
+				sessionAffinity: false,
+				preemptiveQuotaEnabled: false,
+			});
+			expect(selected).toEqual(
+				expect.objectContaining({
+					codexCliDirectInjection: false,
+					sessionAffinity: true,
+					preemptiveQuotaEnabled: true,
+				}),
+			);
+		});
 	});
 });

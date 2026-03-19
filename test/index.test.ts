@@ -1624,7 +1624,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 					getCurrentAccountForFamily: () => accountOne,
 				};
 				vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
-				syncCodexCliSelectionMock.mockReset();
+				syncCodexCliSelectionMock.mockClear();
 				syncCodexCliSelectionMock
 					.mockResolvedValueOnce(true)
 					.mockRejectedValueOnce(Object.assign(new Error(`${code} fail`), { code }));

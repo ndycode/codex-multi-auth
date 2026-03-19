@@ -2464,7 +2464,10 @@ async function promptBackendSettings(
 		if (!result || result.type === "cancel") return null;
 		if (result.type === "save") return draft;
 		if (result.type === "reset") {
-			draft = cloneBackendPluginConfig(BACKEND_DEFAULTS);
+			draft = cloneBackendPluginConfig({
+				...BACKEND_DEFAULTS,
+				codexCliDirectInjection: draft.codexCliDirectInjection,
+			});
 			for (const category of BACKEND_CATEGORY_OPTIONS) {
 				focusByCategory[category.key] =
 					getBackendCategoryInitialFocus(category);
