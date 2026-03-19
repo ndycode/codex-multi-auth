@@ -856,7 +856,7 @@ describe("OpenAIOAuthPlugin", () => {
 			loadFromDiskSpy.mockClear();
 
 			await plugin.tool["codex-switch"].execute({ index: 2 });
-			expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+			expect(loadFromDiskSpy).toHaveBeenCalledTimes(2);
 		});
 	});
 
@@ -1429,9 +1429,45 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
 	});
 
+	it("does not let an in-flight request restore an older CLI selection after a tool switch", async () => {
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+
+		let resolveFetch: (() => void) | null = null;
+		globalThis.fetch = vi.fn().mockImplementation(
+			() =>
+				new Promise<Response>((resolve) => {
+					resolveFetch = () =>
+						resolve(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+				}),
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		const requestPromise = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		await vi.waitFor(() => expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1));
+		const switchResult = await plugin.tool["codex-switch"].execute({ index: 2 });
+
+		expect(switchResult).toContain("Switched to account");
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
+
+		resolveFetch?.();
+		const response = await requestPromise;
+
+		expect(response.status).toBe(200);
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
+	});
+
 	it("times out a stalled CLI sync so later requests can continue", async () => {
 		vi.useFakeTimers();
 		try {
+			const loggerModule = await import("../lib/logger.js");
+			vi.mocked(loggerModule.logWarn).mockClear();
 			syncCodexCliSelectionMock
 				.mockImplementationOnce(() => new Promise<boolean>(() => {}))
 				.mockResolvedValueOnce(true);
@@ -1456,6 +1492,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect(secondResponse.status).toBe(200);
 			expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(2);
 			expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
+				expect.stringContaining("Codex CLI selection sync timed out"),
+				expect.objectContaining({
+					timeoutMs: 5_000,
+				}),
+			);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1999,6 +2041,107 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 					}),
 				);
 			}
+		} finally {
+			vi.doUnmock("../lib/request/stream-failover.js");
+			vi.resetModules();
+		}
+	});
+
+	it("retries a warm cached fallback selection after a forced reinjection write fails", async () => {
+		vi.doMock("../lib/request/stream-failover.js", () => ({
+			withStreamingFailover: async (
+				response: Response,
+				failover: (attempt: number, emittedBytes: number) => Promise<Response | null>,
+			) => (await failover(1, 128)) ?? response,
+		}));
+		try {
+			vi.resetModules();
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+				(_init, _accountId, accessToken) =>
+					new Headers({ "x-test-access-token": String(accessToken) }),
+			);
+			const { AccountManager } = await import("../lib/accounts.js");
+			const accountOne = {
+				index: 0,
+				accountId: "acc-1",
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+				access: "access-account-1",
+				expires: Date.now() + 60_000,
+				addedAt: 1,
+			};
+			const accountTwo = {
+				index: 1,
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+				access: "access-account-2",
+				expires: Date.now() + 60_000,
+				addedAt: 2,
+			};
+			const currentAccount = vi
+				.fn()
+				.mockReturnValueOnce(accountTwo)
+				.mockReturnValueOnce(accountOne)
+				.mockReturnValueOnce(accountTwo)
+				.mockImplementation(() => null);
+			const customManager = buildCustomManager(accountOne, accountTwo, {
+				getCurrentOrNextForFamilyHybrid: currentAccount,
+			});
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
+			syncCodexCliSelectionMock.mockClear();
+			syncCodexCliSelectionMock
+				.mockResolvedValueOnce(true)
+				.mockResolvedValueOnce(false)
+				.mockRejectedValueOnce(
+					Object.assign(new Error("EACCES fail"), { code: "EACCES" }),
+				)
+				.mockResolvedValueOnce(true);
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ content: "seed" }), { status: 200 }),
+				)
+				.mockResolvedValueOnce(new Response("streaming", { status: 200 }))
+				.mockResolvedValueOnce(new Response("retry later", { status: 429 }))
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ content: "fallback-ok" }), { status: 200 }),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ content: "steady-ok" }), { status: 200 }),
+				);
+
+			const { sdk } = await setupPlugin();
+			const seedResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			const failoverResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+			});
+			const steadyStateResponse = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			expect(seedResponse.status).toBe(200);
+			expect(failoverResponse.status).toBe(200);
+			expect(steadyStateResponse.status).toBe(200);
+			expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([
+				1,
+				0,
+				1,
+				1,
+			]);
+			expect(getFetchAccessTokenSequence()).toEqual([
+				"access-account-2",
+				"access-account-1",
+				"access-account-1",
+				"access-account-2",
+				"access-account-2",
+			]);
 		} finally {
 			vi.doUnmock("../lib/request/stream-failover.js");
 			vi.resetModules();
@@ -3465,6 +3608,84 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		expect(staleSync).not.toHaveBeenCalled();
 		expect(freshSync).toHaveBeenCalledTimes(1);
 		expect(freshSync).toHaveBeenCalledWith(1);
+	});
+
+	it("re-resolves the live account by unique identity after a same-timestamp reindex", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const originalAccountAtIndexZero = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user1@example.com",
+			refreshToken: "refresh-1",
+			access: "access-account-1",
+			expires: Date.now() + 60_000,
+			addedAt: 7,
+		};
+		const siblingAccountAtIndexOne = {
+			index: 1,
+			accountId: "acc-2",
+			email: "user2@example.com",
+			refreshToken: "refresh-2",
+			access: "access-account-2",
+			expires: Date.now() + 60_000,
+			addedAt: 7,
+		};
+		const siblingAccountAtIndexZero = {
+			...siblingAccountAtIndexOne,
+			index: 0,
+		};
+		const originalAccountAtIndexOne = {
+			...originalAccountAtIndexZero,
+			index: 1,
+		};
+		let currentAccounts = [originalAccountAtIndexZero, siblingAccountAtIndexOne];
+		const customManager = buildCustomManager(
+			originalAccountAtIndexZero,
+			siblingAccountAtIndexOne,
+			{
+				getCurrentOrNextForFamilyHybrid: vi
+					.fn()
+					.mockReturnValueOnce(originalAccountAtIndexZero)
+					.mockImplementation(() => null),
+				getAccountsSnapshot: () => currentAccounts,
+				getAccountByIndex: (index: number) => currentAccounts[index] ?? null,
+			},
+		);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
+
+		let resolveFetch: (() => void) | null = null;
+		globalThis.fetch = vi.fn().mockImplementation(
+			() =>
+				new Promise<Response>((resolve) => {
+					resolveFetch = () =>
+						resolve(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+				}),
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+		const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+		const responsePromise = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		await vi.waitFor(() => expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1));
+		currentAccounts = [siblingAccountAtIndexZero, originalAccountAtIndexOne];
+		resolveFetch?.();
+
+		const response = await responsePromise;
+
+		expect(response.status).toBe(200);
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
 	});
 
 	it("reloads account manager from disk when handling account.select even if direct injection is disabled", async () => {

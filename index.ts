@@ -978,6 +978,59 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
+		const syncPersistedCodexCliSelection = async (
+			index: number,
+			{
+				enabled,
+				reason,
+			}: {
+				enabled: boolean;
+				reason: "manual account selection" | "tool account switch";
+			},
+		): Promise<void> => {
+			const selectionGeneration = ++codexCliSelectionGeneration;
+			// Reload immediately after the persisted selection change so the cached
+			// manager cannot keep stale active-index state.
+			await reloadAccountManagerFromDisk();
+			if (!enabled) {
+				return;
+			}
+			const synced = await queueCodexCliSelectionSync({
+				generation: selectionGeneration,
+				runSync: async ({ isStale }) => {
+					if (isStale()) {
+						return false;
+					}
+					const activeAccountManager = await reloadAccountManagerFromDisk();
+					try {
+						return await activeAccountManager.syncCodexCliActiveSelectionForIndex(
+							index,
+						);
+					} catch (error) {
+						logWarn(
+							`[${PLUGIN_NAME}] Codex CLI selection sync failed for ${reason}`,
+							{
+								accountIndex: index,
+								code:
+									error &&
+									typeof error === "object" &&
+									"code" in error
+										? String((error as NodeJS.ErrnoException).code ?? "")
+										: "",
+								error:
+									error instanceof Error ? error.message : String(error),
+							},
+						);
+						return false;
+					}
+				},
+			});
+			if (synced && codexCliSelectionGeneration === selectionGeneration) {
+				lastCodexCliActiveSyncIndex = index;
+				lastCodexCliActiveSyncSignature = null;
+			}
+		};
+
         // Event handler for session recovery and account selection
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
           try {
@@ -1016,47 +1069,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const codexCliDirectInjectionEnabledForEvent =
 					getCodexCliDirectInjection(loadPluginConfig());
 				await saveAccounts(storage);
-				const manualSelectionGeneration = ++codexCliSelectionGeneration;
-				// Reload immediately after the persisted selection change so the cached
-				// manager cannot keep stale active-index state, even on the first manual
-				// selection before any request path has populated the cache.
-				await reloadAccountManagerFromDisk();
-				if (codexCliDirectInjectionEnabledForEvent) {
-					const synced = await queueCodexCliSelectionSync({
-						generation: manualSelectionGeneration,
-						runSync: async ({ isStale }) => {
-							if (isStale()) {
-								return false;
-							}
-							const activeAccountManager = await reloadAccountManagerFromDisk();
-							try {
-								return await activeAccountManager.syncCodexCliActiveSelectionForIndex(
-									index,
-								);
-							} catch (error) {
-								logWarn(
-									`[${PLUGIN_NAME}] Codex CLI selection sync failed for manual account selection`,
-									{
-										accountIndex: index,
-										code:
-											error &&
-											typeof error === "object" &&
-											"code" in error
-												? String((error as NodeJS.ErrnoException).code ?? "")
-												: "",
-										error:
-											error instanceof Error ? error.message : String(error),
-									},
-								);
-								return false;
-							}
-						},
-					});
-					if (synced && codexCliSelectionGeneration === manualSelectionGeneration) {
-						lastCodexCliActiveSyncIndex = index;
-						lastCodexCliActiveSyncSignature = null;
-					}
-				}
+				await syncPersistedCodexCliSelection(index, {
+					enabled: codexCliDirectInjectionEnabledForEvent,
+					reason: "manual account selection",
+				});
 
                                 await showToast(`Switched to account ${index + 1}`, "info");
                         }
@@ -1242,19 +1258,101 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				logDebug(`Update check failed: ${err instanceof Error ? err.message : String(err)}`);
 			});
 
+				type CodexCliSelectionAccount = {
+					index: number;
+					accountId?: string;
+					email?: string;
+					refreshToken?: string;
+					addedAt?: number;
+				};
+
+				const buildCodexCliSelectionIdentityKey = (
+					account: CodexCliSelectionAccount,
+				): string => {
+					if (account.accountId) {
+						return `accountId:${account.accountId}`;
+					}
+					if (account.refreshToken) {
+						return `refreshToken:${account.refreshToken}`;
+					}
+					if (account.email) {
+						return `email:${account.email.trim().toLowerCase()}`;
+					}
+					if (account.addedAt !== undefined) {
+						return `addedAt:${account.addedAt}|index:${account.index}`;
+					}
+					return `index:${account.index}`;
+				};
+
 				const buildCodexCliSelectionSignature = (
-					account: {
-						index: number;
-						addedAt?: number;
-					},
+					account: CodexCliSelectionAccount,
 				): string =>
-					[account.index, String(account.addedAt ?? "")].join("|");
+					[
+						buildCodexCliSelectionIdentityKey(account),
+						`index:${account.index}`,
+					].join("|");
+
+				const matchesCodexCliSelectionIdentity = (
+					left: CodexCliSelectionAccount,
+					right: CodexCliSelectionAccount,
+				): boolean => {
+					if (
+						left.accountId &&
+						right.accountId &&
+						left.accountId === right.accountId
+					) {
+						return true;
+					}
+					if (
+						left.refreshToken &&
+						right.refreshToken &&
+						left.refreshToken === right.refreshToken
+					) {
+						return true;
+					}
+					if (left.email && right.email) {
+						return left.email.trim().toLowerCase() === right.email.trim().toLowerCase();
+					}
+					if (
+						left.addedAt !== undefined &&
+						right.addedAt !== undefined &&
+						left.addedAt === right.addedAt &&
+						left.index === right.index
+					) {
+						return true;
+					}
+					return left.index === right.index;
+				};
+
+				const resolveLiveCodexCliSelectionAccount = (
+					activeAccountManager: AccountManager,
+					account: CodexCliSelectionAccount,
+				) => {
+					const indexedAccount =
+						typeof activeAccountManager.getAccountByIndex === "function"
+							? activeAccountManager.getAccountByIndex(account.index)
+							: null;
+					if (
+						indexedAccount &&
+						matchesCodexCliSelectionIdentity(indexedAccount, account)
+					) {
+						return indexedAccount;
+					}
+					const snapshot =
+						typeof activeAccountManager.getAccountsSnapshot === "function"
+							? activeAccountManager.getAccountsSnapshot()
+							: [];
+					return (
+						snapshot.find(
+							(candidate) => matchesCodexCliSelectionIdentity(candidate, account),
+						) ??
+						indexedAccount ??
+						account
+					);
+				};
 
 				const syncCodexCliSelectionNow = async (
-					account: {
-						index: number;
-						addedAt?: number;
-					},
+					account: CodexCliSelectionAccount,
 					options?: { force?: boolean; generation?: number },
 				): Promise<boolean> => {
 					if (!codexCliDirectInjectionEnabled) {
@@ -1281,13 +1379,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							return false;
 						}
 						const activeAccountManager = cachedAccountManager ?? accountManager;
-						const liveAccount =
-							account.addedAt === undefined
-								? activeAccountManager.getAccountByIndex(account.index)
-								: activeAccountManager
-										.getAccountsSnapshot()
-										.find((candidate) => candidate.addedAt === account.addedAt) ??
-									null;
+						const liveAccount = resolveLiveCodexCliSelectionAccount(
+							activeAccountManager,
+							account,
+						);
 						if (!liveAccount) {
 							return false;
 						}
@@ -3772,9 +3867,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 						return `Switched to ${formatAccountLabel(account, targetIndex)} but failed to persist. Changes may be lost on restart.`;
 					}
 
-					if (cachedAccountManager) {
-						await reloadAccountManagerFromDisk();
-					}
+					const codexCliDirectInjectionEnabledForTool =
+						getCodexCliDirectInjection(loadPluginConfig());
+					await syncPersistedCodexCliSelection(targetIndex, {
+						enabled: codexCliDirectInjectionEnabledForTool,
+						reason: "tool account switch",
+					});
 
                                         const label = formatAccountLabel(account, targetIndex);
 					if (ui.v2Enabled) {
