@@ -1142,7 +1142,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(0);
 	});
 
-	it("injects the next account before a skipped account path settles", async () => {
+	it("injects only the account that clears token-bucket admission", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const accountOne = {
 			index: 0,
@@ -1175,7 +1175,42 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 
 		expect(response.status).toBe(200);
-		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([0, 1]);
+		expect(syncCodexCliSelectionMock.mock.calls.map((call) => call[0])).toEqual([1]);
+	});
+
+	it("serializes concurrent CLI injection for the same account", async () => {
+		let resolveSync: (() => void) | null = null;
+		syncCodexCliSelectionMock.mockImplementationOnce(
+			() =>
+				new Promise<boolean>((resolve) => {
+					resolveSync = () => resolve(true);
+				}),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const firstFetch = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+		const secondFetch = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		for (let attempt = 0; attempt < 20 && syncCodexCliSelectionMock.mock.calls.length === 0; attempt++) {
+			await Promise.resolve();
+		}
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1);
+
+		resolveSync?.();
+		const [firstResponse, secondResponse] = await Promise.all([firstFetch, secondFetch]);
+
+		expect(firstResponse.status).toBe(200);
+		expect(secondResponse.status).toBe(200);
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("skips automatic CLI injection when direct injection is disabled", async () => {

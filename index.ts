@@ -229,6 +229,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPrewarmTriggered = false;
 	let lastCodexCliActiveSyncIndex: number | null = null;
 	let lastCodexCliActiveSyncSignature: string | null = null;
+	let codexCliSelectionSyncQueue = Promise.resolve();
 	let perProjectStorageWarningShown = false;
 	let liveAccountSync: LiveAccountSync | null = null;
 	let liveAccountSyncPath: string | null = null;
@@ -1176,21 +1177,34 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						return false;
 					}
 					const signature = buildCodexCliSelectionSignature(account);
-					if (
-						!options?.force &&
-						lastCodexCliActiveSyncIndex === account.index &&
-						lastCodexCliActiveSyncSignature === signature
-					) {
-						return true;
+					const runSync = async (): Promise<boolean> => {
+						if (
+							!options?.force &&
+							lastCodexCliActiveSyncIndex === account.index &&
+							lastCodexCliActiveSyncSignature === signature
+						) {
+							return true;
+						}
+						const synced = await accountManager.syncCodexCliActiveSelectionForIndex(
+							account.index,
+						);
+						if (synced) {
+							lastCodexCliActiveSyncIndex = account.index;
+							lastCodexCliActiveSyncSignature = signature;
+						}
+						return synced;
+					};
+					const priorSync = codexCliSelectionSyncQueue;
+					let releaseSyncQueue!: () => void;
+					codexCliSelectionSyncQueue = new Promise<void>((resolve) => {
+						releaseSyncQueue = resolve;
+					});
+					await priorSync.catch(() => undefined);
+					try {
+						return await runSync();
+					} finally {
+						releaseSyncQueue();
 					}
-					const synced = await accountManager.syncCodexCliActiveSelectionForIndex(
-						account.index,
-					);
-					if (synced) {
-						lastCodexCliActiveSyncIndex = account.index;
-						lastCodexCliActiveSyncSignature = signature;
-					}
-					return synced;
 				};
 
 
@@ -1579,10 +1593,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 												continue;
 											}
 
-											await syncCodexCliSelectionNow(account, {
-												force: accountAuthRefreshed,
-											});
-
 											if (
 												accountCount > 1 &&
 												accountManager.shouldShowAccountToast(
@@ -1637,6 +1647,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 										);
 										continue;
 									}
+									await syncCodexCliSelectionNow(account, {
+										force: accountAuthRefreshed,
+									});
 
 							let sameAccountRetryCount = 0;
 							let successAccountForResponse = account;
