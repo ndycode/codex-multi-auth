@@ -4147,6 +4147,7 @@ async function buildLoginMenuHealthSummary(
 		snapshot: null,
 	};
 	let rollbackPlanLoadFailed = false;
+	let restoreStateUnavailable = false;
 	let syncSummary = {
 		label: "unknown",
 		hint: "Sync state unavailable.",
@@ -4156,23 +4157,28 @@ async function buildLoginMenuHealthSummary(
 		label: "unknown",
 		hint: "Doctor state unavailable.",
 	};
-	try {
-		actionableRestores = await getActionableNamedBackupRestores({
+	const [restoresResult, rollbackResult] = await Promise.allSettled([
+		getActionableNamedBackupRestores({
 			currentStorage: storage,
-		});
-	} catch (error) {
+		}),
+		getLatestCodexCliSyncRollbackPlan(),
+	]);
+	if (restoresResult.status === "fulfilled") {
+		actionableRestores = restoresResult.value;
+	} else {
+		restoreStateUnavailable = true;
 		logLoginMenuHealthSummaryWarning(
 			"Failed to load login menu restore health summary state",
-			error,
+			restoresResult.reason,
 		);
 	}
-	try {
-		rollbackPlan = await getLatestCodexCliSyncRollbackPlan();
-	} catch (error) {
+	if (rollbackResult.status === "fulfilled") {
+		rollbackPlan = rollbackResult.value;
+	} else {
 		rollbackPlanLoadFailed = true;
 		logLoginMenuHealthSummaryWarning(
 			"Failed to load login menu rollback health summary state",
-			error,
+			rollbackResult.reason,
 		);
 	}
 	try {
@@ -4191,11 +4197,22 @@ async function buildLoginMenuHealthSummary(
 			error,
 		);
 	}
+	const rollbackHint = formatLoginMenuRollbackHint(
+		rollbackPlan,
+		rollbackPlanLoadFailed,
+	);
 	const restoreLabel =
-		actionableRestores.totalBackups > 0
+		restoreStateUnavailable
+			? "unavailable"
+			: actionableRestores.totalBackups > 0
 			? `${actionableRestores.assessments.length}/${actionableRestores.totalBackups} ready`
 			: "none";
-	const rollbackLabel = rollbackPlan.status === "ready" ? "ready" : "none";
+	const rollbackLabel =
+		rollbackPlan.status === "ready"
+			? "ready"
+			: rollbackHint.toLowerCase().includes("unavailable")
+				? "unavailable"
+				: "none";
 	const accountLabel =
 		disabledCount > 0
 			? `${enabledCount}/${storage.accounts.length} enabled`
@@ -4203,8 +4220,10 @@ async function buildLoginMenuHealthSummary(
 	const hintParts = [
 		`Accounts: ${enabledCount} enabled / ${disabledCount} disabled / ${storage.accounts.length} total`,
 		`Sync: ${syncSummary.hint}`,
-		`Restore backups: ${actionableRestores.assessments.length} actionable of ${actionableRestores.totalBackups} total`,
-		`Rollback: ${formatLoginMenuRollbackHint(rollbackPlan, rollbackPlanLoadFailed)}`,
+		restoreStateUnavailable
+			? "Restore backups: state unavailable"
+			: `Restore backups: ${actionableRestores.assessments.length} actionable of ${actionableRestores.totalBackups} total`,
+		`Rollback: ${rollbackHint}`,
 		`Doctor: ${doctorSummary.hint}`,
 	];
 

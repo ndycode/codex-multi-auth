@@ -785,7 +785,6 @@ describe("codex manager cli commands", () => {
 			reason: "No manual Codex CLI apply with a rollback checkpoint is available.",
 			snapshot: null,
 		});
-		getLastCodexCliSyncRunMock.mockReturnValue(null);
 		getCodexCliAccountsPathMock.mockReturnValue("/mock/codex/accounts.json");
 		getCodexCliAuthPathMock.mockReturnValue("/mock/codex/auth.json");
 		getCodexCliConfigPathMock.mockReturnValue("/mock/codex/config.toml");
@@ -4498,9 +4497,11 @@ describe("codex manager cli commands", () => {
 			expect.any(Array),
 			expect.objectContaining({
 				healthSummary: expect.objectContaining({
-					label: expect.stringContaining("Pool 1/2 enabled"),
-					hint: expect.stringContaining(
-						"Rollback: checkpoint ready for 2 account(s)",
+					label: expect.stringMatching(
+						/Pool 1\/2 enabled[\s\S]*Sync changed[\s\S]*Restore 1\/2 ready[\s\S]*Rollback ready[\s\S]*Doctor 3 warnings/,
+					),
+					hint: expect.stringMatching(
+						/Sync: Latest sync changed today \| add 1 \| selection changed[\s\S]*Restore backups: 1 actionable of 2 total[\s\S]*Rollback: checkpoint ready for 2 account\(s\)/,
 					),
 				}),
 			}),
@@ -4549,10 +4550,10 @@ describe("codex manager cli commands", () => {
 			expect.objectContaining({
 				healthSummary: expect.objectContaining({
 					label: expect.stringMatching(
-						/Pool 1 active[\s\S]*Sync unknown[\s\S]*Doctor 2 warnings/,
+						/Pool 1 active[\s\S]*Sync unknown[\s\S]*Restore unavailable[\s\S]*Rollback unavailable[\s\S]*Doctor 2 warnings/,
 					),
 					hint: expect.stringMatching(
-						/Restore backups: 0 actionable of 0 total[\s\S]*Rollback: rollback state unavailable[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
+						/Restore backups: state unavailable[\s\S]*Rollback: rollback state unavailable[\s\S]*Doctor: 1 placeholder email \| 1 invalid refresh token/,
 					),
 				}),
 			}),
@@ -4624,6 +4625,57 @@ describe("codex manager cli commands", () => {
 				hint: "Accounts: 1 enabled / 0 disabled / 1 total",
 			}),
 		);
+	});
+
+	it("sanitizes control characters in the health summary row", async () => {
+		selectMock.mockResolvedValueOnce({ type: "cancel" });
+		const { showAuthMenu } = await import("../lib/ui/auth-menu.js");
+
+		await showAuthMenu(
+			[
+				{
+					index: 0,
+					email: "a@example.com",
+					isCurrentAccount: true,
+				},
+			],
+			{
+				healthSummary: {
+					label:
+						"Pool\x1b[31m 1 active\n| Sync none\x00 | Restore none | Rollback none | Doctor ok",
+					hint:
+						"Accounts:\x1b[32m 1 enabled / 0 disabled / 1 total\nRollback:\x00 checkpoint ready",
+				},
+			},
+		);
+
+		const items = selectMock.mock.calls[0]?.[0] as Array<{
+			label: string;
+			disabled?: boolean;
+			hint?: string;
+			kind?: string;
+		}>;
+		const row = items.find(
+			(item) =>
+				item.kind !== "heading" &&
+				item.label.includes("Pool 1 active") &&
+				item.label.includes("Doctor ok"),
+		);
+
+		expect(row).toEqual(
+			expect.objectContaining({
+				label:
+					"Pool 1 active| Sync none | Restore none | Rollback none | Doctor ok",
+				hint: "Accounts: 1 enabled / 0 disabled / 1 totalRollback: checkpoint ready",
+				disabled: true,
+			}),
+		);
+		expect(row?.label).not.toContain("\x1b");
+		expect(row?.label).not.toContain("\n");
+		expect(row?.label).not.toContain("\x00");
+		expect(row?.hint).not.toContain("\x1b");
+		expect(row?.hint).not.toContain("\n");
+		expect(row?.hint).not.toContain("\x00");
 	});
 
 	it("passes smart-sorted accounts to auth menu while preserving source index mapping", async () => {
