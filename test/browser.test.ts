@@ -114,6 +114,23 @@ describe("auth browser utilities", () => {
 			expect(mockedSpawn).not.toHaveBeenCalled();
 		});
 
+		it("does not treat CODEX_AUTH_NO_BROWSER=false as suppression when BROWSER is disabled", () => {
+			process.env.CODEX_AUTH_NO_BROWSER = "false";
+			process.env.BROWSER = "none";
+
+			expect(isBrowserLaunchSuppressed()).toBe(false);
+			expect(openBrowserUrl("https://example.com")).toBe(false);
+			expect(mockedSpawn).not.toHaveBeenCalled();
+		});
+
+		it("suppresses browser launch when BROWSER is set to none", () => {
+			process.env.BROWSER = "none";
+
+			expect(isBrowserLaunchSuppressed()).toBe(true);
+			expect(openBrowserUrl("https://example.com")).toBe(false);
+			expect(mockedSpawn).not.toHaveBeenCalled();
+		});
+
 		it("keeps suppression enabled when CODEX_AUTH_NO_BROWSER is truthy even if BROWSER is also disabled", () => {
 			process.env.CODEX_AUTH_NO_BROWSER = "true";
 			process.env.BROWSER = "none";
