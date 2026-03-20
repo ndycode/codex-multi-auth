@@ -633,9 +633,7 @@ describe("codex manager cli commands", () => {
 					addedAt: now - 2_000,
 					lastUsed: now - 500,
 					enabled: false,
-					rateLimits: {
-						codex_rpm: { remaining: 0, resetAt: now + 60_000 },
-					},
+					rateLimitResetTimes: { codex: now + 60_000 },
 				},
 			],
 		});
@@ -650,7 +648,7 @@ describe("codex manager cli commands", () => {
 			expect.stringContaining("1. 1. active@example.com [current]"),
 		);
 		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining("2. 2. disabled@example.com [disabled]"),
+			expect.stringContaining("2. 2. disabled@example.com [disabled, rate-limited]"),
 		);
 	});
 
