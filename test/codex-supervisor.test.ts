@@ -12,6 +12,8 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_BINDING_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS",
+	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
+	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
 	"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS",
 	"CODEX_HOME",
 ] as const;
@@ -441,6 +443,58 @@ describe("codex supervisor", () => {
 		}
 	});
 
+	it.each(["EPERM", "EBUSY"] as const)(
+		"retries supervisor lock creation after a transient Windows %s",
+		async (code) => {
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS = "1000";
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS = "10";
+
+			const manager = new FakeManager();
+			const runtime = createFakeRuntime(manager);
+			const lockPath = supervisorTestApi?.getSupervisorStorageLockPath(runtime);
+			expect(lockPath).toBeTruthy();
+			if (!lockPath) {
+				throw new Error("expected a supervisor lock path");
+			}
+
+			const originalOpen = fs.open.bind(fs);
+			let injectedFailure = false;
+			const openSpy = vi.spyOn(fs, "open").mockImplementation(async (path, flags, ...rest) => {
+				if (!injectedFailure && `${path}` === lockPath && flags === "wx") {
+					injectedFailure = true;
+					const error = Object.assign(new Error("transient lock create failure"), {
+						code,
+					});
+					throw error;
+				}
+				return originalOpen(
+					path as Parameters<typeof fs.open>[0],
+					flags as Parameters<typeof fs.open>[1],
+					...(rest as Parameters<typeof fs.open> extends [unknown, unknown, ...infer Tail]
+						? Tail
+						: never),
+				);
+			});
+
+			try {
+				await expect(
+					supervisorTestApi?.withLockedManager(runtime, async (loadedManager: FakeManager) => {
+						expect(loadedManager).toBe(manager);
+						return "locked";
+					}),
+				).resolves.toBe("locked");
+				expect(injectedFailure).toBe(true);
+				expect(
+					openSpy.mock.calls.filter(
+						([path, flags]) => `${path}` === lockPath && flags === "wx",
+					).length,
+				).toBeGreaterThanOrEqual(2);
+			} finally {
+				openSpy.mockRestore();
+			}
+		},
+	);
+
 	it("serializes concurrent callers behind the supervisor storage lock", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS = "1000";
 		process.env.CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS = "10";
@@ -827,6 +881,59 @@ describe("codex supervisor", () => {
 		expect(manager.activeIndex).toBe(3);
 		expect(elapsedMs).toBeLessThan(170);
 	});
+
+	it("bypasses supervisor account gating for auth commands before account selection", async () => {
+		const loadFromDisk = vi.fn(async () => {
+			throw new Error("ensureLaunchableAccount should not run for bypass commands");
+		});
+		const forwardToRealCodex = vi.fn(async () => 0);
+
+		await expect(
+			supervisorTestApi?.runCodexSupervisorWithRuntime({
+				codexBin: "dist/bin/codex.js",
+				rawArgs: ["auth"],
+				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+				forwardToRealCodex,
+				runtime: {
+					loadPluginConfig: () => ({ codexCliSessionSupervisor: true }),
+					getCodexCliSessionSupervisor: () => true,
+					AccountManager: { loadFromDisk },
+				},
+				signal: undefined,
+			}),
+		).resolves.toBe(0);
+		expect(forwardToRealCodex).toHaveBeenCalledWith("dist/bin/codex.js", [
+			"auth",
+		]);
+		expect(loadFromDisk).not.toHaveBeenCalled();
+	});
+
+	it(
+		"returns 1 when interactive supervision is already at the restart safety limit",
+		async () => {
+			const manager = new FakeManager([
+				{ accountId: "near-limit", access: "token-1" },
+				{ accountId: "healthy", access: "token-2" },
+			]);
+			const runtime = createFakeRuntime(manager);
+			const spawnChild = vi.fn();
+
+			const result = await supervisorTestApi?.runInteractiveSupervision({
+				codexBin: "dist/bin/codex.js",
+				initialArgs: ["resume", "session-restart-limit"],
+				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+				runtime,
+				pluginConfig: {},
+				manager,
+				signal: undefined,
+				maxSessionRestarts: 0,
+				spawnChild,
+			});
+
+			expect(result).toBe(1);
+			expect(spawnChild).not.toHaveBeenCalled();
+		},
+	);
 
 	it("degrades a failed candidate probe and continues to the next healthy account", async () => {
 		const manager = new FakeManager([

@@ -468,7 +468,7 @@ async function withSupervisorStorageLock(runtime, fn, signal) {
 				error && typeof error === "object" && "code" in error
 					? `${error.code ?? ""}`
 					: "";
-			if (code !== "EEXIST") {
+			if (code !== "EEXIST" && code !== "EPERM" && code !== "EBUSY") {
 				throw error;
 			}
 
@@ -1420,21 +1420,27 @@ async function runInteractiveSupervision({
 	pluginConfig,
 	manager,
 	signal,
+	maxSessionRestarts = MAX_SESSION_RESTARTS,
+	spawnChild = spawnRealCodex,
+	findBinding = findSessionBinding,
+	waitForBinding = waitForSessionBinding,
+	refreshBinding = refreshSessionActivity,
+	requestRestart = requestChildRestart,
 }) {
 	let launchArgs = initialArgs;
 	let knownSessionId = readResumeSessionId(initialArgs);
 	let knownRolloutPath = null;
 	let launchCount = 0;
 
-	while (launchCount < MAX_SESSION_RESTARTS) {
+	while (launchCount < maxSessionRestarts) {
 		if (signal?.aborted) {
 			return 130;
 		}
 		launchCount += 1;
-		const child = spawnRealCodex(codexBin, launchArgs);
+		const child = spawnChild(codexBin, launchArgs);
 		const launchStartedAt = Date.now();
 		let binding = knownSessionId
-			? await findSessionBinding({
+			? await findBinding({
 					cwd: process.cwd(),
 					sinceMs: 0,
 					sessionId: knownSessionId,
@@ -1480,7 +1486,7 @@ async function runInteractiveSupervision({
 		const monitorPromise = (async () => {
 			while (monitorActive) {
 				if (!binding) {
-					binding = await waitForSessionBinding({
+					binding = await waitForBinding({
 						cwd: process.cwd(),
 						sinceMs: launchStartedAt,
 						sessionId: knownSessionId,
@@ -1493,7 +1499,7 @@ async function runInteractiveSupervision({
 						knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
 					}
 				} else {
-					binding = await refreshSessionActivity(binding);
+					binding = await refreshBinding(binding);
 					if (binding?.rolloutPath) {
 						knownRolloutPath = binding.rolloutPath;
 					}
@@ -1586,7 +1592,7 @@ async function runInteractiveSupervision({
 									`rotating session ${binding.sessionId} because ${pressure.reason.replace(/-/g, " ")} (${formatQuotaPressure(pressure)})`,
 								);
 								monitorActive = false;
-								await requestChildRestart(child, process.platform, signal);
+								await requestRestart(child, process.platform, signal);
 								monitorController.abort();
 								continue;
 							}
@@ -1619,7 +1625,7 @@ async function runInteractiveSupervision({
 		await monitorPromise;
 		binding =
 			binding ??
-			(await findSessionBinding({
+			(await findBinding({
 				cwd: process.cwd(),
 				sinceMs: launchStartedAt,
 				sessionId: knownSessionId,
@@ -1741,6 +1747,48 @@ async function runInteractiveSupervision({
 	return 1;
 }
 
+async function runCodexSupervisorWithRuntime({
+	codexBin,
+	rawArgs,
+	buildForwardArgs,
+	forwardToRealCodex,
+	runtime,
+	signal,
+}) {
+	const pluginConfig = runtime.loadPluginConfig();
+	if (!runtime.getCodexCliSessionSupervisor(pluginConfig)) {
+		return null;
+	}
+
+	const initialArgs = buildForwardArgs(rawArgs);
+	if (isSupervisorAccountGateBypassCommand(rawArgs)) {
+		return forwardToRealCodex(codexBin, initialArgs);
+	}
+
+	const ready = await ensureLaunchableAccount(runtime, pluginConfig, signal);
+	if (ready.aborted) {
+		return 130;
+	}
+	if (!ready.ok) {
+		relaunchNotice("no launchable account is currently available");
+		return 1;
+	}
+
+	if (isNonInteractiveCommand(rawArgs)) {
+		return forwardToRealCodex(codexBin, initialArgs);
+	}
+
+	return runInteractiveSupervision({
+		codexBin,
+		initialArgs,
+		buildForwardArgs,
+		runtime,
+		pluginConfig,
+		manager: ready.manager,
+		signal,
+	});
+}
+
 export async function runCodexSupervisorIfEnabled({
 	codexBin,
 	rawArgs,
@@ -1757,41 +1805,12 @@ export async function runCodexSupervisorIfEnabled({
 		if (!runtime) {
 			return null;
 		}
-
-		const pluginConfig = runtime.loadPluginConfig();
-		if (!runtime.getCodexCliSessionSupervisor(pluginConfig)) {
-			return null;
-		}
-
-		const initialArgs = buildForwardArgs(rawArgs);
-		if (isSupervisorAccountGateBypassCommand(rawArgs)) {
-			return forwardToRealCodex(codexBin, initialArgs);
-		}
-
-		const ready = await ensureLaunchableAccount(
-			runtime,
-			pluginConfig,
-			controller.signal,
-		);
-		if (ready.aborted) {
-			return 130;
-		}
-		if (!ready.ok) {
-			relaunchNotice("no launchable account is currently available");
-			return 1;
-		}
-
-		if (isNonInteractiveCommand(rawArgs)) {
-			return forwardToRealCodex(codexBin, initialArgs);
-		}
-
-		return runInteractiveSupervision({
+		return runCodexSupervisorWithRuntime({
 			codexBin,
-			initialArgs,
+			rawArgs,
 			buildForwardArgs,
+			forwardToRealCodex,
 			runtime,
-			pluginConfig,
-			manager: ready.manager,
 			signal: controller.signal,
 		});
 	} catch (error) {
@@ -1829,6 +1848,7 @@ const TEST_ONLY_API = {
 	withLockedManager,
 	getSupervisorStorageLockPath,
 	runInteractiveSupervision,
+	runCodexSupervisorWithRuntime,
 };
 
 export const __testOnly =

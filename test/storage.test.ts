@@ -990,7 +990,7 @@ describe("storage", () => {
 					setStoragePathDirect(secondaryStoragePath);
 					await exportAccounts(exportPath);
 				}),
-			).rejects.toThrow(/different storage path/);
+			).rejects.toThrow(/storage path mismatch/);
 			expect(existsSync(exportPath)).toBe(false);
 		});
 

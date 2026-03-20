@@ -2512,8 +2512,8 @@ export async function exportAccounts(
 		transactionState.storagePath !== activeStoragePath
 	) {
 		throw new Error(
-			`No accounts to export: export was called from a different storage path ` +
-				`(transaction path: ${transactionState.storagePath}, active: ${activeStoragePath})`,
+			`Export blocked by storage path mismatch: transaction path is ` +
+				`${transactionState.storagePath}, active path is ${activeStoragePath}`,
 		);
 	}
 	const storage = transactionState?.active
