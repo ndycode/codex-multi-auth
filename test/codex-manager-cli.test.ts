@@ -3011,6 +3011,9 @@ describe("codex manager cli commands", () => {
 		loadAccountsMock.mockImplementation(async () =>
 			storageState == null ? null : structuredClone(storageState),
 		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
 		getNamedBackupsMock.mockResolvedValue([
 			{
 				path: "/mock/backups/last-good.json",
@@ -3025,10 +3028,7 @@ describe("codex manager cli commands", () => {
 				mtimeMs: now - 60_000,
 			},
 		]);
-		restoreAccountsFromBackupMock.mockImplementation(async () => {
-			storageState = structuredClone(restoredStorage);
-			return structuredClone(restoredStorage);
-		});
+		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
 		selectMock
 			.mockResolvedValueOnce("restore-backup")
 			.mockResolvedValueOnce("latest");
@@ -3052,8 +3052,10 @@ describe("codex manager cli commands", () => {
 		);
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/last-good.json",
+			{ persist: false },
 		);
-		expect(confirmMock).not.toHaveBeenCalled();
+		expect(confirmMock).toHaveBeenCalledWith("Load last-good.json (2 accounts)?");
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accountId: "acc_restored",
@@ -3174,6 +3176,9 @@ describe("codex manager cli commands", () => {
 		loadAccountsMock.mockImplementation(async () =>
 			storageState == null ? null : structuredClone(storageState),
 		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
 		getNamedBackupsMock.mockResolvedValue([
 			{
 				path: "/mock/backups/warn.json",
@@ -3182,10 +3187,7 @@ describe("codex manager cli commands", () => {
 				mtimeMs: now,
 			},
 		]);
-		restoreAccountsFromBackupMock.mockImplementation(async () => {
-			storageState = structuredClone(restoredStorage);
-			return structuredClone(restoredStorage);
-		});
+		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
 		setCodexCliActiveSelectionMock.mockResolvedValueOnce(false);
 		selectMock
 			.mockResolvedValueOnce("restore-backup")
@@ -3198,7 +3200,9 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/warn.json",
+			{ persist: false },
 		);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accountId: "acc_warn",
@@ -3236,6 +3240,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"C:/mock/backups/locked.json",
+			{ persist: false },
 		);
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining("The file may be open in another program"),
@@ -3243,24 +3248,9 @@ describe("codex manager cli commands", () => {
 		expect(errorSpy).toHaveBeenCalledWith("Backup restore failed: File is busy");
 	});
 
-	it("re-enters the existing-account menu when restore sync persistence fails after writing storage", async () => {
+	it("keeps onboarding in the empty-pool flow when restore persistence fails before any storage is written", async () => {
 		const now = Date.now();
 		setInteractiveTTY(true);
-		let storageState: {
-			version: 3;
-			activeIndex: number;
-			activeIndexByFamily: { codex: number };
-			accounts: Array<{
-				email: string;
-				accountId: string;
-				refreshToken: string;
-				accessToken: string;
-				expiresAt: number;
-				addedAt: number;
-				lastUsed: number;
-				enabled: boolean;
-			}>;
-		} | null = null;
 		const restoredStorage = {
 			version: 3 as const,
 			activeIndex: 0,
@@ -3278,9 +3268,7 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		};
-		loadAccountsMock.mockImplementation(async () =>
-			storageState == null ? null : structuredClone(storageState),
-		);
+		loadAccountsMock.mockResolvedValue(null);
 		getNamedBackupsMock.mockResolvedValue([
 			{
 				path: "/mock/backups/persisted.json",
@@ -3289,15 +3277,12 @@ describe("codex manager cli commands", () => {
 				mtimeMs: now,
 			},
 		]);
-		restoreAccountsFromBackupMock.mockImplementation(async () => {
-			storageState = structuredClone(restoredStorage);
-			return structuredClone(restoredStorage);
-		});
+		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
 		saveAccountsMock.mockRejectedValueOnce(new Error("save selected account failed"));
 		selectMock
 			.mockResolvedValueOnce("restore-backup")
-			.mockResolvedValueOnce("latest");
-		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+			.mockResolvedValueOnce("latest")
+			.mockResolvedValueOnce("cancel");
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
@@ -3306,14 +3291,43 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/persisted.json",
+			{ persist: false },
 		);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
-		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
-		expect(selectMock).toHaveBeenCalledTimes(2);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(selectMock).toHaveBeenCalledTimes(3);
 		expect(errorSpy).toHaveBeenCalledWith(
 			"Backup restore failed: save selected account failed",
 		);
+	});
+
+	it("does not restore the latest backup when confirmation is declined", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		loadAccountsMock.mockResolvedValueOnce(null).mockResolvedValue(null);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/latest.json",
+				fileName: "latest.json",
+				accountCount: 2,
+				mtimeMs: now,
+			},
+		]);
+		confirmMock.mockResolvedValueOnce(false);
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("latest")
+			.mockResolvedValueOnce("cancel");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(confirmMock).toHaveBeenCalledWith("Load latest.json (2 accounts)?");
+		expect(restoreAccountsFromBackupMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 	});
 
 	it("does not restore a manually chosen backup when confirmation is declined", async () => {
@@ -3433,7 +3447,13 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		};
-		loadAccountsMock.mockResolvedValue(null);
+		let storageState: typeof restoredStorage | null = null;
+		loadAccountsMock.mockImplementation(async () =>
+			storageState == null ? null : structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
 		getNamedBackupsMock.mockResolvedValue([
 			{
 				path: "/mock/backups/latest.json",
@@ -3458,6 +3478,7 @@ describe("codex manager cli commands", () => {
 				accountCount: 1,
 				mtimeMs: now - 60_000,
 			});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -3465,8 +3486,10 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/manual-choice.json",
+			{ persist: false },
 		);
 		expect(confirmMock).toHaveBeenCalledWith("Load manual-choice.json (1 account)?");
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {

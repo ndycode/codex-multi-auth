@@ -4386,16 +4386,14 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 
-				if (restoreMode === "manual") {
-					const confirmed = await confirm(
-						UI_COPY.oauth.restoreBackupConfirm(
-							selectedBackup.fileName,
-							selectedBackup.accountCount,
-						),
-					);
-					if (!confirmed) {
-						continue;
-					}
+				const confirmed = await confirm(
+					UI_COPY.oauth.restoreBackupConfirm(
+						selectedBackup.fileName,
+						selectedBackup.accountCount,
+					),
+				);
+				if (!confirmed) {
+					continue;
 				}
 
 				const displaySettings = await loadDashboardDisplaySettings();
@@ -4407,6 +4405,7 @@ async function runAuthLogin(): Promise<number> {
 						async () => {
 							const restoredStorage = await restoreAccountsFromBackup(
 								selectedBackup.path,
+								{ persist: false },
 							);
 							const targetIndex = resolveActiveIndex(restoredStorage);
 							const { synced } = await persistAndSyncSelectedAccount({

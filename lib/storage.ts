@@ -871,12 +871,17 @@ export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
 	return collectNamedBackups(getStoragePath());
 }
 
-export async function restoreAccountsFromBackup(path: string): Promise<AccountStorageV3> {
+export async function restoreAccountsFromBackup(
+	path: string,
+	options?: { persist?: boolean },
+): Promise<AccountStorageV3> {
 	const { normalized } = await loadAccountsFromPath(path);
 	if (!normalized || normalized.accounts.length === 0) {
 		throw new Error(`Backup does not contain any accounts: ${path}`);
 	}
-	await saveAccounts(normalized);
+	if (options?.persist !== false) {
+		await saveAccounts(normalized);
+	}
 	return normalized;
 }
 
