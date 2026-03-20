@@ -343,6 +343,9 @@ export async function fetchCodexQuotaSnapshot(
 		}
 		try {
 			const instructions = await getCodexInstructions(model);
+			if (options.signal?.aborted) {
+				throw createAbortError("Quota probe aborted");
+			}
 			const probeBody: RequestBody = {
 				model,
 				stream: true,

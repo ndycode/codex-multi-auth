@@ -227,6 +227,35 @@ describe("quota-probe", () => {
 		).rejects.toThrow(/abort/i);
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
+
+	it("re-checks the caller abort signal after loading instructions", async () => {
+		const controller = new AbortController();
+		const instructionsReady = (() => {
+			let resolve!: (value: string) => void;
+			const promise = new Promise<string>((res) => {
+				resolve = res;
+			});
+			return { promise, resolve };
+		})();
+		getCodexInstructionsMock.mockImplementationOnce(() => instructionsReady.promise);
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		const pending = fetchCodexQuotaSnapshot({
+			accountId: "acc-post-instructions-abort",
+			accessToken: "token-post-instructions-abort",
+			model: "gpt-5-codex",
+			fallbackModels: [],
+			timeoutMs: 30_000,
+			signal: controller.signal,
+		});
+
+		controller.abort();
+		instructionsReady.resolve("instructions:gpt-5-codex");
+
+		await expect(pending).rejects.toThrow(/abort/i);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
 	it("parses reset-at values expressed as epoch seconds and epoch milliseconds", async () => {
 		const nowSec = Math.floor(Date.now() / 1000);
 		const primarySeconds = nowSec + 120;

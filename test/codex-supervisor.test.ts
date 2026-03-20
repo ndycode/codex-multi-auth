@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { __testOnly as supervisorTestApi } from "../scripts/codex-supervisor.js";
 
 const createdDirs: string[] = [];
+const originalPlatform = process.platform;
 const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS",
 	"CODEX_AUTH_CLI_SESSION_BINDING_POLL_MS",
@@ -18,6 +19,7 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
+	"CODEX_AUTH_CLI_SESSION_STATE_REFRESH_MS",
 	"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS",
 	"CODEX_AUTH_ACCESS_TOKEN",
 	"CODEX_AUTH_REFRESH_TOKEN",
@@ -261,6 +263,7 @@ afterEach(async () => {
 	vi.useRealTimers();
 	supervisorTestApi?.clearAllProbeSnapshotCache?.();
 	supervisorTestApi?.clearSessionBindingPathCache?.();
+	Object.defineProperty(process, "platform", { value: originalPlatform });
 	for (const key of envKeys) {
 		const value = originalEnv[key];
 		if (value === undefined) {
@@ -573,6 +576,7 @@ describe("codex supervisor", () => {
 	it("cleans up stale supervisor locks even after a transient Windows unlink failure", async () => {
 		const manager = new FakeManager();
 		const runtime = createFakeRuntime(manager);
+		Object.defineProperty(process, "platform", { value: "win32" });
 		const lockPath = supervisorTestApi?.getSupervisorStorageLockPath(runtime);
 		expect(lockPath).toBeTruthy();
 		if (!lockPath) {
@@ -607,6 +611,24 @@ describe("codex supervisor", () => {
 				}),
 			).resolves.toBe("locked");
 			expect(unlinkSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+		} finally {
+			unlinkSpy.mockRestore();
+		}
+	});
+
+	it("does not retry unlink permission failures outside Windows", async () => {
+		const lockPath = join(createTempDir(), "openai-codex-accounts.json.supervisor.lock");
+		await fs.writeFile(lockPath, "busy", "utf8");
+		Object.defineProperty(process, "platform", { value: "linux" });
+
+		const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async () => {
+			const error = Object.assign(new Error("permission denied"), { code: "EPERM" });
+			throw error;
+		});
+
+		try {
+			await expect(supervisorTestApi?.safeUnlink(lockPath)).resolves.toBe(false);
+			expect(unlinkSpy).toHaveBeenCalledTimes(1);
 		} finally {
 			unlinkSpy.mockRestore();
 		}
@@ -2119,6 +2141,87 @@ describe("codex supervisor", () => {
 				message: "Supervisor storage lock wait aborted",
 			});
 			expect(fetchAttempts).toBe(2);
+			expect(child.kill).toHaveBeenCalled();
+		},
+	);
+
+	it(
+		"reloads supervisor state on a slower cadence than the monitor poll",
+		{ timeout: 10_000 },
+		async () => {
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS = "250";
+			process.env.CODEX_AUTH_CLI_SESSION_STATE_REFRESH_MS = "1000";
+
+			class HangingChild extends EventEmitter {
+				exitCode: number | null = null;
+				kill = vi.fn((signal: string) => {
+					this.exitCode = 130;
+					this.emit("exit", 130, signal);
+					return true;
+				});
+			}
+
+			const manager = new FakeManager();
+			const runtime = createFakeRuntime(manager, {
+				snapshots: new Map([
+					[
+						"near-limit",
+						{
+							status: 200,
+							primary: { usedPercent: 20 },
+							secondary: { usedPercent: 10 },
+						},
+					],
+					[
+						"healthy",
+						{
+							status: 200,
+							primary: { usedPercent: 25 },
+							secondary: { usedPercent: 8 },
+						},
+					],
+				]),
+			});
+			const controller = new AbortController();
+			const child = new HangingChild();
+			let loadCalls = 0;
+
+			setTimeout(() => controller.abort(), 700);
+
+			await expect(
+				supervisorTestApi?.runInteractiveSupervision({
+					codexBin: "dist/bin/codex.js",
+					initialArgs: ["chat"],
+					buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+					runtime,
+					pluginConfig: {},
+					manager,
+					signal: controller.signal,
+					maxSessionRestarts: 1,
+					spawnChild: () => child,
+					waitForBinding: async () => ({
+						sessionId: "state-refresh-session",
+						rolloutPath: null,
+						lastActivityAtMs: Date.now(),
+					}),
+					refreshBinding: async (binding: {
+						sessionId: string;
+						rolloutPath: string | null;
+						lastActivityAtMs: number;
+					}) => binding,
+					loadCurrentState: async () => {
+						loadCalls += 1;
+						return {
+							manager,
+							currentAccount: manager.getCurrentAccountForFamily(),
+						};
+					},
+				}),
+			).rejects.toMatchObject({
+				name: "AbortError",
+				message: "Supervisor storage lock wait aborted",
+			});
+			expect(loadCalls).toBe(1);
 			expect(child.kill).toHaveBeenCalled();
 		},
 	);

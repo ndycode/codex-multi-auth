@@ -16,6 +16,7 @@ const DEFAULT_SESSION_CAPTURE_TIMEOUT_MS = 1_500;
 const DEFAULT_SIGNAL_TIMEOUT_MS = process.platform === "win32" ? 75 : 350;
 const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 4_000;
 const DEFAULT_MONITOR_PROBE_TIMEOUT_MS = 1_250;
+const DEFAULT_STATE_REFRESH_MS = 2_000;
 const DEFAULT_SELECTION_PROBE_TIMEOUT_MS = 2_500;
 const DEFAULT_SELECTION_PROBE_BATCH_SIZE = 4;
 const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 1_500;
@@ -440,7 +441,7 @@ async function persistActiveSelection(manager, account, signal) {
 	}
 }
 
-async function safeUnlink(path) {
+async function safeUnlink(path, platform = process.platform) {
 	for (let attempt = 0; attempt < DEFAULT_UNLINK_RETRY_ATTEMPTS; attempt += 1) {
 		try {
 			await fs.unlink(path);
@@ -454,6 +455,7 @@ async function safeUnlink(path) {
 				return true;
 			}
 			const canRetry =
+				platform === "win32" &&
 				(code === "EPERM" || code === "EBUSY") &&
 				attempt + 1 < DEFAULT_UNLINK_RETRY_ATTEMPTS;
 			if (!canRetry) {
@@ -1902,10 +1904,16 @@ async function runInteractiveSupervision({
 				"CODEX_AUTH_CLI_SESSION_MONITOR_PROBE_TIMEOUT_MS",
 				DEFAULT_MONITOR_PROBE_TIMEOUT_MS,
 			);
+			const stateRefreshMs = parseNumberEnv(
+				"CODEX_AUTH_CLI_SESSION_STATE_REFRESH_MS",
+				DEFAULT_STATE_REFRESH_MS,
+				pollMs,
+			);
 
 			let monitorFailure = null;
 			const monitorPromise = (async () => {
 				try {
+					let nextStateRefreshAt = 0;
 					while (monitorActive) {
 						if (!binding) {
 							binding = await waitForBinding({
@@ -1928,23 +1936,27 @@ async function runInteractiveSupervision({
 						}
 
 						if (!requestedRestart) {
-							let currentState;
-							try {
-								currentState = await loadCurrentState(
-									runtime,
-									monitorController.signal,
-								);
-							} catch (error) {
-								if (
-									monitorController.signal.aborted ||
-									error?.name === "AbortError"
-								) {
-									break;
+							let currentState = null;
+							if (Date.now() >= nextStateRefreshAt) {
+								try {
+									currentState = await loadCurrentState(
+										runtime,
+										monitorController.signal,
+									);
+									nextStateRefreshAt = Date.now() + stateRefreshMs;
+								} catch (error) {
+									if (
+										monitorController.signal.aborted ||
+										error?.name === "AbortError"
+									) {
+										break;
+									}
+									throw error;
 								}
-								throw error;
+								manager = currentState.manager ?? manager;
 							}
-							manager = currentState.manager ?? manager;
-							const currentAccount = currentState.currentAccount;
+							const currentAccount =
+								currentState?.currentAccount ?? getCurrentAccount(manager);
 							if (currentAccount) {
 								let snapshot;
 								try {
@@ -2065,7 +2077,7 @@ async function runInteractiveSupervision({
 				}
 				monitorActive = false;
 				monitorController.abort();
-				await requestRestart(child, process.platform);
+				await requestRestart(child, process.platform, signal);
 				return {
 					exitCode: 130,
 					signal: "SIGTERM",
@@ -2329,6 +2341,7 @@ const TEST_ONLY_API = {
 	getSnapshotCacheKey,
 	isTransientSupervisorLockAcquireError,
 	sleep,
+	safeUnlink,
 	safeUnlinkOwnedSupervisorLock,
 	withLockedManager,
 	getSupervisorStorageLockPath,
