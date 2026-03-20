@@ -4594,7 +4594,19 @@ async function persistAndSyncSelectedAccount({
 		!!storage.activeIndexByFamily &&
 		targetIndex === storage.activeIndex;
 	storage.activeIndex = targetIndex;
-	if (!shouldPreserveActiveIndexByFamily) {
+	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
+	if (shouldPreserveActiveIndexByFamily) {
+		const maxIndex = Math.max(0, storage.accounts.length - 1);
+		for (const family of MODEL_FAMILIES) {
+			const raw = storage.activeIndexByFamily[family];
+			const candidate =
+				typeof raw === "number" && Number.isFinite(raw) ? raw : targetIndex;
+			storage.activeIndexByFamily[family] = Math.max(
+				0,
+				Math.min(candidate, maxIndex),
+			);
+		}
+	} else {
 		storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
 		for (const family of MODEL_FAMILIES) {
 			storage.activeIndexByFamily[family] = targetIndex;
