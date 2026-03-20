@@ -16,6 +16,7 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS",
 	"CODEX_AUTH_CLI_SESSION_MAX_ACCOUNT_SELECTION_ATTEMPTS",
 	"CODEX_AUTH_CLI_SESSION_MAX_RESTARTS",
+	"CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
@@ -1349,6 +1350,8 @@ describe("codex supervisor", () => {
 	});
 
 	it("starts degraded candidate probes in the same batch before waiting on results", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE = "4";
+
 		const manager = new FakeManager([
 			{ accountId: "degraded-1", access: "token-1" },
 			{ accountId: "degraded-2", access: "token-2" },
@@ -1951,6 +1954,7 @@ describe("codex supervisor", () => {
 
 	it("cools down accounts when another caller aborts a shared pending probe", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "5000";
+		process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE = "4";
 
 		const manager = new FakeManager();
 		const fetches: string[] = [];
