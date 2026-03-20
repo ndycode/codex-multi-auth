@@ -1141,7 +1141,7 @@ async function promptManualCallback(state: string): Promise<string | null> {
 type OAuthSignInMode = "browser" | "manual" | "restore-backup" | "cancel";
 type BackupRestoreMode = "latest" | "manual" | "back";
 
-function formatBackupSavedAt(mtimeMs: number): string {
+export function formatBackupSavedAt(mtimeMs: number): string {
 	return new Date(mtimeMs).toLocaleString(undefined, {
 		month: "short",
 		day: "numeric",

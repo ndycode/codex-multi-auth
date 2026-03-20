@@ -166,7 +166,11 @@ async function collectNamedBackups(storagePath: string): Promise<NamedBackupSumm
 		}
 	}
 
-	candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+	candidates.sort((left, right) => {
+		const mtimeDelta = right.mtimeMs - left.mtimeMs;
+		if (mtimeDelta !== 0) return mtimeDelta;
+		return left.fileName.localeCompare(right.fileName);
+	});
 	return candidates;
 }
 
@@ -898,8 +902,9 @@ export async function restoreAccountsFromBackup(
 	}
 	const relativePath = relative(resolvedBackupRoot, resolvedBackupPath);
 	const isInsideBackupRoot =
-		relativePath === "" ||
-		(!relativePath.startsWith("..") && !isAbsolute(relativePath));
+		relativePath.length > 0 &&
+		!relativePath.startsWith("..") &&
+		!isAbsolute(relativePath);
 	if (!isInsideBackupRoot) {
 		throw new Error(`Backup path must stay inside ${resolvedBackupRoot}: ${path}`);
 	}

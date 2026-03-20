@@ -539,6 +539,26 @@ describe("codex manager cli commands", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("formats backup saved-at timestamps with the runtime locale options", async () => {
+		const localeSpy = vi
+			.spyOn(Date.prototype, "toLocaleString")
+			.mockReturnValue("Localized Saved Time");
+		const { formatBackupSavedAt } = await import("../lib/codex-manager.js");
+
+		try {
+			expect(formatBackupSavedAt(1_710_000_000_000)).toBe("Localized Saved Time");
+			expect(localeSpy).toHaveBeenCalledWith(undefined, {
+				month: "short",
+				day: "numeric",
+				year: "numeric",
+				hour: "numeric",
+				minute: "2-digit",
+			});
+		} finally {
+			localeSpy.mockRestore();
+		}
+	});
+
 	it("runs forecast in json mode", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
@@ -3281,6 +3301,7 @@ describe("codex manager cli commands", () => {
 			.mockResolvedValueOnce("restore-backup")
 			.mockResolvedValueOnce("latest");
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -3296,6 +3317,9 @@ describe("codex manager cli commands", () => {
 				accountId: "acc_warn",
 				email: "warn@example.com",
 			}),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Codex auth sync did not complete"),
 		);
 		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
 		expect(selectMock).toHaveBeenCalledTimes(2);
@@ -3330,6 +3354,9 @@ describe("codex manager cli commands", () => {
 			"C:/mock/backups/locked.json",
 			{ persist: false },
 		);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(selectMock).toHaveBeenCalledTimes(3);
 		expect(errorSpy).toHaveBeenCalledWith("Backup restore failed: File is busy");
 	});
 
@@ -3609,6 +3636,7 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
+		expect(getNamedBackupsMock).toHaveBeenCalledTimes(1);
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/manual-choice.json",
 			{ persist: false },

@@ -115,6 +115,60 @@ describe("storage last backup restore", () => {
 		]);
 	});
 
+	it("breaks backup mtime ties with a deterministic file-name order", async () => {
+		const alphaBackupPath = buildNamedBackupPath("backup-alpha");
+		const betaBackupPath = buildNamedBackupPath("backup-beta");
+		await fs.mkdir(dirname(alphaBackupPath), { recursive: true });
+		for (const backupPath of [betaBackupPath, alphaBackupPath]) {
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [{ refreshToken: `${backupPath}-refresh`, addedAt: 1, lastUsed: 1 }],
+				}),
+				"utf-8",
+			);
+			await fs.utimes(
+				backupPath,
+				new Date("2026-03-04T00:00:00.000Z"),
+				new Date("2026-03-04T00:00:00.000Z"),
+			);
+		}
+
+		const backups = await getNamedBackups();
+
+		expect(backups.map((backup) => backup.fileName)).toEqual([
+			"backup-alpha.json",
+			"backup-beta.json",
+		]);
+	});
+
+	it("ignores non-json files and subdirectories in the backup root", async () => {
+		const backupPath = buildNamedBackupPath("real-backup");
+		const backupRoot = dirname(backupPath);
+		await fs.mkdir(backupRoot, { recursive: true });
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [{ refreshToken: "real-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+			"utf-8",
+		);
+		await fs.writeFile(join(backupRoot, "sidecar.tmp"), "lock", "utf-8");
+		await fs.writeFile(join(backupRoot, "notes.bak"), "ignored", "utf-8");
+		await fs.mkdir(join(backupRoot, "subdir"), { recursive: true });
+
+		const backups = await getNamedBackups();
+
+		expect(backups).toHaveLength(1);
+		expect(backups[0]?.fileName).toBe("real-backup.json");
+	});
+
 	it("skips a backup that disappears before stat and falls back to the next valid backup", async () => {
 		const flakyBackupPath = buildNamedBackupPath("backup-flaky");
 		const stableBackupPath = buildNamedBackupPath("backup-stable");
@@ -198,8 +252,14 @@ describe("storage last backup restore", () => {
 
 		expect(restored.accounts).toHaveLength(2);
 		expect(restored.activeIndex).toBe(1);
+		expect(restored.activeIndexByFamily).toEqual(
+			expect.objectContaining({ codex: 1 }),
+		);
 		expect(loaded?.accounts).toHaveLength(2);
 		expect(loaded?.activeIndex).toBe(1);
+		expect(loaded?.activeIndexByFamily).toEqual(
+			expect.objectContaining({ codex: 1 }),
+		);
 		expect(loaded?.accounts[1]?.refreshToken).toBe("refresh-2");
 	});
 
@@ -231,9 +291,15 @@ describe("storage last backup restore", () => {
 
 		expect(restored.accounts).toHaveLength(2);
 		expect(restored.activeIndex).toBe(1);
+		expect(restored.activeIndexByFamily).toEqual(
+			expect.objectContaining({ codex: 1 }),
+		);
 		expect(loaded?.accounts).toHaveLength(1);
 		expect(loaded?.accounts[0]?.refreshToken).toBe("current-refresh");
 		expect(loaded?.activeIndex).toBe(0);
+		expect(loaded?.activeIndexByFamily).toEqual(
+			expect.objectContaining({ codex: 0 }),
+		);
 	});
 
 	it("throws when the named backup has no accounts", async () => {
@@ -312,6 +378,55 @@ describe("storage last backup restore", () => {
 		await expect(restoreAccountsFromBackup(escapedBackupPath)).rejects.toThrow(
 			"Backup path must stay inside",
 		);
+	});
+
+	it("rejects the backup root directory itself as a restore target", async () => {
+		const backupPath = buildNamedBackupPath("backup-root-guard");
+		const backupRoot = dirname(backupPath);
+		await fs.mkdir(backupRoot, { recursive: true });
+
+		await expect(restoreAccountsFromBackup(backupRoot)).rejects.toThrow(
+			"Backup path must stay inside",
+		);
+	});
+
+	it("rejects a path inside the backup tree when realpath escapes outside the root", async () => {
+		const linkedBackupPath = buildNamedBackupPath("backup-link");
+		const backupRoot = dirname(linkedBackupPath);
+		const escapedBackupPath = join(testRoot, "backup-outside-root.json");
+		await fs.mkdir(backupRoot, { recursive: true });
+		await fs.writeFile(
+			escapedBackupPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [{ refreshToken: "outside-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+			"utf-8",
+		);
+
+		const originalRealpath = fs.realpath.bind(fs);
+		const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (path, options) => {
+			if (String(path) === linkedBackupPath) {
+				return originalRealpath(
+					escapedBackupPath as Parameters<typeof originalRealpath>[0],
+					options as Parameters<typeof originalRealpath>[1],
+				);
+			}
+			return originalRealpath(
+				path as Parameters<typeof originalRealpath>[0],
+				options as Parameters<typeof originalRealpath>[1],
+			);
+		});
+
+		try {
+			await expect(restoreAccountsFromBackup(linkedBackupPath)).rejects.toThrow(
+				"Backup path must stay inside",
+			);
+		} finally {
+			realpathSpy.mockRestore();
+		}
 	});
 
 	it("throws a clear error when the backup root has never been created", async () => {
