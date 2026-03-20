@@ -545,6 +545,103 @@ describe("codex supervisor internals", () => {
 		});
 	});
 
+	it("skips the unexpected-exit follow-up probe after the outer signal aborts", async () => {
+		const dir = createTempDir();
+		const sessionsDir = join(dir, "sessions");
+		const storagePath = join(dir, "openai-codex-accounts.json");
+		const childScriptPath = join(dir, "fake-codex.js");
+		const controller = new AbortController();
+		const account = {
+			index: 0,
+			refreshToken: "refresh-1",
+			accountId: "acc-1",
+			email: "one@example.com",
+			access: "access-1",
+		};
+		let loadCount = 0;
+		let probeCalls = 0;
+
+		await fs.writeFile(
+			childScriptPath,
+			[
+				"#!/usr/bin/env node",
+				'import { mkdirSync, writeFileSync } from "node:fs";',
+				'import { join } from "node:path";',
+				"const sessionDir = join(process.env.CODEX_MULTI_AUTH_CLI_SESSIONS_DIR, '2026', '03', '20');",
+				"mkdirSync(sessionDir, { recursive: true });",
+				"writeFileSync(",
+				"\tjoin(sessionDir, 'rollout-session-1.jsonl'),",
+				"\t`${JSON.stringify({ session_meta: { payload: { id: 'session-1', cwd: process.cwd() } } })}\\n`,",
+				"\t'utf8',",
+				");",
+				"setTimeout(() => process.exit(1), 100);",
+			].join("\n"),
+			"utf8",
+		);
+
+		class FakeManager {
+			currentAccount: typeof account | null;
+
+			constructor(currentAccount: typeof account | null) {
+				this.currentAccount = currentAccount;
+			}
+
+			static async loadFromDisk() {
+				loadCount += 1;
+				if (loadCount >= 2) {
+					controller.abort();
+					return new FakeManager(account);
+				}
+				return new FakeManager(null);
+			}
+
+			getCurrentAccountForFamily() {
+				return this.currentAccount;
+			}
+
+			getAccountByIndex(index: number) {
+				return index === account.index ? account : null;
+			}
+
+			getAccountsSnapshot() {
+				return this.currentAccount ? [account] : [];
+			}
+		}
+
+		const runtime = {
+			AccountManager: FakeManager,
+			getStoragePath: () => storagePath,
+			fetchCodexQuotaSnapshot: async () => {
+				probeCalls += 1;
+				return null;
+			},
+			getPreemptiveQuotaEnabled: () => true,
+			getPreemptiveQuotaRemainingPercent5h: () => 10,
+			getPreemptiveQuotaRemainingPercent7d: () => 10,
+		};
+
+		await withLockEnv(
+			{
+				CODEX_MULTI_AUTH_CLI_SESSIONS_DIR: sessionsDir,
+			},
+			async () => {
+				await expect(
+					supervisorTestApi.runInteractiveSupervision({
+						codexBin: childScriptPath,
+						initialArgs: [],
+						buildForwardArgs: (args: string[]) => args,
+						runtime,
+						pluginConfig: {},
+						manager: new FakeManager(account),
+						signal: controller.signal,
+					}),
+				).resolves.toBe(1);
+			},
+		);
+
+		expect(probeCalls).toBe(0);
+	});
+
 	it("does not expose test helpers when imported outside test mode", () => {
 		const scriptPath = join(process.cwd(), "scripts", "codex-supervisor.js");
 		const result = spawnSync(

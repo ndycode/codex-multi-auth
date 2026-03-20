@@ -532,11 +532,11 @@ async function main() {
 		buildForwardArgs,
 		forwardToRealCodex,
 	});
+	await autoSyncManagerActiveSelectionIfEnabled();
 	if (supervisedExitCode !== null) {
 		return supervisedExitCode;
 	}
 
-	await autoSyncManagerActiveSelectionIfEnabled();
 	return forwardToRealCodex(realCodexBin, forwardArgs);
 }
 

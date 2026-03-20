@@ -795,6 +795,58 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(selectionLogPath, "utf8")).toContain("sync:1");
 	});
 
+	it("keeps startup manager sync side effects on supervised launches", () => {
+		const fixtureRoot = createWrapperFixture();
+		const syncLogPath = join(fixtureRoot, "sync.log");
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		createSupervisorRuntimeFixture(fixtureRoot, {
+			accountManagerLines: [
+				"const account = { index: 0, accountId: 'acc-1', access: 'token-1', refreshToken: 'refresh-1', email: 'one@example.com' };",
+				"export class AccountManager {",
+				"\tconstructor() {}",
+				"\tstatic async loadFromDisk() {",
+				"\t\treturn new AccountManager();",
+				"\t}",
+				"\tgetCurrentAccountForFamily() {",
+				"\t\treturn account;",
+				"\t}",
+				"\tgetCurrentOrNextForFamilyHybrid() {",
+				"\t\treturn account;",
+				"\t}",
+				"\tgetMinWaitTimeForFamily() {",
+				"\t\treturn 0;",
+				"\t}",
+				"}",
+			],
+			quotaProbeLines: [
+				"export async function fetchCodexQuotaSnapshot() {",
+				"\treturn { status: 200, model: 'gpt-5-codex', primary: { usedPercent: 20, resetAtMs: Date.now() + 30_000 }, secondary: { usedPercent: 10, resetAtMs: Date.now() + 30_000 } };",
+				"}",
+			],
+		});
+		writeFileSync(
+			join(fixtureRoot, "dist", "lib", "codex-manager.js"),
+			[
+				'import { appendFileSync } from "node:fs";',
+				"export async function autoSyncActiveAccountToCodex() {",
+				'\tappendFileSync(process.env.TEST_SYNC_LOG, "startup-sync\\n");',
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			TEST_SYNC_LOG: syncLogPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
+		expect(readFileSync(syncLogPath, "utf8")).toContain("startup-sync");
+	});
+
 	it("keeps -v on the account-gated path instead of bypassing supervision", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);

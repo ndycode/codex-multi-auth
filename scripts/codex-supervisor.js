@@ -950,6 +950,9 @@ async function runInteractiveSupervision({
 				currentAccount: getCurrentAccount(freshManager),
 			}), signal)
 			manager = refreshedState.manager ?? manager
+			if (signal?.aborted) {
+				return result.exitCode
+			}
 			const snapshot = refreshedState.currentAccount
 				? await probeAccountSnapshot(runtime, refreshedState.currentAccount, signal)
 				: null
@@ -1083,6 +1086,7 @@ const TEST_ONLY_API = {
 	sleep,
 	withLockedManager,
 	getSupervisorStorageLockPath,
+	runInteractiveSupervision,
 }
 
 export const __testOnly =
