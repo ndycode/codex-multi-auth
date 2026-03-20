@@ -146,6 +146,33 @@ function createSupervisorRuntimeFixture(
 	);
 }
 
+function createZeroAccountSupervisorRuntimeFixture(rootDir: string): void {
+	createSupervisorRuntimeFixture(rootDir, {
+		accountManagerLines: [
+			"export class AccountManager {",
+			"\tconstructor() {}",
+			"\tstatic async loadFromDisk() {",
+			"\t\treturn new AccountManager();",
+			"\t}",
+			"\tgetCurrentAccountForFamily() {",
+			"\t\treturn null;",
+			"\t}",
+			"\tgetCurrentOrNextForFamilyHybrid() {",
+			"\t\treturn null;",
+			"\t}",
+			"\tgetMinWaitTimeForFamily() {",
+			"\t\treturn 0;",
+			"\t}",
+			"}",
+		],
+		quotaProbeLines: [
+			"export async function fetchCodexQuotaSnapshot() {",
+			"\tthrow new Error('quota probe should not run');",
+			"}",
+		],
+	});
+}
+
 function runWrapper(
 	fixtureRoot: string,
 	args: string[],
@@ -270,6 +297,54 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:--version");
+	});
+
+	it("forwards help flags without requiring accounts when supervisor is enabled", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		createZeroAccountSupervisorRuntimeFixture(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["--help"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:--help");
+		expect(combinedOutput(result)).not.toContain(
+			"no launchable account is currently available",
+		);
+	});
+
+	it("forwards bypassed auth login commands without requiring accounts", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		createZeroAccountSupervisorRuntimeFixture(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["auth", "login"], {
+			CODEX_MULTI_AUTH_BYPASS: "1",
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:auth login");
+		expect(combinedOutput(result)).not.toContain(
+			"no launchable account is currently available",
+		);
+	});
+
+	it("still blocks quota-consuming commands when no launchable account exists", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		createZeroAccountSupervisorRuntimeFixture(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(1);
+		expect(combinedOutput(result)).toContain(
+			"no launchable account is currently available",
+		);
 	});
 
 	it("injects file auth store forwarding for wrapped real cli invocations by default", () => {

@@ -16,7 +16,6 @@ const DEFAULT_STORAGE_LOCK_WAIT_MS = 10_000
 const DEFAULT_STORAGE_LOCK_POLL_MS = 100
 const DEFAULT_STORAGE_LOCK_TTL_MS = 30_000
 const INTERNAL_RECOVERABLE_COOLDOWN_MS = 60_000
-const RETRYABLE_IO_ERROR_CODES = new Set(["EBUSY", "EPERM", "EMFILE", "ENFILE"])
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/
 const SESSION_META_SCAN_LINE_LIMIT = 200
 const MAX_ACCOUNT_SELECTION_ATTEMPTS = parseNumberEnv(
@@ -92,6 +91,23 @@ function isInteractiveCommand(rawArgs) {
 
 function isNonInteractiveCommand(rawArgs) {
 	return !isInteractiveCommand(rawArgs)
+}
+
+function isSupervisorAccountGateBypassCommand(rawArgs) {
+	if (rawArgs.length === 0) return false
+	const normalizedArgs = rawArgs
+		.map((arg) => `${arg ?? ""}`.trim().toLowerCase())
+		.filter((arg) => arg.length > 0)
+	if (normalizedArgs.length === 0) return false
+
+	const firstArg = normalizedArgs[0]
+	if (firstArg === "auth" || firstArg === "help" || firstArg === "version") {
+		return true
+	}
+
+	return normalizedArgs.some(
+		(arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v",
+	)
 }
 
 function readResumeSessionId(rawArgs) {
@@ -201,11 +217,6 @@ async function persistActiveSelection(manager, account) {
 	if (typeof manager.saveToDisk === "function") {
 		await manager.saveToDisk()
 	}
-}
-
-function isRetryableIoError(error) {
-	if (!error || typeof error !== "object" || !("code" in error)) return false
-	return RETRYABLE_IO_ERROR_CODES.has(`${error.code ?? ""}`)
 }
 
 async function safeUnlink(path) {
@@ -958,6 +969,11 @@ export async function runCodexSupervisorIfEnabled({
 			return null
 		}
 
+		const initialArgs = buildForwardArgs(rawArgs)
+		if (isSupervisorAccountGateBypassCommand(rawArgs)) {
+			return forwardToRealCodex(codexBin, initialArgs)
+		}
+
 		const ready = await ensureLaunchableAccount(runtime, pluginConfig, controller.signal)
 		if (ready.aborted) {
 			return 130
@@ -967,7 +983,6 @@ export async function runCodexSupervisorIfEnabled({
 			return 1
 		}
 
-		const initialArgs = buildForwardArgs(rawArgs)
 		if (isNonInteractiveCommand(rawArgs)) {
 			return forwardToRealCodex(codexBin, initialArgs)
 		}
