@@ -1882,7 +1882,7 @@ describe("codex supervisor", () => {
 		},
 	);
 
-	it("does not cool down accounts when the quota probe is unavailable", async () => {
+	it("cools down accounts when the quota probe is unavailable", async () => {
 		const manager = new FakeManager();
 		const runtime = createFakeRuntime(manager, {
 			onFetch(accountId) {
@@ -1905,8 +1905,46 @@ describe("codex supervisor", () => {
 			ok: true,
 			account: { accountId: "healthy" },
 		});
-		expect(manager.getAccountByIndex(0)?.coolingDownUntil).toBe(0);
+		expect(manager.getAccountByIndex(0)?.coolingDownUntil).toBeGreaterThan(0);
 		expect(manager.activeIndex).toBe(1);
+	});
+
+	it("does not unlink a refreshed lock when the owner heartbeat extends it", async () => {
+		const lockPath = join(createTempDir(), "supervisor.lock");
+		const ownerId = "owner-1";
+		await fs.writeFile(
+			lockPath,
+			JSON.stringify({
+				ownerId,
+				acquiredAt: Date.now() - 500,
+				expiresAt: Date.now() + 30_000,
+			}),
+		);
+
+		const removed = await supervisorTestApi?.safeUnlinkOwnedSupervisorLock(
+			lockPath,
+			ownerId,
+			Date.now() - 1_000,
+		);
+
+		expect(removed).toBe(false);
+		await expect(fs.access(lockPath)).resolves.toBeUndefined();
+	});
+
+	it("strips CODEX_AUTH_* variables from the child process env", () => {
+		const childEnv = supervisorTestApi?.buildCodexChildEnv({
+			PATH: "C:/bin",
+			HOME: "C:/Users/neil",
+			CODEX_AUTH_REFRESH_TOKEN: "secret",
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+		});
+
+		expect(childEnv).toMatchObject({
+			PATH: "C:/bin",
+			HOME: "C:/Users/neil",
+		});
+		expect(childEnv?.CODEX_AUTH_REFRESH_TOKEN).toBeUndefined();
+		expect(childEnv?.CODEX_AUTH_CLI_SESSION_SUPERVISOR).toBeUndefined();
 	});
 
 	it("honors the account-selection-attempt env override at call time", async () => {

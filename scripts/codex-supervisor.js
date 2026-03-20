@@ -528,13 +528,21 @@ async function writeSupervisorLockPayload(lockPath, ownerId, acquiredAt, ttlMs) 
 	);
 }
 
-async function safeUnlinkOwnedSupervisorLock(lockPath, ownerId) {
+async function safeUnlinkOwnedSupervisorLock(lockPath, ownerId, staleBeforeMs) {
 	const payload = await readSupervisorLockPayload(lockPath);
 	if (
 		payload &&
 		typeof payload.ownerId === "string" &&
 		payload.ownerId.length > 0 &&
 		payload.ownerId !== ownerId
+	) {
+		return false;
+	}
+	if (
+		typeof staleBeforeMs === "number" &&
+		payload &&
+		typeof payload.expiresAt === "number" &&
+		payload.expiresAt > staleBeforeMs
 	) {
 		return false;
 	}
@@ -747,6 +755,7 @@ async function withSupervisorStorageLock(runtime, fn, signal) {
 			}
 
 			if (await isSupervisorLockStale(lockPath, ttlMs)) {
+				const staleCheckAtMs = Date.now();
 				const stalePayload = await readSupervisorLockPayload(lockPath);
 				const removed =
 					typeof stalePayload?.ownerId === "string" &&
@@ -754,6 +763,7 @@ async function withSupervisorStorageLock(runtime, fn, signal) {
 						? await safeUnlinkOwnedSupervisorLock(
 								lockPath,
 								stalePayload.ownerId,
+								staleCheckAtMs,
 							)
 						: await safeUnlink(lockPath);
 				if (removed) continue;
@@ -1397,6 +1407,8 @@ async function ensureLaunchableAccount(
 				}
 
 				if (result.evaluation.reason === "probe-unavailable") {
+					markAccountUnavailable(manager, account, result.evaluation);
+					dirty = true;
 					probeUnavailableAccounts.push(account);
 					continue;
 				}
@@ -1776,10 +1788,20 @@ async function requestChildRestart(child, platform = process.platform, signal) {
 	await Promise.race([exitPromise, sleep(signalTimeoutMs, signal)]);
 }
 
+function buildCodexChildEnv(baseEnv = process.env) {
+	const env = { ...baseEnv };
+	for (const key of Object.keys(env)) {
+		if (key.startsWith("CODEX_AUTH_")) {
+			delete env[key];
+		}
+	}
+	return env;
+}
+
 function spawnRealCodex(codexBin, args) {
 	return spawn(process.execPath, [codexBin, ...args], {
 		stdio: "inherit",
-		env: process.env,
+		env: buildCodexChildEnv(),
 	});
 }
 
@@ -2300,6 +2322,7 @@ const TEST_ONLY_API = {
 	safeUnlinkOwnedSupervisorLock,
 	withLockedManager,
 	getSupervisorStorageLockPath,
+	buildCodexChildEnv,
 	runInteractiveSupervision,
 	runCodexSupervisorWithRuntime,
 	waitForSessionBinding,
