@@ -1163,6 +1163,7 @@ async function promptOAuthSignInMode(
 		{ label: UI_COPY.oauth.manualMode, value: "manual", color: "yellow" },
 		...(backupOption
 			? [
+				{ separator: true, label: "", value: "cancel" as const },
 				{ label: UI_COPY.oauth.restoreHeading, value: "browser" as const, kind: "heading" as const },
 				{
 					label: UI_COPY.oauth.restoreSavedBackup,
