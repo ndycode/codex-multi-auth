@@ -11,6 +11,7 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS",
 	"CODEX_AUTH_CLI_SESSION_BINDING_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS",
+	"CODEX_HOME",
 ] as const;
 const originalEnv = Object.fromEntries(
 	envKeys.map((key) => [key, process.env[key]]),
@@ -288,6 +289,54 @@ describe("codex supervisor", () => {
 		);
 
 		await expect(supervisorTestApi?.extractSessionMeta(filePath)).resolves.toBeNull();
+	});
+
+	it("reuses the known rollout path before scanning the sessions tree again", async () => {
+		const codexHome = createTempDir();
+		const cwd = createTempDir();
+		process.env.CODEX_HOME = codexHome;
+
+		const sessionsDir = join(codexHome, "sessions", "2026", "03", "20");
+		await fs.mkdir(sessionsDir, { recursive: true });
+		const rolloutPath = join(sessionsDir, "known-session.jsonl");
+		await fs.writeFile(
+			rolloutPath,
+			JSON.stringify({
+				session_meta: {
+					payload: { id: "known-session", cwd },
+				},
+			}),
+			"utf8",
+		);
+
+		const first = await supervisorTestApi?.findSessionBinding({
+			cwd,
+			sinceMs: 0,
+			sessionId: "known-session",
+		});
+		expect(first).toMatchObject({
+			sessionId: "known-session",
+			rolloutPath,
+		});
+
+		const readdirSpy = vi.spyOn(fs, "readdir");
+		readdirSpy.mockRejectedValue(new Error("should not rescan sessions"));
+
+		try {
+			const second = await supervisorTestApi?.findSessionBinding({
+				cwd,
+				sinceMs: 0,
+				sessionId: "known-session",
+				rolloutPathHint: first?.rolloutPath,
+			});
+			expect(second).toMatchObject({
+				sessionId: "known-session",
+				rolloutPath,
+			});
+			expect(readdirSpy).not.toHaveBeenCalled();
+		} finally {
+			readdirSpy.mockRestore();
+		}
 	});
 
 	it("interrupts child restart waits when the abort signal fires", async () => {

@@ -1253,21 +1253,56 @@ async function extractSessionMeta(filePath) {
 	return null;
 }
 
-async function findSessionBinding({ cwd, sinceMs, sessionId }) {
-	const sessionsRoot = getSessionsRootDir();
+async function matchSessionBindingEntry(entry, cwdKey, sessionId) {
+	const meta = await extractSessionMeta(entry.filePath);
+	if (!meta) return null;
+	if (sessionId && meta.sessionId === sessionId) {
+		return {
+			sessionId: meta.sessionId,
+			rolloutPath: entry.filePath,
+			lastActivityAtMs: entry.mtimeMs,
+		};
+	}
+	const metaCwdKey = normalizeCwd(meta.cwd);
+	if (!cwdKey || !metaCwdKey || metaCwdKey !== cwdKey) return null;
+	return {
+		sessionId: meta.sessionId,
+		rolloutPath: entry.filePath,
+		lastActivityAtMs: entry.mtimeMs,
+	};
+}
+
+async function readSessionBindingEntry(filePath) {
+	try {
+		const stat = await fs.stat(filePath);
+		return {
+			filePath,
+			mtimeMs: stat.mtimeMs,
+		};
+	} catch {
+		return null;
+	}
+}
+
+async function findSessionBinding({ cwd, sinceMs, sessionId, rolloutPathHint }) {
 	const cwdKey = normalizeCwd(cwd);
+	if (rolloutPathHint) {
+		const directEntry = await readSessionBindingEntry(rolloutPathHint);
+		if (directEntry) {
+			const directBinding = await matchSessionBindingEntry(
+				directEntry,
+				cwdKey,
+				sessionId,
+			);
+			if (directBinding) return directBinding;
+		}
+	}
+
+	const sessionsRoot = getSessionsRootDir();
 	const files = (
 		await Promise.all(
 			(await listJsonlFiles(sessionsRoot)).map(async (filePath) => {
-				try {
-					const stat = await fs.stat(filePath);
-					return {
-						filePath,
-						mtimeMs: stat.mtimeMs,
-					};
-				} catch {
-					return null;
-				}
+				return readSessionBindingEntry(filePath);
 			}),
 		)
 	)
@@ -1275,22 +1310,8 @@ async function findSessionBinding({ cwd, sinceMs, sessionId }) {
 		.sort((left, right) => right.mtimeMs - left.mtimeMs);
 
 	for (const entry of files) {
-		const meta = await extractSessionMeta(entry.filePath);
-		if (!meta) continue;
-		if (sessionId && meta.sessionId === sessionId) {
-			return {
-				sessionId: meta.sessionId,
-				rolloutPath: entry.filePath,
-				lastActivityAtMs: entry.mtimeMs,
-			};
-		}
-		const metaCwdKey = normalizeCwd(meta.cwd);
-		if (!cwdKey || !metaCwdKey || metaCwdKey !== cwdKey) continue;
-		return {
-			sessionId: meta.sessionId,
-			rolloutPath: entry.filePath,
-			lastActivityAtMs: entry.mtimeMs,
-		};
+		const binding = await matchSessionBindingEntry(entry, cwdKey, sessionId);
+		if (binding) return binding;
 	}
 
 	return null;
@@ -1300,6 +1321,7 @@ async function waitForSessionBinding({
 	cwd,
 	sinceMs,
 	sessionId,
+	rolloutPathHint,
 	timeoutMs,
 	signal,
 }) {
@@ -1310,7 +1332,12 @@ async function waitForSessionBinding({
 		25,
 	);
 	while (Date.now() <= deadline) {
-		const binding = await findSessionBinding({ cwd, sinceMs, sessionId });
+		const binding = await findSessionBinding({
+			cwd,
+			sinceMs,
+			sessionId,
+			rolloutPathHint,
+		});
 		if (binding) return binding;
 		const slept = await sleep(pollMs, signal);
 		if (!slept) return null;
@@ -1375,6 +1402,7 @@ async function runInteractiveSupervision({
 }) {
 	let launchArgs = initialArgs;
 	let knownSessionId = readResumeSessionId(initialArgs);
+	let knownRolloutPath = null;
 	let launchCount = 0;
 
 	while (launchCount < MAX_SESSION_RESTARTS) {
@@ -1389,8 +1417,12 @@ async function runInteractiveSupervision({
 					cwd: process.cwd(),
 					sinceMs: 0,
 					sessionId: knownSessionId,
+					rolloutPathHint: knownRolloutPath,
 				})
 			: null;
+		if (binding?.rolloutPath) {
+			knownRolloutPath = binding.rolloutPath;
+		}
 		let requestedRestart = null;
 		let preparedResumeSelectionPromise = null;
 		let preparedResumeSelectionStarted = false;
@@ -1431,14 +1463,19 @@ async function runInteractiveSupervision({
 						cwd: process.cwd(),
 						sinceMs: launchStartedAt,
 						sessionId: knownSessionId,
+						rolloutPathHint: knownRolloutPath,
 						timeoutMs: captureTimeoutMs,
 						signal: monitorController.signal,
 					});
 					if (binding?.sessionId) {
 						knownSessionId = binding.sessionId;
+						knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
 					}
 				} else {
 					binding = await refreshSessionActivity(binding);
+					if (binding?.rolloutPath) {
+						knownRolloutPath = binding.rolloutPath;
+					}
 				}
 
 				if (!requestedRestart) {
@@ -1565,9 +1602,11 @@ async function runInteractiveSupervision({
 				cwd: process.cwd(),
 				sinceMs: launchStartedAt,
 				sessionId: knownSessionId,
+				rolloutPathHint: knownRolloutPath,
 			}));
 		if (binding?.sessionId) {
 			knownSessionId = binding.sessionId;
+			knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
 		}
 
 		let restartDecision = requestedRestart;
@@ -1674,6 +1713,7 @@ async function runInteractiveSupervision({
 		logRotationSummary(restartDecision.sessionId, rotationTrace, nextReady);
 		launchArgs = buildResumeArgs(restartDecision.sessionId, buildForwardArgs);
 		knownSessionId = restartDecision.sessionId;
+		knownRolloutPath = binding?.rolloutPath ?? knownRolloutPath;
 	}
 
 	relaunchNotice("session supervisor reached the restart safety limit");
