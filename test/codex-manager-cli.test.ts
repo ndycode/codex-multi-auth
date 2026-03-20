@@ -3094,6 +3094,7 @@ describe("codex manager cli commands", () => {
 		});
 		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 		promptAddAnotherAccountMock.mockResolvedValue(false);
+		selectMock.mockResolvedValueOnce("browser");
 		promptQuestionMock.mockResolvedValueOnce(
 			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=oauth-state",
 		);
@@ -3118,7 +3119,6 @@ describe("codex manager cli commands", () => {
 		vi.mocked(browserModule.isBrowserLaunchSuppressed).mockReturnValueOnce(true);
 		const serverModule = await import("../lib/auth/server.js");
 		const startLocalOAuthServerMock = vi.mocked(serverModule.startLocalOAuthServer);
-		startLocalOAuthServerMock.mockRejectedValueOnce(new Error("suppressed browser mode"));
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
@@ -3166,9 +3166,6 @@ describe("codex manager cli commands", () => {
 		const browserModule = await import("../lib/auth/browser.js");
 		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 		const serverModule = await import("../lib/auth/server.js");
-		vi.mocked(serverModule.startLocalOAuthServer).mockRejectedValueOnce(
-			new Error("port in use"),
-		);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
@@ -3208,9 +3205,6 @@ describe("codex manager cli commands", () => {
 		const browserModule = await import("../lib/auth/browser.js");
 		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 		const serverModule = await import("../lib/auth/server.js");
-		vi.mocked(serverModule.startLocalOAuthServer).mockRejectedValueOnce(
-			new Error("port in use"),
-		);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
@@ -3259,9 +3253,6 @@ describe("codex manager cli commands", () => {
 		const browserModule = await import("../lib/auth/browser.js");
 		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 		const serverModule = await import("../lib/auth/server.js");
-		vi.mocked(serverModule.startLocalOAuthServer).mockRejectedValueOnce(
-			Object.assign(new Error("permission denied"), { code: "EACCES" }),
-		);
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
