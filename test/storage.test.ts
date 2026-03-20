@@ -13,6 +13,7 @@ import {
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getFlaggedAccountsPath,
+	getBackupMetadata,
 	getStoragePath,
 	importAccounts,
 	loadAccounts,
@@ -3367,6 +3368,40 @@ describe("storage", () => {
 			expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-3");
 			expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
 			expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
+		});
+
+		it("prefers earlier snapshot priority when valid backups share the same mtime", async () => {
+			const storagePath = getStoragePath();
+			const snapshotTime = new Date("2026-03-20T00:00:00.000Z");
+			const writeValidSnapshot = async (path: string, refreshToken: string) => {
+				await fs.writeFile(
+					path,
+					JSON.stringify(
+						{
+							version: 3,
+							activeIndex: 0,
+							accounts: [
+								{
+									refreshToken,
+									addedAt: 1,
+									lastUsed: 1,
+								},
+							],
+						},
+						null,
+						2,
+					),
+					"utf-8",
+				);
+				await fs.utimes(path, snapshotTime, snapshotTime);
+			};
+
+			await writeValidSnapshot(storagePath, "primary-token");
+			await writeValidSnapshot(`${storagePath}.bak`, "backup-token");
+			await writeValidSnapshot(`${storagePath}.bak.1`, "backup-history-token");
+
+			const metadata = await getBackupMetadata();
+			expect(metadata.accounts.latestValidPath).toBe(storagePath);
 		});
 	});
 

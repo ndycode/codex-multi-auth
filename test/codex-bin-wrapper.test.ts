@@ -1,6 +1,7 @@
 import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import {
 	copyFileSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -112,6 +113,19 @@ function writeSupervisorRuntimeFixture(fixtureRoot: string): void {
 		].join("\n"),
 		"utf8",
 	);
+	writeFileSync(
+		join(distLibDir, "storage.js"),
+		[
+			"export function getStoragePath() {",
+			`\treturn ${JSON.stringify(join(fixtureRoot, "openai-codex-accounts.json"))};`,
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+}
+
+function writeSupervisorStub(fixtureRoot: string, lines: string[]): void {
+	writeFileSync(join(fixtureRoot, "scripts", "codex-supervisor.js"), lines.join("\n"), "utf8");
 }
 
 function writeCodexManagerAutoSyncFixture(fixtureRoot: string): void {
@@ -634,7 +648,7 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(markerPath, "utf8")).toContain("supervisor\n");
 	});
 
-	it("still auto-syncs once when the supervisor returns early", () => {
+	it("auto-syncs once for a supervisor-forwarded command", () => {
 		const fixtureRoot = createWrapperFixture();
 		writeSupervisorRuntimeFixture(fixtureRoot);
 		writeCodexManagerAutoSyncFixture(fixtureRoot);
@@ -650,6 +664,27 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(0);
 		expect(result.stdout.match(/FORWARDED:/g) ?? []).toHaveLength(1);
 		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
+	});
+
+	it("skips startup auto-sync when the supervisor returns the abort sentinel", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorStub(fixtureRoot, [
+			"export async function runCodexSupervisorIfEnabled() {",
+			"\treturn 130;",
+			"}",
+		]);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "abort-auto-sync.log");
+
+		const result = runWrapper(fixtureRoot, ["resume", "session-123"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(130);
+		expect(result.stdout).not.toContain("FORWARDED:");
+		expect(existsSync(markerPath)).toBe(false);
 	});
 
 	it("supports interactive commands through the supervisor wrapper", () => {

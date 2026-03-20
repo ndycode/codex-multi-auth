@@ -65,6 +65,12 @@ async function autoSyncManagerActiveSelectionIfEnabled() {
 	}
 }
 
+function isSupervisorInteractiveCommand(rawArgs) {
+	if (rawArgs.length === 0) return true;
+	const command = `${rawArgs[0] ?? ""}`.trim().toLowerCase();
+	return command === "resume" || command === "fork";
+}
+
 function resolveRealCodexBin() {
 	const override = (process.env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
 	if (override.length > 0) {
@@ -526,20 +532,27 @@ async function main() {
 	}
 
 	const forwardArgs = buildForwardArgs(rawArgs);
+	const forwardToRealCodexWithStartupSync = async (codexBin, args) => {
+		await autoSyncManagerActiveSelectionIfEnabled();
+		return forwardToRealCodex(codexBin, args);
+	};
 	const supervisedExitCode = await runCodexSupervisorIfEnabled({
 		codexBin: realCodexBin,
 		rawArgs,
 		buildForwardArgs,
-		forwardToRealCodex,
+		forwardToRealCodex: forwardToRealCodexWithStartupSync,
 	});
-	// The supervisor persists account selection, but the wrapper still runs startup sync
-	// before returning so the live Codex CLI state can refresh expired token material.
-	await autoSyncManagerActiveSelectionIfEnabled();
 	if (supervisedExitCode !== null) {
+		if (supervisedExitCode === 130) {
+			return 130;
+		}
+		if (isSupervisorInteractiveCommand(rawArgs)) {
+			await autoSyncManagerActiveSelectionIfEnabled();
+		}
 		return supervisedExitCode;
 	}
 
-	return forwardToRealCodex(realCodexBin, forwardArgs);
+	return forwardToRealCodexWithStartupSync(realCodexBin, forwardArgs);
 }
 
 const exitCode = await main();

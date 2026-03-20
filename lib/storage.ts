@@ -818,7 +818,7 @@ function latestValidSnapshot(
 		.sort(
 			(left, right) =>
 				(right.snapshot.mtimeMs ?? 0) - (left.snapshot.mtimeMs ?? 0) ||
-				right.index - left.index,
+				left.index - right.index,
 		)[0]?.snapshot;
 }
 

@@ -95,7 +95,7 @@ export const UI_COPY = {
 		experimentalTitle: "Experimental",
 		experimentalSubtitle: "Preview sync and backup actions before they become stable",
 		experimentalHelpMenu:
-			"Enter Select | 1 Sync | 2 Backup | 3 Guard | [ - Down | ] + Up | S Save | Q Back",
+			"Enter Select | 1 Supervisor | 2 Sync | 3 Backup | 4 Guard | [ - Down | ] + Up | S Save | Q Back",
 		experimentalHelpPreview: "Enter Select | A Apply | Q Back",
 		experimentalHelpStatus: "Enter Select | Q Back",
 		experimentalSessionSupervisor: "Enable Session Resume Supervisor",

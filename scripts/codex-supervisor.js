@@ -1508,6 +1508,12 @@ async function runInteractiveSupervision({
 		let requestedRestart = null;
 		let preparedResumeSelectionPromise = null;
 		let preparedResumeSelectionStarted = false;
+		const preparedResumeSelectionController = new AbortController();
+		signal?.addEventListener(
+			"abort",
+			() => preparedResumeSelectionController.abort(),
+			{ once: true },
+		);
 		const rotationTrace = {
 			detectedAtMs: 0,
 			prewarmStartedAtMs: 0,
@@ -1597,6 +1603,13 @@ async function runInteractiveSupervision({
 									break;
 								}
 								if (error?.name === "QuotaProbeUnavailableError") {
+									const slept = await sleep(
+										pollMs,
+										monitorController.signal,
+									);
+									if (!slept) {
+										break;
+									}
 									continue;
 								}
 								throw error;
@@ -1622,7 +1635,7 @@ async function runInteractiveSupervision({
 										restartDecision: {
 											sessionId: binding.sessionId,
 										},
-										signal,
+										signal: preparedResumeSelectionController.signal,
 										preparedResumeSelectionStarted,
 										preparedResumeSelectionPromise,
 									});
@@ -1748,6 +1761,10 @@ async function runInteractiveSupervision({
 		}
 
 		if (!restartDecision) {
+			preparedResumeSelectionController.abort();
+			if (preparedResumeSelectionPromise) {
+				await preparedResumeSelectionPromise;
+			}
 			return result.exitCode;
 		}
 
@@ -1875,7 +1892,7 @@ export async function runCodexSupervisorIfEnabled({
 		if (!runtime) {
 			return null;
 		}
-		return runCodexSupervisorWithRuntime({
+		return await runCodexSupervisorWithRuntime({
 			codexBin,
 			rawArgs,
 			buildForwardArgs,

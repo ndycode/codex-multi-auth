@@ -653,6 +653,94 @@ describe("codex supervisor", () => {
 		});
 	});
 
+	it("aborts prepared prewarm selection when the session exits without rotating", async () => {
+		class FakeChild extends EventEmitter {
+			exitCode: number | null = null;
+
+			constructor(exitCode: number) {
+				super();
+				setTimeout(() => {
+					this.exitCode = exitCode;
+					this.emit("exit", exitCode, null);
+				}, 25);
+			}
+
+			kill(_signal: string) {
+				return true;
+			}
+		}
+
+		const manager = new FakeManager();
+		const storageDir = createTempDir();
+		let preparedProbeSignal: AbortSignal | undefined;
+		const runtime = {
+			AccountManager: {
+				async loadFromDisk() {
+					return manager;
+				},
+			},
+			getStoragePath() {
+				return join(storageDir, "accounts.json");
+			},
+			getPreemptiveQuotaEnabled() {
+				return true;
+			},
+			getPreemptiveQuotaRemainingPercent5h() {
+				return 10;
+			},
+			getPreemptiveQuotaRemainingPercent7d() {
+				return 5;
+			},
+			getRetryAllAccountsRateLimited() {
+				return true;
+			},
+			async fetchCodexQuotaSnapshot({
+				accountId,
+				signal,
+			}: {
+				accountId: string;
+				signal?: AbortSignal;
+			}) {
+				if (accountId === "near-limit") {
+					return {
+						status: 200,
+						primary: { usedPercent: 86 },
+						secondary: { usedPercent: 12 },
+					};
+				}
+				preparedProbeSignal = signal;
+				return await new Promise((_resolve, reject) => {
+					const onAbort = () => {
+						const error = new Error("Quota probe aborted");
+						error.name = "AbortError";
+						reject(error);
+					};
+					signal?.addEventListener("abort", onAbort, { once: true });
+				});
+			},
+		};
+
+		const result = await supervisorTestApi?.runInteractiveSupervision({
+			codexBin: "dist/bin/codex.js",
+			initialArgs: ["resume", "prewarm-clean-exit"],
+			buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+			runtime,
+			pluginConfig: {},
+			manager,
+			signal: undefined,
+			maxSessionRestarts: 1,
+			spawnChild: () => new FakeChild(0),
+			findBinding: async ({ sessionId }: { sessionId?: string }) => ({
+				sessionId: sessionId ?? "prewarm-clean-exit",
+				rolloutPath: null,
+				lastActivityAtMs: Date.now(),
+			}),
+		});
+
+		expect(result).toBe(0);
+		expect(preparedProbeSignal?.aborted).toBe(true);
+	});
+
 	it("reuses a cached healthy snapshot within the short ttl", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "5000";
 		const manager = new FakeManager();
@@ -1020,6 +1108,60 @@ describe("codex supervisor", () => {
 			} finally {
 				stderrSpy.mockRestore();
 			}
+		},
+	);
+
+	it(
+		"paces repeated quota probe outages instead of hot-looping the monitor",
+		{ timeout: 10_000 },
+		async () => {
+			vi.useFakeTimers();
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS = "20";
+
+			class FakeChild extends EventEmitter {
+				exitCode: number | null = null;
+
+				constructor(exitCode: number) {
+					super();
+					setTimeout(() => {
+						this.exitCode = exitCode;
+						this.emit("exit", exitCode, null);
+					}, 60);
+				}
+
+				kill(_signal: string) {
+					return true;
+				}
+			}
+
+			const manager = new FakeManager();
+			const runtime = createFakeRuntime(manager, {
+				onFetch(accountId) {
+					if (accountId === "near-limit") {
+						throw new Error("quota endpoint unavailable");
+					}
+				},
+			});
+
+			const runPromise = supervisorTestApi?.runInteractiveSupervision({
+				codexBin: "dist/bin/codex.js",
+				initialArgs: ["resume", "probe-unavailable-session"],
+				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+				runtime,
+				pluginConfig: {},
+				manager,
+				signal: undefined,
+				maxSessionRestarts: 1,
+				spawnChild: () => new FakeChild(0),
+				findBinding: async ({ sessionId }: { sessionId?: string }) => ({
+					sessionId: sessionId ?? "probe-unavailable-session",
+					rolloutPath: null,
+					lastActivityAtMs: Date.now(),
+				}),
+			});
+
+			await vi.advanceTimersByTimeAsync(100);
+			await expect(runPromise).resolves.toBe(0);
 		},
 	);
 
