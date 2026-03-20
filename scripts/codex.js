@@ -6,7 +6,11 @@ import { createRequire } from "node:module";
 import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+import {
+	findPrimaryCodexCommand,
+	normalizeAuthAlias,
+	shouldHandleMultiAuthAuth,
+} from "./codex-routing.js";
 import { runCodexSupervisorIfEnabled } from "./codex-supervisor.js";
 
 function hydrateCliVersionEnv() {
@@ -66,9 +70,8 @@ async function autoSyncManagerActiveSelectionIfEnabled() {
 }
 
 function isSupervisorInteractiveCommand(rawArgs) {
-	if (rawArgs.length === 0) return true;
-	const command = `${rawArgs[0] ?? ""}`.trim().toLowerCase();
-	return command === "resume" || command === "fork";
+	const command = findPrimaryCodexCommand(rawArgs)?.command;
+	return !command || command === "resume" || command === "fork";
 }
 
 function resolveRealCodexBin() {

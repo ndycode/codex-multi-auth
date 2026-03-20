@@ -705,4 +705,32 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout.match(/FORWARDED:/g) ?? []).toHaveLength(1);
 		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
 	});
+
+	it("keeps option-prefixed resume commands on the interactive post-session sync path", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorStub(fixtureRoot, [
+			"export async function runCodexSupervisorIfEnabled({ codexBin, rawArgs, buildForwardArgs, forwardToRealCodex }) {",
+			"\tawait forwardToRealCodex(codexBin, buildForwardArgs(rawArgs));",
+			"\treturn 0;",
+			"}",
+		]);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "interactive-option-auto-sync.log");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["-c", 'profile="dev"', "resume", "session-123"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:-c profile="dev" resume session-123 -c cli_auth_credentials_store="file"',
+		);
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\nsync\n");
+	});
 });

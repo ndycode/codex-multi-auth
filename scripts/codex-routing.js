@@ -12,6 +12,7 @@ const AUTH_SUBCOMMANDS = new Set([
 	"fix",
 	"doctor",
 ]);
+const COMMAND_FLAGS_WITH_VALUE = new Set(["-c", "--config"]);
 
 export function normalizeAuthAlias(args) {
 	if (args.length >= 2 && args[0] === "multi" && args[1] === "auth") {
@@ -30,6 +31,44 @@ export function shouldHandleMultiAuthAuth(args) {
 	if (typeof subcommand !== "string") return false;
 	if (subcommand.startsWith("-")) return true;
 	return AUTH_SUBCOMMANDS.has(subcommand);
+}
+
+export function findPrimaryCodexCommand(args) {
+	let expectFlagValue = false;
+	let stopOptionParsing = false;
+
+	for (let index = 0; index < args.length; index += 1) {
+		const normalizedArg = `${args[index] ?? ""}`.trim().toLowerCase();
+		if (normalizedArg.length === 0) {
+			continue;
+		}
+		if (expectFlagValue) {
+			expectFlagValue = false;
+			continue;
+		}
+		if (!stopOptionParsing && normalizedArg === "--") {
+			stopOptionParsing = true;
+			continue;
+		}
+		if (!stopOptionParsing) {
+			if (COMMAND_FLAGS_WITH_VALUE.has(normalizedArg)) {
+				expectFlagValue = true;
+				continue;
+			}
+			if (normalizedArg.startsWith("--config=")) {
+				continue;
+			}
+			if (normalizedArg.startsWith("-")) {
+				continue;
+			}
+		}
+		return {
+			command: normalizedArg,
+			index,
+		};
+	}
+
+	return null;
 }
 
 export { AUTH_SUBCOMMANDS };

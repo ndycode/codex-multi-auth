@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
+import { findPrimaryCodexCommand } from "./codex-routing.js";
 
 const DEFAULT_POLL_MS = 300;
 const DEFAULT_IDLE_MS = 250;
@@ -37,6 +38,7 @@ const MAX_SESSION_RESTARTS = parseNumberEnv(
 );
 const CODEX_FAMILY = "codex";
 const snapshotProbeCache = new Map();
+const sessionRolloutPathById = new Map();
 
 function sleep(ms, signal) {
 	return new Promise((resolve) => {
@@ -134,9 +136,8 @@ function getSessionsRootDir() {
 }
 
 function isInteractiveCommand(rawArgs) {
-	if (rawArgs.length === 0) return true;
-	const command = `${rawArgs[0] ?? ""}`.trim().toLowerCase();
-	return command === "resume" || command === "fork";
+	const command = findPrimaryCodexCommand(rawArgs)?.command;
+	return !command || command === "resume" || command === "fork";
 }
 
 function isNonInteractiveCommand(rawArgs) {
@@ -144,14 +145,18 @@ function isNonInteractiveCommand(rawArgs) {
 }
 
 function isSupervisorAccountGateBypassCommand(rawArgs) {
-	if (rawArgs.length === 0) return false;
+	const primaryCommand = findPrimaryCodexCommand(rawArgs)?.command;
+	if (!primaryCommand) return false;
 	const normalizedArgs = rawArgs
 		.map((arg) => `${arg ?? ""}`.trim().toLowerCase())
 		.filter((arg) => arg.length > 0);
 	if (normalizedArgs.length === 0) return false;
 
-	const firstArg = normalizedArgs[0];
-	if (firstArg === "auth" || firstArg === "help" || firstArg === "version") {
+	if (
+		primaryCommand === "auth" ||
+		primaryCommand === "help" ||
+		primaryCommand === "version"
+	) {
 		return true;
 	}
 
@@ -161,9 +166,19 @@ function isSupervisorAccountGateBypassCommand(rawArgs) {
 }
 
 function readResumeSessionId(rawArgs) {
-	if ((rawArgs[0] ?? "").trim().toLowerCase() !== "resume") return null;
-	const sessionId = `${rawArgs[1] ?? ""}`.trim();
+	const primaryCommand = findPrimaryCodexCommand(rawArgs);
+	if (primaryCommand?.command !== "resume") return null;
+	const sessionId = `${rawArgs[primaryCommand.index + 1] ?? ""}`.trim();
 	return isValidSessionId(sessionId) ? sessionId : null;
+}
+
+function rememberSessionBinding(binding) {
+	if (!binding?.sessionId || !binding?.rolloutPath) return;
+	sessionRolloutPathById.set(binding.sessionId, binding.rolloutPath);
+}
+
+function clearSessionBindingPathCache() {
+	sessionRolloutPathById.clear();
 }
 
 async function importIfPresent(specifier) {
@@ -1333,15 +1348,23 @@ async function findSessionBinding({
 	sessionEntries,
 }) {
 	const cwdKey = normalizeCwd(cwd);
-	if (rolloutPathHint) {
-		const directEntry = await readSessionBindingEntry(rolloutPathHint);
+	const knownRolloutPath =
+		rolloutPathHint ?? (sessionId ? sessionRolloutPathById.get(sessionId) : null);
+	if (knownRolloutPath) {
+		const directEntry = await readSessionBindingEntry(knownRolloutPath);
 		if (directEntry) {
 			const directBinding = await matchSessionBindingEntry(
 				directEntry,
 				cwdKey,
 				sessionId,
 			);
-			if (directBinding) return directBinding;
+			if (directBinding) {
+				rememberSessionBinding(directBinding);
+				return directBinding;
+			}
+		}
+		if (sessionId && !rolloutPathHint) {
+			sessionRolloutPathById.delete(sessionId);
 		}
 	}
 
@@ -1356,7 +1379,10 @@ async function findSessionBinding({
 
 	for (const entry of files) {
 		const binding = await matchSessionBindingEntry(entry, cwdKey, sessionId);
-		if (binding) return binding;
+		if (binding) {
+			rememberSessionBinding(binding);
+			return binding;
+		}
 	}
 
 	return null;
@@ -1937,6 +1963,7 @@ const TEST_ONLY_API = {
 	runInteractiveSupervision,
 	runCodexSupervisorWithRuntime,
 	waitForSessionBinding,
+	clearSessionBindingPathCache,
 };
 
 export const __testOnly =

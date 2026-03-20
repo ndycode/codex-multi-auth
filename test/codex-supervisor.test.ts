@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __testOnly as supervisorTestApi } from "../scripts/codex-supervisor.js";
 
@@ -250,6 +249,7 @@ function createFakeRuntime(
 afterEach(async () => {
 	vi.useRealTimers();
 	supervisorTestApi?.clearAllProbeSnapshotCache?.();
+	supervisorTestApi?.clearSessionBindingPathCache?.();
 	for (const key of envKeys) {
 		const value = originalEnv[key];
 		if (value === undefined) {
@@ -312,7 +312,7 @@ describe("codex supervisor", () => {
 		await expect(supervisorTestApi?.extractSessionMeta(filePath)).resolves.toBeNull();
 	});
 
-	it("reuses the known rollout path before scanning the sessions tree again", async () => {
+	it("reuses the cached rollout path for a known session before scanning the sessions tree again", async () => {
 		const codexHome = createTempDir();
 		const cwd = createTempDir();
 		process.env.CODEX_HOME = codexHome;
@@ -348,7 +348,6 @@ describe("codex supervisor", () => {
 				cwd,
 				sinceMs: 0,
 				sessionId: "known-session",
-				rolloutPathHint: first?.rolloutPath,
 			});
 			expect(second).toMatchObject({
 				sessionId: "known-session",
@@ -358,6 +357,31 @@ describe("codex supervisor", () => {
 		} finally {
 			readdirSpy.mockRestore();
 		}
+	});
+
+	it("parses option-prefixed interactive commands consistently", () => {
+		expect(
+			supervisorTestApi?.isInteractiveCommand([
+				"-c",
+				'profile="dev"',
+				"resume",
+				"session-123",
+			]),
+		).toBe(true);
+		expect(
+			supervisorTestApi?.readResumeSessionId([
+				"--config",
+				'env="dev"',
+				"resume",
+				"session-123",
+			]),
+		).toBe("session-123");
+		expect(
+			supervisorTestApi?.isInteractiveCommand([
+				"--config=env=\"dev\"",
+				"fork",
+			]),
+		).toBe(true);
 	});
 
 	it("caches the session file listing across binding wait polls", async () => {
@@ -955,15 +979,31 @@ describe("codex supervisor", () => {
 		expect(manager.activeIndex).toBe(1);
 	});
 
-	it("batches probe work so multiple degraded accounts do not add serial pause", async () => {
+	it("starts degraded candidate probes in the same batch before waiting on results", async () => {
 		const manager = new FakeManager([
 			{ accountId: "degraded-1", access: "token-1" },
 			{ accountId: "degraded-2", access: "token-2" },
 			{ accountId: "degraded-3", access: "token-3" },
 			{ accountId: "healthy", access: "token-4" },
 		]);
+		const degradedProbeGate = createDeferred<void>();
+		const firstProbeStarted = createDeferred<void>();
+		const startedAccounts = new Set<string>();
 		const runtime = createFakeRuntime(manager, {
 			quotaProbeDelayMs: 70,
+			waitForFetchByAccountId: new Map([
+				["degraded-1", degradedProbeGate.promise],
+				["degraded-2", degradedProbeGate.promise],
+				["degraded-3", degradedProbeGate.promise],
+			]),
+			onFetchStart(accountId) {
+				if (accountId.startsWith("degraded-")) {
+					startedAccounts.add(accountId);
+					if (startedAccounts.size === 1) {
+						firstProbeStarted.resolve();
+					}
+				}
+			},
 			snapshots: new Map([
 				[
 					"degraded-1",
@@ -984,21 +1024,29 @@ describe("codex supervisor", () => {
 			]),
 		});
 
-		const startedAt = performance.now();
-		const result = await supervisorTestApi?.ensureLaunchableAccount(
+		const pendingResult = supervisorTestApi?.ensureLaunchableAccount(
 			runtime,
 			{},
 			undefined,
 			{ probeTimeoutMs: 250 },
 		);
-		const elapsedMs = performance.now() - startedAt;
+		await firstProbeStarted.promise;
+		for (let attempt = 0; attempt < 6 && startedAccounts.size < 3; attempt += 1) {
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		expect([...startedAccounts].sort()).toEqual([
+			"degraded-1",
+			"degraded-2",
+			"degraded-3",
+		]);
+		degradedProbeGate.resolve();
+		const result = await pendingResult;
 
 		expect(result).toMatchObject({
 			ok: true,
 			account: { accountId: "healthy" },
 		});
 		expect(manager.activeIndex).toBe(3);
-		expect(elapsedMs).toBeLessThan(170);
 	});
 
 	it("bypasses supervisor account gating for auth commands before account selection", async () => {
