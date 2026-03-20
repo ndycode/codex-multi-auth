@@ -11,6 +11,11 @@ const accountManagerState = vi.hoisted(() => ({
 	setAccountEnabledCalls: [] as Array<{ index: number; enabled: boolean }>,
 }));
 
+const recoveryState = vi.hoisted(() => ({
+	forceRecoverable: false,
+	isRecoverableErrorCalls: 0,
+}));
+
 function createMockAccount(
 	overrides: Partial<Record<string, unknown>> = {},
 ): Record<string, unknown> {
@@ -272,6 +277,19 @@ vi.mock("../lib/storage.js", () => ({
 	importAccounts: async () => ({ imported: 0, total: 0 }),
 }));
 
+vi.mock("../lib/recovery.js", () => ({
+	createSessionRecoveryHook: () => null,
+	isRecoverableError: () => {
+		recoveryState.isRecoverableErrorCalls += 1;
+		return recoveryState.forceRecoverable;
+	},
+	detectErrorType: () => "tool_use_failed",
+	getRecoveryToastContent: () => ({
+		title: "Recoverable error",
+		message: "retry",
+	}),
+}));
+
 vi.mock("../lib/auto-update-checker.js", () => ({
 	checkAndNotify: async () => {},
 	checkForUpdates: async () => ({ hasUpdate: false, currentVersion: "4.5.0", latestVersion: null, updateCommand: "" }),
@@ -293,6 +311,8 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 
 	beforeEach(() => {
 		resetAccountManagerState();
+		recoveryState.forceRecoverable = false;
+		recoveryState.isRecoverableErrorCalls = 0;
 		vi.resetModules();
 
 		for (const key of envKeys) originalEnv[key] = process.env[key];
@@ -532,6 +552,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(accountManagerState.disableCurrentWorkspaceCalls).toBe(0);
 		expect(accountManagerState.rotateToNextWorkspaceCalls).toBe(0);
 		expect(accountManagerState.setAccountEnabledCalls).toEqual([]);
+		expect(recoveryState.isRecoverableErrorCalls).toBe(0);
 	});
 
 	it("retries with a fallback account after a workspace-less account gets a workspace-disabled response", async () => {

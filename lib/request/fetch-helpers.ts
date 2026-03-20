@@ -277,15 +277,14 @@ export function isWorkspaceDisabledError(
         const normalizedCode = typeof code === "string" ? code.trim().toLowerCase() : "";
         const haystack = `${normalizedCode} ${bodyText}`.toLowerCase();
 
-        const disabledPatterns = [
-                /workspace.*(?:disabled|expired|deactivated|terminated)/i,
-                /account.*(?:disabled|expired|deactivated|terminated)/i,
-                /(?:workspace|account).*no longer.*(?:active|available|valid)/i,
-                /(?:workspace|account).*has been.*(?:disabled|expired|closed)/i,
-                /workspace.*(?:access|subscription).*expired/i,
-                /organization.*(?:disabled|expired|inactive)/i,
-                /team.*(?:disabled|expired|inactive)/i,
-        ];
+		const disabledPatterns = [
+				/workspace.*(?:disabled|expired|deactivated|terminated)/i,
+				/account\s+(?:has\s+been|is)\s+(?:disabled|expired|deactivated|terminated|closed)/i,
+				/(?:workspace|org(?:anization)?).*no longer.*(?:active|available|valid)/i,
+				/(?:workspace|org(?:anization)?).*has been.*(?:disabled|expired|closed)/i,
+				/workspace.*(?:access|subscription).*expired/i,
+				/org(?:anization)?.*(?:disabled|expired|inactive)/i,
+		];
 
         for (const pattern of disabledPatterns) {
                 if (pattern.test(haystack)) {

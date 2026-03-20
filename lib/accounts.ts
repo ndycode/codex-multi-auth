@@ -899,8 +899,8 @@ export class AccountManager {
 		const currentIdx = account.currentWorkspaceIndex ?? 0;
 		const totalWorkspaces = account.workspaces.length;
 		
-		// Find next enabled workspace
-		for (let i = 1; i <= totalWorkspaces; i++) {
+		// Search successor workspaces only; the current slot was just evaluated.
+		for (let i = 1; i < totalWorkspaces; i++) {
 			const nextIdx = (currentIdx + i) % totalWorkspaces;
 			const workspace = account.workspaces[nextIdx];
 			if (workspace && workspace.enabled !== false) {

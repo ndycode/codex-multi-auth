@@ -376,6 +376,9 @@ describe('isWorkspaceDisabledError', () => {
 		expect(isWorkspaceDisabledError(403, 'payment_required', '')).toBe(false);
 		expect(isWorkspaceDisabledError(403, '', 'Payment required to continue')).toBe(false);
 		expect(isWorkspaceDisabledError(403, '', 'Billing failed for your plan')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'Your billing account has expired')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'service account terminated')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'team plan inactive')).toBe(false);
 	});
 });
 

@@ -1995,6 +1995,7 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 				if (hasRemainingAccounts) {
 					continue accountAttemptLoop;
 				}
+				return errorResponse;
 			} else {
 				const currentWorkspace = accountManager.getCurrentWorkspace(account);
 				const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
