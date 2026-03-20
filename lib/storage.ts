@@ -2169,9 +2169,31 @@ export async function withFlaggedStorageTransaction<T>(
 		const current = await loadFlaggedAccountsFromPath(getFlaggedAccountsPath());
 		let snapshot = cloneFlaggedStorageForPersistence(current);
 		const persist = async (storage: FlaggedAccountStorageV1): Promise<void> => {
+			const previousStorage = cloneFlaggedStorageForPersistence(snapshot);
 			const nextStorage = cloneFlaggedStorageForPersistence(storage);
-			await saveFlaggedAccountsUnlocked(nextStorage);
-			snapshot = nextStorage;
+			try {
+				await saveFlaggedAccountsUnlocked(nextStorage);
+				snapshot = nextStorage;
+			} catch (error) {
+				try {
+					await saveFlaggedAccountsUnlocked(previousStorage);
+					snapshot = previousStorage;
+				} catch (rollbackError) {
+					const combinedError = new AggregateError(
+						[error, rollbackError],
+						"Flagged save failed and flagged storage rollback also failed",
+					);
+					log.error(
+						"Failed to rollback flagged storage after flagged save failure",
+						{
+							error: String(error),
+							rollbackError: String(rollbackError),
+						},
+					);
+					throw combinedError;
+				}
+				throw error;
+			}
 		};
 		return handler(structuredClone(snapshot), persist);
 	});

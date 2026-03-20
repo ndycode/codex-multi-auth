@@ -1726,6 +1726,72 @@ describe("codex manager cli commands", () => {
 		expect(payload.reports[0]?.outcome).toBe("warning-soft-failure");
 	});
 
+	it("preserves concurrently added accounts during auth fix persistence", async () => {
+		const now = Date.now();
+		const originalAccount = {
+			email: "alpha@example.com",
+			accountId: "acc_alpha",
+			refreshToken: "refresh-alpha",
+			accessToken: "access-alpha-stale",
+			expiresAt: now - 5_000,
+			addedAt: now - 2_000,
+			lastUsed: now - 2_000,
+			enabled: true,
+		};
+		const concurrentAccount = {
+			email: "beta@example.com",
+			accountId: "acc_beta",
+			refreshToken: "refresh-beta",
+			accessToken: "access-beta",
+			expiresAt: now + 3_600_000,
+			addedAt: now - 1_000,
+			lastUsed: now - 1_000,
+			enabled: true,
+		};
+		loadAccountsMock
+			.mockResolvedValueOnce({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [originalAccount],
+			})
+			.mockResolvedValueOnce({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [originalAccount, concurrentAccount],
+			});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-alpha-refreshed",
+			refresh: "refresh-alpha-next",
+			expires: now + 7_200_000,
+			idToken: "id-token-alpha",
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--json"]);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({
+						refreshToken: "refresh-alpha-next",
+						accessToken: "access-alpha-refreshed",
+					}),
+					expect.objectContaining({
+						accountId: "acc_beta",
+						refreshToken: "refresh-beta",
+						accessToken: "access-beta",
+					}),
+				]),
+			}),
+		);
+	});
+
 	it("does not persist quota cache during auth fix --dry-run --live", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
