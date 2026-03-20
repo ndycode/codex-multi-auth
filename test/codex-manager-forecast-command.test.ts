@@ -139,4 +139,61 @@ describe("runForecastCommand", () => {
 			expect.stringContaining('"command": "forecast"'),
 		);
 	});
+
+	it("keeps concurrent json runs bound to their own quota formatter", async () => {
+		let releaseSlowLoad: (() => void) | undefined;
+		const slowLoad = new Promise<void>((resolve) => {
+			releaseSlowLoad = resolve;
+		});
+		const slowDeps = createDeps({
+			loadAccounts: vi.fn(async () => {
+				await slowLoad;
+				return createStorage();
+			}),
+			formatQuotaSnapshotLine: vi.fn(() => "slow quota"),
+			fetchCodexQuotaSnapshot: vi.fn(async () => ({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {},
+				secondary: {},
+			})),
+		});
+		const fastDeps = createDeps({
+			formatQuotaSnapshotLine: vi.fn(() => "fast quota"),
+			fetchCodexQuotaSnapshot: vi.fn(async () => ({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {},
+				secondary: {},
+			})),
+		});
+
+		const slowRun = runForecastCommand(["--json", "--live"], slowDeps);
+		const fastRun = runForecastCommand(["--json", "--live"], fastDeps);
+		releaseSlowLoad?.();
+
+		const [slowResult, fastResult] = await Promise.all([slowRun, fastRun]);
+
+		expect(slowResult).toBe(0);
+		expect(fastResult).toBe(0);
+		expect(slowDeps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining('"summary": "slow quota"'),
+		);
+		expect(fastDeps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining('"summary": "fast quota"'),
+		);
+	});
+
+	it("keeps muted separators between styled forecast row segments", async () => {
+		const deps = createDeps({
+			stylePromptText: vi.fn((text, tone) => `<${tone}>${text}</${tone}>`),
+		});
+
+		const result = await runForecastCommand([], deps);
+
+		expect(result).toBe(0);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			'<accent>1.</accent> <accent>1. forecast@example.com [current]</accent> <muted>|</muted> <success>ready</success><muted> | </muted><success>low risk (0)</success>',
+		);
+	});
 });

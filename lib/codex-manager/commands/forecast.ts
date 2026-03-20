@@ -97,6 +97,14 @@ export interface ForecastCommandDeps {
 	getNow?: () => number;
 }
 
+function joinStyledSegments(
+	parts: string[],
+	styleText: (text: string, tone: PromptTone) => string,
+): string {
+	if (parts.length === 0) return "";
+	return parts.join(styleText(" | ", "muted"));
+}
+
 function printForecastUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
@@ -154,6 +162,7 @@ function serializeForecastResults(
 	results: ForecastAccountResult[],
 	liveQuotaByIndex: Map<number, CodexQuotaSnapshot>,
 	refreshFailures: Map<number, TokenFailure>,
+	formatQuotaSnapshotLine: (snapshot: CodexQuotaSnapshot) => string,
 ): Array<{
 	index: number;
 	label: string;
@@ -189,7 +198,7 @@ function serializeForecastResults(
 						planType: liveQuota.planType,
 						activeLimit: liveQuota.activeLimit,
 						model: liveQuota.model,
-						summary: deps_formatQuotaSnapshotLine(liveQuota),
+						summary: formatQuotaSnapshotLine(liveQuota),
 					}
 				: undefined,
 			refreshFailure: refreshFailures.get(result.index),
@@ -197,15 +206,12 @@ function serializeForecastResults(
 	});
 }
 
-let deps_formatQuotaSnapshotLine: (snapshot: CodexQuotaSnapshot) => string;
-
 export async function runForecastCommand(
 	args: string[],
 	deps: ForecastCommandDeps & {
 		formatQuotaSnapshotLine: (snapshot: CodexQuotaSnapshot) => string;
 	},
 ): Promise<number> {
-	deps_formatQuotaSnapshotLine = deps.formatQuotaSnapshotLine;
 	const logInfo = deps.logInfo ?? console.log;
 	const logError = deps.logError ?? console.error;
 	if (args.includes("--help") || args.includes("-h")) {
@@ -334,6 +340,7 @@ export async function runForecastCommand(
 						forecastResults,
 						liveQuotaByIndex,
 						refreshFailures,
+						deps.formatQuotaSnapshotLine,
 					),
 				},
 				null,
@@ -391,7 +398,7 @@ export async function runForecastCommand(
 		const rowParts = [availabilityLabel, riskLabel];
 		if (waitLabel) rowParts.push(waitLabel);
 		logInfo(
-			`${indexLabel} ${accountLabel} ${deps.stylePromptText("|", "muted")} ${rowParts.join(deps.stylePromptText(" | ", "muted"))}`,
+			`${indexLabel} ${accountLabel} ${deps.stylePromptText("|", "muted")} ${joinStyledSegments(rowParts, deps.stylePromptText)}`,
 		);
 		if (display.showForecastReasons && result.reasons.length > 0) {
 			logInfo(
