@@ -359,7 +359,7 @@ describe('isWorkspaceDisabledError', () => {
 		expect(isWorkspaceDisabledError(403, 'usage_not_included', 'Not in your plan')).toBe(false);
 	});
 
-	it('returns false for numeric error codes', () => {
+	it('uses body text to classify numeric error codes', () => {
 		expect(isWorkspaceDisabledError(403, 402, 'Workspace disabled')).toBe(true);
 		expect(isWorkspaceDisabledError(403, 402, 'Billing failed for your subscription')).toBe(false);
 		expect(isWorkspaceDisabledError(403, 0, '')).toBe(false);

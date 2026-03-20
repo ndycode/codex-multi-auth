@@ -593,15 +593,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										: newWs;
 								})
 							: existing.workspaces;
+						const currentWorkspaceId =
+							existing.workspaces?.[
+								typeof existing.currentWorkspaceIndex === "number"
+									? existing.currentWorkspaceIndex
+									: 0
+							]?.id;
 						const nextCurrentWorkspaceIndex =
 							mergedWorkspaces && mergedWorkspaces.length > 0
 								? (() => {
-										const currentIndex =
-											typeof existing.currentWorkspaceIndex === "number"
-												? existing.currentWorkspaceIndex
-												: 0;
-										if (currentIndex >= 0 && currentIndex < mergedWorkspaces.length) {
-											return currentIndex;
+										if (currentWorkspaceId) {
+											const matchingWorkspaceIndex = mergedWorkspaces.findIndex(
+												(workspace) => workspace.id === currentWorkspaceId,
+											);
+											if (matchingWorkspaceIndex >= 0) {
+												return matchingWorkspaceIndex;
+											}
 										}
 										const defaultWorkspaceIndex = mergedWorkspaces.findIndex(
 											(workspace) => workspace.isDefault === true,

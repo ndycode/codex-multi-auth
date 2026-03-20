@@ -2307,6 +2307,75 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		]);
 	});
 
+	it("preserves the active workspace by id when refreshed workspace metadata is reordered", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				accountIdSource: "manual",
+				accountLabel: "Override [id:space]",
+				email: "user@example.com",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: true },
+					{ id: "workspace-b", name: "Workspace B", enabled: false, disabledAt: 222, isDefault: true },
+					{ id: "workspace-c", name: "Workspace C", enabled: true },
+				],
+				currentWorkspaceIndex: 1,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-reorder-workspaces", challenge: "persist-reorder-workspaces" },
+			state: "persist-reorder-workspaces",
+			url: "https://auth.openai.com/test?state=persist-reorder-workspaces",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+			workspaces: [
+				{ id: "workspace-b", name: "Workspace B Renamed", enabled: true, isDefault: true },
+				{ id: "workspace-a", name: "Workspace A", enabled: true },
+				{ id: "workspace-c", name: "Workspace C", enabled: true },
+			],
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-reorder-workspaces",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.currentWorkspaceIndex).toBe(0);
+		expect(mockStorage.accounts[0]?.workspaces).toEqual([
+			{ id: "workspace-b", name: "Workspace B Renamed", enabled: false, disabledAt: 222, isDefault: true },
+			{ id: "workspace-a", name: "Workspace A", enabled: true },
+			{ id: "workspace-c", name: "Workspace C", enabled: true },
+		]);
+	});
+
 	it("preserves duplicate shared accountId entries when a login has no email claim", async () => {
 		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
 		mockStorage.accounts = [
