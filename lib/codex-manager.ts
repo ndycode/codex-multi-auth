@@ -4214,7 +4214,16 @@ async function handleManageAction(
 		const existing = storage.accounts[idx];
 		if (!existing) return;
 
-		const tokenResult = await runOAuthFlow(true, "browser");
+		const signInMode = await promptOAuthSignInMode(null);
+		if (signInMode === "cancel") {
+			console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));
+			return;
+		}
+		if (signInMode !== "browser" && signInMode !== "manual") {
+			return;
+		}
+
+		const tokenResult = await runOAuthFlow(true, signInMode);
 		if (tokenResult.type !== "success") {
 			console.error(`Refresh failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`);
 			return;
@@ -4345,7 +4354,14 @@ async function runAuthLogin(): Promise<number> {
 		const refreshedStorage = await loadAccounts();
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
-		const namedBackups = existingCount === 0 ? await getNamedBackups() : [];
+		let namedBackups: NamedBackupSummary[] = [];
+		if (existingCount === 0) {
+			try {
+				namedBackups = await getNamedBackups();
+			} catch {
+				namedBackups = [];
+			}
+		}
 		const latestNamedBackup = namedBackups[0] ?? null;
 		while (true) {
 			const signInMode = await promptOAuthSignInMode(latestNamedBackup);
@@ -4415,6 +4431,10 @@ async function runAuthLogin(): Promise<number> {
 					const message = error instanceof Error ? error.message : String(error);
 					console.error(formatStorageErrorHint(error, selectedBackup.path));
 					console.error(`Backup restore failed: ${message}`);
+					const storageAfterRestoreAttempt = await loadAccounts().catch(() => null);
+					if ((storageAfterRestoreAttempt?.accounts.length ?? 0) > 0) {
+						continue loginFlow;
+					}
 					continue;
 				}
 				continue loginFlow;
