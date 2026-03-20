@@ -987,6 +987,43 @@ describe("storage", () => {
 			});
 		});
 
+		it("clears transaction activity after failed transactions before fallback exports", async () => {
+			const alternateStoragePath = join(
+				testWorkDir,
+				"accounts-" + Math.random().toString(36).slice(2) + ".json",
+			);
+
+			setStoragePathDirect(alternateStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "alternate",
+						refreshToken: "ref-alt",
+						addedAt: 3,
+						lastUsed: 4,
+					},
+				],
+			});
+			setStoragePathDirect(testStoragePath);
+
+			const exported = await withAccountStorageTransaction(async () => {
+				setStoragePathDirect(alternateStoragePath);
+				throw new Error("boom");
+			}).catch(async (error: Error) => {
+				expect(error.message).toBe("boom");
+				await exportAccounts(exportPath);
+				return JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
+					accounts: Array<{ accountId?: string }>;
+				};
+			});
+
+			expect(exported.accounts).toHaveLength(1);
+			expect(exported.accounts[0]?.accountId).toBe("alternate");
+			setStoragePathDirect(testStoragePath);
+		});
+
 		it("should fail import when file does not exist", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			const nonexistentPath = join(testWorkDir, "nonexistent-file.json");

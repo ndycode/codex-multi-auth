@@ -347,6 +347,28 @@ describe("codex supervisor internals", () => {
 		});
 	});
 
+	it("misses session metadata at the first non-empty line beyond the scan limit", async () => {
+		const dir = createTempDir();
+		const filePath = join(dir, "over-limit-session.jsonl");
+		const preamble = Array.from({ length: 200 }, (_, index) =>
+			JSON.stringify({ type: "event", seq: index + 1 }),
+		);
+		await fs.writeFile(
+			filePath,
+			[
+				...preamble,
+				JSON.stringify({
+					session_meta: {
+						payload: { id: "missed-session", cwd: dir },
+					},
+				}),
+			].join("\n"),
+			"utf8",
+		);
+
+		await expect(supervisorTestApi.extractSessionMeta(filePath)).resolves.toBeNull();
+	});
+
 	it("aborts rate-limit waits while selecting a launchable account", async () => {
 		const dir = createTempDir();
 		const controller = new AbortController();
@@ -465,5 +487,32 @@ describe("codex supervisor internals", () => {
 
 		await supervisorTestApi.requestChildRestart(child, "win32");
 		expect(signals).toEqual(["SIGTERM"]);
+	});
+
+	it("interrupts restart escalation waits when the caller aborts", async () => {
+		const controller = new AbortController();
+		const signals: string[] = [];
+		const startedAt = Date.now();
+		const child = {
+			exitCode: null as number | null,
+			once(_event: string, _listener: () => void) {},
+			kill(signal: string) {
+				signals.push(signal);
+			},
+		};
+
+		await withLockEnv(
+			{
+				CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS: "1000",
+			},
+			async () => {
+				const pending = supervisorTestApi.requestChildRestart(child, "win32", controller.signal);
+				setTimeout(() => controller.abort(), 25);
+				await pending;
+			},
+		);
+
+		expect(Date.now() - startedAt).toBeLessThan(500);
+		expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
 	});
 });

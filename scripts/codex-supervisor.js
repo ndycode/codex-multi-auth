@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import {
 	createReadStream,
-	existsSync,
 	promises as fs,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -575,7 +574,6 @@ async function ensureLaunchableAccount(runtime, pluginConfig, signal) {
 }
 
 async function listJsonlFiles(rootDir) {
-	if (!existsSync(rootDir)) return []
 	const files = []
 	const pending = [rootDir]
 	while (pending.length > 0) {
@@ -716,7 +714,7 @@ async function refreshSessionActivity(binding) {
 	}
 }
 
-async function requestChildRestart(child, platform = process.platform) {
+async function requestChildRestart(child, platform = process.platform, signal) {
 	if (child.exitCode !== null) return
 
 	const signalTimeoutMs = parseNumberEnv(
@@ -730,16 +728,16 @@ async function requestChildRestart(child, platform = process.platform) {
 
 	if (platform !== "win32") {
 		child.kill("SIGINT")
-		await Promise.race([exitPromise, sleep(signalTimeoutMs)])
+		await Promise.race([exitPromise, sleep(signalTimeoutMs, signal)])
 		if (child.exitCode !== null) return
 	}
 
 	child.kill("SIGTERM")
-	await Promise.race([exitPromise, sleep(signalTimeoutMs)])
+	await Promise.race([exitPromise, sleep(signalTimeoutMs, signal)])
 	if (child.exitCode !== null) return
 
 	child.kill("SIGKILL")
-	await exitPromise
+	await Promise.race([exitPromise, sleep(signalTimeoutMs, signal)])
 }
 
 function spawnRealCodex(codexBin, args) {
@@ -835,7 +833,7 @@ async function runInteractiveSupervision({
 								relaunchNotice(`rotating session ${binding.sessionId} because ${evaluation.reason.replace(/-/g, " ")}`)
 								monitorActive = false
 								monitorController.abort()
-								await requestChildRestart(child)
+								await requestChildRestart(child, process.platform, monitorController.signal)
 								continue
 							}
 						}
