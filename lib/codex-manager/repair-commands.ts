@@ -20,9 +20,9 @@ import {
 	getStoragePath,
 	loadAccounts,
 	loadFlaggedAccounts,
-	saveAccounts,
 	saveFlaggedAccounts,
 	setStoragePath,
+	withAccountStorageTransaction,
 	withAccountAndFlaggedStorageTransaction,
 	type AccountMetadataV3,
 	type AccountStorageV3,
@@ -333,6 +333,69 @@ function createEmptyAccountStorage(): AccountStorageV3 {
 		activeIndex: 0,
 		activeIndexByFamily,
 	};
+}
+
+type AccountStorageMutation = {
+	before: AccountMetadataV3;
+	after: AccountMetadataV3;
+};
+
+function hasAccountStorageMutation(
+	before: AccountMetadataV3,
+	after: AccountMetadataV3,
+): boolean {
+	return (
+		before.refreshToken !== after.refreshToken
+		|| before.accessToken !== after.accessToken
+		|| before.expiresAt !== after.expiresAt
+		|| before.email !== after.email
+		|| before.accountId !== after.accountId
+		|| before.accountIdSource !== after.accountIdSource
+		|| before.enabled !== after.enabled
+	);
+}
+
+function collectAccountStorageMutations(
+	beforeAccounts: readonly AccountMetadataV3[],
+	afterAccounts: readonly AccountMetadataV3[],
+): AccountStorageMutation[] {
+	const mutations: AccountStorageMutation[] = [];
+	for (let i = 0; i < afterAccounts.length; i += 1) {
+		const before = beforeAccounts[i];
+		const after = afterAccounts[i];
+		if (!before || !after) continue;
+		if (!hasAccountStorageMutation(before, after)) continue;
+		mutations.push({
+			before: structuredClone(before),
+			after: structuredClone(after),
+		});
+	}
+	return mutations;
+}
+
+function applyAccountStorageMutations(
+	storage: AccountStorageV3,
+	mutations: readonly AccountStorageMutation[],
+): void {
+	for (const mutation of mutations) {
+		const targetIndex =
+			findMatchingAccountIndex(storage.accounts, mutation.before, {
+				allowUniqueAccountIdFallbackWithoutEmail: true,
+			})
+			?? findMatchingAccountIndex(storage.accounts, mutation.after, {
+				allowUniqueAccountIdFallbackWithoutEmail: true,
+			});
+		if (targetIndex === undefined) continue;
+		const target = storage.accounts[targetIndex];
+		if (!target) continue;
+		target.refreshToken = mutation.after.refreshToken;
+		target.accessToken = mutation.after.accessToken;
+		target.expiresAt = mutation.after.expiresAt;
+		target.email = mutation.after.email;
+		target.accountId = mutation.after.accountId;
+		target.accountIdSource = mutation.after.accountIdSource;
+		target.enabled = mutation.after.enabled;
+	}
 }
 
 function findExistingAccountIndexForFlagged(
@@ -908,6 +971,7 @@ export async function runFix(
 		console.log("No accounts configured.");
 		return 0;
 	}
+	const originalAccounts = storage.accounts.map((account) => structuredClone(account));
 	let quotaEmailFallbackState =
 		options.live && quotaCache
 			? deps.buildQuotaEmailFallbackState(storage.accounts)
@@ -1156,9 +1220,19 @@ export async function runFix(
 	);
 	const recommendation = recommendForecastAccount(forecastResults);
 	const reportSummary = summarizeFixReports(reports);
+	const accountMutations = collectAccountStorageMutations(
+		originalAccounts,
+		storage.accounts,
+	);
 
 	if (changed && !options.dryRun) {
-		await saveAccounts(storage);
+		await withAccountStorageTransaction(async (loadedStorage, persist) => {
+			const nextStorage = loadedStorage
+				? structuredClone(loadedStorage)
+				: createEmptyAccountStorage();
+			applyAccountStorageMutations(nextStorage, accountMutations);
+			await persist(nextStorage);
+		});
 	}
 
 	if (options.json) {
@@ -1438,15 +1512,15 @@ export async function runDoctor(
 	});
 
 	const storage = await loadAccounts();
+	const originalDoctorAccounts = storage?.accounts.map((account) => structuredClone(account)) ?? [];
 	let fixChanged = false;
+	let storageFixChanged = false;
 	let fixActions: DoctorFixAction[] = [];
 	if (options.fix && storage && storage.accounts.length > 0) {
 		const fixed = applyDoctorFixes(storage, deps);
+		storageFixChanged = fixed.changed;
 		fixChanged = fixed.changed;
 		fixActions = fixed.actions;
-		if (fixChanged && !options.dryRun) {
-			await saveAccounts(storage);
-		}
 		addCheck({
 			key: "auto-fix",
 			severity: fixChanged ? "warn" : "ok",
@@ -1609,7 +1683,6 @@ export async function runDoctor(
 				let syncRefreshToken = activeAccount.refreshToken;
 				let syncExpiresAt = activeAccount.expiresAt;
 				let syncIdToken: string | undefined;
-				let storageChangedFromDoctorSync = false;
 
 				if (!deps.hasUsableAccessToken(activeAccount, now)) {
 					if (options.dryRun) {
@@ -1633,7 +1706,8 @@ export async function runDoctor(
 							syncRefreshToken = refreshResult.refresh;
 							syncExpiresAt = refreshResult.expires;
 							syncIdToken = refreshResult.idToken;
-							storageChangedFromDoctorSync = true;
+							storageFixChanged = true;
+							fixChanged = true;
 							fixActions.push({
 								key: "doctor-refresh",
 								message: `Refreshed active account tokens for account ${activeIndex + 1}`,
@@ -1649,13 +1723,6 @@ export async function runDoctor(
 								),
 							});
 						}
-					}
-				}
-
-				if (storageChangedFromDoctorSync) {
-					fixChanged = true;
-					if (!options.dryRun) {
-						await saveAccounts(storage);
 					}
 				}
 
@@ -1689,6 +1756,21 @@ export async function runDoctor(
 				}
 			}
 		}
+	}
+
+	if (options.fix && storage && storage.accounts.length > 0 && storageFixChanged && !options.dryRun) {
+		const doctorAccountMutations = collectAccountStorageMutations(
+			originalDoctorAccounts,
+			storage.accounts,
+		);
+		await withAccountStorageTransaction(async (loadedStorage, persist) => {
+			const nextStorage = loadedStorage
+				? structuredClone(loadedStorage)
+				: createEmptyAccountStorage();
+			applyAccountStorageMutations(nextStorage, doctorAccountMutations);
+			normalizeDoctorIndexes(nextStorage);
+			await persist(nextStorage);
+		});
 	}
 
 	const summary = checks.reduce(
