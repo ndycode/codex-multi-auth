@@ -381,6 +381,20 @@ function getAccountsBackupRecoveryCandidates(path: string): string[] {
 	return candidates;
 }
 
+function normalizeStorageComparisonPath(path: string): string {
+	const resolved = resolvePath(path);
+	if (process.platform !== "win32") {
+		return resolved;
+	}
+	return resolved.replaceAll("\\", "/").toLowerCase();
+}
+
+function areEquivalentStoragePaths(left: string, right: string): boolean {
+	return (
+		normalizeStorageComparisonPath(left) === normalizeStorageComparisonPath(right)
+	);
+}
+
 async function getAccountsBackupRecoveryCandidatesWithDiscovery(
 	path: string,
 ): Promise<string[]> {
@@ -2509,7 +2523,7 @@ export async function exportAccounts(
 	const transactionState = transactionSnapshotContext.getStore();
 	if (
 		transactionState?.active &&
-		transactionState.storagePath !== activeStoragePath
+		!areEquivalentStoragePaths(transactionState.storagePath, activeStoragePath)
 	) {
 		throw new Error(
 			`Export blocked by storage path mismatch: transaction path is ` +

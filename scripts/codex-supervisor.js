@@ -4,7 +4,11 @@ import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
-import { findPrimaryCodexCommand } from "./codex-routing.js";
+import {
+	findPrimaryCodexCommand,
+	hasTopLevelHelpOrVersionFlag,
+	splitCodexCommandArgs,
+} from "./codex-routing.js";
 
 const DEFAULT_POLL_MS = 300;
 const DEFAULT_IDLE_MS = 250;
@@ -145,23 +149,15 @@ function isNonInteractiveCommand(rawArgs) {
 }
 
 function isSupervisorAccountGateBypassCommand(rawArgs) {
-	const primaryCommand = findPrimaryCodexCommand(rawArgs)?.command;
-	if (!primaryCommand) return false;
-	const normalizedArgs = rawArgs
-		.map((arg) => `${arg ?? ""}`.trim().toLowerCase())
-		.filter((arg) => arg.length > 0);
-	if (normalizedArgs.length === 0) return false;
-
-	if (
-		primaryCommand === "auth" ||
-		primaryCommand === "help" ||
-		primaryCommand === "version"
-	) {
+	if (hasTopLevelHelpOrVersionFlag(rawArgs)) {
 		return true;
 	}
 
-	return normalizedArgs.some(
-		(arg) => arg === "--help" || arg === "-h" || arg === "--version",
+	const primaryCommand = findPrimaryCodexCommand(rawArgs)?.command;
+	return (
+		primaryCommand === "auth" ||
+		primaryCommand === "help" ||
+		primaryCommand === "version"
 	);
 }
 
@@ -325,8 +321,14 @@ function normalizeExitCode(code, signal) {
 	return typeof code === "number" ? code : 1;
 }
 
-function buildResumeArgs(sessionId, buildForwardArgs) {
-	return buildForwardArgs(["resume", sessionId]);
+function buildResumeArgs(sessionId, currentArgs) {
+	const { leadingArgs, command, trailingArgs } = splitCodexCommandArgs(currentArgs);
+	const remainingArgs =
+		(command === "resume" || command === "fork") &&
+		isValidSessionId(trailingArgs[0])
+			? trailingArgs.slice(1)
+			: trailingArgs;
+	return [...leadingArgs, "resume", sessionId, ...remainingArgs];
 }
 
 function getCurrentAccount(manager) {
@@ -434,6 +436,84 @@ async function readSupervisorLockPayload(lockPath) {
 	}
 }
 
+function createSupervisorLockPayload(ownerId, acquiredAt, ttlMs) {
+	return {
+		ownerId,
+		pid: process.pid,
+		acquiredAt,
+		expiresAt: Date.now() + ttlMs,
+	};
+}
+
+async function writeSupervisorLockPayload(lockPath, ownerId, acquiredAt, ttlMs) {
+	await fs.writeFile(
+		lockPath,
+		`${JSON.stringify(
+			createSupervisorLockPayload(ownerId, acquiredAt, ttlMs),
+		)}\n`,
+		"utf8",
+	);
+}
+
+async function safeUnlinkOwnedSupervisorLock(lockPath, ownerId) {
+	const payload = await readSupervisorLockPayload(lockPath);
+	if (
+		payload &&
+		typeof payload.ownerId === "string" &&
+		payload.ownerId.length > 0 &&
+		payload.ownerId !== ownerId
+	) {
+		return false;
+	}
+	return safeUnlink(lockPath);
+}
+
+function createSupervisorLockHeartbeat(lockPath, ownerId, acquiredAt, ttlMs, signal) {
+	const refreshMs = Math.max(25, Math.floor(ttlMs / 3));
+	let stopped = false;
+	let pendingRefresh = Promise.resolve();
+	const refresh = () => {
+		if (stopped || signal?.aborted) {
+			return;
+		}
+		pendingRefresh = pendingRefresh.then(async () => {
+			const payload = await readSupervisorLockPayload(lockPath);
+			if (!payload) {
+				stopped = true;
+				return;
+			}
+			if (
+				typeof payload.ownerId === "string" &&
+				payload.ownerId.length > 0 &&
+				payload.ownerId !== ownerId
+			) {
+				stopped = true;
+				return;
+			}
+			try {
+				await writeSupervisorLockPayload(lockPath, ownerId, acquiredAt, ttlMs);
+			} catch (error) {
+				supervisorDebug(
+					`failed to refresh supervisor lock lease at ${lockPath}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+		});
+	};
+	const timer = setInterval(refresh, refreshMs);
+	if (typeof timer.unref === "function") {
+		timer.unref();
+	}
+	return {
+		stop: async () => {
+			stopped = true;
+			clearInterval(timer);
+			await pendingRefresh;
+		},
+	};
+}
+
 async function isSupervisorLockStale(lockPath, ttlMs) {
 	const now = Date.now();
 	const payload = await readSupervisorLockPayload(lockPath);
@@ -491,23 +571,33 @@ async function withSupervisorStorageLock(runtime, fn, signal) {
 
 		try {
 			const handle = await fs.open(lockPath, "wx");
+			const acquiredAt = Date.now();
+			const ownerId = `${process.pid}:${acquiredAt}:${Math.random()
+				.toString(36)
+				.slice(2)}`;
 			try {
 				await handle.writeFile(
-					`${JSON.stringify({
-						pid: process.pid,
-						acquiredAt: Date.now(),
-						expiresAt: Date.now() + ttlMs,
-					})}\n`,
+					`${JSON.stringify(
+						createSupervisorLockPayload(ownerId, acquiredAt, ttlMs),
+					)}\n`,
 					"utf8",
 				);
 			} finally {
 				await handle.close();
 			}
+			const heartbeat = createSupervisorLockHeartbeat(
+				lockPath,
+				ownerId,
+				acquiredAt,
+				ttlMs,
+				signal,
+			);
 
 			try {
 				return await fn();
 			} finally {
-				await safeUnlink(lockPath);
+				await heartbeat.stop();
+				await safeUnlinkOwnedSupervisorLock(lockPath, ownerId);
 			}
 		} catch (error) {
 			const code =
@@ -1073,6 +1163,17 @@ async function ensureLaunchableAccount(
 						if (signal?.aborted || error?.name === "AbortError") {
 							throw error;
 						}
+						if (error?.name === "QuotaProbeUnavailableError") {
+							return {
+								account,
+								snapshot: null,
+								evaluation: {
+									rotate: true,
+									reason: "probe-unavailable",
+									waitMs: 0,
+								},
+							};
+						}
 						return {
 							account,
 							snapshot: null,
@@ -1100,6 +1201,7 @@ async function ensureLaunchableAccount(
 		const step = await withLockedManager(runtime, async (manager) => {
 			let dirty = false;
 			const knownAccounts = getManagerAccounts(manager, initial.accounts);
+			const probeUnavailableAccounts = [];
 			for (const result of evaluatedResults) {
 				const account = resolveAccountInManager(
 					manager,
@@ -1110,7 +1212,10 @@ async function ensureLaunchableAccount(
 					getProbeCandidateBatch(
 						manager,
 						1,
-						options.excludedAccounts ?? [],
+						[
+							...(options.excludedAccounts ?? []),
+							...probeUnavailableAccounts,
+						],
 					)[0] ?? null;
 				if (
 					!account ||
@@ -1141,6 +1246,11 @@ async function ensureLaunchableAccount(
 						manager,
 						snapshot: result.snapshot,
 					};
+				}
+
+				if (result.evaluation.reason === "probe-unavailable") {
+					probeUnavailableAccounts.push(account);
+					continue;
 				}
 
 				markAccountUnavailable(manager, account, result.evaluation);
@@ -1205,10 +1315,10 @@ async function prepareResumeSelection({
 	runtime,
 	pluginConfig,
 	currentAccount,
+	// Reserved for future restart-specific account-skip hints.
 	restartDecision,
 	signal,
 }) {
-	void restartDecision;
 	const startedAtMs = Date.now();
 	const nextReady = await ensureLaunchableAccount(
 		runtime,
@@ -1255,7 +1365,16 @@ function maybeStartPreparedResumeSelection({
 			currentAccount,
 			restartDecision,
 			signal,
-		}).catch(() => null),
+		}).catch((error) => {
+			if (error?.name !== "AbortError" && !signal?.aborted) {
+				supervisorDebug(
+					`pre-warm selection failed: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+			return null;
+		}),
 	};
 }
 
@@ -1532,7 +1651,6 @@ async function loadCurrentSupervisorState(runtime, signal) {
 async function runInteractiveSupervision({
 	codexBin,
 	initialArgs,
-	buildForwardArgs,
 	runtime,
 	pluginConfig,
 	manager,
@@ -1766,6 +1884,7 @@ async function runInteractiveSupervision({
 				relaunchNotice(
 					`monitor loop failed: ${monitorFailure instanceof Error ? monitorFailure.message : String(monitorFailure)}`,
 				);
+				return result.exitCode === 0 ? 1 : result.exitCode;
 			}
 			binding =
 				binding ??
@@ -1882,7 +2001,7 @@ async function runInteractiveSupervision({
 			manager = nextReady.manager ?? manager;
 			rotationTrace.resumeReadyAtMs = Date.now();
 			logRotationSummary(restartDecision.sessionId, rotationTrace, nextReady);
-			launchArgs = buildResumeArgs(restartDecision.sessionId, buildForwardArgs);
+			launchArgs = buildResumeArgs(restartDecision.sessionId, launchArgs);
 			knownSessionId = restartDecision.sessionId;
 			knownRolloutPath = binding?.rolloutPath ?? knownRolloutPath;
 		} finally {
@@ -1931,7 +2050,6 @@ async function runCodexSupervisorWithRuntime({
 	return runInteractiveSupervision({
 		codexBin,
 		initialArgs,
-		buildForwardArgs,
 		runtime,
 		pluginConfig,
 		manager: ready.manager,

@@ -1001,6 +1001,79 @@ describe("codex supervisor", () => {
 		expect(manager.activeIndex).toBe(1);
 	});
 
+	it("preserves caller CLI options when rebuilding resume args after rotation", async () => {
+		class FakeChild extends EventEmitter {
+			exitCode: number | null = null;
+
+			constructor(exitCode: number) {
+				super();
+				setTimeout(() => {
+					this.exitCode = exitCode;
+					this.emit("exit", exitCode, null);
+				}, 0);
+			}
+
+			kill(_signal: string) {
+				return true;
+			}
+		}
+
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager);
+		const spawnedArgs: string[][] = [];
+		const exitCodes = [1, 0];
+
+		const result = await supervisorTestApi?.runInteractiveSupervision({
+			codexBin: "dist/bin/codex.js",
+			initialArgs: [
+				"-c",
+				'profile="dev"',
+				"resume",
+				"seed-session",
+				"-c",
+				'cli_auth_credentials_store="file"',
+			],
+			buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+			runtime,
+			pluginConfig: {},
+			manager,
+			signal: undefined,
+			maxSessionRestarts: 2,
+			spawnChild: (_codexBin: string, args: string[]) => {
+				spawnedArgs.push([...args]);
+				return new FakeChild(exitCodes.shift() ?? 0);
+			},
+			findBinding: async ({ sessionId }: { sessionId?: string }) =>
+				sessionId
+					? {
+							sessionId,
+							rolloutPath: null,
+							lastActivityAtMs: Date.now(),
+						}
+					: null,
+		});
+
+		expect(result).toBe(0);
+		expect(spawnedArgs).toEqual([
+			[
+				"-c",
+				'profile="dev"',
+				"resume",
+				"seed-session",
+				"-c",
+				'cli_auth_credentials_store="file"',
+			],
+			[
+				"-c",
+				'profile="dev"',
+				"resume",
+				"seed-session",
+				"-c",
+				'cli_auth_credentials_store="file"',
+			],
+		]);
+	});
+
 	it("starts degraded candidate probes in the same batch before waiting on results", async () => {
 		const manager = new FakeManager([
 			{ accountId: "degraded-1", access: "token-1" },
@@ -1097,6 +1170,59 @@ describe("codex supervisor", () => {
 		expect(loadFromDisk).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		["--help"],
+		["--version"],
+	])(
+		"bypasses supervisor account gating for top-level %s flags before account selection",
+		async (flag) => {
+			const loadFromDisk = vi.fn(async () => {
+				throw new Error("ensureLaunchableAccount should not run for top-level help/version");
+			});
+			const forwardToRealCodex = vi.fn(async () => 0);
+
+			await expect(
+				supervisorTestApi?.runCodexSupervisorWithRuntime({
+					codexBin: "dist/bin/codex.js",
+					rawArgs: [flag],
+					buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+					forwardToRealCodex,
+					runtime: {
+						loadPluginConfig: () => ({ codexCliSessionSupervisor: true }),
+						getCodexCliSessionSupervisor: () => true,
+						AccountManager: { loadFromDisk },
+					},
+					signal: undefined,
+				}),
+			).resolves.toBe(0);
+			expect(forwardToRealCodex).toHaveBeenCalledWith("dist/bin/codex.js", [flag]);
+			expect(loadFromDisk).not.toHaveBeenCalled();
+		},
+	);
+
+	it("does not bypass supervisor account gating for nested version flags after --", async () => {
+		const loadFromDisk = vi.fn(async () => {
+			throw new Error("ensureLaunchableAccount reached");
+		});
+		const forwardToRealCodex = vi.fn(async () => 0);
+
+		await expect(
+			supervisorTestApi?.runCodexSupervisorWithRuntime({
+				codexBin: "dist/bin/codex.js",
+				rawArgs: ["exec", "--", "--version"],
+				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+				forwardToRealCodex,
+				runtime: {
+					loadPluginConfig: () => ({ codexCliSessionSupervisor: true }),
+					getCodexCliSessionSupervisor: () => true,
+					AccountManager: { loadFromDisk },
+				},
+				signal: undefined,
+			}),
+		).rejects.toThrow("ensureLaunchableAccount reached");
+		expect(forwardToRealCodex).not.toHaveBeenCalled();
+	});
+
 	it(
 		"returns 1 when interactive supervision is already at the restart safety limit",
 		async () => {
@@ -1147,8 +1273,52 @@ describe("codex supervisor", () => {
 		}
 	});
 
+	it("renews the supervisor storage lock while a critical section is still running", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS = "40";
+		process.env.CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS = "5";
+		process.env.CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS = "500";
+
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager);
+		const firstEntered = createDeferred<void>();
+		const releaseFirst = createDeferred<void>();
+		let firstReleased = false;
+		let secondEntered = false;
+
+		const first = supervisorTestApi?.withLockedManager(
+			runtime,
+			async () => {
+				firstEntered.resolve();
+				await releaseFirst.promise;
+				firstReleased = true;
+				return "first";
+			},
+			undefined,
+		);
+		await firstEntered.promise;
+
+		const second = supervisorTestApi?.withLockedManager(
+			runtime,
+			async () => {
+				secondEntered = true;
+				expect(firstReleased).toBe(true);
+				return "second";
+			},
+			undefined,
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 140));
+		expect(secondEntered).toBe(false);
+
+		releaseFirst.resolve();
+		await expect(Promise.all([first, second])).resolves.toEqual([
+			"first",
+			"second",
+		]);
+	});
+
 	it(
-		"keeps the child exit code when the monitor loop fails after startup",
+		"returns a failure exit code when the monitor loop fails after startup",
 		{ timeout: 10_000 },
 		async () => {
 			class FakeChild extends EventEmitter {
@@ -1194,7 +1364,7 @@ describe("codex supervisor", () => {
 					},
 				});
 
-				expect(result).toBe(0);
+				expect(result).toBe(1);
 				expect(stderrSpy).toHaveBeenCalledWith(
 					expect.stringContaining("monitor loop failed: Timed out waiting for supervisor storage lock"),
 				);
@@ -1203,6 +1373,33 @@ describe("codex supervisor", () => {
 			}
 		},
 	);
+
+	it("does not cool down accounts when the quota probe is unavailable", async () => {
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager, {
+			onFetch(accountId) {
+				if (accountId === "near-limit") {
+					const error = new Error("quota probe unavailable");
+					error.name = "QuotaProbeUnavailableError";
+					throw error;
+				}
+			},
+		});
+
+		const result = await supervisorTestApi?.ensureLaunchableAccount(
+			runtime,
+			{},
+			undefined,
+			{ probeTimeoutMs: 250 },
+		);
+
+		expect(result).toMatchObject({
+			ok: true,
+			account: { accountId: "healthy" },
+		});
+		expect(manager.getAccountByIndex(0)?.coolingDownUntil).toBe(0);
+		expect(manager.activeIndex).toBe(1);
+	});
 
 	it(
 		"paces repeated quota probe outages instead of hot-looping the monitor",

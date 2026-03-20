@@ -1005,6 +1005,44 @@ describe("storage", () => {
 			expect(existsSync(exportPath)).toBe(false);
 		});
 
+		it("allows equivalent Windows-style storage paths during export from an active transaction", async () => {
+			const originalPlatform = process.platform;
+			Object.defineProperty(process, "platform", {
+				value: "win32",
+				configurable: true,
+			});
+
+			try {
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "acct-primary",
+							refreshToken: "refresh-primary",
+							addedAt: 1,
+							lastUsed: 2,
+						},
+					],
+				});
+
+				await expect(
+					withAccountStorageTransaction(async () => {
+						setStoragePathDirect(testStoragePath.toUpperCase());
+						await exportAccounts(exportPath);
+					}),
+				).resolves.toBeUndefined();
+
+				const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+				expect(exported.accounts[0].accountId).toBe("acct-primary");
+			} finally {
+				Object.defineProperty(process, "platform", {
+					value: originalPlatform,
+					configurable: true,
+				});
+			}
+		});
+
 		it("reloads fresh storage after a transaction handler throws", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1212,6 +1250,26 @@ describe("storage", () => {
 			await exportAccounts(exportPath);
 			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
 			expect(exported.accounts[0].accountId).toBe("acct-after-combined-throw");
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged-after-combined-throw",
+						email: "flagged-after-combined-throw@example.com",
+						refreshToken: "refresh-flagged-after-combined-throw",
+						addedAt: 7,
+						lastUsed: 8,
+						flaggedAt: 9,
+					},
+				],
+			});
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-flagged-after-combined-throw",
+					refreshToken: "refresh-flagged-after-combined-throw",
+				}),
+			);
 		});
 
 		it("reloads fresh storage after a combined transaction handler returns successfully", async () => {
@@ -1263,6 +1321,26 @@ describe("storage", () => {
 			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
 			expect(exported.accounts[0].accountId).toBe(
 				"acct-after-combined-success",
+			);
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged-after-combined-success",
+						email: "flagged-after-combined-success@example.com",
+						refreshToken: "refresh-flagged-after-combined-success",
+						addedAt: 7,
+						lastUsed: 8,
+						flaggedAt: 9,
+					},
+				],
+			});
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-flagged-after-combined-success",
+					refreshToken: "refresh-flagged-after-combined-success",
+				}),
 			);
 		});
 
