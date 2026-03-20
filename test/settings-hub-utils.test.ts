@@ -71,6 +71,8 @@ type SettingsHubTestApi = {
 	promptExperimentalSettings: (
 		initial: PluginConfig,
 	) => Promise<PluginConfig | null>;
+	mapExperimentalMenuHotkey: (raw: string) => unknown;
+	mapExperimentalStatusHotkey: (raw: string) => unknown;
 };
 
 type UiRuntimeOptions = ReturnType<typeof getUiRuntimeOptions>;
@@ -120,10 +122,10 @@ function queueSelectResults(...results: unknown[]): void {
 
 function triggerSettingsHubHotkey(
 	raw: string,
-	fallback: unknown = { type: "back" },
+	fallback: unknown = null,
 ): (items: MenuItem<unknown>[], options: unknown) => unknown {
-	return (items, options) =>
-		(options as {
+	return (items, options) => {
+		const onInput = (options as {
 			onInput?: (
 				input: string,
 				context: {
@@ -132,11 +134,14 @@ function triggerSettingsHubHotkey(
 					requestRerender: () => void;
 				},
 			) => unknown;
-		})?.onInput?.(raw, {
+		})?.onInput;
+		expect(onInput).toBeTypeOf("function");
+		return onInput?.(raw, {
 			cursor: 0,
 			items,
 			requestRerender: () => undefined,
 		}) ?? fallback;
+	};
 }
 
 vi.mock("../lib/ui/select.js", async () => {
@@ -730,19 +735,31 @@ describe("settings-hub utility coverage", () => {
 		it("supports alternate experimental interval hotkeys with minus and plus", async () => {
 			const api = await loadSettingsHubTestApi();
 			queueSelectResults(
+				triggerSettingsHubHotkey("["),
 				triggerSettingsHubHotkey("-"),
 				triggerSettingsHubHotkey("+"),
-				triggerSettingsHubHotkey("s", { type: "save" }),
+				triggerSettingsHubHotkey("S", { type: "save" }),
 			);
 			const selected = await api.promptExperimentalSettings({
-				proactiveRefreshIntervalMs: 120_000,
+				proactiveRefreshIntervalMs: 180_000,
 			});
 			expect(selected?.proactiveRefreshIntervalMs).toBe(120_000);
 		});
 
+		it("maps experimental menu and status hotkeys including numeric and uppercase variants", async () => {
+			const api = await loadSettingsHubTestApi();
+			expect(api.mapExperimentalMenuHotkey("1")).toEqual({ type: "sync" });
+			expect(api.mapExperimentalMenuHotkey("2")).toEqual({ type: "backup" });
+			expect(api.mapExperimentalMenuHotkey("[")).toEqual({
+				type: "decrease-refresh-interval",
+			});
+			expect(api.mapExperimentalMenuHotkey("S")).toEqual({ type: "save" });
+			expect(api.mapExperimentalStatusHotkey("Q")).toEqual({ type: "back" });
+		});
+
 		it("supports q hotkey to back out of experimental menu without saving", async () => {
 			const api = await loadSettingsHubTestApi();
-			queueSelectResults(triggerSettingsHubHotkey("q", { type: "back" }));
+			queueSelectResults(triggerSettingsHubHotkey("Q", { type: "back" }));
 			const selected = await api.promptExperimentalSettings({
 				proactiveRefreshGuardian: true,
 				proactiveRefreshIntervalMs: 120_000,

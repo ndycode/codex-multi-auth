@@ -300,14 +300,14 @@ function getExperimentalSelectOptions(
 function mapExperimentalMenuHotkey(
 	raw: string,
 ): ExperimentalSettingsAction | undefined {
-	const lower = raw.toLowerCase();
-	if (lower === "q") return { type: "back" };
-	if (lower === "s") return { type: "save" };
 	if (raw === "1") return { type: "sync" };
 	if (raw === "2") return { type: "backup" };
 	if (raw === "3") return { type: "toggle-refresh-guardian" };
 	if (raw === "[" || raw === "-") return { type: "decrease-refresh-interval" };
 	if (raw === "]" || raw === "+") return { type: "increase-refresh-interval" };
+	const lower = raw.toLowerCase();
+	if (lower === "q") return { type: "back" };
+	if (lower === "s") return { type: "save" };
 	return undefined;
 }
 
@@ -1315,6 +1315,8 @@ const __testOnly = {
 	cloneDashboardSettings,
 	withQueuedRetry: withQueuedRetryForTests,
 	loadExperimentalSyncTarget,
+	mapExperimentalMenuHotkey,
+	mapExperimentalStatusHotkey,
 	promptExperimentalSettings,
 	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
 	persistBackendConfigSelection: persistBackendConfigSelectionForTests,

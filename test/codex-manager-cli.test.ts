@@ -4557,8 +4557,8 @@ describe("codex manager cli commands", () => {
 		const selectSequence = queueSettingsSelectSequence([
 			{ type: "experimental" },
 			requireSettingsHotkey("1", { type: "sync" }),
-			requireSettingsHotkey("a", { type: "apply" }),
-			requireSettingsHotkey("q", { type: "back" }),
+			requireSettingsHotkey("A", { type: "apply" }),
+			requireSettingsHotkey("Q", { type: "back" }),
 			{ type: "back" },
 			{ type: "back" },
 		]);
@@ -4631,7 +4631,7 @@ describe("codex manager cli commands", () => {
 		const selectSequence = queueSettingsSelectSequence([
 			{ type: "experimental" },
 			requireSettingsHotkey("2", { type: "backup" }),
-			requireSettingsHotkey("q", { type: "back" }),
+			requireSettingsHotkey("Q", { type: "back" }),
 			{ type: "back" },
 			{ type: "back" },
 		]);
@@ -4700,13 +4700,19 @@ describe("codex manager cli commands", () => {
 		const now = Date.now();
 		setupInteractiveSettingsLogin(createSettingsStorage(now));
 		const configModule = await import("../lib/config.js");
-		const defaults = configModule.getDefaultPluginConfig();
+		const defaults = {
+			...configModule.getDefaultPluginConfig(),
+			proactiveRefreshGuardian: false,
+			proactiveRefreshIntervalMs: 180_000,
+		};
 		loadPluginConfigMock.mockReturnValue(structuredClone(defaults));
 		const selectSequence = queueSettingsSelectSequence([
 			{ type: "experimental" },
 			requireSettingsHotkey("3", { type: "toggle-refresh-guardian" }),
-			requireSettingsHotkey("]", { type: "increase-refresh-interval" }),
-			requireSettingsHotkey("s", { type: "save" }),
+			requireSettingsHotkey("[", { type: "decrease-refresh-interval" }),
+			requireSettingsHotkey("-", { type: "decrease-refresh-interval" }),
+			requireSettingsHotkey("+", { type: "increase-refresh-interval" }),
+			requireSettingsHotkey("S", { type: "save" }),
 			{ type: "back" },
 		]);
 
@@ -4718,8 +4724,7 @@ describe("codex manager cli commands", () => {
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
-				proactiveRefreshIntervalMs:
-					(defaults.proactiveRefreshIntervalMs ?? 60000) + 60000,
+				proactiveRefreshIntervalMs: 120_000,
 			}),
 		);
 	});
@@ -4745,7 +4750,7 @@ describe("codex manager cli commands", () => {
 		const selectSequence = queueSettingsSelectSequence([
 			{ type: "experimental" },
 			{ type: "sync" },
-			requireSettingsHotkey("q", { type: "back" }),
+			requireSettingsHotkey("Q", { type: "back" }),
 			{ type: "back" },
 			{ type: "back" },
 		]);
@@ -4798,7 +4803,7 @@ describe("codex manager cli commands", () => {
 		const selectSequence = queueSettingsSelectSequence([
 			{ type: "experimental" },
 			requireSettingsHotkey("1", { type: "sync" }),
-			requireSettingsHotkey("q", { type: "back" }),
+			requireSettingsHotkey("Q", { type: "back" }),
 			{ type: "back" },
 			{ type: "back" },
 		]);
