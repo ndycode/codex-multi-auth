@@ -74,6 +74,17 @@ Experimental currently hosts:
 - named local pool backup export with filename prompt
 - refresh guard controls (`proactiveRefreshGuardian`, `proactiveRefreshIntervalMs`)
 
+Experimental TUI shortcuts:
+
+- `1` sync preview
+- `2` named backup export
+- `3` toggle refresh guard
+- `[` or `-` decrease refresh interval
+- `]` or `+` increase refresh interval
+- `S` save and return
+- `Q` back
+- sync review also supports `A` apply
+
 Sync behavior:
 
 - preview is always shown before apply

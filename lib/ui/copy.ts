@@ -94,8 +94,9 @@ export const UI_COPY = {
 		experimental: "Experimental",
 		experimentalTitle: "Experimental",
 		experimentalSubtitle: "Preview sync and backup actions before they become stable",
-		experimentalHelpMenu: "Enter Select | Q Back",
-		experimentalHelpPreview: "A Apply | Q Back",
+		experimentalHelpMenu:
+			"Enter Select | 1 Sync | 2 Backup | 3 Guard | [ - Down | ] + Up | S Save | Q Back",
+		experimentalHelpPreview: "Enter Select | A Apply | Q Back",
 		experimentalHelpStatus: "Enter Select | Q Back",
 		experimentalSync: "Sync Accounts to oc-chatgpt-multi-auth",
 		experimentalApplySync: "Apply Sync",

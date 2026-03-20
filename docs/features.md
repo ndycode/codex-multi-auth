@@ -55,6 +55,7 @@ User-facing capability map for `codex-multi-auth`.
 | Quick switch and search hotkeys | Faster navigation in the dashboard |
 | Account action hotkeys | Per-account set, refresh, toggle, and delete shortcuts |
 | In-dashboard settings hub | Runtime and display tuning without editing files directly |
+| Experimental settings hotkeys | Keyboard shortcuts for sync preview, backup export, and refresh-guard tuning |
 | Browser-first OAuth with manual fallback | `codex auth login` stays browser-first, while `--manual`, `--no-browser`, and `CODEX_AUTH_NO_BROWSER=1` keep login usable in browser-restricted shells |
 
 Manual/non-TTY login accepts the full callback URL on stdin, so automation and host-managed shells can complete auth without relying on a local browser handoff.

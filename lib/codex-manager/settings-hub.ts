@@ -28,7 +28,7 @@ import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
-import { type MenuItem, select } from "../ui/select.js";
+import { type MenuItem, select, type SelectOptions } from "../ui/select.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
 
@@ -280,6 +280,42 @@ type ExperimentalSettingsAction =
 	| { type: "apply" }
 	| { type: "save" }
 	| { type: "back" };
+
+function getExperimentalSelectOptions(
+	ui: ReturnType<typeof getUiRuntimeOptions>,
+	help: string,
+	onInput?: SelectOptions<ExperimentalSettingsAction>["onInput"],
+): SelectOptions<ExperimentalSettingsAction> {
+	return {
+		message: UI_COPY.settings.experimentalTitle,
+		subtitle: UI_COPY.settings.experimentalSubtitle,
+		help,
+		clearScreen: true,
+		theme: ui.theme,
+		selectedEmphasis: "minimal",
+		onInput,
+	};
+}
+
+function mapExperimentalMenuHotkey(
+	raw: string,
+): ExperimentalSettingsAction | undefined {
+	if (raw === "1") return { type: "sync" };
+	if (raw === "2") return { type: "backup" };
+	if (raw === "3") return { type: "toggle-refresh-guardian" };
+	if (raw === "[" || raw === "-") return { type: "decrease-refresh-interval" };
+	if (raw === "]" || raw === "+") return { type: "increase-refresh-interval" };
+	const lower = raw.toLowerCase();
+	if (lower === "q") return { type: "back" };
+	if (lower === "s") return { type: "save" };
+	return undefined;
+}
+
+function mapExperimentalStatusHotkey(
+	raw: string,
+): ExperimentalSettingsAction | undefined {
+	return raw.toLowerCase() === "q" ? { type: "back" } : undefined;
+}
 
 const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
 	{
@@ -1279,6 +1315,8 @@ const __testOnly = {
 	cloneDashboardSettings,
 	withQueuedRetry: withQueuedRetryForTests,
 	loadExperimentalSyncTarget,
+	mapExperimentalMenuHotkey,
+	mapExperimentalStatusHotkey,
 	promptExperimentalSettings,
 	persistDashboardSettingsSelection: persistDashboardSettingsSelectionForTests,
 	persistBackendConfigSelection: persistBackendConfigSelectionForTests,
@@ -2573,16 +2611,11 @@ async function promptExperimentalSettings(
 					color: "red",
 				},
 			],
-			{
-				message: UI_COPY.settings.experimentalTitle,
-				subtitle: UI_COPY.settings.experimentalSubtitle,
-				help: UI_COPY.settings.experimentalHelpMenu,
-				clearScreen: true,
-				theme: ui.theme,
-				selectedEmphasis: "minimal",
-				onInput: (raw) =>
-					raw.toLowerCase() === "q" ? { type: "back" } : undefined,
-			},
+			getExperimentalSelectOptions(
+				ui,
+				UI_COPY.settings.experimentalHelpMenu,
+				mapExperimentalMenuHotkey,
+			),
 		);
 		if (!action || action.type === "back") return null;
 		if (action.type === "save") return draft;
@@ -2647,14 +2680,11 @@ async function promptExperimentalSettings(
 								color: "red",
 							},
 						],
-						{
-							message: UI_COPY.settings.experimentalTitle,
-							subtitle: UI_COPY.settings.experimentalSubtitle,
-							help: UI_COPY.settings.experimentalHelpStatus,
-							clearScreen: true,
-							theme: ui.theme,
-							selectedEmphasis: "minimal",
-						},
+						getExperimentalSelectOptions(
+							ui,
+							UI_COPY.settings.experimentalHelpStatus,
+							mapExperimentalStatusHotkey,
+						),
 					);
 				} catch (error) {
 					const message =
@@ -2674,14 +2704,11 @@ async function promptExperimentalSettings(
 								color: "red",
 							},
 						],
-						{
-							message: UI_COPY.settings.experimentalTitle,
-							subtitle: UI_COPY.settings.experimentalSubtitle,
-							help: UI_COPY.settings.experimentalHelpStatus,
-							clearScreen: true,
-							theme: ui.theme,
-							selectedEmphasis: "minimal",
-						},
+						getExperimentalSelectOptions(
+							ui,
+							UI_COPY.settings.experimentalHelpStatus,
+							mapExperimentalStatusHotkey,
+						),
 					);
 				}
 			} finally {
@@ -2708,14 +2735,11 @@ async function promptExperimentalSettings(
 						color: "red",
 					},
 				],
-				{
-					message: UI_COPY.settings.experimentalTitle,
-					subtitle: UI_COPY.settings.experimentalSubtitle,
-					help: UI_COPY.settings.experimentalHelpStatus,
-					clearScreen: true,
-					theme: ui.theme,
-					selectedEmphasis: "minimal",
-				},
+				getExperimentalSelectOptions(
+					ui,
+					UI_COPY.settings.experimentalHelpStatus,
+					mapExperimentalStatusHotkey,
+				),
 			);
 			continue;
 		}
@@ -2747,14 +2771,11 @@ async function promptExperimentalSettings(
 						color: "red",
 					},
 				],
-				{
-					message: UI_COPY.settings.experimentalTitle,
-					subtitle: UI_COPY.settings.experimentalSubtitle,
-					help: UI_COPY.settings.experimentalHelpStatus,
-					clearScreen: true,
-					theme: ui.theme,
-					selectedEmphasis: "minimal",
-				},
+				getExperimentalSelectOptions(
+					ui,
+					UI_COPY.settings.experimentalHelpStatus,
+					mapExperimentalStatusHotkey,
+				),
 			);
 			continue;
 		}
@@ -2793,20 +2814,16 @@ async function promptExperimentalSettings(
 					color: "red",
 				},
 			],
-			{
-				message: UI_COPY.settings.experimentalTitle,
-				subtitle: UI_COPY.settings.experimentalSubtitle,
-				help: UI_COPY.settings.experimentalHelpStatus,
-				clearScreen: true,
-				theme: ui.theme,
-				selectedEmphasis: "minimal",
-				onInput: (raw) => {
+			getExperimentalSelectOptions(
+				ui,
+				UI_COPY.settings.experimentalHelpPreview,
+				(raw) => {
 					const lower = raw.toLowerCase();
 					if (lower === "q") return { type: "back" };
 					if (lower === "a") return { type: "apply" };
 					return undefined;
 				},
-			},
+			),
 		);
 		if (!review || review.type === "back") continue;
 
@@ -2837,14 +2854,11 @@ async function promptExperimentalSettings(
 				},
 				{ label: UI_COPY.settings.back, value: { type: "back" }, color: "red" },
 			],
-			{
-				message: UI_COPY.settings.experimentalTitle,
-				subtitle: UI_COPY.settings.experimentalSubtitle,
-				help: UI_COPY.settings.experimentalHelpStatus,
-				clearScreen: true,
-				theme: ui.theme,
-				selectedEmphasis: "minimal",
-			},
+			getExperimentalSelectOptions(
+				ui,
+				UI_COPY.settings.experimentalHelpStatus,
+				mapExperimentalStatusHotkey,
+			),
 		);
 	}
 }
