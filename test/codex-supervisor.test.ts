@@ -12,6 +12,8 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_CAPTURE_TIMEOUT_MS",
 	"CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS",
+	"CODEX_AUTH_CLI_SESSION_MAX_ACCOUNT_SELECTION_ATTEMPTS",
+	"CODEX_AUTH_CLI_SESSION_MAX_RESTARTS",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
@@ -1793,6 +1795,36 @@ describe("codex supervisor", () => {
 		expect(manager.activeIndex).toBe(1);
 	});
 
+	it("honors the account-selection-attempt env override at call time", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_MAX_ACCOUNT_SELECTION_ATTEMPTS = "1";
+
+		const manager = new FakeManager([
+			{ accountId: "retry-a", access: "token-a" },
+			{ accountId: "retry-b", access: "token-b" },
+		]);
+		let fetchAttempts = 0;
+		const runtime = createFakeRuntime(manager, {
+			onFetch() {
+				fetchAttempts += 1;
+				const error = new Error("quota probe unavailable");
+				error.name = "QuotaProbeUnavailableError";
+				throw error;
+			},
+		});
+
+		const result = await supervisorTestApi?.ensureLaunchableAccount(
+			runtime,
+			{},
+			undefined,
+			{ probeTimeoutMs: 250 },
+		);
+
+		expect(result?.ok).toBe(false);
+		expect(result?.account).toBeNull();
+		expect(result?.aborted).toBeUndefined();
+		expect(fetchAttempts).toBe(2);
+	});
+
 	it(
 		"paces repeated quota probe outages instead of hot-looping the monitor",
 		{ timeout: 10_000 },
@@ -1866,6 +1898,43 @@ describe("codex supervisor", () => {
 			expect(child.kill).toHaveBeenCalled();
 		},
 	);
+
+	it("honors the restart-limit env override at call time", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_MAX_RESTARTS = "1";
+
+		class ImmediateChild extends EventEmitter {
+			exitCode: number | null = 0;
+
+			constructor() {
+				super();
+				queueMicrotask(() => {
+					this.emit("exit", 0, null);
+				});
+			}
+
+			kill(_signal: string) {
+				return true;
+			}
+		}
+
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager);
+		const spawnChild = vi.fn(() => new ImmediateChild());
+
+		const result = await supervisorTestApi?.runInteractiveSupervision({
+			codexBin: "dist/bin/codex.js",
+			initialArgs: ["chat"],
+			buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+			runtime,
+			pluginConfig: {},
+			manager,
+			signal: undefined,
+			spawnChild,
+		});
+
+		expect(result).toBe(0);
+		expect(spawnChild).toHaveBeenCalledTimes(1);
+	});
 
 	it("degrades a failed candidate probe and continues to the next healthy account", async () => {
 		const manager = new FakeManager([

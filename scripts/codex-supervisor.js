@@ -30,16 +30,6 @@ const DEFAULT_UNLINK_RETRY_BASE_DELAY_MS = 25;
 const INTERNAL_RECOVERABLE_COOLDOWN_MS = 60_000;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/;
 const SESSION_META_SCAN_LINE_LIMIT = 200;
-const MAX_ACCOUNT_SELECTION_ATTEMPTS = parseNumberEnv(
-	"CODEX_AUTH_CLI_SESSION_MAX_ACCOUNT_SELECTION_ATTEMPTS",
-	32,
-	1,
-);
-const MAX_SESSION_RESTARTS = parseNumberEnv(
-	"CODEX_AUTH_CLI_SESSION_MAX_RESTARTS",
-	16,
-	1,
-);
 const CODEX_FAMILY = "codex";
 const snapshotProbeCache = new Map();
 const sessionRolloutPathById = new Map();
@@ -125,6 +115,18 @@ function parseNumberEnv(name, fallback, min = 0) {
 	const raw = Number(process.env[name]);
 	if (!Number.isFinite(raw)) return fallback;
 	return Math.max(min, Math.trunc(raw));
+}
+
+function getMaxAccountSelectionAttempts() {
+	return parseNumberEnv(
+		"CODEX_AUTH_CLI_SESSION_MAX_ACCOUNT_SELECTION_ATTEMPTS",
+		32,
+		1,
+	);
+}
+
+function getMaxSessionRestarts() {
+	return parseNumberEnv("CODEX_AUTH_CLI_SESSION_MAX_RESTARTS", 16, 1);
 }
 
 function resolveProbeTimeoutMs(name, fallback) {
@@ -1213,6 +1215,8 @@ async function ensureLaunchableAccount(
 	signal,
 	options = {},
 ) {
+	const maxAccountSelectionAttempts =
+		options.maxAccountSelectionAttempts ?? getMaxAccountSelectionAttempts();
 	const probeTimeoutMs =
 		options.probeTimeoutMs ?? DEFAULT_SELECTION_PROBE_TIMEOUT_MS;
 	const probeBatchSize = parseNumberEnv(
@@ -1221,7 +1225,7 @@ async function ensureLaunchableAccount(
 		1,
 	);
 	let attempts = 0;
-	while (attempts < MAX_ACCOUNT_SELECTION_ATTEMPTS) {
+	while (attempts < maxAccountSelectionAttempts) {
 		attempts += 1;
 		if (signal?.aborted) {
 			return { ok: false, account: null, aborted: true };
@@ -1774,7 +1778,7 @@ async function runInteractiveSupervision({
 	pluginConfig,
 	manager,
 	signal,
-	maxSessionRestarts = MAX_SESSION_RESTARTS,
+	maxSessionRestarts = getMaxSessionRestarts(),
 	spawnChild = spawnRealCodex,
 	findBinding = findSessionBinding,
 	waitForBinding = waitForSessionBinding,

@@ -2525,6 +2525,8 @@ export async function exportAccounts(
 		transactionState?.active &&
 		!areEquivalentStoragePaths(transactionState.storagePath, activeStoragePath)
 	) {
+		// A fresh load here can silently export from the wrong storage file while a
+		// different transaction still owns the current snapshot.
 		throw new Error(
 			`Export blocked by storage path mismatch: transaction path is ` +
 				`${transactionState.storagePath}, active path is ${activeStoragePath}`,
