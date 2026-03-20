@@ -10,6 +10,8 @@ const createdDirs: string[] = [];
 const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS",
 	"CODEX_AUTH_CLI_SESSION_BINDING_POLL_MS",
+	"CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS",
+	"CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS",
 	"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS",
 	"CODEX_HOME",
 ] as const;
@@ -420,6 +422,63 @@ describe("codex supervisor", () => {
 		} finally {
 			unlinkSpy.mockRestore();
 		}
+	});
+
+	it("serializes concurrent callers behind the supervisor storage lock", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS = "1000";
+		process.env.CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS = "10";
+
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager);
+		const order: string[] = [];
+		let releaseFirst: (() => void) | null = null;
+		let resolveFirstEntered: (() => void) | null = null;
+		let resolveSecondEntered: (() => void) | null = null;
+		const firstEntered = new Promise<void>((resolve) => {
+			resolveFirstEntered = resolve;
+		});
+		const secondEntered = new Promise<void>((resolve) => {
+			resolveSecondEntered = resolve;
+		});
+		let secondHasLock = false;
+
+		const first = supervisorTestApi?.withLockedManager(
+			runtime,
+			async (loadedManager: FakeManager) => {
+				expect(loadedManager).toBe(manager);
+				order.push("first-enter");
+				resolveFirstEntered?.();
+				await new Promise<void>((resolve) => {
+					releaseFirst = resolve;
+				});
+				order.push("first-exit");
+				return "first";
+			},
+		);
+
+		await firstEntered;
+
+		const second = supervisorTestApi?.withLockedManager(
+			runtime,
+			async (loadedManager: FakeManager) => {
+				expect(loadedManager).toBe(manager);
+				secondHasLock = true;
+				order.push("second-enter");
+				resolveSecondEntered?.();
+				return "second";
+			},
+		);
+
+		await supervisorTestApi?.sleep(40);
+		expect(secondHasLock).toBe(false);
+		releaseFirst?.();
+
+		await secondEntered;
+		await expect(Promise.all([first, second])).resolves.toEqual([
+			"first",
+			"second",
+		]);
+		expect(order).toEqual(["first-enter", "first-exit", "second-enter"]);
 	});
 
 	it("skips a near-limit current account and selects the next healthy account", async () => {
