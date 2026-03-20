@@ -238,7 +238,6 @@ const transactionSnapshotContext = new AsyncLocalStorage<{
 	snapshot: AccountStorageV3 | null;
 	storagePath: string;
 	active: boolean;
-	storagePath: string;
 }>();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
