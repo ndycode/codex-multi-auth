@@ -238,6 +238,31 @@ describe("codex supervisor internals", () => {
 		});
 	});
 
+	it("finds session metadata after a verbose preamble", async () => {
+		const dir = createTempDir();
+		const filePath = join(dir, "verbose-session.jsonl");
+		const preamble = Array.from({ length: 120 }, (_, index) =>
+			JSON.stringify({ type: "event", seq: index + 1 }),
+		);
+		await fs.writeFile(
+			filePath,
+			[
+				...preamble,
+				JSON.stringify({
+					session_meta: {
+						payload: { id: "safe_session-verbose", cwd: dir },
+					},
+				}),
+			].join("\n"),
+			"utf8",
+		);
+
+		await expect(__testOnly.extractSessionMeta(filePath)).resolves.toEqual({
+			sessionId: "safe_session-verbose",
+			cwd: dir,
+		});
+	});
+
 	it("skips SIGINT escalation on Windows restarts", async () => {
 		const exitListeners: Array<() => void> = [];
 		const signals: string[] = [];

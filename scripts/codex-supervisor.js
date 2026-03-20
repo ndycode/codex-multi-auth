@@ -17,6 +17,7 @@ const DEFAULT_STORAGE_LOCK_TTL_MS = 30_000
 const INTERNAL_RECOVERABLE_COOLDOWN_MS = 60_000
 const RETRYABLE_IO_ERROR_CODES = new Set(["EBUSY", "EPERM", "EMFILE", "ENFILE"])
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/
+const SESSION_META_SCAN_LINE_LIMIT = 200
 
 function sleep(ms, signal) {
 	return new Promise((resolve) => {
@@ -565,7 +566,7 @@ async function extractSessionMeta(filePath) {
 	}
 
 	const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0)
-	for (const line of lines.slice(0, 40)) {
+	for (const line of lines.slice(0, SESSION_META_SCAN_LINE_LIMIT)) {
 		try {
 			const parsed = JSON.parse(line)
 			const payload = parsed?.session_meta?.payload ?? (parsed?.type === "session_meta" ? parsed.payload : null)
