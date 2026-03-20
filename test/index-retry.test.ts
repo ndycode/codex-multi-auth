@@ -479,6 +479,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 			enabled: false,
 		});
 		expect(accountManagerState.saveToDiskDebouncedCalls).toBeGreaterThanOrEqual(1);
+		expect(exhaustedAccount.enabled).toBe(false);
 
 		const firstHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Headers;
 		const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Headers;

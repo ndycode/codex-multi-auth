@@ -338,8 +338,8 @@ describe('isWorkspaceDisabledError', () => {
 		expect(isWorkspaceDisabledError(403, 'account_disabled', '')).toBe(true);
 	});
 
-	it('returns true for billing_failed error code', () => {
-		expect(isWorkspaceDisabledError(403, 'billing_failed', '')).toBe(true);
+	it('returns true for organization_disabled error code', () => {
+		expect(isWorkspaceDisabledError(403, 'organization_disabled', '')).toBe(true);
 	});
 
 	it('returns false for non-403 status even with disabled message', () => {
@@ -357,6 +357,19 @@ describe('isWorkspaceDisabledError', () => {
 
 	it('returns false for entitlement errors', () => {
 		expect(isWorkspaceDisabledError(403, 'usage_not_included', 'Not in your plan')).toBe(false);
+	});
+
+	it('returns false for numeric error codes', () => {
+		expect(isWorkspaceDisabledError(403, 402, 'Workspace disabled')).toBe(true);
+		expect(isWorkspaceDisabledError(403, 402, 'Billing failed for your subscription')).toBe(false);
+		expect(isWorkspaceDisabledError(403, 0, '')).toBe(false);
+	});
+
+	it('returns false for billing-style 403 codes without workspace or account disable signals', () => {
+		expect(isWorkspaceDisabledError(403, 'billing_failed', '')).toBe(false);
+		expect(isWorkspaceDisabledError(403, 'payment_required', '')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'Payment required to continue')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'Billing failed for your plan')).toBe(false);
 	});
 });
 

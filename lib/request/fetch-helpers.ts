@@ -265,50 +265,52 @@ export function isEntitlementError(code: string, bodyText: string): boolean {
  * @param bodyText - The response body text to inspect for workspace-related phrases
  * @returns `true` if the error indicates a disabled/expired workspace
  */
-export function isWorkspaceDisabledError(status: number, code: string, bodyText: string): boolean {
-        const haystack = `${code} ${bodyText}`.toLowerCase();
-        
-        // Check for HTTP 403 with workspace disabled messages
-        if (status === 403) {
-                // Common patterns for disabled/expired workspaces
-                const disabledPatterns = [
-                        /workspace.*(?:disabled|expired|deactivated|terminated)/i,
-                        /account.*(?:disabled|expired|deactivated|terminated)/i,
-                        /(?:workspace|account).*no longer.*(?:active|available|valid)/i,
-                        /(?:workspace|account).*has been.*(?:disabled|expired|closed)/i,
-                        /workspace.*(?:access|subscription).*expired/i,
-                        /billing.*(?:failed|expired|disabled)/i,
-                        /payment.*(?:failed|expired|required)/i,
-                        /organization.*(?:disabled|expired|inactive)/i,
-                        /team.*(?:disabled|expired|inactive)/i,
-                ];
-                
-                for (const pattern of disabledPatterns) {
-                        if (pattern.test(haystack)) {
-                                return true;
-                        }
-                }
+export function isWorkspaceDisabledError(
+        status: number,
+        code: unknown,
+        bodyText: string,
+): boolean {
+        if (status !== 403) {
+                return false;
         }
-        
-        // Check for specific error codes that indicate workspace issues.
-        if (status === 403) {
-                const workspaceErrorCodes = [
-                        "workspace_disabled",
-                        "workspace_expired",
-                        "workspace_terminated",
-                        "account_disabled",
-                        "account_expired",
-                        "organization_disabled",
-                        "billing_failed",
-                        "payment_required",
-                ];
 
-                if (workspaceErrorCodes.some((c) => code.toLowerCase().includes(c))) {
+        const normalizedCode = typeof code === "string" ? code.trim().toLowerCase() : "";
+        const haystack = `${normalizedCode} ${bodyText}`.toLowerCase();
+
+        const disabledPatterns = [
+                /workspace.*(?:disabled|expired|deactivated|terminated)/i,
+                /account.*(?:disabled|expired|deactivated|terminated)/i,
+                /(?:workspace|account).*no longer.*(?:active|available|valid)/i,
+                /(?:workspace|account).*has been.*(?:disabled|expired|closed)/i,
+                /workspace.*(?:access|subscription).*expired/i,
+                /organization.*(?:disabled|expired|inactive)/i,
+                /team.*(?:disabled|expired|inactive)/i,
+        ];
+
+        for (const pattern of disabledPatterns) {
+                if (pattern.test(haystack)) {
                         return true;
                 }
         }
 
-        return false;
+        const workspaceErrorCodes = new Set([
+                "workspace_disabled",
+                "workspace_expired",
+                "workspace_terminated",
+                "account_disabled",
+                "account_expired",
+                "organization_disabled",
+        ]);
+        if (workspaceErrorCodes.has(normalizedCode)) {
+                return true;
+        }
+
+        const normalizedTokens = normalizedCode
+                .split(/[^a-z0-9_]+/i)
+                .map((token) => token.trim())
+                .filter((token) => token.length > 0);
+
+        return normalizedTokens.some((token) => workspaceErrorCodes.has(token));
 }
 
 /**
