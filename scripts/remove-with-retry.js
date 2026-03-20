@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
  * Uses linear backoff (attempt * 50ms) with up to 5 retries.
  */
 export async function removeWithRetry(targetPath, options) {
-	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
+	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY", "EACCES"]);
 	const maxAttempts = 6;
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {

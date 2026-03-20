@@ -830,6 +830,10 @@ export function getFlaggedAccountsPath(): string {
 	return join(dirname(getStoragePath()), FLAGGED_ACCOUNTS_FILE_NAME);
 }
 
+function getFlaggedAccountsPathForStoragePath(storagePath: string): string {
+	return join(dirname(storagePath), FLAGGED_ACCOUNTS_FILE_NAME);
+}
+
 function getLegacyFlaggedAccountsPath(): string {
 	return join(dirname(getStoragePath()), LEGACY_FLAGGED_ACCOUNTS_FILE_NAME);
 }
@@ -1596,10 +1600,10 @@ async function loadAccountsFromJournal(
 	}
 }
 
-async function loadAccountsInternal(
+async function loadAccountsInternalAtPath(
+	path: string,
 	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
 ): Promise<AccountStorageV3 | null> {
-	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	await cleanupStaleRotatingBackupArtifacts(path);
 	const migratedLegacyStorage = persistMigration
@@ -1763,8 +1767,16 @@ async function loadAccountsInternal(
 	}
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
-	const path = getStoragePath();
+async function loadAccountsInternal(
+	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
+): Promise<AccountStorageV3 | null> {
+	return loadAccountsInternalAtPath(getStoragePath(), persistMigration);
+}
+
+async function saveAccountsAtPathUnlocked(
+	path: string,
+	storage: AccountStorageV3,
+): Promise<void> {
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -1891,6 +1903,10 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	}
 }
 
+async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
+	await saveAccountsAtPathUnlocked(getStoragePath(), storage);
+}
+
 function cloneAccountStorageForPersistence(
 	storage: AccountStorageV3 | null | undefined,
 ): AccountStorageV3 {
@@ -1915,13 +1931,15 @@ export async function withAccountStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			snapshot: await loadAccountsInternalAtPath(storagePath, (storage) =>
+				saveAccountsAtPathUnlocked(storagePath, storage),
+			),
 			active: true,
 			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
+			await saveAccountsAtPathUnlocked(storagePath, storage);
 			state.snapshot = storage;
 		};
 		return transactionSnapshotContext.run(state, async () => {
@@ -1946,7 +1964,9 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			snapshot: await loadAccountsInternalAtPath(storagePath, (storage) =>
+				saveAccountsAtPathUnlocked(storagePath, storage),
+			),
 			active: true,
 			storagePath,
 		};
@@ -1957,13 +1977,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
-			await saveAccountsUnlocked(nextAccounts);
+			await saveAccountsAtPathUnlocked(storagePath, nextAccounts);
 			try {
-				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				await saveFlaggedAccountsAtPathUnlocked(storagePath, flaggedStorage);
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
-					await saveAccountsUnlocked(previousAccounts);
+					await saveAccountsAtPathUnlocked(storagePath, previousAccounts);
 					state.snapshot = previousAccounts;
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
@@ -2219,10 +2239,11 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	}
 }
 
-async function saveFlaggedAccountsUnlocked(
+async function saveFlaggedAccountsAtPathUnlocked(
+	accountStoragePath: string,
 	storage: FlaggedAccountStorageV1,
 ): Promise<void> {
-	const path = getFlaggedAccountsPath();
+	const path = getFlaggedAccountsPathForStoragePath(accountStoragePath);
 	const markerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -2261,6 +2282,12 @@ async function saveFlaggedAccountsUnlocked(
 		});
 		throw error;
 	}
+}
+
+async function saveFlaggedAccountsUnlocked(
+	storage: FlaggedAccountStorageV1,
+): Promise<void> {
+	await saveFlaggedAccountsAtPathUnlocked(getStoragePath(), storage);
 }
 
 export async function saveFlaggedAccounts(

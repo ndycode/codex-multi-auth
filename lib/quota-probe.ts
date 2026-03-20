@@ -430,5 +430,9 @@ export async function fetchCodexQuotaSnapshot(
 		}
 	}
 
+	if (options.signal?.aborted) {
+		throw createAbortError("Quota probe aborted");
+	}
+
 	throw lastError ?? new Error("Failed to fetch quotas");
 }

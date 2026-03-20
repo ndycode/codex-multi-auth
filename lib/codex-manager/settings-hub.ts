@@ -555,6 +555,19 @@ const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
 	},
 ];
 
+const BACKEND_CATEGORY_TOGGLE_KEYS = new Set<BackendToggleSettingKey>(
+	BACKEND_CATEGORY_OPTIONS.flatMap((category) => category.toggleKeys),
+);
+const BACKEND_CATEGORY_NUMBER_KEYS = new Set<BackendNumberSettingKey>(
+	BACKEND_CATEGORY_OPTIONS.flatMap((category) => category.numberKeys),
+);
+const BACKEND_HIDDEN_TOGGLE_KEYS = BACKEND_TOGGLE_OPTIONS.map((option) => option.key).filter(
+	(key) => !BACKEND_CATEGORY_TOGGLE_KEYS.has(key),
+);
+const BACKEND_HIDDEN_NUMBER_KEYS = BACKEND_NUMBER_OPTIONS.map((option) => option.key).filter(
+	(key) => !BACKEND_CATEGORY_NUMBER_KEYS.has(key),
+);
+
 type DashboardSettingKey = keyof DashboardDisplaySettings;
 
 const RETRYABLE_SETTINGS_WRITE_CODES = new Set([
@@ -2136,6 +2149,25 @@ function applyBackendCategoryDefaults(
 	return next;
 }
 
+function preserveHiddenBackendSettings(
+	base: PluginConfig,
+	current: PluginConfig,
+): PluginConfig {
+	const next = { ...base };
+	for (const key of BACKEND_HIDDEN_TOGGLE_KEYS) {
+		if (typeof current[key] === "boolean") {
+			next[key] = current[key];
+		}
+	}
+	for (const key of BACKEND_HIDDEN_NUMBER_KEYS) {
+		const value = current[key];
+		if (typeof value === "number" && Number.isFinite(value)) {
+			next[key] = value;
+		}
+	}
+	return next;
+}
+
 async function promptBackendCategorySettings(
 	initial: PluginConfig,
 	category: BackendCategoryOption,
@@ -2459,7 +2491,10 @@ async function promptBackendSettings(
 		if (!result || result.type === "cancel") return null;
 		if (result.type === "save") return draft;
 		if (result.type === "reset") {
-			draft = cloneBackendPluginConfig(BACKEND_DEFAULTS);
+			draft = preserveHiddenBackendSettings(
+				cloneBackendPluginConfig(BACKEND_DEFAULTS),
+				draft,
+			);
 			for (const category of BACKEND_CATEGORY_OPTIONS) {
 				focusByCategory[category.key] =
 					getBackendCategoryInitialFocus(category);

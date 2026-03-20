@@ -970,7 +970,11 @@ describe('Plugin Configuration', () => {
 
 	describe('codex cli session supervisor settings', () => {
 		it('should enable the codex cli session supervisor by default and honor env override', () => {
+			delete process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR;
 			expect(getCodexCliSessionSupervisor({})).toBe(true);
+			expect(
+				getCodexCliSessionSupervisor({ codexCliSessionSupervisor: false }),
+			).toBe(false);
 			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '0';
 			expect(getCodexCliSessionSupervisor({ codexCliSessionSupervisor: true })).toBe(false);
 			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '1';

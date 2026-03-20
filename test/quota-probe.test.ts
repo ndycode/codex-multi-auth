@@ -170,6 +170,34 @@ describe("quota-probe", () => {
 		await assertion;
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
+
+	it("prefers the caller abort over the final unsupported-model error", async () => {
+		const controller = new AbortController();
+		getUnsupportedCodexModelInfoMock.mockReturnValue({
+			isUnsupported: true,
+			unsupportedModel: "gpt-5-codex",
+			message: "unsupported",
+		});
+		const fetchMock = vi.fn(async () => {
+			queueMicrotask(() => controller.abort());
+			return new Response(JSON.stringify({ error: { message: "unsupported" } }), {
+				status: 400,
+				headers: { "content-type": "application/json" },
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			fetchCodexQuotaSnapshot({
+				accountId: "acc-abort",
+				accessToken: "token-abort",
+				model: "gpt-5-codex",
+				fallbackModels: [],
+				signal: controller.signal,
+			}),
+		).rejects.toMatchObject({ name: "AbortError" });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
 	it("parses reset-at values expressed as epoch seconds and epoch milliseconds", async () => {
 		const nowSec = Math.floor(Date.now() / 1000);
 		const primarySeconds = nowSec + 120;

@@ -795,11 +795,28 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(selectionLogPath, "utf8")).toContain("sync:1");
 	});
 
+	it("keeps -v on the account-gated path instead of bypassing supervision", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		createZeroAccountSupervisorRuntimeFixture(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["-v", "exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+		const output = combinedOutput(result);
+
+		expect(result.status).toBe(1);
+		expect(output).toContain("no launchable account is currently available");
+		expect(output).not.toContain("FORWARDED:-v exec status");
+	});
+
 	it("relaunches interactive sessions with resume after supervisor rotation", async () => {
 		const fixtureRoot = createWrapperFixture();
 		const launchLogPath = join(fixtureRoot, "launch.log");
 		const selectionLogPath = join(fixtureRoot, "selection.log");
+		const signalLogPath = join(fixtureRoot, "signal.log");
 		const sessionsDir = join(fixtureRoot, "sessions");
+		writeFileSync(signalLogPath, "", "utf8");
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
 			'import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";',
@@ -822,7 +839,8 @@ describe("codex bin wrapper", () => {
 			"\tfinished = true;",
 			"\tprocess.exit(code);",
 			"};",
-			"process.on('SIGINT', () => finish(130));",
+			"process.on('SIGINT', () => { appendFileSync(process.env.TEST_SIGNAL_LOG, 'SIGINT\\n'); finish(130); });",
+			"process.on('SIGTERM', () => { appendFileSync(process.env.TEST_SIGNAL_LOG, 'SIGTERM\\n'); finish(0); });",
 			"setInterval(() => {}, 1000);",
 			"setTimeout(() => finish(0), 20_000);",
 		]);
@@ -891,6 +909,7 @@ describe("codex bin wrapper", () => {
 			CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS: "100",
 			TEST_LAUNCH_LOG: launchLogPath,
 			TEST_SELECTION_LOG: selectionLogPath,
+			TEST_SIGNAL_LOG: signalLogPath,
 		});
 
 		if (result.status !== 0) {
@@ -898,9 +917,24 @@ describe("codex bin wrapper", () => {
 		}
 		expect(result.status).toBe(0);
 		expect(readFileSync(selectionLogPath, "utf8")).toContain("sync:1");
-		expect(readFileSync(launchLogPath, "utf8")).toContain(
+		const launchLines = readFileSync(launchLogPath, "utf8")
+			.split(/\r?\n/)
+			.filter(Boolean);
+		expect(launchLines).toContain(
 			'resume session-1 -c cli_auth_credentials_store="file"',
 		);
+		expect(launchLines).toHaveLength(2);
+		const signals = readFileSync(signalLogPath, "utf8")
+			.split(/\r?\n/)
+			.filter(Boolean);
+		if (process.platform === "win32") {
+			expect(signals.length).toBeLessThanOrEqual(1);
+			if (signals.length === 1) {
+				expect(signals).toEqual(["SIGTERM"]);
+			}
+		} else {
+			expect(signals).toEqual(["SIGINT"]);
+		}
 	});
 
 	it("handles concurrent wrapper invocations without module-load regressions", async () => {

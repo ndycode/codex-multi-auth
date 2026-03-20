@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,7 @@ import {
 	setUiRuntimeOptions,
 } from "../lib/ui/runtime.js";
 import type { MenuItem } from "../lib/ui/select.js";
+import { removeWithRetry } from "../scripts/remove-with-retry.js";
 
 type SettingsHubTestApi = {
 	clampBackendNumber: (settingKey: string, value: number) => number;
@@ -133,6 +134,7 @@ let tempRoot = "";
 const originalCodeHome = process.env.CODEX_HOME;
 const originalCodeMultiAuthDir = process.env.CODEX_MULTI_AUTH_DIR;
 const originalConfigPath = process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+const originalSupervisorEnv = process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR;
 
 async function loadSettingsHubTestApi(): Promise<SettingsHubTestApi> {
 	const module = await import("../lib/codex-manager/settings-hub.js");
@@ -147,6 +149,7 @@ beforeEach(() => {
 		tempRoot,
 		"plugin-config.json",
 	);
+	delete process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR;
 	vi.resetModules();
 	selectQueue = [];
 	selectHandler = async () => {
@@ -161,11 +164,11 @@ beforeEach(() => {
 	resetUiRuntimeOptions();
 });
 
-afterEach(() => {
+afterEach(async () => {
 	vi.restoreAllMocks();
 	vi.resetModules();
 	if (tempRoot.length > 0) {
-		rmSync(tempRoot, { recursive: true, force: true });
+		await removeWithRetry(tempRoot, { recursive: true, force: true });
 	}
 	if (originalCodeHome === undefined) {
 		delete process.env.CODEX_HOME;
@@ -181,6 +184,11 @@ afterEach(() => {
 		delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
 	} else {
 		process.env.CODEX_MULTI_AUTH_CONFIG_PATH = originalConfigPath;
+	}
+	if (originalSupervisorEnv === undefined) {
+		delete process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR;
+	} else {
+		process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = originalSupervisorEnv;
 	}
 	restoreStreamIsTTY(process.stdin, originalStdinDescriptor);
 	restoreStreamIsTTY(process.stdout, originalStdoutDescriptor);
@@ -436,6 +444,7 @@ describe("settings-hub utility coverage", () => {
 		expect(saved.streamStallTimeoutMs).toBe(23_456);
 		expect(saved.codexCliSessionSupervisor).toBe(false);
 
+		delete process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR;
 		vi.resetModules();
 		const freshConfigModule = await import("../lib/config.js");
 		const reloaded = freshConfigModule.loadPluginConfig();
@@ -535,6 +544,33 @@ describe("settings-hub utility coverage", () => {
 				tokenRefreshSkewMs: defaults.tokenRefreshSkewMs,
 				parallelProbing: defaults.parallelProbing,
 				fetchTimeoutMs: defaults.fetchTimeoutMs,
+			}),
+		);
+	});
+
+	it("preserves hidden experimental backend settings when resetting backend categories", async () => {
+		const api = await loadSettingsHubTestApi();
+		const configModule = await import("../lib/config.js");
+		const defaults = configModule.getDefaultPluginConfig();
+
+		queueSelectResults({ type: "reset" }, { type: "save" });
+
+		const selected = await api.promptBackendSettings({
+			...defaults,
+			liveAccountSync: !(defaults.liveAccountSync ?? false),
+			fetchTimeoutMs: 12_345,
+			codexCliSessionSupervisor: false,
+			proactiveRefreshGuardian: false,
+			proactiveRefreshIntervalMs: 120_000,
+		});
+
+		expect(selected).toEqual(
+			expect.objectContaining({
+				liveAccountSync: defaults.liveAccountSync,
+				fetchTimeoutMs: defaults.fetchTimeoutMs,
+				codexCliSessionSupervisor: false,
+				proactiveRefreshGuardian: false,
+				proactiveRefreshIntervalMs: 120_000,
 			}),
 		);
 	});

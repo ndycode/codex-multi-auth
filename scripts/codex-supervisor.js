@@ -106,7 +106,7 @@ function isSupervisorAccountGateBypassCommand(rawArgs) {
 	}
 
 	return normalizedArgs.some(
-		(arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v",
+		(arg) => arg === "--help" || arg === "-h" || arg === "--version",
 	)
 }
 
@@ -361,37 +361,74 @@ async function withLockedManager(runtime, mutate, signal) {
 	}, signal)
 }
 
-function accountsMatch(candidate, account) {
-	if (!candidate || !account) return false
-	if (candidate.refreshToken && account.refreshToken && candidate.refreshToken === account.refreshToken) {
-		return true
+function getManagerAccounts(manager, extraAccounts = []) {
+	const accounts =
+		typeof manager.getAccountsSnapshot === "function" ? manager.getAccountsSnapshot() : []
+	const seen = new Set()
+	const deduped = []
+	for (const item of [...accounts, ...extraAccounts]) {
+		if (!item) continue
+		const key = [
+			`${item.index ?? ""}`,
+			`${item.refreshToken ?? ""}`,
+			`${item.accountId ?? ""}`,
+			`${item.email ?? ""}`,
+		].join("|")
+		if (seen.has(key)) continue
+		seen.add(key)
+		deduped.push(item)
 	}
-	if (candidate.accountId && account.accountId && candidate.accountId === account.accountId) {
-		return true
-	}
-	if (candidate.email && account.email && candidate.email === account.email) {
-		return true
-	}
-	return candidate.index === account.index
+	return deduped
 }
 
-function resolveAccountInManager(manager, account) {
+function resolveUniqueFieldMatch(accounts, field, value) {
+	if (!value) return null
+	const matches = accounts.filter((item) => item && item[field] === value)
+	return matches.length === 1 ? matches[0] : null
+}
+
+function resolveMatchingAccount(accounts, account) {
+	if (!account) return null
+	if (account.refreshToken) {
+		const byRefreshToken =
+			accounts.find((item) => item?.refreshToken === account.refreshToken) ?? null
+		if (byRefreshToken) return byRefreshToken
+	}
+	const byAccountId = resolveUniqueFieldMatch(accounts, "accountId", account.accountId)
+	if (byAccountId) return byAccountId
+	const byEmail = resolveUniqueFieldMatch(accounts, "email", account.email)
+	if (byEmail) return byEmail
+	return accounts.find((item) => item?.index === account.index) ?? null
+}
+
+function resolveAccountInManager(manager, account, knownAccounts = null) {
 	if (!account) return null
 
-	if (typeof manager.getAccountByIndex === "function") {
-		const direct = manager.getAccountByIndex(account.index)
-		if (direct && accountsMatch(direct, account)) return direct
-	}
-
+	const direct =
+		typeof manager.getAccountByIndex === "function"
+			? manager.getAccountByIndex(account.index)
+			: null
 	const current = getCurrentAccount(manager)
-	if (current && accountsMatch(current, account)) return current
-
 	const candidate = pickNextCandidate(manager)
-	if (candidate && accountsMatch(candidate, account)) return candidate
+	const accounts = knownAccounts ?? getManagerAccounts(manager, [direct, current, candidate])
 
-	if (typeof manager.getAccountsSnapshot !== "function") return null
-	const accounts = manager.getAccountsSnapshot()
-	return accounts.find((accountItem) => accountsMatch(accountItem, account)) ?? null
+	if (direct && resolveMatchingAccount(accounts, account) === direct) return direct
+	if (current && resolveMatchingAccount(accounts, account) === current) return current
+	if (candidate && resolveMatchingAccount(accounts, account) === candidate) return candidate
+
+	return resolveMatchingAccount(accounts, account)
+}
+
+function accountsReferToSameStoredAccount(manager, left, right, knownAccounts = null) {
+	const accounts = knownAccounts ?? getManagerAccounts(manager, [left, right])
+	const resolvedLeft = resolveAccountInManager(manager, left, accounts)
+	const resolvedRight = resolveAccountInManager(manager, right, accounts)
+	return Boolean(
+		resolvedLeft &&
+			resolvedRight &&
+			resolvedLeft.index === resolvedRight.index &&
+			`${resolvedLeft.refreshToken ?? ""}` === `${resolvedRight.refreshToken ?? ""}`,
+	)
 }
 
 function computeWaitMsFromSnapshot(snapshot) {
@@ -541,7 +578,11 @@ async function ensureLaunchableAccount(runtime, pluginConfig, signal) {
 		const step = await withLockedManager(runtime, async (manager) => {
 			const account = resolveAccountInManager(manager, initial.account)
 			const currentCandidate = pickNextCandidate(manager)
-			if (!account || !currentCandidate || !accountsMatch(currentCandidate, account)) {
+			if (
+				!account ||
+				!currentCandidate ||
+				!accountsReferToSameStoredAccount(manager, currentCandidate, account)
+			) {
 				return {
 					kind: "retry",
 					waitMs: 0,
@@ -615,7 +656,9 @@ async function listJsonlFiles(rootDir) {
 
 function normalizeCwd(value) {
 	if (typeof value !== "string") return ""
-	const normalized = resolvePath(value).replace(/[\\/]+$/, "")
+	const trimmed = value.trim()
+	if (trimmed.length === 0) return ""
+	const normalized = resolvePath(trimmed).replace(/[\\/]+$/, "")
 	return process.platform === "win32" ? normalized.toLowerCase() : normalized
 }
 
@@ -690,7 +733,8 @@ async function findSessionBinding({ cwd, sinceMs, sessionId }) {
 				lastActivityAtMs: entry.mtimeMs,
 			}
 		}
-		if (cwdKey && normalizeCwd(meta.cwd) !== cwdKey) continue
+		const metaCwdKey = normalizeCwd(meta.cwd)
+		if (!cwdKey || !metaCwdKey || metaCwdKey !== cwdKey) continue
 		return {
 			sessionId: meta.sessionId,
 			rolloutPath: entry.filePath,
@@ -772,6 +816,9 @@ async function runInteractiveSupervision({
 	let launchCount = 0
 
 	while (launchCount < MAX_SESSION_RESTARTS) {
+		if (signal?.aborted) {
+			return 130
+		}
 		launchCount += 1
 		const child = spawnRealCodex(codexBin, launchArgs)
 		const launchStartedAt = Date.now()
@@ -821,7 +868,20 @@ async function runInteractiveSupervision({
 				}
 
 				if (!requestedRestart) {
-					const currentAccount = getCurrentAccount(manager)
+					let currentState
+					try {
+						currentState = await withLockedManager(runtime, async (freshManager) => ({
+							manager: freshManager,
+							currentAccount: getCurrentAccount(freshManager),
+						}), monitorController.signal)
+					} catch (error) {
+						if (monitorController.signal.aborted || error?.name === "AbortError") {
+							break
+						}
+						throw error
+					}
+					manager = currentState.manager ?? manager
+					const currentAccount = currentState.currentAccount
 					if (currentAccount) {
 						let snapshot
 						try {
@@ -843,8 +903,8 @@ async function runInteractiveSupervision({
 								}
 								relaunchNotice(`rotating session ${binding.sessionId} because ${evaluation.reason.replace(/-/g, " ")}`)
 								monitorActive = false
+								await requestChildRestart(child, process.platform, signal)
 								monitorController.abort()
-								await requestChildRestart(child, process.platform, monitorController.signal)
 								continue
 							}
 						}

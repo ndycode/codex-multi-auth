@@ -369,6 +369,105 @@ describe("codex supervisor internals", () => {
 		await expect(supervisorTestApi.extractSessionMeta(filePath)).resolves.toBeNull();
 	});
 
+	it("keeps same-cwd session metadata isolated per rollout file", async () => {
+		const dir = createTempDir();
+		const cwd = join(dir, "workspace");
+		await fs.mkdir(cwd, { recursive: true });
+		const fileA = join(dir, "session-A.jsonl");
+		const fileB = join(dir, "session-B.jsonl");
+		const preambleA = Array.from({ length: 40 }, (_, index) =>
+			JSON.stringify({ type: "event", seq: index + 1, stream: "A" }),
+		);
+		const preambleB = Array.from({ length: 75 }, (_, index) =>
+			JSON.stringify({ type: "event", seq: index + 1, stream: "B" }),
+		);
+
+		await fs.writeFile(
+			fileA,
+			[
+				...preambleA,
+				JSON.stringify({
+					session_meta: {
+						payload: { id: "same-cwd-session-a", cwd },
+					},
+				}),
+			].join("\n"),
+			"utf8",
+		);
+		await fs.writeFile(
+			fileB,
+			[
+				...preambleB,
+				JSON.stringify({
+					session_meta: {
+						payload: { id: "same-cwd-session-b", cwd },
+					},
+				}),
+			].join("\n"),
+			"utf8",
+		);
+
+		await expect(supervisorTestApi.extractSessionMeta(fileA)).resolves.toEqual({
+			sessionId: "same-cwd-session-a",
+			cwd,
+		});
+		await expect(supervisorTestApi.extractSessionMeta(fileB)).resolves.toEqual({
+			sessionId: "same-cwd-session-b",
+			cwd,
+		});
+	});
+
+	it("ignores blank cwd rollout files when binding by cwd", async () => {
+		const sessionsDir = createTempDir();
+		const cwd = createTempDir();
+		const sessionRoot = join(sessionsDir, "2026", "03", "20");
+		await fs.mkdir(sessionRoot, { recursive: true });
+		const blankPath = join(sessionRoot, "blank.jsonl");
+		const validPath = join(sessionRoot, "valid.jsonl");
+
+		await fs.writeFile(
+			validPath,
+			JSON.stringify({
+				session_meta: {
+					payload: { id: "valid-session", cwd },
+				},
+			}),
+			"utf8",
+		);
+		await fs.writeFile(
+			blankPath,
+			JSON.stringify({
+				session_meta: {
+					payload: { id: "blank-session", cwd: "   " },
+				},
+			}),
+			"utf8",
+		);
+		const now = new Date();
+		await fs.utimes(validPath, now, now);
+		await fs.utimes(blankPath, new Date(now.getTime() + 1_000), new Date(now.getTime() + 1_000));
+
+		await withLockEnv(
+			{
+				CODEX_MULTI_AUTH_CLI_SESSIONS_DIR: sessionsDir,
+			},
+			async () => {
+				await expect(
+					supervisorTestApi.findSessionBinding({
+						cwd,
+						sinceMs: 0,
+						sessionId: null,
+					}),
+				).resolves.toEqual(
+					expect.objectContaining({
+						sessionId: "valid-session",
+						rolloutPath: validPath,
+					}),
+				);
+			},
+		);
+	});
+
 	it("aborts rate-limit waits while selecting a launchable account", async () => {
 		const dir = createTempDir();
 		const controller = new AbortController();

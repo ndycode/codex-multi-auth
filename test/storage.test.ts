@@ -718,6 +718,119 @@ describe("storage", () => {
 			);
 		});
 
+		it("rolls back the original storage path when the active path changes mid-transaction", async () => {
+			const now = Date.now();
+			const alternateStoragePath = join(
+				testWorkDir,
+				"accounts-" + Math.random().toString(36).slice(2) + ".json",
+			);
+			const alternateFlaggedPath = join(
+				dirname(alternateStoragePath),
+				"openai-codex-flagged-accounts.json",
+			);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-primary",
+						refreshToken: "refresh-primary",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+
+			setStoragePathDirect(alternateStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-alternate",
+						refreshToken: "refresh-alternate",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+			setStoragePathDirect(testStoragePath);
+
+			const originalRename = fs.rename.bind(fs);
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to) === alternateFlaggedPath) {
+						const error = Object.assign(new Error("flagged storage busy"), {
+							code: "EBUSY",
+						});
+						throw error;
+					}
+					return originalRename(from as string, to as string);
+				},
+			);
+
+			try {
+				setStoragePathDirect(alternateStoragePath);
+				await expect(
+					withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+						if (!current) {
+							throw new Error("expected alternate storage");
+						}
+						setStoragePathDirect(testStoragePath);
+						await persist(
+							{
+								...current,
+								accounts: [
+									...current.accounts,
+									{
+										accountId: "acct-new",
+										refreshToken: "refresh-new",
+										addedAt: now,
+										lastUsed: now,
+									},
+								],
+							},
+							{ version: 1, accounts: [] },
+						);
+					}),
+				).rejects.toThrow("flagged storage busy");
+			} finally {
+				renameSpy.mockRestore();
+				setStoragePathDirect(testStoragePath);
+			}
+
+			const primaryAccounts = await loadAccounts();
+			expect(primaryAccounts?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "acct-primary",
+					refreshToken: "refresh-primary",
+				}),
+			]);
+
+			setStoragePathDirect(alternateStoragePath);
+			const alternateAccounts = await loadAccounts();
+			expect(alternateAccounts?.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "acct-alternate",
+					refreshToken: "refresh-alternate",
+				}),
+			]);
+			setStoragePathDirect(testStoragePath);
+		});
+
 		it("surfaces rollback failure when flagged persistence and account rollback both fail", async () => {
 			const now = Date.now();
 			const storagePath = getStoragePath();
@@ -951,6 +1064,7 @@ describe("storage", () => {
 		it("should fail export when no accounts exist", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
+			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);
@@ -1008,20 +1122,23 @@ describe("storage", () => {
 			});
 			setStoragePathDirect(testStoragePath);
 
-			const exported = await withAccountStorageTransaction(async () => {
-				setStoragePathDirect(alternateStoragePath);
-				throw new Error("boom");
-			}).catch(async (error: Error) => {
-				expect(error.message).toBe("boom");
-				await exportAccounts(exportPath);
-				return JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
-					accounts: Array<{ accountId?: string }>;
-				};
-			});
+			try {
+				const exported = await withAccountStorageTransaction(async () => {
+					setStoragePathDirect(alternateStoragePath);
+					throw new Error("boom");
+				}).catch(async (error: Error) => {
+					expect(error.message).toBe("boom");
+					await exportAccounts(exportPath);
+					return JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
+						accounts: Array<{ accountId?: string }>;
+					};
+				});
 
-			expect(exported.accounts).toHaveLength(1);
-			expect(exported.accounts[0]?.accountId).toBe("alternate");
-			setStoragePathDirect(testStoragePath);
+				expect(exported.accounts).toHaveLength(1);
+				expect(exported.accounts[0]?.accountId).toBe("alternate");
+			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
 		});
 
 		it("should fail import when file does not exist", async () => {
