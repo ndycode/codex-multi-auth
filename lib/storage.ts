@@ -1,11 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
+	getNamedBackupRoot,
 	resolveNamedBackupPath,
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -113,6 +114,74 @@ export type RestoreAssessment = {
 	latestSnapshot?: BackupSnapshotMetadata;
 	backupMetadata: BackupMetadata;
 };
+
+export interface NamedBackupSummary {
+	path: string;
+	fileName: string;
+	accountCount: number;
+	mtimeMs: number;
+}
+
+async function collectNamedBackups(storagePath: string): Promise<NamedBackupSummary[]> {
+	const backupRoot = getNamedBackupRoot(storagePath);
+	let entries: Array<{ isFile(): boolean; name: string }>;
+	try {
+		entries = await fs.readdir(backupRoot, {
+			withFileTypes: true,
+			encoding: "utf8",
+		});
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return [];
+		throw error;
+	}
+
+	const candidates: NamedBackupSummary[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		if (!entry.name.toLowerCase().endsWith(".json")) continue;
+		const candidatePath = join(backupRoot, entry.name);
+		try {
+			const statsBefore = await fs.stat(candidatePath);
+			const { normalized } = await loadAccountsFromPath(candidatePath);
+			if (!normalized || normalized.accounts.length === 0) continue;
+			const statsAfter = await fs.stat(candidatePath).catch(() => null);
+			if (statsAfter && statsAfter.mtimeMs !== statsBefore.mtimeMs) {
+				log.debug("backup file changed between stat and load, mtime may be stale", {
+					candidatePath,
+					fileName: entry.name,
+					beforeMtimeMs: statsBefore.mtimeMs,
+					afterMtimeMs: statsAfter.mtimeMs,
+				});
+			}
+			candidates.push({
+				path: candidatePath,
+				fileName: entry.name,
+				accountCount: normalized.accounts.length,
+				mtimeMs: statsBefore.mtimeMs,
+			});
+		} catch (error) {
+			log.debug("Skipping named backup candidate after loadAccountsFromPath/fs.stat failure", {
+				candidatePath,
+				fileName: entry.name,
+				error: error instanceof Error
+					? {
+						message: error.message,
+						stack: error.stack,
+					}
+					: String(error),
+			});
+			continue;
+		}
+	}
+
+	candidates.sort((left, right) => {
+		const mtimeDelta = right.mtimeMs - left.mtimeMs;
+		if (mtimeDelta !== 0) return mtimeDelta;
+		return left.fileName.localeCompare(right.fileName);
+	});
+	return candidates;
+}
 
 /**
  * Custom error class for storage operations with platform-aware hints.
@@ -843,6 +912,66 @@ export function getStoragePath(): string {
 
 export function buildNamedBackupPath(name: string): string {
 	return resolveNamedBackupPath(name, getStoragePath());
+}
+
+export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
+	return collectNamedBackups(getStoragePath());
+}
+
+export async function restoreAccountsFromBackup(
+	path: string,
+	options?: { persist?: boolean },
+): Promise<AccountStorageV3> {
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	let resolvedBackupRoot: string;
+	try {
+		resolvedBackupRoot = await fs.realpath(backupRoot);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			throw new Error(`Backup root does not exist: ${backupRoot}`);
+		}
+		throw error;
+	}
+	let resolvedBackupPath: string;
+	try {
+		resolvedBackupPath = await fs.realpath(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			throw new Error(`Backup file no longer exists: ${path}`);
+		}
+		throw error;
+	}
+	const relativePath = relative(resolvedBackupRoot, resolvedBackupPath);
+	const isInsideBackupRoot =
+		relativePath.length > 0 &&
+		!relativePath.startsWith("..") &&
+		!isAbsolute(relativePath);
+	if (!isInsideBackupRoot) {
+		throw new Error(`Backup path must stay inside ${resolvedBackupRoot}: ${path}`);
+	}
+
+	const { normalized } = await (async () => {
+		try {
+			return await loadAccountsFromPath(resolvedBackupPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				throw new Error(
+					`Backup file no longer exists: ${path}`,
+				);
+			}
+			throw error;
+		}
+	})();
+	if (!normalized || normalized.accounts.length === 0) {
+		throw new Error(`Backup does not contain any accounts: ${resolvedBackupPath}`);
+	}
+	if (options?.persist !== false) {
+		await saveAccounts(normalized);
+	}
+	return normalized;
 }
 
 export async function exportNamedBackup(
@@ -2104,7 +2233,8 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 			value === "rate-limit" ||
 			value === "initial" ||
 			value === "rotation" ||
-			value === "best";
+			value === "best" ||
+			value === "restore";
 		const isCooldownReason = (
 			value: unknown,
 		): value is AccountMetadataV3["cooldownReason"] =>

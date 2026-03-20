@@ -29,12 +29,35 @@ export const UI_COPY = {
 		help: "↑↓ Move | Enter Select | S Use | R Sign In | D Delete | Q Back",
 	},
 	oauth: {
-		chooseModeTitle: "Sign-In Method",
-		chooseModeSubtitle: "How do you want to sign in?",
+		chooseModeTitle: "Get Started",
+		chooseModeSubtitle: "Choose how you want to continue.",
+		signInHeading: "Sign in",
+		restoreHeading: "Recover saved accounts",
 		openBrowser: "Open Browser (Easy)",
 		manualMode: "Manual / Incognito",
+		restoreSavedBackup: "Restore Saved Backup",
+		loadLastBackup: "Load Last Saved Backup (Recommended)",
+		chooseBackupManually: "Choose Backup Manually",
 		back: "Back",
 		chooseModeHelp: "↑↓ Move | Enter Select | 1 Easy | 2 Manual | Q Back",
+		chooseModeHelpWithBackup: "↑↓ Move | Enter Select | 1 Easy | 2 Manual | 3 Backup | Q Back",
+		restoreBackupTitle: "Restore Saved Backup",
+		restoreBackupSubtitle: "Choose how you want to recover saved accounts.",
+		restoreBackupLatestHint: "Fastest way to recover your saved accounts.",
+		restoreBackupHelp: "↑↓ Move | Enter Select | 1 Latest | 2 Manual | Q Back",
+		manualBackupTitle: "Choose Backup",
+		manualBackupSubtitle: "Pick a saved backup to restore.",
+		manualBackupHelp: "↑↓ Move | Enter Select | Q Back",
+		loadLastBackupHint: (fileName: string, accountCount: number, savedAt: string) =>
+			`${fileName} | ${accountCount} account${accountCount === 1 ? "" : "s"} | saved ${savedAt}`,
+		manualBackupHint: (accountCount: number, savedAt: string) =>
+			`${accountCount} account${accountCount === 1 ? "" : "s"} | saved ${savedAt}`,
+		restoreBackupConfirm: (fileName: string, accountCount: number) =>
+			`Load ${fileName} (${accountCount} account${accountCount === 1 ? "" : "s"})?`,
+		restoreBackupLoaded: (fileName: string, accountCount: number) =>
+			`Loaded ${fileName} (${accountCount} account${accountCount === 1 ? "" : "s"}).`,
+		restoreBackupSyncWarning:
+			"Backup loaded locally, but Codex auth sync did not complete. Multi-auth routing will still use the restored account pool.",
 		goTo: "Go to:",
 		copyOk: "Login link copied.",
 		copyFail: "Could not copy login link.",

@@ -9,6 +9,7 @@ User-facing capability map for `codex-multi-auth`.
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |
 | Multi-account dashboard login | Add and manage multiple OAuth identities from one terminal flow | `codex auth login` |
+| Onboarding backup restore | Restores the latest named backup or lets you choose a named backup manually when a fresh install or empty pool needs to recover saved accounts fast | `codex auth login` |
 | Account dedupe and identity normalization | Avoid duplicate saved account rows | login flow |
 | Explicit active-account switching | Pick the current account by index instead of relying on hidden state | `codex auth switch <index>` |
 | Fast and deep health checks | See whether the current pool is usable before a coding session | `codex auth check` |

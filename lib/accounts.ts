@@ -101,7 +101,12 @@ export interface ManagedAccount {
 	expires?: number;
 	addedAt: number;
 	lastUsed: number;
-	lastSwitchReason?: "rate-limit" | "initial" | "rotation" | "best";
+	lastSwitchReason?:
+		| "rate-limit"
+		| "initial"
+		| "rotation"
+		| "best"
+		| "restore";
 	lastRateLimitReason?: RateLimitReason;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;

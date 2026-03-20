@@ -54,9 +54,14 @@ import {
 import {
 	clearAccounts,
 	findMatchingAccountIndex,
+	formatStorageErrorHint,
+	getNamedBackups,
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
+	StorageError,
+	type NamedBackupSummary,
+	restoreAccountsFromBackup,
 	saveFlaggedAccounts,
 	saveAccounts,
 	setStoragePath,
@@ -75,6 +80,7 @@ import {
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { ANSI } from "./ui/ansi.js";
 import { UI_COPY } from "./ui/copy.js";
+import { confirm } from "./ui/confirm.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { select, type MenuItem } from "./ui/select.js";
@@ -87,7 +93,6 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
-
 const log = createLogger("codex-manager");
 
 function stylePromptText(text: string, tone: PromptTone): string {
@@ -1226,24 +1231,60 @@ function isReadlineClosedError(error: unknown): boolean {
 	return errorCode === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(error.message);
 }
 
-type OAuthSignInMode = "browser" | "manual" | "cancel";
+type OAuthSignInMode = "browser" | "manual" | "restore-backup" | "cancel";
+type BackupRestoreMode = "latest" | "manual" | "back";
 
-async function promptOAuthSignInMode(): Promise<OAuthSignInMode> {
+export function formatBackupSavedAt(mtimeMs: number): string {
+	return new Date(mtimeMs).toLocaleString(undefined, {
+		month: "short",
+		day: "numeric",
+		year: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+	});
+}
+
+async function promptOAuthSignInMode(
+	backupOption: NamedBackupSummary | null,
+	backupDiscoveryWarning: string | null = null,
+): Promise<OAuthSignInMode> {
 	if (!input.isTTY || !output.isTTY) {
 		return "browser";
 	}
 
 	const ui = getUiRuntimeOptions();
 	const items: MenuItem<OAuthSignInMode>[] = [
+		{ label: UI_COPY.oauth.signInHeading, value: "cancel" as const, kind: "heading" },
 		{ label: UI_COPY.oauth.openBrowser, value: "browser", color: "green" },
 		{ label: UI_COPY.oauth.manualMode, value: "manual", color: "yellow" },
+		...(backupOption
+			? [
+				{ separator: true, label: "", value: "cancel" as const },
+				{ label: UI_COPY.oauth.restoreHeading, value: "cancel" as const, kind: "heading" as const },
+				{
+					label: UI_COPY.oauth.restoreSavedBackup,
+					value: "restore-backup" as const,
+					hint: UI_COPY.oauth.loadLastBackupHint(
+						backupOption.fileName,
+						backupOption.accountCount,
+						formatBackupSavedAt(backupOption.mtimeMs),
+					),
+					color: "cyan" as const,
+				},
+			]
+			: []),
+		{ separator: true, label: "", value: "cancel" as const },
 		{ label: UI_COPY.oauth.back, value: "cancel", color: "red" },
 	];
 
 	const selected = await select<OAuthSignInMode>(items, {
 		message: UI_COPY.oauth.chooseModeTitle,
-		subtitle: UI_COPY.oauth.chooseModeSubtitle,
-		help: UI_COPY.oauth.chooseModeHelp,
+		subtitle: backupDiscoveryWarning
+			? `${UI_COPY.oauth.chooseModeSubtitle} ${backupDiscoveryWarning}`
+			: UI_COPY.oauth.chooseModeSubtitle,
+		help: backupOption
+			? UI_COPY.oauth.chooseModeHelpWithBackup
+			: UI_COPY.oauth.chooseModeHelp,
 		clearScreen: true,
 		theme: ui.theme,
 		selectedEmphasis: "minimal",
@@ -1253,11 +1294,94 @@ async function promptOAuthSignInMode(): Promise<OAuthSignInMode> {
 			if (lower === "q") return "cancel";
 			if (lower === "1") return "browser";
 			if (lower === "2") return "manual";
+			if (lower === "3" && backupOption) return "restore-backup";
 			return undefined;
 		},
 	});
 
 	return selected ?? "cancel";
+}
+
+async function promptBackupRestoreMode(
+	latestBackup: NamedBackupSummary,
+): Promise<BackupRestoreMode> {
+	if (!input.isTTY || !output.isTTY) {
+		return "latest";
+	}
+
+	const ui = getUiRuntimeOptions();
+	const items: MenuItem<BackupRestoreMode>[] = [
+		{
+			label: UI_COPY.oauth.loadLastBackup,
+			value: "latest",
+			hint: `${UI_COPY.oauth.restoreBackupLatestHint}\n${UI_COPY.oauth.manualBackupHint(
+				latestBackup.accountCount,
+				formatBackupSavedAt(latestBackup.mtimeMs),
+			)}`,
+			color: "cyan",
+		},
+		{
+			label: UI_COPY.oauth.chooseBackupManually,
+			value: "manual",
+			color: "yellow",
+		},
+		{ label: UI_COPY.oauth.back, value: "back", color: "red" },
+	];
+
+	const selected = await select<BackupRestoreMode>(items, {
+		message: UI_COPY.oauth.restoreBackupTitle,
+		subtitle: UI_COPY.oauth.restoreBackupSubtitle,
+		help: UI_COPY.oauth.restoreBackupHelp,
+		clearScreen: true,
+		theme: ui.theme,
+		selectedEmphasis: "minimal",
+		allowEscape: false,
+		onInput: (raw) => {
+			const lower = raw.toLowerCase();
+			if (lower === "q") return "back";
+			if (lower === "1") return "latest";
+			if (lower === "2") return "manual";
+			return undefined;
+		},
+	});
+
+	return selected ?? "back";
+}
+
+async function promptManualBackupSelection(
+	backups: NamedBackupSummary[],
+): Promise<NamedBackupSummary | null> {
+	if (!input.isTTY || !output.isTTY) {
+		return backups[0] ?? null;
+	}
+
+	const ui = getUiRuntimeOptions();
+	const items: MenuItem<NamedBackupSummary | null>[] = backups.map((backup) => ({
+		label: backup.fileName,
+		value: backup,
+		hint: UI_COPY.oauth.manualBackupHint(
+			backup.accountCount,
+			formatBackupSavedAt(backup.mtimeMs),
+		),
+		color: "cyan",
+	}));
+	items.push({ label: UI_COPY.oauth.back, value: null, color: "red" });
+
+	const selected = await select<NamedBackupSummary | null>(items, {
+		message: UI_COPY.oauth.manualBackupTitle,
+		subtitle: UI_COPY.oauth.manualBackupSubtitle,
+		help: UI_COPY.oauth.manualBackupHelp,
+		clearScreen: true,
+		theme: ui.theme,
+		selectedEmphasis: "minimal",
+		allowEscape: false,
+		onInput: (raw) => {
+			if (raw.toLowerCase() === "q") return null;
+			return undefined;
+		},
+	});
+
+	return selected;
 }
 
 interface WaitForReturnOptions {
@@ -1521,22 +1645,12 @@ async function runActionPanel(
 
 async function runOAuthFlow(
 	forceNewLogin: boolean,
-	options: AuthLoginOptions = { manual: false },
+	signInMode: Extract<OAuthSignInMode, "browser" | "manual">,
 ): Promise<TokenResult> {
 	const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
-	const preferManualMode = options.manual || isBrowserLaunchSuppressed();
 	let code: string | null = null;
 	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
 	try {
-		const signInMode = preferManualMode ? "manual" : await promptOAuthSignInMode();
-		if (signInMode === "cancel") {
-			return {
-				type: "failed",
-				reason: "unknown",
-				message: UI_COPY.oauth.cancelled,
-			};
-		}
-
 		if (signInMode === "browser") {
 			try {
 				oauthServer = await startLocalOAuthServer({ state });
@@ -1604,7 +1718,7 @@ async function runOAuthFlow(
 					"warning",
 				),
 			);
-			code = await promptManualCallback(state, { allowNonTty: preferManualMode });
+			code = await promptManualCallback(state, { allowNonTty: signInMode === "manual" });
 		}
 	} finally {
 		oauthServer?.close();
@@ -4230,7 +4344,16 @@ async function handleManageAction(
 		const existing = storage.accounts[idx];
 		if (!existing) return;
 
-		const tokenResult = await runOAuthFlow(true, { manual: false });
+		const signInMode = await promptOAuthSignInMode(null);
+		if (signInMode === "cancel") {
+			console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));
+			return;
+		}
+		if (signInMode !== "browser" && signInMode !== "manual") {
+			return;
+		}
+
+		const tokenResult = await runOAuthFlow(true, signInMode);
 		if (tokenResult.type !== "success") {
 			console.error(`Refresh failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`);
 			return;
@@ -4370,10 +4493,137 @@ async function runAuthLogin(args: string[]): Promise<number> {
 		}
 
 		const refreshedStorage = await loadAccounts();
-		const existingCount = refreshedStorage?.accounts.length ?? 0;
+		let existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
+		let onboardingBackupDiscoveryWarning: string | null = null;
+		const loadNamedBackupsForOnboarding = async (): Promise<NamedBackupSummary[]> => {
+			if (existingCount > 0) {
+				onboardingBackupDiscoveryWarning = null;
+				return [];
+			}
+			try {
+				onboardingBackupDiscoveryWarning = null;
+				return await getNamedBackups();
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				log.debug("getNamedBackups failed, skipping restore option", {
+					code,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				if (code && code !== "ENOENT") {
+					onboardingBackupDiscoveryWarning =
+						"Named backup discovery failed. Continuing with browser or manual sign-in only.";
+					console.warn(
+						onboardingBackupDiscoveryWarning,
+					);
+				} else {
+					onboardingBackupDiscoveryWarning = null;
+				}
+				return [];
+			}
+		};
+		let namedBackups = await loadNamedBackupsForOnboarding();
 		while (true) {
-			const tokenResult = await runOAuthFlow(forceNewLogin, loginOptions);
+			const latestNamedBackup = namedBackups[0] ?? null;
+			const preferManualMode = loginOptions.manual || isBrowserLaunchSuppressed();
+			const signInMode = preferManualMode
+				? "manual"
+				: await promptOAuthSignInMode(
+					latestNamedBackup,
+					onboardingBackupDiscoveryWarning,
+				);
+			if (signInMode === "cancel") {
+				if (existingCount > 0) {
+					console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));
+					continue loginFlow;
+				}
+				console.log("Cancelled.");
+				return 0;
+			}
+			if (signInMode === "restore-backup") {
+				const latestAvailableBackup = namedBackups[0] ?? null;
+				if (!latestAvailableBackup) {
+					namedBackups = await loadNamedBackupsForOnboarding();
+					continue;
+				}
+				const restoreMode = await promptBackupRestoreMode(latestAvailableBackup);
+				if (restoreMode === "back") {
+					namedBackups = await loadNamedBackupsForOnboarding();
+					continue;
+				}
+
+				const selectedBackup = restoreMode === "manual"
+					? await promptManualBackupSelection(namedBackups)
+					: latestAvailableBackup;
+				if (!selectedBackup) {
+					namedBackups = await loadNamedBackupsForOnboarding();
+					continue;
+				}
+
+				const confirmed = await confirm(
+					UI_COPY.oauth.restoreBackupConfirm(
+						selectedBackup.fileName,
+						selectedBackup.accountCount,
+					),
+				);
+				if (!confirmed) {
+					namedBackups = await loadNamedBackupsForOnboarding();
+					continue;
+				}
+
+				const displaySettings = await loadDashboardDisplaySettings();
+				applyUiThemeFromDashboardSettings(displaySettings);
+				try {
+					await runActionPanel(
+						"Load Backup",
+						`Loading ${selectedBackup.fileName}`,
+						async () => {
+							const restoredStorage = await restoreAccountsFromBackup(
+								selectedBackup.path,
+								{ persist: false },
+							);
+							const targetIndex = resolveActiveIndex(restoredStorage);
+							const { synced } = await persistAndSyncSelectedAccount({
+								storage: restoredStorage,
+								targetIndex,
+								parsed: targetIndex + 1,
+								switchReason: "restore",
+								preserveActiveIndexByFamily: true,
+							});
+							console.log(
+								UI_COPY.oauth.restoreBackupLoaded(
+									selectedBackup.fileName,
+									restoredStorage.accounts.length,
+								),
+							);
+							if (!synced) {
+								console.warn(UI_COPY.oauth.restoreBackupSyncWarning);
+							}
+						},
+						displaySettings,
+					);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					if (error instanceof StorageError) {
+						console.error(formatStorageErrorHint(error, selectedBackup.path));
+					} else {
+						console.error(`Backup restore failed: ${message}`);
+					}
+					const storageAfterRestoreAttempt = await loadAccounts().catch(() => null);
+					if ((storageAfterRestoreAttempt?.accounts.length ?? 0) > 0) {
+						continue loginFlow;
+					}
+					namedBackups = await loadNamedBackupsForOnboarding();
+					continue;
+				}
+				continue loginFlow;
+			}
+
+			if (signInMode !== "browser" && signInMode !== "manual") {
+				continue;
+			}
+
+			const tokenResult = await runOAuthFlow(forceNewLogin, signInMode);
 			if (tokenResult.type !== "success") {
 				if (isUserCancelledOAuth(tokenResult)) {
 					if (existingCount > 0) {
@@ -4393,6 +4643,9 @@ async function runAuthLogin(args: string[]): Promise<number> {
 
 			const latestStorage = await loadAccounts();
 			const count = latestStorage?.accounts.length ?? 1;
+			existingCount = count;
+			namedBackups = [];
+			onboardingBackupDiscoveryWarning = null;
 			console.log(`Added account. Total: ${count}`);
 			if (count >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				console.log(`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`);
@@ -4461,22 +4714,42 @@ async function persistAndSyncSelectedAccount({
 	parsed,
 	switchReason,
 	initialSyncIdToken,
+	preserveActiveIndexByFamily = false,
 }: {
 	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
 	targetIndex: number;
 	parsed: number;
-	switchReason: "rotation" | "best";
+	switchReason: "rotation" | "best" | "restore";
 	initialSyncIdToken?: string;
+	preserveActiveIndexByFamily?: boolean;
 }): Promise<{ synced: boolean; wasDisabled: boolean }> {
 	const account = storage.accounts[targetIndex];
 	if (!account) {
 		throw new Error(`Account ${parsed} not found.`);
 	}
 
+	const shouldPreserveActiveIndexByFamily =
+		preserveActiveIndexByFamily &&
+		!!storage.activeIndexByFamily &&
+		targetIndex === storage.activeIndex;
 	storage.activeIndex = targetIndex;
 	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = targetIndex;
+	if (shouldPreserveActiveIndexByFamily) {
+		const maxIndex = Math.max(0, storage.accounts.length - 1);
+		for (const family of MODEL_FAMILIES) {
+			const raw = storage.activeIndexByFamily[family];
+			const candidate =
+				typeof raw === "number" && Number.isFinite(raw) ? raw : targetIndex;
+			storage.activeIndexByFamily[family] = Math.max(
+				0,
+				Math.min(candidate, maxIndex),
+			);
+		}
+	} else {
+		storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
+		for (const family of MODEL_FAMILIES) {
+			storage.activeIndexByFamily[family] = targetIndex;
+		}
 	}
 	const wasDisabled = account.enabled === false;
 	if (wasDisabled) {
