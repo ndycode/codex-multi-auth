@@ -135,7 +135,7 @@ function getSessionsRootDir() {
 	return join(resolveCodexHomeDir(), "sessions");
 }
 
-function isInteractiveCommand(rawArgs) {
+export function isInteractiveCommand(rawArgs) {
 	const command = findPrimaryCodexCommand(rawArgs)?.command;
 	return !command || command === "resume" || command === "fork";
 }
@@ -179,6 +179,37 @@ function rememberSessionBinding(binding) {
 
 function clearSessionBindingPathCache() {
 	sessionRolloutPathById.clear();
+}
+
+function createLinkedAbortController(parentSignal) {
+	const controller = new AbortController();
+	if (!parentSignal) {
+		return {
+			controller,
+			cleanup: () => controller.abort(),
+		};
+	}
+	const onParentAbort = () => controller.abort();
+	parentSignal.addEventListener("abort", onParentAbort, { once: true });
+	return {
+		controller,
+		cleanup: () => {
+			parentSignal.removeEventListener("abort", onParentAbort);
+			controller.abort();
+		},
+	};
+}
+
+function getSessionBindingEntryPasses(entries, sinceMs, sessionId, hasKnownRolloutPath) {
+	const sortedEntries = [...entries].sort((left, right) => right.mtimeMs - left.mtimeMs);
+	const recentEntries = sortedEntries.filter((entry) => entry.mtimeMs >= sinceMs - 2_000);
+	if (!sessionId || hasKnownRolloutPath) {
+		return [recentEntries];
+	}
+	if (recentEntries.length === 0 || recentEntries.length === sortedEntries.length) {
+		return [sortedEntries];
+	}
+	return [recentEntries, sortedEntries];
 }
 
 async function importIfPresent(specifier) {
@@ -1374,14 +1405,20 @@ async function findSessionBinding({
 				return readSessionBindingEntry(filePath);
 			}),
 		)))
-		.filter((entry) => entry && (sessionId ? true : entry.mtimeMs >= sinceMs - 2_000))
-		.sort((left, right) => right.mtimeMs - left.mtimeMs);
-
-	for (const entry of files) {
-		const binding = await matchSessionBindingEntry(entry, cwdKey, sessionId);
-		if (binding) {
-			rememberSessionBinding(binding);
-			return binding;
+		.filter(Boolean);
+	const passes = getSessionBindingEntryPasses(
+		files,
+		sinceMs,
+		sessionId,
+		Boolean(knownRolloutPath),
+	);
+	for (const entries of passes) {
+		for (const entry of entries) {
+			const binding = await matchSessionBindingEntry(entry, cwdKey, sessionId);
+			if (binding) {
+				rememberSessionBinding(binding);
+				return binding;
+			}
 		}
 	}
 
@@ -1518,108 +1555,86 @@ async function runInteractiveSupervision({
 			return 130;
 		}
 		launchCount += 1;
+		const preparedResumeSelectionLink = createLinkedAbortController(signal);
+		const preparedResumeSelectionController =
+			preparedResumeSelectionLink.controller;
 		const child = spawnChild(codexBin, launchArgs);
-		const launchStartedAt = Date.now();
-		let binding = knownSessionId
-			? await findBinding({
-					cwd: process.cwd(),
-					sinceMs: 0,
-					sessionId: knownSessionId,
-					rolloutPathHint: knownRolloutPath,
-				})
-			: null;
-		if (binding?.rolloutPath) {
-			knownRolloutPath = binding.rolloutPath;
-		}
-		let requestedRestart = null;
 		let preparedResumeSelectionPromise = null;
-		let preparedResumeSelectionStarted = false;
-		const preparedResumeSelectionController = new AbortController();
-		signal?.addEventListener(
-			"abort",
-			() => preparedResumeSelectionController.abort(),
-			{ once: true },
-		);
-		const rotationTrace = {
-			detectedAtMs: 0,
-			prewarmStartedAtMs: 0,
-			prewarmCompletedAtMs: 0,
-			restartRequestedAtMs: 0,
-			resumeReadyAtMs: 0,
-		};
-		let monitorActive = true;
-		const monitorController = new AbortController();
+		try {
+			const launchStartedAt = Date.now();
+			let binding = knownSessionId
+				? await findBinding({
+						cwd: process.cwd(),
+						sinceMs: 0,
+						sessionId: knownSessionId,
+						rolloutPathHint: knownRolloutPath,
+					})
+				: null;
+			if (binding?.rolloutPath) {
+				knownRolloutPath = binding.rolloutPath;
+			}
+			let requestedRestart = null;
+			let preparedResumeSelectionStarted = false;
+			const rotationTrace = {
+				detectedAtMs: 0,
+				prewarmStartedAtMs: 0,
+				prewarmCompletedAtMs: 0,
+				restartRequestedAtMs: 0,
+				resumeReadyAtMs: 0,
+			};
+			let monitorActive = true;
+			const monitorController = new AbortController();
 
-		const pollMs = parseNumberEnv(
-			"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
-			DEFAULT_POLL_MS,
-			250,
-		);
-		const idleMs = parseNumberEnv(
-			"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
-			DEFAULT_IDLE_MS,
-			100,
-		);
-		const captureTimeoutMs = parseNumberEnv(
-			"CODEX_AUTH_CLI_SESSION_CAPTURE_TIMEOUT_MS",
-			DEFAULT_SESSION_CAPTURE_TIMEOUT_MS,
-			1_000,
-		);
-		const monitorProbeTimeoutMs = resolveProbeTimeoutMs(
-			"CODEX_AUTH_CLI_SESSION_MONITOR_PROBE_TIMEOUT_MS",
-			DEFAULT_MONITOR_PROBE_TIMEOUT_MS,
-		);
+			const pollMs = parseNumberEnv(
+				"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
+				DEFAULT_POLL_MS,
+				250,
+			);
+			const idleMs = parseNumberEnv(
+				"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
+				DEFAULT_IDLE_MS,
+				100,
+			);
+			const captureTimeoutMs = parseNumberEnv(
+				"CODEX_AUTH_CLI_SESSION_CAPTURE_TIMEOUT_MS",
+				DEFAULT_SESSION_CAPTURE_TIMEOUT_MS,
+				1_000,
+			);
+			const monitorProbeTimeoutMs = resolveProbeTimeoutMs(
+				"CODEX_AUTH_CLI_SESSION_MONITOR_PROBE_TIMEOUT_MS",
+				DEFAULT_MONITOR_PROBE_TIMEOUT_MS,
+			);
 
-		let monitorFailure = null;
-		const monitorPromise = (async () => {
-			try {
-				while (monitorActive) {
-					if (!binding) {
-						binding = await waitForBinding({
-							cwd: process.cwd(),
-							sinceMs: launchStartedAt,
-							sessionId: knownSessionId,
-							rolloutPathHint: knownRolloutPath,
-							timeoutMs: captureTimeoutMs,
-							signal: monitorController.signal,
-						});
-						if (binding?.sessionId) {
-							knownSessionId = binding.sessionId;
-							knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
-						}
-					} else {
-						binding = await refreshBinding(binding);
-						if (binding?.rolloutPath) {
-							knownRolloutPath = binding.rolloutPath;
-						}
-					}
-
-					if (!requestedRestart) {
-						let currentState;
-						try {
-							currentState = await loadCurrentState(
-								runtime,
-								monitorController.signal,
-							);
-						} catch (error) {
-							if (
-								monitorController.signal.aborted ||
-								error?.name === "AbortError"
-							) {
-								break;
+			let monitorFailure = null;
+			const monitorPromise = (async () => {
+				try {
+					while (monitorActive) {
+						if (!binding) {
+							binding = await waitForBinding({
+								cwd: process.cwd(),
+								sinceMs: launchStartedAt,
+								sessionId: knownSessionId,
+								rolloutPathHint: knownRolloutPath,
+								timeoutMs: captureTimeoutMs,
+								signal: monitorController.signal,
+							});
+							if (binding?.sessionId) {
+								knownSessionId = binding.sessionId;
+								knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
 							}
-							throw error;
+						} else {
+							binding = await refreshBinding(binding);
+							if (binding?.rolloutPath) {
+								knownRolloutPath = binding.rolloutPath;
+							}
 						}
-						manager = currentState.manager ?? manager;
-						const currentAccount = currentState.currentAccount;
-						if (currentAccount) {
-							let snapshot;
+
+						if (!requestedRestart) {
+							let currentState;
 							try {
-								snapshot = await probeAccountSnapshot(
+								currentState = await loadCurrentState(
 									runtime,
-									currentAccount,
 									monitorController.signal,
-									monitorProbeTimeoutMs,
 								);
 							} catch (error) {
 								if (
@@ -1628,232 +1643,254 @@ async function runInteractiveSupervision({
 								) {
 									break;
 								}
-								if (error?.name === "QuotaProbeUnavailableError") {
-									const slept = await sleep(
-										pollMs,
-										monitorController.signal,
-									);
-									if (!slept) {
-										break;
-									}
-									continue;
-								}
 								throw error;
 							}
-							const pressure = computeQuotaPressure(
-								snapshot,
-								runtime,
-								pluginConfig,
-							);
-							if (pressure.prewarm && binding?.sessionId) {
-								if (!rotationTrace.detectedAtMs) {
-									rotationTrace.detectedAtMs = Date.now();
-								}
-								if (!preparedResumeSelectionStarted) {
-									rotationTrace.prewarmStartedAtMs = Date.now();
-									supervisorDebug(
-										`prewarming successor for session ${binding.sessionId} ${formatQuotaPressure(pressure)}`,
-									);
-									const preparedState = maybeStartPreparedResumeSelection({
+							manager = currentState.manager ?? manager;
+							const currentAccount = currentState.currentAccount;
+							if (currentAccount) {
+								let snapshot;
+								try {
+									snapshot = await probeAccountSnapshot(
 										runtime,
-										pluginConfig,
 										currentAccount,
-										restartDecision: {
-											sessionId: binding.sessionId,
-										},
-										signal: preparedResumeSelectionController.signal,
-										preparedResumeSelectionStarted,
-										preparedResumeSelectionPromise,
-									});
-									preparedResumeSelectionStarted =
-										preparedState.preparedResumeSelectionStarted;
-									preparedResumeSelectionPromise =
-										preparedState.preparedResumeSelectionPromise?.then((prepared) => {
-											if (rotationTrace.prewarmCompletedAtMs === 0) {
-												rotationTrace.prewarmCompletedAtMs = Date.now();
-											}
-											return prepared;
-										}) ?? null;
-								}
-							}
-							if (pressure.rotate && binding?.sessionId) {
-								const pendingRestartDecision = {
-									reason: pressure.reason,
-									waitMs: pressure.waitMs,
-									sessionId: binding.sessionId,
-								};
-								const lastActivityAtMs =
-									binding.lastActivityAtMs ?? launchStartedAt;
-								if (Date.now() - lastActivityAtMs >= idleMs) {
-									requestedRestart = pendingRestartDecision;
-									rotationTrace.restartRequestedAtMs = Date.now();
-									relaunchNotice(
-										`rotating session ${binding.sessionId} because ${pressure.reason.replace(/-/g, " ")} (${formatQuotaPressure(pressure)})`,
+										monitorController.signal,
+										monitorProbeTimeoutMs,
 									);
-									monitorActive = false;
-									await requestRestart(child, process.platform, signal);
-									monitorController.abort();
-									continue;
+								} catch (error) {
+									if (
+										monitorController.signal.aborted ||
+										error?.name === "AbortError"
+									) {
+										break;
+									}
+									if (error?.name === "QuotaProbeUnavailableError") {
+										const slept = await sleep(
+											pollMs,
+											monitorController.signal,
+										);
+										if (!slept) {
+											break;
+										}
+										continue;
+									}
+									throw error;
+								}
+								const pressure = computeQuotaPressure(
+									snapshot,
+									runtime,
+									pluginConfig,
+								);
+								if (pressure.prewarm && binding?.sessionId) {
+									if (!rotationTrace.detectedAtMs) {
+										rotationTrace.detectedAtMs = Date.now();
+									}
+									if (!preparedResumeSelectionStarted) {
+										rotationTrace.prewarmStartedAtMs = Date.now();
+										supervisorDebug(
+											`prewarming successor for session ${binding.sessionId} ${formatQuotaPressure(pressure)}`,
+										);
+										const preparedState = maybeStartPreparedResumeSelection({
+											runtime,
+											pluginConfig,
+											currentAccount,
+											restartDecision: {
+												sessionId: binding.sessionId,
+											},
+											signal: preparedResumeSelectionController.signal,
+											preparedResumeSelectionStarted,
+											preparedResumeSelectionPromise,
+										});
+										preparedResumeSelectionStarted =
+											preparedState.preparedResumeSelectionStarted;
+										preparedResumeSelectionPromise =
+											preparedState.preparedResumeSelectionPromise?.then((prepared) => {
+												if (rotationTrace.prewarmCompletedAtMs === 0) {
+													rotationTrace.prewarmCompletedAtMs = Date.now();
+												}
+												return prepared;
+											}) ?? null;
+									}
+								}
+								if (pressure.rotate && binding?.sessionId) {
+									const pendingRestartDecision = {
+										reason: pressure.reason,
+										waitMs: pressure.waitMs,
+										sessionId: binding.sessionId,
+									};
+									const lastActivityAtMs =
+										binding.lastActivityAtMs ?? launchStartedAt;
+									if (Date.now() - lastActivityAtMs >= idleMs) {
+										requestedRestart = pendingRestartDecision;
+										rotationTrace.restartRequestedAtMs = Date.now();
+										relaunchNotice(
+											`rotating session ${binding.sessionId} because ${pressure.reason.replace(/-/g, " ")} (${formatQuotaPressure(pressure)})`,
+										);
+										monitorActive = false;
+										await requestRestart(child, process.platform, signal);
+										monitorController.abort();
+										continue;
+									}
 								}
 							}
 						}
-					}
 
-					const slept = await sleep(pollMs, monitorController.signal);
-					if (!slept) break;
+						const slept = await sleep(pollMs, monitorController.signal);
+						if (!slept) break;
+					}
+				} catch (error) {
+					if (!monitorController.signal.aborted && error?.name !== "AbortError") {
+						monitorFailure = error;
+					}
 				}
-			} catch (error) {
-				if (!monitorController.signal.aborted && error?.name !== "AbortError") {
-					monitorFailure = error;
+			})();
+
+			const result = await new Promise((resolve) => {
+				child.once("error", (error) => {
+					resolve({
+						exitCode: 1,
+						error,
+					});
+				});
+				child.once("exit", (code, exitSignal) => {
+					resolve({
+						exitCode: normalizeExitCode(code, exitSignal),
+						signal: exitSignal,
+					});
+				});
+			});
+
+			monitorActive = false;
+			monitorController.abort();
+			await monitorPromise;
+			if (monitorFailure && !signal?.aborted) {
+				relaunchNotice(
+					`monitor loop failed: ${monitorFailure instanceof Error ? monitorFailure.message : String(monitorFailure)}`,
+				);
+			}
+			binding =
+				binding ??
+				(await findBinding({
+					cwd: process.cwd(),
+					sinceMs: launchStartedAt,
+					sessionId: knownSessionId,
+					rolloutPathHint: knownRolloutPath,
+				}));
+			if (binding?.sessionId) {
+				knownSessionId = binding.sessionId;
+				knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
+			}
+
+			let restartDecision = requestedRestart;
+			if (!restartDecision && result.exitCode !== 0 && knownSessionId) {
+				const refreshedState = await withLockedManager(
+					runtime,
+					async (freshManager) => ({
+						manager: freshManager,
+						currentAccount: getCurrentAccount(freshManager),
+					}),
+					signal,
+				);
+				manager = refreshedState.manager ?? manager;
+				if (signal?.aborted) {
+					return result.exitCode;
+				}
+				let snapshot = null;
+				if (refreshedState.currentAccount) {
+					try {
+						snapshot = await probeAccountSnapshot(
+							runtime,
+							refreshedState.currentAccount,
+							signal,
+						);
+					} catch (error) {
+						if (signal?.aborted || error?.name === "AbortError") {
+							throw error;
+						}
+						if (error?.name !== "QuotaProbeUnavailableError") {
+							throw error;
+						}
+					}
+				}
+				const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig);
+				if (evaluation.rotate) {
+					restartDecision = {
+						reason: evaluation.reason,
+						waitMs: evaluation.waitMs,
+						sessionId: knownSessionId,
+					};
 				}
 			}
-		})();
 
-		const result = await new Promise((resolve) => {
-			child.once("error", (error) => {
-				resolve({
-					exitCode: 1,
-					error,
-				});
-			});
-			child.once("exit", (code, exitSignal) => {
-				resolve({
-					exitCode: normalizeExitCode(code, exitSignal),
-					signal: exitSignal,
-				});
-			});
-		});
-
-		monitorActive = false;
-		monitorController.abort();
-		await monitorPromise;
-		if (monitorFailure && !signal?.aborted) {
-			relaunchNotice(
-				`monitor loop failed: ${monitorFailure instanceof Error ? monitorFailure.message : String(monitorFailure)}`,
-			);
-		}
-		binding =
-			binding ??
-			(await findBinding({
-				cwd: process.cwd(),
-				sinceMs: launchStartedAt,
-				sessionId: knownSessionId,
-				rolloutPathHint: knownRolloutPath,
-			}));
-		if (binding?.sessionId) {
-			knownSessionId = binding.sessionId;
-			knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
-		}
-
-		let restartDecision = requestedRestart;
-		if (!restartDecision && result.exitCode !== 0 && knownSessionId) {
-			const refreshedState = await withLockedManager(
-				runtime,
-				async (freshManager) => ({
-					manager: freshManager,
-					currentAccount: getCurrentAccount(freshManager),
-				}),
-				signal,
-			);
-			manager = refreshedState.manager ?? manager;
-			if (signal?.aborted) {
+			if (!restartDecision) {
 				return result.exitCode;
 			}
-			let snapshot = null;
-			if (refreshedState.currentAccount) {
-				try {
-					snapshot = await probeAccountSnapshot(
-						runtime,
-						refreshedState.currentAccount,
-						signal,
-					);
-				} catch (error) {
-					if (signal?.aborted || error?.name === "AbortError") {
-						throw error;
-					}
-					if (error?.name !== "QuotaProbeUnavailableError") {
-						throw error;
-					}
+
+			if (!restartDecision.sessionId) {
+				relaunchNotice(
+					"rotation needed but no resumable session was captured; re-run `codex` manually",
+				);
+				return result.exitCode;
+			}
+
+			const currentAccount = getCurrentAccount(manager);
+			if (currentAccount) {
+				const refreshedManager = await markCurrentAccountForRestart(
+					runtime,
+					currentAccount,
+					restartDecision,
+					signal,
+				);
+				manager = refreshedManager ?? manager;
+			}
+
+			let nextReady = null;
+			if (preparedResumeSelectionPromise) {
+				const prepared = await preparedResumeSelectionPromise;
+				nextReady = prepared?.nextReady ?? null;
+			}
+			if (nextReady?.ok) {
+				const committedReady = await commitPreparedSelection(
+					runtime,
+					nextReady.account,
+					signal,
+				);
+				if (committedReady?.ok) {
+					nextReady = committedReady;
+				} else {
+					nextReady = null;
 				}
 			}
-			const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig);
-			if (evaluation.rotate) {
-				restartDecision = {
-					reason: evaluation.reason,
-					waitMs: evaluation.waitMs,
-					sessionId: knownSessionId,
-				};
-			}
-		}
 
-		if (!restartDecision) {
-			preparedResumeSelectionController.abort();
+			if (!nextReady) {
+				nextReady = await ensureLaunchableAccount(runtime, pluginConfig, signal, {
+					probeTimeoutMs: resolveProbeTimeoutMs(
+						"CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_TIMEOUT_MS",
+						DEFAULT_SELECTION_PROBE_TIMEOUT_MS,
+					),
+				});
+			}
+			if (nextReady.aborted) {
+				return 130;
+			}
+			if (!nextReady.ok) {
+				relaunchNotice(
+					`no healthy account available to resume ${restartDecision.sessionId}; recover manually with \`codex resume ${restartDecision.sessionId}\` when quota resets`,
+				);
+				return result.exitCode;
+			}
+
+			manager = nextReady.manager ?? manager;
+			rotationTrace.resumeReadyAtMs = Date.now();
+			logRotationSummary(restartDecision.sessionId, rotationTrace, nextReady);
+			launchArgs = buildResumeArgs(restartDecision.sessionId, buildForwardArgs);
+			knownSessionId = restartDecision.sessionId;
+			knownRolloutPath = binding?.rolloutPath ?? knownRolloutPath;
+		} finally {
+			preparedResumeSelectionLink.cleanup();
 			if (preparedResumeSelectionPromise) {
-				await preparedResumeSelectionPromise;
-			}
-			return result.exitCode;
-		}
-
-		if (!restartDecision.sessionId) {
-			relaunchNotice(
-				"rotation needed but no resumable session was captured; re-run `codex` manually",
-			);
-			return result.exitCode;
-		}
-
-		const currentAccount = getCurrentAccount(manager);
-		if (currentAccount) {
-			const refreshedManager = await markCurrentAccountForRestart(
-				runtime,
-				currentAccount,
-				restartDecision,
-				signal,
-			);
-			manager = refreshedManager ?? manager;
-		}
-
-		let nextReady = null;
-		if (preparedResumeSelectionPromise) {
-			const prepared = await preparedResumeSelectionPromise;
-			nextReady = prepared?.nextReady ?? null;
-		}
-		if (nextReady?.ok) {
-			const committedReady = await commitPreparedSelection(
-				runtime,
-				nextReady.account,
-				signal,
-			);
-			if (committedReady?.ok) {
-				nextReady = committedReady;
-			} else {
-				nextReady = null;
+				await preparedResumeSelectionPromise.catch(() => null);
 			}
 		}
-
-		if (!nextReady) {
-			nextReady = await ensureLaunchableAccount(runtime, pluginConfig, signal, {
-				probeTimeoutMs: resolveProbeTimeoutMs(
-					"CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_TIMEOUT_MS",
-					DEFAULT_SELECTION_PROBE_TIMEOUT_MS,
-				),
-			});
-		}
-		if (nextReady.aborted) {
-			return 130;
-		}
-		if (!nextReady.ok) {
-			relaunchNotice(
-				`no healthy account available to resume ${restartDecision.sessionId}; recover manually with \`codex resume ${restartDecision.sessionId}\` when quota resets`,
-			);
-			return result.exitCode;
-		}
-
-		manager = nextReady.manager ?? manager;
-		rotationTrace.resumeReadyAtMs = Date.now();
-		logRotationSummary(restartDecision.sessionId, rotationTrace, nextReady);
-		launchArgs = buildResumeArgs(restartDecision.sessionId, buildForwardArgs);
-		knownSessionId = restartDecision.sessionId;
-		knownRolloutPath = binding?.rolloutPath ?? knownRolloutPath;
 	}
 
 	relaunchNotice("session supervisor reached the restart safety limit");
@@ -1948,6 +1985,8 @@ const TEST_ONLY_API = {
 	extractSessionMeta,
 	isInteractiveCommand,
 	isValidSessionId,
+	createLinkedAbortController,
+	getSessionBindingEntryPasses,
 	listJsonlFiles,
 	maybeStartPreparedResumeSelection,
 	prepareResumeSelection,

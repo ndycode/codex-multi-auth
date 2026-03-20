@@ -7,11 +7,13 @@ import { basename, delimiter, dirname, join, resolve as resolvePath } from "node
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
-	findPrimaryCodexCommand,
 	normalizeAuthAlias,
 	shouldHandleMultiAuthAuth,
 } from "./codex-routing.js";
-import { runCodexSupervisorIfEnabled } from "./codex-supervisor.js";
+import {
+	isInteractiveCommand as isSupervisorInteractiveCommand,
+	runCodexSupervisorIfEnabled,
+} from "./codex-supervisor.js";
 
 function hydrateCliVersionEnv() {
 	try {
@@ -67,11 +69,6 @@ async function autoSyncManagerActiveSelectionIfEnabled() {
 		}
 		// Best effort only: never block official Codex startup on sync failure.
 	}
-}
-
-function isSupervisorInteractiveCommand(rawArgs) {
-	const command = findPrimaryCodexCommand(rawArgs)?.command;
-	return !command || command === "resume" || command === "fork";
 }
 
 function resolveRealCodexBin() {

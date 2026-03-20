@@ -25,6 +25,7 @@ export interface QuotaSchedulerOptions {
 }
 
 export const DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H = 10;
+// Intentionally keep the 7d window less aggressive than the 5h window.
 const DEFAULT_SECONDARY_REMAINING_PERCENT_THRESHOLD = 5;
 const DEFAULT_MAX_DEFERRAL_MS = 2 * 60 * 60_000;
 

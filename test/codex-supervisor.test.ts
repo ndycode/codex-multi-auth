@@ -415,6 +415,28 @@ describe("codex supervisor", () => {
 		}
 	});
 
+	it("tries recent session entries before falling back to the full scan for known session ids", () => {
+		const recentEntry = { filePath: "recent.jsonl", mtimeMs: 5_000 };
+		const staleEntry = { filePath: "stale.jsonl", mtimeMs: 100 };
+
+		expect(
+			supervisorTestApi?.getSessionBindingEntryPasses(
+				[staleEntry, recentEntry],
+				4_000,
+				"known-session",
+				false,
+			),
+		).toEqual([[recentEntry], [recentEntry, staleEntry]]);
+		expect(
+			supervisorTestApi?.getSessionBindingEntryPasses(
+				[staleEntry, recentEntry],
+				4_000,
+				"known-session",
+				true,
+			),
+		).toEqual([[recentEntry]]);
+	});
+
 	it("interrupts child restart waits when the abort signal fires", async () => {
 		vi.useFakeTimers();
 		class FakeChild extends EventEmitter {
@@ -1101,6 +1123,29 @@ describe("codex supervisor", () => {
 			expect(spawnChild).not.toHaveBeenCalled();
 		},
 	);
+
+	it("cleans up the parent abort listener for each linked abort controller", () => {
+		const controller = new AbortController();
+		const addSpy = vi.spyOn(controller.signal, "addEventListener");
+		const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+
+		try {
+			const first = supervisorTestApi?.createLinkedAbortController(
+				controller.signal,
+			);
+			first?.cleanup();
+			const second = supervisorTestApi?.createLinkedAbortController(
+				controller.signal,
+			);
+			second?.cleanup();
+
+			expect(addSpy).toHaveBeenCalledTimes(2);
+			expect(removeSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			addSpy.mockRestore();
+			removeSpy.mockRestore();
+		}
+	});
 
 	it(
 		"keeps the child exit code when the monitor loop fails after startup",

@@ -669,6 +669,9 @@ describe("codex bin wrapper", () => {
 	it("skips startup auto-sync when the supervisor returns the abort sentinel", () => {
 		const fixtureRoot = createWrapperFixture();
 		writeSupervisorStub(fixtureRoot, [
+			"export function isInteractiveCommand() {",
+			"\treturn true;",
+			"}",
 			"export async function runCodexSupervisorIfEnabled() {",
 			"\treturn 130;",
 			"}",
@@ -709,6 +712,9 @@ describe("codex bin wrapper", () => {
 	it("keeps option-prefixed resume commands on the interactive post-session sync path", () => {
 		const fixtureRoot = createWrapperFixture();
 		writeSupervisorStub(fixtureRoot, [
+			"export function isInteractiveCommand(rawArgs) {",
+			"\treturn Array.isArray(rawArgs) && rawArgs.includes(\"resume\");",
+			"}",
 			"export async function runCodexSupervisorIfEnabled({ codexBin, rawArgs, buildForwardArgs, forwardToRealCodex }) {",
 			"\tawait forwardToRealCodex(codexBin, buildForwardArgs(rawArgs));",
 			"\treturn 0;",

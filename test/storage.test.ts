@@ -29,6 +29,10 @@ import {
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // Mocking the behavior we're about to implement for TDD
 // Since the functions aren't in lib/storage.ts yet, we'll need to mock them or
 // accept that this test won't even compile/run until we add them.
@@ -991,7 +995,13 @@ describe("storage", () => {
 					setStoragePathDirect(secondaryStoragePath);
 					await exportAccounts(exportPath);
 				}),
-			).rejects.toThrow(/storage path mismatch/);
+			).rejects.toThrow(
+				new RegExp(
+					`storage path mismatch: transaction path is ${escapeRegExp(
+						testStoragePath,
+					)}, active path is ${escapeRegExp(secondaryStoragePath)}`,
+				),
+			);
 			expect(existsSync(exportPath)).toBe(false);
 		});
 
