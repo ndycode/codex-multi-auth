@@ -36,6 +36,7 @@ import {
 	loadCodexCliState,
 } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import { runCheckCommand } from "./codex-manager/commands/check.js";
 import {
 	runFeaturesCommand,
 	runStatusCommand,
@@ -5547,8 +5548,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runSwitch(rest);
 	}
 	if (command === "check") {
-		await runHealthCheck({ liveProbe: true });
-		return 0;
+		return runCheckCommand({ runHealthCheck });
 	}
 	if (command === "features") {
 		return runFeaturesReport();
