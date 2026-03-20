@@ -1924,9 +1924,13 @@ export async function withAccountStorageTransaction<T>(
 			await saveAccountsUnlocked(storage);
 			state.snapshot = storage;
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
-		);
+		return transactionSnapshotContext.run(state, async () => {
+			try {
+				return await handler(current, persist);
+			} finally {
+				state.active = false;
+			}
+		});
 	});
 }
 
@@ -1978,9 +1982,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 				throw error;
 			}
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
-		);
+		return transactionSnapshotContext.run(state, async () => {
+			try {
+				return await handler(current, persist);
+			} finally {
+				state.active = false;
+			}
+		});
 	});
 }
 
