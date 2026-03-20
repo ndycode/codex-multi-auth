@@ -1155,6 +1155,7 @@ export function formatBackupSavedAt(mtimeMs: number): string {
 
 async function promptOAuthSignInMode(
 	backupOption: NamedBackupSummary | null,
+	backupDiscoveryWarning: string | null = null,
 ): Promise<OAuthSignInMode> {
 	if (!input.isTTY || !output.isTTY) {
 		return "browser";
@@ -1187,7 +1188,9 @@ async function promptOAuthSignInMode(
 
 	const selected = await select<OAuthSignInMode>(items, {
 		message: UI_COPY.oauth.chooseModeTitle,
-		subtitle: UI_COPY.oauth.chooseModeSubtitle,
+		subtitle: backupDiscoveryWarning
+			? `${UI_COPY.oauth.chooseModeSubtitle} ${backupDiscoveryWarning}`
+			: UI_COPY.oauth.chooseModeSubtitle,
 		help: backupOption
 			? UI_COPY.oauth.chooseModeHelpWithBackup
 			: UI_COPY.oauth.chooseModeHelp,
@@ -4357,11 +4360,14 @@ async function runAuthLogin(): Promise<number> {
 		const refreshedStorage = await loadAccounts();
 		let existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
+		let onboardingBackupDiscoveryWarning: string | null = null;
 		const loadNamedBackupsForOnboarding = async (): Promise<NamedBackupSummary[]> => {
 			if (existingCount > 0) {
+				onboardingBackupDiscoveryWarning = null;
 				return [];
 			}
 			try {
+				onboardingBackupDiscoveryWarning = null;
 				return await getNamedBackups();
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
@@ -4370,9 +4376,13 @@ async function runAuthLogin(): Promise<number> {
 					error: error instanceof Error ? error.message : String(error),
 				});
 				if (code && code !== "ENOENT") {
+					onboardingBackupDiscoveryWarning =
+						"Named backup discovery failed. Continuing with browser or manual sign-in only.";
 					console.warn(
-						"Named backup discovery failed. Continuing with browser or manual sign-in only.",
+						onboardingBackupDiscoveryWarning,
 					);
+				} else {
+					onboardingBackupDiscoveryWarning = null;
 				}
 				return [];
 			}
@@ -4380,7 +4390,10 @@ async function runAuthLogin(): Promise<number> {
 		let namedBackups = await loadNamedBackupsForOnboarding();
 		while (true) {
 			const latestNamedBackup = namedBackups[0] ?? null;
-			const signInMode = await promptOAuthSignInMode(latestNamedBackup);
+			const signInMode = await promptOAuthSignInMode(
+				latestNamedBackup,
+				onboardingBackupDiscoveryWarning,
+			);
 			if (signInMode === "cancel") {
 				if (existingCount > 0) {
 					console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));

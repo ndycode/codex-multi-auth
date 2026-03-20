@@ -43,15 +43,15 @@ codex auth login
 
 Expected flow:
 
-Backup restore appears under the `Recover saved accounts` heading in the onboarding menu. This flow does not add any new CLI flags or npm scripts.
+Backup restore appears as `Restore Saved Backup` under the `Recover saved accounts` heading in the onboarding menu. This flow does not add any new CLI flags or npm scripts.
 See upgrade note: [onboarding restore behavior](upgrade.md#onboarding-restore-note).
 
 1. If no accounts are saved yet, the terminal opens directly to the sign-in menu.
 2. Choose one of the sign-in options:
    - `Open Browser (Easy)` for the normal OAuth flow
    - `Manual / Incognito` when you need to paste the callback yourself
-   - `Recover saved accounts` when the current pool is empty and at least one valid named backup exists under `~/.codex/multi-auth/backups` by default, or under `%CODEX_MULTI_AUTH_DIR%\backups` if you override the storage root with `CODEX_MULTI_AUTH_DIR`
-3. If you choose `Recover saved accounts`, the next menu lets you either:
+   - `Restore Saved Backup` under the `Recover saved accounts` heading when the current pool is empty and at least one valid named backup exists under `~/.codex/multi-auth/backups` by default, or under `%CODEX_MULTI_AUTH_DIR%\backups` if you override the storage root with `CODEX_MULTI_AUTH_DIR`
+3. If you choose `Restore Saved Backup`, the next menu lets you either:
    - load the newest valid backup automatically
    - pick a specific backup from a newest-first list
    Empty, unreadable, or non-JSON backup sidecar files are skipped, so the menu entry appears only when at least one backup parses successfully and contains at least one account.

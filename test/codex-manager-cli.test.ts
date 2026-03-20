@@ -3100,6 +3100,12 @@ describe("codex manager cli commands", () => {
 				expect.objectContaining({
 					activeIndex: 1,
 					activeIndexByFamily: { codex: 1 },
+					accounts: expect.arrayContaining([
+						expect.objectContaining({
+							accountId: "acc_restored",
+							lastSwitchReason: "restore",
+						}),
+					]),
 				}),
 			);
 			expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
@@ -3344,6 +3350,12 @@ describe("codex manager cli commands", () => {
 		expect(signInItems.some((item) => item.value === "restore-backup")).toBe(
 			false,
 		);
+		const signInOptions = selectMock.mock.calls[0]?.[1] as {
+			subtitle?: string;
+		};
+		expect(signInOptions.subtitle).toContain(
+			"Named backup discovery failed. Continuing with browser or manual sign-in only.",
+		);
 		expect(loggerDebugMock).toHaveBeenCalledWith(
 			"getNamedBackups failed, skipping restore option",
 			{ code: "EPERM", error: "backups directory is locked" },
@@ -3555,6 +3567,61 @@ describe("codex manager cli commands", () => {
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 		expect(promptLoginModeMock).not.toHaveBeenCalled();
 		expect(selectMock).toHaveBeenCalledTimes(3);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Backup restore failed: save selected account failed",
+		);
+	});
+
+	it("returns to the existing-account menu when restore fails after storage is already written", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		const restoredStorage = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "persisted-after-error@example.com",
+					accountId: "acc_persisted_after_error",
+					refreshToken: "refresh-persisted-after-error",
+					accessToken: "access-persisted-after-error",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		let storageState: typeof restoredStorage | null = null;
+		loadAccountsMock.mockImplementation(async () =>
+			storageState == null ? null : structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementationOnce(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+			throw new Error("save selected account failed");
+		});
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: "/mock/backups/persisted-after-error.json",
+				fileName: "persisted-after-error.json",
+				accountCount: 1,
+				mtimeMs: now,
+			},
+		]);
+		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
+		selectMock
+			.mockResolvedValueOnce("restore-backup")
+			.mockResolvedValueOnce("latest");
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
+		expect(selectMock).toHaveBeenCalledTimes(2);
 		expect(errorSpy).toHaveBeenCalledWith(
 			"Backup restore failed: save selected account failed",
 		);

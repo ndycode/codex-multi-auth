@@ -266,7 +266,7 @@ describe("storage last backup restore", () => {
 		const originalStat = fs.stat.bind(fs);
 		const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (path, options) => {
 			if (String(path) === flakyBackupPath) {
-				await fs.rm(flakyBackupPath, { force: true });
+				await removeWithRetry(flakyBackupPath, { force: true });
 				const error = new Error(
 					`ENOENT: no such file or directory, stat '${flakyBackupPath}'`,
 				) as NodeJS.ErrnoException;
@@ -405,7 +405,7 @@ describe("storage last backup restore", () => {
 		const originalRealpath = fs.realpath.bind(fs);
 		const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (path, options) => {
 			if (String(path) === backupPath) {
-				await fs.rm(backupPath, { force: true });
+				await removeWithRetry(backupPath, { force: true });
 				const error = new Error(
 					`ENOENT: no such file or directory, realpath '${backupPath}'`,
 				) as NodeJS.ErrnoException;
@@ -445,7 +445,7 @@ describe("storage last backup restore", () => {
 		const originalReadFile = fs.readFile.bind(fs);
 		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (path, options) => {
 			if (String(path) === backupPath || String(path) === resolvedBackupPath) {
-				await fs.rm(backupPath, { force: true });
+				await removeWithRetry(backupPath, { force: true });
 				const error = new Error(
 					`ENOENT: no such file or directory, open '${backupPath}'`,
 				) as NodeJS.ErrnoException;
@@ -468,6 +468,9 @@ describe("storage last backup restore", () => {
 	});
 
 	it("accepts UNC-resolved backups inside the managed root and rejects cross-share escapes", async () => {
+		if (process.platform !== "win32") {
+			return;
+		}
 		const insideBackupPath = buildNamedBackupPath("backup-unc-inside");
 		const outsideBackupPath = buildNamedBackupPath("backup-unc-outside");
 		const backupRoot = dirname(insideBackupPath);
