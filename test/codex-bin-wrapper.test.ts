@@ -709,7 +709,7 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
 	});
 
-	it("keeps option-prefixed resume commands on the interactive post-session sync path", () => {
+	it("avoids double sync when the supervisor forwards an interactive command", () => {
 		const fixtureRoot = createWrapperFixture();
 		writeSupervisorStub(fixtureRoot, [
 			"export function isInteractiveCommand(rawArgs) {",
@@ -737,6 +737,6 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain(
 			'FORWARDED:-c profile="dev" resume session-123 -c cli_auth_credentials_store="file"',
 		);
-		expect(readFileSync(markerPath, "utf8")).toBe("sync\nsync\n");
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
 	});
 });
