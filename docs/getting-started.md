@@ -56,6 +56,21 @@ codex auth list
 codex auth check
 ```
 
+If browser launch is blocked or you want to handle the callback manually:
+
+```bash
+codex auth login --manual
+CODEX_AUTH_NO_BROWSER=1 codex auth login
+```
+
+In non-TTY/manual shells, provide the full redirect URL on stdin:
+
+```bash
+echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual
+```
+
+`codex auth login` remains browser-first by default. No new npm scripts or storage migration steps are required for this auth-flow update.
+
 ---
 
 ## Add More Accounts
@@ -111,6 +126,7 @@ If the OAuth callback on port `1455` fails:
 
 - stop the process using port `1455`
 - rerun `codex auth login`
+- if browser launch is unavailable, rerun `codex auth login --manual`
 
 If account state looks stale:
 

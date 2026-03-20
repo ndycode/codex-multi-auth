@@ -42,6 +42,7 @@ export const UI_COPY = {
 		browserOpened: "Browser opened.",
 		browserOpenFail: "Could not open browser. Use this link:",
 		waitingCallback: "Waiting for login callback on localhost:1455...",
+		callbackBypassed: "Manual mode active. Paste the callback URL manually.",
 		callbackUnavailable: "Callback listener unavailable. Paste the callback URL manually.",
 		callbackMissed: "No callback received. Paste manually.",
 		cancelled: "Sign-in cancelled.",

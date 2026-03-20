@@ -56,6 +56,16 @@ Compatibility aliases are supported:
 
 ---
 
+## Upgrade Notes
+
+- `codex auth login` remains browser-first by default.
+- `codex auth login --manual` and `codex auth login --no-browser` force the manual callback flow instead of launching a browser.
+- `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` do not disable browser launch by themselves.
+- In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual`.
+- No new npm scripts or storage migration steps were introduced for this auth-flow update.
+
+---
+
 ## Compatibility and Non-TTY Behavior
 
 - `codex` remains the primary wrapper entrypoint. It routes `codex auth ...` and the compatibility aliases to the multi-auth runtime, and forwards every other command to the official `@openai/codex` CLI.

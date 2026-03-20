@@ -1491,7 +1491,6 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
 		expect(thirdInit.dispatcher).toBe(proxyDispatcher);
 	});
-
 	it("locks fallback entitlement checks to a stable account snapshot before mutating the shared account", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");

@@ -531,16 +531,18 @@ function getSharedProxyDispatcher(proxyUrl: string): ProxyDispatcher {
 }
 
 export async function closeSharedProxyDispatchers(): Promise<void> {
-	const dispatchers = [...sharedProxyDispatchers.values()] as ClosableDispatcher[];
-	sharedProxyDispatchers.clear();
+	while (sharedProxyDispatchers.size > 0) {
+		const dispatchers = [...sharedProxyDispatchers.values()] as ClosableDispatcher[];
+		sharedProxyDispatchers.clear();
 
-	await Promise.allSettled(
-		dispatchers.map(async (dispatcher) => {
-			if (typeof dispatcher.close === "function") {
-				await dispatcher.close();
-			}
-		}),
-	);
+		await Promise.allSettled(
+			dispatchers.map(async (dispatcher) => {
+				if (typeof dispatcher.close === "function") {
+					await dispatcher.close();
+				}
+			}),
+		);
+	}
 }
 
 registerCleanup(closeSharedProxyDispatchers);

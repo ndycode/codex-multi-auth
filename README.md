@@ -109,6 +109,21 @@ codex auth fix --dry-run
 codex auth doctor --fix
 ```
 
+If the shell should not launch a browser, use the manual callback flow:
+
+```bash
+codex auth login --manual
+CODEX_AUTH_NO_BROWSER=1 codex auth login
+```
+
+In non-TTY/manual shells, provide the full redirect URL on stdin instead of waiting for a browser callback:
+
+```bash
+echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual
+```
+
+No new npm scripts or storage migration steps are required for this login-flow update.
+
 ---
 
 ## Command Toolkit
@@ -234,6 +249,7 @@ codex auth login
 - `codex auth` unrecognized: run `where codex`, then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
+- Browser launch is blocked or you are in a headless shell: re-run `codex auth login --manual` or set `CODEX_AUTH_NO_BROWSER=1`
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account
 
 </details>
