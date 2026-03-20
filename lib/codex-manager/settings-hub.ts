@@ -302,9 +302,10 @@ function getExperimentalSelectOptions(
 function mapExperimentalMenuHotkey(
 	raw: string,
 ): ExperimentalSettingsAction | undefined {
-	if (raw === "1") return { type: "sync" };
-	if (raw === "2") return { type: "backup" };
-	if (raw === "3") return { type: "toggle-refresh-guardian" };
+	if (raw === "1") return { type: "toggle-session-supervisor" };
+	if (raw === "2") return { type: "sync" };
+	if (raw === "3") return { type: "backup" };
+	if (raw === "4") return { type: "toggle-refresh-guardian" };
 	if (raw === "[" || raw === "-") return { type: "decrease-refresh-interval" };
 	if (raw === "]" || raw === "+") return { type: "increase-refresh-interval" };
 	const lower = raw.toLowerCase();
