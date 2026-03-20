@@ -2050,6 +2050,50 @@ describe("codex supervisor", () => {
 		expect(spawnChild).toHaveBeenCalledTimes(1);
 	});
 
+	it("syncs startup state before the first interactive launch", async () => {
+		class ImmediateChild extends EventEmitter {
+			exitCode: number | null = 0;
+
+			constructor() {
+				super();
+				queueMicrotask(() => {
+					this.emit("exit", 0, null);
+				});
+			}
+
+			kill(_signal: string) {
+				return true;
+			}
+		}
+
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager);
+		const events: string[] = [];
+		const syncBeforeLaunch = vi.fn(async () => {
+			events.push("sync");
+		});
+		const spawnChild = vi.fn(() => {
+			events.push("spawn");
+			return new ImmediateChild();
+		});
+
+		const result = await supervisorTestApi?.runInteractiveSupervision({
+			codexBin: "dist/bin/codex.js",
+			initialArgs: ["chat"],
+			runtime,
+			pluginConfig: {},
+			manager,
+			signal: undefined,
+			spawnChild,
+			syncBeforeLaunch,
+		});
+
+		expect(result).toBe(0);
+		expect(syncBeforeLaunch).toHaveBeenCalledTimes(1);
+		expect(spawnChild).toHaveBeenCalledTimes(1);
+		expect(events).toEqual(["sync", "spawn"]);
+	});
+
 	it("degrades a failed candidate probe and continues to the next healthy account", async () => {
 		const manager = new FakeManager([
 			{ accountId: "broken", access: "token-broken" },

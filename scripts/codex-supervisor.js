@@ -21,6 +21,9 @@ const DEFAULT_SELECTION_PROBE_BATCH_SIZE = 4;
 const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 1_500;
 const DEFAULT_PREWARM_MARGIN_PERCENT_5H = 5;
 const DEFAULT_PREWARM_MARGIN_PERCENT_7D = 3;
+// Keep these fallback defaults aligned with lib/config.ts.
+const DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H = 5;
+const DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_7D = 5;
 const DEFAULT_SESSION_BINDING_POLL_MS = 50;
 const DEFAULT_STORAGE_LOCK_WAIT_MS = 10_000;
 const DEFAULT_STORAGE_LOCK_POLL_MS = 100;
@@ -306,7 +309,8 @@ function createRuntimeConfigAccessors(configModule) {
 			((pluginConfig) =>
 				parseNumberEnv(
 					"CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT",
-					pluginConfig?.preemptiveQuotaRemainingPercent5h ?? 5,
+					pluginConfig?.preemptiveQuotaRemainingPercent5h ??
+						DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H,
 					0,
 					100,
 				)),
@@ -315,7 +319,8 @@ function createRuntimeConfigAccessors(configModule) {
 			((pluginConfig) =>
 				parseNumberEnv(
 					"CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT",
-					pluginConfig?.preemptiveQuotaRemainingPercent7d ?? 5,
+					pluginConfig?.preemptiveQuotaRemainingPercent7d ??
+						DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_7D,
 					0,
 					100,
 				)),
@@ -1798,6 +1803,7 @@ async function runInteractiveSupervision({
 	signal,
 	maxSessionRestarts = getMaxSessionRestarts(),
 	spawnChild = spawnRealCodex,
+	syncBeforeLaunch = async () => {},
 	findBinding = findSessionBinding,
 	waitForBinding = waitForSessionBinding,
 	refreshBinding = refreshSessionActivity,
@@ -1817,6 +1823,7 @@ async function runInteractiveSupervision({
 		const preparedResumeSelectionLink = createLinkedAbortController(signal);
 		const preparedResumeSelectionController =
 			preparedResumeSelectionLink.controller;
+		await syncBeforeLaunch();
 		const child = spawnChild(codexBin, launchArgs);
 		let preparedResumeSelectionPromise = null;
 		try {
@@ -2184,6 +2191,7 @@ async function runCodexSupervisorWithRuntime({
 	rawArgs,
 	buildForwardArgs,
 	forwardToRealCodex,
+	syncBeforeLaunch,
 	runtime,
 	signal,
 }) {
@@ -2217,6 +2225,7 @@ async function runCodexSupervisorWithRuntime({
 		pluginConfig,
 		manager: ready.manager,
 		signal,
+		syncBeforeLaunch,
 	});
 }
 
@@ -2225,6 +2234,7 @@ export async function runCodexSupervisorIfEnabled({
 	rawArgs,
 	buildForwardArgs,
 	forwardToRealCodex,
+	syncBeforeLaunch,
 }) {
 	const controller = new AbortController();
 	const abort = () => controller.abort();
@@ -2241,6 +2251,7 @@ export async function runCodexSupervisorIfEnabled({
 			rawArgs,
 			buildForwardArgs,
 			forwardToRealCodex,
+			syncBeforeLaunch,
 			runtime,
 			signal: controller.signal,
 		});

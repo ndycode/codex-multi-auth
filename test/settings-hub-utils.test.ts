@@ -760,7 +760,7 @@ describe("settings-hub utility coverage", () => {
 		it("supports experimental submenu hotkeys for guardian toggle and interval increase", async () => {
 			const api = await loadSettingsHubTestApi();
 			queueSelectResults(
-				triggerSettingsHubHotkey("4"),
+				triggerSettingsHubHotkey("3"),
 				triggerSettingsHubHotkey("]"),
 				triggerSettingsHubHotkey("s"),
 			);
@@ -788,13 +788,13 @@ describe("settings-hub utility coverage", () => {
 
 		it("maps experimental menu and status hotkeys including numeric and uppercase variants", async () => {
 			const api = await loadSettingsHubTestApi();
-			expect(api.mapExperimentalMenuHotkey("1")).toEqual({
-				type: "toggle-session-supervisor",
-			});
-			expect(api.mapExperimentalMenuHotkey("2")).toEqual({ type: "sync" });
-			expect(api.mapExperimentalMenuHotkey("3")).toEqual({ type: "backup" });
-			expect(api.mapExperimentalMenuHotkey("4")).toEqual({
+			expect(api.mapExperimentalMenuHotkey("1")).toEqual({ type: "sync" });
+			expect(api.mapExperimentalMenuHotkey("2")).toEqual({ type: "backup" });
+			expect(api.mapExperimentalMenuHotkey("3")).toEqual({
 				type: "toggle-refresh-guardian",
+			});
+			expect(api.mapExperimentalMenuHotkey("4")).toEqual({
+				type: "toggle-session-supervisor",
 			});
 			expect(api.mapExperimentalMenuHotkey("[")).toEqual({
 				type: "decrease-refresh-interval",

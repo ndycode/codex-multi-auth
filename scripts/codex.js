@@ -533,9 +533,14 @@ async function main() {
 
 	const forwardArgs = buildForwardArgs(rawArgs);
 	let supervisorDidForward = false;
+	let supervisorDidStartupSync = false;
+	const syncBeforeSupervisorLaunch = async () => {
+		supervisorDidStartupSync = true;
+		await autoSyncManagerActiveSelectionIfEnabled();
+	};
 	const forwardToRealCodexWithStartupSync = async (codexBin, args) => {
 		supervisorDidForward = true;
-		await autoSyncManagerActiveSelectionIfEnabled();
+		await syncBeforeSupervisorLaunch();
 		return forwardToRealCodex(codexBin, args);
 	};
 	const supervisedExitCode = await runCodexSupervisorIfEnabled({
@@ -543,12 +548,17 @@ async function main() {
 		rawArgs,
 		buildForwardArgs,
 		forwardToRealCodex: forwardToRealCodexWithStartupSync,
+		syncBeforeLaunch: syncBeforeSupervisorLaunch,
 	});
 	if (supervisedExitCode !== null) {
 		if (supervisedExitCode === 130) {
 			return 130;
 		}
-		if (isSupervisorInteractiveCommand(rawArgs) && !supervisorDidForward) {
+		if (
+			isSupervisorInteractiveCommand(rawArgs) &&
+			!supervisorDidForward &&
+			!supervisorDidStartupSync
+		) {
 			await autoSyncManagerActiveSelectionIfEnabled();
 		}
 		return supervisedExitCode;

@@ -302,10 +302,10 @@ function getExperimentalSelectOptions(
 function mapExperimentalMenuHotkey(
 	raw: string,
 ): ExperimentalSettingsAction | undefined {
-	if (raw === "1") return { type: "toggle-session-supervisor" };
-	if (raw === "2") return { type: "sync" };
-	if (raw === "3") return { type: "backup" };
-	if (raw === "4") return { type: "toggle-refresh-guardian" };
+	if (raw === "1") return { type: "sync" };
+	if (raw === "2") return { type: "backup" };
+	if (raw === "3") return { type: "toggle-refresh-guardian" };
+	if (raw === "4") return { type: "toggle-session-supervisor" };
 	if (raw === "[" || raw === "-") return { type: "decrease-refresh-interval" };
 	if (raw === "]" || raw === "+") return { type: "increase-refresh-interval" };
 	const lower = raw.toLowerCase();
@@ -2577,11 +2577,6 @@ async function promptExperimentalSettings(
 		const action = await select<ExperimentalSettingsAction>(
 			[
 				{
-					label: `${formatDashboardSettingState(draft.codexCliSessionSupervisor ?? BACKEND_DEFAULTS.codexCliSessionSupervisor ?? false)} ${UI_COPY.settings.experimentalSessionSupervisor}`,
-					value: { type: "toggle-session-supervisor" },
-					color: "yellow",
-				},
-				{
 					label: UI_COPY.settings.experimentalSync,
 					value: { type: "sync" },
 					color: "yellow",
@@ -2594,6 +2589,11 @@ async function promptExperimentalSettings(
 				{
 					label: `${formatDashboardSettingState(draft.proactiveRefreshGuardian ?? false)} ${UI_COPY.settings.experimentalRefreshGuard}`,
 					value: { type: "toggle-refresh-guardian" },
+					color: "yellow",
+				},
+				{
+					label: `${formatDashboardSettingState(draft.codexCliSessionSupervisor ?? BACKEND_DEFAULTS.codexCliSessionSupervisor ?? false)} ${UI_COPY.settings.experimentalSessionSupervisor}`,
+					value: { type: "toggle-session-supervisor" },
 					color: "yellow",
 				},
 				{
