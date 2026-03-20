@@ -16,7 +16,7 @@ function isRetriableFsError(error: unknown): boolean {
 		return false;
 	}
 	const { code } = error as { code?: unknown };
-	return code === "EBUSY" || code === "EPERM";
+	return code === "EBUSY" || code === "EPERM" || code === "ENOTEMPTY";
 }
 
 async function removeDirectoryWithRetry(dir: string): Promise<void> {
