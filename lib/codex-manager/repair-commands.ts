@@ -20,7 +20,6 @@ import {
 	getStoragePath,
 	loadAccounts,
 	loadFlaggedAccounts,
-	saveFlaggedAccounts,
 	setStoragePath,
 	withAccountStorageTransaction,
 	withAccountAndFlaggedStorageTransaction,
@@ -845,10 +844,12 @@ export async function runVerifyFlagged(
 					? structuredClone(loadedStorage)
 					: createEmptyAccountStorage();
 				applyRefreshChecks(nextStorage);
-				if (!storageChanged) {
+				if (!storageChanged && !flaggedChanged) {
 					return;
 				}
-				normalizeDoctorIndexes(nextStorage);
+				if (storageChanged) {
+					normalizeDoctorIndexes(nextStorage);
+				}
 				await persist(nextStorage, {
 					version: 1,
 					accounts: nextFlaggedAccounts,
@@ -869,10 +870,15 @@ export async function runVerifyFlagged(
 	).length;
 	const changed = storageChanged || flaggedChanged;
 
-	if (!options.dryRun && flaggedChanged && (!options.restore || !storageChanged)) {
-		await saveFlaggedAccounts({
-			version: 1,
-			accounts: nextFlaggedAccounts,
+	if (!options.dryRun && flaggedChanged && !options.restore) {
+		await withAccountAndFlaggedStorageTransaction(async (loadedStorage, persist) => {
+			const nextStorage = loadedStorage
+				? structuredClone(loadedStorage)
+				: createEmptyAccountStorage();
+			await persist(nextStorage, {
+				version: 1,
+				accounts: nextFlaggedAccounts,
+			});
 		});
 	}
 

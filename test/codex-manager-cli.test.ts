@@ -1387,7 +1387,13 @@ describe("codex manager cli commands", () => {
 			"--json",
 		]);
 		expect(exitCode).toBe(0);
-		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [],
+			}),
+		);
 		expect(saveFlaggedAccountsMock).toHaveBeenCalledTimes(1);
 		expect(saveFlaggedAccountsMock).toHaveBeenCalledWith(
 			expect.objectContaining({
