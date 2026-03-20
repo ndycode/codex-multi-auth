@@ -11,6 +11,7 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_BINDING_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_CAPTURE_TIMEOUT_MS",
 	"CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS",
+	"CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS",
 	"CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS",
 	"CODEX_AUTH_CLI_SESSION_MAX_ACCOUNT_SELECTION_ATTEMPTS",
 	"CODEX_AUTH_CLI_SESSION_MAX_RESTARTS",
@@ -533,6 +534,24 @@ describe("codex supervisor", () => {
 		).toBe(23);
 	});
 
+	it("clamps runtime quota threshold env overrides to 100 percent", () => {
+		process.env.CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT = "200";
+		process.env.CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT = "101";
+
+		const accessors = supervisorTestApi?.createRuntimeConfigAccessors({});
+		expect(accessors).toBeTruthy();
+		expect(
+			accessors?.getPreemptiveQuotaRemainingPercent5h({
+				preemptiveQuotaRemainingPercent5h: 5,
+			}),
+		).toBe(100);
+		expect(
+			accessors?.getPreemptiveQuotaRemainingPercent7d({
+				preemptiveQuotaRemainingPercent7d: 7,
+			}),
+		).toBe(100);
+	});
+
 	it("cleans up stale supervisor locks even after a transient Windows unlink failure", async () => {
 		const manager = new FakeManager();
 		const runtime = createFakeRuntime(manager);
@@ -646,6 +665,24 @@ describe("codex supervisor", () => {
 			}
 		},
 	);
+
+	it("only treats EPERM and EBUSY as transient lock errors on Windows", () => {
+		expect(
+			supervisorTestApi?.isTransientSupervisorLockAcquireError("EEXIST", "linux"),
+		).toBe(true);
+		expect(
+			supervisorTestApi?.isTransientSupervisorLockAcquireError("EPERM", "linux"),
+		).toBe(false);
+		expect(
+			supervisorTestApi?.isTransientSupervisorLockAcquireError("EBUSY", "linux"),
+		).toBe(false);
+		expect(
+			supervisorTestApi?.isTransientSupervisorLockAcquireError("EPERM", "win32"),
+		).toBe(true);
+		expect(
+			supervisorTestApi?.isTransientSupervisorLockAcquireError("EBUSY", "win32"),
+		).toBe(true);
+	});
 
 	it("serializes concurrent callers behind the supervisor storage lock", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS = "1000";
@@ -1761,6 +1798,67 @@ describe("codex supervisor", () => {
 				expect(result).toBe(1);
 				expect(stderrSpy).toHaveBeenCalledWith(
 					expect.stringContaining("monitor loop failed: Timed out waiting for supervisor storage lock"),
+				);
+			} finally {
+				stderrSpy.mockRestore();
+			}
+		},
+	);
+
+	it(
+		"logs monitor loop failures even when the outer signal is already aborted",
+		{ timeout: 10_000 },
+		async () => {
+			const controller = new AbortController();
+			class FakeChild extends EventEmitter {
+				exitCode: number | null = null;
+
+				constructor(exitCode: number) {
+					super();
+					setTimeout(() => {
+						this.exitCode = exitCode;
+						this.emit("exit", exitCode, null);
+					}, 25);
+				}
+
+				kill(_signal: string) {
+					return true;
+				}
+			}
+
+			const stderrSpy = vi
+				.spyOn(process.stderr, "write")
+				.mockImplementation(() => true);
+			const manager = new FakeManager();
+			const runtime = createFakeRuntime(manager);
+
+			try {
+				await expect(
+					supervisorTestApi?.runInteractiveSupervision({
+						codexBin: "dist/bin/codex.js",
+						initialArgs: ["resume", "monitor-failure-aborted-session"],
+						buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+						runtime,
+						pluginConfig: {},
+						manager,
+						signal: controller.signal,
+						maxSessionRestarts: 1,
+						spawnChild: () => new FakeChild(0),
+						findBinding: async ({ sessionId }: { sessionId?: string }) => ({
+							sessionId: sessionId ?? "monitor-failure-aborted-session",
+							rolloutPath: null,
+							lastActivityAtMs: Date.now(),
+						}),
+						loadCurrentState: async () => {
+							controller.abort();
+							throw new Error("Timed out waiting for supervisor storage lock");
+						},
+					}),
+				).rejects.toMatchObject({ name: "AbortError" });
+				expect(stderrSpy).toHaveBeenCalledWith(
+					expect.stringContaining(
+						"monitor loop failed: Timed out waiting for supervisor storage lock",
+					),
 				);
 			} finally {
 				stderrSpy.mockRestore();

@@ -111,10 +111,25 @@ function parseBooleanEnv(name, fallback) {
 	return fallback;
 }
 
-function parseNumberEnv(name, fallback, min = 0) {
+function parseNumberEnv(
+	name,
+	fallback,
+	min = 0,
+	max = Number.POSITIVE_INFINITY,
+) {
 	const raw = Number(process.env[name]);
 	if (!Number.isFinite(raw)) return fallback;
-	return Math.max(min, Math.trunc(raw));
+	return Math.min(max, Math.max(min, Math.trunc(raw)));
+}
+
+function isTransientSupervisorLockAcquireError(
+	code,
+	platform = process.platform,
+) {
+	return (
+		code === "EEXIST" ||
+		(platform === "win32" && (code === "EPERM" || code === "EBUSY"))
+	);
 }
 
 function getMaxAccountSelectionAttempts() {
@@ -719,7 +734,7 @@ async function withSupervisorStorageLock(runtime, fn, signal) {
 				error && typeof error === "object" && "code" in error
 					? `${error.code ?? ""}`
 					: "";
-			if (code !== "EEXIST" && code !== "EPERM" && code !== "EBUSY") {
+			if (!isTransientSupervisorLockAcquireError(code)) {
 				throw error;
 			}
 
@@ -2018,11 +2033,13 @@ async function runInteractiveSupervision({
 			monitorActive = false;
 			monitorController.abort();
 			await monitorPromise;
-			if (monitorFailure && !signal?.aborted) {
+			if (monitorFailure) {
 				relaunchNotice(
 					`monitor loop failed: ${monitorFailure instanceof Error ? monitorFailure.message : String(monitorFailure)}`,
 				);
-				return result.exitCode === 0 ? 1 : result.exitCode;
+				if (!signal?.aborted) {
+					return result.exitCode === 0 ? 1 : result.exitCode;
+				}
 			}
 			binding =
 				binding ??
@@ -2264,6 +2281,7 @@ const TEST_ONLY_API = {
 	createRuntimeConfigAccessors,
 	getSessionsRootDir,
 	getSnapshotCacheKey,
+	isTransientSupervisorLockAcquireError,
 	sleep,
 	safeUnlinkOwnedSupervisorLock,
 	withLockedManager,
