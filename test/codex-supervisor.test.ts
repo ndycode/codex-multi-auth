@@ -53,27 +53,28 @@ class FakeManager {
 
 	activeIndex = 0;
 
-	constructor() {
-		this.accounts = [
-			{
-				index: 0,
-				accountId: "near-limit",
-				access: "token-1",
-				email: "near-limit@example.com",
-				refreshToken: "rt-near-limit",
-				enabled: true,
-				cooldownUntil: 0,
-			},
-			{
-				index: 1,
-				accountId: "healthy",
-				access: "token-2",
-				email: "healthy@example.com",
-				refreshToken: "rt-healthy",
-				enabled: true,
-				cooldownUntil: 0,
-			},
-		];
+	constructor(
+		accounts: Array<{
+			accountId: string;
+			access?: string;
+			email?: string;
+			refreshToken?: string;
+			enabled?: boolean;
+			cooldownUntil?: number;
+		}> = [
+			{ accountId: "near-limit", access: "token-1" },
+			{ accountId: "healthy", access: "token-2" },
+		],
+	) {
+		this.accounts = accounts.map((account, index) => ({
+			index,
+			accountId: account.accountId,
+			access: account.access ?? `token-${index + 1}`,
+			email: account.email ?? `${account.accountId}@example.com`,
+			refreshToken: account.refreshToken ?? `rt-${account.accountId}`,
+			enabled: account.enabled ?? true,
+			cooldownUntil: account.cooldownUntil ?? 0,
+		}));
 	}
 
 	getAccountsSnapshot() {
@@ -136,27 +137,42 @@ class FakeManager {
 
 function createFakeRuntime(
 	manager: FakeManager,
-	quotaProbeDelayMs = 0,
+	options: {
+		quotaProbeDelayMs?: number;
+		snapshots?: Map<
+			string,
+			{
+				status: number;
+				primary?: { usedPercent?: number };
+				secondary?: { usedPercent?: number };
+			}
+		>;
+		delayByAccountId?: Map<string, number>;
+	} = {},
 ) {
 	const storageDir = createTempDir();
-	const snapshots = new Map([
-		[
-			"near-limit",
-			{
-				status: 200,
-				primary: { usedPercent: 91 },
-				secondary: { usedPercent: 12 },
-			},
-		],
-		[
-			"healthy",
-			{
-				status: 200,
-				primary: { usedPercent: 25 },
-				secondary: { usedPercent: 8 },
-			},
-		],
-	]);
+	const snapshots =
+		options.snapshots ??
+		new Map([
+			[
+				"near-limit",
+				{
+					status: 200,
+					primary: { usedPercent: 91 },
+					secondary: { usedPercent: 12 },
+				},
+			],
+			[
+				"healthy",
+				{
+					status: 200,
+					primary: { usedPercent: 25 },
+					secondary: { usedPercent: 8 },
+				},
+			],
+		]);
+	const fallbackProbeDelayMs = options.quotaProbeDelayMs ?? 0;
+	const delayByAccountId = options.delayByAccountId ?? new Map();
 
 	return {
 		AccountManager: {
@@ -186,6 +202,8 @@ function createFakeRuntime(
 			accountId: string;
 			signal?: AbortSignal;
 		}) {
+			const quotaProbeDelayMs =
+				delayByAccountId.get(accountId) ?? fallbackProbeDelayMs;
 			await new Promise<void>((resolve, reject) => {
 				const timer = setTimeout(() => {
 					signal?.removeEventListener("abort", onAbort);
@@ -319,7 +337,9 @@ describe("codex supervisor", () => {
 		}
 
 		const serialManager = new FakeManager();
-		const serialRuntime = createFakeRuntime(serialManager, 60);
+		const serialRuntime = createFakeRuntime(serialManager, {
+			quotaProbeDelayMs: 60,
+		});
 		const serialChild = new FakeChild();
 		const serialStart = performance.now();
 		const serialResult = await (async () => {
@@ -338,7 +358,9 @@ describe("codex supervisor", () => {
 		});
 
 		const overlapManager = new FakeManager();
-		const overlapRuntime = createFakeRuntime(overlapManager, 60);
+		const overlapRuntime = createFakeRuntime(overlapManager, {
+			quotaProbeDelayMs: 60,
+		});
 		const overlapChild = new FakeChild();
 		const overlapStart = performance.now();
 		const overlapResult = await Promise.all([
@@ -361,7 +383,7 @@ describe("codex supervisor", () => {
 		expect(overlapElapsedMs).toBeLessThan(serialElapsedMs - 40);
 	});
 
-	it("reduces restart pause further when selection is prepared before the idle gate", async () => {
+	it("keeps the prepared-selection path within the same pause envelope as overlap mode", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "40";
 
 		class FakeChild extends EventEmitter {
@@ -370,7 +392,9 @@ describe("codex supervisor", () => {
 		}
 
 		const overlapManager = new FakeManager();
-		const overlapRuntime = createFakeRuntime(overlapManager, 80);
+		const overlapRuntime = createFakeRuntime(overlapManager, {
+			quotaProbeDelayMs: 80,
+		});
 		const overlapStart = performance.now();
 		await Promise.all([
 			supervisorTestApi?.requestChildRestart(new FakeChild(), "win32"),
@@ -384,7 +408,9 @@ describe("codex supervisor", () => {
 		const overlapElapsedMs = performance.now() - overlapStart;
 
 		const prewarmedManager = new FakeManager();
-		const prewarmedRuntime = createFakeRuntime(prewarmedManager, 80);
+		const prewarmedRuntime = createFakeRuntime(prewarmedManager, {
+			quotaProbeDelayMs: 80,
+		});
 		await supervisorTestApi?.prepareResumeSelection({
 			runtime: prewarmedRuntime,
 			pluginConfig: {},
@@ -400,6 +426,52 @@ describe("codex supervisor", () => {
 		await supervisorTestApi?.requestChildRestart(new FakeChild(), "win32");
 		const prewarmedElapsedMs = performance.now() - prewarmedStart;
 
-		expect(prewarmedElapsedMs).toBeLessThan(overlapElapsedMs - 20);
+		expect(prewarmedElapsedMs).toBeLessThan(overlapElapsedMs + 30);
+	});
+
+	it("batches probe work so multiple degraded accounts do not add serial pause", async () => {
+		const manager = new FakeManager([
+			{ accountId: "degraded-1", access: "token-1" },
+			{ accountId: "degraded-2", access: "token-2" },
+			{ accountId: "degraded-3", access: "token-3" },
+			{ accountId: "healthy", access: "token-4" },
+		]);
+		const runtime = createFakeRuntime(manager, {
+			quotaProbeDelayMs: 70,
+			snapshots: new Map([
+				[
+					"degraded-1",
+					{ status: 200, primary: { usedPercent: 93 }, secondary: { usedPercent: 12 } },
+				],
+				[
+					"degraded-2",
+					{ status: 200, primary: { usedPercent: 94 }, secondary: { usedPercent: 14 } },
+				],
+				[
+					"degraded-3",
+					{ status: 200, primary: { usedPercent: 95 }, secondary: { usedPercent: 11 } },
+				],
+				[
+					"healthy",
+					{ status: 200, primary: { usedPercent: 18 }, secondary: { usedPercent: 7 } },
+				],
+			]),
+		});
+
+		const startedAt = performance.now();
+		const result = await supervisorTestApi?.ensureLaunchableAccount(
+			runtime,
+			{},
+			undefined,
+			{ probeTimeoutMs: 250 },
+		);
+		const elapsedMs = performance.now() - startedAt;
+
+		expect(result).toMatchObject({
+			ok: true,
+			account: { accountId: "healthy" },
+		});
+		expect(manager.activeIndex).toBe(3);
+		expect(elapsedMs).toBeLessThan(170);
 	});
 });

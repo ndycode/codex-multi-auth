@@ -107,35 +107,39 @@ class FakeManager {
 	async saveToDisk() {}
 }
 
-async function buildRuntime(probeLatencyMs, tempRoot) {
+async function buildRuntime(probeLatencyMs, tempRoot, options = {}) {
 	const pluginConfig = {
 		preemptiveQuotaEnabled: true,
 		preemptiveQuotaRemainingPercent5h: 10,
 		preemptiveQuotaRemainingPercent7d: 5,
 		retryAllAccountsRateLimited: true,
 	};
-	const manager = new FakeManager([
-		{ accountId: "near-limit", access: "token-1" },
-		{ accountId: "healthy", access: "token-2" },
-	]);
-	const quotaByAccountId = new Map([
-		[
-			"near-limit",
-			{
-				status: 200,
-				primary: { usedPercent: 91 },
-				secondary: { usedPercent: 12 },
-			},
-		],
-		[
-			"healthy",
-			{
-				status: 200,
-				primary: { usedPercent: 25 },
-				secondary: { usedPercent: 8 },
-			},
-		],
-	]);
+	const accounts =
+		options.accounts ?? [
+			{ accountId: "near-limit", access: "token-1" },
+			{ accountId: "healthy", access: "token-2" },
+		];
+	const manager = new FakeManager(accounts);
+	const quotaByAccountId =
+		options.quotaByAccountId ??
+		new Map([
+			[
+				"near-limit",
+				{
+					status: 200,
+					primary: { usedPercent: 91 },
+					secondary: { usedPercent: 12 },
+				},
+			],
+			[
+				"healthy",
+				{
+					status: 200,
+					primary: { usedPercent: 25 },
+					secondary: { usedPercent: 8 },
+				},
+			],
+		]);
 
 	const runtime = {
 		AccountManager: {
@@ -177,16 +181,32 @@ async function buildRuntime(probeLatencyMs, tempRoot) {
 	return { runtime, pluginConfig, manager };
 }
 
-async function runCase(api, name, iterations, probeLatencyMs) {
+async function runCase(
+	api,
+	name,
+	iterations,
+	probeLatencyMs,
+	runtimeOptions = {},
+	harnessOptions = {},
+) {
 	const tempRoot = await mkdtemp(join(tmpdir(), "codex-supervisor-bench-"));
 	const serialDurations = [];
 	const overlapDurations = [];
 	const prewarmedDurations = [];
+	const originalBatchSize =
+		process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE;
+	if (harnessOptions.selectionProbeBatchSize) {
+		process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE = `${harnessOptions.selectionProbeBatchSize}`;
+	}
 
 	try {
 		for (let iteration = 0; iteration < iterations; iteration += 1) {
 			process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "75";
-			const serialEnv = await buildRuntime(probeLatencyMs, tempRoot);
+			const serialEnv = await buildRuntime(
+				probeLatencyMs,
+				tempRoot,
+				runtimeOptions,
+			);
 			let start = performance.now();
 			await api.requestChildRestart(new FakeChild(), "win32");
 			await api.ensureLaunchableAccount(
@@ -197,7 +217,11 @@ async function runCase(api, name, iterations, probeLatencyMs) {
 			);
 			serialDurations.push(performance.now() - start);
 
-			const overlapEnv = await buildRuntime(probeLatencyMs, tempRoot);
+			const overlapEnv = await buildRuntime(
+				probeLatencyMs,
+				tempRoot,
+				runtimeOptions,
+			);
 			start = performance.now();
 			await Promise.all([
 				api.requestChildRestart(new FakeChild(), "win32"),
@@ -210,7 +234,11 @@ async function runCase(api, name, iterations, probeLatencyMs) {
 			]);
 			overlapDurations.push(performance.now() - start);
 
-			const prewarmedEnv = await buildRuntime(probeLatencyMs, tempRoot);
+			const prewarmedEnv = await buildRuntime(
+				probeLatencyMs,
+				tempRoot,
+				runtimeOptions,
+			);
 			const prewarmedPromise = api.prepareResumeSelection({
 				runtime: prewarmedEnv.runtime,
 				pluginConfig: prewarmedEnv.pluginConfig,
@@ -229,6 +257,12 @@ async function runCase(api, name, iterations, probeLatencyMs) {
 		}
 	} finally {
 		delete process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS;
+		if (originalBatchSize === undefined) {
+			delete process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE;
+		} else {
+			process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE =
+				originalBatchSize;
+		}
 		await rm(tempRoot, { recursive: true, force: true });
 	}
 
@@ -239,6 +273,8 @@ async function runCase(api, name, iterations, probeLatencyMs) {
 		name,
 		iterations,
 		probeLatencyMs,
+		selectionProbeBatchSize:
+			harnessOptions.selectionProbeBatchSize ?? "default",
 		serialPauseAvgMs: round(serialAvgMs),
 		overlapPauseAvgMs: round(overlapAvgMs),
 		prewarmedPauseAvgMs: round(prewarmedAvgMs),
@@ -275,6 +311,103 @@ async function main() {
 		iterations,
 		results: [
 			await runCase(api, "session_rotation_overlap_windows", iterations, probeLatencyMs),
+			await runCase(
+				api,
+				"session_rotation_multi_candidate_windows",
+				iterations,
+				probeLatencyMs,
+				{
+					accounts: [
+						{ accountId: "degraded-1", access: "token-1" },
+						{ accountId: "degraded-2", access: "token-2" },
+						{ accountId: "degraded-3", access: "token-3" },
+						{ accountId: "healthy", access: "token-4" },
+					],
+					quotaByAccountId: new Map([
+						[
+							"degraded-1",
+							{
+								status: 200,
+								primary: { usedPercent: 93 },
+								secondary: { usedPercent: 12 },
+							},
+						],
+						[
+							"degraded-2",
+							{
+								status: 200,
+								primary: { usedPercent: 94 },
+								secondary: { usedPercent: 13 },
+							},
+						],
+						[
+							"degraded-3",
+							{
+								status: 200,
+								primary: { usedPercent: 95 },
+								secondary: { usedPercent: 14 },
+							},
+						],
+						[
+							"healthy",
+							{
+								status: 200,
+								primary: { usedPercent: 25 },
+								secondary: { usedPercent: 8 },
+							},
+						],
+					]),
+				},
+			),
+			await runCase(
+				api,
+				"session_rotation_multi_candidate_windows",
+				iterations,
+				probeLatencyMs,
+				{
+					accounts: [
+						{ accountId: "degraded-1", access: "token-1" },
+						{ accountId: "degraded-2", access: "token-2" },
+						{ accountId: "degraded-3", access: "token-3" },
+						{ accountId: "healthy", access: "token-4" },
+					],
+					quotaByAccountId: new Map([
+						[
+							"degraded-1",
+							{
+								status: 200,
+								primary: { usedPercent: 93 },
+								secondary: { usedPercent: 12 },
+							},
+						],
+						[
+							"degraded-2",
+							{
+								status: 200,
+								primary: { usedPercent: 94 },
+								secondary: { usedPercent: 13 },
+							},
+						],
+						[
+							"degraded-3",
+							{
+								status: 200,
+								primary: { usedPercent: 95 },
+								secondary: { usedPercent: 14 },
+							},
+						],
+						[
+							"healthy",
+							{
+								status: 200,
+								primary: { usedPercent: 25 },
+								secondary: { usedPercent: 8 },
+							},
+						],
+					]),
+				},
+				{ selectionProbeBatchSize: 1 },
+			),
 		],
 	};
 

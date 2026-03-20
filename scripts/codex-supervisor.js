@@ -12,6 +12,7 @@ const DEFAULT_SIGNAL_TIMEOUT_MS = process.platform === "win32" ? 75 : 350;
 const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 4_000;
 const DEFAULT_MONITOR_PROBE_TIMEOUT_MS = 1_250;
 const DEFAULT_SELECTION_PROBE_TIMEOUT_MS = 2_500;
+const DEFAULT_SELECTION_PROBE_BATCH_SIZE = 4;
 const DEFAULT_SESSION_BINDING_POLL_MS = 50;
 const DEFAULT_STORAGE_LOCK_WAIT_MS = 10_000;
 const DEFAULT_STORAGE_LOCK_POLL_MS = 100;
@@ -424,6 +425,41 @@ function getManagerAccounts(manager, extraAccounts = []) {
 	return deduped;
 }
 
+function isEligibleProbeAccount(account, now = Date.now()) {
+	return Boolean(
+		account &&
+			account.enabled !== false &&
+			(account.cooldownUntil ?? 0) <= now,
+	);
+}
+
+function getProbeCandidateBatch(manager, limit) {
+	const accounts = getManagerAccounts(manager);
+	const leadingCandidate = pickNextCandidate(manager);
+	const ordered = leadingCandidate ? [leadingCandidate, ...accounts] : accounts;
+	const now = Date.now();
+	const seen = new Set();
+	const batch = [];
+
+	for (const item of ordered) {
+		const account = resolveMatchingAccount(accounts, item) ?? item;
+		if (!isEligibleProbeAccount(account, now)) {
+			continue;
+		}
+		const key = `${account.index ?? ""}|${account.refreshToken ?? ""}`;
+		if (seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		batch.push(account);
+		if (batch.length >= limit) {
+			break;
+		}
+	}
+
+	return batch;
+}
+
 function resolveUniqueFieldMatch(accounts, field, value) {
 	if (!value) return null;
 	const matches = accounts.filter((item) => item && item[field] === value);
@@ -596,6 +632,11 @@ async function ensureLaunchableAccount(
 ) {
 	const probeTimeoutMs =
 		options.probeTimeoutMs ?? DEFAULT_SELECTION_PROBE_TIMEOUT_MS;
+	const probeBatchSize = parseNumberEnv(
+		"CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE",
+		DEFAULT_SELECTION_PROBE_BATCH_SIZE,
+		1,
+	);
 	let attempts = 0;
 	while (attempts < MAX_ACCOUNT_SELECTION_ATTEMPTS) {
 		attempts += 1;
@@ -604,8 +645,8 @@ async function ensureLaunchableAccount(
 		}
 
 		const initial = await withLockedManager(runtime, async (manager) => {
-			const account = pickNextCandidate(manager);
-			if (!account) {
+			const accounts = getProbeCandidateBatch(manager, probeBatchSize);
+			if (accounts.length === 0) {
 				return {
 					kind: "wait",
 					waitMs: getNearestWaitMs(manager),
@@ -614,7 +655,7 @@ async function ensureLaunchableAccount(
 			}
 			return {
 				kind: "probe",
-				account,
+				accounts,
 			};
 		}, signal);
 
@@ -633,50 +674,85 @@ async function ensureLaunchableAccount(
 			continue;
 		}
 
-		let snapshot;
-		try {
-			snapshot = await probeAccountSnapshot(
-				runtime,
-				initial.account,
-				signal,
-				probeTimeoutMs,
+		const probeResults = [];
+		for (const account of initial.accounts) {
+			probeResults.push(
+				(async () => {
+					try {
+						const snapshot = await probeAccountSnapshot(
+							runtime,
+							account,
+							signal,
+							probeTimeoutMs,
+						);
+						return {
+							account,
+							snapshot,
+							evaluation: evaluateQuotaSnapshot(snapshot, runtime, pluginConfig),
+						};
+					} catch (error) {
+						if (signal?.aborted || error?.name === "AbortError") {
+							throw error;
+						}
+						throw error;
+					}
+				})(),
 			);
+		}
+
+		let evaluatedResults;
+		try {
+			evaluatedResults = await Promise.all(probeResults);
 		} catch (error) {
 			if (signal?.aborted || error?.name === "AbortError") {
 				return { ok: false, account: null, aborted: true };
 			}
 			throw error;
 		}
-		const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig);
+
 		const step = await withLockedManager(runtime, async (manager) => {
-			const account = resolveAccountInManager(manager, initial.account);
-			const currentCandidate = pickNextCandidate(manager);
-			if (
-				!account ||
-				!currentCandidate ||
-				!accountsReferToSameStoredAccount(manager, currentCandidate, account)
-			) {
-				return {
-					kind: "retry",
-					waitMs: 0,
-					account: null,
+			let dirty = false;
+			const knownAccounts = getManagerAccounts(manager, initial.accounts);
+			for (const result of evaluatedResults) {
+				const account = resolveAccountInManager(
 					manager,
-				};
-			}
+					result.account,
+					knownAccounts,
+				);
+				const currentCandidate = pickNextCandidate(manager);
+				if (
+					!account ||
+					!currentCandidate ||
+					!accountsReferToSameStoredAccount(
+						manager,
+						currentCandidate,
+						account,
+						knownAccounts,
+					)
+				) {
+					return {
+						kind: "retry",
+						waitMs: 0,
+						account: null,
+						manager,
+					};
+				}
 
-			if (!evaluation.rotate) {
-				await persistActiveSelection(manager, account);
-				return {
-					kind: "ready",
-					waitMs: 0,
-					account,
-					manager,
-					snapshot,
-				};
-			}
+				if (!result.evaluation.rotate) {
+					await persistActiveSelection(manager, account);
+					return {
+						kind: "ready",
+						waitMs: 0,
+						account,
+						manager,
+						snapshot: result.snapshot,
+					};
+				}
 
-			markAccountUnavailable(manager, account, evaluation);
-			if (typeof manager.saveToDisk === "function") {
+				markAccountUnavailable(manager, account, result.evaluation);
+				dirty = true;
+			}
+			if (dirty && typeof manager.saveToDisk === "function") {
 				await manager.saveToDisk();
 			}
 			return {
