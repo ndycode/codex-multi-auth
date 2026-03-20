@@ -47,11 +47,11 @@ describe("storage last backup restore", () => {
 		await removeWithRetry(testRoot, { recursive: true, force: true });
 	});
 
-	it("returns null when the named backups directory is missing", async () => {
+	it("returns an empty array when the named backups directory is missing", async () => {
 		await expect(getNamedBackups()).resolves.toEqual([]);
 	});
 
-	it("returns null when every named backup has zero accounts", async () => {
+	it("returns an empty array when every named backup has zero accounts", async () => {
 		const emptyOnePath = buildNamedBackupPath("empty-one");
 		const emptyTwoPath = buildNamedBackupPath("empty-two");
 		await fs.mkdir(dirname(emptyOnePath), { recursive: true });
