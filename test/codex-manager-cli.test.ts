@@ -3730,6 +3730,9 @@ describe("codex manager cli commands", () => {
 			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
 			close: vi.fn(),
 		});
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=oauth-state",
+		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
