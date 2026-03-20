@@ -3073,22 +3073,6 @@ describe("codex manager cli commands", () => {
 		expect(storageState.accounts).toHaveLength(1);
 	});
 
-	it("supports interactive manual login selection without waiting for a callback", async () => {
-		setInteractiveTTY(true);
-		const now = Date.now();
-		let storageState = {
-			version: 3 as const,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [] as Array<Record<string, unknown>>,
-		};
-		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
-		saveAccountsMock.mockImplementation(async (nextStorage) => {
-			storageState = structuredClone(nextStorage);
-		});
-		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
-		promptAddAnotherAccountMock.mockResolvedValue(false);
-
 	it("restores the latest named backup from onboarding when no accounts exist", async () => {
 		const now = Date.now();
 		setInteractiveTTY(true);

@@ -23,8 +23,8 @@ function createMockAccount(
 		index: 0,
 		accountId: "account-1",
 		email: "user@example.com",
-		refreshToken: "refresh-token",
-		access: "access-token",
+		refreshToken: "refresh-token-account-1",
+		access: "access-token-account-1",
 		expires: Date.now() + 60_000,
 		addedAt: Date.now(),
 		lastUsed: Date.now(),
@@ -100,6 +100,8 @@ vi.mock("../lib/accounts.js", async () => {
 	const tokenUtils = await vi.importActual("../lib/auth/token-utils.js");
 	const tokenUtilsModule = tokenUtils as typeof import("../lib/auth/token-utils.js");
 	class AccountManager {
+		private currentAuthAccount: Record<string, any> | null = null;
+
 		static async loadFromDisk() {
 			return new AccountManager();
 		}
@@ -133,14 +135,29 @@ vi.mock("../lib/accounts.js", async () => {
 
 		recordFailure() {}
 
-	toAuthDetails() {
-		return {
-			type: "oauth",
-			access: "access-token",
-			refresh: "refresh-token",
-			expires: Date.now() + 60_000,
-		};
-	}
+		toAuthDetails(account?: Record<string, any>) {
+			const resolvedAccount =
+				account ??
+				this.currentAuthAccount ??
+				accountManagerState.accounts[0] ??
+				createMockAccount();
+			this.currentAuthAccount = resolvedAccount;
+			return {
+				type: "oauth",
+				access: String(
+					resolvedAccount.access ?? `access-token-${resolvedAccount.accountId ?? "account-1"}`,
+				),
+				refresh: String(
+					resolvedAccount.refreshToken ??
+						`refresh-token-${resolvedAccount.accountId ?? "account-1"}`,
+				),
+				expires: Number(resolvedAccount.expires ?? Date.now() + 60_000),
+				idToken:
+					typeof resolvedAccount.idToken === "string"
+						? resolvedAccount.idToken
+						: undefined,
+			};
+		}
 
 	hasRefreshToken(_token: string) {
 		return true;
@@ -252,8 +269,17 @@ vi.mock("../lib/accounts.js", async () => {
 
 	return {
 		AccountManager,
-		extractAccountEmail: () => "user@example.com",
-		extractAccountId: () => "account-1",
+		extractAccountEmail: (accessToken?: string) => {
+			if (!accessToken) {
+				return "user@example.com";
+			}
+			const match = /account-(\d+)/.exec(accessToken);
+			return match ? `user${match[1]}@example.com` : "user@example.com";
+		},
+		extractAccountId: (accessToken?: string) => {
+			const match = accessToken ? /account-\d+/.exec(accessToken) : null;
+			return match?.[0] ?? "account-1";
+		},
 		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
 		resolveRuntimeRequestIdentity: ({
 			storedAccountId,
@@ -268,7 +294,9 @@ vi.mock("../lib/accounts.js", async () => {
 			accessToken?: string;
 			idToken?: string;
 		}) => {
-			const tokenAccountId = accessToken ? "account-1" : undefined;
+			const tokenAccountId = accessToken
+				? tokenUtilsModule.extractAccountId(accessToken)
+				: undefined;
 			const tokenEmail = tokenUtilsModule.sanitizeEmail(
 				tokenUtilsModule.extractAccountEmail(accessToken, idToken),
 			);
