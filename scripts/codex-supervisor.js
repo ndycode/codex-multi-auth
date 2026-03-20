@@ -5,13 +5,14 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 
-const DEFAULT_POLL_MS = 750;
-const DEFAULT_IDLE_MS = 400;
-const DEFAULT_SESSION_CAPTURE_TIMEOUT_MS = 3_000;
-const DEFAULT_SIGNAL_TIMEOUT_MS = process.platform === "win32" ? 125 : 500;
+const DEFAULT_POLL_MS = 300;
+const DEFAULT_IDLE_MS = 250;
+const DEFAULT_SESSION_CAPTURE_TIMEOUT_MS = 1_500;
+const DEFAULT_SIGNAL_TIMEOUT_MS = process.platform === "win32" ? 75 : 350;
 const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 4_000;
-const DEFAULT_MONITOR_PROBE_TIMEOUT_MS = 2_000;
-const DEFAULT_SELECTION_PROBE_TIMEOUT_MS = 4_000;
+const DEFAULT_MONITOR_PROBE_TIMEOUT_MS = 1_250;
+const DEFAULT_SELECTION_PROBE_TIMEOUT_MS = 2_500;
+const DEFAULT_SESSION_BINDING_POLL_MS = 50;
 const DEFAULT_STORAGE_LOCK_WAIT_MS = 10_000;
 const DEFAULT_STORAGE_LOCK_POLL_MS = 100;
 const DEFAULT_STORAGE_LOCK_TTL_MS = 30_000;
@@ -865,10 +866,15 @@ async function waitForSessionBinding({
 	signal,
 }) {
 	const deadline = Date.now() + timeoutMs;
+	const pollMs = parseNumberEnv(
+		"CODEX_AUTH_CLI_SESSION_BINDING_POLL_MS",
+		DEFAULT_SESSION_BINDING_POLL_MS,
+		25,
+	);
 	while (Date.now() <= deadline) {
 		const binding = await findSessionBinding({ cwd, sinceMs, sessionId });
 		if (binding) return binding;
-		const slept = await sleep(100, signal);
+		const slept = await sleep(pollMs, signal);
 		if (!slept) return null;
 	}
 	return null;
