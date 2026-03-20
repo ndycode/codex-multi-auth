@@ -305,6 +305,13 @@ export interface ProbeCodexQuotaOptions {
 	model?: string;
 	fallbackModels?: readonly string[];
 	timeoutMs?: number;
+	signal?: AbortSignal;
+}
+
+function createAbortError(message: string): Error {
+	const error = new Error(message);
+	error.name = "AbortError";
+	return error;
 }
 
 /**
@@ -331,6 +338,9 @@ export async function fetchCodexQuotaSnapshot(
 	let lastError: Error | null = null;
 
 	for (const model of models) {
+		if (options.signal?.aborted) {
+			throw createAbortError("Quota probe aborted");
+		}
 		try {
 			const instructions = await getCodexInstructions(model);
 			const probeBody: RequestBody = {
@@ -356,6 +366,12 @@ export async function fetchCodexQuotaSnapshot(
 			headers.set("content-type", "application/json");
 
 			const controller = new AbortController();
+			const onAbort = () => controller.abort(options.signal?.reason);
+			if (options.signal?.aborted) {
+				controller.abort(options.signal.reason);
+			} else {
+				options.signal?.addEventListener("abort", onAbort, { once: true });
+			}
 			const timeout = setTimeout(() => controller.abort(), timeoutMs);
 			let response: Response;
 			try {
@@ -367,6 +383,7 @@ export async function fetchCodexQuotaSnapshot(
 				});
 			} finally {
 				clearTimeout(timeout);
+				options.signal?.removeEventListener("abort", onAbort);
 			}
 
 			const snapshotBase = parseQuotaSnapshotBase(response.headers, response.status);
@@ -406,6 +423,9 @@ export async function fetchCodexQuotaSnapshot(
 			}
 			lastError = new Error("Codex response did not include quota headers");
 		} catch (error) {
+			if (options.signal?.aborted) {
+				throw error instanceof Error ? error : createAbortError("Quota probe aborted");
+			}
 			lastError = error instanceof Error ? error : new Error(String(error));
 		}
 	}

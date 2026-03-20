@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { __testOnly } from "../scripts/codex-supervisor.js";
+import { removeWithRetry } from "../scripts/remove-with-retry.js";
 
 const createdDirs: string[] = [];
 const supervisorTestApi = __testOnly!;
@@ -26,9 +27,9 @@ function createTempDir(): string {
 	return dir;
 }
 
-afterEach(() => {
+afterEach(async () => {
 	for (const dir of createdDirs.splice(0, createdDirs.length).reverse()) {
-		rmSync(dir, { recursive: true, force: true });
+		await removeWithRetry(dir, { recursive: true, force: true });
 	}
 });
 
@@ -371,6 +372,53 @@ describe("codex supervisor internals", () => {
 		await expect(
 			supervisorTestApi.ensureLaunchableAccount(runtime, {}, controller.signal),
 		).resolves.toMatchObject({
+			ok: false,
+			aborted: true,
+		});
+	});
+
+	it("aborts an in-flight quota probe while selecting a launchable account", async () => {
+		const dir = createTempDir();
+		const controller = new AbortController();
+		const candidate = {
+			index: 0,
+			accountId: "acc-1",
+			access: "access-1",
+		};
+
+		const runtime = {
+			getRetryAllAccountsRateLimited: () => true,
+			getStoragePath: () => join(dir, "openai-codex-accounts.json"),
+			fetchCodexQuotaSnapshot: ({ signal }: { signal?: AbortSignal }) =>
+				new Promise((_, reject) => {
+					signal?.addEventListener(
+						"abort",
+						() => {
+							const error = new Error("Quota probe aborted");
+							error.name = "AbortError";
+							reject(error);
+						},
+						{ once: true },
+					);
+				}),
+			AccountManager: class FakeManager {
+				static async loadFromDisk() {
+					return {
+						getCurrentOrNextForFamilyHybrid() {
+							return candidate;
+						},
+						getAccountByIndex(index: number) {
+							return index === candidate.index ? candidate : null;
+						},
+					};
+				}
+			},
+		};
+
+		const pending = supervisorTestApi.ensureLaunchableAccount(runtime, {}, controller.signal);
+		setTimeout(() => controller.abort(), 25);
+
+		await expect(pending).resolves.toMatchObject({
 			ok: false,
 			aborted: true,
 		});

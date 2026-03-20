@@ -2329,6 +2329,10 @@ export async function exportAccounts(
 
 	const transactionState = transactionSnapshotContext.getStore();
 	let storage: AccountStorageV3 | null;
+	let crossPathExportContext: {
+		transactionPath: string;
+		activeStoragePath: string;
+	} | null = null;
 	if (
 		transactionState?.active &&
 		transactionState.storagePath === activeStoragePath
@@ -2336,9 +2340,19 @@ export async function exportAccounts(
 		storage = transactionState.snapshot;
 	} else if (transactionState?.active) {
 		storage = null;
+		crossPathExportContext = {
+			transactionPath: transactionState.storagePath,
+			activeStoragePath,
+		};
 	} else {
 		storage = await withAccountStorageTransaction((current) =>
 			Promise.resolve(current),
+		);
+	}
+	if (crossPathExportContext) {
+		throw new Error(
+			"No accounts to export: export was called from a different storage path " +
+				`(transaction path: ${crossPathExportContext.transactionPath}, active: ${crossPathExportContext.activeStoragePath})`,
 		);
 	}
 	if (!storage || storage.accounts.length === 0) {

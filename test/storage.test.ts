@@ -979,7 +979,7 @@ describe("storage", () => {
 				setStoragePathDirect(alternateStoragePath);
 				try {
 					await expect(exportAccounts(exportPath)).rejects.toThrow(
-						/No accounts to export/,
+						/No accounts to export: export was called from a different storage path/,
 					);
 				} finally {
 					setStoragePathDirect(testStoragePath);

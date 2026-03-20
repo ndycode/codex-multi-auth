@@ -4,29 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { execFileSync } from "node:child_process";
-
-/**
- * Retry-capable fs.rm for Windows EBUSY/EPERM/ENOTEMPTY errors.
- * Uses linear backoff (attempt * 50ms) with up to 5 retries.
- */
-async function removeWithRetry(targetPath, options) {
-	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
-	const maxAttempts = 6;
-
-	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-		try {
-			await fs.rm(targetPath, options);
-			return;
-		} catch (error) {
-			const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-			const shouldRetry = code !== undefined && retryableCodes.has(code);
-			if (!shouldRetry || attempt === maxAttempts) {
-				throw error;
-			}
-			await new Promise((resolve) => setTimeout(resolve, attempt * 50));
-		}
-	}
-}
+import { removeWithRetry } from "./remove-with-retry.js";
 
 const ROOT_TEMP_PATTERN = /^\.?tmp/i;
 const GENERATED_DIRS = new Set([

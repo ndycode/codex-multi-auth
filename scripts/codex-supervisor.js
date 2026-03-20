@@ -434,7 +434,10 @@ function evaluateQuotaSnapshot(snapshot, runtime, pluginConfig) {
 	}
 }
 
-async function probeAccountSnapshot(runtime, account) {
+async function probeAccountSnapshot(runtime, account, signal) {
+	if (signal?.aborted) {
+		throw createAbortError("Quota probe aborted")
+	}
 	if (!account?.accountId || !account?.access) {
 		return null
 	}
@@ -442,8 +445,12 @@ async function probeAccountSnapshot(runtime, account) {
 		return await runtime.fetchCodexQuotaSnapshot({
 			accountId: account.accountId,
 			accessToken: account.access,
+			signal,
 		})
-	} catch {
+	} catch (error) {
+		if (signal?.aborted || error?.name === "AbortError") {
+			throw error
+		}
 		return null
 	}
 }
@@ -511,7 +518,15 @@ async function ensureLaunchableAccount(runtime, pluginConfig, signal) {
 			continue
 		}
 
-		const snapshot = await probeAccountSnapshot(runtime, initial.account)
+		let snapshot
+		try {
+			snapshot = await probeAccountSnapshot(runtime, initial.account, signal)
+		} catch (error) {
+			if (signal?.aborted || error?.name === "AbortError") {
+				return { ok: false, account: null, aborted: true }
+			}
+			throw error
+		}
 		const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
 		const step = await withLockedManager(runtime, async (manager) => {
 			const account = resolveAccountInManager(manager, initial.account)
@@ -799,7 +814,15 @@ async function runInteractiveSupervision({
 				if (!requestedRestart) {
 					const currentAccount = getCurrentAccount(manager)
 					if (currentAccount) {
-						const snapshot = await probeAccountSnapshot(runtime, currentAccount)
+						let snapshot
+						try {
+							snapshot = await probeAccountSnapshot(runtime, currentAccount, monitorController.signal)
+						} catch (error) {
+							if (monitorController.signal.aborted || error?.name === "AbortError") {
+								break
+							}
+							throw error
+						}
 						const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
 						if (evaluation.rotate && binding?.sessionId) {
 							const lastActivityAtMs = binding.lastActivityAtMs ?? launchStartedAt
@@ -859,7 +882,7 @@ async function runInteractiveSupervision({
 			}), signal)
 			manager = refreshedState.manager ?? manager
 			const snapshot = refreshedState.currentAccount
-				? await probeAccountSnapshot(runtime, refreshedState.currentAccount)
+				? await probeAccountSnapshot(runtime, refreshedState.currentAccount, signal)
 				: null
 			const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
 			if (evaluation.rotate) {
