@@ -2,9 +2,6 @@ import { spawn } from "node:child_process";
 import {
 	existsSync,
 	promises as fs,
-	readFileSync,
-	readdirSync,
-	statSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -19,6 +16,7 @@ const DEFAULT_STORAGE_LOCK_POLL_MS = 100
 const DEFAULT_STORAGE_LOCK_TTL_MS = 30_000
 const INTERNAL_RECOVERABLE_COOLDOWN_MS = 60_000
 const RETRYABLE_IO_ERROR_CODES = new Set(["EBUSY", "EPERM", "EMFILE", "ENFILE"])
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/
 
 function sleep(ms, signal) {
 	return new Promise((resolve) => {
@@ -80,7 +78,7 @@ function isNonInteractiveCommand(rawArgs) {
 function readResumeSessionId(rawArgs) {
 	if ((rawArgs[0] ?? "").trim().toLowerCase() !== "resume") return null
 	const sessionId = `${rawArgs[1] ?? ""}`.trim()
-	return sessionId.length > 0 ? sessionId : null
+	return isValidSessionId(sessionId) ? sessionId : null
 }
 
 async function importIfPresent(specifier) {
@@ -222,6 +220,10 @@ function getSupervisorStorageLockPath(runtime) {
 	return `${getSupervisorStoragePath(runtime)}.supervisor.lock`
 }
 
+function isValidSessionId(value) {
+	return SESSION_ID_PATTERN.test(`${value ?? ""}`.trim())
+}
+
 async function readSupervisorLockPayload(lockPath) {
 	try {
 		const raw = await fs.readFile(lockPath, "utf8")
@@ -341,6 +343,12 @@ function resolveAccountInManager(manager, account) {
 		if (direct && accountsMatch(direct, account)) return direct
 	}
 
+	const current = getCurrentAccount(manager)
+	if (current && accountsMatch(current, account)) return current
+
+	const candidate = pickNextCandidate(manager)
+	if (candidate && accountsMatch(candidate, account)) return candidate
+
 	if (typeof manager.getAccountsSnapshot !== "function") return null
 	const accounts = manager.getAccountsSnapshot()
 	return accounts.find((candidate) => accountsMatch(candidate, account)) ?? null
@@ -439,19 +447,45 @@ async function ensureLaunchableAccount(runtime, pluginConfig) {
 	let attempts = 0
 	while (attempts < 32) {
 		attempts += 1
-		const step = await withLockedManager(runtime, async (manager) => {
+		const initial = await withLockedManager(runtime, async (manager) => {
 			const account = pickNextCandidate(manager)
 			if (!account) {
 				return {
 					kind: "wait",
 					waitMs: getNearestWaitMs(manager),
 					account: null,
+				}
+			}
+			return {
+				kind: "probe",
+				account,
+			}
+		})
+
+		if (initial.kind === "wait") {
+			if (initial.waitMs <= 0 || !runtime.getRetryAllAccountsRateLimited(pluginConfig)) {
+				return { ok: false, account: null }
+			}
+
+			relaunchNotice(`all accounts unavailable, waiting ${Math.ceil(initial.waitMs / 1000)}s for the next eligible window`)
+			await sleep(initial.waitMs)
+			continue
+		}
+
+		const snapshot = await probeAccountSnapshot(runtime, initial.account)
+		const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
+		const step = await withLockedManager(runtime, async (manager) => {
+			const account = resolveAccountInManager(manager, initial.account)
+			const currentCandidate = pickNextCandidate(manager)
+			if (!account || !currentCandidate || !accountsMatch(currentCandidate, account)) {
+				return {
+					kind: "retry",
+					waitMs: 0,
+					account: null,
 					manager,
 				}
 			}
 
-			const snapshot = await probeAccountSnapshot(runtime, account)
-			const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
 			if (!evaluation.rotate) {
 				await persistActiveSelection(manager, account)
 				return {
@@ -481,23 +515,12 @@ async function ensureLaunchableAccount(runtime, pluginConfig) {
 				...step,
 			}
 		}
-
-		if (step.kind === "retry") {
-			continue
-		}
-
-		if (step.waitMs <= 0 || !runtime.getRetryAllAccountsRateLimited(pluginConfig)) {
-			return { ok: false, account: null }
-		}
-
-		relaunchNotice(`all accounts unavailable, waiting ${Math.ceil(step.waitMs / 1000)}s for the next eligible window`)
-		await sleep(step.waitMs)
 	}
 
 	return { ok: false, account: null }
 }
 
-function listJsonlFiles(rootDir) {
+async function listJsonlFiles(rootDir) {
 	if (!existsSync(rootDir)) return []
 	const files = []
 	const pending = [rootDir]
@@ -506,12 +529,15 @@ function listJsonlFiles(rootDir) {
 		if (!nextDir) continue
 		let entries = []
 		try {
-			entries = readdirSync(nextDir, { withFileTypes: true })
+			entries = await fs.readdir(nextDir, { withFileTypes: true })
 		} catch {
 			continue
 		}
 		for (const entry of entries) {
 			const fullPath = join(nextDir, entry.name)
+			if (entry.isSymbolicLink()) {
+				continue
+			}
 			if (entry.isDirectory()) {
 				pending.push(fullPath)
 				continue
@@ -526,13 +552,14 @@ function listJsonlFiles(rootDir) {
 
 function normalizeCwd(value) {
 	if (typeof value !== "string") return ""
-	return resolvePath(value).replace(/[\\/]+$/, "").toLowerCase()
+	const normalized = resolvePath(value).replace(/[\\/]+$/, "")
+	return process.platform === "win32" ? normalized.toLowerCase() : normalized
 }
 
-function extractSessionMeta(filePath) {
+async function extractSessionMeta(filePath) {
 	let raw = ""
 	try {
-		raw = readFileSync(filePath, "utf8")
+		raw = await fs.readFile(filePath, "utf8")
 	} catch {
 		return null
 	}
@@ -544,7 +571,7 @@ function extractSessionMeta(filePath) {
 			const payload = parsed?.session_meta?.payload ?? (parsed?.type === "session_meta" ? parsed.payload : null)
 			const sessionId = `${payload?.id ?? ""}`.trim()
 			const cwd = `${payload?.cwd ?? ""}`.trim()
-			if (sessionId.length > 0) {
+			if (isValidSessionId(sessionId)) {
 				return {
 					sessionId,
 					cwd,
@@ -558,27 +585,27 @@ function extractSessionMeta(filePath) {
 	return null
 }
 
-function findSessionBinding({ cwd, sinceMs, sessionId }) {
+async function findSessionBinding({ cwd, sinceMs, sessionId }) {
 	const sessionsRoot = getSessionsRootDir()
 	const cwdKey = normalizeCwd(cwd)
-	const files = listJsonlFiles(sessionsRoot)
-		.map((filePath) => {
-			let stat
+	const files = (await Promise.all(
+		(await listJsonlFiles(sessionsRoot)).map(async (filePath) => {
 			try {
-				stat = statSync(filePath)
+				const stat = await fs.stat(filePath)
+				return {
+					filePath,
+					mtimeMs: stat.mtimeMs,
+				}
 			} catch {
 				return null
 			}
-			return {
-				filePath,
-				mtimeMs: stat.mtimeMs,
-			}
-		})
+		}),
+	))
 		.filter((entry) => entry && (sessionId ? true : entry.mtimeMs >= sinceMs - 2_000))
 		.sort((left, right) => right.mtimeMs - left.mtimeMs)
 
 	for (const entry of files) {
-		const meta = extractSessionMeta(entry.filePath)
+		const meta = await extractSessionMeta(entry.filePath)
 		if (!meta) continue
 		if (sessionId && meta.sessionId === sessionId) {
 			return {
@@ -601,7 +628,7 @@ function findSessionBinding({ cwd, sinceMs, sessionId }) {
 async function waitForSessionBinding({ cwd, sinceMs, sessionId, timeoutMs, signal }) {
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() <= deadline) {
-		const binding = findSessionBinding({ cwd, sinceMs, sessionId })
+		const binding = await findSessionBinding({ cwd, sinceMs, sessionId })
 		if (binding) return binding
 		const slept = await sleep(100, signal)
 		if (!slept) return null
@@ -671,7 +698,7 @@ async function runInteractiveSupervision({
 		const launchStartedAt = Date.now()
 		let binding =
 			knownSessionId
-				? findSessionBinding({
+				? await findSessionBinding({
 					cwd: process.cwd(),
 					sinceMs: 0,
 					sessionId: knownSessionId,
@@ -760,7 +787,7 @@ async function runInteractiveSupervision({
 		monitorActive = false
 		monitorController.abort()
 		await monitorPromise
-		binding = binding ?? findSessionBinding({
+		binding = binding ?? await findSessionBinding({
 			cwd: process.cwd(),
 			sinceMs: launchStartedAt,
 			sessionId: knownSessionId,
@@ -868,6 +895,7 @@ export const __testOnly = {
 	findSessionBinding,
 	extractSessionMeta,
 	isInteractiveCommand,
+	isValidSessionId,
 	readResumeSessionId,
 	resolveCodexHomeDir,
 	getSessionsRootDir,
