@@ -68,12 +68,15 @@ function createAbortError(message = "Operation aborted") {
 	return error;
 }
 
-function createProbeUnavailableError(error) {
+function createProbeUnavailableError(error, options = {}) {
 	const wrapped = new Error(
 		error instanceof Error ? error.message : String(error),
 		{ cause: error },
 	);
 	wrapped.name = "QuotaProbeUnavailableError";
+	if (options.coolDownAccount) {
+		wrapped.coolDownAccount = true;
+	}
 	return wrapped;
 }
 
@@ -1122,7 +1125,9 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 					throw error;
 				}
 				if (error?.name === "AbortError") {
-					throw createProbeUnavailableError(error);
+					throw createProbeUnavailableError(error, {
+						coolDownAccount: true,
+					});
 				}
 				throw error;
 			}
@@ -1182,7 +1187,9 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 			throw error;
 		}
 		if (error?.name === "AbortError") {
-			throw createProbeUnavailableError(error);
+			throw createProbeUnavailableError(error, {
+				coolDownAccount: true,
+			});
 		}
 		if (error?.name === "QuotaProbeUnavailableError") {
 			throw error;
@@ -1324,7 +1331,10 @@ async function ensureLaunchableAccount(
 								snapshot: null,
 								evaluation: {
 									rotate: true,
-									reason: "probe-unavailable",
+									reason:
+										error?.coolDownAccount === true
+											? "probe-error"
+											: "probe-unavailable",
 									waitMs: 0,
 								},
 							};

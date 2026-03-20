@@ -19,6 +19,8 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
 	"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS",
+	"CODEX_AUTH_ACCESS_TOKEN",
+	"CODEX_AUTH_REFRESH_TOKEN",
 	"CODEX_AUTH_RETRY_ALL_RATE_LIMITED",
 	"CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED",
 	"CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT",
@@ -550,6 +552,22 @@ describe("codex supervisor", () => {
 				preemptiveQuotaRemainingPercent7d: 7,
 			}),
 		).toBe(100);
+	});
+
+	it("strips CODEX_AUTH env keys from supervised child launches", () => {
+		process.env.CODEX_AUTH_ACCESS_TOKEN = "access-secret";
+		process.env.CODEX_AUTH_REFRESH_TOKEN = "refresh-secret";
+		process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = "1";
+		process.env.CODEX_HOME = "/tmp/codex-home";
+		process.env.PATH = "C:\\Windows\\System32";
+
+		const env = supervisorTestApi?.buildCodexChildEnv?.();
+		expect(env).toBeTruthy();
+		expect(env?.CODEX_AUTH_ACCESS_TOKEN).toBeUndefined();
+		expect(env?.CODEX_AUTH_REFRESH_TOKEN).toBeUndefined();
+		expect(env?.CODEX_AUTH_CLI_SESSION_SUPERVISOR).toBeUndefined();
+		expect(env?.CODEX_HOME).toBe("/tmp/codex-home");
+		expect(env?.PATH).toBe("C:\\Windows\\System32");
 	});
 
 	it("cleans up stale supervisor locks even after a transient Windows unlink failure", async () => {
@@ -1905,6 +1923,60 @@ describe("codex supervisor", () => {
 			ok: true,
 			account: { accountId: "healthy" },
 		});
+		expect(manager.getAccountByIndex(0)?.coolingDownUntil).toBeGreaterThan(0);
+		expect(manager.activeIndex).toBe(1);
+	});
+
+	it("cools down accounts when another caller aborts a shared pending probe", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "5000";
+
+		const manager = new FakeManager();
+		const fetches: string[] = [];
+		const probeStarted = createDeferred<void>();
+		const runtime = createFakeRuntime(manager, {
+			delayByAccountId: new Map([["near-limit", 80]]),
+			onFetch(accountId) {
+				fetches.push(accountId);
+			},
+			onFetchStart(accountId) {
+				if (accountId === "near-limit") {
+					probeStarted.resolve();
+				}
+			},
+		});
+
+		const firstController = new AbortController();
+		const currentAccount = manager.getCurrentAccountForFamily();
+		expect(currentAccount?.accountId).toBe("near-limit");
+		if (!currentAccount) {
+			throw new Error("missing current account");
+		}
+
+		const firstProbe = supervisorTestApi?.probeAccountSnapshot(
+			runtime,
+			currentAccount,
+			firstController.signal,
+			250,
+		);
+		await probeStarted.promise;
+
+		const selectionPromise = supervisorTestApi?.ensureLaunchableAccount(
+			runtime,
+			{},
+			undefined,
+			{ probeTimeoutMs: 250 },
+		);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		firstController.abort();
+
+		await expect(firstProbe).rejects.toMatchObject({ name: "AbortError" });
+		const result = await selectionPromise;
+
+		expect(result).toMatchObject({
+			ok: true,
+			account: { accountId: "healthy" },
+		});
+		expect(fetches).toEqual(["near-limit", "healthy"]);
 		expect(manager.getAccountByIndex(0)?.coolingDownUntil).toBeGreaterThan(0);
 		expect(manager.activeIndex).toBe(1);
 	});
