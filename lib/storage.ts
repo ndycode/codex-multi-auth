@@ -767,6 +767,63 @@ async function loadFlaggedAccountsFromPath(
 	return normalizeFlaggedStorage(data);
 }
 
+async function loadFlaggedAccountsWithFallback(
+	path: string,
+	persistMigrated: (storage: FlaggedAccountStorageV1) => Promise<void>,
+): Promise<FlaggedAccountStorageV1> {
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
+	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
+
+	try {
+		const loaded = await loadFlaggedAccountsFromPath(path);
+		if (existsSync(resetMarkerPath)) {
+			return empty;
+		}
+		return loaded;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.error("Failed to load flagged account storage", {
+				path,
+				error: String(error),
+			});
+			return empty;
+		}
+	}
+
+	const legacyPath = getLegacyFlaggedAccountsPath();
+	if (!existsSync(legacyPath)) {
+		return empty;
+	}
+
+	try {
+		const legacyContent = await fs.readFile(legacyPath, "utf-8");
+		const legacyData = JSON.parse(legacyContent) as unknown;
+		const migrated = normalizeFlaggedStorage(legacyData);
+		if (migrated.accounts.length > 0) {
+			await persistMigrated(migrated);
+		}
+		try {
+			await fs.unlink(legacyPath);
+		} catch {
+			// Best effort cleanup.
+		}
+		log.info("Migrated legacy flagged account storage", {
+			from: legacyPath,
+			to: path,
+			accounts: migrated.accounts.length,
+		});
+		return migrated;
+	} catch (error) {
+		log.error("Failed to migrate legacy flagged account storage", {
+			from: legacyPath,
+			to: path,
+			error: String(error),
+		});
+		return empty;
+	}
+}
+
 async function describeFlaggedSnapshot(
 	path: string,
 	kind: BackupSnapshotKind,
@@ -2120,7 +2177,10 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			active: true,
 		};
 		const current = state.snapshot;
-		const currentFlagged = await loadFlaggedAccountsFromPath(getFlaggedAccountsPath());
+		const currentFlagged = await loadFlaggedAccountsWithFallback(
+			getFlaggedAccountsPath(),
+			saveFlaggedAccountsUnlocked,
+		);
 		const persist = async (
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
@@ -2166,7 +2226,10 @@ export async function withFlaggedStorageTransaction<T>(
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
-		const current = await loadFlaggedAccountsFromPath(getFlaggedAccountsPath());
+		const current = await loadFlaggedAccountsWithFallback(
+			getFlaggedAccountsPath(),
+			saveFlaggedAccountsUnlocked,
+		);
 		let snapshot = cloneFlaggedStorageForPersistence(current);
 		const persist = async (storage: FlaggedAccountStorageV1): Promise<void> => {
 			const previousStorage = cloneFlaggedStorageForPersistence(snapshot);
@@ -2372,59 +2435,7 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 
 export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	const path = getFlaggedAccountsPath();
-	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
-
-	try {
-		const content = await fs.readFile(path, "utf-8");
-		const data = JSON.parse(content) as unknown;
-		const loaded = normalizeFlaggedStorage(data);
-		if (existsSync(resetMarkerPath)) {
-			return empty;
-		}
-		return loaded;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.error("Failed to load flagged account storage", {
-				path,
-				error: String(error),
-			});
-			return empty;
-		}
-	}
-
-	const legacyPath = getLegacyFlaggedAccountsPath();
-	if (!existsSync(legacyPath)) {
-		return empty;
-	}
-
-	try {
-		const legacyContent = await fs.readFile(legacyPath, "utf-8");
-		const legacyData = JSON.parse(legacyContent) as unknown;
-		const migrated = normalizeFlaggedStorage(legacyData);
-		if (migrated.accounts.length > 0) {
-			await saveFlaggedAccounts(migrated);
-		}
-		try {
-			await fs.unlink(legacyPath);
-		} catch {
-			// Best effort cleanup.
-		}
-		log.info("Migrated legacy flagged account storage", {
-			from: legacyPath,
-			to: path,
-			accounts: migrated.accounts.length,
-		});
-		return migrated;
-	} catch (error) {
-		log.error("Failed to migrate legacy flagged account storage", {
-			from: legacyPath,
-			to: path,
-			error: String(error),
-		});
-		return empty;
-	}
+	return loadFlaggedAccountsWithFallback(path, saveFlaggedAccounts);
 }
 
 async function saveFlaggedAccountsUnlocked(

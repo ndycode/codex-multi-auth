@@ -779,6 +779,7 @@ export async function runVerifyFlagged(
 						restored: 0,
 						healthyFlagged: 0,
 						stillFlagged: 0,
+						remainingFlagged: 0,
 						changed: false,
 						dryRun: options.dryRun,
 						restore: options.restore,
@@ -939,7 +940,7 @@ export async function runVerifyFlagged(
 		}
 	};
 
-	let remainingFlagged = nextFlaggedAccounts.length;
+	let remainingFlagged = 0;
 
 	if (options.restore) {
 		if (options.dryRun) {
@@ -966,6 +967,7 @@ export async function runVerifyFlagged(
 		}
 	} else {
 		applyRefreshChecks(createEmptyAccountStorage());
+		remainingFlagged = nextFlaggedAccounts.length;
 	}
 
 	if (options.dryRun) {
@@ -1082,7 +1084,35 @@ export async function runFix(
 	setStoragePath(null);
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
-		console.log("No accounts configured.");
+		if (options.json) {
+			console.log(
+				JSON.stringify(
+					{
+						command: "fix",
+						dryRun: options.dryRun,
+						liveProbe: options.live,
+						model: options.model,
+						changed: false,
+						summary: {
+							healthy: 0,
+							disabled: 0,
+							warnings: 0,
+							skipped: 0,
+						},
+						recommendation: {
+							recommendedIndex: null,
+							reason: "No accounts configured.",
+						},
+						recommendedSwitchCommand: null,
+						reports: [] as FixAccountReport[],
+					},
+					null,
+					2,
+				),
+			);
+		} else {
+			console.log("No accounts configured.");
+		}
 		return 0;
 	}
 	const originalAccounts = storage.accounts.map((account) => structuredClone(account));
@@ -1093,7 +1123,7 @@ export async function runFix(
 
 	const now = Date.now();
 	const activeIndex = deps.resolveActiveIndex(storage, "codex");
-	let changed = false;
+	let accountStorageChanged = false;
 	const reports: FixAccountReport[] = [];
 	const refreshFailures = new Map<number, TokenFailure>();
 	const hardDisabledIndexes: number[] = [];
@@ -1146,17 +1176,7 @@ export async function runFix(
 								: "live session OK",
 						});
 						continue;
-					} catch (error) {
-						const message = deps.normalizeFailureDetail(
-							error instanceof Error ? error.message : String(error),
-							undefined,
-						);
-						reports.push({
-							index: i,
-							label,
-							outcome: "warning-soft-failure",
-							message: `live probe failed (${message}), trying refresh fallback`,
-						});
+					} catch {
 						refreshAfterLiveProbeFailure = true;
 					}
 				}
@@ -1208,7 +1228,7 @@ export async function runFix(
 				accountIdentityChanged = true;
 			}
 
-			if (accountChanged) changed = true;
+			if (accountChanged) accountStorageChanged = true;
 			if (accountIdentityChanged && options.live && workingQuotaCache) {
 				quotaEmailFallbackState = deps.buildQuotaEmailFallbackState(storage.accounts);
 				quotaCacheChanged =
@@ -1281,7 +1301,7 @@ export async function runFix(
 		});
 		if (isHardRefreshFailure(refreshResult)) {
 			account.enabled = false;
-			changed = true;
+			accountStorageChanged = true;
 			hardDisabledIndexes.push(i);
 			reports.push({
 				index: i,
@@ -1312,7 +1332,7 @@ export async function runFix(
 				: undefined;
 			if (fallback && fallback.enabled === false) {
 				fallback.enabled = true;
-				changed = true;
+				accountStorageChanged = true;
 				const existingReport = reports.find(
 					(report) =>
 						report.index === fallbackIndex
@@ -1343,7 +1363,7 @@ export async function runFix(
 		storage.accounts,
 	);
 
-	if (changed && !options.dryRun) {
+	if (accountStorageChanged && !options.dryRun) {
 		await withAccountStorageTransaction(async (loadedStorage, persist) => {
 			const nextStorage = loadedStorage
 				? structuredClone(loadedStorage)
@@ -1352,6 +1372,8 @@ export async function runFix(
 			await persist(nextStorage);
 		});
 	}
+
+	const changed = accountStorageChanged || quotaCacheChanged;
 
 	if (options.json) {
 		if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
@@ -1648,17 +1670,7 @@ export async function runDoctor(
 	if (options.fix && storage && storage.accounts.length > 0) {
 		const fixed = applyDoctorFixes(storage, deps);
 		storageFixChanged = fixed.changed;
-		fixChanged = fixed.changed;
 		fixActions = fixed.actions;
-		addCheck({
-			key: "auto-fix",
-			severity: fixChanged ? "warn" : "ok",
-			message: fixChanged
-				? options.dryRun
-					? `Prepared ${fixActions.length} fix(es) (dry-run)`
-					: `Applied ${fixActions.length} fix(es)`
-				: "No safe auto-fixes needed",
-		});
 	}
 	if (!storage || storage.accounts.length === 0) {
 		addCheck({
@@ -1718,14 +1730,14 @@ export async function runDoctor(
 		let placeholderEmailCount = 0;
 		let likelyInvalidRefreshTokenCount = 0;
 		for (const account of storage.accounts) {
+			if (deps.hasLikelyInvalidRefreshToken(account.refreshToken)) {
+				likelyInvalidRefreshTokenCount += 1;
+			}
 			const email = sanitizeEmail(account.email);
 			if (!email) continue;
 			if (seenEmails.has(email)) duplicateEmailCount += 1;
 			seenEmails.add(email);
 			if (hasPlaceholderEmail(email)) placeholderEmailCount += 1;
-			if (deps.hasLikelyInvalidRefreshToken(account.refreshToken)) {
-				likelyInvalidRefreshTokenCount += 1;
-			}
 		}
 		addCheck({
 			key: "duplicate-email",
@@ -1901,7 +1913,6 @@ export async function runDoctor(
 	if (pendingCodexActiveSync) {
 		const synced = await setCodexCliActiveSelection(pendingCodexActiveSync);
 		if (synced) {
-			fixChanged = true;
 			fixActions.push({
 				key: "codex-active-sync",
 				message: "Synced manager active account into Codex auth state",
@@ -1913,6 +1924,19 @@ export async function runDoctor(
 				message: "Failed to sync manager active account into Codex auth state",
 			});
 		}
+	}
+
+	if (options.fix && storage && storage.accounts.length > 0) {
+		fixChanged = fixActions.length > 0;
+		addCheck({
+			key: "auto-fix",
+			severity: fixChanged ? "warn" : "ok",
+			message: fixChanged
+				? options.dryRun
+					? `Prepared ${fixActions.length} fix(es) (dry-run)`
+					: `Applied ${fixActions.length} fix(es)`
+				: "No safe auto-fixes needed",
+		});
 	}
 
 	const summary = checks.reduce(

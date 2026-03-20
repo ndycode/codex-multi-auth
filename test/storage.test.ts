@@ -24,6 +24,7 @@ import {
 	saveAccounts,
 	setStoragePath,
 	setStoragePathDirect,
+	clearFlaggedAccounts,
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 	withFlaggedStorageTransaction,
@@ -1012,6 +1013,39 @@ describe("storage", () => {
 			);
 		});
 
+		it("treats missing flagged storage as empty inside flagged transactions", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await clearFlaggedAccounts();
+
+			await expect(
+				withFlaggedStorageTransaction(async (current) => {
+					expect(current).toEqual({ version: 1, accounts: [] });
+				}),
+			).resolves.toBeUndefined();
+
+			await expect(
+				withAccountAndFlaggedStorageTransaction(
+					async (_current, _persist, currentFlagged) => {
+						expect(currentFlagged).toEqual({ version: 1, accounts: [] });
+					},
+				),
+			).resolves.toBeUndefined();
+		});
+
 		it("retries transient flagged storage rename and succeeds", async () => {
 			const now = Date.now();
 			await saveFlaggedAccounts({
@@ -1101,6 +1135,7 @@ describe("storage", () => {
 		it("should fail export when no accounts exist", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
+			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);

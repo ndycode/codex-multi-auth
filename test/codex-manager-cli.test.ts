@@ -37,6 +37,8 @@ const loggerWarnMock = vi.fn();
 const loggerErrorMock = vi.fn();
 let lastAccountStorageSnapshot: unknown = null;
 let lastFlaggedStorageSnapshot: unknown = null;
+let accountStorageState: unknown = null;
+let flaggedStorageState: unknown = null;
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -276,14 +278,18 @@ function updateLastAccountStorageSnapshot(snapshot: unknown): void {
 	if (snapshot == null) {
 		return;
 	}
-	lastAccountStorageSnapshot = cloneValue(snapshot);
+	const cloned = cloneValue(snapshot);
+	lastAccountStorageSnapshot = cloned;
+	accountStorageState = cloneValue(cloned);
 }
 
 function updateLastFlaggedStorageSnapshot(snapshot: unknown): void {
 	if (snapshot == null) {
 		return;
 	}
-	lastFlaggedStorageSnapshot = cloneValue(snapshot);
+	const cloned = cloneValue(snapshot);
+	lastFlaggedStorageSnapshot = cloned;
+	flaggedStorageState = cloneValue(cloned);
 }
 
 function getLastLoadedAccountSnapshot(): unknown {
@@ -307,7 +313,9 @@ async function getCurrentAccountSnapshot(): Promise<unknown> {
 		updateLastAccountStorageSnapshot(current);
 		return current;
 	}
-	return getLastLoadedAccountSnapshot();
+	return accountStorageState == null
+		? getLastLoadedAccountSnapshot()
+		: cloneValue(accountStorageState);
 }
 
 async function getCurrentFlaggedSnapshot(): Promise<unknown> {
@@ -316,7 +324,9 @@ async function getCurrentFlaggedSnapshot(): Promise<unknown> {
 		updateLastFlaggedStorageSnapshot(current);
 		return current;
 	}
-	return getLastLoadedFlaggedSnapshot();
+	return flaggedStorageState == null
+		? getLastLoadedFlaggedSnapshot()
+		: cloneValue(flaggedStorageState);
 }
 
 function makeErrnoError(message: string, code: string): NodeJS.ErrnoException {
@@ -568,7 +578,12 @@ describe("codex manager cli commands", () => {
 			accounts: [],
 		});
 		lastAccountStorageSnapshot = null;
+		accountStorageState = null;
 		lastFlaggedStorageSnapshot = {
+			version: 1,
+			accounts: [],
+		};
+		flaggedStorageState = {
 			version: 1,
 			accounts: [],
 		};
@@ -616,14 +631,18 @@ describe("codex manager cli commands", () => {
 					async (storage: unknown, flaggedStorage: unknown) => {
 						const previousSnapshot = structuredClone(snapshot);
 						const previousFlaggedSnapshot = structuredClone(flaggedSnapshot);
+						accountStorageState = structuredClone(storage);
 						await saveAccountsMock(storage);
 						try {
+							flaggedStorageState = structuredClone(flaggedStorage);
 							await saveFlaggedAccountsMock(flaggedStorage);
 							snapshot = structuredClone(storage);
 							flaggedSnapshot = structuredClone(flaggedStorage);
 							updateLastAccountStorageSnapshot(snapshot);
 							updateLastFlaggedStorageSnapshot(flaggedSnapshot);
 						} catch (error) {
+							accountStorageState = structuredClone(previousSnapshot);
+							flaggedStorageState = structuredClone(previousFlaggedSnapshot);
 							await saveAccountsMock(previousSnapshot);
 							updateLastAccountStorageSnapshot(previousSnapshot);
 							updateLastFlaggedStorageSnapshot(previousFlaggedSnapshot);
@@ -644,8 +663,16 @@ describe("codex manager cli commands", () => {
 					}
 					: structuredClone(current);
 			return handler(structuredClone(snapshot), async (storage: unknown) => {
-				await saveFlaggedAccountsMock(storage);
-				updateLastFlaggedStorageSnapshot(storage);
+				const previousSnapshot = structuredClone(snapshot);
+				flaggedStorageState = structuredClone(storage);
+				try {
+					await saveFlaggedAccountsMock(storage);
+					updateLastFlaggedStorageSnapshot(storage);
+				} catch (error) {
+					flaggedStorageState = structuredClone(previousSnapshot);
+					updateLastFlaggedStorageSnapshot(previousSnapshot);
+					throw error;
+				}
 			});
 		});
 		loadDashboardDisplaySettingsMock.mockResolvedValue({
@@ -6279,6 +6306,99 @@ describe("codex manager cli commands", () => {
 				expect.objectContaining({ key: "doctor-refresh" }),
 				expect.objectContaining({ key: "codex-active-sync" }),
 			]),
+		);
+	});
+
+	it("preserves concurrently added accounts during doctor --fix persistence", async () => {
+		const now = Date.now();
+		const initialStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "doctor@example.com",
+					accountId: "doctor-account",
+					accountIdSource: "manual",
+					refreshToken: "doctor-refresh",
+					accessToken: "doctor-access",
+					expiresAt: now - 60_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+			],
+		};
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "doctor@example.com",
+					accountId: "doctor-account",
+					accountIdSource: "manual",
+					refreshToken: "doctor-refresh",
+					accessToken: "doctor-access",
+					expiresAt: now - 60_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "concurrent@example.com",
+					accountId: "concurrent-account",
+					accountIdSource: "manual",
+					refreshToken: "concurrent-refresh",
+					accessToken: "concurrent-access",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock
+			.mockResolvedValueOnce(structuredClone(initialStorage))
+			.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "doctor-access-next",
+			refresh: "doctor-refresh-next",
+			expires: now + 3_600_000,
+			idToken: "doctor-id-next",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"doctor",
+			"--fix",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "doctor-account",
+						refreshToken: "doctor-refresh-next",
+						accessToken: "doctor-access-next",
+					}),
+					expect.objectContaining({
+						accountId: "concurrent-account",
+						refreshToken: "concurrent-refresh",
+						accessToken: "concurrent-access",
+					}),
+				]),
+			}),
 		);
 	});
 
