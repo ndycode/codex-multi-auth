@@ -649,7 +649,7 @@ async function refreshSessionActivity(binding) {
 	}
 }
 
-async function requestChildRestart(child) {
+async function requestChildRestart(child, platform = process.platform) {
 	if (child.exitCode !== null) return
 
 	const signalTimeoutMs = parseNumberEnv(
@@ -661,9 +661,11 @@ async function requestChildRestart(child) {
 		child.once("exit", () => resolve())
 	})
 
-	child.kill("SIGINT")
-	await Promise.race([exitPromise, sleep(signalTimeoutMs)])
-	if (child.exitCode !== null) return
+	if (platform !== "win32") {
+		child.kill("SIGINT")
+		await Promise.race([exitPromise, sleep(signalTimeoutMs)])
+		if (child.exitCode !== null) return
+	}
 
 	child.kill("SIGTERM")
 	await Promise.race([exitPromise, sleep(signalTimeoutMs)])
@@ -897,6 +899,7 @@ export const __testOnly = {
 	isInteractiveCommand,
 	isValidSessionId,
 	readResumeSessionId,
+	requestChildRestart,
 	resolveCodexHomeDir,
 	getSessionsRootDir,
 	sleep,

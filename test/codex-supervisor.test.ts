@@ -237,4 +237,29 @@ describe("codex supervisor internals", () => {
 			cwd: dir,
 		});
 	});
+
+	it("skips SIGINT escalation on Windows restarts", async () => {
+		const exitListeners: Array<() => void> = [];
+		const signals: string[] = [];
+		const child = {
+			exitCode: null as number | null,
+			once(event: string, listener: () => void) {
+				if (event === "exit") {
+					exitListeners.push(listener);
+				}
+			},
+			kill(signal: string) {
+				signals.push(signal);
+				if (signal === "SIGTERM") {
+					this.exitCode = 0;
+					for (const listener of exitListeners.splice(0, exitListeners.length)) {
+						listener();
+					}
+				}
+			},
+		};
+
+		await __testOnly.requestChildRestart(child, "win32");
+		expect(signals).toEqual(["SIGTERM"]);
+	});
 });
