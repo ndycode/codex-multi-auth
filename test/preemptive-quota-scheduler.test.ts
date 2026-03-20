@@ -142,11 +142,11 @@ describe("preemptive quota scheduler", () => {
 		expect(decision.reason).toBe("quota-near-exhaustion");
 	});
 
-	it("defaults the primary remaining threshold to 10 percent", () => {
+	it("defaults the primary remaining threshold to 5 percent", () => {
 		const scheduler = new PreemptiveQuotaScheduler();
 		scheduler.update("acc:model", {
 			status: 200,
-			primary: { usedPercent: 91, resetAtMs: 65_000 },
+			primary: { usedPercent: 96, resetAtMs: 65_000 },
 			secondary: {},
 			updatedAt: 1_000,
 		});

@@ -138,7 +138,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 10,
+				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 				codexCliSessionSupervisor: false,
@@ -197,7 +197,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 10,
+				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 				codexCliSessionSupervisor: false,
@@ -453,7 +453,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 10,
+				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 				codexCliSessionSupervisor: false,
@@ -518,7 +518,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 10,
+				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 				codexCliSessionSupervisor: false,
@@ -577,7 +577,7 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 10,
+				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 				codexCliSessionSupervisor: false,
@@ -971,7 +971,7 @@ describe('Plugin Configuration', () => {
 	describe('preemptive quota settings', () => {
 		it('should use default thresholds', () => {
 			expect(getPreemptiveQuotaEnabled({})).toBe(true);
-			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(10);
+			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(5);
 			expect(getPreemptiveQuotaRemainingPercent7d({})).toBe(5);
 			expect(getPreemptiveQuotaMaxDeferralMs({})).toBe(2 * 60 * 60_000);
 		});

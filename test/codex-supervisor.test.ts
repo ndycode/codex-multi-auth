@@ -1492,11 +1492,24 @@ describe("codex supervisor", () => {
 			const manager = new FakeManager();
 			const runtime = createFakeRuntime(manager);
 			const entered = createDeferred<void>();
+			const observedAbort = createDeferred<void>();
+			let firstExited = false;
+			let secondEntered = false;
 			const criticalSection = supervisorTestApi?.withLockedManager(
 				runtime,
-				async () => {
+				async (_freshManager, lockSignal) => {
 					entered.resolve();
-					await new Promise((resolve) => setTimeout(resolve, 1_000));
+					await new Promise<void>((resolve) => {
+						lockSignal?.addEventListener(
+							"abort",
+							() => {
+								observedAbort.resolve();
+								resolve();
+							},
+							{ once: true },
+						);
+					});
+					firstExited = true;
 					return "held";
 				},
 				undefined,
@@ -1509,10 +1522,23 @@ describe("codex supervisor", () => {
 				return;
 			}
 			await fs.unlink(lockPath);
+			await observedAbort.promise;
+
+			const secondSection = supervisorTestApi?.withLockedManager(
+				runtime,
+				async () => {
+					secondEntered = true;
+					expect(firstExited).toBe(true);
+					return "second";
+				},
+				undefined,
+			);
 
 			await expect(criticalSection).rejects.toThrow(
 				`Supervisor lock heartbeat lost lease at ${lockPath} for owner`,
 			);
+			await expect(secondSection).resolves.toBe("second");
+			expect(secondEntered).toBe(true);
 		},
 	);
 

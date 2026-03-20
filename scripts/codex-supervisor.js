@@ -81,6 +81,12 @@ function createProbeUnavailableError(error) {
 	return wrapped;
 }
 
+function throwIfAborted(signal, message = "Operation aborted") {
+	if (signal?.aborted) {
+		throw createAbortError(message);
+	}
+}
+
 function abortablePromise(promise, signal, message = "Operation aborted") {
 	if (!signal) return promise;
 	if (signal.aborted) {
@@ -254,7 +260,7 @@ async function loadSupervisorRuntime() {
 			((pluginConfig) => pluginConfig.preemptiveQuotaEnabled !== false),
 		getPreemptiveQuotaRemainingPercent5h:
 			configModule.getPreemptiveQuotaRemainingPercent5h ??
-			((pluginConfig) => pluginConfig.preemptiveQuotaRemainingPercent5h ?? 10),
+			((pluginConfig) => pluginConfig.preemptiveQuotaRemainingPercent5h ?? 5),
 		getPreemptiveQuotaRemainingPercent7d:
 			configModule.getPreemptiveQuotaRemainingPercent7d ??
 			((pluginConfig) => pluginConfig.preemptiveQuotaRemainingPercent7d ?? 5),
@@ -361,7 +367,7 @@ function getNearestWaitMs(manager) {
 	return 0;
 }
 
-async function persistActiveSelection(manager, account) {
+async function persistActiveSelection(manager, account, signal) {
 	if (typeof manager.setActiveIndex === "function") {
 		manager.setActiveIndex(account.index);
 	}
@@ -369,6 +375,7 @@ async function persistActiveSelection(manager, account) {
 		await manager.syncCodexCliActiveSelectionForIndex(account.index);
 	}
 	if (typeof manager.saveToDisk === "function") {
+		throwIfAborted(signal, "Supervisor storage lock lease lost");
 		await manager.saveToDisk();
 	}
 }
@@ -637,12 +644,39 @@ async function withSupervisorStorageLock(runtime, fn, signal) {
 				signal,
 			);
 
+			const lease = createLinkedAbortController(signal);
+			let heartbeatError = null;
+			heartbeat.promise.catch((error) => {
+				heartbeatError = heartbeatError ?? error;
+				if (!lease.controller.signal.aborted) {
+					lease.controller.abort();
+				}
+			});
+			let result;
+			let fnError = null;
 			try {
-				return await Promise.race([fn(), heartbeat.promise]);
+				result = await fn(lease.controller.signal);
+			} catch (error) {
+				fnError = error;
 			} finally {
-				await heartbeat.stop();
+				lease.cleanup();
+				try {
+					await heartbeat.stop();
+				} catch (error) {
+					heartbeatError = heartbeatError ?? error;
+				}
 				await safeUnlinkOwnedSupervisorLock(lockPath, ownerId);
 			}
+			if (heartbeatError) {
+				if (fnError && fnError?.name !== "AbortError") {
+					throw fnError;
+				}
+				throw heartbeatError;
+			}
+			if (fnError) {
+				throw fnError;
+			}
+			return result;
 		} catch (error) {
 			const code =
 				error && typeof error === "object" && "code" in error
@@ -672,9 +706,11 @@ async function withSupervisorStorageLock(runtime, fn, signal) {
 }
 
 async function withLockedManager(runtime, mutate, signal) {
-	return withSupervisorStorageLock(runtime, async () => {
+	return withSupervisorStorageLock(runtime, async (lockSignal) => {
+		throwIfAborted(lockSignal, "Supervisor storage lock lease lost");
 		const manager = await runtime.AccountManager.loadFromDisk();
-		return mutate(manager);
+		throwIfAborted(lockSignal, "Supervisor storage lock lease lost");
+		return mutate(manager, lockSignal);
 	}, signal);
 }
 
@@ -1102,11 +1138,12 @@ async function markCurrentAccountForRestart(
 		return null;
 	}
 
-	return withLockedManager(runtime, async (freshManager) => {
+	return withLockedManager(runtime, async (freshManager, lockSignal) => {
 		const targetAccount = resolveAccountInManager(freshManager, currentAccount);
 		if (targetAccount) {
 			markAccountUnavailable(freshManager, targetAccount, restartDecision);
 			if (typeof freshManager.saveToDisk === "function") {
+				throwIfAborted(lockSignal, "Supervisor storage lock lease lost");
 				await freshManager.saveToDisk();
 			}
 		}
@@ -1128,51 +1165,32 @@ async function ensureLaunchableAccount(
 		1,
 	);
 	let attempts = 0;
-	let managerHint = null;
 	while (attempts < MAX_ACCOUNT_SELECTION_ATTEMPTS) {
 		attempts += 1;
 		if (signal?.aborted) {
 			return { ok: false, account: null, aborted: true };
 		}
 
-		let initial = null;
-		if (managerHint) {
-			const hintedAccounts = getProbeCandidateBatch(
-				managerHint,
+		const initial = await withLockedManager(runtime, async (manager) => {
+			const accounts = getProbeCandidateBatch(
+				manager,
 				probeBatchSize,
 				options.excludedAccounts ?? [],
 			);
-			if (hintedAccounts.length > 0) {
-				initial = {
-					kind: "probe",
-					accounts: hintedAccounts,
+			if (accounts.length === 0) {
+				return {
+					kind: "wait",
+					waitMs: getNearestWaitMs(manager),
+					account: null,
 				};
 			}
-		}
-
-		if (!initial) {
-			initial = await withLockedManager(runtime, async (manager) => {
-				const accounts = getProbeCandidateBatch(
-					manager,
-					probeBatchSize,
-					options.excludedAccounts ?? [],
-				);
-				if (accounts.length === 0) {
-					return {
-						kind: "wait",
-						waitMs: getNearestWaitMs(manager),
-						account: null,
-					};
-				}
-				return {
-					kind: "probe",
-					accounts,
-				};
-			}, signal);
-		}
+			return {
+				kind: "probe",
+				accounts,
+			};
+		}, signal);
 
 		if (initial.kind === "wait") {
-			managerHint = null;
 			if (initial.waitMs <= 0 || !runtime.getRetryAllAccountsRateLimited(pluginConfig)) {
 				return { ok: false, account: null };
 			}
@@ -1242,7 +1260,7 @@ async function ensureLaunchableAccount(
 			throw error;
 		}
 
-		const step = await withLockedManager(runtime, async (manager) => {
+		const step = await withLockedManager(runtime, async (manager, lockSignal) => {
 			let dirty = false;
 			const knownAccounts = getManagerAccounts(manager, initial.accounts);
 			const probeUnavailableAccounts = [];
@@ -1275,13 +1293,16 @@ async function ensureLaunchableAccount(
 						kind: "retry",
 						waitMs: 0,
 						account: null,
-						manager,
 					};
 				}
 
 				if (!result.evaluation.rotate) {
 					if (options.persistSelection !== false) {
-						await persistActiveSelection(manager, account);
+						await persistActiveSelection(
+							manager,
+							account,
+							lockSignal,
+						);
 					}
 					return {
 						kind: "ready",
@@ -1301,13 +1322,13 @@ async function ensureLaunchableAccount(
 				dirty = true;
 			}
 			if (dirty && typeof manager.saveToDisk === "function") {
+				throwIfAborted(lockSignal, "Supervisor storage lock lease lost");
 				await manager.saveToDisk();
 			}
 			return {
 				kind: "retry",
 				waitMs: 0,
 				account: null,
-				manager,
 			};
 		}, signal);
 
@@ -1317,8 +1338,6 @@ async function ensureLaunchableAccount(
 				...step,
 			};
 		}
-
-		managerHint = step.manager ?? null;
 	}
 
 	return { ok: false, account: null };
@@ -1329,7 +1348,7 @@ async function commitPreparedSelection(runtime, selectedAccount, signal) {
 		return { ok: false, account: null };
 	}
 
-	return withLockedManager(runtime, async (manager) => {
+	return withLockedManager(runtime, async (manager, lockSignal) => {
 		const knownAccounts = getManagerAccounts(manager, [selectedAccount]);
 		const account = resolveAccountInManager(manager, selectedAccount, knownAccounts);
 		const currentCandidate = getProbeCandidateBatch(manager, 1)[0] ?? null;
@@ -1346,7 +1365,7 @@ async function commitPreparedSelection(runtime, selectedAccount, signal) {
 			return { ok: false, account: null, manager };
 		}
 
-		await persistActiveSelection(manager, account);
+		await persistActiveSelection(manager, account, lockSignal);
 		return {
 			ok: true,
 			account,

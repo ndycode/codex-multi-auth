@@ -1079,7 +1079,7 @@ export function getPreemptiveQuotaRemainingPercent5h(pluginConfig: PluginConfig)
 	return resolveNumberSetting(
 		"CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT",
 		pluginConfig.preemptiveQuotaRemainingPercent5h,
-		// Keep this fallback aligned with PreemptiveQuotaScheduler's intentional 10% 5h default.
+		// Keep this fallback aligned with PreemptiveQuotaScheduler's shared 5h default.
 		DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H,
 		{ min: 0, max: 100 },
 	);
