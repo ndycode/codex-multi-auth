@@ -1985,6 +1985,7 @@ async function syncSelectionToCodex(
 async function showAccountStatus(): Promise<void> {
 	await runStatusCommand({
 		setStoragePath,
+		getStoragePath,
 		loadAccounts,
 		resolveActiveIndex,
 		formatRateLimitEntry,

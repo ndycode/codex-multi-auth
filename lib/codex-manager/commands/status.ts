@@ -4,12 +4,13 @@ import {
 	formatWaitTime,
 } from "../../accounts.js";
 import type { ModelFamily } from "../../prompts/codex.js";
-import { type AccountStorageV3, getStoragePath } from "../../storage.js";
+import type { AccountStorageV3 } from "../../storage.js";
 
 type LoadedStorage = AccountStorageV3 | null;
 
 export interface StatusCommandDeps {
 	setStoragePath: (path: string | null) => void;
+	getStoragePath: () => string | null;
 	loadAccounts: () => Promise<LoadedStorage>;
 	resolveActiveIndex: (
 		storage: AccountStorageV3,
@@ -29,7 +30,7 @@ export async function runStatusCommand(
 ): Promise<number> {
 	deps.setStoragePath(null);
 	const storage = await deps.loadAccounts();
-	const path = getStoragePath();
+	const path = deps.getStoragePath();
 	const logInfo = deps.logInfo ?? console.log;
 	if (!storage || storage.accounts.length === 0) {
 		logInfo("No accounts configured.");

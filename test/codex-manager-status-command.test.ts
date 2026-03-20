@@ -35,6 +35,7 @@ function createStatusDeps(
 ): StatusCommandDeps {
 	return {
 		setStoragePath: vi.fn(),
+		getStoragePath: vi.fn(() => "/tmp/codex.json"),
 		loadAccounts: vi.fn(async () => createStorage()),
 		resolveActiveIndex: vi.fn(() => 0),
 		formatRateLimitEntry: vi.fn(() => null),
@@ -51,7 +52,9 @@ describe("runStatusCommand", () => {
 		const result = await runStatusCommand(deps);
 
 		expect(result).toBe(0);
+		expect(deps.getStoragePath).toHaveBeenCalledTimes(1);
 		expect(deps.logInfo).toHaveBeenCalledWith("No accounts configured.");
+		expect(deps.logInfo).toHaveBeenCalledWith("Storage: /tmp/codex.json");
 	});
 
 	it("prints account rows with current and disabled markers", async () => {
@@ -62,7 +65,9 @@ describe("runStatusCommand", () => {
 		const result = await runStatusCommand(deps);
 
 		expect(result).toBe(0);
+		expect(deps.getStoragePath).toHaveBeenCalledTimes(1);
 		expect(deps.logInfo).toHaveBeenCalledWith("Accounts (2)");
+		expect(deps.logInfo).toHaveBeenCalledWith("Storage: /tmp/codex.json");
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining(
 				"1. Account 1 (one@example.com) [current, rate-limited]",
