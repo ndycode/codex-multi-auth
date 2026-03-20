@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import {
+	createReadStream,
 	existsSync,
 	promises as fs,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
+import { createInterface } from "node:readline";
 
 const DEFAULT_POLL_MS = 30_000
 const DEFAULT_IDLE_MS = 5_000
@@ -18,6 +20,17 @@ const INTERNAL_RECOVERABLE_COOLDOWN_MS = 60_000
 const RETRYABLE_IO_ERROR_CODES = new Set(["EBUSY", "EPERM", "EMFILE", "ENFILE"])
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/
 const SESSION_META_SCAN_LINE_LIMIT = 200
+const MAX_ACCOUNT_SELECTION_ATTEMPTS = parseNumberEnv(
+	"CODEX_AUTH_CLI_SESSION_MAX_ACCOUNT_SELECTION_ATTEMPTS",
+	32,
+	1,
+)
+const MAX_SESSION_RESTARTS = parseNumberEnv(
+	"CODEX_AUTH_CLI_SESSION_MAX_RESTARTS",
+	16,
+	1,
+)
+const CODEX_FAMILY = "codex"
 
 function sleep(ms, signal) {
 	return new Promise((resolve) => {
@@ -39,6 +52,12 @@ function sleep(ms, signal) {
 
 		signal?.addEventListener("abort", onAbort, { once: true })
 	})
+}
+
+function createAbortError(message = "Operation aborted") {
+	const error = new Error(message)
+	error.name = "AbortError"
+	return error
 }
 
 function parseBooleanEnv(name, fallback) {
@@ -145,7 +164,7 @@ function buildResumeArgs(sessionId, buildForwardArgs) {
 
 function getCurrentAccount(manager) {
 	if (typeof manager.getCurrentAccountForFamily === "function") {
-		return manager.getCurrentAccountForFamily("codex")
+		return manager.getCurrentAccountForFamily(CODEX_FAMILY)
 	}
 	if (typeof manager.getCurrentAccount === "function") {
 		return manager.getCurrentAccount()
@@ -155,7 +174,7 @@ function getCurrentAccount(manager) {
 
 function pickNextCandidate(manager) {
 	if (typeof manager.getCurrentOrNextForFamilyHybrid === "function") {
-		return manager.getCurrentOrNextForFamilyHybrid("codex")
+		return manager.getCurrentOrNextForFamilyHybrid(CODEX_FAMILY)
 	}
 	if (typeof manager.getCurrentOrNext === "function") {
 		return manager.getCurrentOrNext()
@@ -165,7 +184,7 @@ function pickNextCandidate(manager) {
 
 function getNearestWaitMs(manager) {
 	if (typeof manager.getMinWaitTimeForFamily === "function") {
-		return Math.max(0, manager.getMinWaitTimeForFamily("codex"))
+		return Math.max(0, manager.getMinWaitTimeForFamily(CODEX_FAMILY))
 	}
 	if (typeof manager.getMinWaitTime === "function") {
 		return Math.max(0, manager.getMinWaitTime())
@@ -248,11 +267,14 @@ async function isSupervisorLockStale(lockPath, ttlMs) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
 			return true
 		}
-		return false
+		console.warn(
+			`codex-multi-auth: treating unreadable supervisor lock as stale at ${lockPath}: ${error instanceof Error ? error.message : String(error)}`,
+		)
+		return true
 	}
 }
 
-async function withSupervisorStorageLock(runtime, fn) {
+async function withSupervisorStorageLock(runtime, fn, signal) {
 	const lockPath = getSupervisorStorageLockPath(runtime)
 	const lockDir = dirname(lockPath)
 	const waitMs = parseNumberEnv(
@@ -275,6 +297,10 @@ async function withSupervisorStorageLock(runtime, fn) {
 
 	const deadline = Date.now() + waitMs
 	while (true) {
+		if (signal?.aborted) {
+			throw createAbortError("Supervisor storage lock wait aborted")
+		}
+
 		try {
 			const handle = await fs.open(lockPath, "wx")
 			try {
@@ -310,16 +336,19 @@ async function withSupervisorStorageLock(runtime, fn) {
 				throw new Error(`Timed out waiting for supervisor storage lock at ${lockPath}`)
 			}
 
-			await sleep(pollMs)
+			const slept = await sleep(pollMs, signal)
+			if (!slept) {
+				throw createAbortError("Supervisor storage lock wait aborted")
+			}
 		}
 	}
 }
 
-async function withLockedManager(runtime, mutate) {
+async function withLockedManager(runtime, mutate, signal) {
 	return withSupervisorStorageLock(runtime, async () => {
 		const manager = await runtime.AccountManager.loadFromDisk()
 		return mutate(manager)
-	})
+	}, signal)
 }
 
 function accountsMatch(candidate, account) {
@@ -352,7 +381,7 @@ function resolveAccountInManager(manager, account) {
 
 	if (typeof manager.getAccountsSnapshot !== "function") return null
 	const accounts = manager.getAccountsSnapshot()
-	return accounts.find((candidate) => accountsMatch(candidate, account)) ?? null
+	return accounts.find((accountItem) => accountsMatch(accountItem, account)) ?? null
 }
 
 function computeWaitMsFromSnapshot(snapshot) {
@@ -429,8 +458,10 @@ function markAccountUnavailable(manager, account, evaluation) {
 		manager.markRateLimitedWithReason(
 			account,
 			waitMs,
-			"codex",
-			"unknown",
+			CODEX_FAMILY,
+			evaluation.reason === "rate-limit"
+				? "rate_limit_detected"
+				: "quota_near_exhaustion",
 		)
 		return
 	}
@@ -444,10 +475,14 @@ function markAccountUnavailable(manager, account, evaluation) {
 	}
 }
 
-async function ensureLaunchableAccount(runtime, pluginConfig) {
+async function ensureLaunchableAccount(runtime, pluginConfig, signal) {
 	let attempts = 0
-	while (attempts < 32) {
+	while (attempts < MAX_ACCOUNT_SELECTION_ATTEMPTS) {
 		attempts += 1
+		if (signal?.aborted) {
+			return { ok: false, account: null, aborted: true }
+		}
+
 		const initial = await withLockedManager(runtime, async (manager) => {
 			const account = pickNextCandidate(manager)
 			if (!account) {
@@ -461,7 +496,7 @@ async function ensureLaunchableAccount(runtime, pluginConfig) {
 				kind: "probe",
 				account,
 			}
-		})
+		}, signal)
 
 		if (initial.kind === "wait") {
 			if (initial.waitMs <= 0 || !runtime.getRetryAllAccountsRateLimited(pluginConfig)) {
@@ -469,7 +504,10 @@ async function ensureLaunchableAccount(runtime, pluginConfig) {
 			}
 
 			relaunchNotice(`all accounts unavailable, waiting ${Math.ceil(initial.waitMs / 1000)}s for the next eligible window`)
-			await sleep(initial.waitMs)
+			const slept = await sleep(initial.waitMs, signal)
+			if (!slept) {
+				return { ok: false, account: null, aborted: true }
+			}
 			continue
 		}
 
@@ -508,7 +546,7 @@ async function ensureLaunchableAccount(runtime, pluginConfig) {
 				account: null,
 				manager,
 			}
-		})
+		}, signal)
 
 		if (step.kind === "ready") {
 			return {
@@ -558,29 +596,42 @@ function normalizeCwd(value) {
 }
 
 async function extractSessionMeta(filePath) {
-	let raw = ""
+	let stream = null
+	let lineReader = null
 	try {
-		raw = await fs.readFile(filePath, "utf8")
+		stream = createReadStream(filePath, { encoding: "utf8" })
+		lineReader = createInterface({
+			input: stream,
+			crlfDelay: Infinity,
+		})
+
+		let scannedLineCount = 0
+		for await (const rawLine of lineReader) {
+			const line = rawLine.trim()
+			if (!line) continue
+			scannedLineCount += 1
+			if (scannedLineCount > SESSION_META_SCAN_LINE_LIMIT) break
+
+			try {
+				const parsed = JSON.parse(line)
+				const payload = parsed?.session_meta?.payload ?? (parsed?.type === "session_meta" ? parsed.payload : null)
+				const sessionId = `${payload?.id ?? ""}`.trim()
+				const cwd = `${payload?.cwd ?? ""}`.trim()
+				if (isValidSessionId(sessionId)) {
+					return {
+						sessionId,
+						cwd,
+					}
+				}
+			} catch {
+				// Ignore malformed log lines.
+			}
+		}
 	} catch {
 		return null
-	}
-
-	const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0)
-	for (const line of lines.slice(0, SESSION_META_SCAN_LINE_LIMIT)) {
-		try {
-			const parsed = JSON.parse(line)
-			const payload = parsed?.session_meta?.payload ?? (parsed?.type === "session_meta" ? parsed.payload : null)
-			const sessionId = `${payload?.id ?? ""}`.trim()
-			const cwd = `${payload?.cwd ?? ""}`.trim()
-			if (isValidSessionId(sessionId)) {
-				return {
-					sessionId,
-					cwd,
-				}
-			}
-		} catch {
-			// Ignore malformed log lines.
-		}
+	} finally {
+		lineReader?.close()
+		stream?.destroy()
 	}
 
 	return null
@@ -690,12 +741,13 @@ async function runInteractiveSupervision({
 	runtime,
 	pluginConfig,
 	manager,
+	signal,
 }) {
 	let launchArgs = initialArgs
 	let knownSessionId = readResumeSessionId(initialArgs)
 	let launchCount = 0
 
-	while (launchCount < 16) {
+	while (launchCount < MAX_SESSION_RESTARTS) {
 		launchCount += 1
 		const child = spawnRealCodex(codexBin, launchArgs)
 		const launchStartedAt = Date.now()
@@ -835,11 +887,14 @@ async function runInteractiveSupervision({
 					}
 				}
 				return freshManager
-			})
+			}, signal)
 			manager = refreshed
 		}
 
-		const nextReady = await ensureLaunchableAccount(runtime, pluginConfig)
+		const nextReady = await ensureLaunchableAccount(runtime, pluginConfig, signal)
+		if (nextReady.aborted) {
+			return 130
+		}
 		if (!nextReady.ok) {
 			relaunchNotice(
 				`no healthy account available to resume ${restartDecision.sessionId}; recover manually with \`codex resume ${restartDecision.sessionId}\` when quota resets`,
@@ -862,43 +917,65 @@ export async function runCodexSupervisorIfEnabled({
 	buildForwardArgs,
 	forwardToRealCodex,
 }) {
-	const runtime = await loadSupervisorRuntime()
-	if (!runtime) {
-		return null
-	}
+	const controller = new AbortController()
+	const abort = () => controller.abort()
+	process.once("SIGINT", abort)
+	process.once("SIGTERM", abort)
 
-	const pluginConfig = runtime.loadPluginConfig()
-	if (!runtime.getCodexCliSessionSupervisor(pluginConfig)) {
-		return null
-	}
+	try {
+		const runtime = await loadSupervisorRuntime()
+		if (!runtime) {
+			return null
+		}
 
-	const ready = await ensureLaunchableAccount(runtime, pluginConfig)
-	if (!ready.ok) {
-		relaunchNotice("no launchable account is currently available")
-		return 1
-	}
+		const pluginConfig = runtime.loadPluginConfig()
+		if (!runtime.getCodexCliSessionSupervisor(pluginConfig)) {
+			return null
+		}
 
-	const initialArgs = buildForwardArgs(rawArgs)
-	if (isNonInteractiveCommand(rawArgs)) {
-		return forwardToRealCodex(codexBin, initialArgs)
-	}
+		const ready = await ensureLaunchableAccount(runtime, pluginConfig, controller.signal)
+		if (ready.aborted) {
+			return 130
+		}
+		if (!ready.ok) {
+			relaunchNotice("no launchable account is currently available")
+			return 1
+		}
 
-	return runInteractiveSupervision({
-		codexBin,
-		initialArgs,
-		buildForwardArgs,
-		runtime,
-		pluginConfig,
-		manager: ready.manager,
-	})
+		const initialArgs = buildForwardArgs(rawArgs)
+		if (isNonInteractiveCommand(rawArgs)) {
+			return forwardToRealCodex(codexBin, initialArgs)
+		}
+
+		return runInteractiveSupervision({
+			codexBin,
+			initialArgs,
+			buildForwardArgs,
+			runtime,
+			pluginConfig,
+			manager: ready.manager,
+			signal: controller.signal,
+		})
+	} catch (error) {
+		if (error?.name === "AbortError") {
+			return 130
+		}
+		throw error
+	} finally {
+		process.off("SIGINT", abort)
+		process.off("SIGTERM", abort)
+	}
 }
 
 export const __testOnly = {
 	evaluateQuotaSnapshot,
+	ensureLaunchableAccount,
 	findSessionBinding,
 	extractSessionMeta,
 	isInteractiveCommand,
 	isValidSessionId,
+	listJsonlFiles,
+	probeAccountSnapshot,
 	readResumeSessionId,
 	requestChildRestart,
 	resolveCodexHomeDir,

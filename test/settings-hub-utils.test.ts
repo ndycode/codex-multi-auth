@@ -429,16 +429,19 @@ describe("settings-hub utility coverage", () => {
 		const selected = configModule.getDefaultPluginConfig();
 		selected.fetchTimeoutMs = 12_345;
 		selected.streamStallTimeoutMs = 23_456;
+		selected.codexCliSessionSupervisor = false;
 
 		const saved = await api.persistBackendConfigSelection(selected, "backend");
 		expect(saved.fetchTimeoutMs).toBe(12_345);
 		expect(saved.streamStallTimeoutMs).toBe(23_456);
+		expect(saved.codexCliSessionSupervisor).toBe(false);
 
 		vi.resetModules();
 		const freshConfigModule = await import("../lib/config.js");
 		const reloaded = freshConfigModule.loadPluginConfig();
 		expect(reloaded.fetchTimeoutMs).toBe(12_345);
 		expect(reloaded.streamStallTimeoutMs).toBe(23_456);
+		expect(reloaded.codexCliSessionSupervisor).toBe(false);
 	});
 
 	it("applies representative backend prompt edits across all current categories", async () => {

@@ -186,6 +186,7 @@ type ThemeConfigAction =
 
 type BackendToggleSettingKey =
 	| "liveAccountSync"
+	| "codexCliSessionSupervisor"
 	| "sessionAffinity"
 	| "proactiveRefreshGuardian"
 	| "retryAllAccountsRateLimited"
@@ -287,6 +288,11 @@ const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
 		key: "liveAccountSync",
 		label: "Enable Live Sync",
 		description: "Keep accounts synced when files change in another window.",
+	},
+	{
+		key: "codexCliSessionSupervisor",
+		label: "Enable Codex Session Supervisor",
+		description: "Relaunch interactive Codex sessions after account rotation.",
 	},
 	{
 		key: "sessionAffinity",

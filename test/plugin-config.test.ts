@@ -968,7 +968,7 @@ describe('Plugin Configuration', () => {
 		});
 	});
 
-	describe('preemptive quota settings', () => {
+	describe('codex cli session supervisor settings', () => {
 		it('should enable the codex cli session supervisor by default and honor env override', () => {
 			expect(getCodexCliSessionSupervisor({})).toBe(true);
 			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '0';
@@ -976,7 +976,9 @@ describe('Plugin Configuration', () => {
 			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '1';
 			expect(getCodexCliSessionSupervisor({ codexCliSessionSupervisor: false })).toBe(true);
 		});
+	});
 
+	describe('preemptive quota settings', () => {
 		it('should use default thresholds', () => {
 			expect(getPreemptiveQuotaEnabled({})).toBe(true);
 			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(10);

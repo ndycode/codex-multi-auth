@@ -139,7 +139,7 @@ function createSupervisorRuntimeFixture(
 		join(distLibDir, "storage.js"),
 		(options.storageLines ?? [
 			"export function getStoragePath() {",
-			"\treturn process.env.TEST_STORAGE_PATH ?? 'C:/tmp/openai-codex-accounts.json';",
+			"\treturn process.env.TEST_STORAGE_PATH ?? '/test-fixture/openai-codex-accounts.json';",
 			"}",
 		]).join("\n"),
 		"utf8",

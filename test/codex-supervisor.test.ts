@@ -6,6 +6,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { __testOnly } from "../scripts/codex-supervisor.js";
 
 const createdDirs: string[] = [];
+type LockState = {
+	activeIndex: number;
+	blockedUntilByIndex: Record<string, number>;
+};
+type LockAccount = {
+	index: number;
+	refreshToken: string;
+	accountId: string;
+	email: string;
+};
 
 function createTempDir(): string {
 	const dir = mkdtempSync(join(tmpdir(), "codex-supervisor-test-"));
@@ -62,7 +72,10 @@ describe("codex supervisor internals", () => {
 		);
 
 		class FakeManager {
-			constructor(state) {
+			state: LockState;
+			accounts: LockAccount[];
+
+			constructor(state: LockState) {
 				this.state = state;
 				this.accounts = [
 					{ index: 0, refreshToken: "refresh-1", accountId: "acc-1", email: "one@example.com" },
@@ -70,15 +83,15 @@ describe("codex supervisor internals", () => {
 				];
 			}
 
-			getAccountByIndex(index) {
+			getAccountByIndex(index: number): LockAccount | null {
 				return this.accounts[index] ?? null;
 			}
 
-			markRateLimitedWithReason(account, waitMs) {
+			markRateLimitedWithReason(account: LockAccount, waitMs: number) {
 				this.state.blockedUntilByIndex[account.index] = Date.now() + waitMs;
 			}
 
-			setActiveIndex(index) {
+			setActiveIndex(index: number) {
 				this.state.activeIndex = index;
 			}
 
@@ -146,6 +159,44 @@ describe("codex supervisor internals", () => {
 				await expect(
 					__testOnly.withLockedManager(runtime, async () => "unreachable"),
 				).rejects.toThrow(/Timed out waiting for supervisor storage lock/);
+			},
+		);
+	});
+
+	it("aborts lock polling when the caller signal is cancelled", async () => {
+		const dir = createTempDir();
+		const storagePath = join(dir, "openai-codex-accounts.json");
+		const runtime = {
+			AccountManager: class FakeManager {
+				static async loadFromDisk() {
+					return {
+						async saveToDisk() {},
+					};
+				}
+			},
+			getStoragePath: () => storagePath,
+		};
+		const lockPath = __testOnly.getSupervisorStorageLockPath(runtime);
+		await fs.writeFile(
+			lockPath,
+			JSON.stringify({
+				expiresAt: Date.now() + 60_000,
+			}),
+			"utf8",
+		);
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(), 25);
+
+		await withLockEnv(
+			{
+				CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS: "1000",
+				CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS: "50",
+				CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS: "60000",
+			},
+			async () => {
+				await expect(
+					__testOnly.withLockedManager(runtime, async () => "unreachable", controller.signal),
+				).rejects.toMatchObject({ name: "AbortError" });
 			},
 		);
 	});
@@ -260,6 +311,65 @@ describe("codex supervisor internals", () => {
 		await expect(__testOnly.extractSessionMeta(filePath)).resolves.toEqual({
 			sessionId: "safe_session-verbose",
 			cwd: dir,
+		});
+	});
+
+	it("scans only the bounded prefix of large session logs", async () => {
+		const dir = createTempDir();
+		const filePath = join(dir, "large-session.jsonl");
+		const preamble = Array.from({ length: 80 }, (_, index) =>
+			JSON.stringify({ type: "event", seq: index + 1 }),
+		);
+		const verboseTail = Array.from({ length: 5_000 }, (_, index) =>
+			JSON.stringify({ type: "output", seq: index + 1, text: "x".repeat(32) }),
+		);
+		await fs.writeFile(
+			filePath,
+			[
+				...preamble,
+				JSON.stringify({
+					session_meta: {
+						payload: { id: "safe_session-large", cwd: dir },
+					},
+				}),
+				...verboseTail,
+			].join("\n"),
+			"utf8",
+		);
+
+		await expect(__testOnly.extractSessionMeta(filePath)).resolves.toEqual({
+			sessionId: "safe_session-large",
+			cwd: dir,
+		});
+	});
+
+	it("aborts rate-limit waits while selecting a launchable account", async () => {
+		const dir = createTempDir();
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(), 25);
+
+		const runtime = {
+			getRetryAllAccountsRateLimited: () => true,
+			getStoragePath: () => join(dir, "openai-codex-accounts.json"),
+			AccountManager: class FakeManager {
+				static async loadFromDisk() {
+					return {
+						getCurrentOrNextForFamilyHybrid() {
+							return null;
+						},
+						getMinWaitTimeForFamily() {
+							return 10_000;
+						},
+					};
+				}
+			},
+		};
+
+		await expect(
+			__testOnly.ensureLaunchableAccount(runtime, {}, controller.signal),
+		).resolves.toMatchObject({
+			ok: false,
+			aborted: true,
 		});
 	});
 
