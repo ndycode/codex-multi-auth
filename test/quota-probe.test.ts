@@ -173,6 +173,10 @@ describe("quota-probe", () => {
 
 	it("aborts immediately when the caller abort signal fires", async () => {
 		const controller = new AbortController();
+		let markFetchStarted!: () => void;
+		const fetchStarted = new Promise<void>((resolve) => {
+			markFetchStarted = resolve;
+		});
 		const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
 			return new Promise<Response>((_resolve, reject) => {
 				init?.signal?.addEventListener(
@@ -184,6 +188,7 @@ describe("quota-probe", () => {
 					},
 					{ once: true },
 				);
+				markFetchStarted();
 			});
 		});
 		vi.stubGlobal("fetch", fetchMock);
@@ -197,7 +202,7 @@ describe("quota-probe", () => {
 			signal: controller.signal,
 		});
 
-		await Promise.resolve();
+		await fetchStarted;
 		controller.abort();
 
 		await expect(pending).rejects.toThrow(/abort/i);

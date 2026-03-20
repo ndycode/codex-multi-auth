@@ -723,8 +723,13 @@ function latestValidSnapshot(
 	snapshots: BackupSnapshotMetadata[],
 ): BackupSnapshotMetadata | undefined {
 	return snapshots
-		.filter((snapshot) => snapshot.valid)
-		.sort((left, right) => (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0))[0];
+		.map((snapshot, index) => ({ snapshot, index }))
+		.filter(({ snapshot }) => snapshot.valid)
+		.sort(
+			(left, right) =>
+				(right.snapshot.mtimeMs ?? 0) - (left.snapshot.mtimeMs ?? 0) ||
+				right.index - left.index,
+		)[0]?.snapshot;
 }
 
 function buildMetadataSection(
@@ -1598,8 +1603,9 @@ async function loadAccountsFromJournal(
 
 async function loadAccountsInternal(
 	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
+	storagePath = getStoragePath(),
 ): Promise<AccountStorageV3 | null> {
-	const path = getStoragePath();
+	const path = storagePath;
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	await cleanupStaleRotatingBackupArtifacts(path);
 	const migratedLegacyStorage = persistMigration
@@ -1763,8 +1769,11 @@ async function loadAccountsInternal(
 	}
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
-	const path = getStoragePath();
+async function saveAccountsUnlocked(
+	storage: AccountStorageV3,
+	storagePath = getStoragePath(),
+): Promise<void> {
+	const path = storagePath;
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -1915,13 +1924,16 @@ export async function withAccountStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			snapshot: await loadAccountsInternal(
+				(storage) => saveAccountsUnlocked(storage, storagePath),
+				storagePath,
+			),
 			active: true,
 			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
+			await saveAccountsUnlocked(storage, storagePath);
 			state.snapshot = storage;
 		};
 		return transactionSnapshotContext.run(state, async () => {
@@ -1946,7 +1958,10 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			snapshot: await loadAccountsInternal(
+				(storage) => saveAccountsUnlocked(storage, storagePath),
+				storagePath,
+			),
 			active: true,
 			storagePath,
 		};
@@ -1957,13 +1972,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
-			await saveAccountsUnlocked(nextAccounts);
+			await saveAccountsUnlocked(nextAccounts, storagePath);
 			try {
 				await saveFlaggedAccountsUnlocked(flaggedStorage);
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
-					await saveAccountsUnlocked(previousAccounts);
+					await saveAccountsUnlocked(previousAccounts, storagePath);
 					state.snapshot = previousAccounts;
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(

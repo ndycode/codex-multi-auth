@@ -85,8 +85,13 @@ function writeSupervisorRuntimeFixture(fixtureRoot: string): void {
 	writeFileSync(
 		join(distLibDir, "accounts.js"),
 		[
+			'import { appendFile } from "node:fs/promises";',
 			"export class AccountManager {",
 			"\tstatic async loadFromDisk() {",
+			'\t\tconst markerPath = process.env.CODEX_TEST_SUPERVISOR_MARKER ?? "";',
+			"\t\tif (markerPath) {",
+			'\t\t\tawait appendFile(markerPath, "supervisor\\n", "utf8");',
+			"\t\t}",
 			"\t\treturn new AccountManager();",
 			"\t}",
 			"\tgetCurrentOrNextForFamilyHybrid() {",
@@ -614,16 +619,19 @@ describe("codex bin wrapper", () => {
 		const fixtureRoot = createWrapperFixture();
 		writeSupervisorRuntimeFixture(fixtureRoot);
 		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "supervisor-marker.log");
 
 		const result = runWrapper(fixtureRoot, ["exec", "status"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+			CODEX_TEST_SUPERVISOR_MARKER: markerPath,
 		});
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(
 			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
 		);
+		expect(readFileSync(markerPath, "utf8")).toContain("supervisor\n");
 	});
 
 	it("still auto-syncs once when the supervisor returns early", () => {

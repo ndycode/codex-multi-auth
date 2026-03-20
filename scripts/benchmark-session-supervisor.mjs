@@ -49,7 +49,7 @@ class FakeManager {
 			refreshToken: `rt_${account.accountId}`,
 			email: `${account.accountId}@example.com`,
 			enabled: true,
-			cooldownUntil: 0,
+			coolingDownUntil: 0,
 			...account,
 		}));
 		this.activeIndex = 0;
@@ -75,7 +75,9 @@ class FakeManager {
 		].filter(Boolean);
 		return (
 			ordered.find(
-				(account) => account.enabled !== false && (account.cooldownUntil ?? 0) <= now,
+				(account) =>
+					account.enabled !== false &&
+					(account.coolingDownUntil ?? 0) <= now,
 			) ?? null
 		);
 	}
@@ -83,7 +85,7 @@ class FakeManager {
 	getMinWaitTimeForFamily() {
 		const now = Date.now();
 		const waits = this.accounts
-			.map((account) => Math.max(0, (account.cooldownUntil ?? 0) - now))
+			.map((account) => Math.max(0, (account.coolingDownUntil ?? 0) - now))
 			.filter((waitMs) => waitMs > 0);
 		return waits.length > 0 ? Math.min(...waits) : 0;
 	}
@@ -91,7 +93,7 @@ class FakeManager {
 	markRateLimitedWithReason(account, waitMs) {
 		const target = this.getAccountByIndex(account.index);
 		if (!target) return;
-		target.cooldownUntil = Date.now() + Math.max(waitMs, 1);
+		target.coolingDownUntil = Date.now() + Math.max(waitMs, 1);
 	}
 
 	markAccountCoolingDown(account, waitMs) {
@@ -195,6 +197,8 @@ async function runCase(
 	const prewarmedDurations = [];
 	const originalBatchSize =
 		process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE;
+	const originalCacheTtl =
+		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS;
 	if (harnessOptions.selectionProbeBatchSize) {
 		process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE = `${harnessOptions.selectionProbeBatchSize}`;
 	}
@@ -202,6 +206,8 @@ async function runCase(
 	try {
 		for (let iteration = 0; iteration < iterations; iteration += 1) {
 			process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "75";
+			process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "0";
+			api.clearAllProbeSnapshotCache?.();
 			const serialEnv = await buildRuntime(
 				probeLatencyMs,
 				tempRoot,
@@ -257,6 +263,12 @@ async function runCase(
 		}
 	} finally {
 		delete process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS;
+		if (originalCacheTtl === undefined) {
+			delete process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS;
+		} else {
+			process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS =
+				originalCacheTtl;
+		}
 		if (originalBatchSize === undefined) {
 			delete process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE;
 		} else {

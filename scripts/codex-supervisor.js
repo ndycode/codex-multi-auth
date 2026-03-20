@@ -81,11 +81,17 @@ function abortablePromise(promise, signal, message = "Operation aborted") {
 		return Promise.reject(createAbortError(message));
 	}
 
+	let onAbort;
+	const cleanup = () => {
+		if (onAbort) {
+			signal.removeEventListener("abort", onAbort);
+		}
+	};
 	return Promise.race([
-		promise,
+		Promise.resolve(promise).finally(cleanup),
 		new Promise((_, reject) => {
-			const onAbort = () => {
-				signal.removeEventListener("abort", onAbort);
+			onAbort = () => {
+				cleanup();
 				reject(createAbortError(message));
 			};
 			signal.addEventListener("abort", onAbort, { once: true });
@@ -526,7 +532,7 @@ function isEligibleProbeAccount(account, now = Date.now()) {
 	return Boolean(
 		account &&
 			account.enabled !== false &&
-			(account.cooldownUntil ?? 0) <= now,
+			(account.coolingDownUntil ?? 0) <= now,
 	);
 }
 
@@ -801,6 +807,9 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 		return null;
 	}
 	const cacheKey = getSnapshotCacheKey(account);
+	let pendingResolver = null;
+	let pendingRejecter = null;
+	let pendingPromise = null;
 	if (options.useCache !== false) {
 		const cachedSnapshot = readCachedProbeSnapshot(account);
 		if (cachedSnapshot) {
@@ -814,6 +823,18 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 				"Quota probe aborted",
 			);
 		}
+		if (cacheKey) {
+			pendingPromise = new Promise((resolve, reject) => {
+				pendingResolver = resolve;
+				pendingRejecter = reject;
+			});
+			pendingPromise.catch(() => undefined);
+			snapshotProbeCache.set(cacheKey, {
+				snapshot: pendingEntry?.snapshot ?? null,
+				expiresAt: pendingEntry?.expiresAt ?? 0,
+				pending: pendingPromise,
+			});
+		}
 	}
 
 	const fetchPromise = (async () => {
@@ -825,16 +846,22 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 				signal,
 			});
 			rememberProbeSnapshot(account, snapshot);
+			pendingResolver?.(snapshot);
 			return snapshot;
 		} catch (error) {
+			const normalizedError =
+				signal?.aborted || error?.name === "AbortError"
+					? error
+					: createProbeUnavailableError(error);
+			pendingRejecter?.(normalizedError);
 			if (signal?.aborted || error?.name === "AbortError") {
 				throw error;
 			}
-			throw createProbeUnavailableError(error);
+			throw normalizedError;
 		} finally {
 			if (cacheKey) {
 				const current = snapshotProbeCache.get(cacheKey);
-				if (current?.pending) {
+				if (current?.pending === pendingPromise) {
 					snapshotProbeCache.set(cacheKey, {
 						snapshot: current.snapshot ?? null,
 						expiresAt: current.expiresAt ?? 0,
@@ -843,15 +870,6 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 			}
 		}
 	})();
-
-	if (cacheKey) {
-		const current = snapshotProbeCache.get(cacheKey);
-		snapshotProbeCache.set(cacheKey, {
-			snapshot: current?.snapshot ?? null,
-			expiresAt: current?.expiresAt ?? 0,
-			pending: fetchPromise,
-		});
-	}
 
 	try {
 		return await abortablePromise(fetchPromise, signal, "Quota probe aborted");
@@ -1380,6 +1398,7 @@ async function requestChildRestart(child, platform = process.platform, signal) {
 	await Promise.race([exitPromise, sleep(signalTimeoutMs, signal)]);
 	if (child.exitCode !== null) return;
 
+	// On Windows, SIGTERM is already forceful; keep SIGKILL as the Unix fallback.
 	child.kill("SIGKILL");
 	await Promise.race([exitPromise, sleep(signalTimeoutMs, signal)]);
 }

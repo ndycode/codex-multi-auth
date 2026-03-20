@@ -44,6 +44,14 @@ function createTempDir(): string {
 	return dir;
 }
 
+function createDeferred<T = void>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
 class FakeManager {
 	private accounts: Array<{
 		index: number;
@@ -52,7 +60,7 @@ class FakeManager {
 		email: string;
 		refreshToken: string;
 		enabled: boolean;
-		cooldownUntil: number;
+		coolingDownUntil: number;
 	}>;
 
 	activeIndex = 0;
@@ -64,7 +72,7 @@ class FakeManager {
 			email?: string;
 			refreshToken?: string;
 			enabled?: boolean;
-			cooldownUntil?: number;
+			coolingDownUntil?: number;
 		}> = [
 			{ accountId: "near-limit", access: "token-1" },
 			{ accountId: "healthy", access: "token-2" },
@@ -77,7 +85,7 @@ class FakeManager {
 			email: account.email ?? `${account.accountId}@example.com`,
 			refreshToken: account.refreshToken ?? `rt-${account.accountId}`,
 			enabled: account.enabled ?? true,
-			cooldownUntil: account.cooldownUntil ?? 0,
+			coolingDownUntil: account.coolingDownUntil ?? 0,
 		}));
 	}
 
@@ -101,7 +109,8 @@ class FakeManager {
 		].filter(Boolean);
 		return (
 			ordered.find(
-				(account) => account.enabled !== false && account.cooldownUntil <= now,
+				(account) =>
+					account.enabled !== false && account.coolingDownUntil <= now,
 			) ?? null
 		);
 	}
@@ -109,7 +118,7 @@ class FakeManager {
 	getMinWaitTimeForFamily() {
 		const now = Date.now();
 		const waits = this.accounts
-			.map((account) => Math.max(0, account.cooldownUntil - now))
+			.map((account) => Math.max(0, account.coolingDownUntil - now))
 			.filter((waitMs) => waitMs > 0);
 		return waits.length > 0 ? Math.min(...waits) : 0;
 	}
@@ -120,7 +129,7 @@ class FakeManager {
 	) {
 		const target = this.getAccountByIndex(account.index);
 		if (!target) return;
-		target.cooldownUntil = Date.now() + Math.max(waitMs, 1);
+		target.coolingDownUntil = Date.now() + Math.max(waitMs, 1);
 	}
 
 	markAccountCoolingDown(
@@ -152,7 +161,9 @@ function createFakeRuntime(
 			}
 		>;
 		delayByAccountId?: Map<string, number>;
+		waitForFetchByAccountId?: Map<string, Promise<void>>;
 		onFetch?: (accountId: string) => void;
+		onFetchStart?: (accountId: string) => void;
 	} = {},
 ) {
 	const storageDir = createTempDir();
@@ -178,6 +189,7 @@ function createFakeRuntime(
 		]);
 	const fallbackProbeDelayMs = options.quotaProbeDelayMs ?? 0;
 	const delayByAccountId = options.delayByAccountId ?? new Map();
+	const waitForFetchByAccountId = options.waitForFetchByAccountId ?? new Map();
 
 	return {
 		AccountManager: {
@@ -208,6 +220,11 @@ function createFakeRuntime(
 			signal?: AbortSignal;
 		}) {
 			options.onFetch?.(accountId);
+			options.onFetchStart?.(accountId);
+			const gate = waitForFetchByAccountId.get(accountId);
+			if (gate) {
+				await gate;
+			}
 			const quotaProbeDelayMs =
 				delayByAccountId.get(accountId) ?? fallbackProbeDelayMs;
 			await new Promise<void>((resolve, reject) => {
@@ -496,7 +513,7 @@ describe("codex supervisor", () => {
 		expect(result?.account?.accountId).toBe("healthy");
 		expect(manager.activeIndex).toBe(1);
 		expect(manager.getCurrentAccountForFamily()?.accountId).toBe("healthy");
-		expect(manager.getAccountByIndex(0)?.cooldownUntil ?? 0).toBeGreaterThan(
+		expect(manager.getAccountByIndex(0)?.coolingDownUntil ?? 0).toBeGreaterThan(
 			Date.now() - 1,
 		);
 	});
@@ -580,63 +597,97 @@ describe("codex supervisor", () => {
 		expect(calls).toEqual(["near-limit"]);
 	});
 
-	it("overlaps selection with restart so handoff finishes sooner than the serial path", async () => {
+	it("shares the same in-flight probe across concurrent callers", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "5000";
+		const manager = new FakeManager();
+		const calls: string[] = [];
+		const nearLimitGate = createDeferred<void>();
+		const probeStarted = createDeferred<void>();
+		const runtime = createFakeRuntime(manager, {
+			waitForFetchByAccountId: new Map([["near-limit", nearLimitGate.promise]]),
+			onFetch(accountId) {
+				calls.push(accountId);
+			},
+			onFetchStart(accountId) {
+				if (accountId === "near-limit") {
+					probeStarted.resolve();
+				}
+			},
+		});
+		const account = manager.getCurrentAccountForFamily();
+
+		await supervisorTestApi?.clearProbeSnapshotCache(account);
+		const first = supervisorTestApi?.probeAccountSnapshot(
+			runtime,
+			account,
+			undefined,
+			250,
+		);
+		await probeStarted.promise;
+		const second = supervisorTestApi?.probeAccountSnapshot(
+			runtime,
+			account,
+			undefined,
+			250,
+		);
+		expect(calls).toEqual(["near-limit"]);
+
+		nearLimitGate.resolve();
+		const [firstSnapshot, secondSnapshot] = await Promise.all([first, second]);
+		expect(firstSnapshot).toEqual(secondSnapshot);
+		expect(calls).toEqual(["near-limit"]);
+	});
+
+	it("starts selection probing before restart finishes in overlap mode", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "40";
-		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "0";
 
 		class FakeChild extends EventEmitter {
 			exitCode: number | null = null;
 			kill = vi.fn((_signal: string) => true);
 		}
 
-		const serialManager = new FakeManager();
-		const serialRuntime = createFakeRuntime(serialManager, {
-			quotaProbeDelayMs: 140,
-		});
-		const serialChild = new FakeChild();
-		const serialStart = performance.now();
-		const serialResult = await (async () => {
-			await supervisorTestApi?.requestChildRestart(serialChild, "win32");
-			return supervisorTestApi?.ensureLaunchableAccount(
-				serialRuntime,
-				{},
-				undefined,
-				{ probeTimeoutMs: 250 },
-			);
-		})();
-		const serialElapsedMs = performance.now() - serialStart;
-		expect(serialResult).toMatchObject({
-			ok: true,
-			account: { accountId: "healthy" },
-		});
-
 		const overlapManager = new FakeManager();
+		const nearLimitGate = createDeferred<void>();
+		const probeStarted = createDeferred<void>();
 		const overlapRuntime = createFakeRuntime(overlapManager, {
-			quotaProbeDelayMs: 140,
+			waitForFetchByAccountId: new Map([["near-limit", nearLimitGate.promise]]),
+			onFetchStart(accountId) {
+				if (accountId === "near-limit") {
+					probeStarted.resolve();
+				}
+			},
 		});
 		const overlapChild = new FakeChild();
-		const overlapStart = performance.now();
-		const overlapResult = await Promise.all([
-			supervisorTestApi?.requestChildRestart(overlapChild, "win32"),
-			supervisorTestApi?.ensureLaunchableAccount(
-				overlapRuntime,
-				{},
-				undefined,
-				{ probeTimeoutMs: 250 },
-			),
-		]);
-		const overlapElapsedMs = performance.now() - overlapStart;
-		expect(overlapResult).toEqual([
+		let restartFinished = false;
+		const restartPromise = supervisorTestApi?.requestChildRestart(
+			overlapChild,
+			"win32",
+		).then(() => {
+			restartFinished = true;
+		});
+		const selectionPromise = supervisorTestApi?.ensureLaunchableAccount(
+			overlapRuntime,
+			{},
+			undefined,
+			{ probeTimeoutMs: 250 },
+		);
+		await probeStarted.promise;
+		expect(restartFinished).toBe(false);
+		nearLimitGate.resolve();
+
+		await expect(Promise.all([
+			restartPromise,
+			selectionPromise,
+		])).resolves.toEqual([
 			undefined,
 			expect.objectContaining({
 				ok: true,
 				account: expect.objectContaining({ accountId: "healthy" }),
 			}),
 		]);
-		expect(overlapElapsedMs).toBeLessThan(serialElapsedMs - 20);
 	});
 
-	it("keeps the prepared-selection path within the same pause envelope as overlap mode", async () => {
+	it("uses the prepared account without re-probing at cutover time", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "40";
 
 		class FakeChild extends EventEmitter {
@@ -644,30 +695,19 @@ describe("codex supervisor", () => {
 			kill = vi.fn((_signal: string) => true);
 		}
 
-		const overlapManager = new FakeManager();
-		const overlapRuntime = createFakeRuntime(overlapManager, {
+		const calls: string[] = [];
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager, {
 			quotaProbeDelayMs: 80,
+			onFetch(accountId) {
+				calls.push(accountId);
+			},
 		});
-		const overlapStart = performance.now();
-		await Promise.all([
-			supervisorTestApi?.requestChildRestart(new FakeChild(), "win32"),
-			supervisorTestApi?.ensureLaunchableAccount(
-				overlapRuntime,
-				{},
-				undefined,
-				{ probeTimeoutMs: 250 },
-			),
-		]);
-		const overlapElapsedMs = performance.now() - overlapStart;
 
-		const prewarmedManager = new FakeManager();
-		const prewarmedRuntime = createFakeRuntime(prewarmedManager, {
-			quotaProbeDelayMs: 80,
-		});
-		await supervisorTestApi?.prepareResumeSelection({
-			runtime: prewarmedRuntime,
+		const prepared = await supervisorTestApi?.prepareResumeSelection({
+			runtime,
 			pluginConfig: {},
-			currentAccount: prewarmedManager.getCurrentAccountForFamily(),
+			currentAccount: manager.getCurrentAccountForFamily(),
 			restartDecision: {
 				reason: "quota-near-exhaustion",
 				waitMs: 0,
@@ -675,11 +715,34 @@ describe("codex supervisor", () => {
 			},
 			signal: undefined,
 		});
-		const prewarmedStart = performance.now();
-		await supervisorTestApi?.requestChildRestart(new FakeChild(), "win32");
-		const prewarmedElapsedMs = performance.now() - prewarmedStart;
+		expect(prepared?.nextReady).toMatchObject({
+			ok: true,
+			account: { accountId: "healthy" },
+		});
+		expect(calls).toEqual(["healthy"]);
 
-		expect(prewarmedElapsedMs).toBeLessThan(overlapElapsedMs + 30);
+		calls.length = 0;
+		await supervisorTestApi?.markCurrentAccountForRestart(
+			runtime,
+			manager.getCurrentAccountForFamily(),
+			{
+				reason: "quota-near-exhaustion",
+				waitMs: 0,
+				sessionId: "prepared-session",
+			},
+			undefined,
+		);
+		await supervisorTestApi?.requestChildRestart(new FakeChild(), "win32");
+		const committed = await supervisorTestApi?.commitPreparedSelection(
+			runtime,
+			prepared?.nextReady?.account,
+			undefined,
+		);
+		expect(committed).toMatchObject({
+			ok: true,
+			account: { accountId: "healthy" },
+		});
+		expect(calls).toEqual([]);
 	});
 
 	it("commits the prepared account only at cutover time", async () => {

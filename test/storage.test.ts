@@ -1043,6 +1043,113 @@ describe("storage", () => {
 			expect(exported.accounts[0].accountId).toBe("acct-after-throw");
 		});
 
+		it("persists transaction updates to the original storage path after path drift", async () => {
+			const secondaryExportPath = join(testWorkDir, "secondary-export.json");
+			const secondaryStoragePath = join(testWorkDir, "secondary-storage.json");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-primary-before-drift",
+						refreshToken: "refresh-primary-before-drift",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			setStoragePathDirect(secondaryStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-secondary-before-drift",
+						refreshToken: "refresh-secondary-before-drift",
+						addedAt: 3,
+						lastUsed: 4,
+					},
+				],
+			});
+			setStoragePathDirect(testStoragePath);
+
+			await withAccountStorageTransaction(async (current, persist) => {
+				setStoragePathDirect(secondaryStoragePath);
+				await persist({
+					...(current ?? { version: 3, activeIndex: 0, accounts: [] }),
+					accounts: [
+						{
+							accountId: "acct-primary-after-drift",
+							refreshToken: "refresh-primary-after-drift",
+							addedAt: 5,
+							lastUsed: 6,
+						},
+					],
+				});
+			});
+
+			setStoragePathDirect(testStoragePath);
+			await exportAccounts(exportPath);
+			const primaryExport = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+			expect(primaryExport.accounts[0].accountId).toBe("acct-primary-after-drift");
+
+			setStoragePathDirect(secondaryStoragePath);
+			await exportAccounts(secondaryExportPath);
+			const secondaryExport = JSON.parse(
+				await fs.readFile(secondaryExportPath, "utf-8"),
+			);
+			expect(secondaryExport.accounts[0].accountId).toBe(
+				"acct-secondary-before-drift",
+			);
+		});
+
+		it("reloads fresh storage after a transaction handler returns successfully", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-before-success",
+						refreshToken: "refresh-before-success",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			await withAccountStorageTransaction(async (current, persist) => {
+				await persist({
+					...(current ?? { version: 3, activeIndex: 0, accounts: [] }),
+					accounts: [
+						{
+							accountId: "acct-success",
+							refreshToken: "refresh-success",
+							addedAt: 3,
+							lastUsed: 4,
+						},
+					],
+				});
+			});
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-after-success",
+						refreshToken: "refresh-after-success",
+						addedAt: 5,
+						lastUsed: 6,
+					},
+				],
+			});
+
+			await exportAccounts(exportPath);
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+			expect(exported.accounts[0].accountId).toBe("acct-after-success");
+		});
+
 		it("reloads fresh storage after a combined transaction handler throws", async () => {
 			await saveAccounts({
 				version: 3,
@@ -1094,6 +1201,58 @@ describe("storage", () => {
 			await exportAccounts(exportPath);
 			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
 			expect(exported.accounts[0].accountId).toBe("acct-after-combined-throw");
+		});
+
+		it("reloads fresh storage after a combined transaction handler returns successfully", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-before-combined-success",
+						refreshToken: "refresh-before-combined-success",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			await saveFlaggedAccounts({ version: 1, accounts: [] });
+
+			await withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+				await persist(
+					{
+						...(current ?? { version: 3, activeIndex: 0, accounts: [] }),
+						accounts: [
+							{
+								accountId: "acct-combined-success",
+								refreshToken: "refresh-combined-success",
+								addedAt: 3,
+								lastUsed: 4,
+							},
+						],
+					},
+					{ version: 1, accounts: [] },
+				);
+			});
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-after-combined-success",
+						refreshToken: "refresh-after-combined-success",
+						addedAt: 5,
+						lastUsed: 6,
+					},
+				],
+			});
+
+			await exportAccounts(exportPath);
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+			expect(exported.accounts[0].accountId).toBe(
+				"acct-after-combined-success",
+			);
 		});
 
 		it("should fail import when file does not exist", async () => {
