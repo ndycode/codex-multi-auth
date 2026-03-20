@@ -53,9 +53,11 @@ import {
 import {
 	clearAccounts,
 	findMatchingAccountIndex,
+	getLatestNamedBackup,
 	getStoragePath,
 	loadFlaggedAccounts,
 	loadAccounts,
+	restoreAccountsFromBackup,
 	saveFlaggedAccounts,
 	saveAccounts,
 	setStoragePath,
@@ -74,6 +76,7 @@ import {
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import { ANSI } from "./ui/ansi.js";
 import { UI_COPY } from "./ui/copy.js";
+import { confirm } from "./ui/confirm.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { select, type MenuItem } from "./ui/select.js";
@@ -1132,9 +1135,17 @@ async function promptManualCallback(state: string): Promise<string | null> {
 	}
 }
 
-type OAuthSignInMode = "browser" | "manual" | "cancel";
+type OAuthSignInMode = "browser" | "manual" | "restore-backup" | "cancel";
 
-async function promptOAuthSignInMode(): Promise<OAuthSignInMode> {
+interface LatestBackupOption {
+	path: string;
+	fileName: string;
+	accountCount: number;
+}
+
+async function promptOAuthSignInMode(
+	backupOption: LatestBackupOption | null,
+): Promise<OAuthSignInMode> {
 	if (!input.isTTY || !output.isTTY) {
 		return "browser";
 	}
@@ -1143,13 +1154,26 @@ async function promptOAuthSignInMode(): Promise<OAuthSignInMode> {
 	const items: MenuItem<OAuthSignInMode>[] = [
 		{ label: UI_COPY.oauth.openBrowser, value: "browser", color: "green" },
 		{ label: UI_COPY.oauth.manualMode, value: "manual", color: "yellow" },
+		...(backupOption
+			? [{
+				label: UI_COPY.oauth.loadLastBackup,
+				value: "restore-backup" as const,
+				hint: UI_COPY.oauth.loadLastBackupHint(
+					backupOption.fileName,
+					backupOption.accountCount,
+				),
+				color: "cyan" as const,
+			}]
+			: []),
 		{ label: UI_COPY.oauth.back, value: "cancel", color: "red" },
 	];
 
 	const selected = await select<OAuthSignInMode>(items, {
 		message: UI_COPY.oauth.chooseModeTitle,
 		subtitle: UI_COPY.oauth.chooseModeSubtitle,
-		help: UI_COPY.oauth.chooseModeHelp,
+		help: backupOption
+			? UI_COPY.oauth.chooseModeHelpWithBackup
+			: UI_COPY.oauth.chooseModeHelp,
 		clearScreen: true,
 		theme: ui.theme,
 		selectedEmphasis: "minimal",
@@ -1159,6 +1183,7 @@ async function promptOAuthSignInMode(): Promise<OAuthSignInMode> {
 			if (lower === "q") return "cancel";
 			if (lower === "1") return "browser";
 			if (lower === "2") return "manual";
+			if (lower === "3" && backupOption) return "restore-backup";
 			return undefined;
 		},
 	});
@@ -1425,20 +1450,14 @@ async function runActionPanel(
 	}
 }
 
-async function runOAuthFlow(forceNewLogin: boolean): Promise<TokenResult> {
+async function runOAuthFlow(
+	forceNewLogin: boolean,
+	signInMode: Extract<OAuthSignInMode, "browser" | "manual">,
+): Promise<TokenResult> {
 	const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
 	const oauthServer = await startLocalOAuthServer({ state });
 	let code: string | null = null;
 	try {
-		const signInMode = await promptOAuthSignInMode();
-		if (signInMode === "cancel") {
-			return {
-				type: "failed",
-				reason: "unknown",
-				message: UI_COPY.oauth.cancelled,
-			};
-		}
-
 		if (signInMode === "browser") {
 			const opened = openBrowserUrl(url);
 			if (opened) {
@@ -4099,7 +4118,7 @@ async function handleManageAction(
 		const existing = storage.accounts[idx];
 		if (!existing) return;
 
-		const tokenResult = await runOAuthFlow(true);
+		const tokenResult = await runOAuthFlow(true, "browser");
 		if (tokenResult.type !== "success") {
 			console.error(`Refresh failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`);
 			return;
@@ -4231,7 +4250,73 @@ async function runAuthLogin(): Promise<number> {
 		const existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
 		while (true) {
-			const tokenResult = await runOAuthFlow(forceNewLogin);
+			const latestNamedBackup = existingCount === 0
+				? await getLatestNamedBackup()
+				: null;
+			const signInMode = await promptOAuthSignInMode(
+				latestNamedBackup
+					? {
+						path: latestNamedBackup.path,
+						fileName: latestNamedBackup.fileName,
+						accountCount: latestNamedBackup.accountCount,
+					}
+					: null,
+			);
+			if (signInMode === "cancel") {
+				if (existingCount > 0) {
+					console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));
+					continue loginFlow;
+				}
+				console.log("Cancelled.");
+				return 0;
+			}
+			if (signInMode === "restore-backup" && latestNamedBackup) {
+				const confirmed = await confirm(
+					UI_COPY.oauth.restoreBackupConfirm(
+						latestNamedBackup.fileName,
+						latestNamedBackup.accountCount,
+					),
+				);
+				if (!confirmed) {
+					continue;
+				}
+
+				const displaySettings = await loadDashboardDisplaySettings();
+				applyUiThemeFromDashboardSettings(displaySettings);
+				await runActionPanel(
+					"Load Backup",
+					`Loading ${latestNamedBackup.fileName}`,
+					async () => {
+						const restoredStorage = await restoreAccountsFromBackup(
+							latestNamedBackup.path,
+						);
+						const targetIndex = resolveActiveIndex(restoredStorage);
+						const { synced } = await persistAndSyncSelectedAccount({
+							storage: restoredStorage,
+							targetIndex,
+							parsed: targetIndex + 1,
+							switchReason: "rotation",
+						});
+						console.log(
+							UI_COPY.oauth.restoreBackupLoaded(
+								latestNamedBackup.fileName,
+								restoredStorage.accounts.length,
+							),
+						);
+						if (!synced) {
+							console.warn(UI_COPY.oauth.restoreBackupSyncWarning);
+						}
+					},
+					displaySettings,
+				);
+				continue loginFlow;
+			}
+
+			if (signInMode !== "browser" && signInMode !== "manual") {
+				continue;
+			}
+
+			const tokenResult = await runOAuthFlow(forceNewLogin, signInMode);
 			if (tokenResult.type !== "success") {
 				if (isUserCancelledOAuth(tokenResult)) {
 					if (existingCount > 0) {

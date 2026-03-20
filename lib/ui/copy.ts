@@ -33,8 +33,18 @@ export const UI_COPY = {
 		chooseModeSubtitle: "How do you want to sign in?",
 		openBrowser: "Open Browser (Easy)",
 		manualMode: "Manual / Incognito",
+		loadLastBackup: "Load Last Saved Backup",
 		back: "Back",
 		chooseModeHelp: "↑↓ Move | Enter Select | 1 Easy | 2 Manual | Q Back",
+		chooseModeHelpWithBackup: "↑↓ Move | Enter Select | 1 Easy | 2 Manual | 3 Backup | Q Back",
+		loadLastBackupHint: (fileName: string, accountCount: number) =>
+			`${fileName} | ${accountCount} account${accountCount === 1 ? "" : "s"}`,
+		restoreBackupConfirm: (fileName: string, accountCount: number) =>
+			`Load ${fileName} (${accountCount} account${accountCount === 1 ? "" : "s"})?`,
+		restoreBackupLoaded: (fileName: string, accountCount: number) =>
+			`Loaded ${fileName} (${accountCount} account${accountCount === 1 ? "" : "s"}).`,
+		restoreBackupSyncWarning:
+			"Backup loaded locally, but Codex auth sync did not complete. Multi-auth routing will still use the restored account pool.",
 		goTo: "Go to:",
 		copyOk: "Login link copied.",
 		copyFail: "Could not copy login link.",

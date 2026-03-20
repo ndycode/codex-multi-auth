@@ -6,6 +6,8 @@ const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
 const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
+const getLatestNamedBackupMock = vi.fn();
+const restoreAccountsFromBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
@@ -18,6 +20,7 @@ const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
 const selectMock = vi.fn();
+const confirmMock = vi.fn(async () => true);
 const planOcChatgptSyncMock = vi.fn();
 const applyOcChatgptSyncMock = vi.fn();
 const runNamedBackupExportMock = vi.fn();
@@ -113,6 +116,8 @@ vi.mock("../lib/storage.js", async () => {
 		withAccountStorageTransaction: withAccountStorageTransactionMock,
 		setStoragePath: setStoragePathMock,
 		getStoragePath: getStoragePathMock,
+		getLatestNamedBackup: getLatestNamedBackupMock,
+		restoreAccountsFromBackup: restoreAccountsFromBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
 		normalizeAccountStorage: normalizeAccountStorageMock,
 	};
@@ -165,6 +170,10 @@ vi.mock("../lib/quota-cache.js", () => ({
 
 vi.mock("../lib/ui/select.js", () => ({
 	select: selectMock,
+}));
+
+vi.mock("../lib/ui/confirm.js", () => ({
+	confirm: confirmMock,
 }));
 
 vi.mock("../lib/oc-chatgpt-orchestrator.js", () => ({
@@ -428,6 +437,8 @@ describe("codex manager cli commands", () => {
 		loadFlaggedAccountsMock.mockReset();
 		saveAccountsMock.mockReset();
 		saveFlaggedAccountsMock.mockReset();
+		getLatestNamedBackupMock.mockReset();
+		restoreAccountsFromBackupMock.mockReset();
 		withAccountAndFlaggedStorageTransactionMock.mockReset();
 		withAccountStorageTransactionMock.mockReset();
 		queuedRefreshMock.mockReset();
@@ -442,6 +453,8 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReset();
 		savePluginConfigMock.mockReset();
 		selectMock.mockReset();
+		confirmMock.mockReset();
+		confirmMock.mockResolvedValue(true);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
 			model: "gpt-5-codex",
@@ -515,6 +528,7 @@ describe("codex manager cli commands", () => {
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
 		selectMock.mockResolvedValue(undefined);
+		getLatestNamedBackupMock.mockResolvedValue(null);
 		restoreTTYDescriptors();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
@@ -2947,6 +2961,112 @@ describe("codex manager cli commands", () => {
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("restores the latest named backup from onboarding when no accounts exist", async () => {
+		const now = Date.now();
+		setInteractiveTTY(true);
+		const restoredStorage = {
+			version: 3 as const,
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc_first",
+					refreshToken: "refresh-first",
+					accessToken: "access-first",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+				{
+					email: "restored@example.com",
+					accountId: "acc_restored",
+					refreshToken: "refresh-restored",
+					accessToken: "access-restored",
+					expiresAt: now + 7_200_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(null);
+		getLatestNamedBackupMock.mockResolvedValue({
+			path: "/mock/backups/last-good.json",
+			fileName: "last-good.json",
+			accountCount: 2,
+			mtimeMs: now,
+		});
+		restoreAccountsFromBackupMock.mockResolvedValue(structuredClone(restoredStorage));
+		selectMock.mockResolvedValueOnce("restore-backup");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getLatestNamedBackupMock).toHaveBeenCalled();
+		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
+			"/mock/backups/last-good.json",
+		);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_restored",
+				email: "restored@example.com",
+			}),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			"Loaded last-good.json (2 accounts).",
+		);
+	});
+
+	it("does not offer backup restore on onboarding when accounts already exist", async () => {
+		const now = Date.now();
+		loadAccountsMock
+			.mockResolvedValueOnce({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "existing@example.com",
+						accountId: "acc_existing",
+						refreshToken: "refresh-existing",
+						accessToken: "access-existing",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						enabled: true,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "existing@example.com",
+						accountId: "acc_existing",
+						refreshToken: "refresh-existing",
+						accessToken: "access-existing",
+						expiresAt: now + 3_600_000,
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						enabled: true,
+					},
+				],
+			});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(getLatestNamedBackupMock).not.toHaveBeenCalled();
 	});
 
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {

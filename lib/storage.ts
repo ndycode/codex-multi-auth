@@ -6,6 +6,7 @@ import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
+	getNamedBackupRoot,
 	resolveNamedBackupPath,
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -113,6 +114,13 @@ export type RestoreAssessment = {
 	latestSnapshot?: BackupSnapshotMetadata;
 	backupMetadata: BackupMetadata;
 };
+
+export interface NamedBackupSummary {
+	path: string;
+	fileName: string;
+	accountCount: number;
+	mtimeMs: number;
+}
 
 /**
  * Custom error class for storage operations with platform-aware hints.
@@ -809,6 +817,54 @@ export function getStoragePath(): string {
 
 export function buildNamedBackupPath(name: string): string {
 	return resolveNamedBackupPath(name, getStoragePath());
+}
+
+export async function getLatestNamedBackup(): Promise<NamedBackupSummary | null> {
+	const storagePath = getStoragePath();
+	const backupRoot = getNamedBackupRoot(storagePath);
+	let entries: Array<{ isFile(): boolean; name: string }>;
+	try {
+		entries = await fs.readdir(backupRoot, {
+			withFileTypes: true,
+			encoding: "utf8",
+		});
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return null;
+		throw error;
+	}
+
+	const candidates: NamedBackupSummary[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		if (!entry.name.toLowerCase().endsWith(".json")) continue;
+		const candidatePath = join(backupRoot, entry.name);
+		try {
+			const { normalized } = await loadAccountsFromPath(candidatePath);
+			if (!normalized || normalized.accounts.length === 0) continue;
+			const stats = await fs.stat(candidatePath);
+			candidates.push({
+				path: candidatePath,
+				fileName: entry.name,
+				accountCount: normalized.accounts.length,
+				mtimeMs: stats.mtimeMs,
+			});
+		} catch {
+			continue;
+		}
+	}
+
+	candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+	return candidates[0] ?? null;
+}
+
+export async function restoreAccountsFromBackup(path: string): Promise<AccountStorageV3> {
+	const { normalized } = await loadAccountsFromPath(path);
+	if (!normalized || normalized.accounts.length === 0) {
+		throw new Error(`Backup does not contain any accounts: ${path}`);
+	}
+	await saveAccounts(normalized);
+	return normalized;
 }
 
 export async function exportNamedBackup(
