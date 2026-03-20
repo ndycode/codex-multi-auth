@@ -964,6 +964,84 @@ describe("codex supervisor", () => {
 		expect(calls).toEqual([]);
 	});
 
+	it("commits the prepared account after the stored token refreshes before cutover", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "40";
+
+		class FakeChild extends EventEmitter {
+			exitCode: number | null = null;
+			kill = vi.fn((_signal: string) => {
+				setTimeout(() => {
+					this.exitCode = 0;
+					this.emit("exit", 0, null);
+				}, 0);
+				return true;
+			});
+		}
+
+		const calls: string[] = [];
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager, {
+			onFetch(accountId) {
+				calls.push(accountId);
+			},
+		});
+
+		const prepared = await supervisorTestApi?.prepareResumeSelection({
+			runtime,
+			pluginConfig: {},
+			currentAccount: manager.getCurrentAccountForFamily(),
+			restartDecision: {
+				reason: "quota-near-exhaustion",
+				waitMs: 0,
+				sessionId: "prepared-session",
+			},
+			signal: undefined,
+		});
+		const stalePreparedAccount = prepared?.nextReady?.account
+			? { ...prepared.nextReady.account }
+			: null;
+		expect(stalePreparedAccount).toMatchObject({
+			accountId: "healthy",
+			refreshToken: "rt-healthy",
+		});
+		expect(calls).toEqual(["healthy"]);
+
+		await supervisorTestApi?.markCurrentAccountForRestart(
+			runtime,
+			manager.getCurrentAccountForFamily(),
+			{
+				reason: "quota-near-exhaustion",
+				waitMs: 0,
+				sessionId: "prepared-session",
+			},
+			undefined,
+		);
+		const refreshedStoredAccount = manager.getAccountByIndex(1);
+		expect(refreshedStoredAccount).not.toBeNull();
+		if (!refreshedStoredAccount) {
+			return;
+		}
+		refreshedStoredAccount.refreshToken = "rt-healthy-refreshed";
+		refreshedStoredAccount.access = "token-2-refreshed";
+		await supervisorTestApi?.requestChildRestart(new FakeChild(), "win32");
+
+		const committed = await supervisorTestApi?.commitPreparedSelection(
+			runtime,
+			stalePreparedAccount,
+			undefined,
+		);
+
+		expect(committed).toMatchObject({
+			ok: true,
+			account: {
+				accountId: "healthy",
+				refreshToken: "rt-healthy-refreshed",
+				access: "token-2-refreshed",
+			},
+		});
+		expect(calls).toEqual(["healthy"]);
+	});
+
 	it("commits the prepared account only at cutover time", async () => {
 		const manager = new FakeManager();
 		const runtime = createFakeRuntime(manager, {
@@ -1250,6 +1328,54 @@ describe("codex supervisor", () => {
 		},
 	);
 
+	it(
+		"stops waiting on the child when the outer signal aborts",
+		{ timeout: 10_000 },
+		async () => {
+			process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "10";
+
+			class HangingChild extends EventEmitter {
+				exitCode: number | null = null;
+				killSignals: string[] = [];
+				kill = vi.fn((signal: string) => {
+					this.killSignals.push(signal);
+					setTimeout(() => {
+						this.exitCode = 130;
+						this.emit("exit", 130, signal);
+					}, 0);
+					return true;
+				});
+			}
+
+			const manager = new FakeManager();
+			const runtime = {
+				...createFakeRuntime(manager),
+				getPreemptiveQuotaEnabled() {
+					return false;
+				},
+			};
+			const controller = new AbortController();
+			const child = new HangingChild();
+			const runPromise = supervisorTestApi?.runInteractiveSupervision({
+				codexBin: "dist/bin/codex.js",
+				initialArgs: ["chat"],
+				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+				runtime,
+				pluginConfig: {},
+				manager,
+				signal: controller.signal,
+				maxSessionRestarts: 1,
+				spawnChild: () => child,
+			});
+
+			setTimeout(() => controller.abort(), 10);
+
+			await expect(runPromise).resolves.toBe(130);
+			expect(child.kill).toHaveBeenCalled();
+			expect(child.killSignals.length).toBeGreaterThan(0);
+		},
+	);
+
 	it("cleans up the parent abort listener for each linked abort controller", () => {
 		const controller = new AbortController();
 		const addSpy = vi.spyOn(controller.signal, "addEventListener");
@@ -1272,6 +1398,45 @@ describe("codex supervisor", () => {
 			removeSpy.mockRestore();
 		}
 	});
+
+	it.each([
+		[
+			"throws",
+			() => {
+				throw new Error("boom");
+			},
+			/Failed to resolve supervisor storage path via runtime\.getStoragePath\(\): boom/,
+		],
+		[
+			"returns empty whitespace",
+			() => "   ",
+			/Failed to resolve supervisor storage path via runtime\.getStoragePath\(\): received an empty path/,
+		],
+	])(
+		"does not fall back to the default Codex home lock path when runtime.getStoragePath %s",
+		async (_label, getStoragePath, expectedError) => {
+			const codexHome = createTempDir();
+			process.env.CODEX_HOME = codexHome;
+			const loadFromDisk = vi.fn(async () => new FakeManager());
+			const runtime = {
+				AccountManager: { loadFromDisk },
+				getStoragePath,
+			};
+			const defaultLockPath = join(
+				codexHome,
+				"multi-auth",
+				"openai-codex-accounts.json.supervisor.lock",
+			);
+
+			await expect(
+				supervisorTestApi?.withLockedManager(runtime, async () => "ok", undefined),
+			).rejects.toThrow(expectedError);
+			expect(loadFromDisk).not.toHaveBeenCalled();
+			await expect(fs.access(defaultLockPath)).rejects.toMatchObject({
+				code: "ENOENT",
+			});
+		},
+	);
 
 	it("renews the supervisor storage lock while a critical section is still running", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS = "40";
@@ -1316,6 +1481,40 @@ describe("codex supervisor", () => {
 			"second",
 		]);
 	});
+
+	it(
+		"fails fast when the supervisor lock heartbeat loses the lease mid-section",
+		{ timeout: 10_000 },
+		async () => {
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS = "30";
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS = "200";
+
+			const manager = new FakeManager();
+			const runtime = createFakeRuntime(manager);
+			const entered = createDeferred<void>();
+			const criticalSection = supervisorTestApi?.withLockedManager(
+				runtime,
+				async () => {
+					entered.resolve();
+					await new Promise((resolve) => setTimeout(resolve, 1_000));
+					return "held";
+				},
+				undefined,
+			);
+			await entered.promise;
+
+			const lockPath = supervisorTestApi?.getSupervisorStorageLockPath(runtime);
+			expect(lockPath).toBeTruthy();
+			if (!lockPath) {
+				return;
+			}
+			await fs.unlink(lockPath);
+
+			await expect(criticalSection).rejects.toThrow(
+				`Supervisor lock heartbeat lost lease at ${lockPath} for owner`,
+			);
+		},
+	);
 
 	it(
 		"returns a failure exit code when the monitor loop fails after startup",
@@ -1405,53 +1604,73 @@ describe("codex supervisor", () => {
 		"paces repeated quota probe outages instead of hot-looping the monitor",
 		{ timeout: 10_000 },
 		async () => {
-			vi.useFakeTimers();
-			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS = "20";
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS = "30";
 
-			class FakeChild extends EventEmitter {
+			class HangingChild extends EventEmitter {
 				exitCode: number | null = null;
-
-				constructor(exitCode: number) {
-					super();
+				kill = vi.fn((signal: string) => {
 					setTimeout(() => {
-						this.exitCode = exitCode;
-						this.emit("exit", exitCode, null);
-					}, 60);
-				}
-
-				kill(_signal: string) {
+						this.exitCode = 130;
+						this.emit("exit", 130, signal);
+					}, 0);
 					return true;
-				}
+				});
 			}
 
 			const manager = new FakeManager();
+			const controller = new AbortController();
+			let fetchAttempts = 0;
 			const runtime = createFakeRuntime(manager, {
 				onFetch(accountId) {
 					if (accountId === "near-limit") {
+						fetchAttempts += 1;
+						if (fetchAttempts === 2) {
+							controller.abort();
+						}
 						throw new Error("quota endpoint unavailable");
 					}
 				},
 			});
+			const child = new HangingChild();
 
 			const runPromise = supervisorTestApi?.runInteractiveSupervision({
 				codexBin: "dist/bin/codex.js",
-				initialArgs: ["resume", "probe-unavailable-session"],
+				initialArgs: ["chat"],
 				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
 				runtime,
 				pluginConfig: {},
 				manager,
-				signal: undefined,
+				signal: controller.signal,
 				maxSessionRestarts: 1,
-				spawnChild: () => new FakeChild(0),
-				findBinding: async ({ sessionId }: { sessionId?: string }) => ({
-					sessionId: sessionId ?? "probe-unavailable-session",
+				spawnChild: () => child,
+				loadCurrentState: async () => ({
+					manager,
+					currentAccount: manager.getCurrentAccountForFamily(),
+				}),
+				waitForBinding: async () => ({
+					sessionId: "probe-unavailable-session",
 					rolloutPath: null,
 					lastActivityAtMs: Date.now(),
 				}),
+				refreshBinding: async (binding: {
+					sessionId: string;
+					rolloutPath: string | null;
+					lastActivityAtMs: number;
+				}) => binding,
 			});
 
-			await vi.advanceTimersByTimeAsync(100);
-			await expect(runPromise).resolves.toBe(0);
+			for (let attempt = 0; attempt < 20 && fetchAttempts === 0; attempt += 1) {
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			expect(fetchAttempts).toBe(1);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(fetchAttempts).toBe(1);
+			await expect(runPromise).rejects.toMatchObject({
+				name: "AbortError",
+				message: "Supervisor storage lock wait aborted",
+			});
+			expect(fetchAttempts).toBe(2);
+			expect(child.kill).toHaveBeenCalled();
 		},
 	);
 

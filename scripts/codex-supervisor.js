@@ -402,14 +402,23 @@ async function safeUnlink(path) {
 
 function getSupervisorStoragePath(runtime) {
 	if (typeof runtime.getStoragePath === "function") {
+		let storagePath;
 		try {
-			const storagePath = runtime.getStoragePath();
-			if (typeof storagePath === "string" && storagePath.trim().length > 0) {
-				return storagePath;
-			}
-		} catch {
-			// Fall back to the default Codex home path.
+			storagePath = runtime.getStoragePath();
+		} catch (error) {
+			throw new Error(
+				`Failed to resolve supervisor storage path via runtime.getStoragePath(): ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+				{ cause: error },
+			);
 		}
+		if (typeof storagePath !== "string" || storagePath.trim().length === 0) {
+			throw new Error(
+				"Failed to resolve supervisor storage path via runtime.getStoragePath(): received an empty path",
+			);
+		}
+		return storagePath;
 	}
 
 	return join(
@@ -471,7 +480,26 @@ async function safeUnlinkOwnedSupervisorLock(lockPath, ownerId) {
 function createSupervisorLockHeartbeat(lockPath, ownerId, acquiredAt, ttlMs, signal) {
 	const refreshMs = Math.max(25, Math.floor(ttlMs / 3));
 	let stopped = false;
+	let failedError = null;
+	let settleHeartbeat;
+	let rejectHeartbeat;
 	let pendingRefresh = Promise.resolve();
+	const heartbeatPromise = new Promise((resolve, reject) => {
+		settleHeartbeat = resolve;
+		rejectHeartbeat = reject;
+	});
+	let timer = null;
+	const stopWithError = (error) => {
+		if (failedError || stopped) {
+			return;
+		}
+		failedError = error;
+		stopped = true;
+		if (timer) {
+			clearInterval(timer);
+		}
+		rejectHeartbeat(error);
+	};
 	const refresh = () => {
 		if (stopped || signal?.aborted) {
 			return;
@@ -479,7 +507,11 @@ function createSupervisorLockHeartbeat(lockPath, ownerId, acquiredAt, ttlMs, sig
 		pendingRefresh = pendingRefresh.then(async () => {
 			const payload = await readSupervisorLockPayload(lockPath);
 			if (!payload) {
-				stopped = true;
+				stopWithError(
+					new Error(
+						`Supervisor lock heartbeat lost lease at ${lockPath} for owner ${ownerId}: lock file disappeared`,
+					),
+				);
 				return;
 			}
 			if (
@@ -487,29 +519,41 @@ function createSupervisorLockHeartbeat(lockPath, ownerId, acquiredAt, ttlMs, sig
 				payload.ownerId.length > 0 &&
 				payload.ownerId !== ownerId
 			) {
-				stopped = true;
+				stopWithError(
+					new Error(
+						`Supervisor lock heartbeat lost lease at ${lockPath} for owner ${ownerId}: observed owner ${payload.ownerId}`,
+					),
+				);
 				return;
 			}
 			try {
 				await writeSupervisorLockPayload(lockPath, ownerId, acquiredAt, ttlMs);
 			} catch (error) {
-				supervisorDebug(
-					`failed to refresh supervisor lock lease at ${lockPath}: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
+				stopWithError(
+					new Error(
+						`Failed to refresh supervisor lock lease at ${lockPath} for owner ${ownerId}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+						{ cause: error },
+					),
 				);
 			}
 		});
 	};
-	const timer = setInterval(refresh, refreshMs);
+	timer = setInterval(refresh, refreshMs);
 	if (typeof timer.unref === "function") {
 		timer.unref();
 	}
 	return {
+		promise: heartbeatPromise,
 		stop: async () => {
 			stopped = true;
 			clearInterval(timer);
+			settleHeartbeat();
 			await pendingRefresh;
+			if (failedError) {
+				throw failedError;
+			}
 		},
 	};
 }
@@ -594,7 +638,7 @@ async function withSupervisorStorageLock(runtime, fn, signal) {
 			);
 
 			try {
-				return await fn();
+				return await Promise.race([fn(), heartbeat.promise]);
 			} finally {
 				await heartbeat.stop();
 				await safeUnlinkOwnedSupervisorLock(lockPath, ownerId);
@@ -1862,19 +1906,34 @@ async function runInteractiveSupervision({
 				}
 			})();
 
-			const result = await new Promise((resolve) => {
-				child.once("error", (error) => {
-					resolve({
-						exitCode: 1,
-						error,
+			const result = await abortablePromise(
+				new Promise((resolve) => {
+					child.once("error", (error) => {
+						resolve({
+							exitCode: 1,
+							error,
+						});
 					});
-				});
-				child.once("exit", (code, exitSignal) => {
-					resolve({
-						exitCode: normalizeExitCode(code, exitSignal),
-						signal: exitSignal,
+					child.once("exit", (code, exitSignal) => {
+						resolve({
+							exitCode: normalizeExitCode(code, exitSignal),
+							signal: exitSignal,
+						});
 					});
-				});
+				}),
+				signal,
+				"Supervisor child wait aborted",
+			).catch(async (error) => {
+				if (error?.name !== "AbortError" || !signal?.aborted) {
+					throw error;
+				}
+				monitorActive = false;
+				monitorController.abort();
+				await requestRestart(child, process.platform);
+				return {
+					exitCode: 130,
+					signal: "SIGTERM",
+				};
 			});
 
 			monitorActive = false;
