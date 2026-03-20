@@ -24,7 +24,7 @@ export interface QuotaSchedulerOptions {
 	maxDeferralMs?: number;
 }
 
-const DEFAULT_REMAINING_PERCENT_THRESHOLD = 5;
+const DEFAULT_REMAINING_PERCENT_THRESHOLD = 10;
 const DEFAULT_MAX_DEFERRAL_MS = 2 * 60 * 60_000;
 
 /**

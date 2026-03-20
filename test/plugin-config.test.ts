@@ -993,6 +993,13 @@ describe('Plugin Configuration', () => {
 			expect(getCodexCliSessionSupervisor({})).toBe(false);
 		});
 
+		it('should honor the config value when the env override is unset', () => {
+			delete process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR;
+			expect(
+				getCodexCliSessionSupervisor({ codexCliSessionSupervisor: true }),
+			).toBe(true);
+		});
+
 		it('should prioritize environment override for the supervisor wrapper', () => {
 			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '1';
 			expect(getCodexCliSessionSupervisor({ codexCliSessionSupervisor: false })).toBe(true);

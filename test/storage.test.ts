@@ -956,6 +956,146 @@ describe("storage", () => {
 			);
 		});
 
+		it("fails fast when export is called from an active transaction after the storage path changes", async () => {
+			const secondaryStoragePath = join(testWorkDir, "accounts-secondary.json");
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-primary",
+						refreshToken: "refresh-primary",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			setStoragePathDirect(secondaryStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-secondary",
+						refreshToken: "refresh-secondary",
+						addedAt: 3,
+						lastUsed: 4,
+					},
+				],
+			});
+			setStoragePathDirect(testStoragePath);
+
+			await expect(
+				withAccountStorageTransaction(async () => {
+					setStoragePathDirect(secondaryStoragePath);
+					await exportAccounts(exportPath);
+				}),
+			).rejects.toThrow(/different storage path/);
+			expect(existsSync(exportPath)).toBe(false);
+		});
+
+		it("reloads fresh storage after a transaction handler throws", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-before-throw",
+						refreshToken: "refresh-before-throw",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			await expect(
+				withAccountStorageTransaction(async (current, persist) => {
+					await persist({
+						...(current ?? { version: 3, activeIndex: 0, accounts: [] }),
+						accounts: [
+							{
+								accountId: "acct-thrown",
+								refreshToken: "refresh-thrown",
+								addedAt: 3,
+								lastUsed: 4,
+							},
+						],
+					});
+					throw new Error("boom");
+				}),
+			).rejects.toThrow("boom");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-after-throw",
+						refreshToken: "refresh-after-throw",
+						addedAt: 5,
+						lastUsed: 6,
+					},
+				],
+			});
+
+			await exportAccounts(exportPath);
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+			expect(exported.accounts[0].accountId).toBe("acct-after-throw");
+		});
+
+		it("reloads fresh storage after a combined transaction handler throws", async () => {
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-before-combined-throw",
+						refreshToken: "refresh-before-combined-throw",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+			await saveFlaggedAccounts({ version: 1, accounts: [] });
+
+			await expect(
+				withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+					await persist(
+						{
+							...(current ?? { version: 3, activeIndex: 0, accounts: [] }),
+							accounts: [
+								{
+									accountId: "acct-combined-thrown",
+									refreshToken: "refresh-combined-thrown",
+									addedAt: 3,
+									lastUsed: 4,
+								},
+							],
+						},
+						{ version: 1, accounts: [] },
+					);
+					throw new Error("combined boom");
+				}),
+			).rejects.toThrow("combined boom");
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-after-combined-throw",
+						refreshToken: "refresh-after-combined-throw",
+						addedAt: 5,
+						lastUsed: 6,
+					},
+				],
+			});
+
+			await exportAccounts(exportPath);
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+			expect(exported.accounts[0].accountId).toBe("acct-after-combined-throw");
+		});
+
 		it("should fail import when file does not exist", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			const nonexistentPath = join(testWorkDir, "nonexistent-file.json");

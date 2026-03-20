@@ -312,6 +312,67 @@ describe("codex supervisor", () => {
 		expect(child.kill).toHaveBeenCalledWith("SIGKILL");
 	});
 
+	it("sends SIGINT before escalating on non-Windows platforms", async () => {
+		vi.useFakeTimers();
+		class FakeChild extends EventEmitter {
+			exitCode: number | null = null;
+			kill = vi.fn((_signal: string) => true);
+		}
+
+		const child = new FakeChild();
+		const pending = supervisorTestApi?.requestChildRestart(child, "linux");
+
+		await vi.runAllTimersAsync();
+		await expect(pending).resolves.toBeUndefined();
+		expect(child.kill.mock.calls.map(([signal]) => signal)).toEqual([
+			"SIGINT",
+			"SIGTERM",
+			"SIGKILL",
+		]);
+	});
+
+	it("cleans up stale supervisor locks even after a transient Windows unlink failure", async () => {
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager);
+		const lockPath = supervisorTestApi?.getSupervisorStorageLockPath(runtime);
+		expect(lockPath).toBeTruthy();
+		if (!lockPath) {
+			throw new Error("expected a supervisor lock path");
+		}
+
+		await fs.mkdir(join(lockPath, ".."), { recursive: true }).catch(() => {});
+		await fs.writeFile(
+			lockPath,
+			JSON.stringify({
+				pid: 1,
+				acquiredAt: Date.now() - 60_000,
+				expiresAt: Date.now() - 1_000,
+			}),
+			"utf8",
+		);
+
+		const originalUnlink = fs.unlink.bind(fs);
+		const unlinkSpy = vi
+			.spyOn(fs, "unlink")
+			.mockImplementationOnce(async () => {
+				const error = Object.assign(new Error("file busy"), { code: "EPERM" });
+				throw error;
+			})
+			.mockImplementation(originalUnlink);
+
+		try {
+			await expect(
+				supervisorTestApi?.withLockedManager(runtime, async (loadedManager: FakeManager) => {
+					expect(loadedManager).toBe(manager);
+					return "locked";
+				}),
+			).resolves.toBe("locked");
+			expect(unlinkSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+		} finally {
+			unlinkSpy.mockRestore();
+		}
+	});
+
 	it("skips a near-limit current account and selects the next healthy account", async () => {
 		const manager = new FakeManager();
 		const runtime = createFakeRuntime(manager);
@@ -594,5 +655,32 @@ describe("codex supervisor", () => {
 		});
 		expect(manager.activeIndex).toBe(3);
 		expect(elapsedMs).toBeLessThan(170);
+	});
+
+	it("degrades a failed candidate probe and continues to the next healthy account", async () => {
+		const manager = new FakeManager([
+			{ accountId: "broken", access: "token-broken" },
+			{ accountId: "healthy", access: "token-healthy" },
+		]);
+		const runtime = createFakeRuntime(manager, {
+			onFetch(accountId) {
+				if (accountId === "broken") {
+					throw new Error("network fault");
+				}
+			},
+		});
+
+		const result = await supervisorTestApi?.ensureLaunchableAccount(
+			runtime,
+			{},
+			undefined,
+			{ probeTimeoutMs: 250 },
+		);
+
+		expect(result).toMatchObject({
+			ok: true,
+			account: { accountId: "healthy" },
+		});
+		expect(manager.activeIndex).toBe(1);
 	});
 });

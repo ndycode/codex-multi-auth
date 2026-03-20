@@ -203,6 +203,25 @@ describe("quota-probe", () => {
 		await expect(pending).rejects.toThrow(/abort/i);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
+
+	it("rejects immediately when the caller signal is already aborted", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			fetchCodexQuotaSnapshot({
+				accountId: "acc-pre-aborted",
+				accessToken: "token-pre-aborted",
+				model: "gpt-5-codex",
+				fallbackModels: [],
+				timeoutMs: 30_000,
+				signal: controller.signal,
+			}),
+		).rejects.toThrow(/abort/i);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
 	it("parses reset-at values expressed as epoch seconds and epoch milliseconds", async () => {
 		const nowSec = Math.floor(Date.now() / 1000);
 		const primarySeconds = nowSec + 120;

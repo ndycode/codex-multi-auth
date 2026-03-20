@@ -20,6 +20,8 @@ const DEFAULT_SESSION_BINDING_POLL_MS = 50;
 const DEFAULT_STORAGE_LOCK_WAIT_MS = 10_000;
 const DEFAULT_STORAGE_LOCK_POLL_MS = 100;
 const DEFAULT_STORAGE_LOCK_TTL_MS = 30_000;
+const DEFAULT_UNLINK_RETRY_ATTEMPTS = 4;
+const DEFAULT_UNLINK_RETRY_BASE_DELAY_MS = 25;
 const INTERNAL_RECOVERABLE_COOLDOWN_MS = 60_000;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/;
 const SESSION_META_SCAN_LINE_LIMIT = 200;
@@ -62,6 +64,15 @@ function createAbortError(message = "Operation aborted") {
 	const error = new Error(message);
 	error.name = "AbortError";
 	return error;
+}
+
+function createProbeUnavailableError(error) {
+	const wrapped = new Error(
+		error instanceof Error ? error.message : String(error),
+		{ cause: error },
+	);
+	wrapped.name = "QuotaProbeUnavailableError";
+	return wrapped;
 }
 
 function abortablePromise(promise, signal, message = "Operation aborted") {
@@ -309,20 +320,30 @@ async function persistActiveSelection(manager, account) {
 }
 
 async function safeUnlink(path) {
-	try {
-		await fs.unlink(path);
-		return true;
-	} catch (error) {
-		if (
-			error &&
-			typeof error === "object" &&
-			"code" in error &&
-			error.code === "ENOENT"
-		) {
+	for (let attempt = 0; attempt < DEFAULT_UNLINK_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.unlink(path);
 			return true;
+		} catch (error) {
+			const code =
+				error && typeof error === "object" && "code" in error
+					? `${error.code ?? ""}`
+					: "";
+			if (code === "ENOENT") {
+				return true;
+			}
+			const canRetry =
+				(code === "EPERM" || code === "EBUSY") &&
+				attempt + 1 < DEFAULT_UNLINK_RETRY_ATTEMPTS;
+			if (!canRetry) {
+				return false;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, DEFAULT_UNLINK_RETRY_BASE_DELAY_MS * (attempt + 1)),
+			);
 		}
-		return false;
 	}
+	return false;
 }
 
 function getSupervisorStoragePath(runtime) {
@@ -482,7 +503,6 @@ function getManagerAccounts(manager, extraAccounts = []) {
 		if (!item) continue;
 		const key = [
 			`${item.index ?? ""}`,
-			`${item.refreshToken ?? ""}`,
 			`${item.accountId ?? ""}`,
 			`${item.email ?? ""}`,
 		].join("|");
@@ -496,10 +516,9 @@ function getManagerAccounts(manager, extraAccounts = []) {
 function getAccountIdentityKey(account) {
 	if (!account) return "";
 	return [
-		`${account.refreshToken ?? ""}`,
+		`${account.index ?? ""}`,
 		`${account.accountId ?? ""}`,
 		`${account.email ?? ""}`,
-		`${account.index ?? ""}`,
 	].join("|");
 }
 
@@ -811,7 +830,7 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 			if (signal?.aborted || error?.name === "AbortError") {
 				throw error;
 			}
-			return null;
+			throw createProbeUnavailableError(error);
 		} finally {
 			if (cacheKey) {
 				const current = snapshotProbeCache.get(cacheKey);
@@ -838,6 +857,9 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 		return await abortablePromise(fetchPromise, signal, "Quota probe aborted");
 	} catch (error) {
 		if (signal?.aborted || error?.name === "AbortError") {
+			throw error;
+		}
+		if (error?.name === "QuotaProbeUnavailableError") {
 			throw error;
 		}
 		return null;
@@ -968,7 +990,15 @@ async function ensureLaunchableAccount(
 						if (signal?.aborted || error?.name === "AbortError") {
 							throw error;
 						}
-						throw error;
+						return {
+							account,
+							snapshot: null,
+							evaluation: {
+								rotate: true,
+								reason: "probe-error",
+								waitMs: 0,
+							},
+						};
 					}
 				})(),
 			);
@@ -1443,6 +1473,9 @@ async function runInteractiveSupervision({
 							if (monitorController.signal.aborted || error?.name === "AbortError") {
 								break;
 							}
+							if (error?.name === "QuotaProbeUnavailableError") {
+								continue;
+							}
 							throw error;
 						}
 						const pressure = computeQuotaPressure(
@@ -1551,9 +1584,23 @@ async function runInteractiveSupervision({
 			if (signal?.aborted) {
 				return result.exitCode;
 			}
-			const snapshot = refreshedState.currentAccount
-				? await probeAccountSnapshot(runtime, refreshedState.currentAccount, signal)
-				: null;
+			let snapshot = null;
+			if (refreshedState.currentAccount) {
+				try {
+					snapshot = await probeAccountSnapshot(
+						runtime,
+						refreshedState.currentAccount,
+						signal,
+					);
+				} catch (error) {
+					if (signal?.aborted || error?.name === "AbortError") {
+						throw error;
+					}
+					if (error?.name !== "QuotaProbeUnavailableError") {
+						throw error;
+					}
+				}
+			}
 			const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig);
 			if (evaluation.rotate) {
 				restartDecision = {

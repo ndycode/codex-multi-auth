@@ -2328,9 +2328,16 @@ export async function exportAccounts(
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
-	const storage =
+	if (
 		transactionState?.active &&
-		transactionState.storagePath === activeStoragePath
+		transactionState.storagePath !== activeStoragePath
+	) {
+		throw new Error(
+			`No accounts to export: export was called from a different storage path ` +
+				`(transaction path: ${transactionState.storagePath}, active: ${activeStoragePath})`,
+		);
+	}
+	const storage = transactionState?.active
 		? transactionState.snapshot
 		: await withAccountStorageTransaction((current) =>
 				Promise.resolve(current),

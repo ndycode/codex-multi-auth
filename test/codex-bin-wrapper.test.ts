@@ -109,6 +109,23 @@ function writeSupervisorRuntimeFixture(fixtureRoot: string): void {
 	);
 }
 
+function writeCodexManagerAutoSyncFixture(fixtureRoot: string): void {
+	const distLibDir = join(fixtureRoot, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(
+		join(distLibDir, "codex-manager.js"),
+		[
+			'import { appendFile } from "node:fs/promises";',
+			"export async function autoSyncActiveAccountToCodex() {",
+			'\tconst markerPath = process.env.CODEX_TEST_AUTO_SYNC_MARKER ?? "";',
+			"\tif (!markerPath) return;",
+			'\tawait appendFile(markerPath, "sync\\n", "utf8");',
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+}
+
 function createFakeCodexBin(rootDir: string): string {
 	const fakeBin = join(rootDir, "fake-codex.js");
 	writeFileSync(
@@ -607,5 +624,42 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain(
 			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
 		);
+	});
+
+	it("still auto-syncs once when the supervisor returns early", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorRuntimeFixture(fixtureRoot);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "auto-sync.log");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.match(/FORWARDED:/g) ?? []).toHaveLength(1);
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
+	});
+
+	it("supports interactive commands through the supervisor wrapper", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorRuntimeFixture(fixtureRoot);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "interactive-auto-sync.log");
+
+		const result = runWrapper(fixtureRoot, [], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain('FORWARDED:-c cli_auth_credentials_store="file"');
+		expect(result.stdout.match(/FORWARDED:/g) ?? []).toHaveLength(1);
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
 	});
 });
