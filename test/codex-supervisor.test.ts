@@ -360,4 +360,46 @@ describe("codex supervisor", () => {
 		]);
 		expect(overlapElapsedMs).toBeLessThan(serialElapsedMs - 40);
 	});
+
+	it("reduces restart pause further when selection is prepared before the idle gate", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "40";
+
+		class FakeChild extends EventEmitter {
+			exitCode: number | null = null;
+			kill = vi.fn((_signal: string) => true);
+		}
+
+		const overlapManager = new FakeManager();
+		const overlapRuntime = createFakeRuntime(overlapManager, 80);
+		const overlapStart = performance.now();
+		await Promise.all([
+			supervisorTestApi?.requestChildRestart(new FakeChild(), "win32"),
+			supervisorTestApi?.ensureLaunchableAccount(
+				overlapRuntime,
+				{},
+				undefined,
+				{ probeTimeoutMs: 250 },
+			),
+		]);
+		const overlapElapsedMs = performance.now() - overlapStart;
+
+		const prewarmedManager = new FakeManager();
+		const prewarmedRuntime = createFakeRuntime(prewarmedManager, 80);
+		await supervisorTestApi?.prepareResumeSelection({
+			runtime: prewarmedRuntime,
+			pluginConfig: {},
+			currentAccount: prewarmedManager.getCurrentAccountForFamily(),
+			restartDecision: {
+				reason: "quota-near-exhaustion",
+				waitMs: 0,
+				sessionId: "prepared-session",
+			},
+			signal: undefined,
+		});
+		const prewarmedStart = performance.now();
+		await supervisorTestApi?.requestChildRestart(new FakeChild(), "win32");
+		const prewarmedElapsedMs = performance.now() - prewarmedStart;
+
+		expect(prewarmedElapsedMs).toBeLessThan(overlapElapsedMs - 20);
+	});
 });

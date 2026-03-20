@@ -181,6 +181,7 @@ async function runCase(api, name, iterations, probeLatencyMs) {
 	const tempRoot = await mkdtemp(join(tmpdir(), "codex-supervisor-bench-"));
 	const serialDurations = [];
 	const overlapDurations = [];
+	const prewarmedDurations = [];
 
 	try {
 		for (let iteration = 0; iteration < iterations; iteration += 1) {
@@ -208,6 +209,23 @@ async function runCase(api, name, iterations, probeLatencyMs) {
 				),
 			]);
 			overlapDurations.push(performance.now() - start);
+
+			const prewarmedEnv = await buildRuntime(probeLatencyMs, tempRoot);
+			const prewarmedPromise = api.prepareResumeSelection({
+				runtime: prewarmedEnv.runtime,
+				pluginConfig: prewarmedEnv.pluginConfig,
+				currentAccount: prewarmedEnv.manager.getCurrentAccountForFamily(),
+				restartDecision: {
+					reason: "quota-near-exhaustion",
+					waitMs: 0,
+					sessionId: "bench-session",
+				},
+				signal: new AbortController().signal,
+			});
+			await prewarmedPromise;
+			start = performance.now();
+			await api.requestChildRestart(new FakeChild(), "win32");
+			prewarmedDurations.push(performance.now() - start);
 		}
 	} finally {
 		delete process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS;
@@ -216,15 +234,22 @@ async function runCase(api, name, iterations, probeLatencyMs) {
 
 	const serialAvgMs = average(serialDurations);
 	const overlapAvgMs = average(overlapDurations);
+	const prewarmedAvgMs = average(prewarmedDurations);
 	return {
 		name,
 		iterations,
 		probeLatencyMs,
-		serialAvgMs: round(serialAvgMs),
-		overlapAvgMs: round(overlapAvgMs),
-		improvementMs: round(serialAvgMs - overlapAvgMs),
-		improvementPct:
+		serialPauseAvgMs: round(serialAvgMs),
+		overlapPauseAvgMs: round(overlapAvgMs),
+		prewarmedPauseAvgMs: round(prewarmedAvgMs),
+		serialToOverlapImprovementMs: round(serialAvgMs - overlapAvgMs),
+		serialToOverlapImprovementPct:
 			serialAvgMs <= 0 ? 0 : round(((serialAvgMs - overlapAvgMs) / serialAvgMs) * 100),
+		overlapToPrewarmedImprovementMs: round(overlapAvgMs - prewarmedAvgMs),
+		overlapToPrewarmedImprovementPct:
+			overlapAvgMs <= 0
+				? 0
+				: round(((overlapAvgMs - prewarmedAvgMs) / overlapAvgMs) * 100),
 	};
 }
 

@@ -734,6 +734,34 @@ async function prepareResumeSelection({
 	};
 }
 
+function maybeStartPreparedResumeSelection({
+	runtime,
+	pluginConfig,
+	currentAccount,
+	restartDecision,
+	signal,
+	preparedResumeSelectionStarted,
+	preparedResumeSelectionPromise,
+}) {
+	if (preparedResumeSelectionStarted || !currentAccount || !restartDecision?.sessionId) {
+		return {
+			preparedResumeSelectionStarted,
+			preparedResumeSelectionPromise,
+		};
+	}
+
+	return {
+		preparedResumeSelectionStarted: true,
+		preparedResumeSelectionPromise: prepareResumeSelection({
+			runtime,
+			pluginConfig,
+			currentAccount,
+			restartDecision,
+			signal,
+		}).catch(() => null),
+	};
+}
+
 async function listJsonlFiles(rootDir) {
 	const files = [];
 	const pending = [rootDir];
@@ -1036,21 +1064,26 @@ async function runInteractiveSupervision({
 							pluginConfig,
 						);
 						if (evaluation.rotate && binding?.sessionId) {
+							const pendingRestartDecision = {
+								reason: evaluation.reason,
+								waitMs: evaluation.waitMs,
+								sessionId: binding.sessionId,
+							};
+							({
+								preparedResumeSelectionStarted,
+								preparedResumeSelectionPromise,
+							} = maybeStartPreparedResumeSelection({
+								runtime,
+								pluginConfig,
+								currentAccount,
+								restartDecision: pendingRestartDecision,
+								signal,
+								preparedResumeSelectionStarted,
+								preparedResumeSelectionPromise,
+							}));
 							const lastActivityAtMs = binding.lastActivityAtMs ?? launchStartedAt;
 							if (Date.now() - lastActivityAtMs >= idleMs) {
-								requestedRestart = {
-									reason: evaluation.reason,
-									waitMs: evaluation.waitMs,
-									sessionId: binding.sessionId,
-								};
-								preparedResumeSelectionStarted = true;
-								preparedResumeSelectionPromise = prepareResumeSelection({
-									runtime,
-									pluginConfig,
-									currentAccount,
-									restartDecision: requestedRestart,
-									signal,
-								}).catch(() => null);
+								requestedRestart = pendingRestartDecision;
 								relaunchNotice(
 									`rotating session ${binding.sessionId} because ${evaluation.reason.replace(/-/g, " ")}`,
 								);
@@ -1258,6 +1291,8 @@ const TEST_ONLY_API = {
 	isInteractiveCommand,
 	isValidSessionId,
 	listJsonlFiles,
+	maybeStartPreparedResumeSelection,
+	prepareResumeSelection,
 	probeAccountSnapshot,
 	readResumeSessionId,
 	requestChildRestart,
