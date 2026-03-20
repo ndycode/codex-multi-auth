@@ -2335,7 +2335,7 @@ export async function exportAccounts(
 	) {
 		storage = transactionState.snapshot;
 	} else if (transactionState?.active) {
-		storage = await loadAccountsInternal(saveAccountsUnlocked);
+		storage = null;
 	} else {
 		storage = await withAccountStorageTransaction((current) =>
 			Promise.resolve(current),

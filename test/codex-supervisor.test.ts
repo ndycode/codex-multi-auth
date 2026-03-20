@@ -2,10 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { __testOnly } from "../scripts/codex-supervisor.js";
 
 const createdDirs: string[] = [];
+const supervisorTestApi = __testOnly!;
 type LockState = {
 	activeIndex: number;
 	blockedUntilByIndex: Record<string, number>;
@@ -52,7 +55,7 @@ describe("codex supervisor internals", () => {
 	it("interrupts abortable sleeps immediately", async () => {
 		const controller = new AbortController();
 		const startedAt = Date.now();
-		const pending = __testOnly.sleep(10_000, controller.signal);
+		const pending = supervisorTestApi.sleep(10_000, controller.signal);
 		setTimeout(() => controller.abort(), 25);
 
 		await expect(pending).resolves.toBe(false);
@@ -111,12 +114,12 @@ describe("codex supervisor internals", () => {
 		};
 
 		await Promise.all([
-			__testOnly.withLockedManager(runtime, async (manager) => {
+			supervisorTestApi.withLockedManager(runtime, async (manager) => {
 				manager.markRateLimitedWithReason(manager.getAccountByIndex(0), 30_000);
-				await __testOnly.sleep(100);
+				await supervisorTestApi.sleep(100);
 				await manager.saveToDisk();
 			}),
-			__testOnly.withLockedManager(runtime, async (manager) => {
+			supervisorTestApi.withLockedManager(runtime, async (manager) => {
 				manager.setActiveIndex(1);
 				await manager.saveToDisk();
 			}),
@@ -140,7 +143,7 @@ describe("codex supervisor internals", () => {
 			},
 			getStoragePath: () => storagePath,
 		};
-		const lockPath = __testOnly.getSupervisorStorageLockPath(runtime);
+		const lockPath = supervisorTestApi.getSupervisorStorageLockPath(runtime);
 		await fs.writeFile(
 			lockPath,
 			JSON.stringify({
@@ -157,7 +160,7 @@ describe("codex supervisor internals", () => {
 			},
 			async () => {
 				await expect(
-					__testOnly.withLockedManager(runtime, async () => "unreachable"),
+					supervisorTestApi.withLockedManager(runtime, async () => "unreachable"),
 				).rejects.toThrow(/Timed out waiting for supervisor storage lock/);
 			},
 		);
@@ -176,7 +179,7 @@ describe("codex supervisor internals", () => {
 			},
 			getStoragePath: () => storagePath,
 		};
-		const lockPath = __testOnly.getSupervisorStorageLockPath(runtime);
+		const lockPath = supervisorTestApi.getSupervisorStorageLockPath(runtime);
 		await fs.writeFile(
 			lockPath,
 			JSON.stringify({
@@ -195,7 +198,7 @@ describe("codex supervisor internals", () => {
 			},
 			async () => {
 				await expect(
-					__testOnly.withLockedManager(runtime, async () => "unreachable", controller.signal),
+					supervisorTestApi.withLockedManager(runtime, async () => "unreachable", controller.signal),
 				).rejects.toMatchObject({ name: "AbortError" });
 			},
 		);
@@ -231,7 +234,7 @@ describe("codex supervisor internals", () => {
 			AccountManager: FakeManager,
 			getStoragePath: () => storagePath,
 		};
-		const lockPath = __testOnly.getSupervisorStorageLockPath(runtime);
+		const lockPath = supervisorTestApi.getSupervisorStorageLockPath(runtime);
 		await fs.writeFile(
 			lockPath,
 			JSON.stringify({
@@ -247,7 +250,7 @@ describe("codex supervisor internals", () => {
 				CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS: "50",
 			},
 			async () => {
-				await __testOnly.withLockedManager(runtime, async (manager) => {
+				await supervisorTestApi.withLockedManager(runtime, async (manager) => {
 					manager.setActiveIndex(1);
 					await manager.saveToDisk();
 				});
@@ -260,9 +263,9 @@ describe("codex supervisor internals", () => {
 	});
 
 	it("rejects flag-like resume ids and skips unsafe session payload ids", async () => {
-		expect(__testOnly.readResumeSessionId(["resume", "--bad-flag"])).toBeNull();
-		expect(__testOnly.isValidSessionId("safe_session-01")).toBe(true);
-		expect(__testOnly.isValidSessionId("--bad-flag")).toBe(false);
+		expect(supervisorTestApi.readResumeSessionId(["resume", "--bad-flag"])).toBeNull();
+		expect(supervisorTestApi.isValidSessionId("safe_session-01")).toBe(true);
+		expect(supervisorTestApi.isValidSessionId("--bad-flag")).toBe(false);
 
 		const dir = createTempDir();
 		const filePath = join(dir, "session.jsonl");
@@ -283,7 +286,7 @@ describe("codex supervisor internals", () => {
 			"utf8",
 		);
 
-		await expect(__testOnly.extractSessionMeta(filePath)).resolves.toEqual({
+		await expect(supervisorTestApi.extractSessionMeta(filePath)).resolves.toEqual({
 			sessionId: "safe_session-01",
 			cwd: dir,
 		});
@@ -308,7 +311,7 @@ describe("codex supervisor internals", () => {
 			"utf8",
 		);
 
-		await expect(__testOnly.extractSessionMeta(filePath)).resolves.toEqual({
+		await expect(supervisorTestApi.extractSessionMeta(filePath)).resolves.toEqual({
 			sessionId: "safe_session-verbose",
 			cwd: dir,
 		});
@@ -337,7 +340,7 @@ describe("codex supervisor internals", () => {
 			"utf8",
 		);
 
-		await expect(__testOnly.extractSessionMeta(filePath)).resolves.toEqual({
+		await expect(supervisorTestApi.extractSessionMeta(filePath)).resolves.toEqual({
 			sessionId: "safe_session-large",
 			cwd: dir,
 		});
@@ -366,11 +369,29 @@ describe("codex supervisor internals", () => {
 		};
 
 		await expect(
-			__testOnly.ensureLaunchableAccount(runtime, {}, controller.signal),
+			supervisorTestApi.ensureLaunchableAccount(runtime, {}, controller.signal),
 		).resolves.toMatchObject({
 			ok: false,
 			aborted: true,
 		});
+	});
+
+	it("does not expose test helpers when imported outside test mode", () => {
+		const scriptPath = join(process.cwd(), "scripts", "codex-supervisor.js");
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"--eval",
+				`process.env.NODE_ENV='production'; const mod = await import(${JSON.stringify(`file://${scriptPath.replace(/\\/g, "/")}`)}); console.log(String(mod.__testOnly));`,
+			],
+			{
+				encoding: "utf8",
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toBe("undefined");
 	});
 
 	it("skips SIGINT escalation on Windows restarts", async () => {
@@ -394,7 +415,7 @@ describe("codex supervisor internals", () => {
 			},
 		};
 
-		await __testOnly.requestChildRestart(child, "win32");
+		await supervisorTestApi.requestChildRestart(child, "win32");
 		expect(signals).toEqual(["SIGTERM"]);
 	});
 });

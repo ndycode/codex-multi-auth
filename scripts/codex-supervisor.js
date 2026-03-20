@@ -853,9 +853,13 @@ async function runInteractiveSupervision({
 
 		let restartDecision = requestedRestart
 		if (!restartDecision && result.exitCode !== 0 && knownSessionId) {
-			const currentAccount = getCurrentAccount(manager)
-			const snapshot = currentAccount
-				? await probeAccountSnapshot(runtime, currentAccount)
+			const refreshedState = await withLockedManager(runtime, async (freshManager) => ({
+				manager: freshManager,
+				currentAccount: getCurrentAccount(freshManager),
+			}), signal)
+			manager = refreshedState.manager ?? manager
+			const snapshot = refreshedState.currentAccount
+				? await probeAccountSnapshot(runtime, refreshedState.currentAccount)
 				: null
 			const evaluation = evaluateQuotaSnapshot(snapshot, runtime, pluginConfig)
 			if (evaluation.rotate) {
@@ -967,7 +971,7 @@ export async function runCodexSupervisorIfEnabled({
 	}
 }
 
-export const __testOnly = {
+const TEST_ONLY_API = {
 	evaluateQuotaSnapshot,
 	ensureLaunchableAccount,
 	findSessionBinding,
@@ -984,3 +988,8 @@ export const __testOnly = {
 	withLockedManager,
 	getSupervisorStorageLockPath,
 }
+
+export const __testOnly =
+	process.env.NODE_ENV === "test"
+		? TEST_ONLY_API
+		: undefined
