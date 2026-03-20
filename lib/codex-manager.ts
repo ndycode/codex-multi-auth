@@ -6,7 +6,6 @@ import {
 	extractAccountEmail,
 	extractAccountId,
 	formatAccountLabel,
-	formatCooldown,
 	formatWaitTime,
 	getAccountIdCandidates,
 	resolveRequestAccountId,
@@ -37,6 +36,10 @@ import {
 	loadCodexCliState,
 } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import {
+	runFeaturesCommand,
+	runStatusCommand,
+} from "./codex-manager/commands/status.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import {
 	applyUiThemeFromDashboardSettings,
@@ -431,12 +434,7 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 ];
 
 function runFeaturesReport(): number {
-	console.log(`Implemented features (${IMPLEMENTED_FEATURES.length})`);
-	console.log("");
-	for (const feature of IMPLEMENTED_FEATURES) {
-		console.log(`${feature.id}. ${feature.name}`);
-	}
-	return 0;
+	return runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES });
 }
 
 function resolveActiveIndex(
@@ -1985,38 +1983,12 @@ async function syncSelectionToCodex(
 }
 
 async function showAccountStatus(): Promise<void> {
-	setStoragePath(null);
-	const storage = await loadAccounts();
-	const path = getStoragePath();
-	if (!storage || storage.accounts.length === 0) {
-		console.log("No accounts configured.");
-		console.log(`Storage: ${path}`);
-		return;
-	}
-
-	const now = Date.now();
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	console.log(`Accounts (${storage.accounts.length})`);
-	console.log(`Storage: ${path}`);
-	console.log("");
-	for (let i = 0; i < storage.accounts.length; i += 1) {
-		const account = storage.accounts[i];
-		if (!account) continue;
-		const label = formatAccountLabel(account, i);
-		const markers: string[] = [];
-		if (i === activeIndex) markers.push("current");
-		if (account.enabled === false) markers.push("disabled");
-		const rateLimit = formatRateLimitEntry(account, now, "codex");
-		if (rateLimit) markers.push("rate-limited");
-		const cooldown = formatCooldown(account, now);
-		if (cooldown) markers.push(`cooldown:${cooldown}`);
-		const markerLabel = markers.length > 0 ? ` [${markers.join(", ")}]` : "";
-		const lastUsed =
-			typeof account.lastUsed === "number" && account.lastUsed > 0
-				? `used ${formatWaitTime(now - account.lastUsed)} ago`
-				: "never used";
-		console.log(`${i + 1}. ${label}${markerLabel} ${lastUsed}`);
-	}
+	await runStatusCommand({
+		setStoragePath,
+		loadAccounts,
+		resolveActiveIndex,
+		formatRateLimitEntry,
+	});
 }
 
 interface HealthCheckOptions {
