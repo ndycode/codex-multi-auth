@@ -168,6 +168,7 @@ let storageMutex: Promise<void> = Promise.resolve();
 const transactionSnapshotContext = new AsyncLocalStorage<{
 	snapshot: AccountStorageV3 | null;
 	active: boolean;
+	storagePath: string;
 }>();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -1912,9 +1913,11 @@ export async function withAccountStorageTransaction<T>(
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
+			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
@@ -1937,9 +1940,11 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
+			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (
@@ -2308,17 +2313,26 @@ export async function exportAccounts(
 	beforeCommit?: (resolvedPath: string) => Promise<void> | void,
 ): Promise<void> {
 	const resolvedPath = resolvePath(filePath);
+	const activeStoragePath = getStoragePath();
 
 	if (!force && existsSync(resolvedPath)) {
 		throw new Error(`File already exists: ${resolvedPath}`);
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
-	const storage = transactionState?.active
-		? transactionState.snapshot
-		: await withAccountStorageTransaction((current) =>
-				Promise.resolve(current),
-			);
+	let storage: AccountStorageV3 | null;
+	if (
+		transactionState?.active &&
+		transactionState.storagePath === activeStoragePath
+	) {
+		storage = transactionState.snapshot;
+	} else if (transactionState?.active) {
+		storage = await loadAccountsInternal(saveAccountsUnlocked);
+	} else {
+		storage = await withAccountStorageTransaction((current) =>
+			Promise.resolve(current),
+		);
+	}
 	if (!storage || storage.accounts.length === 0) {
 		throw new Error("No accounts to export");
 	}

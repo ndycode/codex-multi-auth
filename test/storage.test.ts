@@ -956,6 +956,37 @@ describe("storage", () => {
 			);
 		});
 
+		it("ignores stale transaction snapshots after the storage path changes", async () => {
+			const alternateStoragePath = join(
+				testWorkDir,
+				"accounts-" + Math.random().toString(36).slice(2) + ".json",
+			);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "test",
+						refreshToken: "ref",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			await withAccountStorageTransaction(async () => {
+				setStoragePathDirect(alternateStoragePath);
+				try {
+					await expect(exportAccounts(exportPath)).rejects.toThrow(
+						/No accounts to export/,
+					);
+				} finally {
+					setStoragePathDirect(testStoragePath);
+				}
+			});
+		});
+
 		it("should fail import when file does not exist", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			const nonexistentPath = join(testWorkDir, "nonexistent-file.json");
