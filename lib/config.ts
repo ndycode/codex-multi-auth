@@ -2,6 +2,7 @@ import { readFileSync, existsSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PluginConfig } from "./types.js";
 import { logWarn } from "./logger.js";
+import { DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H } from "./preemptive-quota-scheduler.js";
 import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
 import { getCodexHomeDir, getCodexMultiAuthDir, getLegacyCodexDir } from "./runtime-paths.js";
 import {
@@ -1125,4 +1126,3 @@ export function getPreemptiveQuotaMaxDeferralMs(pluginConfig: PluginConfig): num
 		{ min: 1_000 },
 	);
 }
-import { DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H } from "./preemptive-quota-scheduler.js";

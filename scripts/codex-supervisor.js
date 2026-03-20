@@ -1689,7 +1689,7 @@ async function runInteractiveSupervision({
 		monitorController.abort();
 		await monitorPromise;
 		if (monitorFailure && !signal?.aborted) {
-			supervisorDebug(
+			relaunchNotice(
 				`monitor loop failed: ${monitorFailure instanceof Error ? monitorFailure.message : String(monitorFailure)}`,
 			);
 		}

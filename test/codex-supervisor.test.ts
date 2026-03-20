@@ -970,56 +970,56 @@ describe("codex supervisor", () => {
 		"keeps the child exit code when the monitor loop fails after startup",
 		{ timeout: 10_000 },
 		async () => {
-		class FakeChild extends EventEmitter {
-			exitCode: number | null = null;
+			class FakeChild extends EventEmitter {
+				exitCode: number | null = null;
 
-			constructor(exitCode: number) {
-				super();
-				setTimeout(() => {
-					this.exitCode = exitCode;
-					this.emit("exit", exitCode, null);
-				}, 25);
+				constructor(exitCode: number) {
+					super();
+					setTimeout(() => {
+						this.exitCode = exitCode;
+						this.emit("exit", exitCode, null);
+					}, 25);
+				}
+
+				kill(_signal: string) {
+					return true;
+				}
 			}
 
-			kill(_signal: string) {
-				return true;
+			const stderrSpy = vi
+				.spyOn(process.stderr, "write")
+				.mockImplementation(() => true);
+			const manager = new FakeManager();
+			const runtime = createFakeRuntime(manager);
+
+			try {
+				const result = await supervisorTestApi?.runInteractiveSupervision({
+					codexBin: "dist/bin/codex.js",
+					initialArgs: ["resume", "monitor-failure-session"],
+					buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+					runtime,
+					pluginConfig: {},
+					manager,
+					signal: undefined,
+					maxSessionRestarts: 1,
+					spawnChild: () => new FakeChild(0),
+					findBinding: async ({ sessionId }: { sessionId?: string }) => ({
+						sessionId: sessionId ?? "monitor-failure-session",
+						rolloutPath: null,
+						lastActivityAtMs: Date.now(),
+					}),
+					loadCurrentState: async () => {
+						throw new Error("Timed out waiting for supervisor storage lock");
+					},
+				});
+
+				expect(result).toBe(0);
+				expect(stderrSpy).toHaveBeenCalledWith(
+					expect.stringContaining("monitor loop failed: Timed out waiting for supervisor storage lock"),
+				);
+			} finally {
+				stderrSpy.mockRestore();
 			}
-		}
-
-		const stderrSpy = vi
-			.spyOn(process.stderr, "write")
-			.mockImplementation(() => true);
-		const manager = new FakeManager();
-		const runtime = createFakeRuntime(manager);
-
-		try {
-			const result = await supervisorTestApi?.runInteractiveSupervision({
-				codexBin: "dist/bin/codex.js",
-				initialArgs: ["resume", "monitor-failure-session"],
-				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
-				runtime,
-				pluginConfig: {},
-				manager,
-				signal: undefined,
-				maxSessionRestarts: 1,
-				spawnChild: () => new FakeChild(0),
-				findBinding: async ({ sessionId }: { sessionId?: string }) => ({
-					sessionId: sessionId ?? "monitor-failure-session",
-					rolloutPath: null,
-					lastActivityAtMs: Date.now(),
-				}),
-				loadCurrentState: async () => {
-					throw new Error("Timed out waiting for supervisor storage lock");
-				},
-			});
-
-			expect(result).toBe(0);
-			expect(stderrSpy).not.toHaveBeenCalledWith(
-				expect.stringContaining("Timed out waiting for supervisor storage lock"),
-			);
-		} finally {
-			stderrSpy.mockRestore();
-		}
 		},
 	);
 
