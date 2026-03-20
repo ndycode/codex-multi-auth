@@ -57,8 +57,6 @@
 		"bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
 		"bench:edit-formats:smoke": "node scripts/benchmark-edit-formats.mjs --smoke --preset=codex-core",
 		"bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
-		"bench:session-supervisor": "node scripts/benchmark-session-supervisor.mjs",
-		"bench:session-supervisor:smoke": "node scripts/benchmark-session-supervisor.mjs --smoke",
 		"bench:runtime-path": "npm run build && node scripts/benchmark-runtime-path.mjs",
 		"bench:runtime-path:quick": "node scripts/benchmark-runtime-path.mjs",
 		"test:coverage": "vitest run --coverage",
