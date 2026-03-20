@@ -256,6 +256,43 @@ describe("AccountManager", () => {
     expect(account.workspaces?.map((workspace) => workspace.enabled)).toEqual([false, true]);
   });
 
+  it("re-enabling an exhausted account restores its workspaces", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "token-1",
+          addedAt: now,
+          lastUsed: now,
+          enabled: false,
+          workspaces: [
+            { id: "workspace-1", name: "Workspace 1", enabled: false, disabledAt: now - 2_000 },
+            { id: "workspace-2", name: "Workspace 2", enabled: false, disabledAt: now - 1_000 },
+          ],
+          currentWorkspaceIndex: 1,
+        },
+      ],
+    };
+
+    const manager = new AccountManager(undefined, stored);
+    const account = manager.setAccountEnabled(0, true);
+    expect(account).not.toBeNull();
+    if (!account) {
+      throw new Error("account should exist");
+    }
+
+    expect(account.enabled).toBe(true);
+    expect(manager.hasEnabledWorkspaces(account)).toBe(true);
+    expect(manager.getEnabledWorkspaceCount(account)).toBe(2);
+    expect(manager.getCurrentWorkspace(account)?.id).toBe("workspace-2");
+    expect(account.workspaces).toEqual([
+      { id: "workspace-1", name: "Workspace 1", enabled: true },
+      { id: "workspace-2", name: "Workspace 2", enabled: true },
+    ]);
+  });
+
   it("checks account availability by enabled/rate-limit/cooldown state", () => {
     const now = Date.now();
     const stored = {

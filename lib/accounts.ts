@@ -765,7 +765,11 @@ export class AccountManager {
 		if (index < 0 || index >= this.accounts.length) return null;
 		const account = this.accounts[index];
 		if (!account) return null;
+		const wasEnabled = account.enabled !== false;
 		account.enabled = enabled;
+		if (enabled && !wasEnabled) {
+			this.resetWorkspaces(account);
+		}
 		return account;
 	}
 
@@ -847,6 +851,22 @@ export class AccountManager {
 			// Find first enabled workspace or default to 0
 			const firstEnabled = workspaces.findIndex((w) => w.enabled !== false);
 			account.currentWorkspaceIndex = firstEnabled >= 0 ? firstEnabled : 0;
+		}
+	}
+
+	private resetWorkspaces(account: ManagedAccount): void {
+		if (!account.workspaces || account.workspaces.length === 0) {
+			return;
+		}
+
+		for (const workspace of account.workspaces) {
+			workspace.enabled = true;
+			delete workspace.disabledAt;
+		}
+
+		const currentIdx = account.currentWorkspaceIndex ?? 0;
+		if (currentIdx < 0 || currentIdx >= account.workspaces.length) {
+			account.currentWorkspaceIndex = 0;
 		}
 	}
 
