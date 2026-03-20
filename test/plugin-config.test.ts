@@ -1000,6 +1000,14 @@ describe('Plugin Configuration', () => {
 			).toBe(true);
 		});
 
+		it('should allow the env override to disable the supervisor wrapper', () => {
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '0';
+			expect(
+				getCodexCliSessionSupervisor({ codexCliSessionSupervisor: true }),
+			).toBe(false);
+			delete process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR;
+		});
+
 		it('should prioritize environment override for the supervisor wrapper', () => {
 			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '1';
 			expect(getCodexCliSessionSupervisor({ codexCliSessionSupervisor: false })).toBe(true);

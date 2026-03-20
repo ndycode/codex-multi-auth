@@ -65,7 +65,10 @@ function createWrapperFixture(): string {
 	return fixtureRoot;
 }
 
-function writeSupervisorRuntimeFixture(fixtureRoot: string): void {
+function writeSupervisorRuntimeFixture(
+	fixtureRoot: string,
+	codexCliSessionSupervisor = false,
+): void {
 	const distLibDir = join(fixtureRoot, "dist", "lib");
 	mkdirSync(distLibDir, { recursive: true });
 	writeFileSync(
@@ -73,7 +76,7 @@ function writeSupervisorRuntimeFixture(fixtureRoot: string): void {
 		[
 			"export function loadPluginConfig() {",
 			"\treturn {",
-			"\t\tcodexCliSessionSupervisor: true,",
+			`\t\tcodexCliSessionSupervisor: ${codexCliSessionSupervisor},`,
 			"\t\tretryAllAccountsRateLimited: true,",
 			"\t\tpreemptiveQuotaEnabled: true,",
 			"\t\tpreemptiveQuotaRemainingPercent5h: 10,",
@@ -688,6 +691,30 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(130);
 		expect(result.stdout).not.toContain("FORWARDED:");
 		expect(existsSync(markerPath)).toBe(false);
+	});
+
+	it("auto-syncs after an interactive supervisor run that does not forward", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorStub(fixtureRoot, [
+			"export function isInteractiveCommand() {",
+			"\treturn true;",
+			"}",
+			"export async function runCodexSupervisorIfEnabled() {",
+			"\treturn 0;",
+			"}",
+		]);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "internal-supervisor-auto-sync.log");
+
+		const result = runWrapper(fixtureRoot, ["resume", "session-123"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).not.toContain("FORWARDED:");
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
 	});
 
 	it("supports interactive commands through the supervisor wrapper", () => {

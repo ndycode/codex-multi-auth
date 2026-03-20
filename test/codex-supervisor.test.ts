@@ -1317,6 +1317,7 @@ describe("codex supervisor", () => {
 		]);
 		const degradedProbeGate = createDeferred<void>();
 		const firstProbeStarted = createDeferred<void>();
+		const allProbesStarted = createDeferred<void>();
 		const startedAccounts = new Set<string>();
 		const runtime = createFakeRuntime(manager, {
 			quotaProbeDelayMs: 70,
@@ -1330,6 +1331,9 @@ describe("codex supervisor", () => {
 					startedAccounts.add(accountId);
 					if (startedAccounts.size === 1) {
 						firstProbeStarted.resolve();
+					}
+					if (startedAccounts.size === 3) {
+						allProbesStarted.resolve();
 					}
 				}
 			},
@@ -1360,9 +1364,21 @@ describe("codex supervisor", () => {
 			{ probeTimeoutMs: 250 },
 		);
 		await firstProbeStarted.promise;
-		for (let attempt = 0; attempt < 6 && startedAccounts.size < 3; attempt += 1) {
-			await new Promise((resolve) => setImmediate(resolve));
-		}
+		await new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				reject(new Error("Timed out waiting for degraded probes to start"));
+			}, 250);
+			allProbesStarted.promise.then(
+				() => {
+					clearTimeout(timeout);
+					resolve();
+				},
+				(error) => {
+					clearTimeout(timeout);
+					reject(error);
+				},
+			);
+		});
 		expect([...startedAccounts].sort()).toEqual([
 			"degraded-1",
 			"degraded-2",

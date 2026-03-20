@@ -1028,7 +1028,9 @@ describe("storage", () => {
 
 				await expect(
 					withAccountStorageTransaction(async () => {
-						setStoragePathDirect(testStoragePath.toUpperCase());
+						setStoragePathDirect(
+							testStoragePath.replaceAll("/", "\\").toUpperCase(),
+						);
 						await exportAccounts(exportPath);
 					}),
 				).resolves.toBeUndefined();

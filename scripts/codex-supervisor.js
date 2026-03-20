@@ -564,6 +564,9 @@ function createSupervisorLockHeartbeat(lockPath, ownerId, acquiredAt, ttlMs, sig
 			return;
 		}
 		pendingRefresh = pendingRefresh.then(async () => {
+			// The heartbeat owns an already-created lock file. Even if another process
+			// observes this path, acquisition still requires a fresh "wx" create, and we
+			// abort immediately if the ownerId no longer matches before rewriting expiry.
 			const payload = await readSupervisorLockPayload(lockPath);
 			if (!payload) {
 				stopWithError(
