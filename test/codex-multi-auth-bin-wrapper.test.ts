@@ -10,6 +10,7 @@ import { sleep } from "../lib/utils.js";
 const createdDirs: string[] = [];
 const testFileDir = dirname(fileURLToPath(import.meta.url));
 const repoRootDir = join(testFileDir, "..");
+const passthroughEnvKeys = ["HOME", "PATH", "SystemRoot", "TEMP", "TMP", "USERPROFILE"] as const;
 
 function isRetriableFsError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) {
@@ -54,15 +55,24 @@ function createWrapperFixture(): string {
 	return fixtureRoot;
 }
 
+function createChildEnv(): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const key of passthroughEnvKeys) {
+		const value = process.env[key];
+		if (typeof value === "string" && value.length > 0) {
+			env[key] = value;
+		}
+	}
+	return env;
+}
+
 function runWrapper(fixtureRoot: string, args: string[] = []) {
 	return spawnSync(
 		process.execPath,
 		[join(fixtureRoot, "scripts", "codex-multi-auth.js"), ...args],
 		{
 			encoding: "utf8",
-			env: {
-				...process.env,
-			},
+			env: createChildEnv(),
 		},
 	);
 }
@@ -107,7 +117,10 @@ describe("codex-multi-auth bin wrapper", () => {
 		expect(result.stderr).toContain("codex-multi-auth version is unavailable.");
 	});
 
-	it("passes multi-argument version flags through to the runtime", () => {
+	it.each([
+		["--version", "extra"],
+		["-v", "extra"],
+	])("passes multi-argument version flags through to the runtime: %s", (flag, extraArg) => {
 		const fixtureRoot = createWrapperFixture();
 		const distLibDir = join(fixtureRoot, "dist", "lib");
 		mkdirSync(distLibDir, { recursive: true });
@@ -115,14 +128,14 @@ describe("codex-multi-auth bin wrapper", () => {
 			join(distLibDir, "codex-manager.js"),
 			[
 				"export async function runCodexMultiAuthCli(args) {",
-				'\tif (!Array.isArray(args) || args[0] !== "--version" || args[1] !== "extra") throw new Error("bad args");',
+				`\tif (!Array.isArray(args) || args[0] !== ${JSON.stringify(flag)} || args[1] !== ${JSON.stringify(extraArg)}) throw new Error("bad args");`,
 				"\treturn 6;",
 				"}",
 			].join("\n"),
 			"utf8",
 		);
 
-		const result = runWrapper(fixtureRoot, ["--version", "extra"]);
+		const result = runWrapper(fixtureRoot, [flag, extraArg]);
 
 		expect(result.status).toBe(6);
 		expect(result.stdout).toBe("");
