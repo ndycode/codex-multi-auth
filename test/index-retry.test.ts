@@ -121,16 +121,18 @@ vi.mock("../lib/accounts.js", async () => {
 			source,
 			storedEmail,
 			accessToken,
+			idToken,
 		}: {
 			storedAccountId?: string;
 			source?: string;
 			storedEmail?: string;
 			accessToken?: string;
+			idToken?: string;
 		}) => {
 			const tokenUtilsModule = tokenUtils as typeof import("../lib/auth/token-utils.js");
 			const tokenAccountId = accessToken ? "account-1" : undefined;
 			const tokenEmail = tokenUtilsModule.sanitizeEmail(
-				tokenUtilsModule.extractAccountEmail(accessToken, undefined),
+				tokenUtilsModule.extractAccountEmail(accessToken, idToken),
 			);
 			const sanitizedStoredEmail = tokenUtilsModule.sanitizeEmail(storedEmail);
 			return {

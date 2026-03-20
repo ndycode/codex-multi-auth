@@ -1240,19 +1240,22 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	});
 
 	it("uses the refreshed token email when checking entitlement blocks", async () => {
-		mockStorage.accounts = [
+		const { AccountManager } = await import("../lib/accounts.js");
+		const manager = buildRoutingManager([
 			{
+				index: 0,
 				accountId: "acc-1",
 				email: "stale@example.com",
 				refreshToken: "refresh-1",
 			},
-		];
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
 		extractAccountEmailMock.mockReturnValueOnce("fresh@example.com");
 		const entitlementModule = await import("../lib/entitlement-cache.js");
 		const isBlockedSpy = vi
 			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
 			.mockImplementation(() => {
-				expect(mockStorage.accounts[0]?.email).toBe("stale@example.com");
+				expect(manager.getAccountsSnapshot()[0]?.email).toBe("stale@example.com");
 				return { blocked: false, waitMs: 0 };
 			});
 		globalThis.fetch = vi.fn().mockResolvedValue(
@@ -1270,6 +1273,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			"account:acc-1::email:fresh@example.com",
 			"gpt-5.1",
 		);
+		expect(manager.getAccountsSnapshot()[0]?.email).toBe("fresh@example.com");
 	});
 
 	it.each([

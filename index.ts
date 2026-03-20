@@ -2131,6 +2131,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 											refreshToken: fallbackAccount.refreshToken,
 											index: fallbackAccount.index,
 										});
+										const fallbackEntitlementBlock = entitlementCache.isBlocked(
+											fallbackEntitlementAccountKey,
+											model ?? modelFamily,
+										);
+										if (fallbackEntitlementBlock.blocked) {
+											runtimeMetrics.accountRotations++;
+											runtimeMetrics.lastError =
+												`Entitlement cached block for account ${fallbackAccount.index + 1}`;
+											logWarn(
+												`Skipping account ${fallbackAccount.index + 1} due to cached entitlement block (${formatWaitTime(fallbackEntitlementBlock.waitMs)} remaining).`,
+											);
+											continue;
+										}
 
 										if (!accountManager.consumeToken(fallbackAccount, modelFamily, model)) {
 											continue;
