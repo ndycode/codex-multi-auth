@@ -168,6 +168,7 @@ let storageMutex: Promise<void> = Promise.resolve();
 const transactionSnapshotContext = new AsyncLocalStorage<{
 	snapshot: AccountStorageV3 | null;
 	active: boolean;
+	storagePath: string;
 }>();
 
 function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -1912,18 +1913,24 @@ export async function withAccountStorageTransaction<T>(
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
+			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
 			await saveAccountsUnlocked(storage);
 			state.snapshot = storage;
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
-		);
+		return transactionSnapshotContext.run(state, async () => {
+			try {
+				return await handler(current, persist);
+			} finally {
+				state.active = false;
+			}
+		});
 	});
 }
 
@@ -1937,9 +1944,11 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
 		const state = {
 			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
 			active: true,
+			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (
@@ -1973,9 +1982,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 				throw error;
 			}
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
-		);
+		return transactionSnapshotContext.run(state, async () => {
+			try {
+				return await handler(current, persist);
+			} finally {
+				state.active = false;
+			}
+		});
 	});
 }
 
@@ -2308,13 +2321,16 @@ export async function exportAccounts(
 	beforeCommit?: (resolvedPath: string) => Promise<void> | void,
 ): Promise<void> {
 	const resolvedPath = resolvePath(filePath);
+	const activeStoragePath = getStoragePath();
 
 	if (!force && existsSync(resolvedPath)) {
 		throw new Error(`File already exists: ${resolvedPath}`);
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
-	const storage = transactionState?.active
+	const storage =
+		transactionState?.active &&
+		transactionState.storagePath === activeStoragePath
 		? transactionState.snapshot
 		: await withAccountStorageTransaction((current) =>
 				Promise.resolve(current),

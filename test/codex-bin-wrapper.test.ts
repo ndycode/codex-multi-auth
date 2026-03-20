@@ -57,7 +57,56 @@ function createWrapperFixture(): string {
 		join(repoRootDir, "scripts", "codex-routing.js"),
 		join(scriptDir, "codex-routing.js"),
 	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex-supervisor.js"),
+		join(scriptDir, "codex-supervisor.js"),
+	);
 	return fixtureRoot;
+}
+
+function writeSupervisorRuntimeFixture(fixtureRoot: string): void {
+	const distLibDir = join(fixtureRoot, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(
+		join(distLibDir, "config.js"),
+		[
+			"export function loadPluginConfig() {",
+			"\treturn {",
+			"\t\tcodexCliSessionSupervisor: true,",
+			"\t\tretryAllAccountsRateLimited: true,",
+			"\t\tpreemptiveQuotaEnabled: true,",
+			"\t\tpreemptiveQuotaRemainingPercent5h: 10,",
+			"\t\tpreemptiveQuotaRemainingPercent7d: 5,",
+			"\t};",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(distLibDir, "accounts.js"),
+		[
+			"export class AccountManager {",
+			"\tstatic async loadFromDisk() {",
+			"\t\treturn new AccountManager();",
+			"\t}",
+			"\tgetCurrentOrNextForFamilyHybrid() {",
+			'\t\treturn { index: 0, email: "healthy@example.com" };',
+			"\t}",
+			"\tsetActiveIndex() {}",
+			"\tasync saveToDisk() {}",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(distLibDir, "quota-probe.js"),
+		[
+			"export async function fetchCodexQuotaSnapshot() {",
+			"\treturn null;",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
 }
 
 function createFakeCodexBin(rootDir: string): string {
@@ -358,6 +407,10 @@ describe("codex bin wrapper", () => {
 				join(repoRootDir, "scripts", "codex-routing.js"),
 				join(scriptDir, "codex-routing.js"),
 			);
+			copyFileSync(
+				join(repoRootDir, "scripts", "codex-supervisor.js"),
+				join(scriptDir, "codex-supervisor.js"),
+			);
 			writeFileSync(
 				join(globalShimDir, "codex-multi-auth.cmd"),
 				"@ECHO OFF\r\nREM real shim\r\n",
@@ -538,5 +591,21 @@ describe("codex bin wrapper", () => {
 				1,
 			);
 		}
+	});
+
+	it("uses the supervisor wrapper for non-interactive commands when enabled", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorRuntimeFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
 	});
 });

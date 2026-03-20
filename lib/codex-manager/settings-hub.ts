@@ -186,6 +186,7 @@ type ThemeConfigAction =
 
 type BackendToggleSettingKey =
 	| "liveAccountSync"
+	| "codexCliSessionSupervisor"
 	| "sessionAffinity"
 	| "proactiveRefreshGuardian"
 	| "retryAllAccountsRateLimited"
@@ -272,6 +273,7 @@ type SettingsHubAction =
 	| { type: "back" };
 
 type ExperimentalSettingsAction =
+	| { type: "toggle-session-supervisor" }
 	| { type: "sync" }
 	| { type: "backup" }
 	| { type: "toggle-refresh-guardian" }
@@ -286,6 +288,11 @@ const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
 		key: "liveAccountSync",
 		label: "Enable Live Sync",
 		description: "Keep accounts synced when files change in another window.",
+	},
+	{
+		key: "codexCliSessionSupervisor",
+		label: "Enable Session Resume Supervisor",
+		description: "Wrap interactive Codex sessions so they can relaunch with resume after rotation.",
 	},
 	{
 		key: "sessionAffinity",
@@ -2531,6 +2538,11 @@ async function promptExperimentalSettings(
 		const action = await select<ExperimentalSettingsAction>(
 			[
 				{
+					label: `${formatDashboardSettingState(draft.codexCliSessionSupervisor ?? BACKEND_DEFAULTS.codexCliSessionSupervisor ?? false)} ${UI_COPY.settings.experimentalSessionSupervisor}`,
+					value: { type: "toggle-session-supervisor" },
+					color: "yellow",
+				},
+				{
 					label: UI_COPY.settings.experimentalSync,
 					value: { type: "sync" },
 					color: "yellow",
@@ -2586,6 +2598,17 @@ async function promptExperimentalSettings(
 		);
 		if (!action || action.type === "back") return null;
 		if (action.type === "save") return draft;
+		if (action.type === "toggle-session-supervisor") {
+			draft = {
+				...draft,
+				codexCliSessionSupervisor: !(
+					draft.codexCliSessionSupervisor ??
+					BACKEND_DEFAULTS.codexCliSessionSupervisor ??
+					false
+				),
+			};
+			continue;
+		}
 		if (action.type === "toggle-refresh-guardian") {
 			draft = {
 				...draft,

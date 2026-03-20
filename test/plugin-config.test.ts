@@ -21,6 +21,7 @@ import {
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
 	getPreemptiveQuotaMaxDeferralMs,
+	getCodexCliSessionSupervisor,
 } from '../lib/config.js';
 import type { PluginConfig } from '../lib/types.js';
 import * as fs from 'node:fs';
@@ -67,6 +68,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS',
+		'CODEX_AUTH_CLI_SESSION_SUPERVISOR',
 	] as const;
 	const originalEnv: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
 
@@ -136,9 +138,10 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				codexCliSessionSupervisor: false,
 			});
 			// existsSync is called with multiple candidate config paths (primary + legacy fallbacks)
 			expect(mockExistsSync).toHaveBeenCalled();
@@ -194,9 +197,10 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				codexCliSessionSupervisor: false,
 			});
 		});
 
@@ -449,9 +453,10 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				codexCliSessionSupervisor: false,
 			});
 		});
 
@@ -513,9 +518,10 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				codexCliSessionSupervisor: false,
 	});
 		expect(mockLogWarn).toHaveBeenCalled();
 	});
@@ -571,9 +577,10 @@ describe('Plugin Configuration', () => {
 				serverErrorCooldownMs: 4_000,
 				storageBackupEnabled: true,
 				preemptiveQuotaEnabled: true,
-				preemptiveQuotaRemainingPercent5h: 5,
+				preemptiveQuotaRemainingPercent5h: 10,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				codexCliSessionSupervisor: false,
 		});
 		expect(mockLogWarn).toHaveBeenCalled();
 	});
@@ -964,7 +971,7 @@ describe('Plugin Configuration', () => {
 	describe('preemptive quota settings', () => {
 		it('should use default thresholds', () => {
 			expect(getPreemptiveQuotaEnabled({})).toBe(true);
-			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(5);
+			expect(getPreemptiveQuotaRemainingPercent5h({})).toBe(10);
 			expect(getPreemptiveQuotaRemainingPercent7d({})).toBe(5);
 			expect(getPreemptiveQuotaMaxDeferralMs({})).toBe(2 * 60 * 60_000);
 		});
@@ -978,6 +985,18 @@ describe('Plugin Configuration', () => {
 			expect(getPreemptiveQuotaRemainingPercent5h({ preemptiveQuotaRemainingPercent5h: 1 })).toBe(9);
 			expect(getPreemptiveQuotaRemainingPercent7d({ preemptiveQuotaRemainingPercent7d: 2 })).toBe(11);
 			expect(getPreemptiveQuotaMaxDeferralMs({ preemptiveQuotaMaxDeferralMs: 2_000 })).toBe(123000);
+		});
+	});
+
+	describe('CLI session supervisor setting', () => {
+		it('should default the supervisor wrapper to disabled', () => {
+			expect(getCodexCliSessionSupervisor({})).toBe(false);
+		});
+
+		it('should prioritize environment override for the supervisor wrapper', () => {
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR = '1';
+			expect(getCodexCliSessionSupervisor({ codexCliSessionSupervisor: false })).toBe(true);
+			delete process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR;
 		});
 	});
 });

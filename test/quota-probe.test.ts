@@ -170,6 +170,39 @@ describe("quota-probe", () => {
 		await assertion;
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
+
+	it("aborts immediately when the caller abort signal fires", async () => {
+		const controller = new AbortController();
+		const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+			return new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener(
+					"abort",
+					() => {
+						const error = new Error("aborted");
+						(error as Error & { name?: string }).name = "AbortError";
+						reject(error);
+					},
+					{ once: true },
+				);
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const pending = fetchCodexQuotaSnapshot({
+			accountId: "acc-abort",
+			accessToken: "token-abort",
+			model: "gpt-5-codex",
+			fallbackModels: [],
+			timeoutMs: 30_000,
+			signal: controller.signal,
+		});
+
+		await Promise.resolve();
+		controller.abort();
+
+		await expect(pending).rejects.toThrow(/abort/i);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
 	it("parses reset-at values expressed as epoch seconds and epoch milliseconds", async () => {
 		const nowSec = Math.floor(Date.now() / 1000);
 		const primarySeconds = nowSec + 120;

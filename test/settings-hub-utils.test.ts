@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -134,6 +134,25 @@ const originalCodeHome = process.env.CODEX_HOME;
 const originalCodeMultiAuthDir = process.env.CODEX_MULTI_AUTH_DIR;
 const originalConfigPath = process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
 
+async function removeDirectoryWithRetry(dir: string): Promise<void> {
+	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
+	for (let attempt = 1; attempt <= 6; attempt += 1) {
+		try {
+			await fs.rm(dir, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			const code =
+				error && typeof error === "object" && "code" in error
+					? `${error.code ?? ""}`
+					: "";
+			if (!retryableCodes.has(code) || attempt === 6) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+		}
+	}
+}
+
 async function loadSettingsHubTestApi(): Promise<SettingsHubTestApi> {
 	const module = await import("../lib/codex-manager/settings-hub.js");
 	return module.__testOnly as SettingsHubTestApi;
@@ -164,9 +183,6 @@ beforeEach(() => {
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.resetModules();
-	if (tempRoot.length > 0) {
-		rmSync(tempRoot, { recursive: true, force: true });
-	}
 	if (originalCodeHome === undefined) {
 		delete process.env.CODEX_HOME;
 	} else {
@@ -184,6 +200,12 @@ afterEach(() => {
 	}
 	restoreStreamIsTTY(process.stdin, originalStdinDescriptor);
 	restoreStreamIsTTY(process.stdout, originalStdoutDescriptor);
+});
+
+afterEach(async () => {
+	if (tempRoot.length > 0) {
+		await removeDirectoryWithRetry(tempRoot);
+	}
 });
 
 describe("settings-hub utility coverage", () => {
@@ -686,6 +708,18 @@ describe("settings-hub utility coverage", () => {
 				proactiveRefreshIntervalMs: 30_000,
 			});
 			expect(selected?.proactiveRefreshIntervalMs).toBe(60_000);
+		});
+
+		it("toggles the CLI session supervisor in experimental settings", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				{ type: "toggle-session-supervisor" },
+				{ type: "save" },
+			);
+			const selected = await api.promptExperimentalSettings({
+				codexCliSessionSupervisor: false,
+			});
+			expect(selected?.codexCliSessionSupervisor).toBe(true);
 		});
 	});
 });

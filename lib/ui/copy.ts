@@ -72,6 +72,7 @@ export const UI_COPY = {
 		experimentalHelpMenu: "Enter Select | Q Back",
 		experimentalHelpPreview: "A Apply | Q Back",
 		experimentalHelpStatus: "Enter Select | Q Back",
+		experimentalSessionSupervisor: "Enable Session Resume Supervisor",
 		experimentalSync: "Sync Accounts to oc-chatgpt-multi-auth",
 		experimentalApplySync: "Apply Sync",
 		experimentalBackup: "Save Pool Backup",
