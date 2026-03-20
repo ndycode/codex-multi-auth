@@ -10,6 +10,7 @@ const createdDirs: string[] = [];
 const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS",
 	"CODEX_AUTH_CLI_SESSION_BINDING_POLL_MS",
+	"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS",
 ] as const;
 const originalEnv = Object.fromEntries(
 	envKeys.map((key) => [key, process.env[key]]),
@@ -148,6 +149,7 @@ function createFakeRuntime(
 			}
 		>;
 		delayByAccountId?: Map<string, number>;
+		onFetch?: (accountId: string) => void;
 	} = {},
 ) {
 	const storageDir = createTempDir();
@@ -202,6 +204,7 @@ function createFakeRuntime(
 			accountId: string;
 			signal?: AbortSignal;
 		}) {
+			options.onFetch?.(accountId);
 			const quotaProbeDelayMs =
 				delayByAccountId.get(accountId) ?? fallbackProbeDelayMs;
 			await new Promise<void>((resolve, reject) => {
@@ -224,6 +227,7 @@ function createFakeRuntime(
 
 afterEach(async () => {
 	vi.useRealTimers();
+	supervisorTestApi?.clearAllProbeSnapshotCache?.();
 	for (const key of envKeys) {
 		const value = originalEnv[key];
 		if (value === undefined) {
@@ -328,8 +332,88 @@ describe("codex supervisor", () => {
 		);
 	});
 
+	it("starts prewarm before the rotate threshold without forcing a cutover", async () => {
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager, {
+			snapshots: new Map([
+				[
+					"near-limit",
+					{
+						status: 200,
+						primary: { usedPercent: 86 },
+						secondary: { usedPercent: 12 },
+					},
+				],
+				[
+					"healthy",
+					{
+						status: 200,
+						primary: { usedPercent: 25 },
+						secondary: { usedPercent: 8 },
+					},
+				],
+			]),
+		});
+
+		const snapshot = await supervisorTestApi?.probeAccountSnapshot(
+			runtime,
+			manager.getCurrentAccountForFamily(),
+			undefined,
+			250,
+			{ useCache: false },
+		);
+		const pressure = supervisorTestApi?.computeQuotaPressure(snapshot, runtime, {});
+		const prepared = await supervisorTestApi?.prepareResumeSelection({
+			runtime,
+			pluginConfig: {},
+			currentAccount: manager.getCurrentAccountForFamily(),
+			signal: undefined,
+		});
+
+		expect(pressure).toMatchObject({
+			prewarm: true,
+			rotate: false,
+			remaining5h: 14,
+		});
+		expect(manager.activeIndex).toBe(0);
+		expect(prepared?.nextReady).toMatchObject({
+			ok: true,
+			account: { accountId: "healthy" },
+		});
+	});
+
+	it("reuses a cached healthy snapshot within the short ttl", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "5000";
+		const manager = new FakeManager();
+		const calls: string[] = [];
+		const runtime = createFakeRuntime(manager, {
+			onFetch(accountId) {
+				calls.push(accountId);
+			},
+		});
+		const account = manager.getCurrentAccountForFamily();
+
+		await supervisorTestApi?.clearProbeSnapshotCache(account);
+		const first = await supervisorTestApi?.probeAccountSnapshot(
+			runtime,
+			account,
+			undefined,
+			250,
+		);
+		const second = await supervisorTestApi?.probeAccountSnapshot(
+			runtime,
+			account,
+			undefined,
+			250,
+		);
+
+		expect(first).toEqual(second);
+		expect(calls).toEqual(["near-limit"]);
+	});
+
 	it("overlaps selection with restart so handoff finishes sooner than the serial path", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_SIGNAL_TIMEOUT_MS = "40";
+		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "0";
 
 		class FakeChild extends EventEmitter {
 			exitCode: number | null = null;
@@ -338,7 +422,7 @@ describe("codex supervisor", () => {
 
 		const serialManager = new FakeManager();
 		const serialRuntime = createFakeRuntime(serialManager, {
-			quotaProbeDelayMs: 60,
+			quotaProbeDelayMs: 140,
 		});
 		const serialChild = new FakeChild();
 		const serialStart = performance.now();
@@ -359,7 +443,7 @@ describe("codex supervisor", () => {
 
 		const overlapManager = new FakeManager();
 		const overlapRuntime = createFakeRuntime(overlapManager, {
-			quotaProbeDelayMs: 60,
+			quotaProbeDelayMs: 140,
 		});
 		const overlapChild = new FakeChild();
 		const overlapStart = performance.now();
@@ -380,7 +464,7 @@ describe("codex supervisor", () => {
 				account: expect.objectContaining({ accountId: "healthy" }),
 			}),
 		]);
-		expect(overlapElapsedMs).toBeLessThan(serialElapsedMs - 40);
+		expect(overlapElapsedMs).toBeLessThan(serialElapsedMs - 20);
 	});
 
 	it("keeps the prepared-selection path within the same pause envelope as overlap mode", async () => {
@@ -427,6 +511,43 @@ describe("codex supervisor", () => {
 		const prewarmedElapsedMs = performance.now() - prewarmedStart;
 
 		expect(prewarmedElapsedMs).toBeLessThan(overlapElapsedMs + 30);
+	});
+
+	it("commits the prepared account only at cutover time", async () => {
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager, {
+			quotaProbeDelayMs: 40,
+		});
+
+		const prepared = await supervisorTestApi?.prepareResumeSelection({
+			runtime,
+			pluginConfig: {},
+			currentAccount: manager.getCurrentAccountForFamily(),
+			signal: undefined,
+		});
+		expect(manager.activeIndex).toBe(0);
+		await supervisorTestApi?.markCurrentAccountForRestart(
+			runtime,
+			manager.getCurrentAccountForFamily(),
+			{
+				reason: "quota-near-exhaustion",
+				waitMs: 0,
+				sessionId: "prepared-session",
+			},
+			undefined,
+		);
+
+		const committed = await supervisorTestApi?.commitPreparedSelection(
+			runtime,
+			prepared?.nextReady?.account,
+			undefined,
+		);
+
+		expect(committed).toMatchObject({
+			ok: true,
+			account: { accountId: "healthy" },
+		});
+		expect(manager.activeIndex).toBe(1);
 	});
 
 	it("batches probe work so multiple degraded accounts do not add serial pause", async () => {

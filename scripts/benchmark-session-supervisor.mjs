@@ -408,6 +408,45 @@ async function main() {
 				},
 				{ selectionProbeBatchSize: 1 },
 			),
+			await runCase(
+				api,
+				"session_rotation_failure_mix_windows",
+				iterations,
+				probeLatencyMs,
+				{
+					accounts: [
+						{ accountId: "rate-limited", access: "token-1" },
+						{ accountId: "near-limit", access: "token-2" },
+						{ accountId: "healthy", access: "token-3" },
+					],
+					quotaByAccountId: new Map([
+						[
+							"rate-limited",
+							{
+								status: 429,
+								primary: { usedPercent: 100 },
+								secondary: { usedPercent: 18 },
+							},
+						],
+						[
+							"near-limit",
+							{
+								status: 200,
+								primary: { usedPercent: 92 },
+								secondary: { usedPercent: 12 },
+							},
+						],
+						[
+							"healthy",
+							{
+								status: 200,
+								primary: { usedPercent: 24 },
+								secondary: { usedPercent: 7 },
+							},
+						],
+					]),
+				},
+			),
 		],
 	};
 

@@ -13,6 +13,9 @@ const DEFAULT_QUOTA_PROBE_TIMEOUT_MS = 4_000;
 const DEFAULT_MONITOR_PROBE_TIMEOUT_MS = 1_250;
 const DEFAULT_SELECTION_PROBE_TIMEOUT_MS = 2_500;
 const DEFAULT_SELECTION_PROBE_BATCH_SIZE = 4;
+const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 1_500;
+const DEFAULT_PREWARM_MARGIN_PERCENT_5H = 5;
+const DEFAULT_PREWARM_MARGIN_PERCENT_7D = 3;
 const DEFAULT_SESSION_BINDING_POLL_MS = 50;
 const DEFAULT_STORAGE_LOCK_WAIT_MS = 10_000;
 const DEFAULT_STORAGE_LOCK_POLL_MS = 100;
@@ -31,6 +34,7 @@ const MAX_SESSION_RESTARTS = parseNumberEnv(
 	1,
 );
 const CODEX_FAMILY = "codex";
+const snapshotProbeCache = new Map();
 
 function sleep(ms, signal) {
 	return new Promise((resolve) => {
@@ -58,6 +62,24 @@ function createAbortError(message = "Operation aborted") {
 	const error = new Error(message);
 	error.name = "AbortError";
 	return error;
+}
+
+function abortablePromise(promise, signal, message = "Operation aborted") {
+	if (!signal) return promise;
+	if (signal.aborted) {
+		return Promise.reject(createAbortError(message));
+	}
+
+	return Promise.race([
+		promise,
+		new Promise((_, reject) => {
+			const onAbort = () => {
+				signal.removeEventListener("abort", onAbort);
+				reject(createAbortError(message));
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+		}),
+	]);
 }
 
 function parseBooleanEnv(name, fallback) {
@@ -185,6 +207,52 @@ async function loadSupervisorRuntime() {
 
 function relaunchNotice(message) {
 	process.stderr.write(`codex-multi-auth: ${message}\n`);
+}
+
+function supervisorDebug(message) {
+	if (
+		parseBooleanEnv("CODEX_AUTH_CLI_SESSION_DEBUG", false)
+	) {
+		relaunchNotice(message);
+	}
+}
+
+function formatQuotaPressure(pressure) {
+	const parts = [];
+	if (typeof pressure.remaining5h === "number") {
+		parts.push(`5h=${pressure.remaining5h}%`);
+	}
+	if (typeof pressure.remaining7d === "number") {
+		parts.push(`7d=${pressure.remaining7d}%`);
+	}
+	return parts.length > 0 ? parts.join(" ") : "quota=unknown";
+}
+
+function logRotationSummary(sessionId, trace, nextReady) {
+	if (!parseBooleanEnv("CODEX_AUTH_CLI_SESSION_DEBUG", false)) {
+		return;
+	}
+
+	const parts = [];
+	if (trace.detectedAtMs && trace.restartRequestedAtMs) {
+		parts.push(`detect_to_restart=${trace.restartRequestedAtMs - trace.detectedAtMs}ms`);
+	}
+	if (trace.prewarmStartedAtMs && trace.prewarmCompletedAtMs) {
+		parts.push(
+			`prewarm=${trace.prewarmCompletedAtMs - trace.prewarmStartedAtMs}ms`,
+		);
+	}
+	if (trace.restartRequestedAtMs && trace.resumeReadyAtMs) {
+		parts.push(`restart_to_ready=${trace.resumeReadyAtMs - trace.restartRequestedAtMs}ms`);
+	}
+
+	const accountLabel =
+		nextReady?.account?.email ??
+		nextReady?.account?.accountId ??
+		`index ${nextReady?.account?.index ?? "unknown"}`;
+	supervisorDebug(
+		`rotation summary session=${sessionId} account=${accountLabel} ${parts.join(" ")}`.trim(),
+	);
 }
 
 function normalizeExitCode(code, signal) {
@@ -425,6 +493,16 @@ function getManagerAccounts(manager, extraAccounts = []) {
 	return deduped;
 }
 
+function getAccountIdentityKey(account) {
+	if (!account) return "";
+	return [
+		`${account.refreshToken ?? ""}`,
+		`${account.accountId ?? ""}`,
+		`${account.email ?? ""}`,
+		`${account.index ?? ""}`,
+	].join("|");
+}
+
 function isEligibleProbeAccount(account, now = Date.now()) {
 	return Boolean(
 		account &&
@@ -433,11 +511,14 @@ function isEligibleProbeAccount(account, now = Date.now()) {
 	);
 }
 
-function getProbeCandidateBatch(manager, limit) {
+function getProbeCandidateBatch(manager, limit, excludedAccounts = []) {
 	const accounts = getManagerAccounts(manager);
 	const leadingCandidate = pickNextCandidate(manager);
 	const ordered = leadingCandidate ? [leadingCandidate, ...accounts] : accounts;
 	const now = Date.now();
+	const excludedKeys = new Set(
+		excludedAccounts.map((account) => getAccountIdentityKey(account)).filter(Boolean),
+	);
 	const seen = new Set();
 	const batch = [];
 
@@ -446,7 +527,10 @@ function getProbeCandidateBatch(manager, limit) {
 		if (!isEligibleProbeAccount(account, now)) {
 			continue;
 		}
-		const key = `${account.index ?? ""}|${account.refreshToken ?? ""}`;
+		const key = getAccountIdentityKey(account);
+		if (excludedKeys.has(key)) {
+			continue;
+		}
 		if (seen.has(key)) {
 			continue;
 		}
@@ -532,21 +616,38 @@ function computeWaitMsFromSnapshot(snapshot) {
 	return candidates.length > 0 ? Math.min(...candidates) : 0;
 }
 
-function evaluateQuotaSnapshot(snapshot, runtime, pluginConfig) {
+function computeQuotaPressure(snapshot, runtime, pluginConfig) {
 	if (!snapshot) {
-		return { rotate: false, reason: "none", waitMs: 0 };
+		return {
+			prewarm: false,
+			rotate: false,
+			reason: "none",
+			waitMs: 0,
+			remaining5h: undefined,
+			remaining7d: undefined,
+		};
 	}
 
 	if (snapshot.status === 429) {
 		return {
+			prewarm: true,
 			rotate: true,
 			reason: "rate-limit",
 			waitMs: computeWaitMsFromSnapshot(snapshot),
+			remaining5h: undefined,
+			remaining7d: undefined,
 		};
 	}
 
 	if (!runtime.getPreemptiveQuotaEnabled(pluginConfig)) {
-		return { rotate: false, reason: "none", waitMs: 0 };
+		return {
+			prewarm: false,
+			rotate: false,
+			reason: "none",
+			waitMs: 0,
+			remaining5h: undefined,
+			remaining7d: undefined,
+		};
 	}
 
 	const remaining5h =
@@ -559,36 +660,182 @@ function evaluateQuotaSnapshot(snapshot, runtime, pluginConfig) {
 			: undefined;
 	const threshold5h = runtime.getPreemptiveQuotaRemainingPercent5h(pluginConfig);
 	const threshold7d = runtime.getPreemptiveQuotaRemainingPercent7d(pluginConfig);
+	const prewarmThreshold5h = Math.min(
+		100,
+		threshold5h +
+			parseNumberEnv(
+				"CODEX_AUTH_CLI_SESSION_PREWARM_MARGIN_PERCENT_5H",
+				DEFAULT_PREWARM_MARGIN_PERCENT_5H,
+				0,
+			),
+	);
+	const prewarmThreshold7d = Math.min(
+		100,
+		threshold7d +
+			parseNumberEnv(
+				"CODEX_AUTH_CLI_SESSION_PREWARM_MARGIN_PERCENT_7D",
+				DEFAULT_PREWARM_MARGIN_PERCENT_7D,
+				0,
+			),
+	);
 	const near5h =
 		typeof remaining5h === "number" && remaining5h <= threshold5h;
 	const near7d =
 		typeof remaining7d === "number" && remaining7d <= threshold7d;
+	const prewarm5h =
+		typeof remaining5h === "number" && remaining5h <= prewarmThreshold5h;
+	const prewarm7d =
+		typeof remaining7d === "number" && remaining7d <= prewarmThreshold7d;
 
 	if (!near5h && !near7d) {
-		return { rotate: false, reason: "none", waitMs: 0 };
+		return {
+			prewarm: prewarm5h || prewarm7d,
+			rotate: false,
+			reason: "none",
+			waitMs: 0,
+			remaining5h,
+			remaining7d,
+		};
 	}
 
 	return {
+		prewarm: true,
 		rotate: true,
 		reason: "quota-near-exhaustion",
 		waitMs: computeWaitMsFromSnapshot(snapshot),
+		remaining5h,
+		remaining7d,
 	};
 }
 
-async function probeAccountSnapshot(runtime, account, signal, timeoutMs) {
+function evaluateQuotaSnapshot(snapshot, runtime, pluginConfig) {
+	const pressure = computeQuotaPressure(snapshot, runtime, pluginConfig);
+	return {
+		rotate: pressure.rotate,
+		reason: pressure.reason,
+		waitMs: pressure.waitMs,
+	};
+}
+
+function getSnapshotCacheKey(account) {
+	if (!account) return "";
+	return [
+		`${account.refreshToken ?? ""}`,
+		`${account.accountId ?? ""}`,
+		`${account.email ?? ""}`,
+		`${account.index ?? ""}`,
+	].join("|");
+}
+
+function getSnapshotCacheTtlMs() {
+	return parseNumberEnv(
+		"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS",
+		DEFAULT_SNAPSHOT_CACHE_TTL_MS,
+		0,
+	);
+}
+
+function clearProbeSnapshotCache(account) {
+	const cacheKey = getSnapshotCacheKey(account);
+	if (!cacheKey) return;
+	snapshotProbeCache.delete(cacheKey);
+}
+
+function clearAllProbeSnapshotCache() {
+	snapshotProbeCache.clear();
+}
+
+function readCachedProbeSnapshot(account) {
+	const cacheKey = getSnapshotCacheKey(account);
+	if (!cacheKey) return null;
+	const entry = snapshotProbeCache.get(cacheKey);
+	if (!entry?.snapshot || entry.expiresAt <= Date.now()) {
+		if (entry && !entry.pending) {
+			snapshotProbeCache.delete(cacheKey);
+		}
+		return null;
+	}
+	return entry.snapshot;
+}
+
+function rememberProbeSnapshot(account, snapshot) {
+	const cacheKey = getSnapshotCacheKey(account);
+	if (!cacheKey) return;
+	const ttlMs = getSnapshotCacheTtlMs();
+	if (ttlMs <= 0) {
+		snapshotProbeCache.delete(cacheKey);
+		return;
+	}
+	const current = snapshotProbeCache.get(cacheKey);
+	snapshotProbeCache.set(cacheKey, {
+		...current,
+		snapshot,
+		expiresAt: Date.now() + ttlMs,
+	});
+}
+
+async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options = {}) {
 	if (signal?.aborted) {
 		throw createAbortError("Quota probe aborted");
 	}
 	if (!account?.accountId || !account?.access) {
 		return null;
 	}
-	try {
-		return await runtime.fetchCodexQuotaSnapshot({
-			accountId: account.accountId,
-			accessToken: account.access,
-			timeoutMs: timeoutMs ?? DEFAULT_QUOTA_PROBE_TIMEOUT_MS,
-			signal,
+	const cacheKey = getSnapshotCacheKey(account);
+	if (options.useCache !== false) {
+		const cachedSnapshot = readCachedProbeSnapshot(account);
+		if (cachedSnapshot) {
+			return cachedSnapshot;
+		}
+		const pendingEntry = cacheKey ? snapshotProbeCache.get(cacheKey) : null;
+		if (pendingEntry?.pending) {
+			return abortablePromise(
+				pendingEntry.pending,
+				signal,
+				"Quota probe aborted",
+			);
+		}
+	}
+
+	const fetchPromise = (async () => {
+		try {
+			const snapshot = await runtime.fetchCodexQuotaSnapshot({
+				accountId: account.accountId,
+				accessToken: account.access,
+				timeoutMs: timeoutMs ?? DEFAULT_QUOTA_PROBE_TIMEOUT_MS,
+				signal,
+			});
+			rememberProbeSnapshot(account, snapshot);
+			return snapshot;
+		} catch (error) {
+			if (signal?.aborted || error?.name === "AbortError") {
+				throw error;
+			}
+			return null;
+		} finally {
+			if (cacheKey) {
+				const current = snapshotProbeCache.get(cacheKey);
+				if (current?.pending) {
+					snapshotProbeCache.set(cacheKey, {
+						snapshot: current.snapshot ?? null,
+						expiresAt: current.expiresAt ?? 0,
+					});
+				}
+			}
+		}
+	})();
+
+	if (cacheKey) {
+		const current = snapshotProbeCache.get(cacheKey);
+		snapshotProbeCache.set(cacheKey, {
+			snapshot: current?.snapshot ?? null,
+			expiresAt: current?.expiresAt ?? 0,
+			pending: fetchPromise,
 		});
+	}
+
+	try {
+		return await abortablePromise(fetchPromise, signal, "Quota probe aborted");
 	} catch (error) {
 		if (signal?.aborted || error?.name === "AbortError") {
 			throw error;
@@ -598,6 +845,7 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs) {
 }
 
 function markAccountUnavailable(manager, account, evaluation) {
+	clearProbeSnapshotCache(account);
 	const waitMs = Math.max(
 		evaluation.waitMs || 0,
 		evaluation.reason === "rate-limit" ? 1 : 0,
@@ -624,6 +872,28 @@ function markAccountUnavailable(manager, account, evaluation) {
 	}
 }
 
+async function markCurrentAccountForRestart(
+	runtime,
+	currentAccount,
+	restartDecision,
+	signal,
+) {
+	if (!currentAccount || !restartDecision) {
+		return null;
+	}
+
+	return withLockedManager(runtime, async (freshManager) => {
+		const targetAccount = resolveAccountInManager(freshManager, currentAccount);
+		if (targetAccount) {
+			markAccountUnavailable(freshManager, targetAccount, restartDecision);
+			if (typeof freshManager.saveToDisk === "function") {
+				await freshManager.saveToDisk();
+			}
+		}
+		return freshManager;
+	}, signal);
+}
+
 async function ensureLaunchableAccount(
 	runtime,
 	pluginConfig,
@@ -645,7 +915,11 @@ async function ensureLaunchableAccount(
 		}
 
 		const initial = await withLockedManager(runtime, async (manager) => {
-			const accounts = getProbeCandidateBatch(manager, probeBatchSize);
+			const accounts = getProbeCandidateBatch(
+				manager,
+				probeBatchSize,
+				options.excludedAccounts ?? [],
+			);
 			if (accounts.length === 0) {
 				return {
 					kind: "wait",
@@ -719,7 +993,12 @@ async function ensureLaunchableAccount(
 					result.account,
 					knownAccounts,
 				);
-				const currentCandidate = pickNextCandidate(manager);
+				const currentCandidate =
+					getProbeCandidateBatch(
+						manager,
+						1,
+						options.excludedAccounts ?? [],
+					)[0] ?? null;
 				if (
 					!account ||
 					!currentCandidate ||
@@ -739,7 +1018,9 @@ async function ensureLaunchableAccount(
 				}
 
 				if (!result.evaluation.rotate) {
-					await persistActiveSelection(manager, account);
+					if (options.persistSelection !== false) {
+						await persistActiveSelection(manager, account);
+					}
 					return {
 						kind: "ready",
 						waitMs: 0,
@@ -774,24 +1055,44 @@ async function ensureLaunchableAccount(
 	return { ok: false, account: null };
 }
 
+async function commitPreparedSelection(runtime, selectedAccount, signal) {
+	if (!selectedAccount) {
+		return { ok: false, account: null };
+	}
+
+	return withLockedManager(runtime, async (manager) => {
+		const knownAccounts = getManagerAccounts(manager, [selectedAccount]);
+		const account = resolveAccountInManager(manager, selectedAccount, knownAccounts);
+		const currentCandidate = getProbeCandidateBatch(manager, 1)[0] ?? null;
+		if (
+			!account ||
+			!currentCandidate ||
+			!accountsReferToSameStoredAccount(
+				manager,
+				currentCandidate,
+				account,
+				knownAccounts,
+			)
+		) {
+			return { ok: false, account: null, manager };
+		}
+
+		await persistActiveSelection(manager, account);
+		return {
+			ok: true,
+			account,
+			manager,
+		};
+	}, signal);
+}
+
 async function prepareResumeSelection({
 	runtime,
 	pluginConfig,
 	currentAccount,
-	restartDecision,
 	signal,
 }) {
-	const preparedManager = await withLockedManager(runtime, async (freshManager) => {
-		const targetAccount = resolveAccountInManager(freshManager, currentAccount);
-		if (targetAccount) {
-			markAccountUnavailable(freshManager, targetAccount, restartDecision);
-			if (typeof freshManager.saveToDisk === "function") {
-				await freshManager.saveToDisk();
-			}
-		}
-		return freshManager;
-	}, signal);
-
+	const startedAtMs = Date.now();
 	const nextReady = await ensureLaunchableAccount(
 		runtime,
 		pluginConfig,
@@ -801,11 +1102,14 @@ async function prepareResumeSelection({
 				"CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_TIMEOUT_MS",
 				DEFAULT_SELECTION_PROBE_TIMEOUT_MS,
 			),
+			excludedAccounts: currentAccount ? [currentAccount] : [],
+			persistSelection: false,
 		},
 	);
 
 	return {
-		manager: preparedManager,
+		startedAtMs,
+		completedAtMs: Date.now(),
 		nextReady,
 	};
 }
@@ -1060,6 +1364,13 @@ async function runInteractiveSupervision({
 		let requestedRestart = null;
 		let preparedResumeSelectionPromise = null;
 		let preparedResumeSelectionStarted = false;
+		const rotationTrace = {
+			detectedAtMs: 0,
+			prewarmStartedAtMs: 0,
+			prewarmCompletedAtMs: 0,
+			restartRequestedAtMs: 0,
+			resumeReadyAtMs: 0,
+		};
 		let monitorActive = true;
 		const monitorController = new AbortController();
 
@@ -1134,34 +1445,54 @@ async function runInteractiveSupervision({
 							}
 							throw error;
 						}
-						const evaluation = evaluateQuotaSnapshot(
+						const pressure = computeQuotaPressure(
 							snapshot,
 							runtime,
 							pluginConfig,
 						);
-						if (evaluation.rotate && binding?.sessionId) {
+						if (pressure.prewarm && binding?.sessionId) {
+							if (!rotationTrace.detectedAtMs) {
+								rotationTrace.detectedAtMs = Date.now();
+							}
+							if (!preparedResumeSelectionStarted) {
+								rotationTrace.prewarmStartedAtMs = Date.now();
+								supervisorDebug(
+									`prewarming successor for session ${binding.sessionId} ${formatQuotaPressure(pressure)}`,
+								);
+								const preparedState = maybeStartPreparedResumeSelection({
+									runtime,
+									pluginConfig,
+									currentAccount,
+									restartDecision: {
+										sessionId: binding.sessionId,
+									},
+									signal,
+									preparedResumeSelectionStarted,
+									preparedResumeSelectionPromise,
+								});
+								preparedResumeSelectionStarted =
+									preparedState.preparedResumeSelectionStarted;
+								preparedResumeSelectionPromise =
+									preparedState.preparedResumeSelectionPromise?.then((prepared) => {
+										if (rotationTrace.prewarmCompletedAtMs === 0) {
+											rotationTrace.prewarmCompletedAtMs = Date.now();
+										}
+										return prepared;
+									}) ?? null;
+							}
+						}
+						if (pressure.rotate && binding?.sessionId) {
 							const pendingRestartDecision = {
-								reason: evaluation.reason,
-								waitMs: evaluation.waitMs,
+								reason: pressure.reason,
+								waitMs: pressure.waitMs,
 								sessionId: binding.sessionId,
 							};
-							({
-								preparedResumeSelectionStarted,
-								preparedResumeSelectionPromise,
-							} = maybeStartPreparedResumeSelection({
-								runtime,
-								pluginConfig,
-								currentAccount,
-								restartDecision: pendingRestartDecision,
-								signal,
-								preparedResumeSelectionStarted,
-								preparedResumeSelectionPromise,
-							}));
 							const lastActivityAtMs = binding.lastActivityAtMs ?? launchStartedAt;
 							if (Date.now() - lastActivityAtMs >= idleMs) {
 								requestedRestart = pendingRestartDecision;
+								rotationTrace.restartRequestedAtMs = Date.now();
 								relaunchNotice(
-									`rotating session ${binding.sessionId} because ${evaluation.reason.replace(/-/g, " ")}`,
+									`rotating session ${binding.sessionId} because ${pressure.reason.replace(/-/g, " ")} (${formatQuotaPressure(pressure)})`,
 								);
 								monitorActive = false;
 								await requestChildRestart(child, process.platform, signal);
@@ -1244,31 +1575,36 @@ async function runInteractiveSupervision({
 			return result.exitCode;
 		}
 
-		let nextReady =
-			preparedResumeSelectionPromise &&
-			(await preparedResumeSelectionPromise.then((prepared) => {
-				if (prepared?.manager) {
-					manager = prepared.manager;
-				}
-				return prepared?.nextReady ?? null;
-			}));
+		const currentAccount = getCurrentAccount(manager);
+		if (currentAccount) {
+			const refreshedManager = await markCurrentAccountForRestart(
+				runtime,
+				currentAccount,
+				restartDecision,
+				signal,
+			);
+			manager = refreshedManager ?? manager;
+		}
+
+		let nextReady = null;
+		if (preparedResumeSelectionPromise) {
+			const prepared = await preparedResumeSelectionPromise;
+			nextReady = prepared?.nextReady ?? null;
+		}
+		if (nextReady?.ok) {
+			const committedReady = await commitPreparedSelection(
+				runtime,
+				nextReady.account,
+				signal,
+			);
+			if (committedReady?.ok) {
+				nextReady = committedReady;
+			} else {
+				nextReady = null;
+			}
+		}
 
 		if (!nextReady) {
-			const currentAccount = getCurrentAccount(manager);
-			if (currentAccount && !preparedResumeSelectionStarted) {
-				const refreshed = await withLockedManager(runtime, async (freshManager) => {
-					const targetAccount = resolveAccountInManager(freshManager, currentAccount);
-					if (targetAccount) {
-						markAccountUnavailable(freshManager, targetAccount, restartDecision);
-						if (typeof freshManager.saveToDisk === "function") {
-							await freshManager.saveToDisk();
-						}
-					}
-					return freshManager;
-				}, signal);
-				manager = refreshed;
-			}
-
 			nextReady = await ensureLaunchableAccount(runtime, pluginConfig, signal, {
 				probeTimeoutMs: resolveProbeTimeoutMs(
 					"CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_TIMEOUT_MS",
@@ -1287,6 +1623,8 @@ async function runInteractiveSupervision({
 		}
 
 		manager = nextReady.manager ?? manager;
+		rotationTrace.resumeReadyAtMs = Date.now();
+		logRotationSummary(restartDecision.sessionId, rotationTrace, nextReady);
 		launchArgs = buildResumeArgs(restartDecision.sessionId, buildForwardArgs);
 		knownSessionId = restartDecision.sessionId;
 	}
@@ -1360,6 +1698,10 @@ export async function runCodexSupervisorIfEnabled({
 }
 
 const TEST_ONLY_API = {
+	commitPreparedSelection,
+	clearAllProbeSnapshotCache,
+	computeQuotaPressure,
+	clearProbeSnapshotCache,
 	evaluateQuotaSnapshot,
 	ensureLaunchableAccount,
 	findSessionBinding,
@@ -1371,6 +1713,7 @@ const TEST_ONLY_API = {
 	prepareResumeSelection,
 	probeAccountSnapshot,
 	readResumeSessionId,
+	markCurrentAccountForRestart,
 	requestChildRestart,
 	resolveCodexHomeDir,
 	getSessionsRootDir,
