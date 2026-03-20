@@ -42,6 +42,11 @@ function createWrapperFixture(): string {
 	createdDirs.push(fixtureRoot);
 	const scriptDir = join(fixtureRoot, "scripts");
 	mkdirSync(scriptDir, { recursive: true });
+	writeFileSync(
+		join(fixtureRoot, "package.json"),
+		JSON.stringify({ type: "module", version: "9.8.7" }, null, "\t"),
+		"utf8",
+	);
 	copyFileSync(
 		join(repoRootDir, "scripts", "codex-multi-auth.js"),
 		join(scriptDir, "codex-multi-auth.js"),
@@ -69,6 +74,39 @@ afterEach(async () => {
 });
 
 describe("codex-multi-auth bin wrapper", () => {
+	it("prints package version for --version without loading the runtime", () => {
+		const fixtureRoot = createWrapperFixture();
+		const result = runWrapper(fixtureRoot, ["--version"]);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toBe("9.8.7\n");
+		expect(result.stderr).toBe("");
+	});
+
+	it("prints package version for -v without loading the runtime", () => {
+		const fixtureRoot = createWrapperFixture();
+		const result = runWrapper(fixtureRoot, ["-v"]);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toBe("9.8.7\n");
+		expect(result.stderr).toBe("");
+	});
+
+	it("prints a clear error when the wrapper version cannot be resolved", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeFileSync(
+			join(fixtureRoot, "package.json"),
+			JSON.stringify({ type: "module" }, null, "\t"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["--version"]);
+
+		expect(result.status).toBe(1);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toContain("codex-multi-auth version is unavailable.");
+	});
+
 	it("propagates integer exit codes", () => {
 		const fixtureRoot = createWrapperFixture();
 		const distLibDir = join(fixtureRoot, "dist", "lib");

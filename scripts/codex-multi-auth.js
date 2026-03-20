@@ -1,18 +1,40 @@
 #!/usr/bin/env node
 
 import { createRequire } from "node:module";
-import { runCodexMultiAuthCli } from "../dist/lib/codex-manager.js";
 
-try {
+const versionFlags = new Set(["--version", "-v"]);
+
+function resolveCliVersion() {
 	const require = createRequire(import.meta.url);
-	const pkg = require("../package.json");
-	const version = typeof pkg?.version === "string" ? pkg.version.trim() : "";
-	if (version.length > 0) {
-		process.env.CODEX_MULTI_AUTH_CLI_VERSION = version;
+	try {
+		const pkg = require("../package.json");
+		const version = typeof pkg?.version === "string" ? pkg.version.trim() : "";
+		if (version.length > 0) {
+			return version;
+		}
+	} catch {
+		// Best effort only.
 	}
-} catch {
-	// Best effort only.
+	return "";
 }
 
-const exitCode = await runCodexMultiAuthCli(process.argv.slice(2));
+const args = process.argv.slice(2);
+const version = resolveCliVersion();
+
+if (version.length > 0) {
+	process.env.CODEX_MULTI_AUTH_CLI_VERSION = version;
+}
+
+if (args.length === 1 && versionFlags.has(args[0])) {
+	if (version.length > 0) {
+		process.stdout.write(`${version}\n`);
+		process.exitCode = 0;
+	} else {
+		process.stderr.write("codex-multi-auth version is unavailable.\n");
+		process.exitCode = 1;
+	}
+} else {
+	const { runCodexMultiAuthCli } = await import("../dist/lib/codex-manager.js");
+	const exitCode = await runCodexMultiAuthCli(args);
 process.exitCode = Number.isInteger(exitCode) ? exitCode : 1;
+}

@@ -26,10 +26,14 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-Verify that the wrapper is active:
+Verify both installed surfaces:
+
+- `codex --version` checks the official `@openai/codex` CLI that the wrapper forwards to.
+- `codex-multi-auth --version` checks the installed wrapper package version.
 
 ```bash
 codex --version
+codex-multi-auth --version
 codex auth status
 ```
 

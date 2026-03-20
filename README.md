@@ -62,8 +62,11 @@ npm i -g codex-multi-auth
 
 ### Option C: Verify wiring
 
+`codex --version` confirms the official Codex CLI is reachable. `codex-multi-auth --version` confirms the installed wrapper package version.
+
 ```bash
 codex --version
+codex-multi-auth --version
 codex auth status
 ```
 
@@ -291,9 +294,9 @@ codex auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md)
-- Previous stable: [docs/releases/v1.1.10.md](docs/releases/v1.1.10.md)
-- Earlier stable: [docs/releases/v0.1.9.md](docs/releases/v0.1.9.md)
+- Current stable: [docs/releases/v1.1.10.md](docs/releases/v1.1.10.md)
+- Previous stable: [docs/releases/v0.1.9.md](docs/releases/v0.1.9.md)
+- Earlier stable: [docs/releases/v0.1.8.md](docs/releases/v0.1.8.md)
 - Archived prerelease: [docs/releases/v0.1.0-beta.0.md](docs/releases/v0.1.0-beta.0.md)
 
 ## License
