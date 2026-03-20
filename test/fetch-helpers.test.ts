@@ -5,10 +5,14 @@ import {
     refreshAndUpdateToken,
     extractRequestUrl,
     rewriteUrlForCodex,
+    resolveProxyUrlForRequest,
+    applyProxyCompatibleInit,
+    closeSharedProxyDispatchers,
     createCodexHeaders,
     handleErrorResponse,
     handleSuccessResponse,
     isEntitlementError,
+    isWorkspaceDisabledError,
     createEntitlementErrorResponse,
 	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
@@ -21,9 +25,10 @@ import type { CreateCodexHeadersParams } from '../lib/request/fetch-helpers.js';
 import { URL_PATHS, OPENAI_HEADERS, OPENAI_HEADER_VALUES, CODEX_BASE_URL } from '../lib/constants.js';
 
 describe('Fetch Helpers Module', () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
+        afterEach(async () => {
+                await closeSharedProxyDispatchers();
+                vi.restoreAllMocks();
+        });
 
 	describe('shouldRefreshToken', () => {
 		it('should return true for non-oauth auth', () => {
@@ -170,6 +175,171 @@ describe('Fetch Helpers Module', () => {
 		});
 	});
 
+	describe('proxy-compatible init helpers', () => {
+		it('prefers lowercase proxy env values over uppercase ones', () => {
+			const env = {
+				HTTPS_PROXY: 'http://uppercase-proxy:8080',
+				https_proxy: 'http://lowercase-proxy:8080',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('https://api.openai.com/v1/chat', env)).toBe(
+				'http://lowercase-proxy:8080',
+			);
+		});
+
+		it('falls back to HTTP_PROXY for https requests when HTTPS_PROXY is unset', () => {
+			const env = {
+				HTTP_PROXY: 'http://shared-proxy:8080',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('https://api.openai.com/v1/chat', env)).toBe(
+				'http://shared-proxy:8080',
+			);
+		});
+
+		it('returns undefined for http requests when only HTTPS_PROXY is configured', () => {
+			const env = {
+				HTTPS_PROXY: 'http://https-only-proxy:8080',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('http://api.openai.com/v1/chat', env)).toBeUndefined();
+		});
+
+		it('prefers HTTP_PROXY for http requests even when HTTPS_PROXY is also set', () => {
+			const env = {
+				HTTP_PROXY: 'http://http-proxy:8080',
+				HTTPS_PROXY: 'http://https-proxy:8080',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('http://api.openai.com/v1/chat', env)).toBe(
+				'http://http-proxy:8080',
+			);
+		});
+
+		it('bypasses the proxy when NO_PROXY matches the request host', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+				NO_PROXY: 'api.openai.com,.internal.example',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('https://api.openai.com/v1/chat', env)).toBeUndefined();
+			expect(resolveProxyUrlForRequest('https://service.internal.example/v1/chat', env)).toBeUndefined();
+		});
+
+		it('treats wildcard entries inside NO_PROXY lists as an explicit global bypass', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+				NO_PROXY: 'api.openai.com,*,.internal.example',
+			} as NodeJS.ProcessEnv;
+
+			expect(resolveProxyUrlForRequest('https://unlisted.example/v1/chat', env)).toBeUndefined();
+		});
+
+		it('attaches a shared dispatcher when proxy env is configured', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+			} as NodeJS.ProcessEnv;
+
+			const first = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+				method: 'POST',
+			}, env);
+			const second = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+				method: 'POST',
+			}, env);
+
+			expect(first.dispatcher).toBeDefined();
+			expect(second.dispatcher).toBe(first.dispatcher);
+		});
+
+		it('closes cached proxy dispatchers and recreates them after cleanup', async () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+			} as NodeJS.ProcessEnv;
+
+			const first = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+				method: 'POST',
+			}, env);
+
+			await closeSharedProxyDispatchers();
+
+			const second = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+				method: 'POST',
+			}, env);
+
+			expect(first.dispatcher).toBeDefined();
+			expect(second.dispatcher).toBeDefined();
+			expect(second.dispatcher).not.toBe(first.dispatcher);
+		});
+
+		it('drains proxy dispatchers created while shutdown cleanup is in flight', async () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+			} as NodeJS.ProcessEnv;
+			const first = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+				method: 'POST',
+			}, env);
+			const lateClose = vi.fn(async () => {});
+			const firstDispatcher = first.dispatcher as {
+				close?: () => Promise<void> | void;
+			};
+
+			expect(firstDispatcher).toBeDefined();
+			firstDispatcher.close = vi.fn(async () => {
+				const lateInit = applyProxyCompatibleInit('https://api.openai.com/v1/chat', {
+					method: 'POST',
+				}, env);
+				const lateDispatcher = lateInit.dispatcher as {
+					close?: () => Promise<void> | void;
+				};
+				expect(lateDispatcher).toBeDefined();
+				expect(lateDispatcher).not.toBe(first.dispatcher);
+				lateDispatcher.close = lateClose;
+			});
+
+			await closeSharedProxyDispatchers();
+
+			expect(firstDispatcher.close).toHaveBeenCalledTimes(1);
+			expect(lateClose).toHaveBeenCalledTimes(1);
+		});
+
+		it('preserves an explicit dispatcher without replacing it', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+			} as NodeJS.ProcessEnv;
+			const dispatcher = { dispatch: vi.fn() } as unknown as RequestInit['dispatcher'];
+
+			const result = applyProxyCompatibleInit(
+				'https://api.openai.com/v1/chat',
+				{
+					method: 'POST',
+					dispatcher,
+				},
+				env,
+			);
+
+			expect(result.dispatcher).toBe(dispatcher);
+		});
+
+		it('does not override an explicit agent flag with proxy transport', () => {
+			const env = {
+				HTTPS_PROXY: 'http://proxy.example:8080',
+			} as NodeJS.ProcessEnv;
+			const agent = { kind: 'custom-agent' };
+
+			const result = applyProxyCompatibleInit(
+				'https://api.openai.com/v1/chat',
+				{
+					method: 'POST',
+					agent,
+				},
+				env,
+			);
+
+			expect(result.agent).toBe(agent);
+			expect(result.dispatcher).toBeUndefined();
+		});
+	});
+
 		describe('createCodexHeaders', () => {
 	const accountId = 'test-account-123';
 	const accessToken = 'test-access-token';
@@ -307,12 +477,81 @@ describe('Fetch Helpers Module', () => {
 			expect(isEntitlementError('rate_limit_exceeded', '')).toBe(false);
 		});
 
-		it('returns false for generic errors', () => {
-			expect(isEntitlementError('not_found', 'Resource not found')).toBe(false);
-		});
+	it('returns false for generic errors', () => {
+		expect(isEntitlementError('not_found', 'Resource not found')).toBe(false);
+	});
+});
+
+describe('isWorkspaceDisabledError', () => {
+	it('returns true for 403 with workspace disabled message', () => {
+		expect(isWorkspaceDisabledError(403, '', 'Your workspace has been disabled')).toBe(true);
 	});
 
-	describe('createEntitlementErrorResponse', () => {
+	it('returns true for 403 with workspace expired message', () => {
+		expect(isWorkspaceDisabledError(403, '', 'Workspace expired')).toBe(true);
+	});
+
+	it('returns true for 403 with account disabled message', () => {
+		expect(isWorkspaceDisabledError(403, '', 'Account has been deactivated')).toBe(true);
+	});
+
+	it('returns true for workspace_disabled error code', () => {
+		expect(isWorkspaceDisabledError(403, 'workspace_disabled', '')).toBe(true);
+	});
+
+	it('returns true for workspace_expired error code', () => {
+		expect(isWorkspaceDisabledError(403, 'workspace_expired', 'Some message')).toBe(true);
+	});
+
+	it('returns true for account_disabled error code', () => {
+		expect(isWorkspaceDisabledError(403, 'account_disabled', '')).toBe(true);
+	});
+
+	it('returns true for organization_disabled error code', () => {
+		expect(isWorkspaceDisabledError(403, 'organization_disabled', '')).toBe(true);
+	});
+
+	it('matches wrapped workspace error tokens but not partial token text', () => {
+		expect(isWorkspaceDisabledError(403, 'error.workspace_disabled', '')).toBe(true);
+		expect(isWorkspaceDisabledError(403, 'workspace_expired:error', '')).toBe(true);
+		expect(isWorkspaceDisabledError(403, 'error.usage_not_included', '')).toBe(false);
+	});
+
+	it('returns false for non-403 status even with disabled message', () => {
+		expect(isWorkspaceDisabledError(400, '', 'Your workspace has been disabled')).toBe(false);
+		expect(isWorkspaceDisabledError(401, '', 'Your workspace has been disabled')).toBe(false);
+		expect(isWorkspaceDisabledError(500, '', 'Your workspace has been disabled')).toBe(false);
+		expect(isWorkspaceDisabledError(400, 'workspace_disabled', '')).toBe(false);
+		expect(isWorkspaceDisabledError(402, 'payment_required', '')).toBe(false);
+	});
+
+	it('returns false for 403 with unrelated messages', () => {
+		expect(isWorkspaceDisabledError(403, '', 'Permission denied')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'Not authorized')).toBe(false);
+	});
+
+	it('returns false for entitlement errors', () => {
+		expect(isWorkspaceDisabledError(403, 'usage_not_included', 'Not in your plan')).toBe(false);
+	});
+
+	it('uses body text to classify numeric error codes', () => {
+		expect(isWorkspaceDisabledError(403, 402, 'Workspace disabled')).toBe(true);
+		expect(isWorkspaceDisabledError(403, 402, 'Billing failed for your subscription')).toBe(false);
+		expect(isWorkspaceDisabledError(403, 0, '')).toBe(false);
+	});
+
+	it('returns false for billing-style 403 codes without workspace or account disable signals', () => {
+		expect(isWorkspaceDisabledError(403, 'billing_failed', '')).toBe(false);
+		expect(isWorkspaceDisabledError(403, 'payment_required', '')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'Payment required to continue')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'Billing failed for your plan')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'Your billing account has expired')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'service account terminated')).toBe(false);
+		expect(isWorkspaceDisabledError(403, '', 'team plan inactive')).toBe(false);
+	});
+});
+
+describe('createEntitlementErrorResponse', () => {
 		it('returns 403 status with user-friendly message', async () => {
 			const resp = createEntitlementErrorResponse('original body');
 			expect(resp.status).toBe(403);

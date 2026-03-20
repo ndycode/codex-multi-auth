@@ -5,6 +5,7 @@
 
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import type { AccountIdSource } from "../types.js";
+import type { Workspace } from "../accounts.js";
 
 export type CooldownReason = "auth-failure" | "network-error" | "rate-limit";
 
@@ -25,7 +26,12 @@ export interface AccountMetadataV1 {
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
-	lastSwitchReason?: "rate-limit" | "initial" | "rotation" | "best";
+	lastSwitchReason?:
+		| "rate-limit"
+		| "initial"
+		| "rotation"
+		| "best"
+		| "restore";
 	rateLimitResetTime?: number;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -50,10 +56,17 @@ export interface AccountMetadataV3 {
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
-	lastSwitchReason?: "rate-limit" | "initial" | "rotation" | "best";
+	lastSwitchReason?:
+		| "rate-limit"
+		| "initial"
+		| "rotation"
+		| "best"
+		| "restore";
 	rateLimitResetTimes?: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
+	workspaces?: Workspace[];
+	currentWorkspaceIndex?: number;
 }
 
 export interface AccountStorageV3 {

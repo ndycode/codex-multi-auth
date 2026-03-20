@@ -53,6 +53,7 @@ vi.mock("../lib/refresh-queue.js", () => ({
 }));
 
 vi.mock("../lib/auth/browser.js", () => ({
+	isBrowserLaunchSuppressed: vi.fn(() => false),
 	openBrowserUrl: vi.fn(),
 }));
 
@@ -200,6 +201,7 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 	vi.mock("../lib/request/fetch-helpers.js", () => ({
 		extractRequestUrl: (input: unknown) => (typeof input === "string" ? input : String(input)),
 		rewriteUrlForCodex: (url: string) => url,
+		applyProxyCompatibleInit: vi.fn((_url: string, init: RequestInit) => init),
 		transformRequestForCodex: vi.fn(async (init: unknown) => ({
 		updatedInit: init,
 		body: { model: "gpt-5.1" },
@@ -208,6 +210,12 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 		refreshAndUpdateToken: vi.fn(async (auth: unknown) => auth),
 		createCodexHeaders: vi.fn(() => new Headers()),
 		handleErrorResponse: vi.fn(async (response: Response) => ({ response })),
+		isWorkspaceDisabledError: (status: number, code: string, bodyText: string) =>
+			status === 403 &&
+			(code.toLowerCase().includes("workspace_disabled") ||
+				code.toLowerCase().includes("workspace_expired") ||
+				bodyText.toLowerCase().includes("workspace disabled") ||
+				bodyText.toLowerCase().includes("workspace expired")),
 	getUnsupportedCodexModelInfo: vi.fn(() => ({ isUnsupported: false })),
 	resolveUnsupportedCodexFallbackModel: vi.fn(() => undefined),
 	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
@@ -227,10 +235,23 @@ const mockStorage = {
 		coolingDownUntil?: number;
 		rateLimitResetTimes?: Record<string, number>;
 		lastSwitchReason?: string;
+		workspaces?: Array<{
+			id: string;
+			name?: string;
+			enabled: boolean;
+			disabledAt?: number;
+			isDefault?: boolean;
+		}>;
+		currentWorkspaceIndex?: number;
 	}>,
 	activeIndex: 0,
 	activeIndexByFamily: {} as Record<string, number>,
 };
+
+const cloneMockAccount = (account: (typeof mockStorage.accounts)[number]) => ({
+	...account,
+	workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
+});
 
 const loadAccountsMock = vi.fn(async () => mockStorage);
 const saveAccountsMock = vi.fn(
@@ -241,7 +262,7 @@ const saveAccountsMock = vi.fn(
 		activeIndexByFamily?: Record<string, number>;
 	}) => {
 		mockStorage.version = storage.version;
-		mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+		mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
 		mockStorage.activeIndex = storage.activeIndex;
 		mockStorage.activeIndexByFamily = {
 			...(storage.activeIndexByFamily ?? {}),
@@ -275,7 +296,7 @@ const withAccountStorageTransactionMock = vi.fn(
 			handler(
 				{
 					version: 3,
-					accounts: mockStorage.accounts.map((account) => ({ ...account })),
+					accounts: mockStorage.accounts.map((account) => cloneMockAccount(account)),
 					activeIndex: mockStorage.activeIndex,
 					activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
 				},
@@ -323,8 +344,13 @@ vi.mock("../lib/storage.js", async () => {
 
 const extractAccountEmailMock = vi.fn(() => "user@example.com");
 const extractAccountIdMock = vi.fn(() => "account-1");
+const getAccountIdCandidatesMock = vi.fn(() => [{ accountId: "acc-1", source: "token", label: "Test" }]);
+const selectBestAccountCandidateMock = vi.fn(
+	(candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+);
 
-vi.mock("../lib/accounts.js", () => {
+vi.mock("../lib/accounts.js", async () => {
+	const tokenUtils = await vi.importActual("../lib/auth/token-utils.js");
 	class MockAccountManager {
 		private accounts = [
 			{
@@ -349,6 +375,15 @@ vi.mock("../lib/accounts.js", () => {
 
 		getCurrentOrNextForFamilyHybrid() {
 			return this.accounts[0] ?? null;
+		}
+
+		getCurrentWorkspace(account: Record<string, unknown>) {
+			const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
+			const currentWorkspaceIndex =
+				typeof account.currentWorkspaceIndex === "number"
+					? account.currentWorkspaceIndex
+					: 0;
+			return workspaces[currentWorkspaceIndex] ?? null;
 		}
 
 		recordSuccess() {}
@@ -394,6 +429,22 @@ vi.mock("../lib/accounts.js", () => {
 
 		markToastShown() {}
 
+		getCurrentWorkspace() {
+			return null;
+		}
+
+		disableCurrentWorkspace() {
+			return false;
+		}
+
+		rotateToNextWorkspace() {
+			return null;
+		}
+
+		hasEnabledWorkspaces() {
+			return true;
+		}
+
 		setActiveIndex(index: number) {
 			return this.accounts[index] ?? null;
 		}
@@ -405,15 +456,48 @@ vi.mock("../lib/accounts.js", () => {
 
 	return {
 		AccountManager: MockAccountManager,
-		getAccountIdCandidates: () => [{ accountId: "acc-1", source: "token", label: "Test" }],
-		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+		getAccountIdCandidates: getAccountIdCandidatesMock,
+		selectBestAccountCandidate: selectBestAccountCandidateMock,
 		extractAccountEmail: extractAccountEmailMock,
 		extractAccountId: extractAccountIdMock,
-		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
+		resolveRuntimeRequestIdentity: ({
+			storedAccountId,
+			source,
+			storedEmail,
+			accessToken,
+			idToken,
+		}: {
+			storedAccountId?: string;
+			source?: string;
+			storedEmail?: string;
+			accessToken?: string;
+			idToken?: string;
+		}) => {
+			const tokenUtilsModule =
+				tokenUtils as typeof import("../lib/auth/token-utils.js");
+			const tokenAccountId = extractAccountIdMock(accessToken);
+			const tokenEmail = tokenUtilsModule.sanitizeEmail(
+				extractAccountEmailMock(accessToken, idToken),
+			);
+			const sanitizedStoredEmail = tokenUtilsModule.sanitizeEmail(storedEmail);
+			return {
+				accountId: tokenUtilsModule.resolveRequestAccountId(
+					storedAccountId,
+					source as never,
+					tokenAccountId,
+				),
+				email: tokenEmail ?? sanitizedStoredEmail,
+				tokenAccountId,
+			};
+		},
+		resolveRequestAccountId: (
+			tokenUtils as typeof import("../lib/auth/token-utils.js")
+		).resolveRequestAccountId,
 		formatAccountLabel: (_account: unknown, index: number) => `Account ${index + 1}`,
 		formatCooldown: () => null,
 		formatWaitTime: (ms: number) => `${Math.round(ms / 1000)}s`,
-		sanitizeEmail: (email: string) => email,
+		sanitizeEmail: (email: string | undefined) =>
+			typeof email === "string" ? email.trim().toLowerCase() : undefined,
 		shouldUpdateAccountIdFromToken: () => true,
 		parseRateLimitReason: () => "unknown",
 		lookupCodexCliTokensByEmail: vi.fn(async () => null),
@@ -489,6 +573,14 @@ describe("OpenAIOAuthPlugin", () => {
 		extractAccountEmailMock.mockImplementation(() => "user@example.com");
 		extractAccountIdMock.mockReset();
 		extractAccountIdMock.mockImplementation(() => "account-1");
+		getAccountIdCandidatesMock.mockReset();
+		getAccountIdCandidatesMock.mockImplementation(() => [
+			{ accountId: "acc-1", source: "token", label: "Test" },
+		]);
+		selectBestAccountCandidateMock.mockReset();
+		selectBestAccountCandidateMock.mockImplementation(
+			(candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+		);
 
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
@@ -558,6 +650,26 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(plugin.auth.methods).toHaveLength(2);
 			expect(plugin.auth.methods[0].label).toBe("ChatGPT Plus/Pro MULTI (Codex Subscription)");
 			expect(plugin.auth.methods[1].label).toBe("ChatGPT Plus/Pro MULTI (Manual URL Paste)");
+		});
+
+		it("uses manual auth flow when browser launch is globally suppressed", async () => {
+			const browserModule = await import("../lib/auth/browser.js");
+			vi.mocked(browserModule.isBrowserLaunchSuppressed).mockReturnValueOnce(true);
+			const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{
+					method: string;
+					instructions: string;
+					validate: (input: string) => string | undefined;
+				}>;
+			};
+
+			const flow = await autoMethod.authorize();
+
+			expect(flow.method).toBe("code");
+			expect(flow.instructions).toContain("copy the full redirect URL");
+			expect(flow.validate("invalid-callback-value")).toContain("No authorization code found");
+			expect(openBrowserUrlMock).not.toHaveBeenCalled();
 		});
 
 		it("rejects manual OAuth callbacks with mismatched state", async () => {
@@ -1126,6 +1238,68 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		return { plugin, sdk, mockClient };
 	};
 
+	const buildRoutingManager = (
+		accounts: Array<{
+			index: number;
+			accountId?: string;
+			accountIdSource?: string;
+			email?: string;
+			refreshToken: string;
+			accessToken?: string;
+			idToken?: string;
+		}>,
+	) => {
+		let selection = 0;
+		return {
+			getAccountCount: () => accounts.length,
+			getCurrentOrNextForFamilyHybrid: () => accounts[selection++] ?? null,
+			getCurrentOrNextForFamily: () => accounts[selection++] ?? null,
+			getCurrentWorkspace: (account: {
+				workspaces?: Array<{ id: string; name?: string; enabled?: boolean }>;
+				currentWorkspaceIndex?: number;
+			}) => {
+				const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
+				const currentWorkspaceIndex =
+					typeof account.currentWorkspaceIndex === "number"
+						? account.currentWorkspaceIndex
+						: 0;
+				return workspaces[currentWorkspaceIndex] ?? null;
+			},
+			getAccountByIndex: (index: number) => accounts[index] ?? null,
+			getAccountsSnapshot: () => accounts,
+			isAccountAvailableForFamily: (index: number) => Boolean(accounts[index]),
+			toAuthDetails: (account: (typeof accounts)[number]) => ({
+				type: "oauth" as const,
+				access: account.accessToken ?? `access-${account.accountId ?? account.index}`,
+				refresh: account.refreshToken,
+				expires: Date.now() + 60_000,
+				...(account.idToken ? { idToken: account.idToken } : {}),
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async (index: number) =>
+				syncCodexCliSelectionMock(index),
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: (index: number) => accounts[index] ?? null,
+		};
+	};
+
 	it("returns success response for successful fetch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
@@ -1142,18 +1316,24 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	});
 
 	it("uses the refreshed token email when checking entitlement blocks", async () => {
-		mockStorage.accounts = [
+		const { AccountManager } = await import("../lib/accounts.js");
+		const manager = buildRoutingManager([
 			{
+				index: 0,
 				accountId: "acc-1",
 				email: "stale@example.com",
 				refreshToken: "refresh-1",
 			},
-		];
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
 		extractAccountEmailMock.mockReturnValueOnce("fresh@example.com");
 		const entitlementModule = await import("../lib/entitlement-cache.js");
 		const isBlockedSpy = vi
 			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
-			.mockReturnValue({ blocked: false, waitMs: 0 });
+			.mockImplementation(() => {
+				expect(manager.getAccountsSnapshot()[0]?.email).toBe("stale@example.com");
+				return { blocked: false, waitMs: 0 };
+			});
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
 		);
@@ -1169,6 +1349,470 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			"account:acc-1::email:fresh@example.com",
 			"gpt-5.1",
 		);
+		expect(manager.getAccountsSnapshot()[0]?.email).toBe("fresh@example.com");
+	});
+
+	it.each([
+		["org", "workspace-alpha"],
+		["manual", "workspace-beta"],
+	] as const)(
+		"preserves %s-selected workspace in primary request routing",
+		async (accountIdSource, expectedAccountId) => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			const manager = buildRoutingManager([
+				{
+					index: 0,
+					accountId: expectedAccountId,
+					accountIdSource,
+					email: "owner@example.com",
+					refreshToken: "refresh-1",
+					accessToken: "access-primary",
+				},
+			]);
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+			extractAccountIdMock.mockReturnValueOnce("token-personal");
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+				(_init, accountId, accessToken) =>
+					new Headers({
+						"x-test-account-id": String(accountId),
+						"x-test-access-token": String(accessToken),
+					}),
+			);
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+			const { sdk } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			expect(response.status).toBe(200);
+			const headers = new Headers(
+				vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers,
+			);
+			expect(headers.get("x-test-account-id")).toBe(expectedAccountId);
+			expect(headers.get("x-test-access-token")).toBe("access-primary");
+		},
+	);
+
+	it("keeps token-derived routing on the refreshed token accountId", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "workspace-alpha",
+				accountIdSource: "token",
+				email: "owner@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-primary",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock.mockReturnValueOnce("token-personal");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		const headers = new Headers(
+			vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers,
+		);
+		expect(headers.get("x-test-account-id")).toBe("token-personal");
+	});
+
+	it("preserves stored workspace routing after a first-account network failure", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-personal-fallback");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+		const thirdHeaders = new Headers(
+			vi.mocked(globalThis.fetch).mock.calls[2]?.[1]?.headers,
+		);
+		expect(thirdHeaders.get("x-test-account-id")).toBe("workspace-fallback");
+		expect(thirdHeaders.get("x-test-access-token")).toBe("access-beta");
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+	});
+
+	it("attaches proxy dispatcher returned by the helper to the primary upstream request", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const proxyDispatcher = { kind: "proxy-dispatcher" };
+		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation((_url, init) => ({
+			...(init ?? {}),
+			dispatcher: proxyDispatcher,
+		}));
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(vi.mocked(fetchHelpers.applyProxyCompatibleInit)).toHaveBeenCalled();
+		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
+		expect(firstInit.dispatcher).toBe(proxyDispatcher);
+	});
+
+	it("preserves proxy dispatcher on fallback retry requests", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const proxyDispatcher = { kind: "proxy-dispatcher" };
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation((_url, init) => ({
+			...(init ?? {}),
+			dispatcher: proxyDispatcher,
+		}));
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(vi.mocked(fetchHelpers.applyProxyCompatibleInit)).toHaveBeenCalledTimes(3);
+		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
+		expect(thirdInit.dispatcher).toBe(proxyDispatcher);
+	});
+	it("locks fallback entitlement checks to a stable account snapshot before mutating the shared account", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const entitlementModule = await import("../lib/entitlement-cache.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta-stale@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+				idToken: "id-token-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-personal-fallback");
+		extractAccountEmailMock
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("beta-fresh@example.com");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		const isBlockedSpy = vi
+			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
+			.mockImplementation((key) => {
+				if (key === "account:workspace-fallback::email:beta-fresh@example.com") {
+					const fallbackSnapshot = manager.getAccountsSnapshot()[1];
+					expect(fallbackSnapshot?.accountId).toBe("workspace-fallback");
+					expect(fallbackSnapshot?.email).toBe("beta-stale@example.com");
+				}
+				return { blocked: false, waitMs: 0 };
+			});
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(isBlockedSpy).toHaveBeenCalledWith(
+			"account:workspace-fallback::email:beta-fresh@example.com",
+			"gpt-5.1",
+		);
+		const fallbackAfterRequest = manager.getAccountsSnapshot()[1];
+		expect(fallbackAfterRequest?.accountId).toBe("workspace-fallback");
+		expect(fallbackAfterRequest?.email).toBe("beta-fresh@example.com");
+	});
+
+	it("preserves a non-token fallback accountIdSource when the stored accountId was originally missing", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountIdSource: "org",
+				email: "beta-stale@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+				idToken: "id-token-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("workspace-fallback");
+		extractAccountEmailMock
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("beta-fresh@example.com");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockRejectedValueOnce(new Error("Network timeout"))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		const fallbackAfterRequest = manager.getAccountsSnapshot()[1];
+		expect(fallbackAfterRequest?.accountId).toBe("workspace-fallback");
+		expect(fallbackAfterRequest?.accountIdSource).toBe("org");
+		expect(fallbackAfterRequest?.email).toBe("beta-fresh@example.com");
+	});
+
+	it("preserves per-request fallback entitlement keys during concurrent fetch failover", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const entitlementModule = await import("../lib/entitlement-cache.js");
+		const accounts = [
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta-stale@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+				idToken: "id-token-beta",
+			},
+		];
+		let selectionCount = 0;
+		const manager = {
+			...buildRoutingManager(accounts),
+			getCurrentOrNextForFamilyHybrid: () =>
+				selectionCount++ < 2 ? accounts[0] : accounts[1],
+			getCurrentOrNextForFamily: () =>
+				selectionCount++ < 2 ? accounts[0] : accounts[1],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		extractAccountIdMock
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-primary")
+			.mockReturnValueOnce("token-personal-a")
+			.mockReturnValueOnce("token-personal-b");
+		extractAccountEmailMock
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("alpha@example.com")
+			.mockReturnValueOnce("beta-fresh-a@example.com")
+			.mockReturnValueOnce("beta-fresh-b@example.com");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		const blockedKeys: Array<[string, string | undefined]> = [];
+		const clearedKeys: Array<[string, string | undefined]> = [];
+		vi.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked").mockImplementation(
+			(accountKey, modelKey) => {
+				blockedKeys.push([accountKey, modelKey]);
+				return { blocked: false, waitMs: 0 };
+			},
+		);
+		vi.spyOn(entitlementModule.EntitlementCache.prototype, "clear").mockImplementation(
+			(accountKey, modelKey) => {
+				clearedKeys.push([accountKey, modelKey]);
+			},
+		);
+
+		let releasePrimaryFailures: (() => void) | undefined;
+		const primaryBarrier = new Promise<void>((resolve) => {
+			releasePrimaryFailures = resolve;
+		});
+		let primaryAttempts = 0;
+		const fallbackResponses: Array<{ accountId: string | null; accessToken: string | null }> =
+			[];
+		globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
+			const headers = new Headers(init?.headers);
+			const accountId = headers.get("x-test-account-id");
+			const accessToken = headers.get("x-test-access-token");
+			if (accountId === "token-primary") {
+				primaryAttempts += 1;
+				if (primaryAttempts === 2) {
+					releasePrimaryFailures?.();
+				}
+				await primaryBarrier;
+				throw new Error("Network timeout");
+			}
+
+			fallbackResponses.push({ accountId, accessToken });
+			return new Response(JSON.stringify({ accountId, accessToken }), { status: 200 });
+		});
+
+		const { sdk } = await setupPlugin();
+		const [firstResponse, secondResponse] = await Promise.all([
+			sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			}),
+			sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			}),
+		]);
+
+		expect(firstResponse.status).toBe(200);
+		expect(secondResponse.status).toBe(200);
+		const routedFetchCalls = vi
+			.mocked(globalThis.fetch)
+			.mock.calls.map(([, init]) => {
+				const headers = new Headers(init?.headers);
+				return headers.get("x-test-account-id");
+			})
+			.filter((accountId): accountId is string => accountId !== null);
+		expect(primaryAttempts).toBeGreaterThanOrEqual(2);
+		expect(
+			routedFetchCalls.filter((accountId) => accountId === "workspace-fallback"),
+		).toHaveLength(2);
+		expect(fallbackResponses).toEqual([
+			{ accountId: "workspace-fallback", accessToken: "access-beta" },
+			{ accountId: "workspace-fallback", accessToken: "access-beta" },
+		]);
+		expect(blockedKeys).toEqual(
+			expect.arrayContaining([
+				["account:workspace-fallback::email:beta-fresh-a@example.com", "gpt-5.1"],
+				["account:workspace-fallback::email:beta-fresh-b@example.com", "gpt-5.1"],
+			]),
+		);
+		expect(clearedKeys).toEqual(
+			expect.arrayContaining([
+				["account:workspace-fallback::email:beta-fresh-a@example.com", "gpt-5.1"],
+				["account:workspace-fallback::email:beta-fresh-b@example.com", "gpt-5.1"],
+			]),
+		);
+		const fallbackAfterRequests = manager.getAccountsSnapshot()[1];
+		expect(fallbackAfterRequests?.accountId).toBe("workspace-fallback");
+		expect(fallbackAfterRequests?.accountIdSource).toBe("org");
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
 	});
 
 	it("handles network errors and rotates to next account", async () => {
@@ -1666,6 +2310,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				recordRateLimit: () => {},
 				consumeToken: () => true,
 				refundToken: () => {},
+				getCurrentWorkspace: () => null,
 				syncCodexCliActiveSelectionForIndex: async () => {},
 				markSwitched: () => {},
 				removeAccount: () => {},
@@ -1674,6 +2319,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				getMinWaitTimeForFamily: () => 0,
 				shouldShowAccountToast: () => false,
 				markToastShown: () => {},
+				getCurrentWorkspace: () => null,
+				disableCurrentWorkspace: () => false,
+				rotateToNextWorkspace: () => null,
+				hasEnabledWorkspaces: () => true,
 				setActiveIndex: () => accountOne,
 				getAccountsSnapshot: () => [accountOne, accountTwo],
 			};
@@ -1896,6 +2545,14 @@ describe("OpenAIOAuthPlugin resolveAccountSelection", () => {
 describe("OpenAIOAuthPlugin persistAccountPool", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		getAccountIdCandidatesMock.mockReset();
+		getAccountIdCandidatesMock.mockImplementation(() => [
+			{ accountId: "acc-1", source: "token", label: "Test" },
+		]);
+		selectBestAccountCandidateMock.mockReset();
+		selectBestAccountCandidateMock.mockImplementation(
+			(candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+		);
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
 		mockStorage.activeIndexByFamily = {};
@@ -1938,6 +2595,62 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		await OpenAIOAuthPlugin({ client: mockClient } as never);
 
 		expect(mockStorage.accounts).toHaveLength(1);
+	});
+
+	it("initializes currentWorkspaceIndex for a newly persisted selected workspace", async () => {
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-new-workspace-index", challenge: "persist-new-workspace-index" },
+			state: "persist-new-workspace-index",
+			url: "https://auth.openai.com/test?state=persist-new-workspace-index",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 3600_000,
+			idToken: "id-token",
+		});
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
+			{ accountId: "workspace-a", source: "org", label: "Workspace A" },
+			{ accountId: "workspace-b", source: "org", label: "Workspace B", isDefault: true },
+			{ accountId: "workspace-c", source: "org", label: "Workspace C" },
+		]);
+		vi.mocked(accountsModule.selectBestAccountCandidate).mockImplementationOnce(
+			(candidates) => candidates[1] ?? null,
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-new-workspace-index",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-b",
+				currentWorkspaceIndex: 1,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: undefined },
+					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
+					{ id: "workspace-c", name: "Workspace C", enabled: true, isDefault: undefined },
+				],
+			}),
+		);
 	});
 
 	it("preserves distinct accountId plus email pairs during manual login", async () => {
@@ -2079,6 +2792,275 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		]);
 	});
 
+	it("preserves tracked workspaces when manual login updates an account without workspace metadata", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				accountIdSource: "manual",
+				accountLabel: "Override [id:space]",
+				email: "user@example.com",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 111 },
+					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
+				],
+				currentWorkspaceIndex: 1,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-preserve-workspaces", challenge: "persist-preserve-workspaces" },
+			state: "persist-preserve-workspaces",
+			url: "https://auth.openai.com/test?state=persist-preserve-workspaces",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-preserve-workspaces",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "shared-workspace",
+				refreshToken: "refresh-updated",
+				currentWorkspaceIndex: 1,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 111 },
+					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
+				],
+			}),
+		);
+	});
+
+	it("preserves disabledAt when refreshed workspace metadata is merged into an existing account", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				accountIdSource: "manual",
+				accountLabel: "Override [id:space]",
+				email: "user@example.com",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 222, isDefault: true },
+				],
+				currentWorkspaceIndex: 0,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-merge-workspaces", challenge: "persist-merge-workspaces" },
+			state: "persist-merge-workspaces",
+			url: "https://auth.openai.com/test?state=persist-merge-workspaces",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+			workspaces: [
+				{ id: "workspace-a", name: "Workspace A Renamed", enabled: true, isDefault: true },
+			],
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-merge-workspaces",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.workspaces).toEqual([
+			{
+				id: "workspace-a",
+				name: "Workspace A Renamed",
+				enabled: false,
+				disabledAt: 222,
+				isDefault: true,
+			},
+		]);
+	});
+
+	it("clamps currentWorkspaceIndex when refreshed workspace metadata removes the active workspace", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				accountIdSource: "manual",
+				accountLabel: "Override [id:space]",
+				email: "user@example.com",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: true },
+					{ id: "workspace-b", name: "Workspace B", enabled: true },
+				],
+				currentWorkspaceIndex: 1,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-clamp-workspace-index", challenge: "persist-clamp-workspace-index" },
+			state: "persist-clamp-workspace-index",
+			url: "https://auth.openai.com/test?state=persist-clamp-workspace-index",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+			workspaces: [
+				{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: true },
+			],
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-clamp-workspace-index",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.currentWorkspaceIndex).toBe(0);
+		expect(mockStorage.accounts[0]?.workspaces).toEqual([
+			{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: true },
+		]);
+	});
+
+	it("preserves the active workspace by id when refreshed workspace metadata is reordered", async () => {
+		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
+		mockStorage.accounts = [
+			{
+				accountId: "shared-workspace",
+				accountIdSource: "manual",
+				accountLabel: "Override [id:space]",
+				email: "user@example.com",
+				refreshToken: "refresh-a",
+				addedAt: Date.now() - 200000,
+				lastUsed: Date.now() - 200000,
+				workspaces: [
+					{ id: "workspace-a", name: "Workspace A", enabled: true },
+					{ id: "workspace-b", name: "Workspace B", enabled: false, disabledAt: 222, isDefault: true },
+					{ id: "workspace-c", name: "Workspace C", enabled: true },
+				],
+				currentWorkspaceIndex: 1,
+			},
+		];
+
+		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { verifier: "persist-reorder-workspaces", challenge: "persist-reorder-workspaces" },
+			state: "persist-reorder-workspaces",
+			url: "https://auth.openai.com/test?state=persist-reorder-workspaces",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-updated",
+			expires: Date.now() + 3600_000,
+			idToken: undefined,
+			workspaces: [
+				{ id: "workspace-b", name: "Workspace B Renamed", enabled: true, isDefault: true },
+				{ id: "workspace-a", name: "Workspace A", enabled: true },
+				{ id: "workspace-c", name: "Workspace C", enabled: true },
+			],
+		});
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin =
+			(await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<{
+				callback: (input: string) => Promise<{ type: string }>;
+			}>;
+		};
+
+		const flow = await manualMethod.authorize();
+		const result = await flow.callback(
+			"http://127.0.0.1:1455/auth/callback?code=abc123&state=persist-reorder-workspaces",
+		);
+
+		expect(result.type).toBe("success");
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.currentWorkspaceIndex).toBe(0);
+		expect(mockStorage.accounts[0]?.workspaces).toEqual([
+			{ id: "workspace-b", name: "Workspace B Renamed", enabled: false, disabledAt: 222, isDefault: true },
+			{ id: "workspace-a", name: "Workspace A", enabled: true },
+			{ id: "workspace-c", name: "Workspace C", enabled: true },
+		]);
+	});
+
 	it("preserves duplicate shared accountId entries when a login has no email claim", async () => {
 		process.env.CODEX_AUTH_ACCOUNT_ID = "shared-workspace";
 		mockStorage.accounts = [
@@ -2162,7 +3144,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			.mockImplementationOnce(async (storage) => {
 				await firstPersist.promise;
 				mockStorage.version = storage.version;
-				mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+				mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
 				mockStorage.activeIndex = storage.activeIndex;
 				mockStorage.activeIndexByFamily = {
 					...(storage.activeIndexByFamily ?? {}),
@@ -2170,7 +3152,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			})
 			.mockImplementation(async (storage) => {
 				mockStorage.version = storage.version;
-				mockStorage.accounts = storage.accounts.map((account) => ({ ...account }));
+				mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
 				mockStorage.activeIndex = storage.activeIndex;
 				mockStorage.activeIndexByFamily = {
 					...(storage.activeIndexByFamily ?? {}),

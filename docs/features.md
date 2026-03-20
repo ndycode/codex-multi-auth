@@ -9,6 +9,7 @@ User-facing capability map for `codex-multi-auth`.
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |
 | Multi-account dashboard login | Add and manage multiple OAuth identities from one terminal flow | `codex auth login` |
+| Onboarding backup restore | Restores the latest named backup or lets you choose a named backup manually when a fresh install or empty pool needs to recover saved accounts fast | `codex auth login` |
 | Account dedupe and identity normalization | Avoid duplicate saved account rows | login flow |
 | Explicit active-account switching | Pick the current account by index instead of relying on hidden state | `codex auth switch <index>` |
 | Fast and deep health checks | See whether the current pool is usable before a coding session | `codex auth check` |
@@ -54,7 +55,10 @@ User-facing capability map for `codex-multi-auth`.
 | Quick switch and search hotkeys | Faster navigation in the dashboard |
 | Account action hotkeys | Per-account set, refresh, toggle, and delete shortcuts |
 | In-dashboard settings hub | Runtime and display tuning without editing files directly |
-| Browser-first OAuth with manual fallback | Works in normal and constrained terminal environments |
+| Experimental settings hotkeys | Keyboard shortcuts for sync preview, backup export, and refresh-guard tuning |
+| Browser-first OAuth with manual fallback | `codex auth login` stays browser-first, while `--manual`, `--no-browser`, and `CODEX_AUTH_NO_BROWSER=1` keep login usable in browser-restricted shells |
+
+Manual/non-TTY login accepts the full callback URL on stdin, so automation and host-managed shells can complete auth without relying on a local browser handoff.
 
 ---
 

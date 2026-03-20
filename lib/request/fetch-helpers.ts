@@ -4,12 +4,14 @@
  */
 
 import type { Auth, CodexClient } from "@codex-ai/sdk";
+import { ProxyAgent } from "undici";
 import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
 import { convertSseToJson, ensureContentType } from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
+import { registerCleanup } from "../shutdown.js";
 import { CodexAuthError } from "../errors.js";
 import { isRecord } from "../utils.js";
 import {
@@ -59,6 +61,16 @@ const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 const CREATE_CODEX_HEADERS_PARAM_KEYS = new Set(["init", "accountId", "accessToken", "opts"]);
+const DEFAULT_PROXY_PORTS: Record<string, number> = {
+	"http:": 80,
+	"https:": 443,
+};
+type ProxyDispatcher = NonNullable<RequestInit["dispatcher"]>;
+const sharedProxyDispatchers = new Map<string, ProxyDispatcher>();
+
+type ClosableDispatcher = ProxyDispatcher & {
+	close?: () => Promise<void> | void;
+};
 
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
@@ -255,6 +267,64 @@ export function isEntitlementError(code: string, bodyText: string): boolean {
 }
 
 /**
+ * Detects whether an error indicates the workspace/account has been disabled or expired.
+ *
+ * Workspace disabled errors signal that the current workspace is no longer accessible
+ * (expired, disabled, or removed) and the plugin should automatically switch to another account.
+ *
+ * @param status - HTTP status code
+ * @param code - The error code string returned by the service
+ * @param bodyText - The response body text to inspect for workspace-related phrases
+ * @returns `true` if the error indicates a disabled/expired workspace
+ */
+export function isWorkspaceDisabledError(
+        status: number,
+        code: unknown,
+        bodyText: string,
+): boolean {
+        if (status !== 403) {
+                return false;
+        }
+
+        const normalizedCode = typeof code === "string" ? code.trim().toLowerCase() : "";
+        const haystack = `${normalizedCode} ${bodyText}`.toLowerCase();
+
+		const disabledPatterns = [
+				/workspace.*(?:disabled|expired|deactivated|terminated)/i,
+				/account\s+(?:has\s+been|is)\s+(?:disabled|expired|deactivated|terminated|closed)/i,
+				/(?:workspace|org(?:anization)?).*no longer.*(?:active|available|valid)/i,
+				/(?:workspace|org(?:anization)?).*has been.*(?:disabled|expired|closed)/i,
+				/workspace.*(?:access|subscription).*expired/i,
+				/org(?:anization)?.*(?:disabled|expired|inactive)/i,
+		];
+
+        for (const pattern of disabledPatterns) {
+                if (pattern.test(haystack)) {
+                        return true;
+                }
+        }
+
+        const workspaceErrorCodes = new Set([
+                "workspace_disabled",
+                "workspace_expired",
+                "workspace_terminated",
+                "account_disabled",
+                "account_expired",
+                "organization_disabled",
+        ]);
+        if (workspaceErrorCodes.has(normalizedCode)) {
+                return true;
+        }
+
+        const normalizedTokens = normalizedCode
+                .split(/[^a-z0-9_]+/i)
+                .map((token) => token.trim())
+                .filter((token) => token.length > 0);
+
+        return normalizedTokens.some((token) => workspaceErrorCodes.has(token));
+}
+
+/**
  * Constructs a standardized 403 entitlement error Response indicating the user lacks access to Codex models.
  *
  * This function returns a JSON Response with an `error` payload containing a user-facing message, a
@@ -311,6 +381,10 @@ export interface ErrorDiagnostics {
 export interface CreateCodexHeadersOptions {
 	model?: string;
 	promptCacheKey?: string;
+}
+
+export interface ProxyCompatibleRequestInit extends RequestInit {
+	agent?: unknown;
 }
 
 export interface CreateCodexHeadersParams {
@@ -416,6 +490,140 @@ export function rewriteUrlForCodex(url: string): string {
 	parsedUrl.pathname = normalizedPath;
 
 	return parsedUrl.toString();
+}
+
+function hasOwnEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(env, key);
+}
+
+function resolveProxyEnvValue(
+	env: NodeJS.ProcessEnv,
+	lowerKey: string,
+	upperKey: string,
+): string | undefined {
+	if (hasOwnEnvKey(env, lowerKey)) {
+		const value = env[lowerKey]?.trim();
+		return value ? value : undefined;
+	}
+
+	const value = env[upperKey]?.trim();
+	return value ? value : undefined;
+}
+
+function parseNoProxyEntries(noProxyValue: string): Array<{ hostname: string; port: number }> {
+	return noProxyValue
+		.split(/[,\s]/)
+		.map((entry) => entry.trim())
+		.filter(Boolean)
+		.map((entry) => {
+			const parsed = entry.match(/^(.+):(\d+)$/);
+			const hostname = parsed?.[1] ?? entry;
+			const portText = parsed?.[2];
+			return {
+				hostname: hostname.toLowerCase(),
+				port: portText ? Number.parseInt(portText, 10) : 0,
+			};
+		});
+}
+
+function shouldBypassProxyForUrl(url: URL, noProxyValue: string | undefined): boolean {
+	if (!noProxyValue) return false;
+	if (noProxyValue === "*") return true;
+
+	const hostname = url.host.replace(/:\d*$/, "").toLowerCase();
+	const port = Number.parseInt(url.port, 10) || DEFAULT_PROXY_PORTS[url.protocol] || 0;
+
+	for (const entry of parseNoProxyEntries(noProxyValue)) {
+		if (entry.hostname === "*") return true;
+		if (entry.port && entry.port !== port) continue;
+
+		if (!/^[.*]/.test(entry.hostname)) {
+			if (hostname === entry.hostname) {
+				return true;
+			}
+			continue;
+		}
+
+		if (hostname.endsWith(entry.hostname.replace(/^\*/, ""))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+export function resolveProxyUrlForRequest(
+	url: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	const parsed = new URL(url);
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		return undefined;
+	}
+
+	const httpProxy = resolveProxyEnvValue(env, "http_proxy", "HTTP_PROXY");
+	const httpsProxy = resolveProxyEnvValue(env, "https_proxy", "HTTPS_PROXY");
+	if (!httpProxy && !httpsProxy) {
+		return undefined;
+	}
+
+	const noProxy = resolveProxyEnvValue(env, "no_proxy", "NO_PROXY");
+	if (shouldBypassProxyForUrl(parsed, noProxy)) {
+		return undefined;
+	}
+
+	return parsed.protocol === "https:"
+		? (httpsProxy ?? httpProxy)
+		: httpProxy;
+}
+
+function getSharedProxyDispatcher(proxyUrl: string): ProxyDispatcher {
+	const existing = sharedProxyDispatchers.get(proxyUrl);
+	if (existing) {
+		return existing;
+	}
+
+	const dispatcher = new ProxyAgent(proxyUrl) as unknown as ProxyDispatcher;
+	sharedProxyDispatchers.set(proxyUrl, dispatcher);
+	return dispatcher;
+}
+
+export async function closeSharedProxyDispatchers(): Promise<void> {
+	while (sharedProxyDispatchers.size > 0) {
+		const dispatchers = [...sharedProxyDispatchers.values()] as ClosableDispatcher[];
+		sharedProxyDispatchers.clear();
+
+		await Promise.allSettled(
+			dispatchers.map(async (dispatcher) => {
+				if (typeof dispatcher.close === "function") {
+					await dispatcher.close();
+				}
+			}),
+		);
+	}
+}
+
+registerCleanup(closeSharedProxyDispatchers);
+
+export function applyProxyCompatibleInit(
+	url: string,
+	init?: ProxyCompatibleRequestInit,
+	env: NodeJS.ProcessEnv = process.env,
+): ProxyCompatibleRequestInit {
+	const resolvedInit = init ?? {};
+	if (resolvedInit.dispatcher || resolvedInit.agent) {
+		return resolvedInit;
+	}
+
+	const proxyUrl = resolveProxyUrlForRequest(url, env);
+	if (!proxyUrl) {
+		return resolvedInit;
+	}
+
+	return {
+		...resolvedInit,
+		dispatcher: getSharedProxyDispatcher(proxyUrl),
+	};
 }
 
 /**

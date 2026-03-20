@@ -1,11 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
+	getNamedBackupRoot,
 	resolveNamedBackupPath,
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
@@ -114,6 +115,74 @@ export type RestoreAssessment = {
 	backupMetadata: BackupMetadata;
 };
 
+export interface NamedBackupSummary {
+	path: string;
+	fileName: string;
+	accountCount: number;
+	mtimeMs: number;
+}
+
+async function collectNamedBackups(storagePath: string): Promise<NamedBackupSummary[]> {
+	const backupRoot = getNamedBackupRoot(storagePath);
+	let entries: Array<{ isFile(): boolean; name: string }>;
+	try {
+		entries = await fs.readdir(backupRoot, {
+			withFileTypes: true,
+			encoding: "utf8",
+		});
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return [];
+		throw error;
+	}
+
+	const candidates: NamedBackupSummary[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		if (!entry.name.toLowerCase().endsWith(".json")) continue;
+		const candidatePath = join(backupRoot, entry.name);
+		try {
+			const statsBefore = await fs.stat(candidatePath);
+			const { normalized } = await loadAccountsFromPath(candidatePath);
+			if (!normalized || normalized.accounts.length === 0) continue;
+			const statsAfter = await fs.stat(candidatePath).catch(() => null);
+			if (statsAfter && statsAfter.mtimeMs !== statsBefore.mtimeMs) {
+				log.debug("backup file changed between stat and load, mtime may be stale", {
+					candidatePath,
+					fileName: entry.name,
+					beforeMtimeMs: statsBefore.mtimeMs,
+					afterMtimeMs: statsAfter.mtimeMs,
+				});
+			}
+			candidates.push({
+				path: candidatePath,
+				fileName: entry.name,
+				accountCount: normalized.accounts.length,
+				mtimeMs: statsBefore.mtimeMs,
+			});
+		} catch (error) {
+			log.debug("Skipping named backup candidate after loadAccountsFromPath/fs.stat failure", {
+				candidatePath,
+				fileName: entry.name,
+				error: error instanceof Error
+					? {
+						message: error.message,
+						stack: error.stack,
+					}
+					: String(error),
+			});
+			continue;
+		}
+	}
+
+	candidates.sort((left, right) => {
+		const mtimeDelta = right.mtimeMs - left.mtimeMs;
+		if (mtimeDelta !== 0) return mtimeDelta;
+		return left.fileName.localeCompare(right.fileName);
+	});
+	return candidates;
+}
+
 /**
  * Custom error class for storage operations with platform-aware hints.
  */
@@ -167,6 +236,7 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 let storageMutex: Promise<void> = Promise.resolve();
 const transactionSnapshotContext = new AsyncLocalStorage<{
 	snapshot: AccountStorageV3 | null;
+	storagePath: string;
 	active: boolean;
 	storagePath: string;
 }>();
@@ -226,11 +296,12 @@ function looksLikeSyntheticFixtureStorage(
 }
 
 async function ensureGitignore(storagePath: string): Promise<void> {
-	if (!currentStoragePath) return;
+	const state = getStoragePathState();
+	if (!state.currentStoragePath) return;
 
 	const configDir = dirname(storagePath);
 	const inferredProjectRoot = dirname(configDir);
-	const candidateRoots = [currentProjectRoot, inferredProjectRoot].filter(
+	const candidateRoots = [state.currentProjectRoot, inferredProjectRoot].filter(
 		(root): root is string => typeof root === "string" && root.length > 0,
 	);
 	const projectRoot = candidateRoots.find((root) =>
@@ -263,10 +334,30 @@ async function ensureGitignore(storagePath: string): Promise<void> {
 	}
 }
 
-let currentStoragePath: string | null = null;
-let currentLegacyProjectStoragePath: string | null = null;
-let currentLegacyWorktreeStoragePath: string | null = null;
-let currentProjectRoot: string | null = null;
+type StoragePathState = {
+	currentStoragePath: string | null;
+	currentLegacyProjectStoragePath: string | null;
+	currentLegacyWorktreeStoragePath: string | null;
+	currentProjectRoot: string | null;
+};
+
+let currentStorageState: StoragePathState = {
+	currentStoragePath: null,
+	currentLegacyProjectStoragePath: null,
+	currentLegacyWorktreeStoragePath: null,
+	currentProjectRoot: null,
+};
+
+const storagePathStateContext = new AsyncLocalStorage<StoragePathState>();
+
+function getStoragePathState(): StoragePathState {
+	return storagePathStateContext.getStore() ?? currentStorageState;
+}
+
+function setStoragePathState(state: StoragePathState): void {
+	currentStorageState = state;
+	storagePathStateContext.enterWith(state);
+}
 
 export function setStorageBackupEnabled(enabled: boolean): void {
 	storageBackupEnabled = enabled;
@@ -760,22 +851,23 @@ export function getLastAccountsSaveTimestamp(): number {
 
 export function setStoragePath(projectPath: string | null): void {
 	if (!projectPath) {
-		currentStoragePath = null;
-		currentLegacyProjectStoragePath = null;
-		currentLegacyWorktreeStoragePath = null;
-		currentProjectRoot = null;
+		setStoragePathState({
+			currentStoragePath: null,
+			currentLegacyProjectStoragePath: null,
+			currentLegacyWorktreeStoragePath: null,
+			currentProjectRoot: null,
+		});
 		return;
 	}
 
 	const projectRoot = findProjectRoot(projectPath);
 	if (projectRoot) {
-		currentProjectRoot = projectRoot;
 		const identityRoot = resolveProjectStorageIdentityRoot(projectRoot);
-		currentStoragePath = join(
+		const currentStoragePath = join(
 			getProjectGlobalConfigDir(identityRoot),
 			ACCOUNTS_FILE_NAME,
 		);
-		currentLegacyProjectStoragePath = join(
+		const currentLegacyProjectStoragePath = join(
 			getProjectConfigDir(projectRoot),
 			ACCOUNTS_FILE_NAME,
 		);
@@ -783,23 +875,33 @@ export function setStoragePath(projectPath: string | null): void {
 			getProjectGlobalConfigDir(projectRoot),
 			ACCOUNTS_FILE_NAME,
 		);
-		currentLegacyWorktreeStoragePath =
+		const currentLegacyWorktreeStoragePath =
 			previousWorktreeScopedPath !== currentStoragePath
 				? previousWorktreeScopedPath
 				: null;
+		setStoragePathState({
+			currentStoragePath,
+			currentLegacyProjectStoragePath,
+			currentLegacyWorktreeStoragePath,
+			currentProjectRoot: projectRoot,
+		});
 	} else {
-		currentStoragePath = null;
-		currentLegacyProjectStoragePath = null;
-		currentLegacyWorktreeStoragePath = null;
-		currentProjectRoot = null;
+		setStoragePathState({
+			currentStoragePath: null,
+			currentLegacyProjectStoragePath: null,
+			currentLegacyWorktreeStoragePath: null,
+			currentProjectRoot: null,
+		});
 	}
 }
 
 export function setStoragePathDirect(path: string | null): void {
-	currentStoragePath = path;
-	currentLegacyProjectStoragePath = null;
-	currentLegacyWorktreeStoragePath = null;
-	currentProjectRoot = null;
+	setStoragePathState({
+		currentStoragePath: path,
+		currentLegacyProjectStoragePath: null,
+		currentLegacyWorktreeStoragePath: null,
+		currentProjectRoot: null,
+	});
 }
 
 /**
@@ -807,14 +909,75 @@ export function setStoragePathDirect(path: string | null): void {
  * @returns Absolute path to the accounts.json file
  */
 export function getStoragePath(): string {
-	if (currentStoragePath) {
-		return currentStoragePath;
+	const state = getStoragePathState();
+	if (state.currentStoragePath) {
+		return state.currentStoragePath;
 	}
 	return join(getConfigDir(), ACCOUNTS_FILE_NAME);
 }
 
 export function buildNamedBackupPath(name: string): string {
 	return resolveNamedBackupPath(name, getStoragePath());
+}
+
+export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
+	return collectNamedBackups(getStoragePath());
+}
+
+export async function restoreAccountsFromBackup(
+	path: string,
+	options?: { persist?: boolean },
+): Promise<AccountStorageV3> {
+	const backupRoot = getNamedBackupRoot(getStoragePath());
+	let resolvedBackupRoot: string;
+	try {
+		resolvedBackupRoot = await fs.realpath(backupRoot);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			throw new Error(`Backup root does not exist: ${backupRoot}`);
+		}
+		throw error;
+	}
+	let resolvedBackupPath: string;
+	try {
+		resolvedBackupPath = await fs.realpath(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			throw new Error(`Backup file no longer exists: ${path}`);
+		}
+		throw error;
+	}
+	const relativePath = relative(resolvedBackupRoot, resolvedBackupPath);
+	const isInsideBackupRoot =
+		relativePath.length > 0 &&
+		!relativePath.startsWith("..") &&
+		!isAbsolute(relativePath);
+	if (!isInsideBackupRoot) {
+		throw new Error(`Backup path must stay inside ${resolvedBackupRoot}: ${path}`);
+	}
+
+	const { normalized } = await (async () => {
+		try {
+			return await loadAccountsFromPath(resolvedBackupPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				throw new Error(
+					`Backup file no longer exists: ${path}`,
+				);
+			}
+			throw error;
+		}
+	})();
+	if (!normalized || normalized.accounts.length === 0) {
+		throw new Error(`Backup does not contain any accounts: ${resolvedBackupPath}`);
+	}
+	if (options?.persist !== false) {
+		await saveAccounts(normalized);
+	}
+	return normalized;
 }
 
 export async function exportNamedBackup(
@@ -842,19 +1005,20 @@ function getLegacyFlaggedAccountsPath(): string {
 async function migrateLegacyProjectStorageIfNeeded(
 	persist: (storage: AccountStorageV3) => Promise<void> = saveAccounts,
 ): Promise<AccountStorageV3 | null> {
-	if (!currentStoragePath) {
+	const state = getStoragePathState();
+	if (!state.currentStoragePath) {
 		return null;
 	}
 
 	const candidatePaths = [
-		currentLegacyWorktreeStoragePath,
-		currentLegacyProjectStoragePath,
+		state.currentLegacyWorktreeStoragePath,
+		state.currentLegacyProjectStoragePath,
 	]
 		.filter(
 			(path): path is string =>
 				typeof path === "string" &&
 				path.length > 0 &&
-				path !== currentStoragePath,
+				path !== state.currentStoragePath,
 		)
 		.filter((path, index, all) => all.indexOf(path) === index);
 
@@ -870,7 +1034,7 @@ async function migrateLegacyProjectStorageIfNeeded(
 	}
 
 	let targetStorage = await loadNormalizedStorageFromPath(
-		currentStoragePath,
+		state.currentStoragePath,
 		"current account storage",
 	);
 	let migrated = false;
@@ -898,7 +1062,7 @@ async function migrateLegacyProjectStorageIfNeeded(
 			targetStorage = fallbackStorage;
 			log.warn("Failed to persist migrated account storage", {
 				from: legacyPath,
-				to: currentStoragePath,
+				to: state.currentStoragePath,
 				error: String(error),
 			});
 			continue;
@@ -924,7 +1088,7 @@ async function migrateLegacyProjectStorageIfNeeded(
 
 		log.info("Migrated legacy project account storage", {
 			from: legacyPath,
-			to: currentStoragePath,
+			to: state.currentStoragePath,
 			accounts: mergedStorage.accounts.length,
 		});
 	}
@@ -932,7 +1096,7 @@ async function migrateLegacyProjectStorageIfNeeded(
 	if (migrated) {
 		return targetStorage;
 	}
-	if (targetStorage && !existsSync(currentStoragePath)) {
+	if (targetStorage && !existsSync(state.currentStoragePath)) {
 		return targetStorage;
 	}
 	return null;
@@ -2093,7 +2257,8 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 			value === "rate-limit" ||
 			value === "initial" ||
 			value === "rotation" ||
-			value === "best";
+			value === "best" ||
+			value === "restore";
 		const isCooldownReason = (
 			value: unknown,
 		): value is AccountMetadataV3["cooldownReason"] =>

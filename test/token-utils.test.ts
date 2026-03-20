@@ -12,6 +12,7 @@ import {
 	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
 	resolveRequestAccountId,
+	resolveRuntimeRequestIdentity,
 	sanitizeEmail,
 } from "../lib/auth/token-utils.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
@@ -678,6 +679,153 @@ describe("Token Utils Module", () => {
 		it("falls back correctly when values are missing", () => {
 			expect(resolveRequestAccountId(undefined, "org", "token_only")).toBe("token_only");
 			expect(resolveRequestAccountId("stored_only", "token", undefined)).toBe("stored_only");
+		});
+	});
+
+	describe("resolveRuntimeRequestIdentity", () => {
+		it("preserves org/manual routing while hydrating email from live tokens", () => {
+			mockedDecodeJWT.mockImplementation((token?: string) => {
+				if (token === "access-token") {
+					return {
+						[JWT_CLAIM_PATH]: {
+							chatgpt_account_id: "acc_test",
+							email: "user@example.com",
+						},
+					};
+				}
+				if (token === "id-token") {
+					return { email: "user@example.com" };
+				}
+				return null;
+			});
+
+			expect(
+				resolveRuntimeRequestIdentity({
+					storedAccountId: "workspace-alpha",
+					source: "org",
+					storedEmail: "stale@example.com",
+					accessToken: "access-token",
+					idToken: "id-token",
+				}),
+			).toEqual({
+				accountId: "workspace-alpha",
+				email: "user@example.com",
+				tokenAccountId: "acc_test",
+			});
+
+			expect(
+				resolveRuntimeRequestIdentity({
+					storedAccountId: "workspace-beta",
+					source: "manual",
+					storedEmail: "stale@example.com",
+					accessToken: "access-token",
+					idToken: "id-token",
+				}),
+			).toEqual({
+				accountId: "workspace-beta",
+				email: "user@example.com",
+				tokenAccountId: "acc_test",
+			});
+		});
+
+		it("follows token identities when the binding is token-derived", () => {
+			mockedDecodeJWT.mockImplementation((token?: string) => {
+				if (token === "access-token") {
+					return {
+						[JWT_CLAIM_PATH]: {
+							chatgpt_account_id: "acc_test",
+							email: "user@example.com",
+						},
+					};
+				}
+				return null;
+			});
+
+			expect(
+				resolveRuntimeRequestIdentity({
+					storedAccountId: "workspace-alpha",
+					source: "token",
+					storedEmail: "stored@example.com",
+					accessToken: "access-token",
+				}),
+			).toEqual({
+				accountId: "acc_test",
+				email: "user@example.com",
+				tokenAccountId: "acc_test",
+			});
+		});
+
+		it("follows token identities when the binding is id_token-derived", () => {
+			mockedDecodeJWT.mockImplementation((token?: string) => {
+				if (token === "access-token") {
+					return {
+						[JWT_CLAIM_PATH]: {
+							chatgpt_account_id: "acc_id_token",
+						},
+					};
+				}
+				if (token === "id-token") {
+					return {
+						email: "id-token@example.com",
+					};
+				}
+				return null;
+			});
+
+			expect(
+				resolveRuntimeRequestIdentity({
+					storedAccountId: "workspace-alpha",
+					source: "id_token",
+					storedEmail: "stored@example.com",
+					accessToken: "access-token",
+					idToken: "id-token",
+				}),
+			).toEqual({
+				accountId: "acc_id_token",
+				email: "id-token@example.com",
+				tokenAccountId: "acc_id_token",
+			});
+		});
+
+		it("falls back to the token accountId when token-derived routing has no stored accountId", () => {
+			mockedDecodeJWT.mockImplementation((token?: string) => {
+				if (token === "access-token") {
+					return {
+						[JWT_CLAIM_PATH]: {
+							chatgpt_account_id: "acc_live",
+							email: "live@example.com",
+						},
+					};
+				}
+				return null;
+			});
+
+			expect(
+				resolveRuntimeRequestIdentity({
+					source: "token",
+					storedEmail: "stored@example.com",
+					accessToken: "access-token",
+				}),
+			).toEqual({
+				accountId: "acc_live",
+				email: "live@example.com",
+				tokenAccountId: "acc_live",
+			});
+		});
+
+		it("falls back to sanitized stored email when the live token has none", () => {
+			mockedDecodeJWT.mockReturnValue(null);
+			expect(
+				resolveRuntimeRequestIdentity({
+					storedAccountId: "workspace-alpha",
+					source: "org",
+					storedEmail: " Stored@Example.com ",
+				}),
+			).toEqual({
+				accountId: "workspace-alpha",
+				email: "stored@example.com",
+				tokenAccountId: undefined,
+			});
 		});
 	});
 

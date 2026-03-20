@@ -8,6 +8,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { PLATFORM_OPENERS } from "../constants.js";
 
+const BROWSER_DISABLED_VALUES = new Set(["0", "false", "no", "off", "none"]);
+const NO_BROWSER_TRUTHY_VALUES = new Set(["1", "true", "yes", "on"]);
+
 /**
  * Gets the platform-specific command to open a URL in the default browser
  * @returns Browser opener command for the current platform
@@ -17,6 +20,16 @@ export function getBrowserOpener(): string {
 	if (platform === "darwin") return PLATFORM_OPENERS.darwin;
 	if (platform === "win32") return PLATFORM_OPENERS.win32;
 	return PLATFORM_OPENERS.linux;
+}
+
+export function isBrowserLaunchSuppressed(): boolean {
+	const explicitNoBrowser = (process.env.CODEX_AUTH_NO_BROWSER ?? "").trim().toLowerCase();
+	if (explicitNoBrowser.length > 0) {
+		return NO_BROWSER_TRUTHY_VALUES.has(explicitNoBrowser);
+	}
+
+	const browserSetting = (process.env.BROWSER ?? "").trim().toLowerCase();
+	return BROWSER_DISABLED_VALUES.has(browserSetting);
 }
 
 /**
@@ -92,6 +105,10 @@ function commandExists(command: string): boolean {
  */
 export function openBrowserUrl(url: string): boolean {
 	try {
+		if (isBrowserLaunchSuppressed()) {
+			return false;
+		}
+
 		// Windows: use PowerShell Start-Process to avoid cmd/start quirks with URLs containing '&' or ':'
 		if (process.platform === "win32") {
 			if (!commandExists("powershell.exe")) {

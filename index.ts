@@ -34,7 +34,7 @@ import {
         REDIRECT_URI,
 } from "./lib/auth/auth.js";
 import { queuedRefresh } from "./lib/refresh-queue.js";
-import { openBrowserUrl } from "./lib/auth/browser.js";
+import { isBrowserLaunchSuppressed, openBrowserUrl } from "./lib/auth/browser.js";
 import { startLocalOAuthServer } from "./lib/auth/server.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
 import {
@@ -109,6 +109,7 @@ import {
         formatAccountLabel,
         formatCooldown,
         formatWaitTime,
+        resolveRuntimeRequestIdentity,
         sanitizeEmail,
         selectBestAccountCandidate,
         shouldUpdateAccountIdFromToken,
@@ -116,6 +117,7 @@ import {
         parseRateLimitReason,
 	lookupCodexCliTokensByEmail,
 	isCodexCliSyncEnabled,
+	type Workspace,
 } from "./lib/accounts.js";
 import {
 	getStoragePath,
@@ -137,6 +139,7 @@ import {
 	type FlaggedAccountMetadataV1,
 } from "./lib/storage.js";
 import {
+	applyProxyCompatibleInit,
 	createCodexHeaders,
 	extractRequestUrl,
         handleErrorResponse,
@@ -147,6 +150,7 @@ import {
         rewriteUrlForCodex,
 	shouldRefreshToken,
 	transformRequestForCodex,
+	isWorkspaceDisabledError,
 } from "./lib/request/fetch-helpers.js";
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import {
@@ -375,6 +379,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 accountIdOverride?: string;
                 accountIdSource?: AccountIdSource;
                 accountLabel?: string;
+		workspaces?: Workspace[];
         };
 
         const resolveAccountSelection = (
@@ -397,6 +402,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         return tokens;
                 }
 
+                // Convert candidates to workspaces
+                const workspaces: Workspace[] = candidates.map((c) => ({
+                        id: c.accountId,
+                        name: c.label,
+                        enabled: true,
+                        isDefault: c.isDefault,
+                }));
+
                 if (candidates.length === 1) {
 				const [candidate] = candidates;
 				if (candidate) {
@@ -405,6 +418,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						accountIdOverride: candidate.accountId,
 						accountIdSource: candidate.source,
 						accountLabel: candidate.label,
+						workspaces,
 					};
 				}
 			}
@@ -419,6 +433,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         accountIdOverride: choice.accountId,
                         accountIdSource: choice.source ?? "token",
                         accountLabel: choice.label,
+			workspaces,
                 };
         };
 
@@ -544,6 +559,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						});
 
 						if (existingIndex === undefined) {
+							const initialWorkspaceIndex =
+								result.workspaces && result.workspaces.length > 0
+									? (() => {
+											if (accountId) {
+												const matchingWorkspaceIndex = result.workspaces.findIndex(
+													(workspace) => workspace.id === accountId,
+												);
+												if (matchingWorkspaceIndex >= 0) {
+													return matchingWorkspaceIndex;
+												}
+											}
+											const firstEnabledWorkspaceIndex = result.workspaces.findIndex(
+												(workspace) => workspace.enabled !== false,
+											);
+											return firstEnabledWorkspaceIndex >= 0 ? firstEnabledWorkspaceIndex : 0;
+										})()
+									: undefined;
 							accounts.push({
 								accountId,
 								accountIdSource,
@@ -554,6 +586,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								expiresAt: result.expires,
 								addedAt: now,
 								lastUsed: now,
+								workspaces: result.workspaces,
+								currentWorkspaceIndex: initialWorkspaceIndex,
 							});
 							continue;
 						}
@@ -566,6 +600,48 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						const nextAccountIdSource =
 							accountId ? accountIdSource ?? existing.accountIdSource : existing.accountIdSource;
 						const nextAccountLabel = accountLabel ?? existing.accountLabel;
+						// Preserve tracked workspace state when auth refreshes do not return workspace metadata.
+						const mergedWorkspaces = result.workspaces
+							? result.workspaces.map((newWs) => {
+									const existingWs = existing.workspaces?.find((w) => w.id === newWs.id);
+									return existingWs
+										? {
+												...newWs,
+												enabled: existingWs.enabled,
+												disabledAt: existingWs.disabledAt,
+											}
+										: newWs;
+								})
+							: existing.workspaces;
+						const currentWorkspaceId =
+							existing.workspaces?.[
+								typeof existing.currentWorkspaceIndex === "number"
+									? existing.currentWorkspaceIndex
+									: 0
+							]?.id;
+						const nextCurrentWorkspaceIndex =
+							mergedWorkspaces && mergedWorkspaces.length > 0
+								? (() => {
+										if (currentWorkspaceId) {
+											const matchingWorkspaceIndex = mergedWorkspaces.findIndex(
+												(workspace) => workspace.id === currentWorkspaceId,
+											);
+											if (matchingWorkspaceIndex >= 0) {
+												return matchingWorkspaceIndex;
+											}
+										}
+										const defaultWorkspaceIndex = mergedWorkspaces.findIndex(
+											(workspace) => workspace.isDefault === true,
+										);
+										if (defaultWorkspaceIndex >= 0) {
+											return defaultWorkspaceIndex;
+										}
+										const firstEnabledWorkspaceIndex = mergedWorkspaces.findIndex(
+											(workspace) => workspace.enabled !== false,
+										);
+										return firstEnabledWorkspaceIndex >= 0 ? firstEnabledWorkspaceIndex : 0;
+									})()
+								: existing.currentWorkspaceIndex;
 						accounts[existingIndex] = {
 							...existing,
 							accountId: nextAccountId,
@@ -576,6 +652,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							accessToken: result.access,
 							expiresAt: result.expires,
 							lastUsed: now,
+							workspaces: mergedWorkspaces,
+							currentWorkspaceIndex: nextCurrentWorkspaceIndex,
 						};
 					}
 
@@ -1402,7 +1480,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											);
 										}
 
-while (attempted.size < Math.max(1, accountCount)) {
+accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 				let account = null;
 				if (
 					!usedPreferredSessionAccount &&
@@ -1495,13 +1573,22 @@ while (attempted.size < Math.max(1, accountCount)) {
 				continue;
 					}
 
-				const hadAccountId = !!account.accountId;
-					const tokenAccountId = extractAccountId(accountAuth.access);
-					const accountId = resolveRequestAccountId(
-						account.accountId,
-						account.accountIdSource,
-						tokenAccountId,
-					);
+				const currentWorkspace = accountManager.getCurrentWorkspace(account);
+				const storedAccountId = currentWorkspace?.id ?? account.accountId;
+				const storedAccountIdSource = currentWorkspace
+					? "manual"
+					: account.accountIdSource;
+				const storedEmail = account.email;
+				const hadAccountId = !!storedAccountId;
+					const runtimeIdentity = resolveRuntimeRequestIdentity({
+						storedAccountId,
+						source: storedAccountIdSource,
+						storedEmail,
+						accessToken: accountAuth.access,
+						idToken: accountAuth.idToken,
+					});
+					const tokenAccountId = runtimeIdentity.tokenAccountId;
+					const accountId = runtimeIdentity.accountId;
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
@@ -1511,19 +1598,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 							accountManager.saveToDiskDebounced();
 							continue;
 						}
-											const resolvedEmail =
-												extractAccountEmail(accountAuth.access) ?? account.email;
+											const resolvedEmail = runtimeIdentity.email;
 											const entitlementAccountKey = resolveEntitlementAccountKey({
-												accountId: account.accountId ?? accountId,
+												accountId: storedAccountId ?? accountId,
 												email: resolvedEmail,
 												refreshToken: account.refreshToken,
 												index: account.index,
 											});
-											account.accountId = accountId;
-											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
-												account.accountIdSource = account.accountIdSource ?? "token";
-											}
-											account.email = resolvedEmail;
 											const entitlementBlock = entitlementCache.isBlocked(
 												entitlementAccountKey,
 												model ?? modelFamily,
@@ -1535,6 +1616,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 													`Skipping account ${account.index + 1} due to cached entitlement block (${formatWaitTime(entitlementBlock.waitMs)} remaining).`,
 												);
 												continue;
+											}
+											account.accountId = accountId;
+											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
+												account.accountIdSource = storedAccountIdSource ?? "token";
+											}
+											if (resolvedEmail) {
+												account.email = resolvedEmail;
 											}
 
 											if (
@@ -1594,6 +1682,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							let sameAccountRetryCount = 0;
 							let successAccountForResponse = account;
+							let successEntitlementAccountKey = entitlementAccountKey;
 							while (true) {
 								let response: Response;
 								const fetchStart = performance.now();
@@ -1621,11 +1710,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							try {
 								runtimeMetrics.totalRequests++;
-								response = await fetch(url, {
+								response = await fetch(url, applyProxyCompatibleInit(url, {
 									...requestInit,
 									headers,
 									signal: fetchController.signal,
-								});
+								}));
 					} catch (networkError) {
 									const fetchAbortReason = fetchController.signal.reason;
 									const isTimeoutAbort =
@@ -1889,19 +1978,99 @@ while (attempted.size < Math.max(1, accountCount)) {
 					blockedModel,
 				);
 			}
-			if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported) {
-				entitlementCache.markBlocked(
-					entitlementAccountKey,
-					model ?? modelFamily,
-					"plan-entitlement",
-				);
-				capabilityPolicyStore.recordFailure(
-					entitlementAccountKey,
-					capabilityModelKey,
-				);
-			}
+		const workspaceErrorCode =
+			(errorBody as { error?: { code?: string } } | undefined)?.error?.code ?? "";
+		const workspaceErrorMessage =
+			(errorBody as { error?: { message?: string } } | undefined)?.error?.message ?? "";
+		const isDisabledWorkspaceError =
+			isWorkspaceDisabledError(
+				errorResponse.status,
+				workspaceErrorCode,
+				workspaceErrorMessage,
+			);
 
-			if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
+		// Handle workspace disabled/expired errors by rotating to the next workspace
+		// within the same account before falling back to another account.
+		if (isDisabledWorkspaceError) {
+			runtimeMetrics.failedRequests++;
+			runtimeMetrics.lastError = `Workspace disabled for account ${account.index + 1}`;
+
+			if (!account.workspaces || account.workspaces.length === 0) {
+				logWarn(
+					`Workspace disabled/expired for account ${account.index + 1} without tracked workspaces. Leaving account enabled.`,
+					{ errorCode: workspaceErrorCode },
+				);
+				if (hasRemainingAccounts) {
+					continue accountAttemptLoop;
+				}
+				return errorResponse;
+			} else {
+				const currentWorkspace = accountManager.getCurrentWorkspace(account);
+				const workspaceName = currentWorkspace?.name ?? currentWorkspace?.id ?? "unknown";
+
+				logWarn(
+					`Workspace disabled/expired for account ${account.index + 1} - workspace: ${workspaceName}. Rotating to next workspace.`,
+					{ errorCode: workspaceErrorCode },
+				);
+
+				const disabledWorkspace = currentWorkspace
+					? accountManager.disableCurrentWorkspace(account, currentWorkspace.id)
+					: false;
+				let nextWorkspace = disabledWorkspace
+					? accountManager.rotateToNextWorkspace(account)
+					: accountManager.getCurrentWorkspace(account);
+				if (!disabledWorkspace && (!nextWorkspace || nextWorkspace.enabled === false)) {
+					nextWorkspace = accountManager.rotateToNextWorkspace(account);
+				}
+
+				if (nextWorkspace) {
+					accountManager.saveToDiskDebounced();
+
+					const newWorkspaceName = nextWorkspace.name ?? nextWorkspace.id;
+					await showToast(
+						`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
+						"warning",
+						{ duration: toastDurationMs },
+					);
+
+					logInfo(`Rotated to workspace ${newWorkspaceName} for account ${account.index + 1}`);
+
+					// Allow the same account to be selected again with fresh request state.
+					attempted.delete(account.index);
+					continue accountAttemptLoop;
+				}
+
+				logWarn(`All workspaces disabled for account ${account.index + 1}. Disabling account.`);
+
+				accountManager.setAccountEnabled(account.index, false);
+				accountManager.saveToDiskDebounced();
+
+				await showToast(
+					`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
+					"warning",
+					{ duration: toastDurationMs },
+				);
+
+				// Forget session affinity and continue the outer loop so another
+				// enabled account can service the request.
+				sessionAffinityStore?.forgetSession(sessionAffinityKey);
+				continue accountAttemptLoop;
+			}
+		}
+
+		if (errorResponse.status === 403 && !unsupportedModelInfo.isUnsupported && !isDisabledWorkspaceError) {
+			entitlementCache.markBlocked(
+				entitlementAccountKey,
+				model ?? modelFamily,
+				"plan-entitlement",
+			);
+			capabilityPolicyStore.recordFailure(
+				entitlementAccountKey,
+				capabilityModelKey,
+			);
+		}
+
+		if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
 					const errorType = detectErrorType(errorBody);
 					const toastContent = getRecoveryToastContent(errorType);
 					await showToast(
@@ -2101,18 +2270,57 @@ while (attempted.size < Math.max(1, accountCount)) {
 											continue;
 										}
 
-										const fallbackTokenAccountId = extractAccountId(fallbackAuth.access);
-										const fallbackAccountId = resolveRequestAccountId(
-											fallbackAccount.accountId,
-											fallbackAccount.accountIdSource,
-											fallbackTokenAccountId,
-										);
+										const fallbackStoredAccountId = fallbackAccount.accountId;
+										const fallbackStoredAccountIdSource = fallbackAccount.accountIdSource;
+										const fallbackStoredEmail = fallbackAccount.email;
+										const hadFallbackAccountId = !!fallbackStoredAccountId;
+										const fallbackRuntimeIdentity = resolveRuntimeRequestIdentity({
+											storedAccountId: fallbackStoredAccountId,
+											source: fallbackStoredAccountIdSource,
+											storedEmail: fallbackStoredEmail,
+											accessToken: fallbackAuth.access,
+											idToken: fallbackAuth.idToken,
+										});
+										const fallbackTokenAccountId = fallbackRuntimeIdentity.tokenAccountId;
+										const fallbackAccountId = fallbackRuntimeIdentity.accountId;
 										if (!fallbackAccountId) {
+											continue;
+										}
+										const fallbackResolvedEmail = fallbackRuntimeIdentity.email;
+										const fallbackEntitlementAccountKey = resolveEntitlementAccountKey({
+											accountId: fallbackStoredAccountId ?? fallbackAccountId,
+											email: fallbackResolvedEmail,
+											refreshToken: fallbackAccount.refreshToken,
+											index: fallbackAccount.index,
+										});
+										const fallbackEntitlementBlock = entitlementCache.isBlocked(
+											fallbackEntitlementAccountKey,
+											model ?? modelFamily,
+										);
+										if (fallbackEntitlementBlock.blocked) {
+											runtimeMetrics.accountRotations++;
+											runtimeMetrics.lastError =
+												`Entitlement cached block for account ${fallbackAccount.index + 1}`;
+											logWarn(
+												`Skipping account ${fallbackAccount.index + 1} due to cached entitlement block (${formatWaitTime(fallbackEntitlementBlock.waitMs)} remaining).`,
+											);
 											continue;
 										}
 
 										if (!accountManager.consumeToken(fallbackAccount, modelFamily, model)) {
 											continue;
+										}
+										fallbackAccount.accountId = fallbackAccountId;
+										if (
+											!hadFallbackAccountId &&
+											fallbackTokenAccountId &&
+											fallbackAccountId === fallbackTokenAccountId
+										) {
+											fallbackAccount.accountIdSource =
+												fallbackStoredAccountIdSource ?? "token";
+										}
+										if (fallbackResolvedEmail) {
+											fallbackAccount.email = fallbackResolvedEmail;
 										}
 
 										const fallbackHeaders = createCodexHeaders(
@@ -2144,18 +2352,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										try {
 											runtimeMetrics.totalRequests++;
-											const fallbackResponse = await fetch(url, {
+											const fallbackResponse = await fetch(url, applyProxyCompatibleInit(url, {
 												...requestInit,
 												headers: fallbackHeaders,
 												signal: fallbackController.signal,
-											});
+											}));
 											const fallbackSnapshot = readQuotaSchedulerSnapshot(
 												fallbackResponse.headers,
 												fallbackResponse.status,
 											);
 											if (fallbackSnapshot) {
 												preemptiveQuotaScheduler.update(
-													`${resolveEntitlementAccountKey(fallbackAccount)}:${model ?? modelFamily}`,
+													`${fallbackEntitlementAccountKey}:${model ?? modelFamily}`,
 													fallbackSnapshot,
 												);
 											}
@@ -2180,13 +2388,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 													accountManager.recordFailure(fallbackAccount, modelFamily, model);
 												}
 												capabilityPolicyStore.recordFailure(
-													resolveEntitlementAccountKey(fallbackAccount),
+													fallbackEntitlementAccountKey,
 													capabilityModelKey,
 												);
 												continue;
 											}
 
 											successAccountForResponse = fallbackAccount;
+											successEntitlementAccountKey = fallbackEntitlementAccountKey;
 											runtimeMetrics.streamFailoverRecoveries += 1;
 											if (fallbackAccount.index !== account.index) {
 												runtimeMetrics.streamFailoverCrossAccountRecoveries += 1;
@@ -2206,7 +2415,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											accountManager.refundToken(fallbackAccount, modelFamily, model);
 											accountManager.recordFailure(fallbackAccount, modelFamily, model);
 											capabilityPolicyStore.recordFailure(
-												resolveEntitlementAccountKey(fallbackAccount),
+												fallbackEntitlementAccountKey,
 												capabilityModelKey,
 											);
 											logWarn(
@@ -2296,10 +2505,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						if (successAccountForResponse.index !== account.index) {
 							accountManager.markSwitched(successAccountForResponse, "rotation", modelFamily);
 						}
-						const successAccountKey =
-							successAccountForResponse.index === account.index
-								? entitlementAccountKey
-								: resolveEntitlementAccountKey(successAccountForResponse);
+						const successAccountKey = successEntitlementAccountKey;
 						accountManager.recordSuccess(successAccountForResponse, modelFamily, model);
 						capabilityPolicyStore.recordSuccess(
 							successAccountKey,
@@ -2386,9 +2592,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							const accounts: TokenSuccessWithAccount[] = [];
 							const noBrowser =
+								inputs?.manual === "true" ||
 								inputs?.noBrowser === "true" ||
 								inputs?.["no-browser"] === "true";
-							const useManualMode = noBrowser;
+							const useManualMode = noBrowser || isBrowserLaunchSuppressed();
 							const explicitLoginMode =
 								inputs?.loginMode === "fresh" || inputs?.loginMode === "add"
 									? inputs.loginMode
