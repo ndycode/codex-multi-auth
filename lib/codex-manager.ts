@@ -1216,10 +1216,10 @@ async function promptBackupRestoreMode(
 		{
 			label: UI_COPY.oauth.loadLastBackup,
 			value: "latest",
-			hint: UI_COPY.oauth.manualBackupHint(
+			hint: `${UI_COPY.oauth.restoreBackupLatestHint}\n${UI_COPY.oauth.manualBackupHint(
 				latestBackup.accountCount,
 				formatBackupSavedAt(latestBackup.mtimeMs),
-			),
+			)}`,
 			color: "cyan",
 		},
 		{
@@ -4369,14 +4369,16 @@ async function runAuthLogin(): Promise<number> {
 					continue;
 				}
 
-				const confirmed = await confirm(
-					UI_COPY.oauth.restoreBackupConfirm(
-						selectedBackup.fileName,
-						selectedBackup.accountCount,
-					),
-				);
-				if (!confirmed) {
-					continue;
+				if (restoreMode === "manual") {
+					const confirmed = await confirm(
+						UI_COPY.oauth.restoreBackupConfirm(
+							selectedBackup.fileName,
+							selectedBackup.accountCount,
+						),
+					);
+					if (!confirmed) {
+						continue;
+					}
 				}
 
 				const displaySettings = await loadDashboardDisplaySettings();

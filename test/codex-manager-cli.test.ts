@@ -3032,6 +3032,7 @@ describe("codex manager cli commands", () => {
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/last-good.json",
 		);
+		expect(confirmMock).not.toHaveBeenCalled();
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accountId: "acc_restored",
@@ -3142,6 +3143,7 @@ describe("codex manager cli commands", () => {
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/manual-choice.json",
 		);
+		expect(confirmMock).toHaveBeenCalledWith("Load manual-choice.json (1 account)?");
 	});
 
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {
