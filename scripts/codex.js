@@ -532,6 +532,8 @@ async function main() {
 		buildForwardArgs,
 		forwardToRealCodex,
 	});
+	// The supervisor persists account selection, but the wrapper still runs startup sync
+	// before returning so the live Codex CLI state can refresh expired token material.
 	await autoSyncManagerActiveSelectionIfEnabled();
 	if (supervisedExitCode !== null) {
 		return supervisedExitCode;

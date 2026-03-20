@@ -156,6 +156,32 @@ describe("preemptive quota scheduler", () => {
 		expect(decision.reason).toBe("quota-near-exhaustion");
 	});
 
+	it("keeps the secondary remaining threshold at 5 percent by default", () => {
+		const scheduler = new PreemptiveQuotaScheduler();
+		scheduler.update("acc:model", {
+			status: 200,
+			primary: {},
+			secondary: { usedPercent: 94, resetAtMs: 65_000 },
+			updatedAt: 1_000,
+		});
+
+		expect(scheduler.getDeferral("acc:model", 5_000)).toEqual({
+			defer: false,
+			waitMs: 0,
+		});
+
+		scheduler.update("acc:model", {
+			status: 200,
+			primary: {},
+			secondary: { usedPercent: 95, resetAtMs: 65_000 },
+			updatedAt: 1_000,
+		});
+
+		const decision = scheduler.getDeferral("acc:model", 5_000);
+		expect(decision.defer).toBe(true);
+		expect(decision.reason).toBe("quota-near-exhaustion");
+	});
+
 	it("can disable preemptive deferral without clearing snapshots", () => {
 		const scheduler = new PreemptiveQuotaScheduler();
 		scheduler.markRateLimited("acc:model", 30_000, 1_000);
