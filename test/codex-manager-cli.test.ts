@@ -3008,8 +3008,9 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(vi.mocked(serverModule.startLocalOAuthServer)).not.toHaveBeenCalled();
 		expect(waitForCodeMock).not.toHaveBeenCalled();
-		expect(renderedLogs.some((entry) => entry.includes("Callback listener unavailable"))).toBe(
+		expect(renderedLogs.some((entry) => entry.includes("Manual mode active"))).toBe(
 			true,
 		);
 		expect(renderedLogs.some((entry) => entry.includes("No callback received"))).toBe(false);
@@ -3069,8 +3070,9 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(selectMock).toHaveBeenCalled();
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(vi.mocked(serverModule.startLocalOAuthServer)).not.toHaveBeenCalled();
 		expect(waitForCodeMock).not.toHaveBeenCalled();
-		expect(renderedLogs.some((entry) => entry.includes("Callback listener unavailable"))).toBe(
+		expect(renderedLogs.some((entry) => entry.includes("Manual mode active"))).toBe(
 			true,
 		);
 		expect(renderedLogs.some((entry) => entry.includes("No callback received"))).toBe(false);
@@ -3124,7 +3126,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(promptQuestionMock).toHaveBeenCalled();
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
-		expect(startLocalOAuthServerMock).toHaveBeenCalledTimes(1);
+		expect(startLocalOAuthServerMock).not.toHaveBeenCalled();
 		expect(storageState.accounts).toHaveLength(1);
 	});
 
@@ -3174,6 +3176,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(promptQuestionMock).toHaveBeenCalledWith("");
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(vi.mocked(serverModule.startLocalOAuthServer)).not.toHaveBeenCalled();
 		expect(storageState.accounts).toHaveLength(1);
 	});
 
@@ -3215,6 +3218,7 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(promptQuestionMock).toHaveBeenCalledWith("");
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(vi.mocked(serverModule.startLocalOAuthServer)).not.toHaveBeenCalled();
 		expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
 		expect(storageState.accounts).toHaveLength(0);
 	});
@@ -3265,7 +3269,46 @@ describe("codex manager cli commands", () => {
 		expect(exitCode).toBe(0);
 		expect(promptQuestionMock).toHaveBeenCalledWith("");
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(vi.mocked(serverModule.startLocalOAuthServer)).not.toHaveBeenCalled();
 		expect(storageState.accounts).toHaveLength(1);
+	});
+
+	it("returns to the menu when stdin closes without input in non-tty manual mode", async () => {
+		setInteractiveTTY(false);
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptQuestionMock.mockRejectedValueOnce(new Error("readline was closed"));
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		const exchangeAuthorizationCodeMock = vi.mocked(authModule.exchangeAuthorizationCode);
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptQuestionMock).toHaveBeenCalledWith("");
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(vi.mocked(serverModule.startLocalOAuthServer)).not.toHaveBeenCalled();
+		expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(0);
 	});
 
 	it("preserves distinct same-email workspaces when oauth login reuses a refresh token", async () => {

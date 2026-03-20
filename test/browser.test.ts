@@ -106,21 +106,33 @@ describe("auth browser utilities", () => {
 		});
 
 		it("lets explicit false-like CODEX_AUTH_NO_BROWSER override a disabling BROWSER value", () => {
+			Object.defineProperty(process, "platform", { value: "darwin" });
+			process.env.PATH = "/usr/bin";
 			process.env.CODEX_AUTH_NO_BROWSER = "0";
 			process.env.BROWSER = "none";
 
 			expect(isBrowserLaunchSuppressed()).toBe(false);
-			expect(openBrowserUrl("https://example.com")).toBe(false);
-			expect(mockedSpawn).not.toHaveBeenCalled();
+			expect(openBrowserUrl("https://example.com")).toBe(true);
+			expect(mockedSpawn).toHaveBeenCalledWith(
+				"open",
+				["https://example.com"],
+				{ stdio: "ignore", shell: false },
+			);
 		});
 
 		it("does not treat CODEX_AUTH_NO_BROWSER=false as suppression when BROWSER is disabled", () => {
+			Object.defineProperty(process, "platform", { value: "darwin" });
+			process.env.PATH = "/usr/bin";
 			process.env.CODEX_AUTH_NO_BROWSER = "false";
 			process.env.BROWSER = "none";
 
 			expect(isBrowserLaunchSuppressed()).toBe(false);
-			expect(openBrowserUrl("https://example.com")).toBe(false);
-			expect(mockedSpawn).not.toHaveBeenCalled();
+			expect(openBrowserUrl("https://example.com")).toBe(true);
+			expect(mockedSpawn).toHaveBeenCalledWith(
+				"open",
+				["https://example.com"],
+				{ stdio: "ignore", shell: false },
+			);
 		});
 
 		it("suppresses browser launch when BROWSER is set to none", () => {
