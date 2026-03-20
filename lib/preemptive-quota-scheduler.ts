@@ -24,7 +24,7 @@ export interface QuotaSchedulerOptions {
 	maxDeferralMs?: number;
 }
 
-const DEFAULT_PRIMARY_REMAINING_PERCENT_THRESHOLD = 10;
+export const DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H = 10;
 const DEFAULT_SECONDARY_REMAINING_PERCENT_THRESHOLD = 5;
 const DEFAULT_MAX_DEFERRAL_MS = 2 * 60 * 60_000;
 
@@ -149,7 +149,7 @@ export class PreemptiveQuotaScheduler {
 
 	constructor(options: QuotaSchedulerOptions = {}) {
 		this.enabled = true;
-		this.primaryRemainingPercentThreshold = DEFAULT_PRIMARY_REMAINING_PERCENT_THRESHOLD;
+		this.primaryRemainingPercentThreshold = DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H;
 		this.secondaryRemainingPercentThreshold = DEFAULT_SECONDARY_REMAINING_PERCENT_THRESHOLD;
 		this.maxDeferralMs = DEFAULT_MAX_DEFERRAL_MS;
 		this.configure(options);

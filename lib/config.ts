@@ -156,7 +156,8 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	serverErrorCooldownMs: 4_000,
 	storageBackupEnabled: true,
 	preemptiveQuotaEnabled: true,
-	preemptiveQuotaRemainingPercent5h: 10,
+	preemptiveQuotaRemainingPercent5h:
+		DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H,
 	preemptiveQuotaRemainingPercent7d: 5,
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 };
@@ -1077,7 +1078,7 @@ export function getPreemptiveQuotaRemainingPercent5h(pluginConfig: PluginConfig)
 	return resolveNumberSetting(
 		"CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT",
 		pluginConfig.preemptiveQuotaRemainingPercent5h,
-		10,
+		DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H,
 		{ min: 0, max: 100 },
 	);
 }
@@ -1124,3 +1125,4 @@ export function getPreemptiveQuotaMaxDeferralMs(pluginConfig: PluginConfig): num
 		{ min: 1_000 },
 	);
 }
+import { DEFAULT_PREEMPTIVE_QUOTA_REMAINING_PERCENT_5H } from "./preemptive-quota-scheduler.js";

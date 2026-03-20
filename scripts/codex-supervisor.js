@@ -948,32 +948,51 @@ async function ensureLaunchableAccount(
 		1,
 	);
 	let attempts = 0;
+	let managerHint = null;
 	while (attempts < MAX_ACCOUNT_SELECTION_ATTEMPTS) {
 		attempts += 1;
 		if (signal?.aborted) {
 			return { ok: false, account: null, aborted: true };
 		}
 
-		const initial = await withLockedManager(runtime, async (manager) => {
-			const accounts = getProbeCandidateBatch(
-				manager,
+		let initial = null;
+		if (managerHint) {
+			const hintedAccounts = getProbeCandidateBatch(
+				managerHint,
 				probeBatchSize,
 				options.excludedAccounts ?? [],
 			);
-			if (accounts.length === 0) {
-				return {
-					kind: "wait",
-					waitMs: getNearestWaitMs(manager),
-					account: null,
+			if (hintedAccounts.length > 0) {
+				initial = {
+					kind: "probe",
+					accounts: hintedAccounts,
 				};
 			}
-			return {
-				kind: "probe",
-				accounts,
-			};
-		}, signal);
+		}
+
+		if (!initial) {
+			initial = await withLockedManager(runtime, async (manager) => {
+				const accounts = getProbeCandidateBatch(
+					manager,
+					probeBatchSize,
+					options.excludedAccounts ?? [],
+				);
+				if (accounts.length === 0) {
+					return {
+						kind: "wait",
+						waitMs: getNearestWaitMs(manager),
+						account: null,
+					};
+				}
+				return {
+					kind: "probe",
+					accounts,
+				};
+			}, signal);
+		}
 
 		if (initial.kind === "wait") {
+			managerHint = null;
 			if (initial.waitMs <= 0 || !runtime.getRetryAllAccountsRateLimited(pluginConfig)) {
 				return { ok: false, account: null };
 			}
@@ -1098,6 +1117,8 @@ async function ensureLaunchableAccount(
 				...step,
 			};
 		}
+
+		managerHint = step.manager ?? null;
 	}
 
 	return { ok: false, account: null };
@@ -1304,7 +1325,13 @@ async function readSessionBindingEntry(filePath) {
 	}
 }
 
-async function findSessionBinding({ cwd, sinceMs, sessionId, rolloutPathHint }) {
+async function findSessionBinding({
+	cwd,
+	sinceMs,
+	sessionId,
+	rolloutPathHint,
+	sessionEntries,
+}) {
 	const cwdKey = normalizeCwd(cwd);
 	if (rolloutPathHint) {
 		const directEntry = await readSessionBindingEntry(rolloutPathHint);
@@ -1318,14 +1345,12 @@ async function findSessionBinding({ cwd, sinceMs, sessionId, rolloutPathHint }) 
 		}
 	}
 
-	const sessionsRoot = getSessionsRootDir();
-	const files = (
-		await Promise.all(
-			(await listJsonlFiles(sessionsRoot)).map(async (filePath) => {
+	const files = (sessionEntries ??
+		(await Promise.all(
+			(await listJsonlFiles(getSessionsRootDir())).map(async (filePath) => {
 				return readSessionBindingEntry(filePath);
 			}),
-		)
-	)
+		)))
 		.filter((entry) => entry && (sessionId ? true : entry.mtimeMs >= sinceMs - 2_000))
 		.sort((left, right) => right.mtimeMs - left.mtimeMs);
 
@@ -1351,12 +1376,30 @@ async function waitForSessionBinding({
 		DEFAULT_SESSION_BINDING_POLL_MS,
 		25,
 	);
+	const listingRefreshMs = Math.max(250, pollMs * 8);
+	let cachedSessionEntries = null;
+	let lastSessionEntriesRefreshAt = 0;
 	while (Date.now() <= deadline) {
+		if (
+			!cachedSessionEntries ||
+			Date.now() - lastSessionEntriesRefreshAt >= listingRefreshMs
+		) {
+			cachedSessionEntries = (
+				await Promise.all(
+					(await listJsonlFiles(getSessionsRootDir())).map(async (filePath) => {
+						return readSessionBindingEntry(filePath);
+					}),
+				)
+			).filter(Boolean);
+			lastSessionEntriesRefreshAt = Date.now();
+		}
+
 		const binding = await findSessionBinding({
 			cwd,
 			sinceMs,
 			sessionId,
 			rolloutPathHint,
+			sessionEntries: cachedSessionEntries,
 		});
 		if (binding) return binding;
 		const slept = await sleep(pollMs, signal);
@@ -1412,6 +1455,17 @@ function spawnRealCodex(codexBin, args) {
 	});
 }
 
+async function loadCurrentSupervisorState(runtime, signal) {
+	return withLockedManager(
+		runtime,
+		async (freshManager) => ({
+			manager: freshManager,
+			currentAccount: getCurrentAccount(freshManager),
+		}),
+		signal,
+	);
+}
+
 async function runInteractiveSupervision({
 	codexBin,
 	initialArgs,
@@ -1426,6 +1480,7 @@ async function runInteractiveSupervision({
 	waitForBinding = waitForSessionBinding,
 	refreshBinding = refreshSessionActivity,
 	requestRestart = requestChildRestart,
+	loadCurrentState = loadCurrentSupervisorState,
 }) {
 	let launchArgs = initialArgs;
 	let knownSessionId = readResumeSessionId(initialArgs);
@@ -1483,125 +1538,135 @@ async function runInteractiveSupervision({
 			DEFAULT_MONITOR_PROBE_TIMEOUT_MS,
 		);
 
+		let monitorFailure = null;
 		const monitorPromise = (async () => {
-			while (monitorActive) {
-				if (!binding) {
-					binding = await waitForBinding({
-						cwd: process.cwd(),
-						sinceMs: launchStartedAt,
-						sessionId: knownSessionId,
-						rolloutPathHint: knownRolloutPath,
-						timeoutMs: captureTimeoutMs,
-						signal: monitorController.signal,
-					});
-					if (binding?.sessionId) {
-						knownSessionId = binding.sessionId;
-						knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
-					}
-				} else {
-					binding = await refreshBinding(binding);
-					if (binding?.rolloutPath) {
-						knownRolloutPath = binding.rolloutPath;
-					}
-				}
-
-				if (!requestedRestart) {
-					let currentState;
-					try {
-						currentState = await withLockedManager(
-							runtime,
-							async (freshManager) => ({
-								manager: freshManager,
-								currentAccount: getCurrentAccount(freshManager),
-							}),
-							monitorController.signal,
-						);
-					} catch (error) {
-						if (monitorController.signal.aborted || error?.name === "AbortError") {
-							break;
+			try {
+				while (monitorActive) {
+					if (!binding) {
+						binding = await waitForBinding({
+							cwd: process.cwd(),
+							sinceMs: launchStartedAt,
+							sessionId: knownSessionId,
+							rolloutPathHint: knownRolloutPath,
+							timeoutMs: captureTimeoutMs,
+							signal: monitorController.signal,
+						});
+						if (binding?.sessionId) {
+							knownSessionId = binding.sessionId;
+							knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
 						}
-						throw error;
+					} else {
+						binding = await refreshBinding(binding);
+						if (binding?.rolloutPath) {
+							knownRolloutPath = binding.rolloutPath;
+						}
 					}
-					manager = currentState.manager ?? manager;
-					const currentAccount = currentState.currentAccount;
-					if (currentAccount) {
-						let snapshot;
+
+					if (!requestedRestart) {
+						let currentState;
 						try {
-							snapshot = await probeAccountSnapshot(
+							currentState = await loadCurrentState(
 								runtime,
-								currentAccount,
 								monitorController.signal,
-								monitorProbeTimeoutMs,
 							);
 						} catch (error) {
-							if (monitorController.signal.aborted || error?.name === "AbortError") {
+							if (
+								monitorController.signal.aborted ||
+								error?.name === "AbortError"
+							) {
 								break;
-							}
-							if (error?.name === "QuotaProbeUnavailableError") {
-								continue;
 							}
 							throw error;
 						}
-						const pressure = computeQuotaPressure(
-							snapshot,
-							runtime,
-							pluginConfig,
-						);
-						if (pressure.prewarm && binding?.sessionId) {
-							if (!rotationTrace.detectedAtMs) {
-								rotationTrace.detectedAtMs = Date.now();
-							}
-							if (!preparedResumeSelectionStarted) {
-								rotationTrace.prewarmStartedAtMs = Date.now();
-								supervisorDebug(
-									`prewarming successor for session ${binding.sessionId} ${formatQuotaPressure(pressure)}`,
-								);
-								const preparedState = maybeStartPreparedResumeSelection({
+						manager = currentState.manager ?? manager;
+						const currentAccount = currentState.currentAccount;
+						if (currentAccount) {
+							let snapshot;
+							try {
+								snapshot = await probeAccountSnapshot(
 									runtime,
-									pluginConfig,
 									currentAccount,
-									restartDecision: {
-										sessionId: binding.sessionId,
-									},
-									signal,
-									preparedResumeSelectionStarted,
-									preparedResumeSelectionPromise,
-								});
-								preparedResumeSelectionStarted =
-									preparedState.preparedResumeSelectionStarted;
-								preparedResumeSelectionPromise =
-									preparedState.preparedResumeSelectionPromise?.then((prepared) => {
-										if (rotationTrace.prewarmCompletedAtMs === 0) {
-											rotationTrace.prewarmCompletedAtMs = Date.now();
-										}
-										return prepared;
-									}) ?? null;
-							}
-						}
-						if (pressure.rotate && binding?.sessionId) {
-							const pendingRestartDecision = {
-								reason: pressure.reason,
-								waitMs: pressure.waitMs,
-								sessionId: binding.sessionId,
-							};
-							const lastActivityAtMs = binding.lastActivityAtMs ?? launchStartedAt;
-							if (Date.now() - lastActivityAtMs >= idleMs) {
-								requestedRestart = pendingRestartDecision;
-								rotationTrace.restartRequestedAtMs = Date.now();
-								relaunchNotice(
-									`rotating session ${binding.sessionId} because ${pressure.reason.replace(/-/g, " ")} (${formatQuotaPressure(pressure)})`,
+									monitorController.signal,
+									monitorProbeTimeoutMs,
 								);
-								monitorActive = false;
-								await requestRestart(child, process.platform, signal);
-								monitorController.abort();
-								continue;
+							} catch (error) {
+								if (
+									monitorController.signal.aborted ||
+									error?.name === "AbortError"
+								) {
+									break;
+								}
+								if (error?.name === "QuotaProbeUnavailableError") {
+									continue;
+								}
+								throw error;
+							}
+							const pressure = computeQuotaPressure(
+								snapshot,
+								runtime,
+								pluginConfig,
+							);
+							if (pressure.prewarm && binding?.sessionId) {
+								if (!rotationTrace.detectedAtMs) {
+									rotationTrace.detectedAtMs = Date.now();
+								}
+								if (!preparedResumeSelectionStarted) {
+									rotationTrace.prewarmStartedAtMs = Date.now();
+									supervisorDebug(
+										`prewarming successor for session ${binding.sessionId} ${formatQuotaPressure(pressure)}`,
+									);
+									const preparedState = maybeStartPreparedResumeSelection({
+										runtime,
+										pluginConfig,
+										currentAccount,
+										restartDecision: {
+											sessionId: binding.sessionId,
+										},
+										signal,
+										preparedResumeSelectionStarted,
+										preparedResumeSelectionPromise,
+									});
+									preparedResumeSelectionStarted =
+										preparedState.preparedResumeSelectionStarted;
+									preparedResumeSelectionPromise =
+										preparedState.preparedResumeSelectionPromise?.then((prepared) => {
+											if (rotationTrace.prewarmCompletedAtMs === 0) {
+												rotationTrace.prewarmCompletedAtMs = Date.now();
+											}
+											return prepared;
+										}) ?? null;
+								}
+							}
+							if (pressure.rotate && binding?.sessionId) {
+								const pendingRestartDecision = {
+									reason: pressure.reason,
+									waitMs: pressure.waitMs,
+									sessionId: binding.sessionId,
+								};
+								const lastActivityAtMs =
+									binding.lastActivityAtMs ?? launchStartedAt;
+								if (Date.now() - lastActivityAtMs >= idleMs) {
+									requestedRestart = pendingRestartDecision;
+									rotationTrace.restartRequestedAtMs = Date.now();
+									relaunchNotice(
+										`rotating session ${binding.sessionId} because ${pressure.reason.replace(/-/g, " ")} (${formatQuotaPressure(pressure)})`,
+									);
+									monitorActive = false;
+									await requestRestart(child, process.platform, signal);
+									monitorController.abort();
+									continue;
+								}
 							}
 						}
 					}
-				}
 
-				const slept = await sleep(pollMs, monitorController.signal);
-				if (!slept) break;
+					const slept = await sleep(pollMs, monitorController.signal);
+					if (!slept) break;
+				}
+			} catch (error) {
+				if (!monitorController.signal.aborted && error?.name !== "AbortError") {
+					monitorFailure = error;
+				}
 			}
 		})();
 
@@ -1623,6 +1688,11 @@ async function runInteractiveSupervision({
 		monitorActive = false;
 		monitorController.abort();
 		await monitorPromise;
+		if (monitorFailure && !signal?.aborted) {
+			supervisorDebug(
+				`monitor loop failed: ${monitorFailure instanceof Error ? monitorFailure.message : String(monitorFailure)}`,
+			);
+		}
 		binding =
 			binding ??
 			(await findBinding({
@@ -1849,6 +1919,7 @@ const TEST_ONLY_API = {
 	getSupervisorStorageLockPath,
 	runInteractiveSupervision,
 	runCodexSupervisorWithRuntime,
+	waitForSessionBinding,
 };
 
 export const __testOnly =

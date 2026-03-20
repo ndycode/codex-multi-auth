@@ -360,6 +360,37 @@ describe("codex supervisor", () => {
 		}
 	});
 
+	it("caches the session file listing across binding wait polls", async () => {
+		const codexHome = createTempDir();
+		const cwd = createTempDir();
+		process.env.CODEX_HOME = codexHome;
+		process.env.CODEX_AUTH_CLI_SESSION_BINDING_POLL_MS = "5";
+
+		const sessionsDir = join(codexHome, "sessions", "2026", "03", "20");
+		await fs.mkdir(sessionsDir, { recursive: true });
+		await fs.writeFile(
+			join(sessionsDir, "no-binding.jsonl"),
+			JSON.stringify({ type: "event", seq: 1 }),
+			"utf8",
+		);
+
+		const readdirSpy = vi.spyOn(fs, "readdir");
+		try {
+			const binding = await supervisorTestApi?.waitForSessionBinding({
+				cwd,
+				sinceMs: Date.now(),
+				sessionId: "missing-session",
+				rolloutPathHint: null,
+				timeoutMs: 40,
+				signal: undefined,
+			});
+			expect(binding).toBeNull();
+			expect(readdirSpy.mock.calls.length).toBeLessThan(10);
+		} finally {
+			readdirSpy.mockRestore();
+		}
+	});
+
 	it("interrupts child restart waits when the abort signal fires", async () => {
 		vi.useFakeTimers();
 		class FakeChild extends EventEmitter {
@@ -932,6 +963,63 @@ describe("codex supervisor", () => {
 
 			expect(result).toBe(1);
 			expect(spawnChild).not.toHaveBeenCalled();
+		},
+	);
+
+	it(
+		"keeps the child exit code when the monitor loop fails after startup",
+		{ timeout: 10_000 },
+		async () => {
+		class FakeChild extends EventEmitter {
+			exitCode: number | null = null;
+
+			constructor(exitCode: number) {
+				super();
+				setTimeout(() => {
+					this.exitCode = exitCode;
+					this.emit("exit", exitCode, null);
+				}, 25);
+			}
+
+			kill(_signal: string) {
+				return true;
+			}
+		}
+
+		const stderrSpy = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation(() => true);
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager);
+
+		try {
+			const result = await supervisorTestApi?.runInteractiveSupervision({
+				codexBin: "dist/bin/codex.js",
+				initialArgs: ["resume", "monitor-failure-session"],
+				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+				runtime,
+				pluginConfig: {},
+				manager,
+				signal: undefined,
+				maxSessionRestarts: 1,
+				spawnChild: () => new FakeChild(0),
+				findBinding: async ({ sessionId }: { sessionId?: string }) => ({
+					sessionId: sessionId ?? "monitor-failure-session",
+					rolloutPath: null,
+					lastActivityAtMs: Date.now(),
+				}),
+				loadCurrentState: async () => {
+					throw new Error("Timed out waiting for supervisor storage lock");
+				},
+			});
+
+			expect(result).toBe(0);
+			expect(stderrSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining("Timed out waiting for supervisor storage lock"),
+			);
+		} finally {
+			stderrSpy.mockRestore();
+		}
 		},
 	);
 
