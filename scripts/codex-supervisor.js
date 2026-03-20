@@ -1138,8 +1138,10 @@ async function prepareResumeSelection({
 	runtime,
 	pluginConfig,
 	currentAccount,
+	restartDecision,
 	signal,
 }) {
+	void restartDecision;
 	const startedAtMs = Date.now();
 	const nextReady = await ensureLaunchableAccount(
 		runtime,

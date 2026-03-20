@@ -373,7 +373,7 @@ async function main() {
 			),
 			await runCase(
 				api,
-				"session_rotation_multi_candidate_windows",
+				"session_rotation_multi_candidate_batch1_windows",
 				iterations,
 				probeLatencyMs,
 				{
