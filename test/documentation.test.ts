@@ -241,26 +241,32 @@ describe("Documentation Integrity", () => {
 	it("keeps fix command flag docs aligned across README, reference, and CLI usage text", () => {
 		const readme = read("README.md");
 		const commandRef = read("docs/reference/commands.md");
-		const managerPath = "lib/codex-manager.ts";
+		const helpPath = "lib/codex-manager/help.ts";
+		const authCommandsPath = "lib/codex-manager/auth-commands.ts";
 		expect(
-			existsSync(join(projectRoot, managerPath)),
-			`${managerPath} should exist`,
+			existsSync(join(projectRoot, helpPath)),
+			`${helpPath} should exist`,
 		).toBe(true);
-		const manager = read(managerPath);
+		expect(
+			existsSync(join(projectRoot, authCommandsPath)),
+			`${authCommandsPath} should exist`,
+		).toBe(true);
+		const help = read(helpPath);
+		const authCommands = read(authCommandsPath);
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
 		expect(commandRef).toContain("| `--live` | forecast, report, fix |");
 		expect(commandRef).toContain(
 			"| `--model <model>` | forecast, report, fix |",
 		);
-		expect(manager).toContain("codex auth login");
-		expect(manager).toContain(
+		expect(help).toContain("codex auth login");
+		expect(help).toContain(
 			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 		);
-		expect(manager).toContain(
+		expect(authCommands).toContain(
 			"Missing index. Usage: codex auth switch <index>",
 		);
-		expect(manager).not.toContain("codex-multi-auth auth switch <index>");
+		expect(authCommands).not.toContain("codex-multi-auth auth switch <index>");
 	});
 
 	it("documents stable overrides separately from advanced and internal overrides", () => {
