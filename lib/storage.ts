@@ -142,9 +142,9 @@ async function collectNamedBackups(storagePath: string): Promise<NamedBackupSumm
 		if (!entry.name.toLowerCase().endsWith(".json")) continue;
 		const candidatePath = join(backupRoot, entry.name);
 		try {
+			const stats = await fs.stat(candidatePath);
 			const { normalized } = await loadAccountsFromPath(candidatePath);
 			if (!normalized || normalized.accounts.length === 0) continue;
-			const stats = await fs.stat(candidatePath);
 			candidates.push({
 				path: candidatePath,
 				fileName: entry.name,
