@@ -6,7 +6,14 @@ import { createRequire } from "node:module";
 import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+import {
+	normalizeAuthAlias,
+	shouldHandleMultiAuthAuth,
+} from "./codex-routing.js";
+import {
+	isInteractiveCommand as isSupervisorInteractiveCommand,
+	runCodexSupervisorIfEnabled,
+} from "./codex-supervisor.js";
 
 function hydrateCliVersionEnv() {
 	try {
@@ -524,9 +531,30 @@ async function main() {
 		return 1;
 	}
 
-	await autoSyncManagerActiveSelectionIfEnabled();
 	const forwardArgs = buildForwardArgs(rawArgs);
-	return forwardToRealCodex(realCodexBin, forwardArgs);
+	let supervisorDidForward = false;
+	const forwardToRealCodexWithStartupSync = async (codexBin, args) => {
+		supervisorDidForward = true;
+		await autoSyncManagerActiveSelectionIfEnabled();
+		return forwardToRealCodex(codexBin, args);
+	};
+	const supervisedExitCode = await runCodexSupervisorIfEnabled({
+		codexBin: realCodexBin,
+		rawArgs,
+		buildForwardArgs,
+		forwardToRealCodex: forwardToRealCodexWithStartupSync,
+	});
+	if (supervisedExitCode !== null) {
+		if (supervisedExitCode === 130) {
+			return 130;
+		}
+		if (isSupervisorInteractiveCommand(rawArgs) && !supervisorDidForward) {
+			await autoSyncManagerActiveSelectionIfEnabled();
+		}
+		return supervisedExitCode;
+	}
+
+	return forwardToRealCodexWithStartupSync(realCodexBin, forwardArgs);
 }
 
 const exitCode = await main();

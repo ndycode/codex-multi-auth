@@ -145,6 +145,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	liveAccountSync: true,
 	liveAccountSyncDebounceMs: 250,
 	liveAccountSyncPollMs: 2_000,
+	codexCliSessionSupervisor: false,
 	sessionAffinity: true,
 	sessionAffinityTtlMs: 20 * 60_000,
 	sessionAffinityMaxEntries: 512,
@@ -854,6 +855,25 @@ export function getLiveAccountSyncPollMs(pluginConfig: PluginConfig): number {
 		pluginConfig.liveAccountSyncPollMs,
 		2_000,
 		{ min: 500 },
+	);
+}
+
+/**
+ * Determines whether the CLI session supervisor wrapper is enabled.
+ *
+ * This accessor is synchronous, side-effect free, and safe for concurrent reads.
+ * It performs no filesystem I/O and does not expose token material.
+ *
+ * @param pluginConfig - The plugin configuration object used as the non-environment fallback
+ * @returns `true` when the session supervisor should wrap interactive Codex sessions
+ */
+export function getCodexCliSessionSupervisor(
+	pluginConfig: PluginConfig,
+): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_CLI_SESSION_SUPERVISOR",
+		pluginConfig.codexCliSessionSupervisor,
+		false,
 	);
 }
 

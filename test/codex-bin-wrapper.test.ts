@@ -1,6 +1,7 @@
 import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import {
 	copyFileSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -57,7 +58,91 @@ function createWrapperFixture(): string {
 		join(repoRootDir, "scripts", "codex-routing.js"),
 		join(scriptDir, "codex-routing.js"),
 	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex-supervisor.js"),
+		join(scriptDir, "codex-supervisor.js"),
+	);
 	return fixtureRoot;
+}
+
+function writeSupervisorRuntimeFixture(fixtureRoot: string): void {
+	const distLibDir = join(fixtureRoot, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(
+		join(distLibDir, "config.js"),
+		[
+			"export function loadPluginConfig() {",
+			"\treturn {",
+			"\t\tcodexCliSessionSupervisor: true,",
+			"\t\tretryAllAccountsRateLimited: true,",
+			"\t\tpreemptiveQuotaEnabled: true,",
+			"\t\tpreemptiveQuotaRemainingPercent5h: 10,",
+			"\t\tpreemptiveQuotaRemainingPercent7d: 5,",
+			"\t};",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(distLibDir, "accounts.js"),
+		[
+			'import { appendFile } from "node:fs/promises";',
+			"export class AccountManager {",
+			"\tstatic async loadFromDisk() {",
+			'\t\tconst markerPath = process.env.CODEX_TEST_SUPERVISOR_MARKER ?? "";',
+			"\t\tif (markerPath) {",
+			'\t\t\tawait appendFile(markerPath, "supervisor\\n", "utf8");',
+			"\t\t}",
+			"\t\treturn new AccountManager();",
+			"\t}",
+			"\tgetCurrentOrNextForFamilyHybrid() {",
+			'\t\treturn { index: 0, email: "healthy@example.com" };',
+			"\t}",
+			"\tsetActiveIndex() {}",
+			"\tasync saveToDisk() {}",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(distLibDir, "quota-probe.js"),
+		[
+			"export async function fetchCodexQuotaSnapshot() {",
+			"\treturn null;",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(distLibDir, "storage.js"),
+		[
+			"export function getStoragePath() {",
+			`\treturn ${JSON.stringify(join(fixtureRoot, "openai-codex-accounts.json"))};`,
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+}
+
+function writeSupervisorStub(fixtureRoot: string, lines: string[]): void {
+	writeFileSync(join(fixtureRoot, "scripts", "codex-supervisor.js"), lines.join("\n"), "utf8");
+}
+
+function writeCodexManagerAutoSyncFixture(fixtureRoot: string): void {
+	const distLibDir = join(fixtureRoot, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(
+		join(distLibDir, "codex-manager.js"),
+		[
+			'import { appendFile } from "node:fs/promises";',
+			"export async function autoSyncActiveAccountToCodex() {",
+			'\tconst markerPath = process.env.CODEX_TEST_AUTO_SYNC_MARKER ?? "";',
+			"\tif (!markerPath) return;",
+			'\tawait appendFile(markerPath, "sync\\n", "utf8");',
+			"}",
+		].join("\n"),
+		"utf8",
+	);
 }
 
 function createFakeCodexBin(rootDir: string): string {
@@ -358,6 +443,10 @@ describe("codex bin wrapper", () => {
 				join(repoRootDir, "scripts", "codex-routing.js"),
 				join(scriptDir, "codex-routing.js"),
 			);
+			copyFileSync(
+				join(repoRootDir, "scripts", "codex-supervisor.js"),
+				join(scriptDir, "codex-supervisor.js"),
+			);
 			writeFileSync(
 				join(globalShimDir, "codex-multi-auth.cmd"),
 				"@ECHO OFF\r\nREM real shim\r\n",
@@ -538,5 +627,116 @@ describe("codex bin wrapper", () => {
 				1,
 			);
 		}
+	});
+
+	it("uses the supervisor wrapper for non-interactive commands when enabled", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorRuntimeFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "supervisor-marker.log");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+			CODEX_TEST_SUPERVISOR_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
+		expect(readFileSync(markerPath, "utf8")).toContain("supervisor\n");
+	});
+
+	it("auto-syncs once for a supervisor-forwarded command", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorRuntimeFixture(fixtureRoot);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "auto-sync.log");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.match(/FORWARDED:/g) ?? []).toHaveLength(1);
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
+	});
+
+	it("skips startup auto-sync when the supervisor returns the abort sentinel", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorStub(fixtureRoot, [
+			"export function isInteractiveCommand() {",
+			"\treturn true;",
+			"}",
+			"export async function runCodexSupervisorIfEnabled() {",
+			"\treturn 130;",
+			"}",
+		]);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "abort-auto-sync.log");
+
+		const result = runWrapper(fixtureRoot, ["resume", "session-123"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(130);
+		expect(result.stdout).not.toContain("FORWARDED:");
+		expect(existsSync(markerPath)).toBe(false);
+	});
+
+	it("supports interactive commands through the supervisor wrapper", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorRuntimeFixture(fixtureRoot);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "interactive-auto-sync.log");
+
+		const result = runWrapper(fixtureRoot, [], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain('FORWARDED:-c cli_auth_credentials_store="file"');
+		expect(result.stdout.match(/FORWARDED:/g) ?? []).toHaveLength(1);
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
+	});
+
+	it("avoids double sync when the supervisor forwards an interactive command", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorStub(fixtureRoot, [
+			"export function isInteractiveCommand(rawArgs) {",
+			"\treturn Array.isArray(rawArgs) && rawArgs.includes(\"resume\");",
+			"}",
+			"export async function runCodexSupervisorIfEnabled({ codexBin, rawArgs, buildForwardArgs, forwardToRealCodex }) {",
+			"\tawait forwardToRealCodex(codexBin, buildForwardArgs(rawArgs));",
+			"\treturn 0;",
+			"}",
+		]);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "interactive-option-auto-sync.log");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["-c", 'profile="dev"', "resume", "session-123"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:-c profile="dev" resume session-123 -c cli_auth_credentials_store="file"',
+		);
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
 	});
 });
