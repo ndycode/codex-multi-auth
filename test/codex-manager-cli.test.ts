@@ -3019,6 +3019,16 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(getNamedBackupsMock).toHaveBeenCalled();
+		const signInItems = selectMock.mock.calls[0]?.[0] as Array<{
+			label: string;
+			kind?: string;
+		}>;
+		expect(signInItems.map((item) => item.label)).toContain(
+			"Recover saved accounts",
+		);
+		expect(signInItems.find((item) => item.label === "Recover saved accounts")?.kind).toBe(
+			"heading",
+		);
 		expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
 			"/mock/backups/last-good.json",
 		);

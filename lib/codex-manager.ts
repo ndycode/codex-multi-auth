@@ -1158,19 +1158,25 @@ async function promptOAuthSignInMode(
 
 	const ui = getUiRuntimeOptions();
 	const items: MenuItem<OAuthSignInMode>[] = [
+		{ label: UI_COPY.oauth.signInHeading, value: "browser" as const, kind: "heading" },
 		{ label: UI_COPY.oauth.openBrowser, value: "browser", color: "green" },
 		{ label: UI_COPY.oauth.manualMode, value: "manual", color: "yellow" },
 		...(backupOption
-			? [{
-				label: UI_COPY.oauth.restoreSavedBackup,
-				value: "restore-backup" as const,
-				hint: UI_COPY.oauth.loadLastBackupHint(
-					backupOption.fileName,
-					backupOption.accountCount,
-				),
-				color: "cyan" as const,
-			}]
+			? [
+				{ label: UI_COPY.oauth.restoreHeading, value: "browser" as const, kind: "heading" as const },
+				{
+					label: UI_COPY.oauth.restoreSavedBackup,
+					value: "restore-backup" as const,
+					hint: UI_COPY.oauth.loadLastBackupHint(
+						backupOption.fileName,
+						backupOption.accountCount,
+						formatBackupSavedAt(backupOption.mtimeMs),
+					),
+					color: "cyan" as const,
+				},
+			]
 			: []),
+		{ separator: true, label: "", value: "cancel" as const },
 		{ label: UI_COPY.oauth.back, value: "cancel", color: "red" },
 	];
 
