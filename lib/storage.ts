@@ -2069,6 +2069,15 @@ function cloneAccountStorageForPersistence(
 	};
 }
 
+function cloneFlaggedStorageForPersistence(
+	storage: FlaggedAccountStorageV1 | null | undefined,
+): FlaggedAccountStorageV1 {
+	return {
+		version: 1,
+		accounts: structuredClone(storage?.accounts ?? []),
+	};
+}
+
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -2100,6 +2109,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		) => Promise<void>,
+		currentFlagged: FlaggedAccountStorageV1,
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
@@ -2110,15 +2120,17 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			active: true,
 		};
 		const current = state.snapshot;
+		const currentFlagged = await loadFlaggedAccountsFromPath(getFlaggedAccountsPath());
 		const persist = async (
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
+			const nextFlagged = cloneFlaggedStorageForPersistence(flaggedStorage);
 			await saveAccountsUnlocked(nextAccounts);
 			try {
-				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				await saveFlaggedAccountsUnlocked(nextFlagged);
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
@@ -2142,8 +2154,26 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			}
 		};
 		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
+			handler(current, persist, currentFlagged),
 		);
+	});
+}
+
+export async function withFlaggedStorageTransaction<T>(
+	handler: (
+		current: FlaggedAccountStorageV1,
+		persist: (storage: FlaggedAccountStorageV1) => Promise<void>,
+	) => Promise<T>,
+): Promise<T> {
+	return withStorageLock(async () => {
+		const current = await loadFlaggedAccountsFromPath(getFlaggedAccountsPath());
+		let snapshot = cloneFlaggedStorageForPersistence(current);
+		const persist = async (storage: FlaggedAccountStorageV1): Promise<void> => {
+			const nextStorage = cloneFlaggedStorageForPersistence(storage);
+			await saveFlaggedAccountsUnlocked(nextStorage);
+			snapshot = nextStorage;
+		};
+		return handler(structuredClone(snapshot), persist);
 	});
 }
 

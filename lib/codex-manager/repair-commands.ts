@@ -23,9 +23,11 @@ import {
 	setStoragePath,
 	withAccountStorageTransaction,
 	withAccountAndFlaggedStorageTransaction,
+	withFlaggedStorageTransaction,
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
+	type FlaggedAccountStorageV1,
 } from "../storage.js";
 import {
 	getCodexCliAuthPath,
@@ -339,6 +341,11 @@ type AccountStorageMutation = {
 	after: AccountMetadataV3;
 };
 
+type FlaggedStorageMutation = {
+	before: FlaggedAccountMetadataV1;
+	after?: FlaggedAccountMetadataV1;
+};
+
 function hasAccountStorageMutation(
 	before: AccountMetadataV3,
 	after: AccountMetadataV3,
@@ -426,6 +433,45 @@ function findExistingAccountIndexForFlagged(
 		allowUniqueAccountIdFallbackWithoutEmail: true,
 	});
 	return flaggedMatchIndex ?? -1;
+}
+
+function findMatchingFlaggedAccountIndex(
+	accounts: readonly FlaggedAccountMetadataV1[],
+	target: FlaggedAccountMetadataV1,
+): number {
+	const targetEmail = sanitizeEmail(target.email);
+	return accounts.findIndex((account) => {
+		if (account.refreshToken === target.refreshToken) {
+			return true;
+		}
+		if (target.accountId && account.accountId === target.accountId) {
+			if (!targetEmail) {
+				return true;
+			}
+			return sanitizeEmail(account.email) === targetEmail;
+		}
+		return Boolean(targetEmail) && sanitizeEmail(account.email) === targetEmail;
+	});
+}
+
+function applyFlaggedStorageMutations(
+	flaggedStorage: FlaggedAccountStorageV1,
+	mutations: readonly FlaggedStorageMutation[],
+): void {
+	for (const mutation of mutations) {
+		const targetIndex = findMatchingFlaggedAccountIndex(
+			flaggedStorage.accounts,
+			mutation.before,
+		);
+		if (targetIndex < 0) {
+			continue;
+		}
+		if (mutation.after) {
+			flaggedStorage.accounts[targetIndex] = structuredClone(mutation.after);
+			continue;
+		}
+		flaggedStorage.accounts.splice(targetIndex, 1);
+	}
 }
 
 function upsertRecoveredFlaggedAccount(
@@ -752,6 +798,7 @@ export async function runVerifyFlagged(
 	let flaggedChanged = false;
 	const reports: VerifyFlaggedReport[] = [];
 	const nextFlaggedAccounts: FlaggedAccountMetadataV1[] = [];
+	const flaggedMutations: FlaggedStorageMutation[] = [];
 	const now = Date.now();
 	const refreshChecks: Array<{
 		index: number;
@@ -799,6 +846,10 @@ export async function runVerifyFlagged(
 					if (JSON.stringify(nextFlagged) !== JSON.stringify(flagged)) {
 						flaggedChanged = true;
 					}
+					flaggedMutations.push({
+						before: flagged,
+						after: nextFlagged,
+					});
 					reports.push({
 						index: i,
 						label,
@@ -818,6 +869,9 @@ export async function runVerifyFlagged(
 				if (upsertResult.restored) {
 					storageChanged = storageChanged || upsertResult.changed;
 					flaggedChanged = true;
+					flaggedMutations.push({
+						before: flagged,
+					});
 					reports.push({
 						index: i,
 						label,
@@ -850,6 +904,10 @@ export async function runVerifyFlagged(
 				if (JSON.stringify(updatedFlagged) !== JSON.stringify(flagged)) {
 					flaggedChanged = true;
 				}
+				flaggedMutations.push({
+					before: flagged,
+					after: updatedFlagged,
+				});
 				reports.push({
 					index: i,
 					label,
@@ -868,6 +926,10 @@ export async function runVerifyFlagged(
 			if ((flagged.lastError ?? "") !== detail) {
 				flaggedChanged = true;
 			}
+			flaggedMutations.push({
+				before: flagged,
+				after: failedFlagged,
+			});
 			reports.push({
 				index: i,
 				label,
@@ -877,32 +939,39 @@ export async function runVerifyFlagged(
 		}
 	};
 
+	let remainingFlagged = nextFlaggedAccounts.length;
+
 	if (options.restore) {
 		if (options.dryRun) {
 			applyRefreshChecks((await loadAccounts()) ?? createEmptyAccountStorage());
 		} else {
-			await withAccountAndFlaggedStorageTransaction(async (loadedStorage, persist) => {
-				const nextStorage = loadedStorage
-					? structuredClone(loadedStorage)
-					: createEmptyAccountStorage();
-				applyRefreshChecks(nextStorage);
-				if (!storageChanged && !flaggedChanged) {
-					return;
-				}
-				if (storageChanged) {
-					normalizeDoctorIndexes(nextStorage);
-				}
-				await persist(nextStorage, {
-					version: 1,
-					accounts: nextFlaggedAccounts,
-				});
-			});
+			await withAccountAndFlaggedStorageTransaction(
+				async (loadedStorage, persist, loadedFlaggedStorage) => {
+					const nextStorage = loadedStorage
+						? structuredClone(loadedStorage)
+						: createEmptyAccountStorage();
+					const nextFlaggedStorage = structuredClone(loadedFlaggedStorage);
+					applyRefreshChecks(nextStorage);
+					applyFlaggedStorageMutations(nextFlaggedStorage, flaggedMutations);
+					remainingFlagged = nextFlaggedStorage.accounts.length;
+					if (!storageChanged && !flaggedChanged) {
+						return;
+					}
+					if (storageChanged) {
+						normalizeDoctorIndexes(nextStorage);
+					}
+					await persist(nextStorage, nextFlaggedStorage);
+				},
+			);
 		}
 	} else {
 		applyRefreshChecks(createEmptyAccountStorage());
 	}
 
-	const remainingFlagged = nextFlaggedAccounts.length;
+	if (options.dryRun) {
+		remainingFlagged = nextFlaggedAccounts.length;
+	}
+
 	const restored = reports.filter((report) => report.outcome === "restored").length;
 	const healthyFlagged = reports.filter(
 		(report) => report.outcome === "healthy-flagged",
@@ -913,14 +982,11 @@ export async function runVerifyFlagged(
 	const changed = storageChanged || flaggedChanged;
 
 	if (!options.dryRun && flaggedChanged && !options.restore) {
-		await withAccountAndFlaggedStorageTransaction(async (loadedStorage, persist) => {
-			const nextStorage = loadedStorage
-				? structuredClone(loadedStorage)
-				: createEmptyAccountStorage();
-			await persist(nextStorage, {
-				version: 1,
-				accounts: nextFlaggedAccounts,
-			});
+		await withFlaggedStorageTransaction(async (loadedFlaggedStorage, persist) => {
+			const nextFlaggedStorage = structuredClone(loadedFlaggedStorage);
+			applyFlaggedStorageMutations(nextFlaggedStorage, flaggedMutations);
+			remainingFlagged = nextFlaggedStorage.accounts.length;
+			await persist(nextFlaggedStorage);
 		});
 	}
 
@@ -1571,6 +1637,14 @@ export async function runDoctor(
 	let fixChanged = false;
 	let storageFixChanged = false;
 	let fixActions: DoctorFixAction[] = [];
+	let pendingCodexActiveSync: {
+		accountId: string | undefined;
+		email: string | undefined;
+		accessToken: string | undefined;
+		refreshToken: string | undefined;
+		expiresAt: number | undefined;
+		idToken?: string;
+	} | null = null;
 	if (options.fix && storage && storage.accounts.length > 0) {
 		const fixed = applyDoctorFixes(storage, deps);
 		storageFixChanged = fixed.changed;
@@ -1791,27 +1865,14 @@ export async function runDoctor(
 				}
 
 				if (!options.dryRun && canSyncActiveAccount) {
-					const synced = await setCodexCliActiveSelection({
+					pendingCodexActiveSync = {
 						accountId: activeAccount.accountId,
 						email: activeAccount.email,
 						accessToken: syncAccessToken,
 						refreshToken: syncRefreshToken,
 						expiresAt: syncExpiresAt,
 						...(syncIdToken ? { idToken: syncIdToken } : {}),
-					});
-					if (synced) {
-						fixChanged = true;
-						fixActions.push({
-							key: "codex-active-sync",
-							message: "Synced manager active account into Codex auth state",
-						});
-					} else {
-						addCheck({
-							key: "codex-active-sync",
-							severity: "warn",
-							message: "Failed to sync manager active account into Codex auth state",
-						});
-					}
+					};
 				} else if (options.dryRun && canSyncActiveAccount) {
 					fixActions.push({
 						key: "codex-active-sync",
@@ -1835,6 +1896,23 @@ export async function runDoctor(
 			normalizeDoctorIndexes(nextStorage);
 			await persist(nextStorage);
 		});
+	}
+
+	if (pendingCodexActiveSync) {
+		const synced = await setCodexCliActiveSelection(pendingCodexActiveSync);
+		if (synced) {
+			fixChanged = true;
+			fixActions.push({
+				key: "codex-active-sync",
+				message: "Synced manager active account into Codex auth state",
+			});
+		} else {
+			addCheck({
+				key: "codex-active-sync",
+				severity: "warn",
+				message: "Failed to sync manager active account into Codex auth state",
+			});
+		}
 	}
 
 	const summary = checks.reduce(

@@ -2095,10 +2095,27 @@ function resolveManageActionAccountIndex(
 		if (typeof matchedIndex === "number" && matchedIndex >= 0) {
 			return matchedIndex;
 		}
+		return null;
 	}
 	return fallbackIndex >= 0 && fallbackIndex < storage.accounts.length
 		? fallbackIndex
 		: null;
+}
+
+function matchesManageActionAccount(
+	account: AccountMetadataV3 | undefined,
+	candidate: AccountMetadataV3 | undefined,
+): boolean {
+	if (!account || !candidate) {
+		return false;
+	}
+	if (account.accountId || candidate.accountId) {
+		return account.accountId === candidate.accountId;
+	}
+	return (
+		account.refreshToken === candidate.refreshToken
+		&& sanitizeEmail(account.email) === sanitizeEmail(candidate.email)
+	);
 }
 
 async function handleManageAction(
@@ -2126,6 +2143,10 @@ async function handleManageAction(
 					selectedAccount,
 				);
 				if (nextIndex === null) {
+					return;
+				}
+				const nextAccount = nextStorage.accounts[nextIndex];
+				if (!matchesManageActionAccount(selectedAccount, nextAccount)) {
 					return;
 				}
 				nextStorage.accounts.splice(nextIndex, 1);
@@ -2159,7 +2180,7 @@ async function handleManageAction(
 					return;
 				}
 				const nextAccount = nextStorage.accounts[nextIndex];
-				if (!nextAccount) {
+				if (!nextAccount || !matchesManageActionAccount(selectedAccount, nextAccount)) {
 					return;
 				}
 				nextAccount.enabled = nextAccount.enabled === false;
@@ -2239,55 +2260,88 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	if (!account) {
 		return false;
 	}
+	const accountMatch = {
+		accountId: account.accountId,
+		email: account.email,
+		refreshToken: account.refreshToken,
+	};
 
 	const now = Date.now();
 	let syncAccessToken = account.accessToken;
 	let syncRefreshToken = account.refreshToken;
 	let syncExpiresAt = account.expiresAt;
 	let syncIdToken: string | undefined;
+	let syncAccountId = account.accountId;
+	let syncEmail = account.email;
 	let changed = false;
+	let nextStoredAccount: AccountMetadataV3 | null = null;
 
 	if (!hasUsableAccessToken(account, now)) {
 		const refreshResult = await queuedRefresh(account.refreshToken);
 		if (refreshResult.type !== "success") {
 			return false;
 		}
+		nextStoredAccount = structuredClone(account);
 		const tokenAccountId = extractAccountId(refreshResult.access);
 		const nextEmail = sanitizeEmail(
 			extractAccountEmail(refreshResult.access, refreshResult.idToken),
 		);
-		if (account.refreshToken !== refreshResult.refresh) {
-			account.refreshToken = refreshResult.refresh;
+		if (nextStoredAccount.refreshToken !== refreshResult.refresh) {
+			nextStoredAccount.refreshToken = refreshResult.refresh;
 			changed = true;
 		}
-		if (account.accessToken !== refreshResult.access) {
-			account.accessToken = refreshResult.access;
+		if (nextStoredAccount.accessToken !== refreshResult.access) {
+			nextStoredAccount.accessToken = refreshResult.access;
 			changed = true;
 		}
-		if (account.expiresAt !== refreshResult.expires) {
-			account.expiresAt = refreshResult.expires;
+		if (nextStoredAccount.expiresAt !== refreshResult.expires) {
+			nextStoredAccount.expiresAt = refreshResult.expires;
 			changed = true;
 		}
-		if (nextEmail && nextEmail !== account.email) {
-			account.email = nextEmail;
+		if (nextEmail && nextEmail !== nextStoredAccount.email) {
+			nextStoredAccount.email = nextEmail;
 			changed = true;
 		}
-		if (applyTokenAccountIdentity(account, tokenAccountId)) {
+		if (applyTokenAccountIdentity(nextStoredAccount, tokenAccountId)) {
 			changed = true;
 		}
 		syncAccessToken = refreshResult.access;
 		syncRefreshToken = refreshResult.refresh;
 		syncExpiresAt = refreshResult.expires;
 		syncIdToken = refreshResult.idToken;
+		syncAccountId = nextStoredAccount.accountId;
+		syncEmail = nextStoredAccount.email;
 	}
 
-	if (changed) {
-		await saveAccounts(storage);
+	if (changed && nextStoredAccount) {
+		let persisted = false;
+		await withAccountStorageTransaction(async (loadedStorage, persist) => {
+			if (!loadedStorage) {
+				return;
+			}
+			const nextStorage = structuredClone(loadedStorage);
+			const targetIndex =
+				findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
+					allowUniqueAccountIdFallbackWithoutEmail: true,
+				})
+				?? findMatchingAccountIndex(nextStorage.accounts, nextStoredAccount, {
+					allowUniqueAccountIdFallbackWithoutEmail: true,
+				});
+			if (targetIndex === undefined) {
+				return;
+			}
+			nextStorage.accounts[targetIndex] = structuredClone(nextStoredAccount);
+			await persist(nextStorage);
+			persisted = true;
+		});
+		if (!persisted) {
+			return false;
+		}
 	}
 
 	return setCodexCliActiveSelection({
-		accountId: account.accountId,
-		email: account.email,
+		accountId: syncAccountId,
+		email: syncEmail,
 		accessToken: syncAccessToken,
 		refreshToken: syncRefreshToken,
 		expiresAt: syncExpiresAt,
