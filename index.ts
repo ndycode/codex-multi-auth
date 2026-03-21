@@ -220,6 +220,7 @@ import {
 	ensureRefreshGuardianState,
 	ensureSessionAffinityState,
 } from "./lib/runtime/runtime-services.js";
+import { ensureSessionAffinityEntry } from "./lib/runtime/session-affinity-entry.js";
 import { applyAccountStorageScopeFromConfig } from "./lib/runtime/storage-scope.js";
 import {
 	applyUiRuntimeFromConfig,
@@ -610,14 +611,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const ensureSessionAffinity = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
-		const next = ensureSessionAffinityState({
-			enabled: getSessionAffinity(pluginConfig),
-			ttlMs: getSessionAffinityTtlMs(pluginConfig),
-			maxEntries: getSessionAffinityMaxEntries(pluginConfig),
+		const next = ensureSessionAffinityEntry({
+			pluginConfig,
 			currentStore: sessionAffinityStore,
 			currentConfigKey: sessionAffinityConfigKey,
+			getSessionAffinity,
+			getSessionAffinityTtlMs,
+			getSessionAffinityMaxEntries,
 			createStore: ({ ttlMs, maxEntries }) =>
 				new SessionAffinityStore({ ttlMs, maxEntries }),
+			ensureSessionAffinityState,
 		});
 		sessionAffinityStore = next.sessionAffinityStore;
 		sessionAffinityConfigKey = next.sessionAffinityConfigKey;
