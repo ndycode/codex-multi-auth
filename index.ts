@@ -190,6 +190,7 @@ import {
 } from "./lib/runtime/metrics.js";
 import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
 import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-quota.js";
+import { fetchRuntimeCodexQuotaSnapshot } from "./lib/runtime/quota-probe.js";
 import {
 	type CodexQuotaSnapshot,
 	formatCodexQuotaLine,
@@ -2430,123 +2431,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						};
 
 						const fetchCodexQuotaSnapshot = async (params: {
-							accountId: string;
-							accessToken: string;
-						}): Promise<CodexQuotaSnapshot> => {
-							const QUOTA_PROBE_MODELS = [
-								"gpt-5-codex",
-								"gpt-5.3-codex",
-								"gpt-5.2-codex",
-							];
-							let lastError: Error | null = null;
+									accountId: string;
+									accessToken: string;
+								}): Promise<CodexQuotaSnapshot> =>
+								fetchRuntimeCodexQuotaSnapshot({
+									accountId: params.accountId,
+									accessToken: params.accessToken,
+									baseUrl: CODEX_BASE_URL,
+									fetchImpl: fetch,
+									getCodexInstructions,
+									createCodexHeaders,
+									parseCodexQuotaSnapshot,
+									getUnsupportedCodexModelInfo,
+								});
 
-							for (const model of QUOTA_PROBE_MODELS) {
-								try {
-									const instructions = await getCodexInstructions(model);
-									const probeBody: RequestBody = {
-										model,
-										stream: true,
-										store: false,
-										include: ["reasoning.encrypted_content"],
-										instructions,
-										input: [
-											{
-												type: "message",
-												role: "user",
-												content: [{ type: "input_text", text: "quota ping" }],
-											},
-										],
-										reasoning: { effort: "none", summary: "auto" },
-										text: { verbosity: "low" },
-									};
-
-									const headers = createCodexHeaders(
-										undefined,
-										params.accountId,
-										params.accessToken,
-										{
-											model,
-										},
-									);
-									headers.set(
-										"content-type",
-										"application/json; charset=utf-8",
-									);
-
-									const controller = new AbortController();
-									const timeout = setTimeout(() => controller.abort(), 15_000);
-									let response: Response;
-									try {
-										response = await fetch(
-											`${CODEX_BASE_URL}/codex/responses`,
-											{
-												method: "POST",
-												headers,
-												body: JSON.stringify(probeBody),
-												signal: controller.signal,
-											},
-										);
-									} finally {
-										clearTimeout(timeout);
-									}
-
-									const snapshot = parseCodexQuotaSnapshot(
-										response.headers,
-										response.status,
-									);
-									if (snapshot) {
-										// We only need headers; cancel the SSE stream immediately.
-										try {
-											await response.body?.cancel();
-										} catch {
-											// Ignore cancellation failures.
-										}
-										return snapshot;
-									}
-
-									if (!response.ok) {
-										const bodyText = await response.text().catch(() => "");
-										let errorBody: unknown;
-										try {
-											errorBody = bodyText
-												? (JSON.parse(bodyText) as unknown)
-												: undefined;
-										} catch {
-											errorBody = { error: { message: bodyText } };
-										}
-
-										const unsupportedInfo =
-											getUnsupportedCodexModelInfo(errorBody);
-										if (unsupportedInfo.isUnsupported) {
-											lastError = new Error(
-												unsupportedInfo.message ??
-													`Model '${model}' unsupported for this account`,
-											);
-											continue;
-										}
-
-										const message =
-											(typeof (errorBody as { error?: { message?: unknown } })
-												?.error?.message === "string"
-												? (errorBody as { error?: { message?: string } }).error
-														?.message
-												: bodyText) || `HTTP ${response.status}`;
-										throw new Error(message);
-									}
-
-									lastError = new Error(
-										"Codex response did not include quota headers",
-									);
-								} catch (error) {
-									lastError =
-										error instanceof Error ? error : new Error(String(error));
-								}
-							}
-
-							throw lastError ?? new Error("Failed to fetch quotas");
-						};
-
-						const runAccountCheck = async (
+const runAccountCheck = async (
 							deepProbe: boolean,
 						): Promise<void> => {
 							const loadedStorage = await hydrateEmails(await loadAccounts());
