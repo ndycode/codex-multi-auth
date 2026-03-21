@@ -2663,20 +2663,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							console.log("");
 						};
 
-						const verifyFlaggedAccounts = async (): Promise<void> => {
-							await verifyRuntimeFlaggedAccounts({
-								loadFlaggedAccounts,
-								lookupCodexCliTokensByEmail,
-								queuedRefresh,
-								resolveAccountSelection,
-								persistAccounts,
-								invalidateAccountManagerCache,
-								saveFlaggedAccounts,
-								logInfo,
-								showLine: (message) => console.log(message),
-							});
-						};
-
 						if (!explicitLoginMode) {
 							while (true) {
 								const loadedStorage = await hydrateEmails(await loadAccounts());
@@ -2742,7 +2728,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									continue;
 								}
 								if (menuResult.mode === "verify-flagged") {
-									await verifyFlaggedAccounts();
+									await verifyRuntimeFlaggedAccounts({
+										loadFlaggedAccounts,
+										lookupCodexCliTokensByEmail,
+										queuedRefresh,
+										resolveAccountSelection,
+										persistAccounts,
+										invalidateAccountManagerCache,
+										saveFlaggedAccounts,
+										logInfo,
+										showLine: (message) => console.log(message),
+									});
 									continue;
 								}
 
