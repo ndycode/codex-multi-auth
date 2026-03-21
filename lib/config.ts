@@ -1436,9 +1436,10 @@ export function getPluginConfigExplainReport(): ConfigExplainReport {
 	const stored = resolveStoredPluginConfigRecord();
 	const storedRecord = stored.record ?? null;
 	const entries = CONFIG_EXPLAIN_ENTRIES.map((entry) => {
-		const source: ConfigExplainSource = entry.envNames.some(
-			(name) => process.env[name] !== undefined,
-		)
+		const source: ConfigExplainSource = entry.envNames.some((name) => {
+			const value = process.env[name];
+			return typeof value === "string" && value.trim().length > 0;
+		})
 			? "env"
 			: storedRecord && Object.hasOwn(storedRecord, entry.key)
 				? stored.storageKind

@@ -19,6 +19,7 @@ const loadQuotaCacheMock = vi.fn();
 const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
+const getPluginConfigExplainReportMock = vi.fn();
 const selectMock = vi.fn();
 const confirmMock = vi.fn(async () => true);
 const planOcChatgptSyncMock = vi.fn();
@@ -181,6 +182,7 @@ vi.mock("../lib/config.js", async () => {
 		...(actual as Record<string, unknown>),
 		loadPluginConfig: loadPluginConfigMock,
 		savePluginConfig: savePluginConfigMock,
+		getPluginConfigExplainReport: getPluginConfigExplainReportMock,
 	};
 });
 
@@ -564,6 +566,19 @@ describe("codex manager cli commands", () => {
 		});
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
+		getPluginConfigExplainReportMock.mockReturnValue({
+			configPath: "/mock/settings.json",
+			storageKind: "unified",
+			entries: [
+				{
+					key: "codexMode",
+					value: true,
+					defaultValue: true,
+					source: "default",
+					envNames: ["CODEX_MODE"],
+				},
+			],
+		});
 		selectMock.mockResolvedValue(undefined);
 		getNamedBackupsMock.mockResolvedValue([]);
 		restoreTTYDescriptors();
