@@ -32,6 +32,8 @@ const DEFAULT_STORAGE_LOCK_POLL_MS = 100;
 const DEFAULT_STORAGE_LOCK_TTL_MS = 30_000;
 const DEFAULT_UNLINK_RETRY_ATTEMPTS = 4;
 const DEFAULT_UNLINK_RETRY_BASE_DELAY_MS = 25;
+const DEFAULT_WRITE_RETRY_ATTEMPTS = 4;
+const DEFAULT_WRITE_RETRY_BASE_DELAY_MS = 25;
 const INTERNAL_RECOVERABLE_COOLDOWN_MS = 60_000;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/;
 const SESSION_META_SCAN_LINE_LIMIT = 200;
@@ -470,6 +472,10 @@ async function safeUnlink(path, platform = process.platform) {
 	return false;
 }
 
+function isWindowsRetryableWriteError(code, platform = process.platform) {
+	return platform === "win32" && (code === "EPERM" || code === "EBUSY");
+}
+
 function getSupervisorStoragePath(runtime) {
 	if (typeof runtime.getStoragePath === "function") {
 		let storagePath;
@@ -524,14 +530,37 @@ function createSupervisorLockPayload(ownerId, acquiredAt, ttlMs) {
 	};
 }
 
-async function writeSupervisorLockPayload(lockPath, ownerId, acquiredAt, ttlMs) {
-	await fs.writeFile(
-		lockPath,
-		`${JSON.stringify(
-			createSupervisorLockPayload(ownerId, acquiredAt, ttlMs),
-		)}\n`,
-		"utf8",
-	);
+async function writeSupervisorLockPayload(
+	lockPath,
+	ownerId,
+	acquiredAt,
+	ttlMs,
+	platform = process.platform,
+) {
+	const payload = `${JSON.stringify(
+		createSupervisorLockPayload(ownerId, acquiredAt, ttlMs),
+	)}\n`;
+
+	for (let attempt = 0; attempt < DEFAULT_WRITE_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.writeFile(lockPath, payload, "utf8");
+			return;
+		} catch (error) {
+			const code =
+				error && typeof error === "object" && "code" in error
+					? `${error.code ?? ""}`
+					: "";
+			const canRetry =
+				isWindowsRetryableWriteError(code, platform) &&
+				attempt + 1 < DEFAULT_WRITE_RETRY_ATTEMPTS;
+			if (!canRetry) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, DEFAULT_WRITE_RETRY_BASE_DELAY_MS * (attempt + 1)),
+			);
+		}
+	}
 }
 
 async function safeUnlinkOwnedSupervisorLock(lockPath, ownerId, staleBeforeMs) {
@@ -2404,6 +2433,7 @@ const TEST_ONLY_API = {
 	sleep,
 	safeUnlink,
 	safeUnlinkOwnedSupervisorLock,
+	writeSupervisorLockPayload,
 	withSupervisorStorageLock,
 	withLockedManager,
 	getSupervisorStorageLockPath,

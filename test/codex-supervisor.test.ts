@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__testOnly as supervisorTestApi,
 	runCodexSupervisorIfEnabled,
@@ -41,6 +41,10 @@ const envKeys = [
 const originalEnv = Object.fromEntries(
 	envKeys.map((key) => [key, process.env[key]]),
 ) as Record<(typeof envKeys)[number], string | undefined>;
+
+beforeEach(() => {
+	supervisorTestApi?.resetSupervisorCaches?.();
+});
 
 async function removeDirectoryWithRetry(dir: string): Promise<void> {
 	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
@@ -711,6 +715,52 @@ describe("codex supervisor", () => {
 				).toBeGreaterThanOrEqual(2);
 			} finally {
 				openSpy.mockRestore();
+			}
+		},
+	);
+
+	it.each(["EPERM", "EBUSY"] as const)(
+		"retries supervisor lock payload writes after a transient Windows %s",
+		async (code) => {
+			Object.defineProperty(process, "platform", { value: "win32" });
+			const lockPath = join(createTempDir(), "supervisor.lock");
+
+			const originalWriteFile = fs.writeFile.bind(fs);
+			let injectedFailures = 0;
+			const writeSpy = vi.spyOn(fs, "writeFile").mockImplementation(async (path, data, options) => {
+				if (`${path}` === lockPath) {
+					if (injectedFailures < 2) {
+						injectedFailures += 1;
+						const error = Object.assign(new Error("transient heartbeat write failure"), {
+							code,
+						});
+						throw error;
+					}
+				}
+				return originalWriteFile(
+					path as Parameters<typeof fs.writeFile>[0],
+					data as Parameters<typeof fs.writeFile>[1],
+					options as Parameters<typeof fs.writeFile>[2],
+				);
+			});
+
+			try {
+				await expect(
+					supervisorTestApi?.writeSupervisorLockPayload(
+						lockPath,
+						"owner-1",
+						1_000,
+						30_000,
+						"win32",
+					),
+				).resolves.toBeUndefined();
+				expect(injectedFailures).toBe(2);
+				expect(
+					writeSpy.mock.calls.filter(([path]) => `${path}` === lockPath).length,
+				).toBe(3);
+				await expect(fs.readFile(lockPath, "utf8")).resolves.toContain('"ownerId":"owner-1"');
+			} finally {
+				writeSpy.mockRestore();
 			}
 		},
 	);
