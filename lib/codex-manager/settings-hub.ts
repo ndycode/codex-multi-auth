@@ -327,11 +327,6 @@ const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
 		description: "Keep accounts synced when files change in another window.",
 	},
 	{
-		key: "codexCliSessionSupervisor",
-		label: "Enable Session Resume Supervisor",
-		description: "Wrap interactive Codex sessions so they can relaunch with resume after rotation.",
-	},
-	{
 		key: "sessionAffinity",
 		label: "Enable Session Affinity",
 		description: "Try to keep each conversation on the same account.",

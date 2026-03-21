@@ -1069,6 +1069,11 @@ function clearAllProbeSnapshotCache() {
 	snapshotProbeCache.clear();
 }
 
+export function resetSupervisorCaches() {
+	clearAllProbeSnapshotCache();
+	clearSessionBindingPathCache();
+}
+
 function readCachedProbeSnapshot(account) {
 	const cacheKey = getSnapshotCacheKey(account);
 	if (!cacheKey) return null;
@@ -2336,6 +2341,7 @@ const TEST_ONLY_API = {
 	markCurrentAccountForRestart,
 	requestChildRestart,
 	resolveCodexHomeDir,
+	resetSupervisorCaches,
 	createRuntimeConfigAccessors,
 	getSessionsRootDir,
 	getSnapshotCacheKey,
