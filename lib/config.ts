@@ -1441,9 +1441,7 @@ export function getPluginConfigExplainReport(): ConfigExplainReport {
 		)
 			? "env"
 			: storedRecord && Object.hasOwn(storedRecord, entry.key)
-				? stored.storageKind === "none"
-					? "default"
-					: stored.storageKind
+				? stored.storageKind
 				: "default";
 
 		return {

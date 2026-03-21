@@ -676,6 +676,29 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"entries"'));
 	});
 
+	it("prints config explain output in text mode", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "config", "explain"]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith("Config storage: unified");
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("codexMode = "),
+		);
+	});
+
+	it("errors for unknown config subcommands", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "config", "unknown"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Unknown config command: unknown");
+	});
+
 	it("prints populated account status for auth status", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
