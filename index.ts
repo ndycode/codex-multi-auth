@@ -437,25 +437,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		}
 	};
 
-	const applyStorageScope = (
-		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void =>
-		applyAccountStorageScope(pluginConfig, {
-			getPerProjectAccounts,
-			getStorageBackupEnabled,
-			isCodexCliSyncEnabled,
-			setStorageBackupEnabled,
-			setStoragePath,
-			getCwd: () => process.cwd(),
-			warnPerProjectSyncConflict: () => {
-				if (perProjectStorageWarningShown) return;
-				perProjectStorageWarningShown = true;
-				logWarn(
-					`[${PLUGIN_NAME}] CODEX_AUTH_PER_PROJECT_ACCOUNTS is ignored while Codex CLI sync is enabled. Using global account storage.`,
-				);
-			},
-		});
-
 	const ensureLiveAccountSync = async (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 		authFallback?: OAuthAuthDetails,
@@ -666,7 +647,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const auth = await getAuth();
 				const pluginConfig = loadPluginConfig();
 				applyUiRuntimeFromConfig(pluginConfig);
-				applyStorageScope(pluginConfig);
+				applyAccountStorageScope(pluginConfig, {
+					getPerProjectAccounts,
+					getStorageBackupEnabled,
+					isCodexCliSyncEnabled,
+					setStorageBackupEnabled,
+					setStoragePath,
+					getCwd: () => process.cwd(),
+					warnPerProjectSyncConflict: () => {
+						if (perProjectStorageWarningShown) return;
+						perProjectStorageWarningShown = true;
+						logWarn(
+							`[${PLUGIN_NAME}] CODEX_AUTH_PER_PROJECT_ACCOUNTS is ignored while Codex CLI sync is enabled. Using global account storage.`,
+						);
+					},
+				});
 				ensureSessionAffinity(pluginConfig);
 				ensureRefreshGuardian(pluginConfig);
 				applyPreemptiveQuotaSettings(pluginConfig);
@@ -2530,7 +2525,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					authorize: async (inputs?: Record<string, string>) => {
 						const authPluginConfig = loadPluginConfig();
 						applyUiRuntimeFromConfig(authPluginConfig);
-						applyStorageScope(authPluginConfig);
+						applyAccountStorageScope(authPluginConfig, {
+							getPerProjectAccounts,
+							getStorageBackupEnabled,
+							isCodexCliSyncEnabled,
+							setStorageBackupEnabled,
+							setStoragePath,
+							getCwd: () => process.cwd(),
+							warnPerProjectSyncConflict: () => {
+								if (perProjectStorageWarningShown) return;
+								perProjectStorageWarningShown = true;
+								logWarn(
+									`[${PLUGIN_NAME}] CODEX_AUTH_PER_PROJECT_ACCOUNTS is ignored while Codex CLI sync is enabled. Using global account storage.`,
+								);
+							},
+						});
 
 						const accounts: TokenSuccessWithAccount[] = [];
 						const noBrowser =
@@ -3719,7 +3728,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						// Must happen BEFORE persistAccountPool to ensure correct storage location
 						const manualPluginConfig = loadPluginConfig();
 						applyUiRuntimeFromConfig(manualPluginConfig);
-						applyStorageScope(manualPluginConfig);
+						applyAccountStorageScope(manualPluginConfig, {
+							getPerProjectAccounts,
+							getStorageBackupEnabled,
+							isCodexCliSyncEnabled,
+							setStorageBackupEnabled,
+							setStoragePath,
+							getCwd: () => process.cwd(),
+							warnPerProjectSyncConflict: () => {
+								if (perProjectStorageWarningShown) return;
+								perProjectStorageWarningShown = true;
+								logWarn(
+									`[${PLUGIN_NAME}] CODEX_AUTH_PER_PROJECT_ACCOUNTS is ignored while Codex CLI sync is enabled. Using global account storage.`,
+								);
+							},
+						});
 
 						const { pkce, state, url } = await createAuthorizationFlow();
 						return buildManualOAuthFlow(pkce, url, state, {
