@@ -182,6 +182,7 @@ import {
 	sanitizeResponseHeadersForLog,
 } from "./lib/runtime/metrics.js";
 import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
+import { ensureRuntimeRefreshGuardian } from "./lib/runtime/refresh-guardian.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
@@ -483,32 +484,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const ensureRefreshGuardian = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
-		if (!getProactiveRefreshGuardian(pluginConfig)) {
-			if (refreshGuardian) {
-				refreshGuardian.stop();
-				refreshGuardian = null;
-				refreshGuardianConfigKey = null;
-			}
-			return;
-		}
-
-		const intervalMs = getProactiveRefreshIntervalMs(pluginConfig);
-		const bufferMs = getProactiveRefreshBufferMs(pluginConfig);
-		const configKey = `${intervalMs}:${bufferMs}`;
-		if (refreshGuardian && refreshGuardianConfigKey === configKey) return;
-
-		if (refreshGuardian) {
-			refreshGuardian.stop();
-		}
-		refreshGuardian = new RefreshGuardian(() => cachedAccountManager, {
-			intervalMs,
-			bufferMs,
+		const ensured = ensureRuntimeRefreshGuardian({
+			pluginConfig,
+			getProactiveRefreshGuardian,
+			currentGuardian: refreshGuardian,
+			currentConfigKey: refreshGuardianConfigKey,
+			getProactiveRefreshIntervalMs,
+			getProactiveRefreshBufferMs,
+			createGuardian: ({ intervalMs, bufferMs }) =>
+				new RefreshGuardian(() => cachedAccountManager, {
+					intervalMs,
+					bufferMs,
+				}),
+			registerCleanup,
 		});
-		refreshGuardianConfigKey = configKey;
-		refreshGuardian.start();
-		registerCleanup(() => {
-			refreshGuardian?.stop();
-		});
+		refreshGuardian = ensured.guardian;
+		refreshGuardianConfigKey = ensured.configKey;
 	};
 
 	const ensureSessionAffinity = (
