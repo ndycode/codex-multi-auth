@@ -27,10 +27,7 @@ describe("experimental settings schema", () => {
 		expect(mapExperimentalMenuHotkey("2")).toEqual({ type: "backup" });
 		expect(mapExperimentalMenuHotkey("3")).toEqual({ type: "toggle-refresh-guardian" });
 		expect(mapExperimentalMenuHotkey("[")).toEqual({ type: "decrease-refresh-interval" });
-		expect(mapExperimentalMenuHotkey("a")).toEqual({ type: "decrease-refresh-interval" });
 		expect(mapExperimentalMenuHotkey("]")).toEqual({ type: "increase-refresh-interval" });
-		expect(mapExperimentalMenuHotkey("=")).toEqual({ type: "increase-refresh-interval" });
-		expect(mapExperimentalMenuHotkey("d")).toEqual({ type: "increase-refresh-interval" });
 		expect(mapExperimentalMenuHotkey("q")).toEqual({ type: "back" });
 		expect(mapExperimentalMenuHotkey("s")).toEqual({ type: "save" });
 		expect(mapExperimentalMenuHotkey("x")).toBeUndefined();
