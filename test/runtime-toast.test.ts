@@ -17,5 +17,14 @@ describe("showRuntimeToast", () => {
 
 	it("silently ignores missing TUI clients", async () => {
 		await expect(showRuntimeToast({}, "Saved")).resolves.toBeUndefined();
+		await expect(showRuntimeToast({ tui: {} }, "Saved")).resolves.toBeUndefined();
+	});
+
+	it("swallows TUI toast errors", async () => {
+		const showToast = vi.fn(async () => {
+			throw new Error("tui offline");
+		});
+		await expect(showRuntimeToast({ tui: { showToast } }, "Saved", "error")).resolves.toBeUndefined();
+		expect(showToast).toHaveBeenCalledTimes(1);
 	});
 });
