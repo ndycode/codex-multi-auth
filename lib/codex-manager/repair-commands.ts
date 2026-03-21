@@ -1520,6 +1520,7 @@ export async function runDoctor(
 
 	setStoragePath(null);
 	const storagePath = getStoragePath();
+	const storageFileExists = existsSync(storagePath);
 	const checks: DoctorCheck[] = [];
 	const addCheck = (check: DoctorCheck): void => {
 		checks.push(check);
@@ -1527,14 +1528,14 @@ export async function runDoctor(
 
 	addCheck({
 		key: "storage-file",
-		severity: existsSync(storagePath) ? "ok" : "warn",
-		message: existsSync(storagePath)
+		severity: storageFileExists ? "ok" : "warn",
+		message: storageFileExists
 			? "Account storage file found"
 			: "Account storage file does not exist yet (first login pending)",
 		details: storagePath,
 	});
 
-	if (existsSync(storagePath)) {
+	if (storageFileExists) {
 		try {
 			const stat = await fs.stat(storagePath);
 			addCheck({
@@ -1555,19 +1556,21 @@ export async function runDoctor(
 
 	const codexAuthPath = getCodexCliAuthPath();
 	const codexConfigPath = getCodexCliConfigPath();
+	const codexAuthFileExists = existsSync(codexAuthPath);
+	const codexConfigFileExists = existsSync(codexConfigPath);
 	let codexAuthEmail: string | undefined;
 	let codexAuthAccountId: string | undefined;
 
 	addCheck({
 		key: "codex-auth-file",
-		severity: existsSync(codexAuthPath) ? "ok" : "warn",
-		message: existsSync(codexAuthPath)
+		severity: codexAuthFileExists ? "ok" : "warn",
+		message: codexAuthFileExists
 			? "Codex auth file found"
 			: "Codex auth file does not exist",
 		details: codexAuthPath,
 	});
 
-	if (existsSync(codexAuthPath)) {
+	if (codexAuthFileExists) {
 		try {
 			const raw = await fs.readFile(codexAuthPath, "utf-8");
 			const parsed = JSON.parse(raw) as unknown;
@@ -1617,15 +1620,15 @@ export async function runDoctor(
 
 	addCheck({
 		key: "codex-config-file",
-		severity: existsSync(codexConfigPath) ? "ok" : "warn",
-		message: existsSync(codexConfigPath)
+		severity: codexConfigFileExists ? "ok" : "warn",
+		message: codexConfigFileExists
 			? "Codex config file found"
 			: "Codex config file does not exist",
 		details: codexConfigPath,
 	});
 
 	let codexAuthStoreMode: string | undefined;
-	if (existsSync(codexConfigPath)) {
+	if (codexConfigFileExists) {
 		try {
 			const configRaw = await fs.readFile(codexConfigPath, "utf-8");
 			const match = configRaw.match(/^\s*cli_auth_credentials_store\s*=\s*"([^"]+)"\s*$/m);
