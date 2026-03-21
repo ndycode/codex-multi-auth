@@ -2,16 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { showRuntimeToast } from "../lib/runtime/toast.js";
 
 describe("showRuntimeToast", () => {
-	it("passes a zero duration through to the TUI toast payload", async () => {
+	it("preserves variant, title, and zero duration in the TUI toast payload", async () => {
 		const showToast = vi.fn(async () => {});
 		await showRuntimeToast(
 			{ tui: { showToast } },
 			"Saved",
 			"info",
-			{ duration: 0 },
+			{ title: "Heads up", duration: 0 },
 		);
 		expect(showToast).toHaveBeenCalledWith({
-			body: { message: "Saved", variant: "info", duration: 0 },
+			body: { message: "Saved", variant: "info", title: "Heads up", duration: 0 },
 		});
 	});
 
