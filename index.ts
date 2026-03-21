@@ -160,6 +160,10 @@ import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
 import { withStreamingFailover } from "./lib/request/stream-failover.js";
 import { addJitter } from "./lib/rotation.js";
+import {
+	invalidateRuntimeAccountManagerCache,
+	reloadRuntimeAccountManager,
+} from "./lib/runtime/account-manager-cache.js";
 import { persistAccountPool } from "./lib/runtime/account-pool.js";
 import { applyAccountStorageScope } from "./lib/runtime/account-scope.js";
 import { handleAccountSelectEvent } from "./lib/runtime/account-select-event.js";
@@ -413,28 +417,33 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	): string => getRuntimeStatusMarker(ui, status);
 
 	const invalidateAccountManagerCache = (): void => {
-		cachedAccountManager = null;
-		accountManagerPromise = null;
+		invalidateRuntimeAccountManagerCache({
+			setCachedAccountManager: (value) => {
+				cachedAccountManager = value as AccountManager | null;
+			},
+			setAccountManagerPromise: (value) => {
+				accountManagerPromise = value as Promise<AccountManager> | null;
+			},
+		});
 	};
 
 	const reloadAccountManagerFromDisk = async (
 		authFallback?: OAuthAuthDetails,
-	): Promise<AccountManager> => {
-		if (accountReloadInFlight) {
-			return accountReloadInFlight;
-		}
-		accountReloadInFlight = (async () => {
-			const reloaded = await AccountManager.loadFromDisk(authFallback);
-			cachedAccountManager = reloaded;
-			accountManagerPromise = Promise.resolve(reloaded);
-			return reloaded;
-		})();
-		try {
-			return await accountReloadInFlight;
-		} finally {
-			accountReloadInFlight = null;
-		}
-	};
+	): Promise<AccountManager> =>
+		reloadRuntimeAccountManager<AccountManager>({
+			currentReloadInFlight: accountReloadInFlight,
+			loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
+			setCachedAccountManager: (value) => {
+				cachedAccountManager = value;
+			},
+			setAccountManagerPromise: (value) => {
+				accountManagerPromise = value;
+			},
+			setReloadInFlight: (value) => {
+				accountReloadInFlight = value;
+			},
+			authFallback,
+		});
 
 	const applyStorageScope = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
