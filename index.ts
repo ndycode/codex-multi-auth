@@ -159,10 +159,8 @@ import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
 import { withStreamingFailover } from "./lib/request/stream-failover.js";
 import { addJitter } from "./lib/rotation.js";
-import {
-	type AccountCheckWorkingState,
-	createAccountCheckWorkingState,
-} from "./lib/runtime/account-check-types.js";
+import { runRuntimeAccountCheck } from "./lib/runtime/account-check.js";
+import { createAccountCheckWorkingState } from "./lib/runtime/account-check-types.js";
 import {
 	clampRuntimeActiveIndices,
 	isRuntimeFlaggableFailure,
@@ -231,7 +229,6 @@ import {
 	clearAccounts,
 	clearFlaggedAccounts,
 	exportAccounts,
-	type FlaggedAccountMetadataV1,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getStoragePath,
@@ -2360,308 +2357,35 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								getUnsupportedCodexModelInfo,
 							});
 
-						const runAccountCheck = async (
-							deepProbe: boolean,
-						): Promise<void> => {
-							const loadedStorage = await hydrateEmails(await loadAccounts());
-							const workingStorage = loadedStorage
-								? {
-										...loadedStorage,
-										accounts: loadedStorage.accounts.map((account) => ({
-											...account,
-										})),
-										activeIndexByFamily: loadedStorage.activeIndexByFamily
-											? { ...loadedStorage.activeIndexByFamily }
-											: {},
-									}
-								: {
-										version: 3 as const,
-										accounts: [],
-										activeIndex: 0,
-										activeIndexByFamily: {},
-									};
-
-							if (workingStorage.accounts.length === 0) {
-								console.log("\nNo accounts to check.\n");
-								return;
-							}
-
-							const flaggedStorage = await loadFlaggedAccounts();
-							const state: AccountCheckWorkingState =
-								createAccountCheckWorkingState(flaggedStorage);
-							const total = workingStorage.accounts.length;
-
-							console.log(
-								`\nChecking ${deepProbe ? "full account health" : "quotas"} for all accounts...\n`,
-							);
-
-							for (let i = 0; i < total; i += 1) {
-								const account = workingStorage.accounts[i];
-								if (!account) continue;
-								const label =
-									account.email ?? account.accountLabel ?? `Account ${i + 1}`;
-								if (account.enabled === false) {
-									state.disabled += 1;
-									console.log(`[${i + 1}/${total}] ${label}: DISABLED`);
-									continue;
-								}
-
-								try {
-									// If we already have a valid cached access token, don't force-refresh.
-									// This avoids flagging accounts where the refresh token has been burned
-									// but the access token is still valid (same behavior as Codex CLI).
-									const nowMs = Date.now();
-									let accessToken: string | null = null;
-									let tokenAccountId: string | undefined;
-									let authDetail = "OK";
-									if (
-										account.accessToken &&
-										(typeof account.expiresAt !== "number" ||
-											!Number.isFinite(account.expiresAt) ||
-											account.expiresAt > nowMs)
-									) {
-										accessToken = account.accessToken;
-										authDetail = "OK (cached access)";
-
-										tokenAccountId = extractAccountId(account.accessToken);
-										if (
-											tokenAccountId &&
-											shouldUpdateAccountIdFromToken(
-												account.accountIdSource,
-												account.accountId,
-											) &&
-											tokenAccountId !== account.accountId
-										) {
-											account.accountId = tokenAccountId;
-											account.accountIdSource = "token";
-											state.storageChanged = true;
-										}
-									}
-
-									// If Codex CLI has a valid cached access token for this email, use it
-									// instead of forcing a refresh.
-									if (!accessToken) {
-										const cached = await lookupCodexCliTokensByEmail(
-											account.email,
-										);
-										if (
-											cached &&
-											(typeof cached.expiresAt !== "number" ||
-												!Number.isFinite(cached.expiresAt) ||
-												cached.expiresAt > nowMs)
-										) {
-											accessToken = cached.accessToken;
-											authDetail = "OK (Codex CLI cache)";
-
-											if (
-												cached.refreshToken &&
-												cached.refreshToken !== account.refreshToken
-											) {
-												account.refreshToken = cached.refreshToken;
-												state.storageChanged = true;
-											}
-											if (
-												cached.accessToken &&
-												cached.accessToken !== account.accessToken
-											) {
-												account.accessToken = cached.accessToken;
-												state.storageChanged = true;
-											}
-											if (cached.expiresAt !== account.expiresAt) {
-												account.expiresAt = cached.expiresAt;
-												state.storageChanged = true;
-											}
-
-											const hydratedEmail = sanitizeEmail(
-												extractAccountEmail(cached.accessToken),
-											);
-											if (hydratedEmail && hydratedEmail !== account.email) {
-												account.email = hydratedEmail;
-												state.storageChanged = true;
-											}
-
-											tokenAccountId = extractAccountId(cached.accessToken);
-											if (
-												tokenAccountId &&
-												shouldUpdateAccountIdFromToken(
-													account.accountIdSource,
-													account.accountId,
-												) &&
-												tokenAccountId !== account.accountId
-											) {
-												account.accountId = tokenAccountId;
-												account.accountIdSource = "token";
-												state.storageChanged = true;
-											}
-										}
-									}
-
-									if (!accessToken) {
-										const refreshResult = await queuedRefresh(
-											account.refreshToken,
-										);
-										if (refreshResult.type !== "success") {
-											state.errors += 1;
-											const message =
-												refreshResult.message ??
-												refreshResult.reason ??
-												"refresh failed";
-											console.log(
-												`[${i + 1}/${total}] ${label}: ERROR (${message})`,
-											);
-											if (
-												deepProbe &&
-												isRuntimeFlaggableFailure(refreshResult)
-											) {
-												const existingIndex =
-													state.flaggedStorage.accounts.findIndex(
-														(flagged) =>
-															flagged.refreshToken === account.refreshToken,
-													);
-												const flaggedRecord: FlaggedAccountMetadataV1 = {
-													...account,
-													flaggedAt: Date.now(),
-													flaggedReason: "token-invalid",
-													lastError: message,
-												};
-												if (existingIndex >= 0) {
-													state.flaggedStorage.accounts[existingIndex] =
-														flaggedRecord;
-												} else {
-													state.flaggedStorage.accounts.push(flaggedRecord);
-												}
-												state.removeFromActive.add(account.refreshToken);
-												state.flaggedChanged = true;
-											}
-											continue;
-										}
-
-										accessToken = refreshResult.access;
-										authDetail = "OK";
-										if (refreshResult.refresh !== account.refreshToken) {
-											account.refreshToken = refreshResult.refresh;
-											state.storageChanged = true;
-										}
-										if (
-											refreshResult.access &&
-											refreshResult.access !== account.accessToken
-										) {
-											account.accessToken = refreshResult.access;
-											state.storageChanged = true;
-										}
-										if (
-											typeof refreshResult.expires === "number" &&
-											refreshResult.expires !== account.expiresAt
-										) {
-											account.expiresAt = refreshResult.expires;
-											state.storageChanged = true;
-										}
-										const hydratedEmail = sanitizeEmail(
-											extractAccountEmail(
-												refreshResult.access,
-												refreshResult.idToken,
-											),
-										);
-										if (hydratedEmail && hydratedEmail !== account.email) {
-											account.email = hydratedEmail;
-											state.storageChanged = true;
-										}
-										tokenAccountId = extractAccountId(refreshResult.access);
-										if (
-											tokenAccountId &&
-											shouldUpdateAccountIdFromToken(
-												account.accountIdSource,
-												account.accountId,
-											) &&
-											tokenAccountId !== account.accountId
-										) {
-											account.accountId = tokenAccountId;
-											account.accountIdSource = "token";
-											state.storageChanged = true;
-										}
-									}
-
-									if (!accessToken) {
-										throw new Error("Missing access token after refresh");
-									}
-
-									if (deepProbe) {
-										state.ok += 1;
-										const detail = tokenAccountId
-											? `${authDetail} (id:${tokenAccountId.slice(-6)})`
-											: authDetail;
-										console.log(`[${i + 1}/${total}] ${label}: ${detail}`);
-										continue;
-									}
-
-									try {
-										const requestAccountId =
-											resolveRequestAccountId(
-												account.accountId,
-												account.accountIdSource,
-												tokenAccountId,
-											) ??
-											tokenAccountId ??
-											account.accountId;
-
-										if (!requestAccountId) {
-											throw new Error("Missing accountId for quota probe");
-										}
-
-										const snapshot = await fetchCodexQuotaSnapshot({
-											accountId: requestAccountId,
-											accessToken,
-										});
-										state.ok += 1;
-										console.log(
-											`[${i + 1}/${total}] ${label}: ${formatCodexQuotaLine(snapshot)}`,
-										);
-									} catch (error) {
-										state.errors += 1;
-										const message =
-											error instanceof Error ? error.message : String(error);
-										console.log(
-											`[${i + 1}/${total}] ${label}: ERROR (${message.slice(0, 160)})`,
-										);
-									}
-								} catch (error) {
-									state.errors += 1;
-									const message =
-										error instanceof Error ? error.message : String(error);
-									console.log(
-										`[${i + 1}/${total}] ${label}: ERROR (${message.slice(0, 120)})`,
-									);
-								}
-							}
-
-							if (state.removeFromActive.size > 0) {
-								workingStorage.accounts = workingStorage.accounts.filter(
-									(account) =>
-										!state.removeFromActive.has(account.refreshToken),
-								);
-								clampRuntimeActiveIndices(workingStorage, MODEL_FAMILIES);
-								state.storageChanged = true;
-							}
-
-							if (state.storageChanged) {
-								await saveAccounts(workingStorage);
-								invalidateAccountManagerCache();
-							}
-							if (state.flaggedChanged) {
-								await saveFlaggedAccounts(state.flaggedStorage);
-							}
-
-							console.log("");
-							console.log(
-								`Results: ${state.ok} ok, ${state.errors} error, ${state.disabled} disabled`,
-							);
-							if (state.removeFromActive.size > 0) {
-								console.log(
-									`Moved ${state.removeFromActive.size} account(s) to flagged pool (invalid refresh token).`,
-								);
-							}
-							console.log("");
-						};
+						const runAccountCheck = async (deepProbe: boolean): Promise<void> =>
+							runRuntimeAccountCheck(deepProbe, {
+								hydrateEmails,
+								loadAccounts,
+								createEmptyStorage: () => ({
+									version: 3 as const,
+									accounts: [],
+									activeIndex: 0,
+									activeIndexByFamily: {},
+								}),
+								loadFlaggedAccounts,
+								createAccountCheckWorkingState,
+								lookupCodexCliTokensByEmail,
+								extractAccountId,
+								shouldUpdateAccountIdFromToken,
+								sanitizeEmail,
+								extractAccountEmail,
+								queuedRefresh,
+								isRuntimeFlaggableFailure,
+								fetchCodexQuotaSnapshot,
+								resolveRequestAccountId,
+								formatCodexQuotaLine,
+								clampRuntimeActiveIndices,
+								MODEL_FAMILIES,
+								saveAccounts,
+								invalidateAccountManagerCache,
+								saveFlaggedAccounts,
+								showLine: (message) => console.log(message),
+							});
 
 						if (!explicitLoginMode) {
 							while (true) {
