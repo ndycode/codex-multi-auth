@@ -207,6 +207,7 @@ import {
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./lib/runtime/account-status.js";
+import { applyAccountStorageScopeEntry } from "./lib/runtime/account-storage-scope-entry.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
 import { handleRuntimeEvent } from "./lib/runtime/event-handler.js";
 import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
@@ -544,7 +545,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const applyAccountStorageScope = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void =>
-		applyAccountStorageScopeFromConfig(pluginConfig, {
+		applyAccountStorageScopeEntry({
+			pluginConfig,
 			getPerProjectAccounts,
 			getStorageBackupEnabled,
 			setStorageBackupEnabled,
@@ -557,6 +559,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			pluginName: PLUGIN_NAME,
 			setStoragePath,
 			cwd: () => process.cwd(),
+			applyAccountStorageScopeFromConfig,
 		});
 
 	const ensureLiveAccountSync = async (
