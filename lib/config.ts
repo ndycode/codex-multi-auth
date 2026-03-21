@@ -1216,6 +1216,7 @@ type ConfigExplainMeta = {
 	sourceKeys?: (keyof PluginConfig)[];
 };
 
+/** CLI-only helper; not concurrency-safe because it temporarily mutates process.env. */
 function withExplainEnvUnset<T>(envNames: string[], run: () => T): T {
 	const previous = new Map<string, string | undefined>();
 	for (const name of envNames) {
@@ -1251,6 +1252,7 @@ function resolveConfigExplainSource(
 		return "env";
 	}
 	const defaultResolvedValue = withExplainEnvUnset(entry.envNames, () =>
+		// empty config to trigger default-resolution path in getters
 		entry.getValue({} as PluginConfig),
 	);
 	const storedKeys = entry.sourceKeys ?? [entry.key];

@@ -316,12 +316,12 @@ export async function runRuntimeAccountCheck(
 		state.storageChanged = true;
 	}
 
+	if (state.flaggedChanged) {
+		await deps.saveFlaggedAccounts(state.flaggedStorage);
+	}
 	if (state.storageChanged) {
 		await deps.saveAccounts(workingStorage);
 		deps.invalidateAccountManagerCache();
-	}
-	if (state.flaggedChanged) {
-		await deps.saveFlaggedAccounts(state.flaggedStorage);
 	}
 
 	deps.showLine("");
