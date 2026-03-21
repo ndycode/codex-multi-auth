@@ -165,6 +165,10 @@ import {
 	createAccountCheckWorkingState,
 } from "./lib/runtime/account-check-types.js";
 import {
+	clampRuntimeActiveIndices,
+	isRuntimeFlaggableFailure,
+} from "./lib/runtime/account-health-check.js";
+import {
 	invalidateRuntimeAccountManagerCache,
 	reloadRuntimeAccountManager,
 } from "./lib/runtime/account-manager-cache.js";
@@ -2339,45 +2343,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						let startFresh = explicitLoginMode === "fresh";
 						let refreshAccountIndex: number | undefined;
 
-						const clampActiveIndices = (storage: AccountStorageV3): void => {
-							const count = storage.accounts.length;
-							if (count === 0) {
-								storage.activeIndex = 0;
-								storage.activeIndexByFamily = {};
-								return;
-							}
-							storage.activeIndex = Math.max(
-								0,
-								Math.min(storage.activeIndex, count - 1),
-							);
-							storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-							for (const family of MODEL_FAMILIES) {
-								const raw = storage.activeIndexByFamily[family];
-								const candidate =
-									typeof raw === "number" && Number.isFinite(raw)
-										? raw
-										: storage.activeIndex;
-								storage.activeIndexByFamily[family] = Math.max(
-									0,
-									Math.min(candidate, count - 1),
-								);
-							}
-						};
-
-						const isFlaggableFailure = (
-							failure: Extract<TokenResult, { type: "failed" }>,
-						): boolean => {
-							if (failure.reason === "missing_refresh") return true;
-							if (failure.statusCode === 401) return true;
-							if (failure.statusCode !== 400) return false;
-							const message = (failure.message ?? "").toLowerCase();
-							return (
-								message.includes("invalid_grant") ||
-								message.includes("invalid refresh") ||
-								message.includes("token has been revoked")
-							);
-						};
-
 						const fetchCodexQuotaSnapshot = async (params: {
 							accountId: string;
 							accessToken: string;
@@ -2542,7 +2507,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											console.log(
 												`[${i + 1}/${total}] ${label}: ERROR (${message})`,
 											);
-											if (deepProbe && isFlaggableFailure(refreshResult)) {
+											if (
+												deepProbe &&
+												isRuntimeFlaggableFailure(refreshResult)
+											) {
 												const existingIndex =
 													state.flaggedStorage.accounts.findIndex(
 														(flagged) =>
@@ -2669,7 +2637,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									(account) =>
 										!state.removeFromActive.has(account.refreshToken),
 								);
-								clampActiveIndices(workingStorage);
+								clampRuntimeActiveIndices(workingStorage, MODEL_FAMILIES);
 								state.storageChanged = true;
 							}
 
@@ -2909,7 +2877,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												menuResult.deleteAccountIndex,
 												1,
 											);
-											clampActiveIndices(workingStorage);
+											clampRuntimeActiveIndices(workingStorage, MODEL_FAMILIES);
 											await saveAccounts(workingStorage);
 											await saveFlaggedAccounts({
 												version: 1,
