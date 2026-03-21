@@ -28,6 +28,50 @@ describe("statSnapshot", () => {
 			expect.objectContaining({ path: "locked.json" }),
 		);
 	});
+	it("marks schema-error snapshots invalid while preserving metadata", async () => {
+		await expect(
+			describeAccountSnapshot("accounts.json", "accounts-primary", {
+				index: 0,
+				statSnapshot: vi.fn(async () => ({ exists: true, bytes: 12, mtimeMs: 34 })),
+				loadAccountsFromPath: vi.fn(async () => ({ normalized: { accounts: [{ id: 1 }] }, schemaErrors: ["bad"], storedVersion: 3 })),
+				logWarn: vi.fn(),
+			}),
+		).resolves.toEqual({
+			kind: "accounts-primary",
+			path: "accounts.json",
+			index: 0,
+			exists: true,
+			valid: true,
+			bytes: 12,
+			mtimeMs: 34,
+			version: 3,
+			accountCount: 1,
+			schemaErrors: ["bad"],
+		});
+	});
+
+	it("marks null-normalized snapshots invalid while preserving metadata", async () => {
+		await expect(
+			describeAccountSnapshot("accounts.json", "accounts-primary", {
+				index: 0,
+				statSnapshot: vi.fn(async () => ({ exists: true, bytes: 12, mtimeMs: 34 })),
+				loadAccountsFromPath: vi.fn(async () => ({ normalized: null, schemaErrors: [], storedVersion: 3 })),
+				logWarn: vi.fn(),
+			}),
+		).resolves.toEqual({
+			kind: "accounts-primary",
+			path: "accounts.json",
+			index: 0,
+			exists: true,
+			valid: false,
+			bytes: 12,
+			mtimeMs: 34,
+			version: 3,
+			accountCount: undefined,
+			schemaErrors: undefined,
+		});
+	});
+
 });
 
 describe("describeAccountSnapshot", () => {
