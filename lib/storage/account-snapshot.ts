@@ -56,14 +56,18 @@ export async function describeAccountSnapshot(
 	try {
 		const { normalized, schemaErrors, storedVersion } =
 			await deps.loadAccountsFromPath(path);
+		const resolvedStats =
+			stats.bytes === undefined || stats.mtimeMs === undefined
+				? await deps.statSnapshot(path)
+				: stats;
 		return {
 			kind,
 			path,
 			index: deps.index,
 			exists: true,
 			valid: !!normalized,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
+			bytes: resolvedStats.bytes,
+			mtimeMs: resolvedStats.mtimeMs,
 			version: typeof storedVersion === "number" ? storedVersion : undefined,
 			accountCount: normalized?.accounts.length,
 			schemaErrors: schemaErrors.length > 0 ? schemaErrors : undefined,
