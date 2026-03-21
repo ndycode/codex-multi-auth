@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
@@ -23,6 +22,7 @@ import {
 import { isCacheLikeBackupArtifactName } from "./storage/cache-artifacts.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
 import { loadFlaggedAccountsFromFile } from "./storage/flagged-storage-file.js";
+import { computeSha256 } from "./storage/hash.js";
 import {
 	collectNamedBackups,
 	type NamedBackupSummary,
@@ -470,10 +470,6 @@ async function cleanupStaleRotatingBackupArtifacts(
 			});
 		}
 	}
-}
-
-function computeSha256(value: string): string {
-	return createHash("sha256").update(value).digest("hex");
 }
 
 function createEmptyStorageWithMetadata(
