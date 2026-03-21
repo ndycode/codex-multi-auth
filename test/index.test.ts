@@ -672,6 +672,27 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(openBrowserUrlMock).not.toHaveBeenCalled();
 		});
 
+		it("does not open the browser when the oauth callback server fails to start", async () => {
+			const browserModule = await import("../lib/auth/browser.js");
+			const loggerModule = await import("../lib/logger.js");
+			const serverModule = await import("../lib/auth/server.js");
+			const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+			vi.mocked(serverModule.startLocalOAuthServer).mockRejectedValueOnce(
+				new Error("EADDRINUSE"),
+			);
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize();
+			const warnCall = vi.mocked(loggerModule.logWarn).mock.calls.at(-1)?.[0];
+
+			expect(openBrowserUrlMock).not.toHaveBeenCalled();
+			expect(warnCall).toBe(
+				'\n[codex-multi-auth] OAuth callback server failed to start. Please retry with "ChatGPT Plus/Pro MULTI (Manual URL Paste)".\n',
+			);
+		});
+
 		it("rejects manual OAuth callbacks with mismatched state", async () => {
 			const authModule = await import("../lib/auth/auth.js");
 			const manualMethod = plugin.auth.methods[1] as unknown as {

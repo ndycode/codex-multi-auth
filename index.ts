@@ -284,7 +284,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
 			logInfo,
 			logDebug: (message) => logDebug(`[${PLUGIN_NAME}] ${message}`),
-			logWarn: (message) => logWarn(`[${PLUGIN_NAME}] ${message}`),
+			logWarn: (message) => logWarn(`\n[${PLUGIN_NAME}] ${message}`),
 		});
 
 	const persistAccountPool = async (

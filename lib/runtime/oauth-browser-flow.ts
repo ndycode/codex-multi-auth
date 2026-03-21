@@ -30,15 +30,15 @@ export async function runOAuthBrowserFlow(deps: {
 		);
 		serverInfo = null;
 	}
-	openBrowserUrl(url);
 
 	if (!serverInfo || !serverInfo.ready) {
 		serverInfo?.close();
 		deps.logWarn(
-			`\nOAuth callback server failed to start. Please retry with "${deps.manualModeLabel}".\n`,
+			`OAuth callback server failed to start. Please retry with "${deps.manualModeLabel}".\n`,
 		);
 		return { type: "failed" as const };
 	}
+	openBrowserUrl(url);
 
 	const result = await serverInfo.waitForCode(state);
 	serverInfo.close();
