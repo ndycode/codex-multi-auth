@@ -1,7 +1,7 @@
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 import { sleep } from "../utils.js";
 
-const RETRYABLE_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+const RETRYABLE_READ_CODES = new Set(["EBUSY", "EAGAIN"]);
 
 function isRetryableReadError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;

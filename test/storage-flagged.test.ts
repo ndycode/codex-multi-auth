@@ -541,9 +541,6 @@ describe("flagged account storage", () => {
 });
 
 
-import { loadFlaggedAccountsFromFile } from "../lib/storage/flagged-storage-file.js";
-import { describeFlaggedSnapshot } from "../lib/storage/snapshot-inspectors.js";
-
 describe("flagged storage extracted helpers", () => {
 	it("retries transient Windows read locks before parsing", async () => {
 		const normalizeFlaggedStorage = vi.fn((data) => data as never);
@@ -561,6 +558,42 @@ describe("flagged storage extracted helpers", () => {
 		).resolves.toEqual({ version: 1, accounts: [] });
 		expect(readFile).toHaveBeenCalledTimes(3);
 		expect(normalizeFlaggedStorage).toHaveBeenCalledWith({ version: 1, accounts: [] });
+	});
+
+	it("rethrows after retry budget is exhausted for windows lock errors", async () => {
+		const sleep = vi.fn(async () => {});
+		const readFile = vi
+			.fn()
+			.mockRejectedValue(Object.assign(new Error("locked"), { code: "EBUSY" }));
+		await expect(
+			loadFlaggedAccountsFromFile("flagged.json", {
+				readFile,
+				normalizeFlaggedStorage: vi.fn(),
+				sleep,
+			}),
+		).rejects.toThrow("locked");
+		expect(readFile).toHaveBeenCalledTimes(4);
+		expect(sleep).toHaveBeenNthCalledWith(1, 10);
+		expect(sleep).toHaveBeenNthCalledWith(2, 20);
+		expect(sleep).toHaveBeenNthCalledWith(3, 40);
+	});
+
+	it("rethrows after retry budget is exhausted for windows lock errors", async () => {
+		const sleep = vi.fn(async () => {});
+		const readFile = vi
+			.fn()
+			.mockRejectedValue(Object.assign(new Error("locked"), { code: "EBUSY" }));
+		await expect(
+			loadFlaggedAccountsFromFile("flagged.json", {
+				readFile,
+				normalizeFlaggedStorage: vi.fn(),
+				sleep,
+			}),
+		).rejects.toThrow("locked");
+		expect(readFile).toHaveBeenCalledTimes(4);
+		expect(sleep).toHaveBeenNthCalledWith(1, 10);
+		expect(sleep).toHaveBeenNthCalledWith(2, 20);
+		expect(sleep).toHaveBeenNthCalledWith(3, 40);
 	});
 
 	it("propagates malformed JSON parse errors", async () => {
