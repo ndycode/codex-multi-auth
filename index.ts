@@ -410,13 +410,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		});
 	};
 
-	const resolveUiRuntime = (): UiRuntimeOptions => {
-		return resolveRuntimeUiOptions({
-			loadPluginConfig,
-			applyUiRuntimeFromConfig,
-		});
-	};
-
 	const getStatusMarker = (
 		ui: UiRuntimeOptions,
 		status: "ok" | "warning" | "error",
@@ -570,7 +563,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	// Initialize runtime UI settings once on plugin load; auth/tools refresh this dynamically.
-	resolveUiRuntime();
+	resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 
 	return {
 		event: eventHandler,
@@ -3689,7 +3685,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					"List all Codex OAuth accounts and the current active index.",
 				args: {},
 				async execute() {
-					const ui = resolveUiRuntime();
+					const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 					const storage = await loadAccounts();
 					const storePath = getStoragePath();
 
@@ -3825,7 +3824,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						),
 				},
 				async execute({ index }) {
-					const ui = resolveUiRuntime();
+					const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 					const storage = await loadAccounts();
 					if (!storage || storage.accounts.length === 0) {
 						if (ui.v2Enabled) {
@@ -3921,7 +3923,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				description: "Show detailed status of Codex accounts and rate limits.",
 				args: {},
 				async execute() {
-					const ui = resolveUiRuntime();
+					const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 					const storage = await loadAccounts();
 					if (!storage || storage.accounts.length === 0) {
 						if (ui.v2Enabled) {
@@ -4092,7 +4097,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								"Show runtime request metrics for this plugin process.",
 							args: {},
 							execute() {
-								const ui = resolveUiRuntime();
+								const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 								const now = Date.now();
 								const uptimeMs = Math.max(0, now - runtimeMetrics.startedAt);
 								const total = runtimeMetrics.totalRequests;
@@ -4294,7 +4302,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					"Check health of all Codex accounts by validating refresh tokens.",
 				args: {},
 				async execute() {
-					const ui = resolveUiRuntime();
+					const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 					const storage = await loadAccounts();
 					if (!storage || storage.accounts.length === 0) {
 						if (ui.v2Enabled) {
@@ -4372,7 +4383,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									),
 							},
 							async execute({ index }) {
-								const ui = resolveUiRuntime();
+								const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 								const storage = await loadAccounts();
 								if (!storage || storage.accounts.length === 0) {
 									if (ui.v2Enabled) {
@@ -4516,7 +4530,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								"Manually refresh OAuth tokens for all accounts to verify they're still valid.",
 							args: {},
 							async execute() {
-								const ui = resolveUiRuntime();
+								const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 								const storage = await loadAccounts();
 								if (!storage || storage.accounts.length === 0) {
 									if (ui.v2Enabled) {
@@ -4604,7 +4621,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									.describe("Overwrite existing file (default: true)"),
 							},
 							async execute({ path: filePath, force }) {
-								const ui = resolveUiRuntime();
+								const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 								try {
 									await exportAccounts(filePath, force ?? true);
 									const storage = await loadAccounts();
@@ -4653,7 +4673,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									),
 							},
 							async execute({ path: filePath }) {
-								const ui = resolveUiRuntime();
+								const ui = resolveRuntimeUiOptions({
+						loadPluginConfig,
+						applyUiRuntimeFromConfig,
+					});
 								try {
 									const result = await importAccounts(filePath);
 									invalidateAccountManagerCache();
