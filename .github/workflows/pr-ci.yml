@@ -76,5 +76,11 @@ jobs:
       - name: Run type check
         run: npm run typecheck
 
+      - name: Run tests
+        run: npm test
+
+      - name: Security audit (CI policy)
+        run: npm run audit:ci
+
       - name: Build
         run: npm run build
