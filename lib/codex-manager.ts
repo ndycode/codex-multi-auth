@@ -39,6 +39,7 @@ import {
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
+import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
 import {
 	type DoctorCliOptions,
 	runDoctorCommand,
@@ -63,6 +64,7 @@ import {
 	configureUnifiedSettings,
 	resolveMenuLayoutMode,
 } from "./codex-manager/settings-hub.js";
+import { getPluginConfigExplainReport } from "./config.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
 	type DashboardAccountSortMode,
@@ -3624,6 +3626,16 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			applyTokenAccountIdentity,
 			setCodexCliActiveSelection,
 		});
+	}
+	if (command === "config") {
+		const [subcommand, ...configArgs] = rest;
+		if (subcommand === "explain") {
+			return runConfigExplainCommand(configArgs, {
+				getReport: getPluginConfigExplainReport,
+			});
+		}
+		console.error(`Unknown config command: ${subcommand ?? "(missing)"}`);
+		return 1;
 	}
 
 	console.error(`Unknown command: ${command}`);

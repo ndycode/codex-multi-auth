@@ -38,6 +38,7 @@ Compatibility aliases are supported:
 | `codex auth report` | Generate full health report |
 | `codex auth fix` | Apply safe account storage fixes |
 | `codex auth doctor` | Run diagnostics and optional repairs |
+| `codex auth config explain` | Print effective config values and their sources |
 
 ---
 
@@ -46,7 +47,7 @@ Compatibility aliases are supported:
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
-| `--json` | verify-flagged, forecast, report, fix, doctor | Print machine-readable output |
+| `--json` | verify-flagged, forecast, report, fix, doctor, config explain | Print machine-readable output |
 | `--live` | forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
 | `--model <model>` | forecast, report, fix | Specify model for live probe paths |
