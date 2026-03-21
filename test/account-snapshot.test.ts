@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { describeAccountSnapshot, statSnapshot } from "../lib/storage/account-snapshot.js";
 
 describe("statSnapshot", () => {
+	it("returns size and mtime for accessible snapshots", async () => {
+		await expect(
+			statSnapshot("accounts.json", {
+				stat: vi.fn(async () => ({ size: 1234, mtimeMs: 5678 })),
+				logWarn: vi.fn(),
+			}),
+		).resolves.toEqual({ exists: true, bytes: 1234, mtimeMs: 5678 });
+	});
+
 	it("returns missing metadata for ENOENT", async () => {
 		await expect(
 			statSnapshot("missing.json", {
@@ -16,7 +25,7 @@ describe("statSnapshot", () => {
 	it("logs and returns missing metadata for non-ENOENT stat failures", async () => {
 		const logWarn = vi.fn();
 		await expect(
-			statSnapshot("locked.json", {
+			statSnapshot("denied.json", {
 				stat: vi.fn(async () => {
 					throw Object.assign(new Error("denied"), { code: "EACCES" });
 				}),
@@ -25,7 +34,7 @@ describe("statSnapshot", () => {
 		).resolves.toEqual({ exists: false });
 		expect(logWarn).toHaveBeenCalledWith(
 			"Failed to stat backup candidate",
-			expect.objectContaining({ path: "locked.json" }),
+			expect.objectContaining({ path: "denied.json" }),
 		);
 	});
 	it("treats locked snapshots as existing when stat returns EBUSY", async () => {
@@ -162,6 +171,39 @@ describe("describeAccountSnapshot", () => {
 		});
 
 		expect(statSnapshot).toHaveBeenCalledTimes(2);
+	});
+
+	it("falls back to zeroed metadata after repeated stat locks", async () => {
+		const statSnapshot = vi
+			.fn()
+			.mockResolvedValueOnce({ exists: true })
+			.mockResolvedValueOnce({ exists: true })
+			.mockResolvedValueOnce({ exists: true });
+
+		await expect(
+			describeAccountSnapshot("accounts.json", "accounts-primary", {
+				index: 0,
+				statSnapshot,
+				loadAccountsFromPath: vi.fn(async () => ({
+					normalized: { accounts: [{ id: 1 }] },
+					schemaErrors: [],
+					storedVersion: 3,
+				})),
+				logWarn: vi.fn(),
+			}),
+		).resolves.toEqual({
+			kind: "accounts-primary",
+			path: "accounts.json",
+			index: 0,
+			exists: true,
+			valid: true,
+			bytes: 0,
+			mtimeMs: 0,
+			version: 3,
+			accountCount: 1,
+		});
+
+		expect(statSnapshot).toHaveBeenCalledTimes(3);
 	});
 
 	it("returns invalid metadata when the loader fails", async () => {

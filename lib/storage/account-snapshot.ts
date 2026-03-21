@@ -33,7 +33,8 @@ export async function statSnapshot(
 }
 
 /**
- * Build backup metadata for an account snapshot, treating ENOENT races as missing files.
+ * Build backup metadata for an account snapshot, treating ENOENT load races as invalid snapshots
+ * that were present when the initial stat succeeded.
  */
 export async function describeAccountSnapshot(
 	path: string,
@@ -56,18 +57,26 @@ export async function describeAccountSnapshot(
 	try {
 		const { normalized, schemaErrors, storedVersion } =
 			await deps.loadAccountsFromPath(path);
-		const resolvedStats =
-			stats.bytes === undefined || stats.mtimeMs === undefined
-				? await deps.statSnapshot(path)
-				: stats;
+		let resolvedStats = stats;
+		for (
+			let attempt = 0;
+			attempt < 2 &&
+			(resolvedStats.bytes === undefined || resolvedStats.mtimeMs === undefined);
+			attempt += 1
+		) {
+			const refreshedStats = await deps.statSnapshot(path);
+			if (refreshedStats.exists) {
+				resolvedStats = refreshedStats;
+			}
+		}
 		return {
 			kind,
 			path,
 			index: deps.index,
 			exists: true,
 			valid: !!normalized,
-			bytes: resolvedStats.bytes,
-			mtimeMs: resolvedStats.mtimeMs,
+			bytes: resolvedStats.bytes ?? 0,
+			mtimeMs: resolvedStats.mtimeMs ?? 0,
 			version: typeof storedVersion === "number" ? storedVersion : undefined,
 			accountCount: normalized?.accounts.length,
 			schemaErrors: schemaErrors.length > 0 ? schemaErrors : undefined,
