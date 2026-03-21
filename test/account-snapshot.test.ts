@@ -132,6 +132,38 @@ describe("describeAccountSnapshot", () => {
 		});
 	});
 
+	it("refreshes snapshot metadata after a transient stat lock", async () => {
+		const statSnapshot = vi
+			.fn()
+			.mockResolvedValueOnce({ exists: true })
+			.mockResolvedValueOnce({ exists: true, bytes: 12, mtimeMs: 34 });
+
+		await expect(
+			describeAccountSnapshot("accounts.json", "accounts-primary", {
+				index: 0,
+				statSnapshot,
+				loadAccountsFromPath: vi.fn(async () => ({
+					normalized: { accounts: [{ id: 1 }] },
+					schemaErrors: [],
+					storedVersion: 3,
+				})),
+				logWarn: vi.fn(),
+			}),
+		).resolves.toEqual({
+			kind: "accounts-primary",
+			path: "accounts.json",
+			index: 0,
+			exists: true,
+			valid: true,
+			bytes: 12,
+			mtimeMs: 34,
+			version: 3,
+			accountCount: 1,
+		});
+
+		expect(statSnapshot).toHaveBeenCalledTimes(2);
+	});
+
 	it("returns invalid metadata when the loader fails", async () => {
 		const logWarn = vi.fn();
 		await expect(
