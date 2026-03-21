@@ -44,6 +44,9 @@ jobs:
       - name: Run ESLint
         run: npm run lint
 
+      - name: Typecheck scripts
+        run: npm run typecheck:scripts
+
       - name: Run tests
         run: npm test
 
@@ -55,9 +58,6 @@ jobs:
 
       - name: Verify vendor provenance
         run: npm run vendor:verify
-
-      - name: Typecheck scripts
-        run: npm run typecheck:scripts
 
   node22-smoke:
     name: Node 22 Smoke
