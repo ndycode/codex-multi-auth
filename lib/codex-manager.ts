@@ -2834,35 +2834,6 @@ function applyDoctorFixes(storage: AccountStorageV3): {
 	return { changed, actions };
 }
 
-async function runDoctor(args: string[]): Promise<number> {
-	return runDoctorCommand(args, {
-		setStoragePath,
-		getStoragePath,
-		getCodexCliAuthPath,
-		getCodexCliConfigPath,
-		loadCodexCliState,
-		parseDoctorArgs,
-		printDoctorUsage,
-		loadAccounts,
-		applyDoctorFixes,
-		saveAccounts,
-		resolveActiveIndex,
-		evaluateForecastAccounts,
-		recommendForecastAccount,
-		sanitizeEmail,
-		extractAccountEmail,
-		extractAccountId,
-		hasPlaceholderEmail,
-		hasLikelyInvalidRefreshToken,
-		getDoctorRefreshTokenKey,
-		hasUsableAccessToken,
-		queuedRefresh,
-		normalizeFailureDetail,
-		applyTokenAccountIdentity,
-		setCodexCliActiveSelection,
-	});
-}
-
 async function clearAccountsAndReset(): Promise<void> {
 	await clearAccounts();
 }
@@ -3600,7 +3571,32 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runFix(rest);
 	}
 	if (command === "doctor") {
-		return runDoctor(rest);
+		return runDoctorCommand(rest, {
+			setStoragePath,
+			getStoragePath,
+			getCodexCliAuthPath,
+			getCodexCliConfigPath,
+			loadCodexCliState,
+			parseDoctorArgs,
+			printDoctorUsage,
+			loadAccounts,
+			applyDoctorFixes,
+			saveAccounts,
+			resolveActiveIndex,
+			evaluateForecastAccounts,
+			recommendForecastAccount,
+			sanitizeEmail,
+			extractAccountEmail,
+			extractAccountId,
+			hasPlaceholderEmail,
+			hasLikelyInvalidRefreshToken,
+			getDoctorRefreshTokenKey,
+			hasUsableAccessToken,
+			queuedRefresh,
+			normalizeFailureDetail,
+			applyTokenAccountIdentity,
+			setCodexCliActiveSelection,
+		});
 	}
 
 	console.error(`Unknown command: ${command}`);
