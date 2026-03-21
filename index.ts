@@ -180,6 +180,7 @@ import {
 	sanitizeResponseHeadersForLog,
 } from "./lib/runtime/metrics.js";
 import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
+import { showRuntimeToast } from "./lib/runtime/toast.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
 import {
@@ -309,20 +310,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		message: string,
 		variant: "info" | "success" | "warning" | "error" = "success",
 		options?: { title?: string; duration?: number },
-	): Promise<void> => {
-		try {
-			await client.tui.showToast({
-				body: {
-					message,
-					variant,
-					...(options?.title && { title: options.title }),
-					...(options?.duration && { duration: options.duration }),
-				},
-			});
-		} catch {
-			// Ignore when TUI is not available.
-		}
-	};
+	): Promise<void> => showRuntimeToast(client, message, variant, options);
 
 	const hydrateEmails = async (
 		storage: AccountStorageV3 | null,
