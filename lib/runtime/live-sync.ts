@@ -26,6 +26,11 @@ export async function ensureRuntimeLiveAccountSync<
 	) => Promise<unknown>;
 	getLiveAccountSyncDebounceMs: (config: TConfig) => number;
 	getLiveAccountSyncPollMs: (config: TConfig) => number;
+	commitState: (state: {
+		sync: TSync | null;
+		path: string | null;
+		cleanupRegistered: boolean;
+	}) => void;
 	registerCleanup: (cleanup: () => void) => void;
 	logWarn: (message: string) => void;
 	pluginName: string;
@@ -46,6 +51,14 @@ export async function ensureRuntimeLiveAccountSync<
 	const targetPath = deps.getStoragePath();
 	let sync = deps.currentSync;
 	let cleanupRegistered = deps.currentCleanupRegistered;
+	let nextPath = deps.currentPath;
+	const commitState = (): void => {
+		deps.commitState({
+			sync,
+			path: nextPath,
+			cleanupRegistered,
+		});
+	};
 	if (!sync) {
 		sync = deps.createSync(
 			async () => {
@@ -56,21 +69,23 @@ export async function ensureRuntimeLiveAccountSync<
 				pollIntervalMs: deps.getLiveAccountSyncPollMs(deps.pluginConfig),
 			},
 		);
+		commitState();
 		if (!cleanupRegistered) {
 			deps.registerCleanup(() => {
 				deps.getCurrentSync()?.stop();
 			});
 			cleanupRegistered = true;
+			commitState();
 		}
 	}
 
-	let nextPath = deps.currentPath;
 	if (nextPath !== targetPath) {
 		let switched = false;
 		for (let attempt = 0; attempt < 3; attempt += 1) {
 			try {
 				await sync.syncToPath(targetPath);
 				nextPath = targetPath;
+				commitState();
 				switched = true;
 				break;
 			} catch (error) {

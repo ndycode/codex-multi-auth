@@ -475,6 +475,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			reloadAccountManagerFromDisk,
 			getLiveAccountSyncDebounceMs,
 			getLiveAccountSyncPollMs,
+			commitState: ({ sync, path, cleanupRegistered }) => {
+				liveAccountSync = sync;
+				liveAccountSyncPath = path;
+				liveAccountSyncCleanupRegistered = cleanupRegistered;
+			},
 			registerCleanup,
 			logWarn,
 			pluginName: PLUGIN_NAME,
