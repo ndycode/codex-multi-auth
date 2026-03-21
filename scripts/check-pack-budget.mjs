@@ -20,7 +20,7 @@ const FORBIDDEN_PREFIXES = [
 	".github/",
 	"test/",
 	"src/",
-	"tmp",
+	"tmp/",
 	".tmp/",
 	".codex/",
 ];

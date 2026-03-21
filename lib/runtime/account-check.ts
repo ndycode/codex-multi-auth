@@ -198,7 +198,7 @@ export async function runRuntimeAccountCheck(
 						);
 						const flaggedRecord: FlaggedAccountMetadataV1 = {
 							...account,
-							flaggedAt: deps.now?.() ?? Date.now(),
+							flaggedAt: nowMs,
 							flaggedReason: "token-invalid",
 							lastError: message,
 						};
