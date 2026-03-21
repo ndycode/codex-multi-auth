@@ -166,7 +166,7 @@ Validation:
 
 - `npm run lint`
 - `npm run typecheck`
-- `npm test -- test/storage.test.ts test/storage-async.test.ts test/storage-recovery-paths.test.ts test/paths.test.ts test/runtime-paths.test.ts`
+- `npm test -- test/storage.test.ts test/storage-async.test.ts test/storage-recovery-paths.test.ts test/paths.test.ts test/runtime-paths.test.ts test/lockfile-version-floor.test.ts`
 
 Acceptance:
 
@@ -202,7 +202,7 @@ Validation:
 
 - `npm run lint`
 - `npm run typecheck`
-- `npm test -- test/index.test.ts test/index-retry.test.ts test/fetch-helpers.test.ts test/request-transformer.test.ts test/response-handler.test.ts test/failure-policy.test.ts test/stream-failover.test.ts test/live-account-sync.test.ts test/session-affinity.test.ts test/proactive-refresh.test.ts`
+- `npm test -- test/index.test.ts test/index-retry.test.ts test/fetch-helpers.test.ts test/request-transformer.test.ts test/response-handler.test.ts test/failure-policy.test.ts test/stream-failover.test.ts test/live-account-sync.test.ts test/session-affinity.test.ts test/proactive-refresh.test.ts test/parallel-probe.test.ts test/circuit-breaker.test.ts`
 
 Acceptance:
 
