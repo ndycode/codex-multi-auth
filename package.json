@@ -51,6 +51,7 @@
 		"test:model-matrix": "node scripts/test-model-matrix.js",
 		"test:model-matrix:smoke": "node scripts/test-model-matrix.js --smoke",
 		"test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
+		"test:session-supervisor:smoke": "vitest run test/codex-supervisor.test.ts test/codex-bin-wrapper.test.ts test/plugin-config.test.ts test/quota-probe.test.ts",
 		"clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
 		"clean:repo:check": "node scripts/repo-hygiene.js check",
 		"bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
