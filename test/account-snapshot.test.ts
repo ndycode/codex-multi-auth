@@ -44,6 +44,22 @@ describe("statSnapshot", () => {
 		);
 	});
 
+	it("treats locked snapshots as existing when stat returns EPERM", async () => {
+		const logWarn = vi.fn();
+		await expect(
+			statSnapshot("locked.json", {
+				stat: vi.fn(async () => {
+					throw Object.assign(new Error("perm"), { code: "EPERM" });
+				}),
+				logWarn,
+			}),
+		).resolves.toEqual({ exists: true });
+		expect(logWarn).toHaveBeenCalledWith(
+			"Backup candidate is locked",
+			expect.objectContaining({ path: "locked.json" }),
+		);
+	});
+
 });
 
 describe("describeAccountSnapshot", () => {
