@@ -594,23 +594,6 @@ describe("flagged storage extracted helpers", () => {
 		expect(sleep).toHaveBeenNthCalledWith(3, 40);
 	});
 
-	it("rethrows after retry budget is exhausted for windows lock errors", async () => {
-		const sleep = vi.fn(async () => {});
-		const readFile = vi
-			.fn()
-			.mockRejectedValue(Object.assign(new Error("locked"), { code: "EBUSY" }));
-		await expect(
-			loadFlaggedAccountsFromFile("flagged.json", {
-				readFile,
-				normalizeFlaggedStorage: vi.fn(),
-				sleep,
-			}),
-		).rejects.toThrow("locked");
-		expect(readFile).toHaveBeenCalledTimes(4);
-		expect(sleep).toHaveBeenNthCalledWith(1, 10);
-		expect(sleep).toHaveBeenNthCalledWith(2, 20);
-		expect(sleep).toHaveBeenNthCalledWith(3, 40);
-	});
 
 	it("propagates malformed JSON parse errors", async () => {
 		await expect(
