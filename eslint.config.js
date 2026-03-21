@@ -3,7 +3,7 @@ import tsparser from "@typescript-eslint/parser";
 
 export default [
   {
-    ignores: ["dist/**", "coverage/**", "node_modules/**", "winston/**", ".tmp*/**", "vendor/**", "*.cjs", "*.mjs"],
+    ignores: ["dist/**", "coverage/**", "node_modules/**", "winston/**", ".tmp*/**", "vendor/**", "*.cjs", "*.mjs", "!scripts/**/*.mjs"],
   },
   {
     files: ["index.ts", "lib/**/*.ts"],
@@ -40,7 +40,7 @@ export default [
     },
   },
   {
-    files: ["scripts/**/*.js"],
+    files: ["scripts/**/*.js", "scripts/**/*.mjs"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",

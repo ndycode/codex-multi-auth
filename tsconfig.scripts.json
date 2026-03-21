@@ -10,6 +10,7 @@
 		"scripts/codex-multi-auth.js",
 		"scripts/install-codex-auth.js",
 		"scripts/install-codex-auth-utils.js",
-		"scripts/check-pack-budget.mjs"
+		"scripts/check-pack-budget.mjs",
+		"scripts/verify-vendor-provenance.mjs"
 	]
 }
