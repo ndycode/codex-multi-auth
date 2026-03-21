@@ -314,6 +314,12 @@ function createAbortError(message: string): Error {
 	return error;
 }
 
+function throwIfQuotaProbeAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) {
+		throw createAbortError("Quota probe aborted");
+	}
+}
+
 /**
  * Probe Codex models sequentially to obtain a quota snapshot for the specified account.
  *
@@ -338,14 +344,11 @@ export async function fetchCodexQuotaSnapshot(
 	let lastError: Error | null = null;
 
 	for (const model of models) {
-		if (options.signal?.aborted) {
-			throw createAbortError("Quota probe aborted");
-		}
+		throwIfQuotaProbeAborted(options.signal);
 		try {
+			throwIfQuotaProbeAborted(options.signal);
 			const instructions = await getCodexInstructions(model);
-			if (options.signal?.aborted) {
-				throw createAbortError("Quota probe aborted");
-			}
+			throwIfQuotaProbeAborted(options.signal);
 			const probeBody: RequestBody = {
 				model,
 				stream: true,
@@ -410,6 +413,7 @@ export async function fetchCodexQuotaSnapshot(
 
 				const unsupportedInfo = getUnsupportedCodexModelInfo(errorBody);
 				if (unsupportedInfo.isUnsupported) {
+					throwIfQuotaProbeAborted(options.signal);
 					lastError = new Error(
 						unsupportedInfo.message ?? `Model '${model}' unsupported for this account`,
 					);

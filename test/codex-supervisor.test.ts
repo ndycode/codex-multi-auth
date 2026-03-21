@@ -2013,6 +2013,90 @@ describe("codex supervisor", () => {
 		},
 	);
 
+	it(
+		"continues a pending restart after the monitor loop fails during restart handling",
+		{ timeout: 10_000 },
+		async () => {
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS = "10";
+			process.env.CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS = "0";
+			process.env.CODEX_AUTH_CLI_SESSION_STATE_REFRESH_MS = "10";
+
+			class TimedChild extends EventEmitter {
+				exitCode: number | null = null;
+
+				constructor(exitCode: number, delayMs = 25) {
+					super();
+					setTimeout(() => {
+						this.exitCode = exitCode;
+						this.emit("exit", exitCode, null);
+					}, delayMs);
+				}
+
+				kill(_signal: string) {
+					return true;
+				}
+			}
+
+			const stderrSpy = vi
+				.spyOn(process.stderr, "write")
+				.mockImplementation(() => true);
+			const manager = new FakeManager();
+			const runtime = createFakeRuntime(manager);
+			const spawnChild = vi
+				.fn()
+				.mockImplementationOnce(() => new TimedChild(1, 40))
+				.mockImplementationOnce(() => new TimedChild(0, 10));
+			const requestRestart = vi
+				.fn()
+				.mockRejectedValueOnce(new Error("restart transport failed"));
+
+			try {
+				const result = await supervisorTestApi?.runInteractiveSupervision({
+					codexBin: "dist/bin/codex.js",
+					initialArgs: ["resume", "monitor-restart-session"],
+					buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+					runtime,
+					pluginConfig: {},
+					manager,
+					signal: undefined,
+					maxSessionRestarts: 2,
+					spawnChild,
+					requestRestart,
+					findBinding: async ({ sessionId }: { sessionId?: string }) => ({
+						sessionId: sessionId ?? "monitor-restart-session",
+						rolloutPath: null,
+						lastActivityAtMs: Date.now() - 5_000,
+					}),
+					waitForBinding: async () => ({
+						sessionId: "monitor-restart-session",
+						rolloutPath: null,
+						lastActivityAtMs: Date.now() - 5_000,
+					}),
+					refreshBinding: async (binding: {
+						sessionId: string;
+						rolloutPath: string | null;
+						lastActivityAtMs: number;
+					}) => binding,
+					loadCurrentState: async () => ({
+						manager,
+						currentAccount: manager.getCurrentAccountForFamily(),
+					}),
+				});
+
+				expect(result).toBe(0);
+				expect(spawnChild).toHaveBeenCalledTimes(2);
+				expect(requestRestart).toHaveBeenCalledTimes(1);
+				expect(stderrSpy).toHaveBeenCalledWith(
+					expect.stringContaining(
+						"monitor loop failed: restart transport failed",
+					),
+				);
+			} finally {
+				stderrSpy.mockRestore();
+			}
+		},
+	);
+
 	it("cools down accounts when the quota probe is unavailable", async () => {
 		const manager = new FakeManager();
 		const runtime = createFakeRuntime(manager, {
@@ -2116,6 +2200,110 @@ describe("codex supervisor", () => {
 		expect(removed).toBe(false);
 		await expect(fs.access(lockPath)).resolves.toBeUndefined();
 	});
+
+	it(
+		"does not steal a live lock when it is refreshed between stale detection and unlink guard",
+		{ timeout: 10_000 },
+		async () => {
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS = "30";
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS = "250";
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_POLL_MS = "5";
+
+			const runtime = createFakeRuntime(new FakeManager());
+			const ownerEntered = createDeferred<void>();
+			const releaseOwner = createDeferred<void>();
+			const waiterEntered = createDeferred<void>();
+			const order: string[] = [];
+
+			const ownerSection = supervisorTestApi?.withSupervisorStorageLock(
+				runtime,
+				async () => {
+					order.push("owner-entered");
+					ownerEntered.resolve();
+					await releaseOwner.promise;
+					order.push("owner-released");
+				},
+				undefined,
+			);
+
+			await ownerEntered.promise;
+			const lockPath = supervisorTestApi?.getSupervisorStorageLockPath(runtime);
+			expect(lockPath).toBeTruthy();
+			if (!lockPath) {
+				return;
+			}
+
+			const originalReadFile = fs.readFile.bind(fs);
+			const currentPayload = JSON.parse(await originalReadFile(lockPath, "utf8"));
+			const ownerId = `${currentPayload.ownerId ?? ""}`;
+			expect(ownerId.length).toBeGreaterThan(0);
+
+			await fs.writeFile(
+				lockPath,
+				`${JSON.stringify({
+					...currentPayload,
+					ownerId,
+					expiresAt: Date.now() - 1_000,
+				})}\n`,
+				"utf8",
+			);
+
+			let refreshedDuringGuard = false;
+			const readFileSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (path, options) => {
+					if (
+						typeof path === "string" &&
+						path === lockPath &&
+						!refreshedDuringGuard &&
+						new Error().stack?.includes("safeUnlinkOwnedSupervisorLock")
+					) {
+						refreshedDuringGuard = true;
+						await fs.writeFile(
+							lockPath,
+							`${JSON.stringify({
+								...currentPayload,
+								ownerId,
+								expiresAt: Date.now() + 30_000,
+							})}\n`,
+							"utf8",
+						);
+					}
+					return originalReadFile(
+						path as Parameters<typeof fs.readFile>[0],
+						options as Parameters<typeof fs.readFile>[1],
+					);
+				});
+
+			try {
+				const waiterSection = supervisorTestApi?.withSupervisorStorageLock(
+					runtime,
+					async () => {
+						order.push("waiter-entered");
+						waiterEntered.resolve();
+					},
+					undefined,
+				);
+
+				await new Promise((resolve) => setTimeout(resolve, 40));
+				expect(refreshedDuringGuard).toBe(true);
+				expect(order).toEqual(["owner-entered"]);
+
+				releaseOwner.resolve();
+				await ownerSection;
+				await waiterEntered.promise;
+				await waiterSection;
+
+				expect(order).toEqual([
+					"owner-entered",
+					"owner-released",
+					"waiter-entered",
+				]);
+			} finally {
+				readFileSpy.mockRestore();
+			}
+		},
+	);
 
 	it("strips auth and multi-auth variables from the child process env without mutating the input", () => {
 		const baseEnv = {

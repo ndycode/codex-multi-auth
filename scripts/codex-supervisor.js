@@ -2146,7 +2146,7 @@ async function runInteractiveSupervision({
 				relaunchNotice(
 					`monitor loop failed: ${monitorFailure instanceof Error ? monitorFailure.message : String(monitorFailure)}`,
 				);
-				if (!signal?.aborted) {
+				if (!signal?.aborted && !requestedRestart) {
 					return result.exitCode;
 				}
 			}

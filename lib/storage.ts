@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { existsSync, promises as fs, realpathSync } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
@@ -381,13 +381,10 @@ function getAccountsBackupRecoveryCandidates(path: string): string[] {
 	return candidates;
 }
 
-function normalizeStorageComparisonPath(path: string): string {
+async function normalizeStorageComparisonPath(path: string): Promise<string> {
 	let resolved = resolvePath(path);
 	try {
-		resolved =
-			typeof realpathSync.native === "function"
-				? realpathSync.native(resolved)
-				: realpathSync(resolved);
+		resolved = await fs.realpath(resolved);
 	} catch {
 		// Fall back to the normalized input when the path does not exist yet.
 	}
@@ -397,9 +394,13 @@ function normalizeStorageComparisonPath(path: string): string {
 	return resolved.replaceAll("\\", "/").toLowerCase();
 }
 
-function areEquivalentStoragePaths(left: string, right: string): boolean {
+async function areEquivalentStoragePaths(
+	left: string,
+	right: string,
+): Promise<boolean> {
 	return (
-		normalizeStorageComparisonPath(left) === normalizeStorageComparisonPath(right)
+		(await normalizeStorageComparisonPath(left)) ===
+		(await normalizeStorageComparisonPath(right))
 	);
 }
 
@@ -2531,7 +2532,10 @@ export async function exportAccounts(
 	const transactionState = transactionSnapshotContext.getStore();
 	if (
 		transactionState?.active &&
-		!areEquivalentStoragePaths(transactionState.storagePath, activeStoragePath)
+		!(await areEquivalentStoragePaths(
+			transactionState.storagePath,
+			activeStoragePath,
+		))
 	) {
 		// A fresh load here can silently export from the wrong storage file while a
 		// different transaction still owns the current snapshot.

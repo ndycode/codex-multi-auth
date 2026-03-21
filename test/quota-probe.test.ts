@@ -256,6 +256,46 @@ describe("quota-probe", () => {
 		await expect(pending).rejects.toThrow(/abort/i);
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
+
+	it("does not start probing a fallback model after the caller aborts an unsupported first attempt", async () => {
+		const controller = new AbortController();
+		const unsupported = new Response(
+			JSON.stringify({
+				error: { message: "Model gpt-5.3-codex unsupported", type: "invalid_request_error" },
+			}),
+			{ status: 400, headers: new Headers({ "content-type": "application/json" }) },
+		);
+		const fetchMock = vi.fn(async () => {
+			controller.abort();
+			return unsupported;
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		getUnsupportedCodexModelInfoMock
+			.mockReturnValueOnce({
+				isUnsupported: true,
+				unsupportedModel: "gpt-5.3-codex",
+				message: "unsupported",
+			})
+			.mockReturnValue({
+				isUnsupported: false,
+				unsupportedModel: undefined,
+				message: undefined,
+			});
+
+		await expect(
+			fetchCodexQuotaSnapshot({
+				accountId: "acc-abort-before-fallback",
+				accessToken: "token-abort-before-fallback",
+				model: "gpt-5.3-codex",
+				fallbackModels: ["gpt-5.2-codex"],
+				signal: controller.signal,
+			}),
+		).rejects.toThrow(/abort/i);
+		expect(getCodexInstructionsMock).toHaveBeenCalledTimes(1);
+		expect(getCodexInstructionsMock).toHaveBeenCalledWith("gpt-5.3-codex");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
 	it("parses reset-at values expressed as epoch seconds and epoch milliseconds", async () => {
 		const nowSec = Math.floor(Date.now() / 1000);
 		const primarySeconds = nowSec + 120;
