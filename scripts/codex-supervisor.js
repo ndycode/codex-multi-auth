@@ -20,6 +20,7 @@ const DEFAULT_STATE_REFRESH_MS = 2_000;
 const DEFAULT_SELECTION_PROBE_TIMEOUT_MS = 2_500;
 const DEFAULT_SELECTION_PROBE_BATCH_SIZE = 4;
 const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 1_500;
+const DEFAULT_SNAPSHOT_CACHE_MAX_ENTRIES = 128;
 const DEFAULT_PREWARM_MARGIN_PERCENT_5H = 5;
 const DEFAULT_PREWARM_MARGIN_PERCENT_7D = 3;
 // Keep these fallback defaults aligned with lib/config.ts.
@@ -1059,6 +1060,14 @@ function getSnapshotCacheTtlMs() {
 	);
 }
 
+function getSnapshotCacheMaxEntries() {
+	return parseNumberEnv(
+		"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_MAX_ENTRIES",
+		DEFAULT_SNAPSHOT_CACHE_MAX_ENTRIES,
+		0,
+	);
+}
+
 function clearProbeSnapshotCache(account) {
 	const cacheKey = getSnapshotCacheKey(account);
 	if (!cacheKey) return;
@@ -1074,7 +1083,38 @@ export function resetSupervisorCaches() {
 	clearSessionBindingPathCache();
 }
 
+function pruneProbeSnapshotCache() {
+	const maxEntries = getSnapshotCacheMaxEntries();
+	const now = Date.now();
+
+	for (const [cacheKey, entry] of snapshotProbeCache) {
+		if (!entry?.pending && entry.expiresAt <= now) {
+			snapshotProbeCache.delete(cacheKey);
+		}
+	}
+
+	if (maxEntries <= 0) {
+		clearAllProbeSnapshotCache();
+		return;
+	}
+
+	if (snapshotProbeCache.size <= maxEntries) {
+		return;
+	}
+
+	for (const [cacheKey, entry] of snapshotProbeCache) {
+		if (snapshotProbeCache.size <= maxEntries) {
+			break;
+		}
+		if (entry?.pending) {
+			continue;
+		}
+		snapshotProbeCache.delete(cacheKey);
+	}
+}
+
 function readCachedProbeSnapshot(account) {
+	pruneProbeSnapshotCache();
 	const cacheKey = getSnapshotCacheKey(account);
 	if (!cacheKey) return null;
 	const entry = snapshotProbeCache.get(cacheKey);
@@ -1101,6 +1141,7 @@ function rememberProbeSnapshot(account, snapshot) {
 		snapshot,
 		expiresAt: Date.now() + ttlMs,
 	});
+	pruneProbeSnapshotCache();
 }
 
 async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options = {}) {
@@ -1150,6 +1191,7 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 				expiresAt: pendingEntry?.expiresAt ?? 0,
 				pending: pendingPromise,
 			});
+			pruneProbeSnapshotCache();
 		}
 	}
 
@@ -1182,6 +1224,7 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 						snapshot: current.snapshot ?? null,
 						expiresAt: current.expiresAt ?? 0,
 					});
+					pruneProbeSnapshotCache();
 				}
 			}
 		}
@@ -1807,6 +1850,8 @@ async function requestChildRestart(child, platform = process.platform, signal) {
 
 function buildCodexChildEnv(baseEnv = process.env) {
 	const env = { ...baseEnv };
+	// Strip supervisor-only auth and multi-auth env so the real Codex child process
+	// cannot inherit token material or test-only session directory overrides.
 	for (const key of Object.keys(env)) {
 		if (
 			key.startsWith("CODEX_AUTH_") ||
@@ -2359,6 +2404,7 @@ const TEST_ONLY_API = {
 	sleep,
 	safeUnlink,
 	safeUnlinkOwnedSupervisorLock,
+	withSupervisorStorageLock,
 	withLockedManager,
 	getSupervisorStorageLockPath,
 	buildCodexChildEnv,

@@ -29,6 +29,7 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
 	"CODEX_AUTH_CLI_SESSION_STATE_REFRESH_MS",
 	"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS",
+	"CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_MAX_ENTRIES",
 	"CODEX_AUTH_ACCESS_TOKEN",
 	"CODEX_AUTH_REFRESH_TOKEN",
 	"CODEX_AUTH_RETRY_ALL_RATE_LIMITED",
@@ -976,6 +977,40 @@ describe("codex supervisor", () => {
 		expect(calls).toEqual(["near-limit"]);
 	});
 
+	it("evicts the oldest settled probe snapshots once the cache exceeds its max size", async () => {
+		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "5000";
+		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_MAX_ENTRIES = "2";
+		const manager = new FakeManager([
+			{ accountId: "acct-1", access: "token-1" },
+			{ accountId: "acct-2", access: "token-2" },
+			{ accountId: "acct-3", access: "token-3" },
+		]);
+		const calls: string[] = [];
+		const runtime = createFakeRuntime(manager, {
+			onFetch(accountId) {
+				calls.push(accountId);
+			},
+		});
+		const firstAccount = manager.getAccountByIndex(0);
+		const secondAccount = manager.getAccountByIndex(1);
+		const thirdAccount = manager.getAccountByIndex(2);
+
+		expect(firstAccount).toBeTruthy();
+		expect(secondAccount).toBeTruthy();
+		expect(thirdAccount).toBeTruthy();
+		if (!firstAccount || !secondAccount || !thirdAccount) {
+			return;
+		}
+
+		supervisorTestApi?.clearAllProbeSnapshotCache();
+		await supervisorTestApi?.probeAccountSnapshot(runtime, firstAccount, undefined, 250);
+		await supervisorTestApi?.probeAccountSnapshot(runtime, secondAccount, undefined, 250);
+		await supervisorTestApi?.probeAccountSnapshot(runtime, thirdAccount, undefined, 250);
+		await supervisorTestApi?.probeAccountSnapshot(runtime, firstAccount, undefined, 250);
+
+		expect(calls).toEqual(["acct-1", "acct-2", "acct-3", "acct-1"]);
+	});
+
 	it("shares the same in-flight probe across concurrent callers", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "5000";
 		const manager = new FakeManager();
@@ -1811,6 +1846,52 @@ describe("codex supervisor", () => {
 				"first-exit",
 				"second-after-first-exit",
 			]);
+		},
+	);
+
+	it(
+		"surfaces the heartbeat error when withSupervisorStorageLock aborts an active callback",
+		{ timeout: 10_000 },
+		async () => {
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_TTL_MS = "30";
+			process.env.CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS = "200";
+
+			const runtime = createFakeRuntime(new FakeManager());
+			const entered = createDeferred<void>();
+			const observedAbort = createDeferred<void>();
+			const criticalSection = supervisorTestApi?.withSupervisorStorageLock(
+				runtime,
+				async (lockSignal) => {
+					entered.resolve();
+					await new Promise<void>((resolve) => {
+						lockSignal?.addEventListener(
+							"abort",
+							() => {
+								observedAbort.resolve();
+								resolve();
+							},
+							{ once: true },
+						);
+					});
+					const abortError = new Error("lock callback aborted");
+					abortError.name = "AbortError";
+					throw abortError;
+				},
+				undefined,
+			);
+
+			await entered.promise;
+			const lockPath = supervisorTestApi?.getSupervisorStorageLockPath(runtime);
+			expect(lockPath).toBeTruthy();
+			if (!lockPath) {
+				return;
+			}
+			await fs.unlink(lockPath);
+			await observedAbort.promise;
+
+			await expect(criticalSection).rejects.toThrow(
+				`Supervisor lock heartbeat lost lease at ${lockPath} for owner`,
+			);
 		},
 	);
 

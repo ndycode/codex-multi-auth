@@ -1045,6 +1045,44 @@ describe("storage", () => {
 			}
 		});
 
+		it("allows symlink-resolved storage paths during export from an active transaction", async () => {
+			if (process.platform === "win32") {
+				return;
+			}
+
+			const realStorageDir = join(testWorkDir, "real-storage");
+			const aliasStorageDir = join(testWorkDir, "alias-storage");
+			const realStoragePath = join(realStorageDir, "accounts.json");
+			const aliasStoragePath = join(aliasStorageDir, "accounts.json");
+
+			await fs.mkdir(realStorageDir, { recursive: true });
+			await fs.symlink(realStorageDir, aliasStorageDir, "dir");
+
+			setStoragePathDirect(realStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "acct-primary",
+						refreshToken: "refresh-primary",
+						addedAt: 1,
+						lastUsed: 2,
+					},
+				],
+			});
+
+			await expect(
+				withAccountStorageTransaction(async () => {
+					setStoragePathDirect(aliasStoragePath);
+					await exportAccounts(exportPath);
+				}),
+			).resolves.toBeUndefined();
+
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+			expect(exported.accounts[0].accountId).toBe("acct-primary");
+		});
+
 		it("reloads fresh storage after a transaction handler throws", async () => {
 			await saveAccounts({
 				version: 3,

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, promises as fs, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
@@ -382,7 +382,15 @@ function getAccountsBackupRecoveryCandidates(path: string): string[] {
 }
 
 function normalizeStorageComparisonPath(path: string): string {
-	const resolved = resolvePath(path);
+	let resolved = resolvePath(path);
+	try {
+		resolved =
+			typeof realpathSync.native === "function"
+				? realpathSync.native(resolved)
+				: realpathSync(resolved);
+	} catch {
+		// Fall back to the normalized input when the path does not exist yet.
+	}
 	if (process.platform !== "win32") {
 		return resolved;
 	}
