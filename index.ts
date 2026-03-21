@@ -161,6 +161,7 @@ import { isEmptyResponse } from "./lib/request/response-handler.js";
 import { withStreamingFailover } from "./lib/request/stream-failover.js";
 import { addJitter } from "./lib/rotation.js";
 import { persistAccountPool } from "./lib/runtime/account-pool.js";
+import { applyAccountStorageScope } from "./lib/runtime/account-scope.js";
 import {
 	resolveAccountSelection,
 	type TokenSuccessWithAccount,
@@ -436,24 +437,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		}
 	};
 
-	const applyAccountStorageScope = (
+	const applyStorageScope = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void => {
-		const perProjectAccounts = getPerProjectAccounts(pluginConfig);
-		setStorageBackupEnabled(getStorageBackupEnabled(pluginConfig));
-		if (isCodexCliSyncEnabled()) {
-			if (perProjectAccounts && !perProjectStorageWarningShown) {
+	): void =>
+		applyAccountStorageScope(pluginConfig, {
+			getPerProjectAccounts,
+			getStorageBackupEnabled,
+			isCodexCliSyncEnabled,
+			setStorageBackupEnabled,
+			setStoragePath,
+			getCwd: () => process.cwd(),
+			warnPerProjectSyncConflict: () => {
+				if (perProjectStorageWarningShown) return;
 				perProjectStorageWarningShown = true;
 				logWarn(
 					`[${PLUGIN_NAME}] CODEX_AUTH_PER_PROJECT_ACCOUNTS is ignored while Codex CLI sync is enabled. Using global account storage.`,
 				);
-			}
-			setStoragePath(null);
-			return;
-		}
-
-		setStoragePath(perProjectAccounts ? process.cwd() : null);
-	};
+			},
+		});
 
 	const ensureLiveAccountSync = async (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
@@ -665,7 +666,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const auth = await getAuth();
 				const pluginConfig = loadPluginConfig();
 				applyUiRuntimeFromConfig(pluginConfig);
-				applyAccountStorageScope(pluginConfig);
+				applyStorageScope(pluginConfig);
 				ensureSessionAffinity(pluginConfig);
 				ensureRefreshGuardian(pluginConfig);
 				applyPreemptiveQuotaSettings(pluginConfig);
@@ -2529,7 +2530,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					authorize: async (inputs?: Record<string, string>) => {
 						const authPluginConfig = loadPluginConfig();
 						applyUiRuntimeFromConfig(authPluginConfig);
-						applyAccountStorageScope(authPluginConfig);
+						applyStorageScope(authPluginConfig);
 
 						const accounts: TokenSuccessWithAccount[] = [];
 						const noBrowser =
@@ -3718,7 +3719,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						// Must happen BEFORE persistAccountPool to ensure correct storage location
 						const manualPluginConfig = loadPluginConfig();
 						applyUiRuntimeFromConfig(manualPluginConfig);
-						applyAccountStorageScope(manualPluginConfig);
+						applyStorageScope(manualPluginConfig);
 
 						const { pkce, state, url } = await createAuthorizationFlow();
 						return buildManualOAuthFlow(pkce, url, state, {
