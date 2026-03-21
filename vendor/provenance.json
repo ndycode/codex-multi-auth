@@ -41,7 +41,8 @@
 				},
 				{
 					"path": "vendor/codex-ai-sdk/dist/index.js",
-					"sha256": "aee9a2454b1778ff0af7c648a172074fe61446e21e76bac0e354ef1d12c0dc22"
+					"sha256": "aee9a2454b1778ff0af7c648a172074fe61446e21e76bac0e354ef1d12c0dc22",
+					"note": "Intentionally identical to vendor/codex-ai-plugin/dist/index.js; both shims export an empty ESM module."
 				},
 				{
 					"path": "vendor/codex-ai-sdk/dist/index.d.ts",
