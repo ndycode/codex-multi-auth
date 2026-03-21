@@ -381,6 +381,38 @@ function getAccountsBackupRecoveryCandidates(path: string): string[] {
 	return candidates;
 }
 
+async function normalizeStorageComparisonPath(path: string): Promise<string> {
+	let resolved = resolvePath(path);
+	try {
+		resolved = await fs.realpath(resolved);
+	} catch (error: unknown) {
+		// Fall back to the normalized input when the path does not exist yet.
+		if (
+			!error ||
+			typeof error !== "object" ||
+			!("code" in error) ||
+			error.code !== "ENOENT"
+		) {
+			throw error;
+		}
+	}
+	if (process.platform !== "win32") {
+		return resolved;
+	}
+	return resolved.replaceAll("\\", "/").toLowerCase();
+}
+
+async function areEquivalentStoragePaths(
+	left: string,
+	right: string,
+): Promise<boolean> {
+	const [normalizedLeft, normalizedRight] = await Promise.all([
+		normalizeStorageComparisonPath(left),
+		normalizeStorageComparisonPath(right),
+	]);
+	return normalizedLeft === normalizedRight;
+}
+
 async function getAccountsBackupRecoveryCandidatesWithDiscovery(
 	path: string,
 ): Promise<string[]> {
@@ -1761,8 +1793,9 @@ async function loadAccountsFromJournal(
 
 async function loadAccountsInternal(
 	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
+	storagePath = getStoragePath(),
 ): Promise<AccountStorageV3 | null> {
-	const path = getStoragePath();
+	const path = storagePath;
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	await cleanupStaleRotatingBackupArtifacts(path);
 	const migratedLegacyStorage = persistMigration
@@ -1926,8 +1959,11 @@ async function loadAccountsInternal(
 	}
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
-	const path = getStoragePath();
+async function saveAccountsUnlocked(
+	storage: AccountStorageV3,
+	storagePath = getStoragePath(),
+): Promise<void> {
+	const path = storagePath;
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -2078,18 +2114,25 @@ export async function withAccountStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
-			storagePath,
+			snapshot: await loadAccountsInternal(
+				(storage) => saveAccountsUnlocked(storage, storagePath),
+				storagePath,
+			),
 			active: true,
+			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
+			await saveAccountsUnlocked(storage, storagePath);
 			state.snapshot = storage;
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
-		);
+		return transactionSnapshotContext.run(state, async () => {
+			try {
+				return await handler(current, persist);
+			} finally {
+				state.active = false;
+			}
+		});
 	});
 }
 
@@ -2104,10 +2147,14 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 ): Promise<T> {
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
+		const flaggedStoragePath = getFlaggedAccountsPath();
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
-			storagePath,
+			snapshot: await loadAccountsInternal(
+				(storage) => saveAccountsUnlocked(storage, storagePath),
+				storagePath,
+			),
 			active: true,
+			storagePath,
 		};
 		const current = state.snapshot;
 		const persist = async (
@@ -2116,13 +2163,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
-			await saveAccountsUnlocked(nextAccounts);
+			await saveAccountsUnlocked(nextAccounts, storagePath);
 			try {
-				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				await saveFlaggedAccountsUnlocked(flaggedStorage, flaggedStoragePath);
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
-					await saveAccountsUnlocked(previousAccounts);
+					await saveAccountsUnlocked(previousAccounts, storagePath);
 					state.snapshot = previousAccounts;
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
@@ -2141,9 +2188,13 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 				throw error;
 			}
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
-		);
+		return transactionSnapshotContext.run(state, async () => {
+			try {
+				return await handler(current, persist);
+			} finally {
+				state.active = false;
+			}
+		});
 	});
 }
 
@@ -2377,8 +2428,9 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 
 async function saveFlaggedAccountsUnlocked(
 	storage: FlaggedAccountStorageV1,
+	storagePath = getFlaggedAccountsPath(),
 ): Promise<void> {
-	const path = getFlaggedAccountsPath();
+	const path = storagePath;
 	const markerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
@@ -2477,22 +2529,32 @@ export async function exportAccounts(
 	beforeCommit?: (resolvedPath: string) => Promise<void> | void,
 ): Promise<void> {
 	const resolvedPath = resolvePath(filePath);
-	const currentStoragePath = getStoragePath();
+	const activeStoragePath = getStoragePath();
 
 	if (!force && existsSync(resolvedPath)) {
 		throw new Error(`File already exists: ${resolvedPath}`);
 	}
 
 	const transactionState = transactionSnapshotContext.getStore();
-	const storage =
+	if (
 		transactionState?.active &&
-		transactionState.storagePath === currentStoragePath
-			? transactionState.snapshot
-			: transactionState?.active
-				? await loadAccountsInternal(saveAccountsUnlocked)
-				: await withAccountStorageTransaction((current) =>
-						Promise.resolve(current),
-					);
+		!(await areEquivalentStoragePaths(
+			transactionState.storagePath,
+			activeStoragePath,
+		))
+	) {
+		// A fresh load here can silently export from the wrong storage file while a
+		// different transaction still owns the current snapshot.
+		throw new Error(
+			`Export blocked by storage path mismatch: transaction path is ` +
+				`${transactionState.storagePath}, active path is ${activeStoragePath}`,
+		);
+	}
+	const storage = transactionState?.active
+		? transactionState.snapshot
+		: await withAccountStorageTransaction((current) =>
+				Promise.resolve(current),
+			);
 	if (!storage || storage.accounts.length === 0) {
 		throw new Error("No accounts to export");
 	}
