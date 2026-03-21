@@ -69,6 +69,7 @@ import {
 	mapExperimentalStatusHotkey,
 } from "./experimental-settings-schema.js";
 import { loadExperimentalSyncTargetState } from "./experimental-sync-target.js";
+import { loadExperimentalSyncTargetEntry } from "./experimental-sync-target-entry.js";
 import {
 	buildSettingsHubItems,
 	findSettingsHubInitialCursor,
@@ -654,23 +655,12 @@ async function loadExperimentalSyncTarget(): Promise<
 			destination: import("../storage.js").AccountStorageV3 | null;
 	  }
 > {
-	return loadExperimentalSyncTargetState({
+	return loadExperimentalSyncTargetEntry({
+		loadExperimentalSyncTargetState,
 		detectTarget: detectOcChatgptMultiAuthTarget,
-		readJson: async (path) =>
-			JSON.parse(
-				await readFileWithRetry(path, {
-					retryableCodes: new Set([
-						"EBUSY",
-						"EPERM",
-						"EAGAIN",
-						"ENOTEMPTY",
-						"EACCES",
-					]),
-					maxAttempts: 4,
-					sleep,
-				}),
-			),
+		readFileWithRetry,
 		normalizeAccountStorage,
+		sleep,
 	});
 }
 
