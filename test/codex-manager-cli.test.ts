@@ -643,7 +643,11 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "status"]);
 
 		expect(exitCode).toBe(0);
+		expect(setStoragePathMock).toHaveBeenCalledWith(null);
 		expect(logSpy).toHaveBeenCalledWith("Accounts (2)");
+		expect(logSpy).toHaveBeenCalledWith(
+			"Storage: /mock/openai-codex-accounts.json",
+		);
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("1. 1. active@example.com [current]"),
 		);
