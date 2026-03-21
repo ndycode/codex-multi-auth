@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { createLogger } from "./logger.js";
 import {
@@ -62,6 +62,7 @@ import {
 	resolvePath,
 	resolveProjectStorageIdentityRoot,
 } from "./storage/paths.js";
+import { restoreAccountsFromBackupFile } from "./storage/restore.js";
 
 export type {
 	CooldownReason,
@@ -769,58 +770,17 @@ export async function restoreAccountsFromBackup(
 	path: string,
 	options?: { persist?: boolean },
 ): Promise<AccountStorageV3> {
-	const backupRoot = getNamedBackupRoot(getStoragePath());
-	let resolvedBackupRoot: string;
-	try {
-		resolvedBackupRoot = await fs.realpath(backupRoot);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			throw new Error(`Backup root does not exist: ${backupRoot}`);
-		}
-		throw error;
-	}
-	let resolvedBackupPath: string;
-	try {
-		resolvedBackupPath = await fs.realpath(path);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			throw new Error(`Backup file no longer exists: ${path}`);
-		}
-		throw error;
-	}
-	const relativePath = relative(resolvedBackupRoot, resolvedBackupPath);
-	const isInsideBackupRoot =
-		relativePath.length > 0 &&
-		!relativePath.startsWith("..") &&
-		!isAbsolute(relativePath);
-	if (!isInsideBackupRoot) {
-		throw new Error(
-			`Backup path must stay inside ${resolvedBackupRoot}: ${path}`,
-		);
-	}
-
-	const { normalized } = await (async () => {
-		try {
-			return await loadAccountsFromPath(resolvedBackupPath);
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				throw new Error(`Backup file no longer exists: ${path}`);
-			}
-			throw error;
-		}
-	})();
-	if (!normalized || normalized.accounts.length === 0) {
-		throw new Error(
-			`Backup does not contain any accounts: ${resolvedBackupPath}`,
-		);
-	}
-	if (options?.persist !== false) {
-		await saveAccounts(normalized);
-	}
-	return normalized;
+	return restoreAccountsFromBackupFile(
+		path,
+		{
+			realpath: fs.realpath,
+			getNamedBackupRoot,
+			getStoragePath,
+			loadAccountsFromPath,
+			saveAccounts,
+		},
+		options,
+	);
 }
 
 export async function exportNamedBackup(
