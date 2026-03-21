@@ -1,4 +1,3 @@
-import { promises as fs } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { loadPluginConfig, savePluginConfig } from "../config.js";
@@ -25,7 +24,6 @@ import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, select } from "../ui/select.js";
-import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
 import {
 	backendSettingsEqual,
@@ -64,10 +62,11 @@ import {
 	mapExperimentalStatusHotkey,
 } from "./experimental-settings-schema.js";
 import {
-	RETRYABLE_SETTINGS_WRITE_CODES,
-	SETTINGS_WRITE_MAX_ATTEMPTS,
-	withQueuedRetry,
-} from "./settings-write-queue.js";
+	readFileWithRetry,
+	resolvePluginConfigSavePathKey,
+	warnPersistFailure,
+} from "./settings-persist-utils.js";
+import { withQueuedRetry } from "./settings-write-queue.js";
 import { promptStatuslineSettingsPanel } from "./statusline-settings-panel.js";
 import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
 
@@ -267,22 +266,6 @@ function mergeDashboardSettingsForKeys(
 	return cloneDashboardSettings(next);
 }
 
-function resolvePluginConfigSavePathKey(): string {
-	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
-	return envPath.length > 0 ? envPath : getUnifiedSettingsPath();
-}
-
-function formatPersistError(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	return String(error);
-}
-
-function warnPersistFailure(scope: string, error: unknown): void {
-	console.warn(
-		`Settings save failed (${scope}) after retries: ${formatPersistError(error)}`,
-	);
-}
-
 async function persistDashboardSettingsSelection(
 	selected: DashboardDisplaySettings,
 	keys: readonly DashboardSettingKey[],
@@ -305,27 +288,6 @@ async function persistDashboardSettingsSelection(
 	} catch (error) {
 		warnPersistFailure(scope, error);
 		return fallback;
-	}
-}
-
-async function readFileWithRetry(path: string): Promise<string> {
-	for (let attempt = 0; ; attempt += 1) {
-		try {
-			return await fs.readFile(path, "utf-8");
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				throw error;
-			}
-			if (
-				!code ||
-				!RETRYABLE_SETTINGS_WRITE_CODES.has(code) ||
-				attempt >= SETTINGS_WRITE_MAX_ATTEMPTS - 1
-			) {
-				throw error;
-			}
-			await sleep(25 * 2 ** attempt);
-		}
 	}
 }
 
@@ -1177,7 +1139,17 @@ async function loadExperimentalSyncTarget(): Promise<
 	}
 	try {
 		const raw = JSON.parse(
-			await readFileWithRetry(detection.descriptor.accountPath),
+			await readFileWithRetry(detection.descriptor.accountPath, {
+				retryableCodes: new Set([
+					"EBUSY",
+					"EPERM",
+					"EAGAIN",
+					"ENOTEMPTY",
+					"EACCES",
+				]),
+				maxAttempts: 4,
+				sleep,
+			}),
 		);
 		const normalized = normalizeAccountStorage(raw);
 		if (!normalized) {
