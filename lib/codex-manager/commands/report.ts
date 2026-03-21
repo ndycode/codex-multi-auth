@@ -174,9 +174,9 @@ function serializeForecastResults(
 async function defaultWriteFile(path: string, contents: string): Promise<void> {
 	await fs.mkdir(dirname(path), { recursive: true });
 	const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await fs.writeFile(tempPath, contents, "utf-8");
 	let moved = false;
 	try {
+		await fs.writeFile(tempPath, contents, "utf-8");
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				await fs.rename(tempPath, path);
