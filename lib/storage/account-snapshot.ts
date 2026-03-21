@@ -63,13 +63,12 @@ export async function describeAccountSnapshot(
 		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return { kind, path, index: deps.index, exists: false, valid: false };
+		if (code !== "ENOENT") {
+			deps.logWarn("Failed to inspect account snapshot", {
+				path,
+				error: String(error),
+			});
 		}
-		deps.logWarn("Failed to inspect account snapshot", {
-			path,
-			error: String(error),
-		});
 		return {
 			kind,
 			path,

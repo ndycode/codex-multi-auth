@@ -98,7 +98,7 @@ describe("describeAccountSnapshot", () => {
 		});
 	});
 
-	it("treats ENOENT during load as a missing snapshot", async () => {
+	it("treats ENOENT during load as an invalid existing snapshot", async () => {
 		await expect(
 			describeAccountSnapshot("gone.json", "accounts-primary", {
 				index: 1,
@@ -112,8 +112,10 @@ describe("describeAccountSnapshot", () => {
 			kind: "accounts-primary",
 			path: "gone.json",
 			index: 1,
-			exists: false,
+			exists: true,
 			valid: false,
+			bytes: 12,
+			mtimeMs: 34,
 		});
 	});
 });
