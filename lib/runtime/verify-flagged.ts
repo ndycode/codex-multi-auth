@@ -1,3 +1,4 @@
+import { maskEmail } from "../logger.js";
 import type { FlaggedAccountMetadataV1 } from "../storage.js";
 import type { TokenSuccessWithAccount } from "./account-selection.js";
 import { createFlaggedVerificationState } from "./flagged-verify-types.js";
@@ -63,7 +64,8 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 	for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
 		const flagged = flaggedStorage.accounts[i];
 		if (!flagged) continue;
-		const label = flagged.email ?? flagged.accountLabel ?? `Flagged ${i + 1}`;
+		const maskedEmail = flagged.email ? maskEmail(flagged.email) : undefined;
+		const label = flagged.accountLabel ?? maskedEmail ?? `Flagged ${i + 1}`;
 		try {
 			const cached = await deps.lookupCodexCliTokensByEmail(flagged.email);
 			const now = deps.now?.() ?? Date.now();

@@ -1,3 +1,4 @@
+import { maskEmail } from "../logger.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { AccountStorageV3, FlaggedAccountMetadataV1 } from "../storage.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
@@ -95,7 +96,8 @@ export async function runRuntimeAccountCheck(
 	for (let i = 0; i < total; i += 1) {
 		const account = workingStorage.accounts[i];
 		if (!account) continue;
-		const label = account.email ?? account.accountLabel ?? `Account ${i + 1}`;
+		const maskedEmail = account.email ? maskEmail(account.email) : undefined;
+		const label = account.accountLabel ?? maskedEmail ?? `Account ${i + 1}`;
 		if (account.enabled === false) {
 			state.disabled += 1;
 			deps.showLine(`[${i + 1}/${total}] ${label}: DISABLED`);

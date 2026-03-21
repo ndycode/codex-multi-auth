@@ -22,7 +22,7 @@ export async function runRuntimeOAuthFlow(
 	return deps.runOAuthBrowserFlow({
 		forceNewLogin,
 		manualModeLabel: deps.manualModeLabel,
-		logInfo: (message) => deps.logInfo(`[${deps.pluginName}] ${message}`),
+		logInfo: deps.logInfo,
 		logDebug: (message) => deps.logDebug(`[${deps.pluginName}] ${message}`),
 		logWarn: (message) => deps.logWarn(`[${deps.pluginName}] ${message}`),
 	});

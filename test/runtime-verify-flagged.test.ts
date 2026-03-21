@@ -31,7 +31,7 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 			version: 1,
 			accounts: [expect.objectContaining({ refreshToken: "flagged-refresh" })],
 		});
-		expect(showLine).toHaveBeenCalledWith(expect.stringContaining("RESTORED (Codex CLI cache)"));
+		expect(showLine).toHaveBeenCalledWith(expect.stringContaining("ca***@***.com: RESTORED (Codex CLI cache)"));
 	});
 
 	it("logs verification failures through logError and keeps the account flagged", async () => {
@@ -55,7 +55,7 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 			showLine: vi.fn(),
 		});
 		expect(logError).toHaveBeenCalledWith(
-			expect.stringContaining("Failed to verify flagged account broken@example.com: cache unavailable"),
+			expect.stringContaining("Failed to verify flagged account br***@***.com: cache unavailable"),
 		);
 		expect(saveFlaggedAccounts).toHaveBeenCalledWith({
 			version: 1,

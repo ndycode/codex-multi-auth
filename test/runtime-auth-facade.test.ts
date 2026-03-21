@@ -6,7 +6,7 @@ import {
 } from "../lib/runtime/auth-facade.js";
 
 describe("runRuntimeOAuthFlow", () => {
-	it("prefixes info, debug and warn logs with the plugin name", async () => {
+	it("passes through info logs and prefixes debug/warn logs with the plugin name", async () => {
 		const logInfo = vi.fn();
 		const logDebug = vi.fn();
 		const logWarn = vi.fn();
@@ -23,7 +23,7 @@ describe("runRuntimeOAuthFlow", () => {
 			logWarn,
 			pluginName: "codex-multi-auth",
 		});
-		expect(logInfo).toHaveBeenCalledWith("[codex-multi-auth] info message");
+		expect(logInfo).toHaveBeenCalledWith("info message");
 		expect(logDebug).toHaveBeenCalledWith("[codex-multi-auth] debug message");
 		expect(logWarn).toHaveBeenCalledWith("[codex-multi-auth] warn message");
 	});
