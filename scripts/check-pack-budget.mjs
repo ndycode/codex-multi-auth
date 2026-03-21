@@ -55,12 +55,12 @@ if (packageSize > MAX_PACKAGE_SIZE) {
 }
 
 const paths = pack.files
-	.map((file) => file.path)
-	.filter((value) => typeof value === "string");
+	.map((/** @type {{ path?: unknown }} */ file) => file.path)
+	.filter((/** @type {unknown} */ value) => typeof value === "string");
 
 for (const forbidden of FORBIDDEN_PREFIXES) {
 	const leaked = paths.find(
-		(path) => path === forbidden || path.startsWith(forbidden),
+		(/** @type {string} */ path) => path === forbidden || path.startsWith(forbidden),
 	);
 	if (leaked) {
 		throw new Error(`Forbidden file leaked into package: ${leaked}`);
@@ -69,7 +69,7 @@ for (const forbidden of FORBIDDEN_PREFIXES) {
 
 for (const required of REQUIRED_PREFIXES) {
 	const present = paths.some(
-		(path) => path === required || path.startsWith(required),
+		(/** @type {string} */ path) => path === required || path.startsWith(required),
 	);
 	if (!present) {
 		throw new Error(

@@ -35,5 +35,5 @@ for (const component of manifest.components) {
 }
 
 console.log(
-	`Vendor provenance ok: ${manifest.components.length} component(s), ${manifest.components.reduce((sum, component) => sum + component.files.length, 0)} file(s) verified`,
+	`Vendor provenance ok: ${manifest.components.length} component(s), ${manifest.components.reduce((/** @type {number} */ sum, /** @type {{ files?: unknown[] }} */ component) => sum + (Array.isArray(component.files) ? component.files.length : 0), 0)} file(s) verified`,
 );
