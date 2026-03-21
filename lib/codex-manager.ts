@@ -45,6 +45,7 @@ import {
 } from "./codex-manager/commands/doctor.js";
 import {
 	type FixCliOptions,
+	type FixCommandDeps,
 	runFixCommand,
 } from "./codex-manager/commands/fix.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
@@ -2803,6 +2804,41 @@ async function clearAccountsAndReset(): Promise<void> {
 	await clearAccounts();
 }
 
+function buildFixCommandDeps(): FixCommandDeps {
+	return {
+		setStoragePath,
+		loadAccounts,
+		parseFixArgs,
+		printFixUsage,
+		loadQuotaCache,
+		saveQuotaCache,
+		cloneQuotaCacheData,
+		buildQuotaEmailFallbackState,
+		updateQuotaCacheForAccount,
+		pruneUnsafeQuotaEmailCacheEntry,
+		resolveActiveIndex,
+		hasUsableAccessToken,
+		fetchCodexQuotaSnapshot,
+		formatCompactQuotaSnapshot,
+		normalizeFailureDetail,
+		hasLikelyInvalidRefreshToken,
+		queuedRefresh,
+		sanitizeEmail,
+		extractAccountEmail,
+		extractAccountId,
+		applyTokenAccountIdentity,
+		isHardRefreshFailure,
+		evaluateForecastAccounts,
+		recommendForecastAccount,
+		saveAccounts,
+		formatAccountLabel,
+		stylePromptText,
+		formatResultSummary,
+		styleAccountDetailText,
+		defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+	};
+}
+
 async function handleManageAction(
 	storage: AccountStorageV3,
 	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
@@ -2987,38 +3023,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 						"Auto-Fix",
 						"Checking and fixing common issues",
 						async () => {
-							await runFixCommand(["--live"], {
-								setStoragePath,
-								loadAccounts,
-								parseFixArgs,
-								printFixUsage,
-								loadQuotaCache,
-								saveQuotaCache,
-								cloneQuotaCacheData,
-								buildQuotaEmailFallbackState,
-								updateQuotaCacheForAccount,
-								pruneUnsafeQuotaEmailCacheEntry,
-								resolveActiveIndex,
-								hasUsableAccessToken,
-								fetchCodexQuotaSnapshot,
-								formatCompactQuotaSnapshot,
-								normalizeFailureDetail,
-								hasLikelyInvalidRefreshToken,
-								queuedRefresh,
-								sanitizeEmail,
-								extractAccountEmail,
-								extractAccountId,
-								applyTokenAccountIdentity,
-								isHardRefreshFailure,
-								evaluateForecastAccounts,
-								recommendForecastAccount,
-								saveAccounts,
-								formatAccountLabel,
-								stylePromptText,
-								formatResultSummary,
-								styleAccountDetailText,
-								defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-							});
+							await runFixCommand(["--live"], buildFixCommandDeps());
 						},
 						displaySettings,
 					);
@@ -3564,38 +3569,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		});
 	}
 	if (command === "fix") {
-		return runFixCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-			parseFixArgs,
-			printFixUsage,
-			loadQuotaCache,
-			saveQuotaCache,
-			cloneQuotaCacheData,
-			buildQuotaEmailFallbackState,
-			updateQuotaCacheForAccount,
-			pruneUnsafeQuotaEmailCacheEntry,
-			resolveActiveIndex,
-			hasUsableAccessToken,
-			fetchCodexQuotaSnapshot,
-			formatCompactQuotaSnapshot,
-			normalizeFailureDetail,
-			hasLikelyInvalidRefreshToken,
-			queuedRefresh,
-			sanitizeEmail,
-			extractAccountEmail,
-			extractAccountId,
-			applyTokenAccountIdentity,
-			isHardRefreshFailure,
-			evaluateForecastAccounts,
-			recommendForecastAccount,
-			saveAccounts,
-			formatAccountLabel,
-			stylePromptText,
-			formatResultSummary,
-			styleAccountDetailText,
-			defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-		});
+		return runFixCommand(rest, buildFixCommandDeps());
 	}
 	if (command === "doctor") {
 		return runDoctorCommand(rest, {
