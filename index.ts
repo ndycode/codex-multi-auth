@@ -182,6 +182,7 @@ import {
 	sanitizeResponseHeadersForLog,
 } from "./lib/runtime/metrics.js";
 import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
+import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-quota.js";
 import { ensureRuntimeRefreshGuardian } from "./lib/runtime/refresh-guardian.js";
 import { ensureRuntimeSessionAffinity } from "./lib/runtime/session-affinity.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
@@ -521,13 +522,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const applyPreemptiveQuotaSettings = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
-		preemptiveQuotaScheduler.configure({
-			enabled: getPreemptiveQuotaEnabled(pluginConfig),
-			remainingPercentThresholdPrimary:
-				getPreemptiveQuotaRemainingPercent5h(pluginConfig),
-			remainingPercentThresholdSecondary:
-				getPreemptiveQuotaRemainingPercent7d(pluginConfig),
-			maxDeferralMs: getPreemptiveQuotaMaxDeferralMs(pluginConfig),
+		applyRuntimePreemptiveQuotaSettings(pluginConfig, {
+			configure: (options) => preemptiveQuotaScheduler.configure(options),
+			getPreemptiveQuotaEnabled,
+			getPreemptiveQuotaRemainingPercent5h,
+			getPreemptiveQuotaRemainingPercent7d,
+			getPreemptiveQuotaMaxDeferralMs,
 		});
 	};
 
