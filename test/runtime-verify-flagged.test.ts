@@ -6,7 +6,7 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 		const showLine = vi.fn();
 		await verifyRuntimeFlaggedAccounts({
 			loadFlaggedAccounts: async () => ({ version: 1, accounts: [] }),
-			lookupCodexCliTokensByEmail: async () => null,
+			lookupCodexCliTokensByEmail: async () => { throw new Error("busy"); },
 			queuedRefresh: async () => ({ type: "failed", reason: "invalid_grant" }),
 			resolveAccountSelection: () => ({}) as never,
 			persistAccounts: vi.fn(async () => {}),
@@ -74,9 +74,9 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 		const saveFlaggedAccounts = vi.fn(async () => {});
 		await verifyRuntimeFlaggedAccounts({
 			loadFlaggedAccounts: async () => ({ version: 1, accounts: [{ email: "broken@example.com", refreshToken: "broken-refresh", addedAt: 1, lastUsed: 1 }] }),
-			lookupCodexCliTokensByEmail: async () => { throw new Error("cache unavailable"); },
+			lookupCodexCliTokensByEmail: async () => ({ accessToken: "cached-access", refreshToken: "cached-refresh", expiresAt: Date.now() + 60_000 }),
 			queuedRefresh: async () => ({ type: "failed", reason: "invalid_grant" }),
-			resolveAccountSelection: () => ({}) as never,
+			resolveAccountSelection: () => { throw new Error("selection failed"); },
 			persistAccounts: vi.fn(async () => {}),
 			invalidateAccountManagerCache: vi.fn(),
 			saveFlaggedAccounts,
@@ -84,17 +84,17 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 			logError,
 			showLine: vi.fn(),
 		});
-		expect(logError).toHaveBeenCalledWith(expect.stringContaining("Failed to verify flagged account br***@***.com: cache unavailable"));
+		expect(logError).toHaveBeenCalledWith(expect.stringContaining("Failed to verify flagged account br***@***.com: selection failed"));
 		expect(saveFlaggedAccounts).toHaveBeenCalledWith({
 			version: 1,
-			accounts: [expect.objectContaining({ refreshToken: "broken-refresh", lastError: "cache unavailable" })],
+			accounts: [expect.objectContaining({ refreshToken: "broken-refresh", lastError: "selection failed" })],
 		});
 	});
-	it("writes flagged state before restored accounts", async () => {
+	it("writes restored accounts before flagged state cleanup", async () => {
 		const calls: string[] = [];
 		await verifyRuntimeFlaggedAccounts({
 			loadFlaggedAccounts: async () => ({ version: 1, accounts: [{ email: "refresh@example.com", refreshToken: "refresh-token", addedAt: 1, lastUsed: 1 }] }),
-			lookupCodexCliTokensByEmail: async () => null,
+			lookupCodexCliTokensByEmail: async () => { throw new Error("busy"); },
 			queuedRefresh: async () => ({ type: "success", access: "new-access", refresh: "new-refresh", expires: Date.now() + 60_000 }),
 			resolveAccountSelection: (tokens) => ({ refreshToken: tokens.refresh, accessToken: tokens.access }) as never,
 			persistAccounts: vi.fn(async () => { calls.push("persistAccounts"); }),
@@ -103,10 +103,10 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 			logInfo: vi.fn(),
 			showLine: vi.fn(),
 		});
-		expect(calls).toEqual(["saveFlaggedAccounts", "persistAccounts"]);
+		expect(calls).toEqual(["persistAccounts", "saveFlaggedAccounts"]);
 	});
 
-	it("keeps flagged state saved when persistAccounts throws EBUSY", async () => {
+	it("leaves flagged state untouched when persistAccounts throws EBUSY", async () => {
 		const saveFlaggedAccounts = vi.fn(async () => {});
 		const persistAccounts = vi.fn(async () => {
 			const error = new Error("busy") as Error & { code?: string };
@@ -116,7 +116,7 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 		await expect(
 			verifyRuntimeFlaggedAccounts({
 				loadFlaggedAccounts: async () => ({ version: 1, accounts: [{ email: "refresh@example.com", refreshToken: "refresh-token", addedAt: 1, lastUsed: 1 }] }),
-				lookupCodexCliTokensByEmail: async () => null,
+				lookupCodexCliTokensByEmail: async () => { throw new Error("busy"); },
 				queuedRefresh: async () => ({ type: "success", access: "new-access", refresh: "new-refresh", expires: Date.now() + 60_000 }),
 				resolveAccountSelection: (tokens) => ({ refreshToken: tokens.refresh, accessToken: tokens.access }) as never,
 				persistAccounts,
@@ -126,6 +126,6 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 				showLine: vi.fn(),
 			}),
 		).rejects.toThrow("busy");
-		expect(saveFlaggedAccounts).toHaveBeenCalledTimes(1);
+		expect(saveFlaggedAccounts).not.toHaveBeenCalled();
 	});
 });

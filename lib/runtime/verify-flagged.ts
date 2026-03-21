@@ -67,7 +67,7 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 		const maskedEmail = flagged.email ? maskEmail(flagged.email) : undefined;
 		const label = flagged.accountLabel ?? maskedEmail ?? `Flagged ${i + 1}`;
 		try {
-			const cached = await deps.lookupCodexCliTokensByEmail(flagged.email);
+			const cached = await deps.lookupCodexCliTokensByEmail(flagged.email).catch(() => null);
 			const now = deps.now?.() ?? Date.now();
 			if (
 				cached &&
@@ -139,15 +139,15 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 		}
 	}
 
-	await deps.saveFlaggedAccounts({
-		version: 1,
-		accounts: state.remaining,
-	});
-
 	if (state.restored.length > 0) {
 		await deps.persistAccounts(state.restored, false);
 		deps.invalidateAccountManagerCache();
 	}
+
+	await deps.saveFlaggedAccounts({
+		version: 1,
+		accounts: state.remaining,
+	});
 
 	deps.showLine("");
 	deps.showLine(
