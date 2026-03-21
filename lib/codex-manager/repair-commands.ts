@@ -1404,7 +1404,7 @@ export async function runFix(
 		});
 	}
 
-	const changed = accountStorageChanged || quotaCacheChanged;
+	const changed = accountStorageChanged;
 
 	if (options.json) {
 		if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
@@ -1418,6 +1418,7 @@ export async function runFix(
 					liveProbe: options.live,
 					model: options.model,
 					changed,
+					quotaCacheChanged,
 					summary: reportSummary,
 					recommendation,
 					recommendedSwitchCommand:
@@ -1688,7 +1689,8 @@ export async function runDoctor(
 		details: codexCliState?.path,
 	});
 
-	const storage = await loadAccounts();
+	const loadedStorage = await loadAccounts();
+	const storage = loadedStorage ? structuredClone(loadedStorage) : loadedStorage;
 	let fixChanged = false;
 	let storageFixChanged = false;
 	let structuralFixActions: DoctorFixAction[] = [];
@@ -1992,6 +1994,7 @@ export async function runDoctor(
 				transactionChanged = true;
 			}
 			if (!transactionChanged) {
+				structuralFixActions = [];
 				storageFixChanged = false;
 				return;
 			}

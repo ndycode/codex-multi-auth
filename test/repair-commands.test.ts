@@ -434,7 +434,8 @@ describe("repair-commands direct deps coverage", () => {
 			JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")),
 		).toMatchObject({
 			command: "fix",
-			changed: true,
+			changed: false,
+			quotaCacheChanged: true,
 			summary: {
 				healthy: 1,
 			},
@@ -605,7 +606,13 @@ describe("repair-commands direct deps coverage", () => {
 						},
 					],
 					activeIndex: 0,
-					activeIndexByFamily: { codex: 0 },
+					activeIndexByFamily: {
+						codex: 0,
+						"codex-max": 0,
+						"gpt-5-codex": 0,
+						"gpt-5.1": 0,
+						"gpt-5.2": 0,
+					},
 				},
 				async (nextStorage: unknown) => {
 					persistedAccountStorage = nextStorage;
@@ -667,5 +674,95 @@ describe("repair-commands direct deps coverage", () => {
 				message: expect.stringMatching(/Applied \d+ fix\(es\)/),
 			}),
 		);
+	});
+
+	it("runDoctor keeps the prescan snapshot unchanged when the transaction is already fixed", async () => {
+		const now = Date.now();
+		let persistedAccountStorage: unknown;
+		const prescanStorage = {
+			version: 3,
+			accounts: [
+				{
+					email: "doctor@example.com",
+					refreshToken: "doctor-refresh",
+					accessToken: "doctor-access",
+					expiresAt: now + 60_000,
+					accountId: "doctor-account",
+					accountIdSource: "manual" as const,
+					enabled: true,
+				},
+				{
+					email: "doctor+duplicate@example.com",
+					refreshToken: "doctor-refresh",
+					accessToken: "doctor-access-duplicate",
+					expiresAt: now + 60_000,
+					accountId: "doctor-duplicate",
+					accountIdSource: "manual" as const,
+					enabled: true,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		};
+		loadAccountsMock.mockResolvedValueOnce(prescanStorage);
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(
+				{
+					version: 3,
+					accounts: [
+						{
+							email: "doctor@example.com",
+							refreshToken: "doctor-refresh",
+							accessToken: "doctor-access",
+							expiresAt: now + 60_000,
+							accountId: "doctor-account",
+							accountIdSource: "manual" as const,
+							enabled: true,
+						},
+						{
+							email: "doctor+duplicate@example.com",
+							refreshToken: "doctor-refresh-2",
+							accessToken: "doctor-access-duplicate",
+							expiresAt: now + 60_000,
+							accountId: "doctor-duplicate",
+							accountIdSource: "manual" as const,
+							enabled: true,
+						},
+					],
+					activeIndex: 0,
+					activeIndexByFamily: {
+						codex: 0,
+						"codex-max": 0,
+						"gpt-5-codex": 0,
+						"gpt-5.1": 0,
+						"gpt-5.2": 0,
+					},
+				},
+				async (nextStorage: unknown) => {
+					persistedAccountStorage = nextStorage;
+				},
+			),
+		);
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runDoctor(
+			["--json", "--fix"],
+			createDeps({
+				hasUsableAccessToken: () => true,
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(persistedAccountStorage).toBeUndefined();
+		expect(prescanStorage.accounts[1]?.enabled).toBe(true);
+		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
+			fix: {
+				changed: boolean;
+				actions: Array<{ key: string }>;
+			};
+		};
+		expect(payload.fix.changed).toBe(false);
+		expect(payload.fix.actions).toEqual([]);
 	});
 });
