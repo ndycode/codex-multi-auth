@@ -53,6 +53,9 @@ jobs:
       - name: Pack budget check
         run: npm run pack:check
 
+      - name: Verify vendor provenance
+        run: npm run vendor:verify
+
   node22-smoke:
     name: Node 22 Smoke
     runs-on: ubuntu-latest
