@@ -68,10 +68,10 @@
 		"typecheck": "tsc --noEmit",
 		"lint": "npm run lint:ts && npm run lint:scripts",
 		"lint:ts": "eslint . --ext .ts",
-		"lint:scripts": "eslint scripts --ext .js",
+		"lint:scripts": "eslint scripts --ext .js,.mjs",
 		"lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
 		"lint:ts:fix": "eslint . --ext .ts --fix",
-		"lint:scripts:fix": "eslint scripts --ext .js --fix",
+		"lint:scripts:fix": "eslint scripts --ext .js,.mjs --fix",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:ui": "vitest --ui",
@@ -116,7 +116,7 @@
 		"*.ts": [
 			"eslint --max-warnings=0 --fix --no-warn-ignored"
 		],
-		"scripts/**/*.js": [
+		"scripts/**/*.{js,mjs}": [
 			"eslint --max-warnings=0 --fix --no-warn-ignored"
 		]
 	},
