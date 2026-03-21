@@ -305,6 +305,19 @@ export interface ProbeCodexQuotaOptions {
 	model?: string;
 	fallbackModels?: readonly string[];
 	timeoutMs?: number;
+	signal?: AbortSignal;
+}
+
+function createAbortError(message: string): Error {
+	const error = new Error(message);
+	error.name = "AbortError";
+	return error;
+}
+
+function throwIfQuotaProbeAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) {
+		throw createAbortError("Quota probe aborted");
+	}
 }
 
 /**
@@ -331,8 +344,11 @@ export async function fetchCodexQuotaSnapshot(
 	let lastError: Error | null = null;
 
 	for (const model of models) {
+		throwIfQuotaProbeAborted(options.signal);
 		try {
+			throwIfQuotaProbeAborted(options.signal);
 			const instructions = await getCodexInstructions(model);
+			throwIfQuotaProbeAborted(options.signal);
 			const probeBody: RequestBody = {
 				model,
 				stream: true,
@@ -356,6 +372,12 @@ export async function fetchCodexQuotaSnapshot(
 			headers.set("content-type", "application/json");
 
 			const controller = new AbortController();
+			const onAbort = () => controller.abort(options.signal?.reason);
+			if (options.signal?.aborted) {
+				controller.abort(options.signal.reason);
+			} else {
+				options.signal?.addEventListener("abort", onAbort, { once: true });
+			}
 			const timeout = setTimeout(() => controller.abort(), timeoutMs);
 			let response: Response;
 			try {
@@ -367,6 +389,7 @@ export async function fetchCodexQuotaSnapshot(
 				});
 			} finally {
 				clearTimeout(timeout);
+				options.signal?.removeEventListener("abort", onAbort);
 			}
 
 			const snapshotBase = parseQuotaSnapshotBase(response.headers, response.status);
@@ -390,6 +413,7 @@ export async function fetchCodexQuotaSnapshot(
 
 				const unsupportedInfo = getUnsupportedCodexModelInfo(errorBody);
 				if (unsupportedInfo.isUnsupported) {
+					throwIfQuotaProbeAborted(options.signal);
 					lastError = new Error(
 						unsupportedInfo.message ?? `Model '${model}' unsupported for this account`,
 					);
@@ -406,8 +430,15 @@ export async function fetchCodexQuotaSnapshot(
 			}
 			lastError = new Error("Codex response did not include quota headers");
 		} catch (error) {
+			if (options.signal?.aborted) {
+				throw error instanceof Error ? error : createAbortError("Quota probe aborted");
+			}
 			lastError = error instanceof Error ? error : new Error(String(error));
 		}
+	}
+
+	if (options.signal?.aborted) {
+		throw createAbortError("Quota probe aborted");
 	}
 
 	throw lastError ?? new Error("Failed to fetch quotas");
