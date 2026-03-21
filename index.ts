@@ -186,6 +186,7 @@ import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-qu
 import { ensureRuntimeRefreshGuardian } from "./lib/runtime/refresh-guardian.js";
 import { ensureRuntimeSessionAffinity } from "./lib/runtime/session-affinity.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
+import { applyRuntimeUiOptions } from "./lib/runtime/ui-runtime.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
 import {
@@ -392,10 +393,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const applyUiRuntimeFromConfig = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): UiRuntimeOptions => {
-		return setUiRuntimeOptions({
-			v2Enabled: getCodexTuiV2(pluginConfig),
-			colorProfile: getCodexTuiColorProfile(pluginConfig),
-			glyphMode: getCodexTuiGlyphMode(pluginConfig),
+		return applyRuntimeUiOptions(pluginConfig, {
+			setUiRuntimeOptions,
+			getCodexTuiV2,
+			getCodexTuiColorProfile,
+			getCodexTuiGlyphMode,
 		});
 	};
 
