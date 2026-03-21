@@ -8360,19 +8360,26 @@ describe("codex manager cli commands", () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
 			accounts: [
 				{
 					email: "first@example.com",
 					refreshToken: "refresh-first",
-					addedAt: now - 2_000,
-					lastUsed: now - 2_000,
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
 					enabled: true,
 				},
 				{
 					email: "second@example.com",
 					refreshToken: "refresh-second",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "third@example.com",
+					refreshToken: "refresh-third",
 					addedAt: now - 1_000,
 					lastUsed: now - 1_000,
 					enabled: true,
@@ -8388,9 +8395,62 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(2);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe(
 			"first@example.com",
+		);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[1]?.email).toBe(
+			"third@example.com",
+		);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndex).toBe(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndexByFamily?.codex).toBe(
+			1,
+		);
+	});
+
+	it("preserves the active selection when deleting a different account", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 2,
+			activeIndexByFamily: { codex: 2 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "third@example.com",
+					refreshToken: "refresh-third",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(2);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndex).toBe(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndexByFamily?.codex).toBe(
+			1,
 		);
 	});
 

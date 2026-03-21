@@ -2055,11 +2055,54 @@ async function clearAccountsAndReset(): Promise<void> {
 	await clearAccounts();
 }
 
-function resetManageActionSelection(storage: AccountStorageV3): void {
-	storage.activeIndex = 0;
+function adjustManageActionSelectionIndex(
+	currentIndex: number | undefined,
+	removedIndex: number,
+	remainingCount: number,
+): number {
+	if (remainingCount <= 0) {
+		return 0;
+	}
+	if (typeof currentIndex !== "number" || currentIndex < 0) {
+		return 0;
+	}
+	if (currentIndex < removedIndex) {
+		return Math.min(currentIndex, remainingCount - 1);
+	}
+	if (currentIndex > removedIndex) {
+		return currentIndex - 1;
+	}
+	return Math.min(removedIndex, remainingCount - 1);
+}
+
+function resetManageActionSelection(
+	storage: AccountStorageV3,
+	removedIndex: number,
+): void {
+	const remainingCount = storage.accounts.length;
+	if (remainingCount <= 0) {
+		storage.activeIndex = 0;
+		storage.activeIndexByFamily = {};
+		for (const family of MODEL_FAMILIES) {
+			storage.activeIndexByFamily[family] = 0;
+		}
+		return;
+	}
+
+	const previousActiveIndex = storage.activeIndex;
+	const previousByFamily = { ...storage.activeIndexByFamily };
+	storage.activeIndex = adjustManageActionSelectionIndex(
+		previousActiveIndex,
+		removedIndex,
+		remainingCount,
+	);
 	storage.activeIndexByFamily = {};
 	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = 0;
+		storage.activeIndexByFamily[family] = adjustManageActionSelectionIndex(
+			previousByFamily[family] ?? previousActiveIndex,
+			removedIndex,
+			remainingCount,
+		);
 	}
 }
 
@@ -2150,7 +2193,7 @@ async function handleManageAction(
 					return;
 				}
 				nextStorage.accounts.splice(nextIndex, 1);
-				resetManageActionSelection(nextStorage);
+				resetManageActionSelection(nextStorage, nextIndex);
 				await persist(nextStorage);
 				replaceManageActionStorage(storage, nextStorage);
 				deleted = true;

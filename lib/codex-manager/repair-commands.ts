@@ -810,25 +810,43 @@ export async function runVerifyFlagged(
 	const nextFlaggedAccounts: FlaggedAccountMetadataV1[] = [];
 	const flaggedMutations: FlaggedStorageMutation[] = [];
 	const now = Date.now();
-	const refreshChecks: Array<{
+	const collectRefreshChecks = async (
+		accounts: FlaggedAccountMetadataV1[],
+	): Promise<
+		Array<{
+			index: number;
+			flagged: FlaggedAccountMetadataV1;
+			label: string;
+			result: Awaited<ReturnType<typeof queuedRefresh>>;
+		}>
+	> => {
+		const refreshChecks: Array<{
+			index: number;
+			flagged: FlaggedAccountMetadataV1;
+			label: string;
+			result: Awaited<ReturnType<typeof queuedRefresh>>;
+		}> = [];
+		for (let i = 0; i < accounts.length; i += 1) {
+			const flagged = accounts[i];
+			if (!flagged) continue;
+			refreshChecks.push({
+				index: i,
+				flagged,
+				label: formatAccountLabel(flagged, i),
+				result: await queuedRefresh(flagged.refreshToken),
+			});
+		}
+		return refreshChecks;
+	};
+	const applyRefreshChecks = (
+		storage: AccountStorageV3,
+		refreshChecks: Array<{
 		index: number;
 		flagged: FlaggedAccountMetadataV1;
 		label: string;
 		result: Awaited<ReturnType<typeof queuedRefresh>>;
-	}> = [];
-
-	for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
-		const flagged = flaggedStorage.accounts[i];
-		if (!flagged) continue;
-		refreshChecks.push({
-			index: i,
-			flagged,
-			label: formatAccountLabel(flagged, i),
-			result: await queuedRefresh(flagged.refreshToken),
-		});
-	}
-
-	const applyRefreshChecks = (storage: AccountStorageV3): void => {
+		}>,
+	): void => {
 		for (const check of refreshChecks) {
 			const { index: i, flagged, label, result } = check;
 			if (result.type === "success") {
@@ -950,10 +968,14 @@ export async function runVerifyFlagged(
 	};
 
 	let remainingFlagged = 0;
+	const refreshChecks = await collectRefreshChecks(flaggedStorage.accounts);
 
 	if (options.restore) {
 		if (options.dryRun) {
-			applyRefreshChecks((await loadAccounts()) ?? createEmptyAccountStorage());
+			applyRefreshChecks(
+				(await loadAccounts()) ?? createEmptyAccountStorage(),
+				refreshChecks,
+			);
 		} else {
 			await withAccountAndFlaggedStorageTransaction(
 				async (loadedStorage, persist, loadedFlaggedStorage) => {
@@ -961,7 +983,7 @@ export async function runVerifyFlagged(
 						? structuredClone(loadedStorage)
 						: createEmptyAccountStorage();
 					const nextFlaggedStorage = structuredClone(loadedFlaggedStorage);
-					applyRefreshChecks(nextStorage);
+					applyRefreshChecks(nextStorage, refreshChecks);
 					applyFlaggedStorageMutations(nextFlaggedStorage, flaggedMutations);
 					remainingFlagged = nextFlaggedStorage.accounts.length;
 					if (!storageChanged && !flaggedChanged) {
@@ -975,7 +997,7 @@ export async function runVerifyFlagged(
 			);
 		}
 	} else {
-		applyRefreshChecks(createEmptyAccountStorage());
+		applyRefreshChecks(createEmptyAccountStorage(), refreshChecks);
 		remainingFlagged = nextFlaggedAccounts.length;
 	}
 
@@ -992,7 +1014,7 @@ export async function runVerifyFlagged(
 	).length;
 	const changed = storageChanged || flaggedChanged;
 
-	if (!options.dryRun && flaggedChanged && !options.restore) {
+	if (!options.dryRun && !options.restore && flaggedChanged) {
 		await withFlaggedStorageTransaction(async (loadedFlaggedStorage, persist) => {
 			const nextFlaggedStorage = structuredClone(loadedFlaggedStorage);
 			applyFlaggedStorageMutations(nextFlaggedStorage, flaggedMutations);
