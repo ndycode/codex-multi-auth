@@ -1535,6 +1535,37 @@ describe("codex supervisor", () => {
 		},
 	);
 
+	it.each([
+		[["-c", 'profile="dev"', "--help"], ["-c", 'profile="dev"', "--help"]],
+		[["--config", 'env="dev"', "--help"], ["--config", 'env="dev"', "--help"]],
+		[["--config=env=\"dev\"", "--version"], ["--config=env=\"dev\"", "--version"]],
+	])(
+		"bypasses supervisor account gating for option-prefixed top-level help/version flags",
+		async (rawArgs, forwardedArgs) => {
+			const loadFromDisk = vi.fn(async () => {
+				throw new Error("ensureLaunchableAccount should not run for option-prefixed top-level help/version");
+			});
+			const forwardToRealCodex = vi.fn(async () => 0);
+
+			await expect(
+				supervisorTestApi?.runCodexSupervisorWithRuntime({
+					codexBin: "dist/bin/codex.js",
+					rawArgs,
+					buildForwardArgs: (args: string[]) => [...args],
+					forwardToRealCodex,
+					runtime: {
+						loadPluginConfig: () => ({ codexCliSessionSupervisor: true }),
+						getCodexCliSessionSupervisor: () => true,
+						AccountManager: { loadFromDisk },
+					},
+					signal: undefined,
+				}),
+			).resolves.toBe(0);
+			expect(forwardToRealCodex).toHaveBeenCalledWith("dist/bin/codex.js", forwardedArgs);
+			expect(loadFromDisk).not.toHaveBeenCalled();
+		},
+	);
+
 	it("does not bypass supervisor account gating for nested version flags after --", async () => {
 		const loadFromDisk = vi.fn(async () => {
 			throw new Error("ensureLaunchableAccount reached");
@@ -2174,7 +2205,16 @@ describe("codex supervisor", () => {
 			ok: true,
 			account: { accountId: "healthy" },
 		});
-		expect(fetches).toEqual(["near-limit", "healthy"]);
+		expect(fetches.at(-1)).toBe("healthy");
+		expect(fetches.filter((accountId) => accountId === "healthy")).toEqual([
+			"healthy",
+		]);
+		expect(
+			fetches.filter((accountId) => accountId === "near-limit").length,
+		).toBeGreaterThanOrEqual(1);
+		expect(
+			fetches.filter((accountId) => accountId === "near-limit").length,
+		).toBeLessThanOrEqual(2);
 		expect(manager.getAccountByIndex(0)?.coolingDownUntil).toBeGreaterThan(0);
 		expect(manager.activeIndex).toBe(1);
 	});

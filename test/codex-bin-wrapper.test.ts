@@ -340,6 +340,46 @@ describe("codex bin wrapper", () => {
 		).toHaveLength(1);
 	});
 
+	it("does not double-inject file auth store when caller uses --config=", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", '--config=cli_auth_credentials_store="keychain"'],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status --config=cli_auth_credentials_store="keychain"',
+		);
+		expect(
+			result.stdout.match(/cli_auth_credentials_store=/g) ?? [],
+		).toHaveLength(1);
+	});
+
+	it("does not double-inject file auth store when caller uses --config with a separate value", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--config", 'cli_auth_credentials_store="keychain"'],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status --config cli_auth_credentials_store="keychain"',
+		);
+		expect(
+			result.stdout.match(/cli_auth_credentials_store=/g) ?? [],
+		).toHaveLength(1);
+	});
+
 	it("propagates downstream file-store write errors from forwarded wrapper execution", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
