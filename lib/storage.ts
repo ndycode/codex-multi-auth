@@ -11,6 +11,11 @@ import {
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
+
+import { formatStorageErrorHint } from "./storage/error-hints.js";
+
+export { formatStorageErrorHint } from "./storage/error-hints.js";
+
 import {
 	type AccountMetadataV1,
 	type AccountMetadataV3,
@@ -122,7 +127,9 @@ export interface NamedBackupSummary {
 	mtimeMs: number;
 }
 
-async function collectNamedBackups(storagePath: string): Promise<NamedBackupSummary[]> {
+async function collectNamedBackups(
+	storagePath: string,
+): Promise<NamedBackupSummary[]> {
 	const backupRoot = getNamedBackupRoot(storagePath);
 	let entries: Array<{ isFile(): boolean; name: string }>;
 	try {
@@ -147,12 +154,15 @@ async function collectNamedBackups(storagePath: string): Promise<NamedBackupSumm
 			if (!normalized || normalized.accounts.length === 0) continue;
 			const statsAfter = await fs.stat(candidatePath).catch(() => null);
 			if (statsAfter && statsAfter.mtimeMs !== statsBefore.mtimeMs) {
-				log.debug("backup file changed between stat and load, mtime may be stale", {
-					candidatePath,
-					fileName: entry.name,
-					beforeMtimeMs: statsBefore.mtimeMs,
-					afterMtimeMs: statsAfter.mtimeMs,
-				});
+				log.debug(
+					"backup file changed between stat and load, mtime may be stale",
+					{
+						candidatePath,
+						fileName: entry.name,
+						beforeMtimeMs: statsBefore.mtimeMs,
+						afterMtimeMs: statsAfter.mtimeMs,
+					},
+				);
 			}
 			candidates.push({
 				path: candidatePath,
@@ -161,17 +171,20 @@ async function collectNamedBackups(storagePath: string): Promise<NamedBackupSumm
 				mtimeMs: statsBefore.mtimeMs,
 			});
 		} catch (error) {
-			log.debug("Skipping named backup candidate after loadAccountsFromPath/fs.stat failure", {
-				candidatePath,
-				fileName: entry.name,
-				error: error instanceof Error
-					? {
-						message: error.message,
-						stack: error.stack,
-					}
-					: String(error),
-			});
-			continue;
+			log.debug(
+				"Skipping named backup candidate after loadAccountsFromPath/fs.stat failure",
+				{
+					candidatePath,
+					fileName: entry.name,
+					error:
+						error instanceof Error
+							? {
+									message: error.message,
+									stack: error.stack,
+								}
+							: String(error),
+				},
+			);
 		}
 	}
 
@@ -203,33 +216,6 @@ export class StorageError extends Error {
 		this.code = code;
 		this.path = path;
 		this.hint = hint;
-	}
-}
-
-/**
- * Generate platform-aware troubleshooting hint based on error code.
- */
-export function formatStorageErrorHint(error: unknown, path: string): string {
-	const err = error as NodeJS.ErrnoException;
-	const code = err?.code || "UNKNOWN";
-	const isWindows = process.platform === "win32";
-
-	switch (code) {
-		case "EACCES":
-		case "EPERM":
-			return isWindows
-				? `Permission denied writing to ${path}. Check antivirus exclusions for this folder. Ensure you have write permissions.`
-				: `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.codex`;
-		case "EBUSY":
-			return `File is locked at ${path}. The file may be open in another program. Close any editors or processes accessing it.`;
-		case "ENOSPC":
-			return `Disk is full. Free up space and try again. Path: ${path}`;
-		case "EEMPTY":
-			return `File written but is empty. This may indicate a disk or filesystem issue. Path: ${path}`;
-		default:
-			return isWindows
-				? `Failed to write to ${path}. Check folder permissions and ensure path contains no special characters.`
-				: `Failed to write to ${path}. Check folder permissions and disk space.`;
 	}
 }
 
@@ -949,7 +935,9 @@ export async function restoreAccountsFromBackup(
 		!relativePath.startsWith("..") &&
 		!isAbsolute(relativePath);
 	if (!isInsideBackupRoot) {
-		throw new Error(`Backup path must stay inside ${resolvedBackupRoot}: ${path}`);
+		throw new Error(
+			`Backup path must stay inside ${resolvedBackupRoot}: ${path}`,
+		);
 	}
 
 	const { normalized } = await (async () => {
@@ -958,15 +946,15 @@ export async function restoreAccountsFromBackup(
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") {
-				throw new Error(
-					`Backup file no longer exists: ${path}`,
-				);
+				throw new Error(`Backup file no longer exists: ${path}`);
 			}
 			throw error;
 		}
 	})();
 	if (!normalized || normalized.accounts.length === 0) {
-		throw new Error(`Backup does not contain any accounts: ${resolvedBackupPath}`);
+		throw new Error(
+			`Backup does not contain any accounts: ${resolvedBackupPath}`,
+		);
 	}
 	if (options?.persist !== false) {
 		await saveAccounts(normalized);
@@ -1330,7 +1318,10 @@ function findCompatibleRefreshTokenMatchIndex<T extends AccountLike>(
 			matchingAccount = account;
 			continue;
 		}
-		const newest: T = selectNewestAccount(matchingAccount ?? undefined, account);
+		const newest: T = selectNewestAccount(
+			matchingAccount ?? undefined,
+			account,
+		);
 		if (newest === account) {
 			matchingIndex = i;
 			matchingAccount = account;
@@ -2114,7 +2105,9 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		): Promise<void> => {
-			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
+			const previousAccounts = cloneAccountStorageForPersistence(
+				state.snapshot,
+			);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
 			await saveAccountsUnlocked(nextAccounts);
 			try {
