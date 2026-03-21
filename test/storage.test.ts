@@ -723,6 +723,167 @@ describe("storage", () => {
 			);
 		});
 
+		it("keeps combined account and flagged writes pinned to the original storage root after path drift", async () => {
+			const now = Date.now();
+			const primaryStoragePath = getStoragePath();
+			expect(primaryStoragePath).toBeTruthy();
+			const primaryFlaggedStoragePath = getFlaggedAccountsPath();
+			const secondaryStoragePath = join(
+				testWorkDir,
+				"secondary-root",
+				"accounts.json",
+			);
+
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-primary",
+						email: "primary@example.com",
+						refreshToken: "refresh-primary",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "flagged-primary",
+						email: "flagged-primary@example.com",
+						refreshToken: "flagged-refresh-primary",
+						addedAt: now - 9_000,
+						lastUsed: now - 9_000,
+						flaggedAt: now - 9_000,
+					},
+				],
+			});
+
+			setStoragePathDirect(secondaryStoragePath);
+			const secondaryFlaggedStoragePath = getFlaggedAccountsPath();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-secondary",
+						email: "secondary@example.com",
+						refreshToken: "refresh-secondary",
+						addedAt: now - 8_000,
+						lastUsed: now - 8_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "flagged-secondary",
+						email: "flagged-secondary@example.com",
+						refreshToken: "flagged-refresh-secondary",
+						addedAt: now - 7_000,
+						lastUsed: now - 7_000,
+						flaggedAt: now - 7_000,
+					},
+				],
+			});
+
+			setStoragePathDirect(primaryStoragePath);
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to) === primaryFlaggedStoragePath) {
+						flaggedRenameAttempts += 1;
+						throw Object.assign(new Error("flagged storage busy"), {
+							code: "EBUSY",
+						});
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await expect(
+					withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+						setStoragePathDirect(secondaryStoragePath);
+						await persist(
+							{
+								...(current ?? {
+									version: 3,
+									activeIndex: 0,
+									activeIndexByFamily: { codex: 0 },
+									accounts: [],
+								}),
+								accounts: [
+									{
+										accountId: "acct-primary-updated",
+										email: "primary-updated@example.com",
+										refreshToken: "refresh-primary-updated",
+										addedAt: now,
+										lastUsed: now,
+									},
+								],
+							},
+							{
+								version: 1,
+								accounts: [
+									{
+										accountId: "flagged-primary-updated",
+										email: "flagged-primary-updated@example.com",
+										refreshToken: "flagged-refresh-primary-updated",
+										addedAt: now,
+										lastUsed: now,
+										flaggedAt: now,
+									},
+								],
+							},
+						);
+					}),
+				).rejects.toThrow("flagged storage busy");
+				expect(flaggedRenameAttempts).toBe(5);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			setStoragePathDirect(primaryStoragePath);
+			const primaryAccounts = await loadAccounts();
+			expect(primaryAccounts?.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-primary",
+					refreshToken: "refresh-primary",
+				}),
+			);
+			const primaryFlagged = await loadFlaggedAccounts();
+			expect(primaryFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "flagged-primary",
+					refreshToken: "flagged-refresh-primary",
+				}),
+			);
+
+			setStoragePathDirect(secondaryStoragePath);
+			const secondaryAccounts = await loadAccounts();
+			expect(secondaryAccounts?.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-secondary",
+					refreshToken: "refresh-secondary",
+				}),
+			);
+			const secondaryFlagged = await loadFlaggedAccounts();
+			expect(secondaryFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "flagged-secondary",
+					refreshToken: "flagged-refresh-secondary",
+				}),
+			);
+			expect(secondaryFlaggedStoragePath).not.toBe(primaryFlaggedStoragePath);
+		});
+
 		it("surfaces rollback failure when flagged persistence and account rollback both fail", async () => {
 			const now = Date.now();
 			const storagePath = getStoragePath();

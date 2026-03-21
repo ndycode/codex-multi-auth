@@ -2143,6 +2143,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 ): Promise<T> {
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
+		const flaggedStoragePath = getFlaggedAccountsPath();
 		const state = {
 			snapshot: await loadAccountsInternal(
 				(storage) => saveAccountsUnlocked(storage, storagePath),
@@ -2160,7 +2161,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
 			await saveAccountsUnlocked(nextAccounts, storagePath);
 			try {
-				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				await saveFlaggedAccountsUnlocked(flaggedStorage, flaggedStoragePath);
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
@@ -2423,8 +2424,9 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 
 async function saveFlaggedAccountsUnlocked(
 	storage: FlaggedAccountStorageV1,
+	storagePath = getFlaggedAccountsPath(),
 ): Promise<void> {
-	const path = getFlaggedAccountsPath();
+	const path = storagePath;
 	const markerPath = getIntentionalResetMarkerPath(path);
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${path}.${uniqueSuffix}.tmp`;
