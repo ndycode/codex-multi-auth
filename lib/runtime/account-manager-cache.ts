@@ -8,7 +8,7 @@ export function invalidateRuntimeAccountManagerCache(deps: {
 	deps.setAccountManagerPromise(null);
 }
 
-export async function reloadRuntimeAccountManager<TAccountManager>(deps: {
+export function reloadRuntimeAccountManager<TAccountManager>(deps: {
 	currentReloadInFlight: Promise<TAccountManager> | null;
 	loadFromDisk: (authFallback?: OAuthAuthDetails) => Promise<TAccountManager>;
 	setCachedAccountManager: (value: TAccountManager) => void;
@@ -25,12 +25,10 @@ export async function reloadRuntimeAccountManager<TAccountManager>(deps: {
 		deps.setCachedAccountManager(reloaded);
 		deps.setAccountManagerPromise(Promise.resolve(reloaded));
 		return reloaded;
-	})();
+	})().finally(() => {
+		deps.setReloadInFlight(null);
+	});
 
 	deps.setReloadInFlight(reloadInFlight);
-	try {
-		return await reloadInFlight;
-	} finally {
-		deps.setReloadInFlight(null);
-	}
+	return reloadInFlight;
 }

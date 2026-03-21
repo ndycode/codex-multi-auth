@@ -318,6 +318,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			MODEL_FAMILIES,
 		});
 
+	const makeReloadAccountManagerDeps = (authFallback?: OAuthAuthDetails) => ({
+		currentReloadInFlight: accountReloadInFlight,
+		loadFromDisk: (fallback?: OAuthAuthDetails) => AccountManager.loadFromDisk(fallback),
+		setCachedAccountManager: (value: AccountManager) => {
+			cachedAccountManager = value;
+		},
+		setAccountManagerPromise: (value: Promise<AccountManager> | null) => {
+			accountManagerPromise = value;
+		},
+		setReloadInFlight: (value: Promise<AccountManager> | null) => {
+			accountReloadInFlight = value;
+		},
+		authFallback,
+	});
+
 	const showToast = async (
 		message: string,
 		variant: "info" | "success" | "warning" | "error" = "success",
@@ -459,21 +474,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			currentPath: liveAccountSyncPath,
 			createSync: (onChange, options) => new LiveAccountSync(onChange, options),
 			reloadAccountManagerFromDisk: async (fallback) =>
-				reloadRuntimeAccountManager<AccountManager>({
-					currentReloadInFlight: accountReloadInFlight,
-					loadFromDisk: (reloadFallback) =>
-						AccountManager.loadFromDisk(reloadFallback),
-					setCachedAccountManager: (value) => {
-						cachedAccountManager = value;
-					},
-					setAccountManagerPromise: (value) => {
-						accountManagerPromise = value;
-					},
-					setReloadInFlight: (value) => {
-						accountReloadInFlight = value;
-					},
-					authFallback: fallback,
-				}),
+				reloadRuntimeAccountManager<AccountManager>(
+					makeReloadAccountManagerDeps(fallback),
+				),
 			getLiveAccountSyncDebounceMs,
 			getLiveAccountSyncPollMs,
 			registerCleanup,
@@ -545,20 +548,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				modelFamilies: MODEL_FAMILIES,
 				cachedAccountManager,
 				reloadAccountManagerFromDisk: async () => {
-					await reloadRuntimeAccountManager<AccountManager>({
-						currentReloadInFlight: accountReloadInFlight,
-						loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
-						setCachedAccountManager: (value) => {
-							cachedAccountManager = value;
-						},
-						setAccountManagerPromise: (value) => {
-							accountManagerPromise = value;
-						},
-						setReloadInFlight: (value) => {
-							accountReloadInFlight = value;
-						},
-						authFallback: undefined,
-					});
+					await reloadRuntimeAccountManager<AccountManager>(
+						makeReloadAccountManagerDeps(),
+					);
 				},
 				setLastCodexCliActiveSyncIndex: (index) => {
 					lastCodexCliActiveSyncIndex = index;
@@ -630,37 +622,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				try {
 					await ensureLiveAccountSync(pluginConfig, auth);
 					if (!accountManagerPromise) {
-						await reloadRuntimeAccountManager<AccountManager>({
-							currentReloadInFlight: accountReloadInFlight,
-							loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
-							setCachedAccountManager: (value) => {
-								cachedAccountManager = value;
-							},
-							setAccountManagerPromise: (value) => {
-								accountManagerPromise = value;
-							},
-							setReloadInFlight: (value) => {
-								accountReloadInFlight = value;
-							},
-							authFallback: auth as OAuthAuthDetails,
-						});
+						await reloadRuntimeAccountManager<AccountManager>(
+							makeReloadAccountManagerDeps(auth as OAuthAuthDetails),
+						);
 					}
 					const managerPromise =
 						accountManagerPromise ??
-						reloadRuntimeAccountManager<AccountManager>({
-							currentReloadInFlight: accountReloadInFlight,
-							loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
-							setCachedAccountManager: (value) => {
-								cachedAccountManager = value;
-							},
-							setAccountManagerPromise: (value) => {
-								accountManagerPromise = value;
-							},
-							setReloadInFlight: (value) => {
-								accountReloadInFlight = value;
-							},
-							authFallback: auth as OAuthAuthDetails,
-						});
+						reloadRuntimeAccountManager<AccountManager>(
+							makeReloadAccountManagerDeps(auth as OAuthAuthDetails),
+						);
 					let accountManager = await managerPromise;
 					cachedAccountManager = accountManager;
 					const refreshToken = auth.type === "oauth" ? auth.refresh : "";
@@ -3929,20 +3899,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					}
 
 					if (cachedAccountManager) {
-						await reloadRuntimeAccountManager<AccountManager>({
-							currentReloadInFlight: accountReloadInFlight,
-							loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
-							setCachedAccountManager: (value) => {
-								cachedAccountManager = value;
-							},
-							setAccountManagerPromise: (value) => {
-								accountManagerPromise = value;
-							},
-							setReloadInFlight: (value) => {
-								accountReloadInFlight = value;
-							},
-							authFallback: undefined,
-						});
+						await reloadRuntimeAccountManager<AccountManager>(
+							makeReloadAccountManagerDeps(),
+						);
 					}
 
 					const label = formatAccountLabel(account, targetIndex);
@@ -4518,21 +4477,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								}
 
 								if (cachedAccountManager) {
-									await reloadRuntimeAccountManager<AccountManager>({
-										currentReloadInFlight: accountReloadInFlight,
-										loadFromDisk: (fallback) =>
-											AccountManager.loadFromDisk(fallback),
-										setCachedAccountManager: (value) => {
-											cachedAccountManager = value;
-										},
-										setAccountManagerPromise: (value) => {
-											accountManagerPromise = value;
-										},
-										setReloadInFlight: (value) => {
-											accountReloadInFlight = value;
-										},
-										authFallback: undefined,
-									});
+									await reloadRuntimeAccountManager<AccountManager>(
+										makeReloadAccountManagerDeps(),
+									);
 								}
 
 								const remaining = storage.accounts.length;
@@ -4629,21 +4576,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								await saveAccounts(storage);
 								if (cachedAccountManager) {
-									await reloadRuntimeAccountManager<AccountManager>({
-										currentReloadInFlight: accountReloadInFlight,
-										loadFromDisk: (fallback) =>
-											AccountManager.loadFromDisk(fallback),
-										setCachedAccountManager: (value) => {
-											cachedAccountManager = value;
-										},
-										setAccountManagerPromise: (value) => {
-											accountManagerPromise = value;
-										},
-										setReloadInFlight: (value) => {
-											accountReloadInFlight = value;
-										},
-										authFallback: undefined,
-									});
+									await reloadRuntimeAccountManager<AccountManager>(
+										makeReloadAccountManagerDeps(),
+									);
 								}
 								results.push("");
 								results.push(

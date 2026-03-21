@@ -3437,4 +3437,49 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	});
 });
 
+describe("reloadRuntimeAccountManager", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("reuses the same in-flight promise for concurrent reloads", async () => {
+		const runtimeCacheModule = await import("../lib/runtime/account-manager-cache.js");
+		const reloadedManager = { name: "manager" };
+		let resolveLoad!: (value: typeof reloadedManager) => void;
+		const loadPromise = new Promise<typeof reloadedManager>((resolve) => {
+			resolveLoad = resolve;
+		});
+		const loadFromDisk = vi.fn(async () => loadPromise);
+		let cachedAccountManager: typeof reloadedManager | null = null;
+		let accountManagerPromise: Promise<typeof reloadedManager> | null = null;
+		let accountReloadInFlight: Promise<typeof reloadedManager> | null = null;
+		const makeDeps = () => ({
+			currentReloadInFlight: accountReloadInFlight,
+			loadFromDisk,
+			setCachedAccountManager: (value: typeof reloadedManager) => {
+				cachedAccountManager = value;
+			},
+			setAccountManagerPromise: (value: Promise<typeof reloadedManager> | null) => {
+				accountManagerPromise = value;
+			},
+			setReloadInFlight: (value: Promise<typeof reloadedManager> | null) => {
+				accountReloadInFlight = value;
+			},
+		});
+
+		const firstReload = runtimeCacheModule.reloadRuntimeAccountManager(makeDeps());
+		const secondReload = runtimeCacheModule.reloadRuntimeAccountManager(makeDeps());
+
+		expect(secondReload).toBe(firstReload);
+		expect(loadFromDisk).toHaveBeenCalledTimes(1);
+
+		resolveLoad(reloadedManager);
+
+		await expect(firstReload).resolves.toBe(reloadedManager);
+		expect(cachedAccountManager).toBe(reloadedManager);
+		await expect(accountManagerPromise).resolves.toBe(reloadedManager);
+		expect(accountReloadInFlight).toBeNull();
+	});
+});
+
 
