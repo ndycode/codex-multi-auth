@@ -2102,7 +2102,7 @@ async function runInteractiveSupervision({
 					`monitor loop failed: ${monitorFailure instanceof Error ? monitorFailure.message : String(monitorFailure)}`,
 				);
 				if (!signal?.aborted) {
-					return result.exitCode === 0 ? 1 : result.exitCode;
+					return result.exitCode;
 				}
 			}
 			binding =
@@ -2302,7 +2302,7 @@ export async function runCodexSupervisorIfEnabled({
 	try {
 		const runtime = await loadSupervisorRuntime();
 		if (!runtime) {
-			return null;
+			return controller.signal.aborted ? 130 : null;
 		}
 		return await runCodexSupervisorWithRuntime({
 			codexBin,

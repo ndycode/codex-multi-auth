@@ -3,7 +3,10 @@ import { mkdtempSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { __testOnly as supervisorTestApi } from "../scripts/codex-supervisor.js";
+import {
+	__testOnly as supervisorTestApi,
+	runCodexSupervisorIfEnabled,
+} from "../scripts/codex-supervisor.js";
 
 const createdDirs: string[] = [];
 const originalPlatform = process.platform;
@@ -1858,7 +1861,7 @@ describe("codex supervisor", () => {
 					},
 				});
 
-				expect(result).toBe(1);
+				expect(result).toBe(0);
 				expect(stderrSpy).toHaveBeenCalledWith(
 					expect.stringContaining("monitor loop failed: Timed out waiting for supervisor storage lock"),
 				);
@@ -2316,6 +2319,102 @@ describe("codex supervisor", () => {
 		expect(syncBeforeLaunch).toHaveBeenCalledTimes(1);
 		expect(spawnChild).toHaveBeenCalledTimes(1);
 		expect(events).toEqual(["sync", "spawn"]);
+	});
+
+	it("syncs startup state again before each restart launch", async () => {
+		class ImmediateChild extends EventEmitter {
+			exitCode: number | null = null;
+
+			constructor(exitCode: number) {
+				super();
+				setTimeout(() => {
+					this.exitCode = exitCode;
+					this.emit("exit", exitCode, null);
+				}, 0);
+			}
+
+			kill(_signal: string) {
+				return true;
+			}
+		}
+
+		const manager = new FakeManager();
+		const runtime = createFakeRuntime(manager);
+		const events: string[] = [];
+		const exitCodes = [1, 0];
+		const syncBeforeLaunch = vi.fn(async () => {
+			events.push("sync");
+		});
+		const spawnChild = vi.fn(() => {
+			events.push("spawn");
+			return new ImmediateChild(exitCodes.shift() ?? 0);
+		});
+
+		const result = await supervisorTestApi?.runInteractiveSupervision({
+			codexBin: "dist/bin/codex.js",
+			initialArgs: ["resume", "restart-sync-session"],
+			buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+			runtime,
+			pluginConfig: {},
+			manager,
+			signal: undefined,
+			maxSessionRestarts: 2,
+			spawnChild,
+			syncBeforeLaunch,
+			findBinding: async ({ sessionId }: { sessionId?: string }) =>
+				sessionId
+					? {
+							sessionId,
+							rolloutPath: null,
+							lastActivityAtMs: Date.now(),
+						}
+					: null,
+		});
+
+		expect(result).toBe(0);
+		expect(syncBeforeLaunch).toHaveBeenCalledTimes(2);
+		expect(spawnChild).toHaveBeenCalledTimes(2);
+		expect(events).toEqual(["sync", "spawn", "sync", "spawn"]);
+	});
+
+	it("returns 130 when startup aborts before the runtime fallback resolves unavailable", async () => {
+		const runtimeGate = createDeferred<void>();
+		const forwardToRealCodex = vi.fn(async () => 0);
+		const syncBeforeLaunch = vi.fn(async () => {});
+
+		vi.doMock("../dist/lib/config.js", async () => {
+			await runtimeGate.promise;
+			return {};
+		});
+		vi.doMock("../dist/lib/accounts.js", () => ({ AccountManager: undefined }));
+		vi.doMock("../dist/lib/quota-probe.js", () => ({
+			fetchCodexQuotaSnapshot: undefined,
+		}));
+		vi.doMock("../dist/lib/storage.js", () => ({}));
+
+		try {
+			const runPromise = runCodexSupervisorIfEnabled({
+				codexBin: "dist/bin/codex.js",
+				rawArgs: ["chat"],
+				buildForwardArgs: (rawArgs: string[]) => [...rawArgs],
+				forwardToRealCodex,
+				syncBeforeLaunch,
+			});
+
+			await Promise.resolve();
+			process.emit("SIGINT");
+			runtimeGate.resolve();
+
+			await expect(runPromise).resolves.toBe(130);
+			expect(forwardToRealCodex).not.toHaveBeenCalled();
+			expect(syncBeforeLaunch).not.toHaveBeenCalled();
+		} finally {
+			runtimeGate.resolve();
+			vi.doUnmock("../dist/lib/config.js");
+			vi.doUnmock("../dist/lib/accounts.js");
+			vi.doUnmock("../dist/lib/quota-probe.js");
+			vi.doUnmock("../dist/lib/storage.js");
+		}
 	});
 
 	it("degrades a failed candidate probe and continues to the next healthy account", async () => {
