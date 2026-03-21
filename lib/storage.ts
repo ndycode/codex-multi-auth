@@ -18,6 +18,7 @@ import {
 	importAccountsSnapshot,
 } from "./storage/account-port.js";
 import { saveAccountsToDisk } from "./storage/account-save.js";
+import { saveAccountsEntry } from "./storage/account-save-entry.js";
 import { buildBackupMetadata } from "./storage/backup-metadata-builder.js";
 import {
 	ACCOUNTS_BACKUP_SUFFIX,
@@ -1836,8 +1837,10 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
  * @throws StorageError with platform-aware hints on failure
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
-	return withStorageLock(async () => {
-		await saveAccountsUnlocked(storage);
+	return saveAccountsEntry({
+		storage,
+		withStorageLock,
+		saveUnlocked: saveAccountsUnlocked,
 	});
 }
 
