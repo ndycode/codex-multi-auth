@@ -24,7 +24,7 @@ import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
-import { type MenuItem, type SelectOptions, select } from "../ui/select.js";
+import { type MenuItem, select } from "../ui/select.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
 import {
@@ -46,6 +46,12 @@ import {
 } from "./backend-settings-schema.js";
 import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
 import { promptDashboardDisplayPanel } from "./dashboard-display-panel.js";
+import {
+	type ExperimentalSettingsAction,
+	getExperimentalSelectOptions,
+	mapExperimentalMenuHotkey,
+	mapExperimentalStatusHotkey,
+} from "./experimental-settings-schema.js";
 import { promptStatuslineSettingsPanel } from "./statusline-settings-panel.js";
 import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
 
@@ -176,52 +182,6 @@ type SettingsHubAction =
 	| { type: "experimental" }
 	| { type: "backend" }
 	| { type: "back" };
-
-type ExperimentalSettingsAction =
-	| { type: "sync" }
-	| { type: "backup" }
-	| { type: "toggle-refresh-guardian" }
-	| { type: "decrease-refresh-interval" }
-	| { type: "increase-refresh-interval" }
-	| { type: "apply" }
-	| { type: "save" }
-	| { type: "back" };
-
-function getExperimentalSelectOptions(
-	ui: ReturnType<typeof getUiRuntimeOptions>,
-	help: string,
-	onInput?: SelectOptions<ExperimentalSettingsAction>["onInput"],
-): SelectOptions<ExperimentalSettingsAction> {
-	return {
-		message: UI_COPY.settings.experimentalTitle,
-		subtitle: UI_COPY.settings.experimentalSubtitle,
-		help,
-		clearScreen: true,
-		theme: ui.theme,
-		selectedEmphasis: "minimal",
-		onInput,
-	};
-}
-
-function mapExperimentalMenuHotkey(
-	raw: string,
-): ExperimentalSettingsAction | undefined {
-	if (raw === "1") return { type: "sync" };
-	if (raw === "2") return { type: "backup" };
-	if (raw === "3") return { type: "toggle-refresh-guardian" };
-	if (raw === "[" || raw === "-") return { type: "decrease-refresh-interval" };
-	if (raw === "]" || raw === "+") return { type: "increase-refresh-interval" };
-	const lower = raw.toLowerCase();
-	if (lower === "q") return { type: "back" };
-	if (lower === "s") return { type: "save" };
-	return undefined;
-}
-
-function mapExperimentalStatusHotkey(
-	raw: string,
-): ExperimentalSettingsAction | undefined {
-	return raw.toLowerCase() === "q" ? { type: "back" } : undefined;
-}
 
 type DashboardSettingKey = keyof DashboardDisplaySettings;
 
