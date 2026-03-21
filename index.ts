@@ -41,17 +41,8 @@ import {
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "./lib/accounts.js";
-import {
-	createAuthorizationFlow,
-	exchangeAuthorizationCode,
-	REDIRECT_URI,
-	redactOAuthUrlForLog,
-} from "./lib/auth/auth.js";
-import {
-	isBrowserLaunchSuppressed,
-	openBrowserUrl,
-} from "./lib/auth/browser.js";
-import { startLocalOAuthServer } from "./lib/auth/server.js";
+import { createAuthorizationFlow } from "./lib/auth/auth.js";
+import { isBrowserLaunchSuppressed } from "./lib/auth/browser.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { CapabilityPolicyStore } from "./lib/capability-policy.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
@@ -183,6 +174,7 @@ import {
 	type RuntimeMetrics,
 	sanitizeResponseHeadersForLog,
 } from "./lib/runtime/metrics.js";
+import { runOAuthBrowserFlow } from "./lib/runtime/oauth-browser-flow.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
 import {
@@ -286,50 +278,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 	const runOAuthFlow = async (
 		forceNewLogin: boolean = false,
-	): Promise<TokenResult> => {
-		const { pkce, state, url } = await createAuthorizationFlow({
+	): Promise<TokenResult> =>
+		runOAuthBrowserFlow({
 			forceNewLogin,
+			manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
+			logInfo,
+			logDebug: (message) => logDebug(`[${PLUGIN_NAME}] ${message}`),
+			logWarn: (message) => logWarn(`[${PLUGIN_NAME}] ${message}`),
 		});
-		logInfo(`OAuth URL: ${redactOAuthUrlForLog(url)}`);
-
-		let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null =
-			null;
-		try {
-			serverInfo = await startLocalOAuthServer({ state });
-		} catch (err) {
-			logDebug(
-				`[${PLUGIN_NAME}] Failed to start OAuth server: ${(err as Error)?.message ?? String(err)}`,
-			);
-			serverInfo = null;
-		}
-		openBrowserUrl(url);
-
-		if (!serverInfo || !serverInfo.ready) {
-			serverInfo?.close();
-			const message =
-				`\n[${PLUGIN_NAME}] OAuth callback server failed to start. ` +
-				`Please retry with "${AUTH_LABELS.OAUTH_MANUAL}".\n`;
-			logWarn(message);
-			return { type: "failed" as const };
-		}
-
-		const result = await serverInfo.waitForCode(state);
-		serverInfo.close();
-
-		if (!result) {
-			return {
-				type: "failed" as const,
-				reason: "unknown" as const,
-				message: "OAuth callback timeout or cancelled",
-			};
-		}
-
-		return await exchangeAuthorizationCode(
-			result.code,
-			pkce.verifier,
-			REDIRECT_URI,
-		);
-	};
 
 	const persistAccountPool = async (
 		results: TokenSuccessWithAccount[],
