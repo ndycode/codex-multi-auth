@@ -3001,9 +3001,11 @@ describe("codex manager cli commands", () => {
 			close: vi.fn(),
 		};
 		startLocalOAuthServerMock.mockResolvedValue(oauthServer);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		const renderedLogs = logSpy.mock.calls.flat().map((entry) => String(entry));
 
 		expect(exitCode).toBe(0);
 		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
@@ -3011,6 +3013,17 @@ describe("codex manager cli commands", () => {
 		expect(storageState.activeIndex).toBe(1);
 		expect(storageState.activeIndexByFamily.codex).toBe(1);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		expect(renderedLogs).toContain("Next steps:");
+		expect(renderedLogs).toContain(
+			"  codex auth status  Check that the wrapper is active.",
+		);
+		expect(renderedLogs).toContain(
+			"  codex auth check   Confirm your saved accounts look healthy.",
+		);
+		expect(renderedLogs).toContain(
+			"  codex auth list    Review saved accounts before switching.",
+		);
+		logSpy.mockRestore();
 	});
 
 	it("supports --manual login without launching a browser", async () => {

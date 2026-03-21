@@ -30,6 +30,9 @@ const userDocs = [
 	"docs/reference/error-contracts.md",
 	"docs/reference/settings.md",
 	"docs/reference/storage-paths.md",
+	"docs/releases/v1.1.10.md",
+	"docs/releases/v0.1.9.md",
+	"docs/releases/v0.1.8.md",
 	"docs/releases/v0.1.7.md",
 	"docs/releases/v0.1.6.md",
 	"docs/releases/v0.1.5.md",
@@ -259,16 +262,6 @@ describe("Documentation Integrity", () => {
 		expect(manager).toContain("codex auth login");
 		expect(manager).toContain(
 			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
-		);
-		expect(manager).toContain("Next steps:");
-		expect(manager).toContain(
-			"codex auth status  Check that the wrapper is active.",
-		);
-		expect(manager).toContain(
-			"codex auth check   Confirm your saved accounts look healthy.",
-		);
-		expect(manager).toContain(
-			"codex auth list    Review saved accounts before switching.",
 		);
 		expect(manager).toContain(
 			"Missing index. Usage: codex auth switch <index>",

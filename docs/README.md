@@ -17,7 +17,7 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [Daily-use landing page](index.md) | Daily-use landing page for common `codex auth ...` workflows |
+| [Daily-use landing page](index.md) | Common `codex auth ...` workflows and quick-start guidance |
 | [faq.md](faq.md) | Short answers to common adoption questions |
 | [features.md](features.md) | User-facing capability map |
 | [configuration.md](configuration.md) | Stable defaults, precedence, and environment overrides |
