@@ -72,6 +72,10 @@ import {
 	warnPersistFailure,
 } from "./settings-persist-utils.js";
 import { withQueuedRetry } from "./settings-write-queue.js";
+import { reorderStatuslineField } from "./statusline-order.js";
+
+const reorderField = reorderStatuslineField;
+
 import { promptStatuslineSettingsPanel } from "./statusline-settings-panel.js";
 import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
 
@@ -607,24 +611,6 @@ async function configureDashboardDisplaySettings(
 	);
 	applyUiThemeFromDashboardSettings(merged);
 	return merged;
-}
-
-function reorderField(
-	fields: DashboardStatuslineField[],
-	key: DashboardStatuslineField,
-	direction: -1 | 1,
-): DashboardStatuslineField[] {
-	const index = fields.indexOf(key);
-	if (index < 0) return fields;
-	const target = index + direction;
-	if (target < 0 || target >= fields.length) return fields;
-	const next = [...fields];
-	const current = next[index];
-	const swap = next[target];
-	if (!current || !swap) return fields;
-	next[index] = swap;
-	next[target] = current;
-	return next;
 }
 
 async function promptStatuslineSettings(
