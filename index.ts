@@ -292,19 +292,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			logWarn: (message) => logWarn(`[${PLUGIN_NAME}] ${message}`),
 		});
 
-	const persistAccounts = async (
-		results: TokenSuccessWithAccount[],
-		replaceAll: boolean = false,
-	): Promise<void> =>
-		persistAccountPool(results, replaceAll, {
-			withAccountStorageTransaction,
-			extractAccountId,
-			extractAccountEmail,
-			sanitizeEmail,
-			findMatchingAccountIndex,
-			MODEL_FAMILIES,
-		});
-
 	const showToast = async (
 		message: string,
 		variant: "info" | "success" | "warning" | "error" = "success",
@@ -3321,7 +3308,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							}
 
 							if (restored.length > 0) {
-								await persistAccounts(restored, false);
+								await persistAccountPool(restored, false, {
+									withAccountStorageTransaction,
+									extractAccountId,
+									extractAccountEmail,
+									sanitizeEmail,
+									findMatchingAccountIndex,
+									MODEL_FAMILIES,
+								});
 								invalidateAccountManagerCache();
 							}
 
@@ -3546,7 +3540,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								logInfo,
 								onSuccess: async (tokens: TokenSuccessWithAccount) => {
 									try {
-										await persistAccounts([tokens], startFresh);
+										await persistAccountPool([tokens], startFresh, {
+											withAccountStorageTransaction,
+											extractAccountId,
+											extractAccountEmail,
+											sanitizeEmail,
+											findMatchingAccountIndex,
+											MODEL_FAMILIES,
+										});
 										invalidateAccountManagerCache();
 									} catch (err) {
 										const storagePath = getStoragePath();
@@ -3650,7 +3651,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							try {
 								const isFirstAccount = accounts.length === 1;
-								await persistAccounts([resolved], isFirstAccount && startFresh);
+								await persistAccountPool(
+									[resolved],
+									isFirstAccount && startFresh,
+									{
+										withAccountStorageTransaction,
+										extractAccountId,
+										extractAccountEmail,
+										sanitizeEmail,
+										findMatchingAccountIndex,
+										MODEL_FAMILIES,
+									},
+								);
 								invalidateAccountManagerCache();
 							} catch (err) {
 								const storagePath = getStoragePath();
@@ -3738,7 +3750,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							logInfo,
 							onSuccess: async (tokens: TokenSuccessWithAccount) => {
 								try {
-									await persistAccounts([tokens], false);
+									await persistAccountPool([tokens], false, {
+										withAccountStorageTransaction,
+										extractAccountId,
+										extractAccountEmail,
+										sanitizeEmail,
+										findMatchingAccountIndex,
+										MODEL_FAMILIES,
+									});
 								} catch (err) {
 									const storagePath = getStoragePath();
 									const errorCode =
