@@ -21,6 +21,10 @@ import {
 	collectNamedBackups,
 	type NamedBackupSummary,
 } from "./storage/named-backups.js";
+import {
+	describeAccountsWalSnapshot,
+	describeFlaggedSnapshot,
+} from "./storage/snapshot-inspectors.js";
 
 export { formatStorageErrorHint } from "./storage/error-hints.js";
 export {
@@ -563,115 +567,12 @@ async function describeAccountSnapshot(
 	}
 }
 
-async function describeAccountsWalSnapshot(
-	path: string,
-): Promise<BackupSnapshotMetadata> {
-	const stats = await statSnapshot(path);
-	if (!stats.exists) {
-		return { kind: "accounts-wal", path, exists: false, valid: false };
-	}
-	try {
-		const raw = await fs.readFile(path, "utf-8");
-		const parsed = JSON.parse(raw) as unknown;
-		if (!isRecord(parsed)) {
-			return {
-				kind: "accounts-wal",
-				path,
-				exists: true,
-				valid: false,
-				bytes: stats.bytes,
-				mtimeMs: stats.mtimeMs,
-			};
-		}
-		const entry = parsed as Partial<AccountsJournalEntry>;
-		if (
-			entry.version !== 1 ||
-			typeof entry.content !== "string" ||
-			typeof entry.checksum !== "string" ||
-			computeSha256(entry.content) !== entry.checksum
-		) {
-			return {
-				kind: "accounts-wal",
-				path,
-				exists: true,
-				valid: false,
-				bytes: stats.bytes,
-				mtimeMs: stats.mtimeMs,
-			};
-		}
-		const { normalized, storedVersion, schemaErrors } =
-			parseAndNormalizeStorage(JSON.parse(entry.content) as unknown);
-		return {
-			kind: "accounts-wal",
-			path,
-			exists: true,
-			valid: !!normalized,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-			version: typeof storedVersion === "number" ? storedVersion : undefined,
-			accountCount: normalized?.accounts.length,
-			schemaErrors: schemaErrors.length > 0 ? schemaErrors : undefined,
-		};
-	} catch {
-		return {
-			kind: "accounts-wal",
-			path,
-			exists: true,
-			valid: false,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-		};
-	}
-}
-
 async function loadFlaggedAccountsFromPath(
 	path: string,
 ): Promise<FlaggedAccountStorageV1> {
 	const content = await fs.readFile(path, "utf-8");
 	const data = JSON.parse(content) as unknown;
 	return normalizeFlaggedStorage(data);
-}
-
-async function describeFlaggedSnapshot(
-	path: string,
-	kind: BackupSnapshotKind,
-	index?: number,
-): Promise<BackupSnapshotMetadata> {
-	const stats = await statSnapshot(path);
-	if (!stats.exists) {
-		return { kind, path, index, exists: false, valid: false };
-	}
-	try {
-		const storage = await loadFlaggedAccountsFromPath(path);
-		return {
-			kind,
-			path,
-			index,
-			exists: true,
-			valid: true,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-			version: storage.version,
-			flaggedCount: storage.accounts.length,
-		};
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to inspect flagged snapshot", {
-				path,
-				error: String(error),
-			});
-		}
-		return {
-			kind,
-			path,
-			index,
-			exists: true,
-			valid: false,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-		};
-	}
 }
 
 type AccountsJournalEntry = {
@@ -1361,7 +1262,13 @@ export async function getBackupMetadata(): Promise<BackupMetadata> {
 		await getAccountsBackupRecoveryCandidatesWithDiscovery(storagePath);
 	const accountSnapshots: BackupSnapshotMetadata[] = [
 		await describeAccountSnapshot(storagePath, "accounts-primary"),
-		await describeAccountsWalSnapshot(walPath),
+		await describeAccountsWalSnapshot(walPath, {
+			statSnapshot,
+			readFile: fs.readFile,
+			isRecord,
+			computeSha256,
+			parseAndNormalizeStorage,
+		}),
 	];
 	for (const [index, candidate] of accountCandidates.entries()) {
 		const kind: BackupSnapshotKind =
@@ -1379,7 +1286,11 @@ export async function getBackupMetadata(): Promise<BackupMetadata> {
 	const flaggedCandidates =
 		await getAccountsBackupRecoveryCandidatesWithDiscovery(flaggedPath);
 	const flaggedSnapshots: BackupSnapshotMetadata[] = [
-		await describeFlaggedSnapshot(flaggedPath, "flagged-primary"),
+		await describeFlaggedSnapshot(flaggedPath, "flagged-primary", {
+			statSnapshot,
+			loadFlaggedAccountsFromPath,
+			logWarn: (message, meta) => log.warn(message, meta),
+		}),
 	];
 	for (const [index, candidate] of flaggedCandidates.entries()) {
 		const kind: BackupSnapshotKind =
@@ -1389,7 +1300,12 @@ export async function getBackupMetadata(): Promise<BackupMetadata> {
 					? "flagged-backup-history"
 					: "flagged-discovered-backup";
 		flaggedSnapshots.push(
-			await describeFlaggedSnapshot(candidate, kind, index),
+			await describeFlaggedSnapshot(candidate, kind, {
+				index,
+				statSnapshot,
+				loadFlaggedAccountsFromPath,
+				logWarn: (message, meta) => log.warn(message, meta),
+			}),
 		);
 	}
 
