@@ -17,6 +17,8 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 				: `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.codex`;
 		case "EBUSY":
 			return `File is locked at ${path}. The file may be open in another program. Close any editors or processes accessing it.`;
+		case "ENOENT":
+			return `Path does not exist: ${path}. Create the parent folder and try again.`;
 		case "ENOSPC":
 			return `Disk is full. Free up space and try again. Path: ${path}`;
 		default:
