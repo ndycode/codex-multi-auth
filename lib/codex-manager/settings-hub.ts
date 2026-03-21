@@ -32,6 +32,7 @@ import { type MenuItem, type SelectOptions, select } from "../ui/select.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
 import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
+import { promptDashboardDisplayPanel } from "./dashboard-display-panel.js";
 import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
 
 type DashboardDisplaySettingKey =
@@ -152,14 +153,6 @@ type PreviewFocusKey =
 	| "menuSortMode"
 	| "menuLayoutMode"
 	| null;
-
-type DashboardConfigAction =
-	| { type: "toggle"; key: DashboardDisplaySettingKey }
-	| { type: "cycle-sort-mode" }
-	| { type: "cycle-layout-mode" }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
 
 type StatuslineConfigAction =
 	| { type: "toggle"; key: DashboardStatuslineField }
@@ -1320,211 +1313,19 @@ const __testOnly = {
 async function promptDashboardDisplaySettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	if (!input.isTTY || !output.isTTY) {
-		return null;
-	}
-
-	const ui = getUiRuntimeOptions();
-	let draft = cloneDashboardSettings(initial);
-	let focusKey: DashboardDisplaySettingKey | "menuSortMode" | "menuLayoutMode" =
-		DASHBOARD_DISPLAY_OPTIONS[0]?.key ?? "menuShowStatusBadge";
-	while (true) {
-		const preview = buildAccountListPreview(draft, ui, focusKey);
-		const optionItems: MenuItem<DashboardConfigAction>[] =
-			DASHBOARD_DISPLAY_OPTIONS.map((option, index) => {
-				const enabled = draft[option.key] ?? true;
-				const label = `${formatDashboardSettingState(enabled)} ${index + 1}. ${option.label}`;
-				const color: MenuItem<DashboardConfigAction>["color"] = enabled
-					? "green"
-					: "yellow";
-				return {
-					label,
-					hint: option.description,
-					value: { type: "toggle", key: option.key } as DashboardConfigAction,
-					color,
-				};
-			});
-		const sortMode =
-			draft.menuSortMode ??
-			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-			"ready-first";
-		const sortModeItem: MenuItem<DashboardConfigAction> = {
-			label: `Sort mode: ${formatMenuSortMode(sortMode)}`,
-			hint: "Applies when smart sort is enabled.",
-			value: { type: "cycle-sort-mode" },
-			color: sortMode === "ready-first" ? "green" : "yellow",
-		};
-		const layoutMode = resolveMenuLayoutMode(draft);
-		const layoutModeItem: MenuItem<DashboardConfigAction> = {
-			label: `Layout: ${formatMenuLayoutMode(layoutMode)}`,
-			hint: "Compact shows one-line rows with a selected details pane.",
-			value: { type: "cycle-layout-mode" },
-			color: layoutMode === "compact-details" ? "green" : "yellow",
-		};
-		const items: MenuItem<DashboardConfigAction>[] = [
-			{
-				label: UI_COPY.settings.previewHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			{
-				label: preview.label,
-				hint: preview.hint,
-				value: { type: "cancel" },
-				color: "green",
-				disabled: true,
-				hideUnavailableSuffix: true,
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.displayHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...optionItems,
-			sortModeItem,
-			layoutModeItem,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-		const initialCursor = items.findIndex(
-			(item) =>
-				(item.value.type === "toggle" && item.value.key === focusKey) ||
-				(item.value.type === "cycle-sort-mode" &&
-					focusKey === "menuSortMode") ||
-				(item.value.type === "cycle-layout-mode" &&
-					focusKey === "menuLayoutMode"),
-		);
-
-		const updateFocusedPreview = (cursor: number) => {
-			const focusedItem = items[cursor];
-			const focusedKey =
-				focusedItem?.value.type === "toggle"
-					? focusedItem.value.key
-					: focusedItem?.value.type === "cycle-sort-mode"
-						? "menuSortMode"
-						: focusedItem?.value.type === "cycle-layout-mode"
-							? "menuLayoutMode"
-							: focusKey;
-			const nextPreview = buildAccountListPreview(draft, ui, focusedKey);
-			const previewItem = items[1];
-			if (!previewItem) return;
-			previewItem.label = nextPreview.label;
-			previewItem.hint = nextPreview.hint;
-		};
-
-		const result = await select<DashboardConfigAction>(items, {
-			message: UI_COPY.settings.accountListTitle,
-			subtitle: UI_COPY.settings.accountListSubtitle,
-			help: UI_COPY.settings.accountListHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const focusedItem = items[cursor];
-				if (focusedItem?.value.type === "toggle") {
-					focusKey = focusedItem.value.key;
-				} else if (focusedItem?.value.type === "cycle-sort-mode") {
-					focusKey = "menuSortMode";
-				} else if (focusedItem?.value.type === "cycle-layout-mode") {
-					focusKey = "menuLayoutMode";
-				}
-				updateFocusedPreview(cursor);
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				if (lower === "m") return { type: "cycle-sort-mode" };
-				if (lower === "l") return { type: "cycle-layout-mode" };
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= DASHBOARD_DISPLAY_OPTIONS.length
-				) {
-					const target = DASHBOARD_DISPLAY_OPTIONS[parsed - 1];
-					if (target) {
-						return { type: "toggle", key: target.key };
-					}
-				}
-				if (parsed === DASHBOARD_DISPLAY_OPTIONS.length + 1) {
-					return { type: "cycle-sort-mode" };
-				}
-				if (parsed === DASHBOARD_DISPLAY_OPTIONS.length + 2) {
-					return { type: "cycle-layout-mode" };
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "cancel") {
-			return null;
-		}
-		if (result.type === "save") {
-			return draft;
-		}
-		if (result.type === "reset") {
-			draft = applyDashboardDefaultsForKeys(draft, ACCOUNT_LIST_PANEL_KEYS);
-			focusKey = DASHBOARD_DISPLAY_OPTIONS[0]?.key ?? focusKey;
-			continue;
-		}
-		if (result.type === "cycle-sort-mode") {
-			const currentMode =
-				draft.menuSortMode ??
-				DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-				"ready-first";
-			const nextMode: DashboardAccountSortMode =
-				currentMode === "ready-first" ? "manual" : "ready-first";
-			draft = {
-				...draft,
-				menuSortMode: nextMode,
-				menuSortEnabled:
-					nextMode === "ready-first"
-						? true
-						: (draft.menuSortEnabled ??
-							DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ??
-							true),
-			};
-			focusKey = "menuSortMode";
-			continue;
-		}
-		if (result.type === "cycle-layout-mode") {
-			const currentLayout = resolveMenuLayoutMode(draft);
-			const nextLayout =
-				currentLayout === "compact-details"
-					? "expanded-rows"
-					: "compact-details";
-			draft = {
-				...draft,
-				menuLayoutMode: nextLayout,
-				menuShowDetailsForUnselectedRows: nextLayout === "expanded-rows",
-			};
-			focusKey = "menuLayoutMode";
-			continue;
-		}
-		focusKey = result.key;
-		draft = {
-			...draft,
-			[result.key]: !draft[result.key],
-		};
-	}
+	return promptDashboardDisplayPanel(initial, {
+		cloneDashboardSettings,
+		buildAccountListPreview,
+		formatDashboardSettingState,
+		formatMenuSortMode,
+		resolveMenuLayoutMode: (settings) =>
+			resolveMenuLayoutMode(settings ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS),
+		formatMenuLayoutMode,
+		applyDashboardDefaultsForKeys,
+		DASHBOARD_DISPLAY_OPTIONS,
+		ACCOUNT_LIST_PANEL_KEYS,
+		UI_COPY,
+	});
 }
 
 async function configureDashboardDisplaySettings(
