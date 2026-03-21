@@ -215,6 +215,7 @@ import {
 	applyPreemptiveQuotaSettingsFromConfig,
 	resolveUiRuntimeFromConfig,
 } from "./lib/runtime/quota-settings.js";
+import { ensureRefreshGuardianEntry } from "./lib/runtime/refresh-guardian-entry.js";
 import {
 	ensureLiveAccountSyncState,
 	ensureRefreshGuardianState,
@@ -591,18 +592,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const ensureRefreshGuardian = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
-		const next = ensureRefreshGuardianState({
-			enabled: getProactiveRefreshGuardian(pluginConfig),
-			intervalMs: getProactiveRefreshIntervalMs(pluginConfig),
-			bufferMs: getProactiveRefreshBufferMs(pluginConfig),
+		const next = ensureRefreshGuardianEntry({
+			pluginConfig,
 			currentGuardian: refreshGuardian,
 			currentConfigKey: refreshGuardianConfigKey,
+			getProactiveRefreshGuardian,
+			getProactiveRefreshIntervalMs,
+			getProactiveRefreshBufferMs,
 			createGuardian: ({ intervalMs, bufferMs }) =>
 				new RefreshGuardian(() => cachedAccountManager, {
 					intervalMs,
 					bufferMs,
 				}),
 			registerCleanup,
+			ensureRefreshGuardianState,
 		});
 		refreshGuardian = next.refreshGuardian;
 		refreshGuardianConfigKey = next.refreshGuardianConfigKey;
