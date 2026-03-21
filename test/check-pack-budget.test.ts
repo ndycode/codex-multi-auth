@@ -27,11 +27,51 @@ describe("parsePackMetadata", () => {
 	it("throws when npm pack returns no package metadata", () => {
 		expect(() => parsePackMetadata("[]")).toThrow(/no package metadata/);
 	});
+
+	it("throws when npm pack reports a non-positive package size", () => {
+		expect(() =>
+			parsePackMetadata(JSON.stringify([{ size: 0, files: [] }])),
+		).toThrow(/valid package size/);
+	});
 });
 
 describe("validatePackMetadata", () => {
-	it("rejects forbidden lib sources in the packed file list", () => {
+
+	it("rejects oversized tarballs", () => {
 		expect(() =>
+			validatePackMetadata({
+				packageSize: 9 * 1024 * 1024,
+				paths: [
+					"dist/index.js",
+					"assets/logo.svg",
+					"config/default.json",
+					"scripts/codex.js",
+					"vendor/codex-ai-plugin/index.js",
+					"vendor/codex-ai-sdk/index.js",
+					"README.md",
+					"LICENSE",
+				],
+			}),
+		).toThrow(/too large/);
+	});
+
+	it("rejects missing required package content", () => {
+		expect(() =>
+			validatePackMetadata({
+				packageSize: 123,
+				paths: [
+					"dist/index.js",
+					"assets/logo.svg",
+					"config/default.json",
+					"scripts/codex.js",
+					"vendor/codex-ai-plugin/index.js",
+					"README.md",
+					"LICENSE",
+				],
+			}),
+		).toThrow(/vendor\/codex-ai-sdk/);
+	});
+	it("rejects forbidden lib sources in the packed file list", () => {		expect(() =>
 			validatePackMetadata({
 				packageSize: 123,
 				paths: [
