@@ -533,6 +533,7 @@ async function main() {
 
 	const forwardArgs = buildForwardArgs(rawArgs);
 	let supervisorDidForward = false;
+	let supervisorDidLaunchSession = false;
 	let supervisorDidStartupSync = false;
 	const syncBeforeSupervisorLaunch = async () => {
 		supervisorDidStartupSync = true;
@@ -548,6 +549,9 @@ async function main() {
 		rawArgs,
 		buildForwardArgs,
 		forwardToRealCodex: forwardToRealCodexWithStartupSync,
+		onLaunch: () => {
+			supervisorDidLaunchSession = true;
+		},
 		syncBeforeLaunch: syncBeforeSupervisorLaunch,
 	});
 	if (supervisedExitCode !== null) {
@@ -557,7 +561,8 @@ async function main() {
 		if (
 			isSupervisorInteractiveCommand(rawArgs) &&
 			!supervisorDidForward &&
-			!supervisorDidStartupSync
+			!supervisorDidStartupSync &&
+			supervisorDidLaunchSession
 		) {
 			await autoSyncManagerActiveSelectionIfEnabled();
 		}

@@ -16,7 +16,11 @@ const envKeys = [
 	"CODEX_AUTH_CLI_SESSION_LOCK_WAIT_MS",
 	"CODEX_AUTH_CLI_SESSION_MAX_ACCOUNT_SELECTION_ATTEMPTS",
 	"CODEX_AUTH_CLI_SESSION_MAX_RESTARTS",
+	"CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_TIMEOUT_MS",
 	"CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE",
+	"CODEX_AUTH_CLI_SESSION_MONITOR_PROBE_TIMEOUT_MS",
+	"CODEX_AUTH_CLI_SESSION_PREWARM_MARGIN_PERCENT_5H",
+	"CODEX_AUTH_CLI_SESSION_PREWARM_MARGIN_PERCENT_7D",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_POLL_MS",
 	"CODEX_AUTH_CLI_SESSION_SUPERVISOR_IDLE_MS",
@@ -1913,7 +1917,7 @@ describe("codex supervisor", () => {
 							throw new Error("Timed out waiting for supervisor storage lock");
 						},
 					}),
-				).rejects.toMatchObject({ name: "AbortError" });
+				).resolves.toBe(130);
 				expect(stderrSpy).toHaveBeenCalledWith(
 					expect.stringContaining(
 						"monitor loop failed: Timed out waiting for supervisor storage lock",
@@ -2029,20 +2033,29 @@ describe("codex supervisor", () => {
 		await expect(fs.access(lockPath)).resolves.toBeUndefined();
 	});
 
-	it("strips CODEX_AUTH_* variables from the child process env", () => {
-		const childEnv = supervisorTestApi?.buildCodexChildEnv({
+	it("strips auth and multi-auth variables from the child process env without mutating the input", () => {
+		const baseEnv = {
 			PATH: "C:/bin",
 			HOME: "C:/Users/neil",
+			CODEX_HOME: "C:/Users/neil/.codex",
 			CODEX_AUTH_REFRESH_TOKEN: "secret",
 			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
-		});
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: "C:/codex/bin/codex.js",
+			CODEX_MULTI_AUTH_CLI_SESSIONS_DIR: "C:/sessions",
+		};
+		const originalEnv = { ...baseEnv };
+		const childEnv = supervisorTestApi?.buildCodexChildEnv(baseEnv);
 
 		expect(childEnv).toMatchObject({
 			PATH: "C:/bin",
 			HOME: "C:/Users/neil",
+			CODEX_HOME: "C:/Users/neil/.codex",
 		});
 		expect(childEnv?.CODEX_AUTH_REFRESH_TOKEN).toBeUndefined();
 		expect(childEnv?.CODEX_AUTH_CLI_SESSION_SUPERVISOR).toBeUndefined();
+		expect(childEnv?.CODEX_MULTI_AUTH_REAL_CODEX_BIN).toBeUndefined();
+		expect(childEnv?.CODEX_MULTI_AUTH_CLI_SESSIONS_DIR).toBeUndefined();
+		expect(baseEnv).toEqual(originalEnv);
 	});
 
 	it("honors the account-selection-attempt env override at call time", async () => {
@@ -2140,10 +2153,7 @@ describe("codex supervisor", () => {
 			expect(fetchAttempts).toBe(1);
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			expect(fetchAttempts).toBe(1);
-			await expect(runPromise).rejects.toMatchObject({
-				name: "AbortError",
-				message: "Supervisor storage lock wait aborted",
-			});
+			await expect(runPromise).resolves.toBe(130);
 			expect(fetchAttempts).toBe(2);
 			expect(child.kill).toHaveBeenCalled();
 		},
@@ -2221,10 +2231,7 @@ describe("codex supervisor", () => {
 						};
 					},
 				}),
-			).rejects.toMatchObject({
-				name: "AbortError",
-				message: "Supervisor storage lock wait aborted",
-			});
+			).resolves.toBe(130);
 			expect(loadCalls).toBe(1);
 			expect(child.kill).toHaveBeenCalled();
 		},

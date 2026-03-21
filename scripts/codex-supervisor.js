@@ -1128,7 +1128,7 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 					"Quota probe aborted",
 				);
 			} catch (error) {
-				if (signal?.aborted || (error?.name === "AbortError" && signal?.aborted)) {
+				if (signal?.aborted) {
 					throw error;
 				}
 				if (error?.name === "AbortError") {
@@ -1190,7 +1190,7 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 	try {
 		return await abortablePromise(fetchPromise, signal, "Quota probe aborted");
 	} catch (error) {
-		if (signal?.aborted || (error?.name === "AbortError" && signal?.aborted)) {
+		if (signal?.aborted) {
 			throw error;
 		}
 		if (error?.name === "AbortError") {
@@ -1808,7 +1808,10 @@ async function requestChildRestart(child, platform = process.platform, signal) {
 function buildCodexChildEnv(baseEnv = process.env) {
 	const env = { ...baseEnv };
 	for (const key of Object.keys(env)) {
-		if (key.startsWith("CODEX_AUTH_")) {
+		if (
+			key.startsWith("CODEX_AUTH_") ||
+			key.startsWith("CODEX_MULTI_AUTH_")
+		) {
 			delete env[key];
 		}
 	}
@@ -1841,6 +1844,7 @@ async function runInteractiveSupervision({
 	manager,
 	signal,
 	maxSessionRestarts = getMaxSessionRestarts(),
+	onLaunch = () => {},
 	spawnChild = spawnRealCodex,
 	syncBeforeLaunch = async () => {},
 	findBinding = findSessionBinding,
@@ -1864,6 +1868,7 @@ async function runInteractiveSupervision({
 			preparedResumeSelectionLink.controller;
 		await syncBeforeLaunch();
 		const child = spawnChild(codexBin, launchArgs);
+		onLaunch();
 		let preparedResumeSelectionPromise = null;
 		try {
 			const launchStartedAt = Date.now();
@@ -2116,6 +2121,7 @@ async function runInteractiveSupervision({
 			let restartDecision = requestedRestart;
 			if (
 				!restartDecision &&
+				!signal?.aborted &&
 				result.exitCode !== 0 &&
 				result.signal !== "SIGINT" &&
 				knownSessionId
@@ -2240,6 +2246,7 @@ async function runCodexSupervisorWithRuntime({
 	rawArgs,
 	buildForwardArgs,
 	forwardToRealCodex,
+	onLaunch,
 	syncBeforeLaunch,
 	runtime,
 	signal,
@@ -2274,6 +2281,7 @@ async function runCodexSupervisorWithRuntime({
 		pluginConfig,
 		manager: ready.manager,
 		signal,
+		onLaunch,
 		syncBeforeLaunch,
 	});
 }
@@ -2283,6 +2291,7 @@ export async function runCodexSupervisorIfEnabled({
 	rawArgs,
 	buildForwardArgs,
 	forwardToRealCodex,
+	onLaunch,
 	syncBeforeLaunch,
 }) {
 	const controller = new AbortController();
@@ -2300,6 +2309,7 @@ export async function runCodexSupervisorIfEnabled({
 			rawArgs,
 			buildForwardArgs,
 			forwardToRealCodex,
+			onLaunch,
 			syncBeforeLaunch,
 			runtime,
 			signal: controller.signal,

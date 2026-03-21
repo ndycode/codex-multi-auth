@@ -699,7 +699,10 @@ describe("codex bin wrapper", () => {
 			"export function isInteractiveCommand() {",
 			"\treturn true;",
 			"}",
-			"export async function runCodexSupervisorIfEnabled() {",
+			"export async function runCodexSupervisorIfEnabled({ onLaunch }) {",
+			"\tif (typeof onLaunch === \"function\") {",
+			"\t\tonLaunch();",
+			"\t}",
 			"\treturn 0;",
 			"}",
 		]);
@@ -715,6 +718,30 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(0);
 		expect(result.stdout).not.toContain("FORWARDED:");
 		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
+	});
+
+	it("does not auto-sync when an interactive supervisor exits before launching a session", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeSupervisorStub(fixtureRoot, [
+			"export function isInteractiveCommand() {",
+			"\treturn true;",
+			"}",
+			"export async function runCodexSupervisorIfEnabled() {",
+			"\treturn 1;",
+			"}",
+		]);
+		writeCodexManagerAutoSyncFixture(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "no-launch-auto-sync.log");
+
+		const result = runWrapper(fixtureRoot, ["resume", "session-123"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(1);
+		expect(result.stdout).not.toContain("FORWARDED:");
+		expect(existsSync(markerPath)).toBe(false);
 	});
 
 	it("supports interactive commands through the supervisor wrapper", () => {
