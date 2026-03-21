@@ -195,6 +195,52 @@ describe("runtime account select event helper", () => {
 		expect(loadAccounts).not.toHaveBeenCalled();
 	});
 
+	it("returns false when the event is missing an account index", async () => {
+		const loadAccounts = vi.fn();
+
+		await expect(
+			handleAccountSelectEvent({
+				event: {
+					type: "account.select",
+					properties: { provider: "openai" },
+				},
+				providerId: "openai",
+				loadAccounts,
+				saveAccounts: vi.fn(),
+				modelFamilies: [],
+				cachedAccountManager: null,
+				reloadAccountManagerFromDisk: vi.fn(),
+				setLastCodexCliActiveSyncIndex: vi.fn(),
+				showToast: vi.fn(),
+			}),
+		).resolves.toBe(false);
+		expect(loadAccounts).not.toHaveBeenCalled();
+	});
+
+	it("returns false when the requested account index is unavailable", async () => {
+		const saveAccounts = vi.fn();
+		const showToast = vi.fn();
+
+		await expect(
+			handleAccountSelectEvent({
+				event: {
+					type: "account.select",
+					properties: { index: 3, provider: "openai" },
+				},
+				providerId: "openai",
+				loadAccounts: vi.fn().mockResolvedValue(structuredClone(storage)),
+				saveAccounts,
+				modelFamilies: ["gpt-5"],
+				cachedAccountManager: null,
+				reloadAccountManagerFromDisk: vi.fn(),
+				setLastCodexCliActiveSyncIndex: vi.fn(),
+				showToast,
+			}),
+		).resolves.toBe(false);
+		expect(saveAccounts).not.toHaveBeenCalled();
+		expect(showToast).not.toHaveBeenCalled();
+	});
+
 	it("updates storage and reports handled events for matching providers", async () => {
 		const saveAccounts = vi.fn();
 		const setLastCodexCliActiveSyncIndex = vi.fn();

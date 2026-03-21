@@ -39,11 +39,11 @@ export async function handleAccountSelectEvent(input: {
 	}
 
 	const index = props.index ?? props.accountIndex;
-	if (typeof index !== "number") return true;
+	if (typeof index !== "number") return false;
 
 	const storage = await input.loadAccounts();
 	if (!storage || index < 0 || index >= storage.accounts.length) {
-		return true;
+		return false;
 	}
 
 	const now = Date.now();
