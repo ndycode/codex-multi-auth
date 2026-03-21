@@ -170,6 +170,132 @@ describe("quota-probe", () => {
 		await assertion;
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
+
+	it("aborts immediately when the caller abort signal fires", async () => {
+		const controller = new AbortController();
+		let markFetchStarted!: () => void;
+		const fetchStarted = new Promise<void>((resolve) => {
+			markFetchStarted = resolve;
+		});
+		const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+			return new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener(
+					"abort",
+					() => {
+						const error = new Error("aborted");
+						(error as Error & { name?: string }).name = "AbortError";
+						reject(error);
+					},
+					{ once: true },
+				);
+				markFetchStarted();
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const pending = fetchCodexQuotaSnapshot({
+			accountId: "acc-abort",
+			accessToken: "token-abort",
+			model: "gpt-5-codex",
+			fallbackModels: [],
+			timeoutMs: 30_000,
+			signal: controller.signal,
+		});
+
+		await fetchStarted;
+		controller.abort();
+
+		await expect(pending).rejects.toThrow(/abort/i);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects immediately when the caller signal is already aborted", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			fetchCodexQuotaSnapshot({
+				accountId: "acc-pre-aborted",
+				accessToken: "token-pre-aborted",
+				model: "gpt-5-codex",
+				fallbackModels: [],
+				timeoutMs: 30_000,
+				signal: controller.signal,
+			}),
+		).rejects.toThrow(/abort/i);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("re-checks the caller abort signal after loading instructions", async () => {
+		const controller = new AbortController();
+		const instructionsReady = (() => {
+			let resolve!: (value: string) => void;
+			const promise = new Promise<string>((res) => {
+				resolve = res;
+			});
+			return { promise, resolve };
+		})();
+		getCodexInstructionsMock.mockImplementationOnce(() => instructionsReady.promise);
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		const pending = fetchCodexQuotaSnapshot({
+			accountId: "acc-post-instructions-abort",
+			accessToken: "token-post-instructions-abort",
+			model: "gpt-5-codex",
+			fallbackModels: [],
+			timeoutMs: 30_000,
+			signal: controller.signal,
+		});
+
+		controller.abort();
+		instructionsReady.resolve("instructions:gpt-5-codex");
+
+		await expect(pending).rejects.toThrow(/abort/i);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("does not start probing a fallback model after the caller aborts an unsupported first attempt", async () => {
+		const controller = new AbortController();
+		const unsupported = new Response(
+			JSON.stringify({
+				error: { message: "Model gpt-5.3-codex unsupported", type: "invalid_request_error" },
+			}),
+			{ status: 400, headers: new Headers({ "content-type": "application/json" }) },
+		);
+		const fetchMock = vi.fn(async () => {
+			controller.abort();
+			return unsupported;
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		getUnsupportedCodexModelInfoMock
+			.mockReturnValueOnce({
+				isUnsupported: true,
+				unsupportedModel: "gpt-5.3-codex",
+				message: "unsupported",
+			})
+			.mockReturnValue({
+				isUnsupported: false,
+				unsupportedModel: undefined,
+				message: undefined,
+			});
+
+		await expect(
+			fetchCodexQuotaSnapshot({
+				accountId: "acc-abort-before-fallback",
+				accessToken: "token-abort-before-fallback",
+				model: "gpt-5.3-codex",
+				fallbackModels: ["gpt-5.2-codex"],
+				signal: controller.signal,
+			}),
+		).rejects.toThrow(/abort/i);
+		expect(getCodexInstructionsMock).toHaveBeenCalledTimes(1);
+		expect(getCodexInstructionsMock).toHaveBeenCalledWith("gpt-5.3-codex");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
 	it("parses reset-at values expressed as epoch seconds and epoch milliseconds", async () => {
 		const nowSec = Math.floor(Date.now() / 1000);
 		const primarySeconds = nowSec + 120;
