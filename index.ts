@@ -519,18 +519,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		sessionAffinityConfigKey = ensured.configKey;
 	};
 
-	const applyPreemptiveQuotaSettings = (
-		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void => {
-		applyRuntimePreemptiveQuotaSettings(pluginConfig, {
-			configure: (options) => preemptiveQuotaScheduler.configure(options),
-			getPreemptiveQuotaEnabled,
-			getPreemptiveQuotaRemainingPercent5h,
-			getPreemptiveQuotaRemainingPercent7d,
-			getPreemptiveQuotaMaxDeferralMs,
-		});
-	};
-
 	// Event handler for session recovery and account selection
 	const eventHandler = async (input: {
 		event: { type: string; properties?: unknown };
@@ -628,7 +616,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				applyStorageScope(pluginConfig);
 				ensureSessionAffinity(pluginConfig);
 				ensureRefreshGuardian(pluginConfig);
-				applyPreemptiveQuotaSettings(pluginConfig);
+				applyRuntimePreemptiveQuotaSettings(pluginConfig, {
+					configure: (options) => preemptiveQuotaScheduler.configure(options),
+					getPreemptiveQuotaEnabled,
+					getPreemptiveQuotaRemainingPercent5h,
+					getPreemptiveQuotaRemainingPercent7d,
+					getPreemptiveQuotaMaxDeferralMs,
+				});
 
 				// Only handle OAuth auth type, skip API key auth
 				if (auth.type !== "oauth") {
