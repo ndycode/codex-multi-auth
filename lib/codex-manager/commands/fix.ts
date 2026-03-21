@@ -174,7 +174,30 @@ export async function runFixCommand(
 	deps.setStoragePath(null);
 	const storage = await deps.loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
-		logInfo("No accounts configured.");
+		if (options.json) {
+			logInfo(
+				JSON.stringify(
+					{
+						command: "fix",
+						dryRun: options.dryRun,
+						liveProbe: options.live,
+						model: options.model,
+						changed: false,
+						summary: { healthy: 0, disabled: 0, warnings: 0, skipped: 0 },
+						recommendation: {
+							recommendedIndex: null,
+							reason: "No accounts configured.",
+						},
+						recommendedSwitchCommand: null,
+						reports: [] as FixAccountReport[],
+					},
+					null,
+					2,
+				),
+			);
+		} else {
+			logInfo("No accounts configured.");
+		}
 		return 0;
 	}
 	let quotaEmailFallbackState =
@@ -205,6 +228,7 @@ export async function runFixCommand(
 		}
 
 		if (deps.hasUsableAccessToken(account, now)) {
+			let needsRefresh = false;
 			if (options.live) {
 				const currentAccessToken = account.accessToken;
 				const probeAccountId = currentAccessToken
@@ -235,33 +259,26 @@ export async function runFixCommand(
 								: "live session OK",
 						});
 						continue;
-					} catch (error) {
-						const message = deps.normalizeFailureDetail(
-							error instanceof Error ? error.message : String(error),
-							undefined,
-						);
-						reports.push({
-							index: i,
-							label,
-							outcome: "warning-soft-failure",
-							message: `live probe failed (${message}), trying refresh fallback`,
-						});
+					} catch {
+						needsRefresh = true;
 					}
 				}
 			}
 
-			const refreshWarning = deps.hasLikelyInvalidRefreshToken(
-				account.refreshToken,
-			)
-				? " (refresh token looks stale; re-login recommended)"
-				: "";
-			reports.push({
-				index: i,
-				label,
-				outcome: "healthy",
-				message: `access token still valid${refreshWarning}`,
-			});
-			continue;
+			if (!needsRefresh) {
+				const refreshWarning = deps.hasLikelyInvalidRefreshToken(
+					account.refreshToken,
+				)
+					? " (refresh token looks stale; re-login recommended)"
+					: "";
+				reports.push({
+					index: i,
+					label,
+					outcome: "healthy",
+					message: `access token still valid${refreshWarning}`,
+				});
+				continue;
+			}
 		}
 
 		const refreshResult = await deps.queuedRefresh(account.refreshToken);
@@ -426,7 +443,7 @@ export async function runFixCommand(
 
 	if (changed && !options.dryRun) await deps.saveAccounts(storage);
 	if (options.json) {
-		if (workingQuotaCache && quotaCacheChanged)
+		if (workingQuotaCache && quotaCacheChanged && !options.dryRun)
 			await deps.saveQuotaCache(workingQuotaCache);
 		logInfo(
 			JSON.stringify(
@@ -525,7 +542,7 @@ export async function runFixCommand(
 			);
 		}
 	}
-	if (workingQuotaCache && quotaCacheChanged)
+	if (workingQuotaCache && quotaCacheChanged && !options.dryRun)
 		await deps.saveQuotaCache(workingQuotaCache);
 	if (changed && options.dryRun)
 		logInfo(
