@@ -2413,66 +2413,41 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									};
 								}
 
+								const accountCheckDeps = {
+									hydrateEmails,
+									loadAccounts,
+									createEmptyStorage: () => ({
+										version: 3 as const,
+										accounts: [],
+										activeIndex: 0,
+										activeIndexByFamily: {},
+									}),
+									loadFlaggedAccounts,
+									createAccountCheckWorkingState,
+									lookupCodexCliTokensByEmail,
+									extractAccountId,
+									shouldUpdateAccountIdFromToken,
+									sanitizeEmail,
+									extractAccountEmail,
+									queuedRefresh,
+									isRuntimeFlaggableFailure,
+									fetchCodexQuotaSnapshot,
+									resolveRequestAccountId,
+									formatCodexQuotaLine,
+									clampRuntimeActiveIndices,
+									MODEL_FAMILIES,
+									saveAccounts,
+									invalidateAccountManagerCache,
+									saveFlaggedAccounts,
+									showLine: (message: string) => console.log(message),
+								};
+
 								if (menuResult.mode === "check") {
-									await runRuntimeAccountCheck(false, {
-										hydrateEmails,
-										loadAccounts,
-										createEmptyStorage: () => ({
-											version: 3 as const,
-											accounts: [],
-											activeIndex: 0,
-											activeIndexByFamily: {},
-										}),
-										loadFlaggedAccounts,
-										createAccountCheckWorkingState,
-										lookupCodexCliTokensByEmail,
-										extractAccountId,
-										shouldUpdateAccountIdFromToken,
-										sanitizeEmail,
-										extractAccountEmail,
-										queuedRefresh,
-										isRuntimeFlaggableFailure,
-										fetchCodexQuotaSnapshot,
-										resolveRequestAccountId,
-										formatCodexQuotaLine,
-										clampRuntimeActiveIndices,
-										MODEL_FAMILIES,
-										saveAccounts,
-										invalidateAccountManagerCache,
-										saveFlaggedAccounts,
-										showLine: (message) => console.log(message),
-									});
+									await runRuntimeAccountCheck(false, accountCheckDeps);
 									continue;
 								}
 								if (menuResult.mode === "deep-check") {
-									await runRuntimeAccountCheck(true, {
-										hydrateEmails,
-										loadAccounts,
-										createEmptyStorage: () => ({
-											version: 3 as const,
-											accounts: [],
-											activeIndex: 0,
-											activeIndexByFamily: {},
-										}),
-										loadFlaggedAccounts,
-										createAccountCheckWorkingState,
-										lookupCodexCliTokensByEmail,
-										extractAccountId,
-										shouldUpdateAccountIdFromToken,
-										sanitizeEmail,
-										extractAccountEmail,
-										queuedRefresh,
-										isRuntimeFlaggableFailure,
-										fetchCodexQuotaSnapshot,
-										resolveRequestAccountId,
-										formatCodexQuotaLine,
-										clampRuntimeActiveIndices,
-										MODEL_FAMILIES,
-										saveAccounts,
-										invalidateAccountManagerCache,
-										saveFlaggedAccounts,
-										showLine: (message) => console.log(message),
-									});
+									await runRuntimeAccountCheck(true, accountCheckDeps);
 									continue;
 								}
 								if (menuResult.mode === "verify-flagged") {
