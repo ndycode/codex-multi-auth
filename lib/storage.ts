@@ -13,7 +13,7 @@ import {
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 
-import { formatStorageErrorHint } from "./storage/error-hints.js";
+import { toStorageError } from "./storage/error-hints.js";
 
 export { StorageError } from "./errors.js";
 export { formatStorageErrorHint } from "./storage/error-hints.js";
@@ -2004,23 +2004,20 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 		}
 
 		const err = error as NodeJS.ErrnoException;
-		const code = err?.code || "UNKNOWN";
-		const hint = formatStorageErrorHint(error, path);
+		const storageError = toStorageError(
+			`Failed to save accounts: ${err?.message || "Unknown error"}`,
+			error,
+			path,
+		);
 
 		log.error("Failed to save accounts", {
 			path,
-			code,
+			code: storageError.code,
 			message: err?.message,
-			hint,
+			hint: storageError.hint,
 		});
 
-		throw new StorageError(
-			`Failed to save accounts: ${err?.message || "Unknown error"}`,
-			code,
-			path,
-			hint,
-			err instanceof Error ? err : undefined,
-		);
+		throw storageError;
 	}
 }
 
