@@ -28,9 +28,10 @@ import type { PluginConfig } from "../types.js";
 import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
-import { type MenuItem, select, type SelectOptions } from "../ui/select.js";
+import { type MenuItem, type SelectOptions, select } from "../ui/select.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
+import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
 
 type DashboardDisplaySettingKey =
 	| "menuShowStatusBadge"
@@ -173,13 +174,6 @@ type BehaviorConfigAction =
 	| { type: "toggle-menu-limit-fetch" }
 	| { type: "toggle-menu-fetch-status" }
 	| { type: "set-menu-quota-ttl"; ttlMs: number }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
-
-type ThemeConfigAction =
-	| { type: "set-palette"; palette: DashboardThemePreset }
-	| { type: "set-accent"; accent: DashboardAccentColor }
 	| { type: "reset" }
 	| { type: "save" }
 	| { type: "cancel" };
@@ -1997,129 +1991,15 @@ async function promptBehaviorSettings(
 async function promptThemeSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	if (!input.isTTY || !output.isTTY) return null;
-	const baseline = cloneDashboardSettings(initial);
-	let draft = cloneDashboardSettings(initial);
-	let focus: ThemeConfigAction = {
-		type: "set-palette",
-		palette: draft.uiThemePreset ?? "green",
-	};
-	while (true) {
-		const ui = getUiRuntimeOptions();
-		const palette = draft.uiThemePreset ?? "green";
-		const accent = draft.uiAccentColor ?? "green";
-		const paletteItems: MenuItem<ThemeConfigAction>[] =
-			THEME_PRESET_OPTIONS.map((candidate, index) => {
-				const color: MenuItem<ThemeConfigAction>["color"] =
-					palette === candidate ? "green" : "yellow";
-				return {
-					label: `${palette === candidate ? "[x]" : "[ ]"} ${index + 1}. ${candidate === "green" ? "Green base" : "Blue base"}`,
-					hint:
-						candidate === "green"
-							? "High-contrast default."
-							: "Codex-style blue look.",
-					value: { type: "set-palette", palette: candidate },
-					color,
-				};
-			});
-		const accentItems: MenuItem<ThemeConfigAction>[] = ACCENT_COLOR_OPTIONS.map(
-			(candidate) => {
-				const color: MenuItem<ThemeConfigAction>["color"] =
-					accent === candidate ? "green" : "yellow";
-				return {
-					label: `${accent === candidate ? "[x]" : "[ ]"} ${candidate}`,
-					value: { type: "set-accent", accent: candidate },
-					color,
-				};
-			},
-		);
-		const items: MenuItem<ThemeConfigAction>[] = [
-			{
-				label: UI_COPY.settings.baseTheme,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...paletteItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.accentColor,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...accentItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-		const initialCursor = items.findIndex((item) => {
-			const value = item.value;
-			if (value.type !== focus.type) return false;
-			if (value.type === "set-palette" && focus.type === "set-palette") {
-				return value.palette === focus.palette;
-			}
-			if (value.type === "set-accent" && focus.type === "set-accent") {
-				return value.accent === focus.accent;
-			}
-			return true;
-		});
-		const result = await select<ThemeConfigAction>(items, {
-			message: UI_COPY.settings.themeTitle,
-			subtitle: UI_COPY.settings.themeSubtitle,
-			help: UI_COPY.settings.themeHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const item = items[cursor];
-				if (item && !item.separator && item.kind !== "heading") {
-					focus = item.value;
-				}
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				if (raw === "1") return { type: "set-palette", palette: "green" };
-				if (raw === "2") return { type: "set-palette", palette: "blue" };
-				return undefined;
-			},
-		});
-		if (!result || result.type === "cancel") {
-			applyUiThemeFromDashboardSettings(baseline);
-			return null;
-		}
-		if (result.type === "save") return draft;
-		if (result.type === "reset") {
-			draft = applyDashboardDefaultsForKeys(draft, THEME_PANEL_KEYS);
-			focus = { type: "set-palette", palette: draft.uiThemePreset ?? "green" };
-			applyUiThemeFromDashboardSettings(draft);
-			continue;
-		}
-		if (result.type === "set-palette") {
-			draft = { ...draft, uiThemePreset: result.palette };
-			focus = result;
-			applyUiThemeFromDashboardSettings(draft);
-			continue;
-		}
-		draft = { ...draft, uiAccentColor: result.accent };
-		focus = result;
-		applyUiThemeFromDashboardSettings(draft);
-	}
+	return promptThemeSettingsPanel(initial, {
+		cloneDashboardSettings,
+		applyDashboardDefaultsForKeys,
+		applyUiThemeFromDashboardSettings,
+		THEME_PRESET_OPTIONS,
+		ACCENT_COLOR_OPTIONS,
+		THEME_PANEL_KEYS,
+		UI_COPY,
+	});
 }
 
 function resolveFocusedBackendNumberKey(
