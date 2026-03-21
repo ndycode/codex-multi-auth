@@ -17,7 +17,6 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 		});
 		expect(showLine).toHaveBeenCalledWith("\nNo flagged accounts to verify.\n");
 	});
-
 	it("restores accounts from Codex CLI cache and preserves the remainder", async () => {
 		const persistAccounts = vi.fn(async () => {});
 		const saveFlaggedAccounts = vi.fn(async () => {});
