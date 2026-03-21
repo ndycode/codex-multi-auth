@@ -62,6 +62,8 @@ export function getAccountIdentityKey(
 	if (ref.accountId) return `account:${ref.accountId}`;
 	if (ref.emailKey) return `email:${ref.emailKey}`;
 	if (ref.refreshToken) {
+		// Legacy refresh-only identity keys embedded raw tokens. Hashing preserves
+		// deterministic fallback matching without exposing token material in logs.
 		return `refresh:${hashRefreshTokenKey(ref.refreshToken)}`;
 	}
 	return undefined;
