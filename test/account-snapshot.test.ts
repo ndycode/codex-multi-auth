@@ -31,7 +31,7 @@ describe("statSnapshot", () => {
 });
 
 describe("describeAccountSnapshot", () => {
-	it("marks schema-error snapshots invalid while preserving metadata", async () => {
+	it("marks schema-error snapshots valid while preserving schema errors in metadata", async () => {
 		await expect(
 			describeAccountSnapshot("accounts.json", "accounts-primary", {
 				index: 0,
