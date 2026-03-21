@@ -90,7 +90,15 @@ export async function runInitConfigCommand(
 			await writeFile(path, content, "utf8");
 		});
 
-	const content = await readTemplate(parsed.template);
+	let content: string;
+	try {
+		content = await readTemplate(parsed.template);
+	} catch (error) {
+		const message =
+			error instanceof Error ? error.message : "Failed to read config template";
+		logError(message);
+		return 1;
+	}
 
 	if (parsed.stdout || !parsed.writePath) {
 		logInfo(content.trimEnd());
