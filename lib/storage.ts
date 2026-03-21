@@ -11,6 +11,11 @@ import {
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
+import {
+	type BackupMetadataSection,
+	type BackupSnapshotMetadata,
+	buildMetadataSection,
+} from "./storage/backup-metadata.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
 import {
 	collectNamedBackups,
@@ -107,28 +112,6 @@ type BackupSnapshotKind =
 	| "flagged-backup"
 	| "flagged-backup-history"
 	| "flagged-discovered-backup";
-
-type BackupSnapshotMetadata = {
-	kind: BackupSnapshotKind;
-	path: string;
-	index?: number;
-	exists: boolean;
-	valid: boolean;
-	bytes?: number;
-	mtimeMs?: number;
-	version?: number;
-	accountCount?: number;
-	flaggedCount?: number;
-	schemaErrors?: string[];
-};
-
-type BackupMetadataSection = {
-	storagePath: string;
-	latestValidPath?: string;
-	snapshotCount: number;
-	validSnapshotCount: number;
-	snapshots: BackupSnapshotMetadata[];
-};
 
 export type BackupMetadata = {
 	accounts: BackupMetadataSection;
@@ -688,28 +671,6 @@ async function describeFlaggedSnapshot(
 			mtimeMs: stats.mtimeMs,
 		};
 	}
-}
-
-function latestValidSnapshot(
-	snapshots: BackupSnapshotMetadata[],
-): BackupSnapshotMetadata | undefined {
-	return snapshots
-		.filter((snapshot) => snapshot.valid)
-		.sort((left, right) => (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0))[0];
-}
-
-function buildMetadataSection(
-	storagePath: string,
-	snapshots: BackupSnapshotMetadata[],
-): BackupMetadataSection {
-	const latestValid = latestValidSnapshot(snapshots);
-	return {
-		storagePath,
-		latestValidPath: latestValid?.path,
-		snapshotCount: snapshots.length,
-		validSnapshotCount: snapshots.filter((snapshot) => snapshot.valid).length,
-		snapshots,
-	};
 }
 
 type AccountsJournalEntry = {
