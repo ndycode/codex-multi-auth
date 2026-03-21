@@ -38,7 +38,7 @@ export function buildManualOAuthFlow(
 		},
 		callback: async (
 			input: string,
-		): Promise<TokenResult | TokenSuccessWithAccount> => {
+		): Promise<TokenResult> => {
 			const parsed = parseAuthorizationInput(input);
 			if (!parsed.code || !parsed.state) {
 				return {
