@@ -35,6 +35,7 @@ import {
 	clearFlaggedAccountsEntry,
 	saveFlaggedAccountsEntry,
 } from "./storage/flagged-entry.js";
+import { loadFlaggedAccountsEntry } from "./storage/flagged-load-entry.js";
 import { normalizeFlaggedStorage } from "./storage/flagged-storage.js";
 import {
 	clearFlaggedAccountsOnDisk,
@@ -1869,17 +1870,17 @@ export async function clearAccounts(): Promise<void> {
 }
 
 export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
-	const path = getFlaggedAccountsPath();
-	return loadFlaggedAccountsState({
-		path,
-		legacyPath: getLegacyFlaggedAccountsPath(),
-		resetMarkerPath: getIntentionalResetMarkerPath(path),
+	return loadFlaggedAccountsEntry({
+		getFlaggedAccountsPath,
+		getLegacyFlaggedAccountsPath,
+		getIntentionalResetMarkerPath,
 		normalizeFlaggedStorage: (data) =>
 			normalizeFlaggedStorage(data, {
 				isRecord,
 				now: () => Date.now(),
 			}),
 		saveFlaggedAccounts,
+		loadFlaggedAccountsState,
 		logError: (message, details) => {
 			log.error(message, details);
 		},
