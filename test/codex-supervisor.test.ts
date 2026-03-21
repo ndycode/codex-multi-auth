@@ -3,6 +3,7 @@ import { mkdtempSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removeDirectoryWithRetry } from "./fs-test-utils.js";
 import {
 	__testOnly as supervisorTestApi,
 	runCodexSupervisorIfEnabled,
@@ -45,25 +46,6 @@ const originalEnv = Object.fromEntries(
 beforeEach(() => {
 	supervisorTestApi?.resetSupervisorCaches?.();
 });
-
-async function removeDirectoryWithRetry(dir: string): Promise<void> {
-	const retryableCodes = new Set(["ENOTEMPTY", "EPERM", "EBUSY"]);
-	for (let attempt = 1; attempt <= 6; attempt += 1) {
-		try {
-			await fs.rm(dir, { recursive: true, force: true });
-			return;
-		} catch (error) {
-			const code =
-				error && typeof error === "object" && "code" in error
-					? `${error.code ?? ""}`
-					: "";
-			if (!retryableCodes.has(code) || attempt === 6) {
-				throw error;
-			}
-			await new Promise((resolve) => setTimeout(resolve, attempt * 50));
-		}
-	}
-}
 
 function createTempDir(): string {
 	const dir = mkdtempSync(join(tmpdir(), "codex-supervisor-test-"));
@@ -1143,6 +1125,12 @@ describe("codex supervisor", () => {
 		await expect(second).rejects.toMatchObject({
 			name: "QuotaProbeUnavailableError",
 		});
+		await second?.catch(
+			(error: { coolDownAccount?: boolean; skipAccountCooldown?: boolean }) => {
+			expect(error.coolDownAccount).not.toBe(true);
+			expect(error.skipAccountCooldown).toBe(true);
+		},
+		);
 		expect(calls).toEqual(["near-limit"]);
 	});
 
@@ -1640,14 +1628,45 @@ describe("codex supervisor", () => {
 	});
 
 	it(
-		"returns 1 when interactive supervision is already at the restart safety limit",
+		"allows the initial interactive launch even when no restarts remain",
 		async () => {
-			const manager = new FakeManager([
-				{ accountId: "near-limit", access: "token-1" },
-				{ accountId: "healthy", access: "token-2" },
-			]);
-			const runtime = createFakeRuntime(manager);
-			const spawnChild = vi.fn();
+			class ImmediateChild extends EventEmitter {
+				exitCode: number | null = 0;
+
+				constructor() {
+					super();
+					setTimeout(() => {
+						this.emit("exit", 0, null);
+					}, 0);
+				}
+
+				kill(_signal: string) {
+					return true;
+				}
+			}
+
+			const manager = new FakeManager();
+			const runtime = createFakeRuntime(manager, {
+				snapshots: new Map([
+					[
+						"near-limit",
+						{
+							status: 200,
+							primary: { usedPercent: 20 },
+							secondary: { usedPercent: 8 },
+						},
+					],
+					[
+						"healthy",
+						{
+							status: 200,
+							primary: { usedPercent: 25 },
+							secondary: { usedPercent: 8 },
+						},
+					],
+				]),
+			});
+			const spawnChild = vi.fn(() => new ImmediateChild());
 
 			const result = await supervisorTestApi?.runInteractiveSupervision({
 				codexBin: "dist/bin/codex.js",
@@ -1659,10 +1678,18 @@ describe("codex supervisor", () => {
 				signal: undefined,
 				maxSessionRestarts: 0,
 				spawnChild,
+				findBinding: async ({ sessionId }: { sessionId?: string }) =>
+					sessionId
+						? {
+								sessionId,
+								rolloutPath: null,
+								lastActivityAtMs: Date.now(),
+							}
+						: null,
 			});
 
-			expect(result).toBe(1);
-			expect(spawnChild).not.toHaveBeenCalled();
+			expect(result).toBe(0);
+			expect(spawnChild).toHaveBeenCalledTimes(1);
 		},
 	);
 
@@ -2205,7 +2232,7 @@ describe("codex supervisor", () => {
 		expect(manager.activeIndex).toBe(1);
 	});
 
-	it("cools down accounts when another caller aborts a shared pending probe", async () => {
+	it("does not cool down accounts when another caller aborts a shared pending probe", async () => {
 		process.env.CODEX_AUTH_CLI_SESSION_SNAPSHOT_CACHE_TTL_MS = "5000";
 		process.env.CODEX_AUTH_CLI_SESSION_SELECTION_PROBE_BATCH_SIZE = "4";
 
@@ -2255,7 +2282,6 @@ describe("codex supervisor", () => {
 			ok: true,
 			account: { accountId: "healthy" },
 		});
-		expect(fetches.at(-1)).toBe("healthy");
 		expect(fetches.filter((accountId) => accountId === "healthy")).toEqual([
 			"healthy",
 		]);
@@ -2265,7 +2291,6 @@ describe("codex supervisor", () => {
 		expect(
 			fetches.filter((accountId) => accountId === "near-limit").length,
 		).toBeLessThanOrEqual(2);
-		expect(manager.getAccountByIndex(0)?.coolingDownUntil).toBeGreaterThan(0);
 		expect(manager.activeIndex).toBe(1);
 	});
 
@@ -2401,8 +2426,10 @@ describe("codex supervisor", () => {
 			HOME: "C:/Users/neil",
 			CODEX_HOME: "C:/Users/neil/.codex",
 			CODEX_AUTH_REFRESH_TOKEN: "secret",
+			codex_auth_access_token: "lowercase-secret",
 			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: "C:/codex/bin/codex.js",
+			codex_multi_auth_cli_sessions_dir: "C:/sessions-lower",
 			CODEX_MULTI_AUTH_CLI_SESSIONS_DIR: "C:/sessions",
 		};
 		const originalEnv = { ...baseEnv };
@@ -2414,8 +2441,10 @@ describe("codex supervisor", () => {
 			CODEX_HOME: "C:/Users/neil/.codex",
 		});
 		expect(childEnv?.CODEX_AUTH_REFRESH_TOKEN).toBeUndefined();
+		expect(childEnv?.codex_auth_access_token).toBeUndefined();
 		expect(childEnv?.CODEX_AUTH_CLI_SESSION_SUPERVISOR).toBeUndefined();
 		expect(childEnv?.CODEX_MULTI_AUTH_REAL_CODEX_BIN).toBeUndefined();
+		expect(childEnv?.codex_multi_auth_cli_sessions_dir).toBeUndefined();
 		expect(childEnv?.CODEX_MULTI_AUTH_CLI_SESSIONS_DIR).toBeUndefined();
 		expect(baseEnv).toEqual(originalEnv);
 	});

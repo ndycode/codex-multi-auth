@@ -81,6 +81,9 @@ function createProbeUnavailableError(error, options = {}) {
 	if (options.coolDownAccount) {
 		wrapped.coolDownAccount = true;
 	}
+	if (options.skipAccountCooldown) {
+		wrapped.skipAccountCooldown = true;
+	}
 	return wrapped;
 }
 
@@ -151,7 +154,7 @@ function getMaxAccountSelectionAttempts() {
 }
 
 function getMaxSessionRestarts() {
-	return parseNumberEnv("CODEX_AUTH_CLI_SESSION_MAX_RESTARTS", 16, 1);
+	return parseNumberEnv("CODEX_AUTH_CLI_SESSION_MAX_RESTARTS", 16, 0);
 }
 
 function resolveProbeTimeoutMs(name, fallback) {
@@ -176,7 +179,7 @@ function getSessionsRootDir() {
 }
 
 export function isInteractiveCommand(rawArgs) {
-	const command = findPrimaryCodexCommand(rawArgs)?.command;
+	const command = findPrimaryCodexCommand(rawArgs)?.normalizedCommand;
 	return !command || command === "resume" || command === "fork";
 }
 
@@ -189,7 +192,7 @@ function isSupervisorAccountGateBypassCommand(rawArgs) {
 		return true;
 	}
 
-	const primaryCommand = findPrimaryCodexCommand(rawArgs)?.command;
+	const primaryCommand = findPrimaryCodexCommand(rawArgs)?.normalizedCommand;
 	return (
 		primaryCommand === "auth" ||
 		primaryCommand === "help" ||
@@ -199,7 +202,7 @@ function isSupervisorAccountGateBypassCommand(rawArgs) {
 
 function readResumeSessionId(rawArgs) {
 	const primaryCommand = findPrimaryCodexCommand(rawArgs);
-	if (primaryCommand?.command !== "resume") return null;
+	if (primaryCommand?.normalizedCommand !== "resume") return null;
 	const sessionId = `${rawArgs[primaryCommand.index + 1] ?? ""}`.trim();
 	return isValidSessionId(sessionId) ? sessionId : null;
 }
@@ -392,9 +395,10 @@ function normalizeExitCode(code, signal) {
 }
 
 function buildResumeArgs(sessionId, currentArgs) {
-	const { leadingArgs, command, trailingArgs } = splitCodexCommandArgs(currentArgs);
+	const { leadingArgs, normalizedCommand, trailingArgs } =
+		splitCodexCommandArgs(currentArgs);
 	const remainingArgs =
-		(command === "resume" || command === "fork") &&
+		(normalizedCommand === "resume" || normalizedCommand === "fork") &&
 		isValidSessionId(trailingArgs[0])
 			? trailingArgs.slice(1)
 			: trailingArgs;
@@ -1238,7 +1242,9 @@ async function probeAccountSnapshot(runtime, account, signal, timeoutMs, options
 		} catch (error) {
 			const normalizedError =
 				signal?.aborted || error?.name === "AbortError"
-					? error
+					? createProbeUnavailableError(error, {
+						skipAccountCooldown: true,
+					})
 					: createProbeUnavailableError(error);
 			pendingRejecter?.(normalizedError);
 			if (signal?.aborted || error?.name === "AbortError") {
@@ -1404,20 +1410,22 @@ async function ensureLaunchableAccount(
 						if (signal?.aborted || error?.name === "AbortError") {
 							throw error;
 						}
-						if (error?.name === "QuotaProbeUnavailableError") {
-							return {
-								account,
-								snapshot: null,
-								evaluation: {
-									rotate: true,
-									reason:
-										error?.coolDownAccount === true
-											? "probe-error"
-											: "probe-unavailable",
-									waitMs: 0,
-								},
-							};
-						}
+								if (error?.name === "QuotaProbeUnavailableError") {
+									return {
+										account,
+										snapshot: null,
+										evaluation: {
+											rotate: true,
+											reason:
+												error?.coolDownAccount === true
+													? "probe-error"
+													: "probe-unavailable",
+											waitMs: 0,
+											skipCooldown:
+												error?.skipAccountCooldown === true,
+										},
+									};
+								}
 						return {
 							account,
 							snapshot: null,
@@ -1493,6 +1501,13 @@ async function ensureLaunchableAccount(
 						manager,
 						snapshot: result.snapshot,
 					};
+				}
+
+				if (
+					result.evaluation.reason === "probe-unavailable" &&
+					result.evaluation.skipCooldown === true
+				) {
+					continue;
 				}
 
 				if (result.evaluation.reason === "probe-unavailable") {
@@ -1882,9 +1897,10 @@ function buildCodexChildEnv(baseEnv = process.env) {
 	// Strip supervisor-only auth and multi-auth env so the real Codex child process
 	// cannot inherit token material or test-only session directory overrides.
 	for (const key of Object.keys(env)) {
+		const normalizedKey = key.toUpperCase();
 		if (
-			key.startsWith("CODEX_AUTH_") ||
-			key.startsWith("CODEX_MULTI_AUTH_")
+			normalizedKey.startsWith("CODEX_AUTH_") ||
+			normalizedKey.startsWith("CODEX_MULTI_AUTH_")
 		) {
 			delete env[key];
 		}
@@ -1930,19 +1946,33 @@ async function runInteractiveSupervision({
 	let launchArgs = initialArgs;
 	let knownSessionId = readResumeSessionId(initialArgs);
 	let knownRolloutPath = null;
-	let launchCount = 0;
+	let launchStarted = false;
+	let remainingRestarts = maxSessionRestarts;
+	let launchNotified = false;
 
-	while (launchCount < maxSessionRestarts) {
+	while (true) {
 		if (signal?.aborted) {
 			return 130;
 		}
-		launchCount += 1;
+		if (launchStarted) {
+			if (remainingRestarts <= 0) {
+				relaunchNotice("session supervisor reached the restart safety limit");
+				return 1;
+			}
+			remainingRestarts -= 1;
+		}
+		launchStarted = true;
 		const preparedResumeSelectionLink = createLinkedAbortController(signal);
 		const preparedResumeSelectionController =
 			preparedResumeSelectionLink.controller;
 		await syncBeforeLaunch();
 		const child = spawnChild(codexBin, launchArgs);
-		onLaunch();
+		const notifyLaunch = (binding) => {
+			if (!launchNotified && binding?.sessionId) {
+				launchNotified = true;
+				onLaunch();
+			}
+		};
 		let preparedResumeSelectionPromise = null;
 		try {
 			const launchStartedAt = Date.now();
@@ -1954,6 +1984,7 @@ async function runInteractiveSupervision({
 						rolloutPathHint: knownRolloutPath,
 					})
 				: null;
+			notifyLaunch(binding);
 			if (binding?.rolloutPath) {
 				knownRolloutPath = binding.rolloutPath;
 			}
@@ -2011,6 +2042,7 @@ async function runInteractiveSupervision({
 							if (binding?.sessionId) {
 								knownSessionId = binding.sessionId;
 								knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
+								notifyLaunch(binding);
 							}
 						} else {
 							binding = await refreshBinding(binding);
@@ -2190,6 +2222,7 @@ async function runInteractiveSupervision({
 			if (binding?.sessionId) {
 				knownSessionId = binding.sessionId;
 				knownRolloutPath = binding.rolloutPath ?? knownRolloutPath;
+				notifyLaunch(binding);
 			}
 
 			let restartDecision = requestedRestart;
@@ -2311,8 +2344,6 @@ async function runInteractiveSupervision({
 		}
 	}
 
-	relaunchNotice("session supervisor reached the restart safety limit");
-	return 1;
 }
 
 async function runCodexSupervisorWithRuntime({

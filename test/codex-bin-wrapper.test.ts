@@ -5,7 +5,6 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,37 +12,11 @@ import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { sleep } from "../lib/utils.js";
+import { removeDirectoryWithRetry } from "./fs-test-utils.js";
 
 const createdDirs: string[] = [];
 const testFileDir = dirname(fileURLToPath(import.meta.url));
 const repoRootDir = join(testFileDir, "..");
-
-function isRetriableFsError(error: unknown): boolean {
-	if (!error || typeof error !== "object" || !("code" in error)) {
-		return false;
-	}
-	const { code } = error as { code?: unknown };
-	return code === "EBUSY" || code === "EPERM";
-}
-
-async function removeDirectoryWithRetry(dir: string): Promise<void> {
-	const backoffMs = [20, 60, 120];
-	let lastError: unknown;
-	for (let attempt = 0; attempt <= backoffMs.length; attempt += 1) {
-		try {
-			rmSync(dir, { recursive: true, force: true });
-			return;
-		} catch (error) {
-			lastError = error;
-			if (!isRetriableFsError(error) || attempt === backoffMs.length) {
-				break;
-			}
-			await sleep(backoffMs[attempt]);
-		}
-	}
-	throw lastError;
-}
 
 function createWrapperFixture(): string {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "codex-wrapper-fixture-"));
@@ -760,28 +733,27 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
 	});
 
-	it("does not auto-sync when an interactive supervisor exits before launching a session", () => {
+	it("does not post-sync when an interactive supervisor exits before launching a session", () => {
 		const fixtureRoot = createWrapperFixture();
-		writeSupervisorStub(fixtureRoot, [
-			"export function isInteractiveCommand() {",
-			"\treturn true;",
-			"}",
-			"export async function runCodexSupervisorIfEnabled() {",
-			"\treturn 1;",
-			"}",
-		]);
+		writeSupervisorRuntimeFixture(fixtureRoot, true);
 		writeCodexManagerAutoSyncFixture(fixtureRoot);
-		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"process.exit(1);",
+		]);
 		const markerPath = join(fixtureRoot, "no-launch-auto-sync.log");
 
 		const result = runWrapper(fixtureRoot, ["resume", "session-123"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_AUTH_CLI_SESSION_SUPERVISOR: "1",
+			CODEX_AUTH_CLI_SESSION_CAPTURE_TIMEOUT_MS: "10",
+			CODEX_AUTH_CLI_SESSION_MAX_RESTARTS: "0",
 			CODEX_TEST_AUTO_SYNC_MARKER: markerPath,
 		});
 
-		expect(result.status).toBe(1);
+		expect(result.status).not.toBe(0);
 		expect(result.stdout).not.toContain("FORWARDED:");
-		expect(existsSync(markerPath)).toBe(false);
+		expect(readFileSync(markerPath, "utf8")).toBe("sync\n");
 	});
 
 	it("supports interactive commands through the supervisor wrapper", () => {

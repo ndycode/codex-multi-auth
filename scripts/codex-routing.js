@@ -39,32 +39,34 @@ export function findPrimaryCodexCommand(args) {
 	let stopOptionParsing = false;
 
 	for (let index = 0; index < args.length; index += 1) {
-		const normalizedArg = `${args[index] ?? ""}`.trim().toLowerCase();
-		if (normalizedArg.length === 0) {
+		const command = `${args[index] ?? ""}`.trim();
+		const normalizedCommand = command.toLowerCase();
+		if (normalizedCommand.length === 0) {
 			continue;
 		}
 		if (expectFlagValue) {
 			expectFlagValue = false;
 			continue;
 		}
-		if (!stopOptionParsing && normalizedArg === "--") {
+		if (!stopOptionParsing && normalizedCommand === "--") {
 			stopOptionParsing = true;
 			continue;
 		}
 		if (!stopOptionParsing) {
-			if (COMMAND_FLAGS_WITH_VALUE.has(normalizedArg)) {
+			if (COMMAND_FLAGS_WITH_VALUE.has(normalizedCommand)) {
 				expectFlagValue = true;
 				continue;
 			}
-			if (normalizedArg.startsWith("--config=")) {
+			if (normalizedCommand.startsWith("--config=")) {
 				continue;
 			}
-			if (normalizedArg.startsWith("-")) {
+			if (normalizedCommand.startsWith("-")) {
 				continue;
 			}
 		}
 		return {
-			command: normalizedArg,
+			command,
+			normalizedCommand,
 			index,
 		};
 	}
@@ -112,6 +114,7 @@ export function splitCodexCommandArgs(args) {
 		return {
 			leadingArgs: [...args],
 			command: null,
+			normalizedCommand: null,
 			trailingArgs: [],
 		};
 	}
@@ -119,6 +122,7 @@ export function splitCodexCommandArgs(args) {
 	return {
 		leadingArgs: args.slice(0, primaryCommand.index),
 		command: primaryCommand.command,
+		normalizedCommand: primaryCommand.normalizedCommand,
 		trailingArgs: args.slice(primaryCommand.index + 1),
 	};
 }
