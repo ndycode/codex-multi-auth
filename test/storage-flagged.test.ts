@@ -560,6 +560,22 @@ describe("flagged storage extracted helpers", () => {
 		expect(normalizeFlaggedStorage).toHaveBeenCalledWith({ version: 1, accounts: [] });
 	});
 
+	it("does not retry non-retryable permission errors", async () => {
+		const sleep = vi.fn(async () => {});
+		const readFile = vi
+			.fn()
+			.mockRejectedValue(Object.assign(new Error("permission denied"), { code: "EPERM" }));
+		await expect(
+			loadFlaggedAccountsFromFile("flagged.json", {
+				readFile,
+				normalizeFlaggedStorage: vi.fn(),
+				sleep,
+			}),
+		).rejects.toThrow("permission denied");
+		expect(readFile).toHaveBeenCalledTimes(1);
+		expect(sleep).not.toHaveBeenCalled();
+	});
+
 	it("rethrows after retry budget is exhausted for windows lock errors", async () => {
 		const sleep = vi.fn(async () => {});
 		const readFile = vi
