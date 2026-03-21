@@ -1,11 +1,12 @@
 export const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
 export const SETTINGS_WRITE_BASE_DELAY_MS = 50;
-export const SETTINGS_WRITE_MAX_DELAY_MS = 1_000;
+export const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
 export const RETRYABLE_SETTINGS_WRITE_CODES = new Set([
 	"EBUSY",
 	"EPERM",
 	"EAGAIN",
 	"ENOTEMPTY",
+	"EACCES",
 ]);
 
 const settingsWriteQueues = new Map<string, Promise<void>>();
