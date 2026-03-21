@@ -176,6 +176,7 @@ import {
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./lib/runtime/account-state.js";
+import { buildCapabilityBoostByAccount } from "./lib/runtime/capability-boost.js";
 import { ensureRuntimeLiveAccountSync } from "./lib/runtime/live-sync.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import {
@@ -942,37 +943,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											index: number,
 										) => AccountSnapshotCandidate | null;
 									};
-									const accountSnapshotList =
-										typeof accountSnapshotSource.getAccountsSnapshot ===
-										"function"
-											? (accountSnapshotSource.getAccountsSnapshot() ?? [])
-											: [];
-									if (
-										accountSnapshotList.length === 0 &&
-										typeof accountSnapshotSource.getAccountByIndex ===
-											"function"
+									const capabilityBoostList = buildCapabilityBoostByAccount({
+										accountCount,
+										model,
+										modelFamily,
+										accountSnapshotSource,
+										getBoost: (accountKey, capabilityKey) =>
+											capabilityPolicyStore.getBoost(accountKey, capabilityKey),
+									});
+									for (
+										let boostIndex = 0;
+										boostIndex < capabilityBoostList.length;
+										boostIndex += 1
 									) {
-										for (
-											let accountSnapshotIndex = 0;
-											accountSnapshotIndex < accountCount;
-											accountSnapshotIndex += 1
-										) {
-											const candidate =
-												accountSnapshotSource.getAccountByIndex(
-													accountSnapshotIndex,
-												);
-											if (candidate) {
-												accountSnapshotList.push(candidate);
-											}
+										const boost = capabilityBoostList[boostIndex];
+										if (typeof boost === "number") {
+											capabilityBoostByAccount[boostIndex] = boost;
 										}
-									}
-									for (const candidate of accountSnapshotList) {
-										const accountKey = resolveEntitlementAccountKey(candidate);
-										capabilityBoostByAccount[candidate.index] =
-											capabilityPolicyStore.getBoost(
-												accountKey,
-												model ?? modelFamily,
-											);
 									}
 
 									accountAttemptLoop: while (
