@@ -192,7 +192,10 @@ import { ensureRuntimeRefreshGuardian } from "./lib/runtime/refresh-guardian.js"
 import { ensureRuntimeSessionAffinity } from "./lib/runtime/session-affinity.js";
 import { getRuntimeStatusMarker } from "./lib/runtime/status-marker.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
-import { applyRuntimeUiOptions } from "./lib/runtime/ui-runtime.js";
+import {
+	applyRuntimeUiOptions,
+	resolveRuntimeUiOptions,
+} from "./lib/runtime/ui-runtime.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
 import {
@@ -408,7 +411,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	const resolveUiRuntime = (): UiRuntimeOptions => {
-		return applyUiRuntimeFromConfig(loadPluginConfig());
+		return resolveRuntimeUiOptions({
+			loadPluginConfig,
+			applyUiRuntimeFromConfig,
+		});
 	};
 
 	const getStatusMarker = (

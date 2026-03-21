@@ -19,3 +19,10 @@ export function applyRuntimeUiOptions<TConfig>(
 		glyphMode: deps.getCodexTuiGlyphMode(pluginConfig),
 	});
 }
+
+export function resolveRuntimeUiOptions<TConfig>(deps: {
+	loadPluginConfig: () => TConfig;
+	applyUiRuntimeFromConfig: (config: TConfig) => UiRuntimeOptions;
+}): UiRuntimeOptions {
+	return deps.applyUiRuntimeFromConfig(deps.loadPluginConfig());
+}
