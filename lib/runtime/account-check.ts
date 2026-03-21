@@ -134,7 +134,16 @@ export async function runRuntimeAccountCheck(
 			}
 
 			if (!accessToken) {
-				const cached = await deps.lookupCodexCliTokensByEmail(account.email);
+				const cached = await deps
+					.lookupCodexCliTokensByEmail(account.email)
+					.catch(() => null);
+				if (
+					cached?.refreshToken &&
+					cached.refreshToken !== account.refreshToken
+				) {
+					account.refreshToken = cached.refreshToken;
+					state.storageChanged = true;
+				}
 				if (
 					cached &&
 					(typeof cached.expiresAt !== "number" ||
