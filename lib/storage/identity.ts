@@ -1,18 +1,18 @@
+import { createHash } from "node:crypto";
+
 type AccountLike = {
 	accountId?: string;
 	email?: string;
 	refreshToken?: string;
 };
 
-export type AccountIdentityRef = {
+type AccountIdentityRef = {
 	accountId?: string;
 	emailKey?: string;
 	refreshToken?: string;
 };
 
-export function normalizeAccountIdKey(
-	accountId: string | undefined,
-): string | undefined {
+function normalizeAccountIdKey(accountId: string | undefined): string | undefined {
 	if (!accountId) return undefined;
 	const trimmed = accountId.trim();
 	return trimmed || undefined;
@@ -27,7 +27,7 @@ export function normalizeEmailKey(
 	return trimmed.toLowerCase();
 }
 
-export function normalizeRefreshTokenKey(
+function normalizeRefreshTokenKey(
 	refreshToken: string | undefined,
 ): string | undefined {
 	if (!refreshToken) return undefined;
@@ -35,7 +35,11 @@ export function normalizeRefreshTokenKey(
 	return trimmed || undefined;
 }
 
-export function toAccountIdentityRef(
+function hashRefreshTokenKey(refreshToken: string): string {
+	return createHash("sha256").update(refreshToken).digest("hex");
+}
+
+function toAccountIdentityRef(
 	account:
 		| Pick<AccountLike, "accountId" | "email" | "refreshToken">
 		| null
@@ -57,6 +61,8 @@ export function getAccountIdentityKey(
 	}
 	if (ref.accountId) return `account:${ref.accountId}`;
 	if (ref.emailKey) return `email:${ref.emailKey}`;
-	if (ref.refreshToken) return `refresh:${ref.refreshToken}`;
+	if (ref.refreshToken) {
+		return `refresh:${hashRefreshTokenKey(ref.refreshToken)}`;
+	}
 	return undefined;
 }

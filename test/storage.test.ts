@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,6 +13,7 @@ import {
 	exportNamedBackup,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getAccountIdentityKey,
 	getFlaggedAccountsPath,
 	getStoragePath,
 	importAccounts,
@@ -93,6 +95,53 @@ describe("storage", () => {
 			expect(error.path).toBe("/tmp/openai-codex-accounts.json");
 			expect(error.hint).toContain("File is locked");
 			expect(error.cause).toBe(cause);
+		});
+	});
+
+	describe("account identity keys", () => {
+		it("prefers accountId and normalized email when both are present", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " acct-123 ",
+					email: " User@Example.com ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("account:acct-123::email:user@example.com");
+		});
+
+		it("falls back to accountId when email is missing", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " acct-123 ",
+					email: " ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("account:acct-123");
+		});
+
+		it("falls back to normalized email when accountId is missing", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " ",
+					email: " User@Example.com ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("email:user@example.com");
+		});
+
+		it("hashes refresh-token-only fallbacks", () => {
+			const refreshToken = " secret-token ";
+			const expectedHash = createHash("sha256")
+				.update(refreshToken.trim())
+				.digest("hex");
+			const identityKey = getAccountIdentityKey({
+				accountId: " ",
+				email: " ",
+				refreshToken,
+			});
+
+			expect(identityKey).toBe(`refresh:${expectedHash}`);
+			expect(identityKey).not.toContain(refreshToken.trim());
 		});
 	});
 	describe("deduplication", () => {
