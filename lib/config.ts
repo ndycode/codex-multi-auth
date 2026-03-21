@@ -1213,7 +1213,59 @@ type ConfigExplainMeta = {
 	key: keyof PluginConfig;
 	envNames: string[];
 	getValue: (pluginConfig: PluginConfig) => unknown;
+	sourceKeys?: (keyof PluginConfig)[];
 };
+
+function withExplainEnvUnset<T>(envNames: string[], run: () => T): T {
+	const previous = new Map<string, string | undefined>();
+	for (const name of envNames) {
+		previous.set(name, process.env[name]);
+		delete process.env[name];
+	}
+	try {
+		return run();
+	} finally {
+		for (const [name, value] of previous) {
+			if (value === undefined) {
+				delete process.env[name];
+			} else {
+				process.env[name] = value;
+			}
+		}
+	}
+}
+
+function configExplainValuesEqual(left: unknown, right: unknown): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function resolveConfigExplainSource(
+	entry: ConfigExplainMeta,
+	pluginConfig: PluginConfig,
+	storedRecord: Partial<PluginConfig> | null,
+	storageKind: "unified" | "file" | "none",
+): ConfigExplainSource {
+	const effectiveValue = entry.getValue(pluginConfig);
+	const noEnvValue = withExplainEnvUnset(entry.envNames, () => entry.getValue(pluginConfig));
+	if (!configExplainValuesEqual(effectiveValue, noEnvValue)) {
+		return "env";
+	}
+	const defaultResolvedValue = withExplainEnvUnset(entry.envNames, () =>
+		entry.getValue({} as PluginConfig),
+	);
+	const storedKeys = entry.sourceKeys ?? [entry.key];
+	const hasStoredSource =
+		storageKind !== "none" &&
+		storedRecord !== null &&
+		storedKeys.some((key) => Object.hasOwn(storedRecord, key));
+	if (hasStoredSource && !configExplainValuesEqual(noEnvValue, defaultResolvedValue)) {
+		return storageKind;
+	}
+	if (hasStoredSource && storedKeys.length > 1) {
+		return storageKind;
+	}
+	return "default";
+}
 
 const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 	{ key: "codexMode", envNames: ["CODEX_MODE"], getValue: getCodexMode },
@@ -1265,6 +1317,7 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 			"CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL",
 		],
 		getValue: getUnsupportedCodexPolicy,
+		sourceKeys: ["unsupportedCodexPolicy", "fallbackOnUnsupportedCodexModel"],
 	},
 	{
 		key: "fallbackOnUnsupportedCodexModel",
@@ -1273,6 +1326,7 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 			"CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL",
 		],
 		getValue: getFallbackOnUnsupportedCodexModel,
+		sourceKeys: ["unsupportedCodexPolicy", "fallbackOnUnsupportedCodexModel"],
 	},
 	{
 		key: "fallbackToGpt52OnUnsupportedGpt53",
@@ -1436,20 +1490,12 @@ export function getPluginConfigExplainReport(): ConfigExplainReport {
 	const stored = resolveStoredPluginConfigRecord();
 	const storedRecord = stored.record ?? null;
 	const entries = CONFIG_EXPLAIN_ENTRIES.map((entry) => {
-		const source: ConfigExplainSource = entry.envNames.some((name) => {
-			const value = process.env[name];
-			return typeof value === "string" && value.trim().length > 0;
-		})
-			? "env"
-			: storedRecord && Object.hasOwn(storedRecord, entry.key)
-				? stored.storageKind
-				: "default";
-
+		const value = entry.getValue(pluginConfig);
 		return {
 			key: entry.key,
-			value: entry.getValue(pluginConfig),
+			value,
 			defaultValue: DEFAULT_PLUGIN_CONFIG[entry.key],
-			source,
+			source: resolveConfigExplainSource(entry, pluginConfig, storedRecord, stored.storageKind),
 			envNames: entry.envNames,
 		};
 	});
