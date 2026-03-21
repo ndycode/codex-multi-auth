@@ -5,6 +5,9 @@ function extractErrorCode(error: unknown): string {
 	return err?.code || "UNKNOWN";
 }
 
+/**
+ * Format a user-facing hint for storage persistence failures based on errno code.
+ */
 export function formatStorageErrorHint(error: unknown, path: string): string {
 	const code = extractErrorCode(error);
 	const isWindows = process.platform === "win32";
@@ -28,6 +31,9 @@ export function formatStorageErrorHint(error: unknown, path: string): string {
 	}
 }
 
+/**
+ * Wrap an arbitrary storage failure in a StorageError with a derived hint.
+ */
 export function toStorageError(
 	message: string,
 	error: unknown,
