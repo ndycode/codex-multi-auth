@@ -95,14 +95,19 @@ export async function runPackBudgetCheck(deps = {}) {
 		}));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`npm pack --dry-run --json failed via ${npmCommand}: ${message}`);
+		const stdoutText = typeof error === "object" && error && "stdout" in error ? String(error.stdout ?? "") : "";
+		const stderrText = typeof error === "object" && error && "stderr" in error ? String(error.stderr ?? "") : "";
+		throw new Error(`npm pack --dry-run --json failed via ${npmCommand}: ${message}${stdoutText ? `
+stdout: ${stdoutText.slice(0, 500)}` : ""}${stderrText ? `
+stderr: ${stderrText.slice(0, 500)}` : ""}`);
 	}
 	let summary;
 	try {
 		summary = validatePackMetadata(parsePackMetadata(stdout));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Failed to validate npm pack output: ${message}`);
+		throw new Error(`Failed to validate npm pack output: ${message}
+stdout: ${stdout.slice(0, 500)}`);
 	}
 	log(summary);
 	return summary;

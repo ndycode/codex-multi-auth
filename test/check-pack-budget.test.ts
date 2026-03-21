@@ -41,7 +41,7 @@ describe("parsePackMetadata", () => {
 				}),
 				log: vi.fn(),
 			}),
-		).rejects.toThrow(/npm pack --dry-run --json failed/);
+		).rejects.toThrow(/failed via .*spawn failed/);
 	});
 
 	it("wraps malformed pack output errors with validation context", async () => {
@@ -50,7 +50,7 @@ describe("parsePackMetadata", () => {
 				execAsync: vi.fn(async () => ({ stdout: "not-json" })),
 				log: vi.fn(),
 			}),
-		).rejects.toThrow(/Failed to validate npm pack output/);
+		).rejects.toThrow(/stdout: not-json/);
 	});
 
 });
@@ -91,7 +91,8 @@ describe("validatePackMetadata", () => {
 			}),
 		).toThrow(/vendor\/codex-ai-sdk/);
 	});
-	it("rejects forbidden lib sources in the packed file list", () => {		expect(() =>
+	it("rejects forbidden lib sources in the packed file list", () => {
+		expect(() =>
 			validatePackMetadata({
 				packageSize: 123,
 				paths: [
