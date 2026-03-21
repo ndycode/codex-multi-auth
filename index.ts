@@ -306,12 +306,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			MODEL_FAMILIES,
 		});
 
-	const showToast = async (
-		message: string,
-		variant: "info" | "success" | "warning" | "error" = "success",
-		options?: { title?: string; duration?: number },
-	): Promise<void> => showRuntimeToast(client, message, variant, options);
-
 	const hydrateEmails = async (
 		storage: AccountStorageV3 | null,
 	): Promise<AccountStorageV3 | null> => {
@@ -630,7 +624,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						await reloadAccountManagerFromDisk();
 					}
 
-					await showToast(`Switched to account ${index + 1}`, "info");
+					await showRuntimeToast(client, `Switched to account ${index + 1}`, "info");
 				}
 			}
 		} catch (error) {
@@ -826,7 +820,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						: null;
 
 					checkAndNotify(async (message, variant) => {
-						await showToast(message, variant);
+						await showRuntimeToast(client, message, variant);
 					}).catch((err) => {
 						logDebug(
 							`Update check failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1039,7 +1033,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 										const remaining = Math.max(0, endTime - Date.now());
 										const waitLabel = formatWaitTime(remaining);
-										await showToast(
+										await showRuntimeToast(client, 
 											`${message} (${waitLabel} remaining)`,
 											"warning",
 											{
@@ -1206,7 +1200,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												accountManager.removeAccount(account);
 												sessionAffinityStore?.reindexAfterRemoval(removedIndex);
 												accountManager.saveToDiskDebounced();
-												await showToast(
+												await showRuntimeToast(client, 
 													`Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'codex login' to re-add.`,
 													"error",
 													{ duration: toastDurationMs * 2 },
@@ -1298,7 +1292,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												account,
 												account.index,
 											);
-											await showToast(
+											await showRuntimeToast(client, 
 												`Using ${accountLabel} (${account.index + 1}/${accountCount})`,
 												"info",
 											);
@@ -1677,7 +1671,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															fallbackReason: "unsupported-model-entitlement",
 														},
 													);
-													await showToast(
+													await showRuntimeToast(client, 
 														`Model ${previousModel} is not available for this account. Retrying with ${model}.`,
 														"warning",
 														{ duration: toastDurationMs },
@@ -1710,7 +1704,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															fallbackReason: "unsupported-model-entitlement",
 														},
 													);
-													await showToast(
+													await showRuntimeToast(client, 
 														`Model ${blockedModel} is not available for this account. Strict policy blocked automatic fallback.`,
 														"warning",
 														{ duration: toastDurationMs },
@@ -1805,7 +1799,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 															const newWorkspaceName =
 																nextWorkspace.name ?? nextWorkspace.id;
-															await showToast(
+															await showRuntimeToast(client, 
 																`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
 																"warning",
 																{ duration: toastDurationMs },
@@ -1830,7 +1824,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														);
 														accountManager.saveToDiskDebounced();
 
-														await showToast(
+														await showRuntimeToast(client, 
 															`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
 															"warning",
 															{ duration: toastDurationMs },
@@ -1869,7 +1863,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													const errorType = detectErrorType(errorBody);
 													const toastContent =
 														getRecoveryToastContent(errorType);
-													await showToast(
+													await showRuntimeToast(client, 
 														`${toastContent.title}: ${toastContent.message}`,
 														"warning",
 														{ duration: toastDurationMs },
@@ -1968,7 +1962,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																rateLimitToastDebounceMs,
 															)
 														) {
-															await showToast(
+															await showRuntimeToast(client, 
 																`Rate limited. Retrying in ${waitLabel} (attempt ${attempt})...`,
 																"warning",
 																{ duration: toastDurationMs },
@@ -2011,7 +2005,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															rateLimitToastDebounceMs,
 														)
 													) {
-														await showToast(
+														await showRuntimeToast(client, 
 															`Rate limited. Switching accounts (retry in ${waitLabel}).`,
 															"warning",
 															{ duration: toastDurationMs },
@@ -2361,7 +2355,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															logWarn(
 																`Empty response received (attempt ${emptyResponseRetries}/${emptyResponseMaxRetries}). Retrying...`,
 															);
-															await showToast(
+															await showRuntimeToast(client, 
 																`Empty response. Retrying (${emptyResponseRetries}/${emptyResponseMaxRetries})...`,
 																"warning",
 																{ duration: toastDurationMs },
@@ -3547,7 +3541,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										logError(
 											`[${PLUGIN_NAME}] Failed to persist account: [${errorCode}] ${(err as Error)?.message ?? String(err)}`,
 										);
-										await showToast(hint, "error", {
+										await showRuntimeToast(client, hint, "error", {
 											title: "Account Persistence Failed",
 											duration: 10000,
 										});
@@ -3631,7 +3625,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							}
 
 							accounts.push(resolved);
-							await showToast(
+							await showRuntimeToast(client, 
 								`Account ${accounts.length} authenticated`,
 								"success",
 							);
@@ -3651,7 +3645,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								logError(
 									`[${PLUGIN_NAME}] Failed to persist account: [${errorCode}] ${(err as Error)?.message ?? String(err)}`,
 								);
-								await showToast(hint, "error", {
+								await showRuntimeToast(client, hint, "error", {
 									title: "Account Persistence Failed",
 									duration: 10000,
 								});
@@ -3738,7 +3732,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									logError(
 										`[${PLUGIN_NAME}] Failed to persist account: [${errorCode}] ${(err as Error)?.message ?? String(err)}`,
 									);
-									await showToast(hint, "error", {
+									await showRuntimeToast(client, hint, "error", {
 										title: "Account Persistence Failed",
 										duration: 10000,
 									});
