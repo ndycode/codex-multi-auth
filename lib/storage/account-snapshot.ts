@@ -1,5 +1,8 @@
 import type { BackupSnapshotMetadata, SnapshotStats } from "./backup-metadata.js";
 
+/**
+ * Read size and mtime metadata for a backup candidate when it exists.
+ */
 export async function statSnapshot(
 	path: string,
 	deps: {
@@ -22,6 +25,9 @@ export async function statSnapshot(
 	}
 }
 
+/**
+ * Build backup metadata for an account snapshot, treating ENOENT races as missing files.
+ */
 export async function describeAccountSnapshot(
 	path: string,
 	kind: BackupSnapshotMetadata["kind"],
