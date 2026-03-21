@@ -28,7 +28,6 @@ Public documentation for `codex-multi-auth`.
 | [upgrade.md](upgrade.md) | Migration from legacy package and path history |
 | [releases/v1.1.10.md](releases/v1.1.10.md) | Stable release notes |
 | [releases/v0.1.9.md](releases/v0.1.9.md) | Previous stable release notes |
-| [releases/v0.1.7.md](releases/v0.1.7.md) | Earlier stable release notes |
 | [releases/v0.1.7.md](releases/v0.1.7.md) | Archived stable release notes |
 | [releases/v0.1.6.md](releases/v0.1.6.md) | Archived stable release notes |
 | [releases/v0.1.5.md](releases/v0.1.5.md) | Archived stable release notes |
