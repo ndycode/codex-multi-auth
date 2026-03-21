@@ -15,6 +15,13 @@ export async function statSnapshot(
 		return { exists: true, bytes: stats.size, mtimeMs: stats.mtimeMs };
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "EBUSY" || code === "EPERM") {
+			deps.logWarn("Backup candidate is locked", {
+				path,
+				error: String(error),
+			});
+			return { exists: true };
+		}
 		if (code !== "ENOENT") {
 			deps.logWarn("Failed to stat backup candidate", {
 				path,
