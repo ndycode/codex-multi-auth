@@ -340,6 +340,71 @@ describe("repair-commands direct deps coverage", () => {
 		});
 	});
 
+	it("runVerifyFlagged skips stale no-restore updates when flagged refresh tokens changed before persistence", async () => {
+		const flaggedAccount = {
+			email: "flagged@example.com",
+			refreshToken: "flagged-refresh",
+			accessToken: "old-access",
+			expiresAt: 10,
+			accountId: "stored-account",
+			accountIdSource: "manual" as const,
+			lastError: "old-error",
+			lastUsed: 1,
+		};
+		const persistSpy = vi.fn();
+
+		loadFlaggedAccountsMock.mockResolvedValue({
+			version: 1,
+			accounts: [structuredClone(flaggedAccount)],
+		});
+		queuedRefreshMock.mockResolvedValue({
+			type: "success",
+			access: "fresh-access",
+			refresh: "fresh-refresh",
+			expires: 999,
+			idToken: "fresh-id-token",
+		});
+		extractAccountEmailMock.mockReturnValue("flagged@example.com");
+		extractAccountIdMock.mockReturnValue("token-account");
+		withFlaggedStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(
+				{
+					version: 1,
+					accounts: [
+						{
+							...structuredClone(flaggedAccount),
+							refreshToken: "rotated-refresh",
+						},
+					],
+				},
+				persistSpy,
+			),
+		);
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runVerifyFlagged(
+			["--json", "--no-restore"],
+			createDeps(),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(withFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(persistSpy).not.toHaveBeenCalled();
+		expect(
+			JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")),
+		).toMatchObject({
+			total: 1,
+			remainingFlagged: 1,
+			changed: false,
+			reports: [
+				expect.objectContaining({
+					outcome: "restore-skipped",
+					message: expect.stringContaining("changed before persistence"),
+				}),
+			],
+		});
+	});
+
 	it("runFix uses the injected token-identity applier in the direct concurrent-write path", async () => {
 		const prescanStorage = {
 			version: 3,
@@ -509,7 +574,7 @@ describe("repair-commands direct deps coverage", () => {
 		});
 	});
 
-	it("runFix reports saved updates for quota-cache-only live changes in display mode", async () => {
+	it("runFix reports quota-cache-only live changes distinctly in display mode", async () => {
 		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		loadQuotaCacheMock.mockResolvedValueOnce({
@@ -553,7 +618,8 @@ describe("repair-commands direct deps coverage", () => {
 		const output = consoleSpy.mock.calls
 			.map((call) => call.map((value) => String(value)).join(" "))
 			.join("\n");
-		expect(output).toContain("Saved updates.");
+		expect(output).toContain("Quota cache refreshed (no account storage changes).");
+		expect(output).not.toContain("Saved updates.");
 		expect(output).not.toContain("No changes were needed.");
 	});
 

@@ -342,6 +342,8 @@ type AccountStorageMutation = {
 };
 
 type FlaggedStorageMutation = {
+	index: number;
+	label: string;
 	before: FlaggedAccountMetadataV1;
 	after?: FlaggedAccountMetadataV1;
 };
@@ -903,6 +905,8 @@ export async function runVerifyFlagged(
 						flaggedChanged = true;
 					}
 					flaggedMutations.push({
+						index: i,
+						label,
 						before: flagged,
 						after: nextFlagged,
 					});
@@ -926,6 +930,8 @@ export async function runVerifyFlagged(
 					storageChanged = storageChanged || upsertResult.changed;
 					flaggedChanged = true;
 					flaggedMutations.push({
+						index: i,
+						label,
 						before: flagged,
 					});
 					reports.push({
@@ -961,6 +967,8 @@ export async function runVerifyFlagged(
 					flaggedChanged = true;
 				}
 				flaggedMutations.push({
+					index: i,
+					label,
 					before: flagged,
 					after: updatedFlagged,
 				});
@@ -983,6 +991,8 @@ export async function runVerifyFlagged(
 				flaggedChanged = true;
 			}
 			flaggedMutations.push({
+				index: i,
+				label,
 				before: flagged,
 				after: failedFlagged,
 			});
@@ -1049,6 +1059,45 @@ export async function runVerifyFlagged(
 		remainingFlagged = nextFlaggedAccounts.length;
 	}
 
+	if (!options.dryRun && !options.restore && flaggedChanged) {
+		await withFlaggedStorageTransaction(async (loadedFlaggedStorage, persist) => {
+			const nextFlaggedStorage = structuredClone(loadedFlaggedStorage);
+			const staleFlaggedMutations = flaggedMutations.filter((mutation) =>
+				hasFlaggedRefreshTokenDrift(nextFlaggedStorage.accounts, mutation.before),
+			);
+			const safeFlaggedMutations = flaggedMutations.filter(
+				(mutation) =>
+					!hasFlaggedRefreshTokenDrift(nextFlaggedStorage.accounts, mutation.before),
+			);
+			for (const mutation of staleFlaggedMutations) {
+				const staleReport = reports.find(
+					(report) =>
+						report.index === mutation.index && report.label === mutation.label,
+				);
+				if (staleReport) {
+					staleReport.outcome = "restore-skipped";
+					staleReport.message =
+						"Skipped flagged update because refresh token changed before persistence";
+					continue;
+				}
+				reports.push({
+					index: mutation.index,
+					label: mutation.label,
+					outcome: "restore-skipped",
+					message:
+						"Skipped flagged update because refresh token changed before persistence",
+				});
+			}
+			applyFlaggedStorageMutations(nextFlaggedStorage, safeFlaggedMutations);
+			remainingFlagged = nextFlaggedStorage.accounts.length;
+			if (safeFlaggedMutations.length === 0) {
+				flaggedChanged = false;
+				return;
+			}
+			await persist(nextFlaggedStorage);
+		});
+	}
+
 	const restored = reports.filter((report) => report.outcome === "restored").length;
 	const healthyFlagged = reports.filter(
 		(report) => report.outcome === "healthy-flagged",
@@ -1057,15 +1106,6 @@ export async function runVerifyFlagged(
 		(report) => report.outcome === "still-flagged",
 	).length;
 	const changed = storageChanged || flaggedChanged;
-
-	if (!options.dryRun && !options.restore && flaggedChanged) {
-		await withFlaggedStorageTransaction(async (loadedFlaggedStorage, persist) => {
-			const nextFlaggedStorage = structuredClone(loadedFlaggedStorage);
-			applyFlaggedStorageMutations(nextFlaggedStorage, flaggedMutations);
-			remainingFlagged = nextFlaggedStorage.accounts.length;
-			await persist(nextFlaggedStorage);
-		});
-	}
 
 	if (options.json) {
 		console.log(
@@ -1558,10 +1598,14 @@ export async function runFix(
 		await saveQuotaCache(workingQuotaCache);
 	}
 
-	if (anyChanged && options.dryRun) {
+	if (accountStorageChanged && options.dryRun) {
 		console.log(`\n${deps.stylePromptText("Preview only: no changes were saved.", "warning")}`);
-	} else if (anyChanged) {
+	} else if (accountStorageChanged) {
 		console.log(`\n${deps.stylePromptText("Saved updates.", "success")}`);
+	} else if (quotaCacheChanged) {
+		console.log(
+			`\n${deps.stylePromptText("Quota cache refreshed (no account storage changes).", "muted")}`,
+		);
 	} else {
 		console.log(`\n${deps.stylePromptText("No changes were needed.", "muted")}`);
 	}
