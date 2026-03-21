@@ -345,20 +345,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		options?: { title?: string; duration?: number },
 	): Promise<void> => showRuntimeToast(client, message, variant, options);
 
-	const hydrateEmails = async (
-		storage: AccountStorageV3 | null,
-	): Promise<AccountStorageV3 | null> =>
-		hydrateRuntimeEmails(storage, {
-			queuedRefresh,
-			extractAccountId,
-			sanitizeEmail,
-			extractAccountEmail,
-			shouldUpdateAccountIdFromToken,
-			saveAccounts,
-			logWarn,
-			pluginName: PLUGIN_NAME,
-		});
-
 	const applyUiRuntimeFromConfig = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): UiRuntimeOptions => {
@@ -2396,7 +2382,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						const runAccountCheck = async (
 							deepProbe: boolean,
 						): Promise<void> => {
-							const loadedStorage = await hydrateEmails(await loadAccounts());
+							const loadedStorage = await hydrateRuntimeEmails(await loadAccounts(), {
+							queuedRefresh,
+							extractAccountId,
+							sanitizeEmail,
+							extractAccountEmail,
+							shouldUpdateAccountIdFromToken,
+							saveAccounts,
+							logWarn,
+							pluginName: PLUGIN_NAME,
+						});
 							const workingStorage = loadedStorage
 								? {
 										...loadedStorage,
@@ -2807,7 +2802,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 						if (!explicitLoginMode) {
 							while (true) {
-								const loadedStorage = await hydrateEmails(await loadAccounts());
+								const loadedStorage = await hydrateRuntimeEmails(await loadAccounts(), {
+							queuedRefresh,
+							extractAccountId,
+							sanitizeEmail,
+							extractAccountEmail,
+							shouldUpdateAccountIdFromToken,
+							saveAccounts,
+							logWarn,
+							pluginName: PLUGIN_NAME,
+						});
 								const workingStorage = loadedStorage
 									? {
 											...loadedStorage,
