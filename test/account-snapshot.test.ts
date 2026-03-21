@@ -28,6 +28,9 @@ describe("statSnapshot", () => {
 			expect.objectContaining({ path: "locked.json" }),
 		);
 	});
+});
+
+describe("describeAccountSnapshot", () => {
 	it("marks schema-error snapshots invalid while preserving metadata", async () => {
 		await expect(
 			describeAccountSnapshot("accounts.json", "accounts-primary", {
@@ -72,9 +75,6 @@ describe("statSnapshot", () => {
 		});
 	});
 
-});
-
-describe("describeAccountSnapshot", () => {
 	it("returns metadata for valid snapshots", async () => {
 		await expect(
 			describeAccountSnapshot("accounts.json", "accounts-primary", {
