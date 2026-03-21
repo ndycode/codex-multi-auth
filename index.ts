@@ -194,6 +194,10 @@ import {
 	isFlaggableFailure,
 } from "./lib/runtime/account-check-helpers.js";
 import {
+	invalidateAccountManagerCacheState,
+	reloadAccountManagerFromDiskState,
+} from "./lib/runtime/account-manager-cache.js";
+import {
 	type TokenSuccessWithAccount as AccountPoolTokenSuccessWithAccount,
 	persistAccountPoolResults,
 } from "./lib/runtime/account-pool.js";
@@ -204,7 +208,12 @@ import {
 	resolveActiveIndex,
 } from "./lib/runtime/account-status.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
+import { handleRuntimeEvent } from "./lib/runtime/event-handler.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
+import {
+	applyPreemptiveQuotaSettingsFromConfig,
+	resolveUiRuntimeFromConfig,
+} from "./lib/runtime/quota-settings.js";
 import {
 	ensureLiveAccountSyncState,
 	ensureRefreshGuardianState,
@@ -500,31 +509,33 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	const resolveUiRuntime = (): UiRuntimeOptions => {
-		return applyUiRuntimeFromConfig(loadPluginConfig(), setUiRuntimeOptions);
+		return resolveUiRuntimeFromConfig(loadPluginConfig, (pluginConfig) =>
+			applyUiRuntimeFromConfig(pluginConfig, setUiRuntimeOptions),
+		);
 	};
 
 	const invalidateAccountManagerCache = (): void => {
-		cachedAccountManager = null;
-		accountManagerPromise = null;
+		const next = invalidateAccountManagerCacheState();
+		cachedAccountManager = next.cachedAccountManager;
+		accountManagerPromise = next.accountManagerPromise;
 	};
 
 	const reloadAccountManagerFromDisk = async (
 		authFallback?: OAuthAuthDetails,
 	): Promise<AccountManager> => {
-		if (accountReloadInFlight) {
-			return accountReloadInFlight;
-		}
-		accountReloadInFlight = (async () => {
-			const reloaded = await AccountManager.loadFromDisk(authFallback);
-			cachedAccountManager = reloaded;
-			accountManagerPromise = Promise.resolve(reloaded);
-			return reloaded;
-		})();
-		try {
-			return await accountReloadInFlight;
-		} finally {
-			accountReloadInFlight = null;
-		}
+		accountReloadInFlight = reloadAccountManagerFromDiskState({
+			currentReloadInFlight: accountReloadInFlight,
+			loadFromDisk: (fallback) => AccountManager.loadFromDisk(fallback),
+			authFallback,
+			onLoaded: (reloaded) => {
+				cachedAccountManager = reloaded;
+				accountManagerPromise = Promise.resolve(reloaded);
+			},
+			onSettled: () => {
+				accountReloadInFlight = null;
+			},
+		});
+		return accountReloadInFlight;
 	};
 
 	const applyAccountStorageScope = (
@@ -611,85 +622,38 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 	const applyPreemptiveQuotaSettings = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void => {
-		preemptiveQuotaScheduler.configure({
-			enabled: getPreemptiveQuotaEnabled(pluginConfig),
-			remainingPercentThresholdPrimary:
-				getPreemptiveQuotaRemainingPercent5h(pluginConfig),
-			remainingPercentThresholdSecondary:
-				getPreemptiveQuotaRemainingPercent7d(pluginConfig),
-			maxDeferralMs: getPreemptiveQuotaMaxDeferralMs(pluginConfig),
+	): void =>
+		applyPreemptiveQuotaSettingsFromConfig(pluginConfig, {
+			configure: (options) => preemptiveQuotaScheduler.configure(options),
+			getPreemptiveQuotaEnabled,
+			getPreemptiveQuotaRemainingPercent5h,
+			getPreemptiveQuotaRemainingPercent7d,
+			getPreemptiveQuotaMaxDeferralMs,
 		});
-	};
 
 	// Event handler for session recovery and account selection
 	const eventHandler = async (input: {
 		event: { type: string; properties?: unknown };
-	}) => {
-		try {
-			const { event } = input;
-			// Handle TUI account selection events
-			// Accepts generic selection events with an index property
-			if (
-				event.type === "account.select" ||
-				event.type === "openai.account.select"
-			) {
-				const props = event.properties as {
-					index?: number;
-					accountIndex?: number;
-					provider?: string;
-				};
-				// Filter by provider if specified
-				if (
-					props.provider &&
-					props.provider !== "openai" &&
-					props.provider !== PROVIDER_ID
-				) {
-					return;
-				}
-
-				const index = props.index ?? props.accountIndex;
-				if (typeof index === "number") {
-					const storage = await loadAccounts();
-					if (!storage || index < 0 || index >= storage.accounts.length) {
-						return;
-					}
-
-					const now = Date.now();
-					const account = storage.accounts[index];
-					if (account) {
-						account.lastUsed = now;
-						account.lastSwitchReason = "rotation";
-					}
-					storage.activeIndex = index;
-					storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-					for (const family of MODEL_FAMILIES) {
-						storage.activeIndexByFamily[family] = index;
-					}
-
-					await saveAccounts(storage);
-					if (cachedAccountManager) {
-						await cachedAccountManager.syncCodexCliActiveSelectionForIndex(
-							index,
-						);
-					}
-					lastCodexCliActiveSyncIndex = index;
-
-					// Reload manager from disk so we don't overwrite newer rotated
-					// refresh tokens with stale in-memory state.
-					if (cachedAccountManager) {
-						await reloadAccountManagerFromDisk();
-					}
-
-					await showToast(`Switched to account ${index + 1}`, "info");
-				}
-			}
-		} catch (error) {
-			logDebug(
-				`[${PLUGIN_NAME}] Event handler error: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	};
+	}) =>
+		handleRuntimeEvent({
+			input,
+			providerId: PROVIDER_ID,
+			modelFamilies: MODEL_FAMILIES,
+			loadAccounts,
+			saveAccounts,
+			hasCachedAccountManager: () => !!cachedAccountManager,
+			syncCodexCliActiveSelectionForIndex: async (index) => {
+				if (!cachedAccountManager) return;
+				await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
+			},
+			setLastCodexCliActiveSyncIndex: (index) => {
+				lastCodexCliActiveSyncIndex = index;
+			},
+			reloadAccountManagerFromDisk: () => reloadAccountManagerFromDisk(),
+			showToast: (message, variant) => showToast(message, variant),
+			logDebug,
+			pluginName: PLUGIN_NAME,
+		});
 
 	// Initialize runtime UI settings once on plugin load; auth/tools refresh this dynamically.
 	resolveUiRuntime();
