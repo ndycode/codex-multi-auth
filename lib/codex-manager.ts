@@ -2667,41 +2667,6 @@ function upsertRecoveredFlaggedAccount(
 	};
 }
 
-async function runFix(args: string[]): Promise<number> {
-	return runFixCommand(args, {
-		setStoragePath,
-		loadAccounts,
-		parseFixArgs,
-		printFixUsage,
-		loadQuotaCache,
-		saveQuotaCache,
-		cloneQuotaCacheData,
-		buildQuotaEmailFallbackState,
-		updateQuotaCacheForAccount,
-		pruneUnsafeQuotaEmailCacheEntry,
-		resolveActiveIndex,
-		hasUsableAccessToken,
-		fetchCodexQuotaSnapshot,
-		formatCompactQuotaSnapshot,
-		normalizeFailureDetail,
-		hasLikelyInvalidRefreshToken,
-		queuedRefresh,
-		sanitizeEmail,
-		extractAccountEmail,
-		extractAccountId,
-		applyTokenAccountIdentity,
-		isHardRefreshFailure,
-		evaluateForecastAccounts,
-		recommendForecastAccount,
-		saveAccounts,
-		formatAccountLabel,
-		stylePromptText,
-		formatResultSummary,
-		styleAccountDetailText,
-		defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-	});
-}
-
 interface DoctorFixAction {
 	key: string;
 	message: string;
@@ -3022,7 +2987,38 @@ async function runAuthLogin(args: string[]): Promise<number> {
 						"Auto-Fix",
 						"Checking and fixing common issues",
 						async () => {
-							await runFix(["--live"]);
+							await runFixCommand(["--live"], {
+								setStoragePath,
+								loadAccounts,
+								parseFixArgs,
+								printFixUsage,
+								loadQuotaCache,
+								saveQuotaCache,
+								cloneQuotaCacheData,
+								buildQuotaEmailFallbackState,
+								updateQuotaCacheForAccount,
+								pruneUnsafeQuotaEmailCacheEntry,
+								resolveActiveIndex,
+								hasUsableAccessToken,
+								fetchCodexQuotaSnapshot,
+								formatCompactQuotaSnapshot,
+								normalizeFailureDetail,
+								hasLikelyInvalidRefreshToken,
+								queuedRefresh,
+								sanitizeEmail,
+								extractAccountEmail,
+								extractAccountId,
+								applyTokenAccountIdentity,
+								isHardRefreshFailure,
+								evaluateForecastAccounts,
+								recommendForecastAccount,
+								saveAccounts,
+								formatAccountLabel,
+								stylePromptText,
+								formatResultSummary,
+								styleAccountDetailText,
+								defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+							});
 						},
 						displaySettings,
 					);
@@ -3568,7 +3564,38 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		});
 	}
 	if (command === "fix") {
-		return runFix(rest);
+		return runFixCommand(rest, {
+			setStoragePath,
+			loadAccounts,
+			parseFixArgs,
+			printFixUsage,
+			loadQuotaCache,
+			saveQuotaCache,
+			cloneQuotaCacheData,
+			buildQuotaEmailFallbackState,
+			updateQuotaCacheForAccount,
+			pruneUnsafeQuotaEmailCacheEntry,
+			resolveActiveIndex,
+			hasUsableAccessToken,
+			fetchCodexQuotaSnapshot,
+			formatCompactQuotaSnapshot,
+			normalizeFailureDetail,
+			hasLikelyInvalidRefreshToken,
+			queuedRefresh,
+			sanitizeEmail,
+			extractAccountEmail,
+			extractAccountId,
+			applyTokenAccountIdentity,
+			isHardRefreshFailure,
+			evaluateForecastAccounts,
+			recommendForecastAccount,
+			saveAccounts,
+			formatAccountLabel,
+			stylePromptText,
+			formatResultSummary,
+			styleAccountDetailText,
+			defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+		});
 	}
 	if (command === "doctor") {
 		return runDoctorCommand(rest, {
