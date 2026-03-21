@@ -21,6 +21,14 @@ export {
 } from "./storage/identity.js";
 
 import {
+	getFlaggedAccountsPath as buildFlaggedAccountsPath,
+	getLegacyFlaggedAccountsPath as buildLegacyFlaggedAccountsPath,
+	getAccountsBackupPath,
+	getAccountsBackupRecoveryCandidates,
+	getAccountsWalPath,
+	getIntentionalResetMarkerPath,
+} from "./storage/file-paths.js";
+import {
 	type AccountIdentityRef,
 	toAccountIdentityRef,
 } from "./storage/identity.js";
@@ -57,7 +65,6 @@ const FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-flagged-accounts.json";
 const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
 const ACCOUNTS_BACKUP_SUFFIX = ".bak";
 const ACCOUNTS_WAL_SUFFIX = ".wal";
-const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
 const RESET_MARKER_SUFFIX = ".reset-intent";
@@ -356,25 +363,6 @@ export function setStorageBackupEnabled(enabled: boolean): void {
 	storageBackupEnabled = enabled;
 }
 
-function getAccountsBackupPath(path: string): string {
-	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
-}
-
-function getAccountsBackupPathAtIndex(path: string, index: number): string {
-	if (index <= 0) {
-		return getAccountsBackupPath(path);
-	}
-	return `${path}${ACCOUNTS_BACKUP_SUFFIX}.${index}`;
-}
-
-function getAccountsBackupRecoveryCandidates(path: string): string[] {
-	const candidates: string[] = [];
-	for (let i = 0; i < ACCOUNTS_BACKUP_HISTORY_DEPTH; i += 1) {
-		candidates.push(getAccountsBackupPathAtIndex(path, i));
-	}
-	return candidates;
-}
-
 async function getAccountsBackupRecoveryCandidatesWithDiscovery(
 	path: string,
 ): Promise<string[]> {
@@ -412,10 +400,6 @@ async function getAccountsBackupRecoveryCandidatesWithDiscovery(
 		a.localeCompare(b, undefined, { sensitivity: "base" }),
 	);
 	return [...knownCandidates, ...discoveredOrdered];
-}
-
-function getAccountsWalPath(path: string): string {
-	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
 }
 
 async function copyFileWithRetry(
@@ -592,10 +576,6 @@ async function cleanupStaleRotatingBackupArtifacts(
 
 function computeSha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
-}
-
-function getIntentionalResetMarkerPath(path: string): string {
-	return `${path}${RESET_MARKER_SUFFIX}`;
 }
 
 function createEmptyStorageWithMetadata(
@@ -985,11 +965,14 @@ export async function exportNamedBackup(
 }
 
 export function getFlaggedAccountsPath(): string {
-	return join(dirname(getStoragePath()), FLAGGED_ACCOUNTS_FILE_NAME);
+	return buildFlaggedAccountsPath(getStoragePath(), FLAGGED_ACCOUNTS_FILE_NAME);
 }
 
 function getLegacyFlaggedAccountsPath(): string {
-	return join(dirname(getStoragePath()), LEGACY_FLAGGED_ACCOUNTS_FILE_NAME);
+	return buildLegacyFlaggedAccountsPath(
+		getStoragePath(),
+		LEGACY_FLAGGED_ACCOUNTS_FILE_NAME,
+	);
 }
 
 async function migrateLegacyProjectStorageIfNeeded(
