@@ -52,3 +52,9 @@ export function buildMetadataSection(
 		snapshots,
 	};
 }
+
+export type SnapshotStats = {
+	exists: boolean;
+	bytes?: number;
+	mtimeMs?: number;
+};

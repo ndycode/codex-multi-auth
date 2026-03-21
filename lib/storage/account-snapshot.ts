@@ -1,16 +1,10 @@
-import type { BackupSnapshotMetadata } from "./backup-metadata.js";
-
-type SnapshotStats = {
-	exists: boolean;
-	bytes?: number;
-	mtimeMs?: number;
-};
+import type { BackupSnapshotMetadata, SnapshotStats } from "./backup-metadata.js";
 
 export async function statSnapshot(
 	path: string,
 	deps: {
 		stat: typeof import("node:fs").promises.stat;
-		logWarn?: (message: string, meta: Record<string, unknown>) => void;
+		logWarn: (message: string, meta: Record<string, unknown>) => void;
 	},
 ): Promise<SnapshotStats> {
 	try {
@@ -19,7 +13,7 @@ export async function statSnapshot(
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT") {
-			deps.logWarn?.("Failed to stat backup candidate", {
+			deps.logWarn("Failed to stat backup candidate", {
 				path,
 				error: String(error),
 			});
@@ -39,7 +33,7 @@ export async function describeAccountSnapshot(
 			schemaErrors: string[];
 			storedVersion?: unknown;
 		}>;
-		logWarn?: (message: string, meta: Record<string, unknown>) => void;
+		logWarn: (message: string, meta: Record<string, unknown>) => void;
 	},
 ): Promise<BackupSnapshotMetadata> {
 	const stats = await deps.statSnapshot(path);
@@ -63,12 +57,13 @@ export async function describeAccountSnapshot(
 		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			deps.logWarn?.("Failed to inspect account snapshot", {
-				path,
-				error: String(error),
-			});
+		if (code === "ENOENT") {
+			return { kind, path, index: deps.index, exists: false, valid: false };
 		}
+		deps.logWarn("Failed to inspect account snapshot", {
+			path,
+			error: String(error),
+		});
 		return {
 			kind,
 			path,

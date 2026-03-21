@@ -1,11 +1,5 @@
 import type { FlaggedAccountStorageV1 } from "../storage.js";
-import type { BackupSnapshotMetadata } from "./backup-metadata.js";
-
-type SnapshotStats = {
-	exists: boolean;
-	bytes?: number;
-	mtimeMs?: number;
-};
+import type { BackupSnapshotMetadata, SnapshotStats } from "./backup-metadata.js";
 
 export async function describeAccountsWalSnapshot(
 	path: string,
