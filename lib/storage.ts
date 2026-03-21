@@ -46,6 +46,10 @@ import {
 	toAccountIdentityRef,
 } from "./storage/identity.js";
 import {
+	loadNormalizedStorageFromPathOrNull,
+	mergeStorageForMigration,
+} from "./storage/migration-helpers.js";
+import {
 	type AccountMetadataV1,
 	type AccountMetadataV3,
 	type AccountStorageV1,
@@ -747,9 +751,13 @@ async function migrateLegacyProjectStorageIfNeeded(
 	let migrated = false;
 
 	for (const legacyPath of existingCandidatePaths) {
-		const legacyStorage = await loadNormalizedStorageFromPath(
+		const legacyStorage = await loadNormalizedStorageFromPathOrNull(
 			legacyPath,
 			"legacy account storage",
+			{
+				loadAccountsFromPath,
+				logWarn: (message, meta) => log.warn(message, meta),
+			},
 		);
 		if (!legacyStorage) {
 			continue;
@@ -758,6 +766,7 @@ async function migrateLegacyProjectStorageIfNeeded(
 		const mergedStorage = mergeStorageForMigration(
 			targetStorage,
 			legacyStorage,
+			{ normalizeAccountStorage },
 		);
 		const fallbackStorage = targetStorage ?? legacyStorage;
 
@@ -813,45 +822,10 @@ async function loadNormalizedStorageFromPath(
 	path: string,
 	label: string,
 ): Promise<AccountStorageV3 | null> {
-	try {
-		const { normalized, schemaErrors } = await loadAccountsFromPath(path);
-		if (schemaErrors.length > 0) {
-			log.warn(`${label} schema validation warnings`, {
-				path,
-				errors: schemaErrors.slice(0, 5),
-			});
-		}
-		return normalized;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn(`Failed to load ${label}`, {
-				path,
-				error: String(error),
-			});
-		}
-		return null;
-	}
-}
-
-function mergeStorageForMigration(
-	current: AccountStorageV3 | null,
-	incoming: AccountStorageV3,
-): AccountStorageV3 {
-	if (!current) {
-		return incoming;
-	}
-
-	const merged = normalizeAccountStorage({
-		version: 3,
-		activeIndex: current.activeIndex,
-		activeIndexByFamily: current.activeIndexByFamily,
-		accounts: [...current.accounts, ...incoming.accounts],
+	return loadNormalizedStorageFromPathOrNull(path, label, {
+		loadAccountsFromPath,
+		logWarn: (message, meta) => log.warn(message, meta),
 	});
-	if (!merged) {
-		return current;
-	}
-	return merged;
 }
 
 function selectNewestAccount<T extends AccountLike>(
