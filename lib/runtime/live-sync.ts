@@ -15,6 +15,8 @@ export async function ensureRuntimeLiveAccountSync<
 	getStoragePath: () => string;
 	currentSync: TSync | null;
 	currentPath: string | null;
+	currentCleanupRegistered: boolean;
+	getCurrentSync: () => TSync | null;
 	createSync: (
 		onChange: () => Promise<void>,
 		options: { debounceMs: number; pollIntervalMs: number },
@@ -27,14 +29,23 @@ export async function ensureRuntimeLiveAccountSync<
 	registerCleanup: (cleanup: () => void) => void;
 	logWarn: (message: string) => void;
 	pluginName: string;
-}): Promise<{ sync: TSync | null; path: string | null }> {
+}): Promise<{
+	sync: TSync | null;
+	path: string | null;
+	cleanupRegistered: boolean;
+}> {
 	if (!deps.getLiveAccountSync(deps.pluginConfig)) {
 		deps.currentSync?.stop();
-		return { sync: null, path: null };
+		return {
+			sync: null,
+			path: null,
+			cleanupRegistered: deps.currentCleanupRegistered,
+		};
 	}
 
 	const targetPath = deps.getStoragePath();
 	let sync = deps.currentSync;
+	let cleanupRegistered = deps.currentCleanupRegistered;
 	if (!sync) {
 		sync = deps.createSync(
 			async () => {
@@ -45,9 +56,12 @@ export async function ensureRuntimeLiveAccountSync<
 				pollIntervalMs: deps.getLiveAccountSyncPollMs(deps.pluginConfig),
 			},
 		);
-		deps.registerCleanup(() => {
-			sync?.stop();
-		});
+		if (!cleanupRegistered) {
+			deps.registerCleanup(() => {
+				deps.getCurrentSync()?.stop();
+			});
+			cleanupRegistered = true;
+		}
 	}
 
 	let nextPath = deps.currentPath;
@@ -72,5 +86,5 @@ export async function ensureRuntimeLiveAccountSync<
 		}
 	}
 
-	return { sync, path: nextPath };
+	return { sync, path: nextPath, cleanupRegistered };
 }

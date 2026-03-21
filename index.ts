@@ -259,6 +259,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let perProjectStorageWarningShown = false;
 	let liveAccountSync: LiveAccountSync | null = null;
 	let liveAccountSyncPath: string | null = null;
+	let liveAccountSyncCleanupRegistered = false;
 	let refreshGuardian: RefreshGuardian | null = null;
 	let refreshGuardianConfigKey: string | null = null;
 	let sessionAffinityStore: SessionAffinityStore | null =
@@ -468,6 +469,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			getStoragePath,
 			currentSync: liveAccountSync,
 			currentPath: liveAccountSyncPath,
+			currentCleanupRegistered: liveAccountSyncCleanupRegistered,
+			getCurrentSync: () => liveAccountSync,
 			createSync: (onChange, options) => new LiveAccountSync(onChange, options),
 			reloadAccountManagerFromDisk,
 			getLiveAccountSyncDebounceMs,
@@ -478,6 +481,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		});
 		liveAccountSync = ensured.sync;
 		liveAccountSyncPath = ensured.path;
+		liveAccountSyncCleanupRegistered = ensured.cleanupRegistered;
 	};
 
 	const ensureRefreshGuardian = (
