@@ -3,6 +3,19 @@ import type { BackupSnapshotMetadata } from "./backup-metadata.js";
 
 type BackupSnapshotKind = BackupSnapshotMetadata["kind"];
 
+function normalizeSnapshotPath(path: string): string {
+	return path.replaceAll("\\", "/");
+}
+
+function resolveLatestSnapshot(backupMetadata: BackupMetadata): BackupSnapshotMetadata | undefined {
+	const latestValidPath = backupMetadata.accounts.latestValidPath;
+	if (!latestValidPath) return undefined;
+	const normalizedLatest = normalizeSnapshotPath(latestValidPath);
+	return backupMetadata.accounts.snapshots.find(
+		(snapshot) => normalizeSnapshotPath(snapshot.path) === normalizedLatest,
+	);
+}
+
 export async function collectBackupMetadata(deps: {
 	storagePath: string;
 	flaggedPath: string;
@@ -99,12 +112,7 @@ export function buildRestoreAssessment(deps: {
 			storagePath: deps.storagePath,
 			restoreEligible: true,
 			restoreReason: "missing-storage",
-			latestSnapshot: deps.backupMetadata.accounts.latestValidPath
-				? deps.backupMetadata.accounts.snapshots.find(
-						(snapshot) =>
-							snapshot.path === deps.backupMetadata.accounts.latestValidPath,
-					)
-				: undefined,
+			latestSnapshot: resolveLatestSnapshot(deps.backupMetadata),
 			backupMetadata: deps.backupMetadata,
 		};
 	}
@@ -113,19 +121,14 @@ export function buildRestoreAssessment(deps: {
 			storagePath: deps.storagePath,
 			restoreEligible: true,
 			restoreReason: "empty-storage",
-			latestSnapshot: primarySnapshot,
+			latestSnapshot: resolveLatestSnapshot(deps.backupMetadata) ?? primarySnapshot,
 			backupMetadata: deps.backupMetadata,
 		};
 	}
 	return {
 		storagePath: deps.storagePath,
 		restoreEligible: false,
-		latestSnapshot: deps.backupMetadata.accounts.latestValidPath
-			? deps.backupMetadata.accounts.snapshots.find(
-					(snapshot) =>
-						snapshot.path === deps.backupMetadata.accounts.latestValidPath,
-				)
-			: undefined,
+		latestSnapshot: resolveLatestSnapshot(deps.backupMetadata),
 		backupMetadata: deps.backupMetadata,
 	};
 }
