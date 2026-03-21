@@ -57,6 +57,7 @@ import {
 	collectNamedBackups,
 	type NamedBackupSummary,
 } from "./storage/named-backups.js";
+import { getNamedBackupsEntry } from "./storage/named-backups-entry.js";
 import {
 	findProjectRoot,
 	getConfigDir,
@@ -789,7 +790,9 @@ export function buildNamedBackupPath(name: string): string {
 }
 
 export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
-	return collectNamedBackups(getStoragePath(), {
+	return getNamedBackupsEntry({
+		getStoragePath,
+		collectNamedBackups,
 		loadAccountsFromPath: (path) =>
 			loadAccountsFromPath(path, {
 				normalizeAccountStorage,
