@@ -31,6 +31,7 @@ import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, type SelectOptions, select } from "../ui/select.js";
 import { getUnifiedSettingsPath } from "../unified-settings.js";
 import { sleep } from "../utils.js";
+import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
 import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
 
 type DashboardDisplaySettingKey =
@@ -164,16 +165,6 @@ type StatuslineConfigAction =
 	| { type: "toggle"; key: DashboardStatuslineField }
 	| { type: "move-up"; key: DashboardStatuslineField }
 	| { type: "move-down"; key: DashboardStatuslineField }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
-
-type BehaviorConfigAction =
-	| { type: "set-delay"; delayMs: number }
-	| { type: "toggle-pause" }
-	| { type: "toggle-menu-limit-fetch" }
-	| { type: "toggle-menu-fetch-status" }
-	| { type: "set-menu-quota-ttl"; ttlMs: number }
 	| { type: "reset" }
 	| { type: "save" }
 	| { type: "cancel" };
@@ -1801,191 +1792,16 @@ function formatDelayLabel(delayMs: number): string {
 async function promptBehaviorSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	if (!input.isTTY || !output.isTTY) return null;
-	const ui = getUiRuntimeOptions();
-	let draft = cloneDashboardSettings(initial);
-	let focus: BehaviorConfigAction = {
-		type: "set-delay",
-		delayMs: draft.actionAutoReturnMs ?? 2_000,
-	};
-
-	while (true) {
-		const currentDelay = draft.actionAutoReturnMs ?? 2_000;
-		const pauseOnKey = draft.actionPauseOnKey ?? true;
-		const autoFetchLimits = draft.menuAutoFetchLimits ?? true;
-		const fetchStatusVisible = draft.menuShowFetchStatus ?? true;
-		const menuQuotaTtlMs = draft.menuQuotaTtlMs ?? 5 * 60_000;
-		const delayItems: MenuItem<BehaviorConfigAction>[] =
-			AUTO_RETURN_OPTIONS_MS.map((delayMs) => {
-				const color: MenuItem<BehaviorConfigAction>["color"] =
-					currentDelay === delayMs ? "green" : "yellow";
-				return {
-					label: `${currentDelay === delayMs ? "[x]" : "[ ]"} ${formatDelayLabel(delayMs)}`,
-					hint:
-						delayMs === 1_000
-							? "Fastest loop for frequent actions."
-							: delayMs === 2_000
-								? "Balanced default for most users."
-								: "More time to read action output.",
-					value: { type: "set-delay", delayMs },
-					color,
-				};
-			});
-		const pauseColor: MenuItem<BehaviorConfigAction>["color"] = pauseOnKey
-			? "green"
-			: "yellow";
-		const items: MenuItem<BehaviorConfigAction>[] = [
-			{
-				label: UI_COPY.settings.actionTiming,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...delayItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: `${pauseOnKey ? "[x]" : "[ ]"} Pause on key press`,
-				hint: "Press any key to stop auto-return.",
-				value: { type: "toggle-pause" },
-				color: pauseColor,
-			},
-			{
-				label: `${autoFetchLimits ? "[x]" : "[ ]"} Auto-fetch limits on menu open (5m cache)`,
-				hint: "Refreshes account limits automatically when opening the menu.",
-				value: { type: "toggle-menu-limit-fetch" },
-				color: autoFetchLimits ? "green" : "yellow",
-			},
-			{
-				label: `${fetchStatusVisible ? "[x]" : "[ ]"} Show limit refresh status`,
-				hint: "Shows background fetch progress like [2/7] in menu subtitle.",
-				value: { type: "toggle-menu-fetch-status" },
-				color: fetchStatusVisible ? "green" : "yellow",
-			},
-			{
-				label: `Limit cache TTL: ${formatMenuQuotaTtl(menuQuotaTtlMs)}`,
-				hint: "How fresh cached quota data must be before refresh runs.",
-				value: { type: "set-menu-quota-ttl", ttlMs: menuQuotaTtlMs },
-				color: "yellow",
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-		const initialCursor = items.findIndex((item) => {
-			const value = item.value;
-			if (value.type !== focus.type) return false;
-			if (value.type === "set-delay" && focus.type === "set-delay") {
-				return value.delayMs === focus.delayMs;
-			}
-			return true;
-		});
-
-		const result = await select<BehaviorConfigAction>(items, {
-			message: UI_COPY.settings.behaviorTitle,
-			subtitle: UI_COPY.settings.behaviorSubtitle,
-			help: UI_COPY.settings.behaviorHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const item = items[cursor];
-				if (item && !item.separator && item.kind !== "heading") {
-					focus = item.value;
-				}
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				if (lower === "p") return { type: "toggle-pause" };
-				if (lower === "l") return { type: "toggle-menu-limit-fetch" };
-				if (lower === "f") return { type: "toggle-menu-fetch-status" };
-				if (lower === "t")
-					return { type: "set-menu-quota-ttl", ttlMs: menuQuotaTtlMs };
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= AUTO_RETURN_OPTIONS_MS.length
-				) {
-					const delayMs = AUTO_RETURN_OPTIONS_MS[parsed - 1];
-					if (typeof delayMs === "number")
-						return { type: "set-delay", delayMs };
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "cancel") return null;
-		if (result.type === "save") return draft;
-		if (result.type === "reset") {
-			draft = applyDashboardDefaultsForKeys(draft, BEHAVIOR_PANEL_KEYS);
-			focus = { type: "set-delay", delayMs: draft.actionAutoReturnMs ?? 2_000 };
-			continue;
-		}
-		if (result.type === "toggle-pause") {
-			draft = {
-				...draft,
-				actionPauseOnKey: !(draft.actionPauseOnKey ?? true),
-			};
-			focus = result;
-			continue;
-		}
-		if (result.type === "toggle-menu-limit-fetch") {
-			draft = {
-				...draft,
-				menuAutoFetchLimits: !(draft.menuAutoFetchLimits ?? true),
-			};
-			focus = result;
-			continue;
-		}
-		if (result.type === "toggle-menu-fetch-status") {
-			draft = {
-				...draft,
-				menuShowFetchStatus: !(draft.menuShowFetchStatus ?? true),
-			};
-			focus = result;
-			continue;
-		}
-		if (result.type === "set-menu-quota-ttl") {
-			const currentIndex = MENU_QUOTA_TTL_OPTIONS_MS.findIndex(
-				(value) => value === menuQuotaTtlMs,
-			);
-			const nextIndex =
-				currentIndex < 0
-					? 0
-					: (currentIndex + 1) % MENU_QUOTA_TTL_OPTIONS_MS.length;
-			const nextTtl =
-				MENU_QUOTA_TTL_OPTIONS_MS[nextIndex] ??
-				MENU_QUOTA_TTL_OPTIONS_MS[0] ??
-				menuQuotaTtlMs;
-			draft = {
-				...draft,
-				menuQuotaTtlMs: nextTtl,
-			};
-			focus = { type: "set-menu-quota-ttl", ttlMs: nextTtl };
-			continue;
-		}
-		draft = {
-			...draft,
-			actionAutoReturnMs: result.delayMs,
-		};
-		focus = result;
-	}
+	return promptBehaviorSettingsPanel(initial, {
+		cloneDashboardSettings,
+		applyDashboardDefaultsForKeys,
+		formatDelayLabel,
+		formatMenuQuotaTtl,
+		AUTO_RETURN_OPTIONS_MS,
+		MENU_QUOTA_TTL_OPTIONS_MS,
+		BEHAVIOR_PANEL_KEYS,
+		UI_COPY,
+	});
 }
 
 async function promptThemeSettings(
