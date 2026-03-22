@@ -24,19 +24,19 @@ afterEach(async () => {
 });
 
 function createRuntimeBenchmarkFixture(): {
-	fixtureRoot: string;
+	root: string;
 	scriptCopy: string;
 } {
-	const fixtureRoot = mkdtempSync(join(tmpdir(), "runtime-bench-fixture-"));
-	tempRoots.push(fixtureRoot);
+	const root = mkdtempSync(join(tmpdir(), "runtime-bench-fixture-"));
+	tempRoots.push(root);
 
-	const scriptsDir = join(fixtureRoot, "scripts");
-	const distRequestDir = join(fixtureRoot, "dist", "lib", "request");
-	const distHelpersDir = join(distRequestDir, "helpers");
-	const distLibDir = join(fixtureRoot, "dist", "lib");
+	const scriptsDir = join(root, "scripts");
+	const distRequestDir = join(root, "dist", "lib", "request");
+	const distRequestHelpersDir = join(distRequestDir, "helpers");
+	const distLibDir = join(root, "dist", "lib");
 
 	mkdirSync(scriptsDir, { recursive: true });
-	mkdirSync(distHelpersDir, { recursive: true });
+	mkdirSync(distRequestHelpersDir, { recursive: true });
 	mkdirSync(distLibDir, { recursive: true });
 
 	const scriptCopy = join(scriptsDir, "benchmark-runtime-path.mjs");
@@ -48,7 +48,7 @@ function createRuntimeBenchmarkFixture(): {
 		"utf8",
 	);
 	writeFileSync(
-		join(distHelpersDir, "tool-utils.js"),
+		join(distRequestHelpersDir, "tool-utils.js"),
 		"export function cleanupToolDefinitions(tools) { return Array.isArray(tools) ? tools : []; }\n",
 		"utf8",
 	);
@@ -63,18 +63,18 @@ function createRuntimeBenchmarkFixture(): {
 		"utf8",
 	);
 
-	return { fixtureRoot, scriptCopy };
+	return { root, scriptCopy };
 }
 
 describe("benchmark runtime path script", () => {
-	it("writes a benchmark payload with the expected result entries", () => {
-		const { fixtureRoot, scriptCopy } = createRuntimeBenchmarkFixture();
-		const outputPath = join(fixtureRoot, "runtime-benchmark.json");
+	it("writes a benchmark payload with expected result names", () => {
+		const { root, scriptCopy } = createRuntimeBenchmarkFixture();
+		const outputPath = join(root, "runtime-benchmark.json");
 
 		const result = spawnSync(
 			process.execPath,
 			[scriptCopy, "--iterations=1", `--output=${outputPath}`],
-			{ encoding: "utf8" },
+			{ cwd: root, encoding: "utf8", timeout: 15_000 },
 		);
 
 		expect(result.status).toBe(0);
