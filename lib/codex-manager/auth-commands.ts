@@ -33,7 +33,7 @@ import {
 } from "../storage.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "../types.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
-import type { ModelFamily } from "../prompts/codex.js";
+import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { UI_COPY } from "../ui/copy.js";
 import { confirm } from "../ui/confirm.js";
 import {
@@ -134,6 +134,27 @@ export interface AuthLoginCommandDeps extends AuthCommandHelpers {
 	};
 }
 
+function clampPreservedActiveIndexByFamily(
+	storage: AccountStorageV3,
+	targetIndex: number,
+): void {
+	const maxIndex = Math.max(0, storage.accounts.length - 1);
+	const existingByFamily = storage.activeIndexByFamily ?? {};
+	const nextByFamily: Record<string, number> = {};
+
+	for (const family of MODEL_FAMILIES) {
+		const candidate = existingByFamily[family];
+		if (typeof candidate !== "number" || !Number.isInteger(candidate)) continue;
+		nextByFamily[family] = Math.min(
+			maxIndex,
+			Math.max(0, candidate),
+		);
+	}
+
+	nextByFamily.codex = targetIndex;
+	storage.activeIndexByFamily = nextByFamily;
+}
+
 export async function persistAndSyncSelectedAccount({
 	storage,
 	targetIndex,
@@ -162,10 +183,12 @@ export async function persistAndSyncSelectedAccount({
 	}
 
 	storage.activeIndex = targetIndex;
-	if (!storage.activeIndexByFamily || !preserveActiveIndexByFamily) {
+	if (storage.activeIndexByFamily && preserveActiveIndexByFamily) {
+		clampPreservedActiveIndexByFamily(storage, targetIndex);
+	} else {
 		storage.activeIndexByFamily = {};
+		storage.activeIndexByFamily.codex = targetIndex;
 	}
-	storage.activeIndexByFamily.codex = targetIndex;
 
 	const switchNow = Date.now();
 	let syncAccessToken = account.accessToken;
