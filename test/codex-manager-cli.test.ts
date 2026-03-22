@@ -5775,6 +5775,78 @@ describe("codex manager cli commands", () => {
 		});
 	});
 
+	it("uses the same normalized backend model for live probes across report, forecast, best, and fix", async () => {
+		const now = Date.now();
+		const storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "probe@example.com",
+					accountId: "acc_probe",
+					refreshToken: "refresh-probe",
+					accessToken: "access-probe",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		loadQuotaCacheMock.mockResolvedValue({ byAccountId: {}, byEmail: {} });
+		saveQuotaCacheMock.mockResolvedValue(undefined);
+		queuedRefreshMock.mockResolvedValue({
+			type: "success",
+			access: "access-probe-refresh",
+			refresh: "refresh-probe-refresh",
+			expires: now + 7_200_000,
+			idToken: "id-probe-refresh",
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValue({
+			status: 200,
+			model: "gpt-5-mini",
+			primary: {
+				usedPercent: 10,
+				windowMinutes: 300,
+				resetAtMs: now + 1_000,
+			},
+			secondary: {
+				usedPercent: 5,
+				windowMinutes: 10080,
+				resetAtMs: now + 2_000,
+			},
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const commands = [
+			["auth", "report", "--live", "--json", "--model", "gpt-5.4-mini-high"],
+			["auth", "forecast", "--live", "--json", "--model", "gpt-5.4-mini-high"],
+			["auth", "best", "--live", "--model", "gpt-5.4-mini-high"],
+			["auth", "fix", "--live", "--json", "--model", "gpt-5.4-mini-high"],
+		];
+
+		for (const command of commands) {
+			fetchCodexQuotaSnapshotMock.mockClear();
+			const exitCode = await runCodexMultiAuthCli(command);
+
+			expect(exitCode).toBe(0);
+			expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalled();
+			for (const [request] of fetchCodexQuotaSnapshotMock.mock.calls) {
+				expect(request).toMatchObject({ model: "gpt-5-mini" });
+			}
+		}
+
+		expect(errorSpy).not.toHaveBeenCalled();
+		errorSpy.mockRestore();
+		warnSpy.mockRestore();
+		logSpy.mockRestore();
+	});
+
 	it("drives interactive settings hub across sections and persists dashboard/backend changes", async () => {
 		const now = Date.now();
 		setupInteractiveSettingsLogin(createSettingsStorage(now));

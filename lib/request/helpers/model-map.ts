@@ -180,8 +180,8 @@ function addGeneralAliases(): void {
 	addReasoningAliases("gpt-5-mini", "gpt-5-mini");
 	addReasoningAliases("gpt-5-nano", "gpt-5-nano");
 
-	addAlias("gpt-5.1-chat-latest", "gpt-5.1");
-	addAlias("gpt-5-chat-latest", "gpt-5");
+	addReasoningAliases("gpt-5.1-chat-latest", "gpt-5.1");
+	addReasoningAliases("gpt-5-chat-latest", "gpt-5");
 	addReasoningAliases("gpt-5.4-mini", "gpt-5-mini");
 	addReasoningAliases("gpt-5.4-nano", "gpt-5-nano");
 }
@@ -195,6 +195,7 @@ function addCodexAliases(): void {
 	addAlias("gpt_5_codex", "gpt-5-codex");
 
 	addReasoningAliases("gpt-5.1-codex-max", "gpt-5.1-codex-max");
+	addAlias("codex-max", "gpt-5.1-codex-max");
 
 	addAlias("codex-mini-latest", "gpt-5.1-codex-mini");
 	addReasoningAliases("gpt-5-codex-mini", "gpt-5.1-codex-mini");

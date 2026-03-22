@@ -61,6 +61,16 @@ describe("capability policy store", () => {
 		expect(snapshot?.successes).toBe(1);
 	});
 
+	it("keeps unknown model identifiers in separate capability buckets", () => {
+		const store = new CapabilityPolicyStore();
+		store.recordSuccess("id:acc_unknown", "claude-3-sonnet-high", 1_000);
+
+		expect(store.getSnapshot("id:acc_unknown", "claude-3-sonnet")).toMatchObject({
+			successes: 1,
+		});
+		expect(store.getSnapshot("id:acc_unknown", "gpt-5.4")).toBeNull();
+	});
+
 	it("ignores blank model and blank account writes", () => {
 		const store = new CapabilityPolicyStore();
 		store.recordSuccess("", "gpt-5-codex", 1_000);

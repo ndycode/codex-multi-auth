@@ -2609,6 +2609,7 @@ async function runForecast(args: string[]): Promise<number> {
 	}
 	const options = parsedArgs.options;
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
+	const probeModel = inspectRequestedModel(options.model?.trim() || "gpt-5-codex").normalized;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
@@ -2659,7 +2660,7 @@ async function runForecast(args: string[]): Promise<number> {
 			const liveQuota = await fetchCodexQuotaSnapshot({
 				accountId: probeAccountId,
 				accessToken: probeAccessToken,
-				model: options.model,
+				model: probeModel,
 			});
 			liveQuotaByIndex.set(i, liveQuota);
 			if (workingQuotaCache) {
@@ -3410,6 +3411,7 @@ async function runFix(args: string[]): Promise<number> {
 	}
 	const options = parsedArgs.options;
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
+	const probeModel = inspectRequestedModel(options.model?.trim() || "gpt-5-codex").normalized;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
@@ -3458,7 +3460,7 @@ async function runFix(args: string[]): Promise<number> {
 						const snapshot = await fetchCodexQuotaSnapshot({
 							accountId: probeAccountId,
 							accessToken: currentAccessToken,
-							model: options.model,
+							model: probeModel,
 						});
 						if (workingQuotaCache) {
 							quotaCacheChanged =
@@ -3554,7 +3556,7 @@ async function runFix(args: string[]): Promise<number> {
 						const snapshot = await fetchCodexQuotaSnapshot({
 							accountId: probeAccountId,
 							accessToken: refreshResult.access,
-							model: options.model,
+							model: probeModel,
 						});
 						if (workingQuotaCache) {
 							quotaCacheChanged =
@@ -4885,6 +4887,7 @@ async function runBest(args: string[]): Promise<number> {
 	}
 
 	const now = Date.now();
+	const probeModel = inspectRequestedModel(options.model?.trim() || "gpt-5-codex").normalized;
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
 	const probeIdTokenByIndex = new Map<number, string>();
@@ -4967,7 +4970,7 @@ async function runBest(args: string[]): Promise<number> {
 			const liveQuota = await fetchCodexQuotaSnapshot({
 				accountId: probeAccountId,
 				accessToken: probeAccessToken,
-				model: options.model,
+				model: probeModel,
 			});
 			liveQuotaByIndex.set(i, liveQuota);
 		} catch (error) {

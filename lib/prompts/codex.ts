@@ -370,8 +370,15 @@ function refreshInstructionsInBackground(
  * Prewarm instruction caches for the provided models/families.
  */
 export function prewarmCodexInstructions(models: string[] = []): void {
-	const candidates = models.length > 0 ? models : ["gpt-5-codex", "gpt-5.4", "gpt-5.2"];
+	const candidates = models.length > 0 ? models : ["gpt-5-codex", "gpt-5.4", "gpt-5.1"];
+	const prewarmTargets = new Map<string, string>();
 	for (const model of candidates) {
+		const promptFamily = getModelFamily(model);
+		if (!prewarmTargets.has(promptFamily)) {
+			prewarmTargets.set(promptFamily, model);
+		}
+	}
+	for (const model of prewarmTargets.values()) {
 		void getCodexInstructions(model).catch((error) => {
 			logDebug("Codex instruction prewarm failed", {
 				model,

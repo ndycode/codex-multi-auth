@@ -31,6 +31,11 @@ describe("model map", () => {
 			expect(MODEL_MAP["gpt-5.4-mini"]).toBe("gpt-5-mini");
 			expect(MODEL_MAP["gpt-5.4-nano"]).toBe("gpt-5-nano");
 		});
+
+		it("adds reasoning variants for legacy chat-latest aliases", () => {
+			expect(MODEL_MAP["gpt-5-chat-latest-high"]).toBe("gpt-5");
+			expect(MODEL_MAP["gpt-5.1-chat-latest-minimal"]).toBe("gpt-5.1");
+		});
 	});
 
 	describe("getNormalizedModel", () => {
@@ -39,6 +44,8 @@ describe("model map", () => {
 			expect(getNormalizedModel("GPT-5.4-PRO-HIGH")).toBe("gpt-5.4-pro");
 			expect(getNormalizedModel("gpt-5.4-mini")).toBe("gpt-5-mini");
 			expect(getNormalizedModel("gpt-5.3-codex-high")).toBe("gpt-5-codex");
+			expect(getNormalizedModel("gpt-5-chat-latest-high")).toBe("gpt-5");
+			expect(getNormalizedModel("codex-max")).toBe("gpt-5.1-codex-max");
 		});
 
 		it("returns undefined for unknown exact identifiers", () => {
