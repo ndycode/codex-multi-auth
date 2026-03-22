@@ -1,5 +1,6 @@
 import { createLogger, logRequest, LOGGING_ENABLED } from "../logger.js";
 import { PLUGIN_NAME } from "../constants.js";
+import { isRecord } from "../utils.js";
 
 import type { SSEEventData } from "../types.js";
 
@@ -7,6 +8,322 @@ const log = createLogger("response-handler");
 
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
 const DEFAULT_STREAM_STALL_TIMEOUT_MS = 45_000;
+
+type MutableRecord = Record<string, unknown>;
+
+interface ParsedResponseState {
+	finalResponse: MutableRecord | null;
+	lastPhase: string | null;
+	outputItems: Map<number, MutableRecord>;
+	outputText: Map<string, string>;
+	phaseText: Map<string, string>;
+	reasoningSummaryText: Map<string, string>;
+}
+
+function createParsedResponseState(): ParsedResponseState {
+	return {
+		finalResponse: null,
+		lastPhase: null,
+		outputItems: new Map<number, MutableRecord>(),
+		outputText: new Map<string, string>(),
+		phaseText: new Map<string, string>(),
+		reasoningSummaryText: new Map<string, string>(),
+	};
+}
+
+function toMutableRecord(value: unknown): MutableRecord | null {
+	return isRecord(value) ? { ...value } : null;
+}
+
+function getNumberField(record: MutableRecord, key: string): number | null {
+	const value = record[key];
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getStringField(record: MutableRecord, key: string): string | null {
+	const value = record[key];
+	return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function cloneContentArray(content: unknown): MutableRecord[] {
+	if (!Array.isArray(content)) return [];
+	return content.filter(isRecord).map((part) => ({ ...part }));
+}
+
+function mergeRecord(base: MutableRecord | null, update: MutableRecord): MutableRecord {
+	if (!base) return { ...update };
+	const merged: MutableRecord = { ...base, ...update };
+	if ("content" in update || "content" in base) {
+		merged.content = cloneContentArray(update.content ?? base.content);
+	}
+	return merged;
+}
+
+function makeOutputTextKey(outputIndex: number | null, contentIndex: number | null): string | null {
+	if (outputIndex === null || contentIndex === null) return null;
+	return `${outputIndex}:${contentIndex}`;
+}
+
+function makeSummaryKey(outputIndex: number | null, summaryIndex: number | null): string | null {
+	if (outputIndex === null || summaryIndex === null) return null;
+	return `${outputIndex}:${summaryIndex}`;
+}
+
+function getPartText(part: unknown): string | null {
+	if (!isRecord(part)) return null;
+	const text = getStringField(part, "text");
+	if (text) return text;
+	return null;
+}
+
+function capturePhase(
+	state: ParsedResponseState,
+	phase: unknown,
+	text: string | null = null,
+): void {
+	if (typeof phase !== "string" || phase.trim().length === 0) return;
+	const normalizedPhase = phase.trim();
+	state.lastPhase = normalizedPhase;
+	if (text && text.length > 0) {
+		const existing = state.phaseText.get(normalizedPhase) ?? "";
+		state.phaseText.set(normalizedPhase, `${existing}${text}`);
+	}
+}
+
+function upsertOutputItem(state: ParsedResponseState, outputIndex: number | null, item: unknown): void {
+	if (outputIndex === null || !isRecord(item)) return;
+	const current = state.outputItems.get(outputIndex) ?? null;
+	const merged = mergeRecord(current, item);
+	state.outputItems.set(outputIndex, merged);
+	capturePhase(state, merged.phase);
+}
+
+function setOutputTextValue(
+	state: ParsedResponseState,
+	outputIndex: number | null,
+	contentIndex: number | null,
+	text: string | null,
+	phase: unknown = undefined,
+): void {
+	if (!text) return;
+	const key = makeOutputTextKey(outputIndex, contentIndex);
+	if (!key) return;
+	const existing = state.outputText.get(key) ?? "";
+	state.outputText.set(key, text);
+	const phaseDelta = existing.length > 0 && text.startsWith(existing)
+		? text.slice(existing.length)
+		: existing === text
+			? ""
+			: text;
+	capturePhase(state, phase, phaseDelta);
+}
+
+function appendOutputTextValue(
+	state: ParsedResponseState,
+	outputIndex: number | null,
+	contentIndex: number | null,
+	delta: string | null,
+	phase: unknown = undefined,
+): void {
+	if (!delta) return;
+	const key = makeOutputTextKey(outputIndex, contentIndex);
+	if (!key) return;
+	const existing = state.outputText.get(key) ?? "";
+	state.outputText.set(key, `${existing}${delta}`);
+	capturePhase(state, phase, delta);
+}
+
+function setReasoningSummaryValue(
+	state: ParsedResponseState,
+	outputIndex: number | null,
+	summaryIndex: number | null,
+	text: string | null,
+): void {
+	if (!text) return;
+	const key = makeSummaryKey(outputIndex, summaryIndex);
+	if (!key) return;
+	state.reasoningSummaryText.set(key, text);
+}
+
+function appendReasoningSummaryValue(
+	state: ParsedResponseState,
+	outputIndex: number | null,
+	summaryIndex: number | null,
+	delta: string | null,
+): void {
+	if (!delta) return;
+	const key = makeSummaryKey(outputIndex, summaryIndex);
+	if (!key) return;
+	const existing = state.reasoningSummaryText.get(key) ?? "";
+	state.reasoningSummaryText.set(key, `${existing}${delta}`);
+}
+
+function ensureOutputItemAtIndex(output: unknown[], index: number): MutableRecord | null {
+	while (output.length <= index) {
+		output.push({});
+	}
+	const current = output[index];
+	if (!isRecord(current)) {
+		output[index] = {};
+	}
+	return isRecord(output[index]) ? (output[index] as MutableRecord) : null;
+}
+
+function ensureContentPartAtIndex(item: MutableRecord, index: number): MutableRecord | null {
+	const content = Array.isArray(item.content) ? [...item.content] : [];
+	while (content.length <= index) {
+		content.push({});
+	}
+	const current = content[index];
+	if (!isRecord(current)) {
+		content[index] = {};
+	}
+	item.content = content;
+	return isRecord(content[index]) ? (content[index] as MutableRecord) : null;
+}
+
+function applyAccumulatedOutputText(response: MutableRecord, state: ParsedResponseState): void {
+	if (state.outputText.size === 0) return;
+	const output = Array.isArray(response.output) ? [...response.output] : [];
+
+	for (const [key, text] of state.outputText.entries()) {
+		const [outputIndexText, contentIndexText] = key.split(":");
+		const outputIndex = Number.parseInt(outputIndexText ?? "", 10);
+		const contentIndex = Number.parseInt(contentIndexText ?? "", 10);
+		if (!Number.isFinite(outputIndex) || !Number.isFinite(contentIndex)) continue;
+		const item = ensureOutputItemAtIndex(output, outputIndex);
+		if (!item) continue;
+		const part = ensureContentPartAtIndex(item, contentIndex);
+		if (!part) continue;
+		if (!getStringField(part, "type")) {
+			part.type = "output_text";
+		}
+		part.text = text;
+	}
+
+	if (output.length > 0) {
+		response.output = output;
+	}
+}
+
+function mergeOutputItemsIntoResponse(response: MutableRecord, state: ParsedResponseState): void {
+	if (state.outputItems.size === 0) return;
+	const output = Array.isArray(response.output) ? [...response.output] : [];
+
+	for (const [outputIndex, item] of state.outputItems.entries()) {
+		while (output.length <= outputIndex) {
+			output.push({});
+		}
+		output[outputIndex] = mergeRecord(toMutableRecord(output[outputIndex]), item);
+	}
+
+	response.output = output;
+}
+
+function collectMessageOutputText(output: unknown[]): string {
+	return output
+		.filter(isRecord)
+		.map((item) => {
+			if (item.type !== "message") return "";
+			const content = Array.isArray(item.content) ? item.content : [];
+			return content
+				.filter(isRecord)
+				.map((part) => {
+					if (part.type !== "output_text") return "";
+					return typeof part.text === "string" ? part.text : "";
+				})
+				.join("");
+		})
+		.filter((text) => text.length > 0)
+		.join("");
+}
+
+function collectReasoningSummaryText(output: unknown[]): string {
+	return output
+		.filter(isRecord)
+		.map((item) => {
+			if (item.type !== "reasoning") return "";
+			const summary = Array.isArray(item.summary) ? item.summary : [];
+			return summary
+				.filter(isRecord)
+				.map((part) => (typeof part.text === "string" ? part.text : ""))
+				.filter((text) => text.length > 0)
+				.join("\n\n");
+		})
+		.filter((text) => text.length > 0)
+		.join("\n\n");
+}
+
+function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseState): void {
+	if (state.reasoningSummaryText.size === 0) return;
+	const output = Array.isArray(response.output) ? [...response.output] : [];
+
+	for (const [key, text] of state.reasoningSummaryText.entries()) {
+		const [outputIndexText, summaryIndexText] = key.split(":");
+		const outputIndex = Number.parseInt(outputIndexText ?? "", 10);
+		const summaryIndex = Number.parseInt(summaryIndexText ?? "", 10);
+		if (!Number.isFinite(outputIndex) || !Number.isFinite(summaryIndex)) continue;
+		const item = ensureOutputItemAtIndex(output, outputIndex);
+		if (!item) continue;
+		const summary = Array.isArray(item.summary) ? [...item.summary] : [];
+		while (summary.length <= summaryIndex) {
+			summary.push({});
+		}
+		const current = summary[summaryIndex];
+		const nextPart = isRecord(current) ? { ...current } : {};
+		if (!getStringField(nextPart, "type")) {
+			nextPart.type = "summary_text";
+		}
+		nextPart.text = text;
+		summary[summaryIndex] = nextPart;
+		item.summary = summary;
+		if (!getStringField(item, "type")) {
+			item.type = "reasoning";
+		}
+	}
+
+	if (output.length > 0) {
+		response.output = output;
+	}
+}
+
+function finalizeParsedResponse(state: ParsedResponseState): MutableRecord | null {
+	const response = state.finalResponse ? { ...state.finalResponse } : null;
+	if (!response) return null;
+
+	mergeOutputItemsIntoResponse(response, state);
+	applyAccumulatedOutputText(response, state);
+	applyReasoningSummaries(response, state);
+
+	const output = Array.isArray(response.output) ? response.output : [];
+	if (typeof response.output_text !== "string") {
+		const outputText = collectMessageOutputText(output);
+		if (outputText.length > 0) {
+			response.output_text = outputText;
+		}
+	}
+
+	const reasoningSummaryText = collectReasoningSummaryText(output);
+	if (reasoningSummaryText.length > 0) {
+		response.reasoning_summary_text = reasoningSummaryText;
+	}
+
+	if (state.lastPhase && typeof response.phase !== "string") {
+		response.phase = state.lastPhase;
+	}
+
+	if (state.phaseText.size > 0) {
+		const phaseText: MutableRecord = {};
+		for (const [phase, text] of state.phaseText.entries()) {
+			phaseText[phase] = text;
+			if (phase === "commentary") response.commentary_text = text;
+			if (phase === "final_answer") response.final_answer_text = text;
+		}
+		response.phase_text = phaseText;
+	}
+
+	return response;
+}
 
 function extractResponseId(response: unknown): string | null {
 	if (!response || typeof response !== "object") return null;
@@ -32,28 +349,106 @@ function notifyResponseId(
 	}
 }
 
-type CapturedResponseEvent =
-	| { kind: "error" }
-	| { kind: "response"; response: unknown }
-	| null;
-
 function maybeCaptureResponseEvent(
+	state: ParsedResponseState,
 	data: SSEEventData,
 	onResponseId?: (responseId: string) => void,
-): CapturedResponseEvent {
+): void {
 	if (data.type === "error") {
 		log.error("SSE error event received", { error: data });
-		return { kind: "error" };
+		return;
+	}
+
+	if (isRecord(data.response)) {
+		state.finalResponse = { ...data.response };
+		notifyResponseId(onResponseId, data.response);
 	}
 
 	if (data.type === "response.done" || data.type === "response.completed") {
-		notifyResponseId(onResponseId, data.response);
-		if (data.response !== undefined && data.response !== null) {
-			return { kind: "response", response: data.response };
-		}
+		return;
 	}
 
-	return null;
+	const eventRecord = toMutableRecord(data);
+	if (!eventRecord) return;
+	const outputIndex = getNumberField(eventRecord, "output_index");
+
+	if (data.type === "response.output_item.added" || data.type === "response.output_item.done") {
+		upsertOutputItem(state, outputIndex, eventRecord.item);
+		return;
+	}
+
+	if (data.type === "response.output_text.delta") {
+		appendOutputTextValue(
+			state,
+			outputIndex,
+			getNumberField(eventRecord, "content_index"),
+			getStringField(eventRecord, "delta"),
+			eventRecord.phase,
+		);
+		return;
+	}
+
+	if (data.type === "response.output_text.done") {
+		setOutputTextValue(
+			state,
+			outputIndex,
+			getNumberField(eventRecord, "content_index"),
+			getStringField(eventRecord, "text"),
+			eventRecord.phase,
+		);
+		return;
+	}
+
+	if (data.type === "response.content_part.added" || data.type === "response.content_part.done") {
+		const part = toMutableRecord(eventRecord.part);
+		if (!part || getStringField(part, "type") !== "output_text") {
+			capturePhase(state, part?.phase);
+			return;
+		}
+		setOutputTextValue(
+			state,
+			outputIndex,
+			getNumberField(eventRecord, "content_index"),
+			getPartText(part),
+			part.phase,
+		);
+		return;
+	}
+
+	if (data.type === "response.reasoning_summary_text.delta") {
+		appendReasoningSummaryValue(
+			state,
+			outputIndex,
+			getNumberField(eventRecord, "summary_index"),
+			getStringField(eventRecord, "delta"),
+		);
+		return;
+	}
+
+	if (data.type === "response.reasoning_summary_text.done") {
+		setReasoningSummaryValue(
+			state,
+			outputIndex,
+			getNumberField(eventRecord, "summary_index"),
+			getStringField(eventRecord, "text"),
+		);
+		return;
+	}
+
+	if (
+		data.type === "response.reasoning_summary_part.added" ||
+		data.type === "response.reasoning_summary_part.done"
+	) {
+		setReasoningSummaryValue(
+			state,
+			outputIndex,
+			getNumberField(eventRecord, "summary_index"),
+			getPartText(eventRecord.part),
+		);
+		return;
+	}
+
+	capturePhase(state, eventRecord.phase);
 }
 
 /**
@@ -67,6 +462,7 @@ function parseSseStream(
 	onResponseId?: (responseId: string) => void,
 ): unknown | null {
 	const lines = sseText.split(/\r?\n/);
+	const state = createParsedResponseState();
 
 	for (const line of lines) {
 		const trimmedLine = line.trim();
@@ -75,16 +471,14 @@ function parseSseStream(
 			if (!payload || payload === '[DONE]') continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
-				const capturedEvent = maybeCaptureResponseEvent(data, onResponseId);
-				if (capturedEvent?.kind === "error") return null;
-				if (capturedEvent?.kind === "response") return capturedEvent.response;
+				maybeCaptureResponseEvent(state, data, onResponseId);
 			} catch {
 				// Skip malformed JSON
 			}
 		}
 	}
 
-	return null;
+	return finalizeParsedResponse(state);
 }
 
 /**
@@ -133,7 +527,9 @@ export async function convertSseToJson(
 		if (!finalResponse) {
 			log.warn("Could not find final response in SSE stream");
 
-			logRequest("stream-error", { error: "No response.done event found" });
+			logRequest("stream-error", {
+				error: "No terminal response event found in SSE stream",
+			});
 
 			// Return original stream if we can't parse
 			return new Response(fullText, {
@@ -173,10 +569,8 @@ function createResponseIdCapturingStream(
 ): ReadableStream<Uint8Array> {
 	const decoder = new TextDecoder();
 	let bufferedText = "";
-	let sawErrorEvent = false;
 
 	const processBufferedLines = (flush = false): void => {
-		if (sawErrorEvent) return;
 		const lines = bufferedText.split(/\r?\n/);
 		if (!flush) {
 			bufferedText = lines.pop() ?? "";
@@ -191,11 +585,7 @@ function createResponseIdCapturingStream(
 			if (!payload || payload === "[DONE]") continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
-				const capturedEvent = maybeCaptureResponseEvent(data, onResponseId);
-				if (capturedEvent?.kind === "error") {
-					sawErrorEvent = true;
-					break;
-				}
+				maybeCaptureResponseEvent(createParsedResponseState(), data, onResponseId);
 			} catch {
 				// Ignore malformed SSE lines and keep forwarding the raw stream.
 			}
@@ -244,7 +634,7 @@ async function readWithTimeout(
 				timeoutId = setTimeout(() => {
 					reject(
 						new Error(
-							`SSE stream stalled for ${timeoutMs}ms while waiting for response.done`,
+							`SSE stream stalled for ${timeoutMs}ms while waiting for a terminal response event`,
 						),
 					);
 				}, timeoutMs);

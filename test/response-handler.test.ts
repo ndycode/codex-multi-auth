@@ -66,6 +66,88 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body).toEqual({ id: 'resp_456', output: 'done' });
 		});
 
+		it('synthesizes output_text and reasoning summaries from semantic SSE events', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_semantic_123","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_123","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello ","phase":"final_answer"}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"world","phase":"final_answer"}',
+				'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Hello world","phase":"final_answer"}',
+				'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"rs_123","type":"reasoning"}}',
+				'data: {"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"Need more context."}',
+				'data: {"type":"response.reasoning_summary_text.done","output_index":1,"summary_index":0,"text":"Need more context."}',
+				'data: {"type":"response.completed","response":{"id":"resp_semantic_123","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				id: string;
+				output?: Array<{
+					type?: string;
+					role?: string;
+					phase?: string;
+					content?: Array<{ type?: string; text?: string }>;
+					summary?: Array<{ type?: string; text?: string }>;
+				}>;
+				output_text?: string;
+				reasoning_summary_text?: string;
+				phase?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+			};
+
+			expect(body.id).toBe('resp_semantic_123');
+			expect(body.output_text).toBe('Hello world');
+			expect(body.reasoning_summary_text).toBe('Need more context.');
+			expect(body.phase).toBe('final_answer');
+			expect(body.final_answer_text).toBe('Hello world');
+			expect(body.phase_text).toEqual({ final_answer: 'Hello world' });
+			expect(body.output?.[0]?.content?.[0]).toEqual({
+				type: 'output_text',
+				text: 'Hello world',
+			});
+			expect(body.output?.[1]?.summary?.[0]).toEqual({
+				type: 'summary_text',
+				text: 'Need more context.',
+			});
+		});
+
+		it('tracks commentary and final_answer phase text separately when phase labels are present', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_phase_123","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_123","type":"message","role":"assistant","phase":"commentary"}}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Thinking...","phase":"commentary"}',
+				'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Thinking...","phase":"commentary"}',
+				'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_123","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.output_text.done","output_index":0,"content_index":1,"text":"Done.","phase":"final_answer"}',
+				'data: {"type":"response.done","response":{"id":"resp_phase_123","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				phase?: string;
+				commentary_text?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+				output_text?: string;
+			};
+
+			expect(body.phase).toBe('final_answer');
+			expect(body.commentary_text).toBe('Thinking...');
+			expect(body.final_answer_text).toBe('Done.');
+			expect(body.phase_text).toEqual({
+				commentary: 'Thinking...',
+				final_answer: 'Done.',
+			});
+			expect(body.output_text).toBe('Thinking...Done.');
+		});
+
 		it('should return original text if no final response found', async () => {
 			const sseContent = `data: {"type":"response.started"}
 data: {"type":"chunk","delta":"text"}
