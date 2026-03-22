@@ -96,6 +96,8 @@ describe("public api contract", () => {
 		expect(typeof config.loadPluginConfig).toBe("function");
 		expect(typeof request.createCodexHeaders).toBe("function");
 		expect(typeof request.transformRequestBody).toBe("function");
+		expect("handleResponse" in request).toBe(false);
+		expect("withStreamFailover" in request).toBe(false);
 		expect(typeof cli.loadCodexCliState).toBe("function");
 	});
 
