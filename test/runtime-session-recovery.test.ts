@@ -1,35 +1,47 @@
-import { describe, expect, it, vi } from "vitest";
-import { createRuntimeSessionRecoveryHook } from "../lib/runtime/session-recovery.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const createSessionRecoveryHookMock = vi.fn();
 vi.mock("../lib/recovery.js", () => ({
-	createSessionRecoveryHook: vi.fn(() => "hook"),
+	createSessionRecoveryHook: createSessionRecoveryHookMock,
 }));
 
 describe("createRuntimeSessionRecoveryHook", () => {
-	it("returns null when session recovery is disabled", () => {
+	beforeEach(() => {
+		createSessionRecoveryHookMock.mockReset();
+		createSessionRecoveryHookMock.mockReturnValue("hook");
+	});
+
+	it("returns null when disabled", async () => {
+		const { createRuntimeSessionRecoveryHook } = await import(
+			"../lib/runtime/session-recovery.js"
+		);
+
 		expect(
 			createRuntimeSessionRecoveryHook({
 				enabled: false,
-				client: {},
-				directory: "/repo",
+				client: {} as never,
+				directory: "/tmp/recovery",
 				autoResume: true,
 			}),
 		).toBeNull();
 	});
 
-	it("creates the recovery hook when enabled", async () => {
-		const recovery = await import("../lib/recovery.js");
+	it("forwards typed client context when enabled", async () => {
+		const client = { id: "client" } as never;
+		const { createRuntimeSessionRecoveryHook } = await import(
+			"../lib/runtime/session-recovery.js"
+		);
 
 		expect(
 			createRuntimeSessionRecoveryHook({
 				enabled: true,
-				client: { id: "client" },
-				directory: "/repo",
+				client,
+				directory: "/tmp/recovery",
 				autoResume: false,
 			}),
 		).toBe("hook");
-		expect(recovery.createSessionRecoveryHook).toHaveBeenCalledWith(
-			{ client: { id: "client" }, directory: "/repo" },
+		expect(createSessionRecoveryHookMock).toHaveBeenCalledWith(
+			{ client, directory: "/tmp/recovery" },
 			{ sessionRecovery: true, autoResume: false },
 		);
 	});

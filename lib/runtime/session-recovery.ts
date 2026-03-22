@@ -1,8 +1,9 @@
+import type { PluginInput } from "@codex-ai/plugin";
 import { createSessionRecoveryHook } from "../recovery.js";
 
 export function createRuntimeSessionRecoveryHook(deps: {
 	enabled: boolean;
-	client: unknown;
+	client: PluginInput["client"];
 	directory: string;
 	autoResume: boolean;
 }) {

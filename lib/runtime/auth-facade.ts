@@ -101,13 +101,18 @@ export function createAccountManagerReloader<TAccountManager>(deps: {
 	) => void;
 	setReloadInFlight: (value: Promise<TAccountManager> | null) => void;
 }) {
-	return async (authFallback?: OAuthAuthDetails): Promise<TAccountManager> =>
-		deps.reloadRuntimeAccountManager({
-			currentReloadInFlight: deps.getReloadInFlight(),
+	return async (authFallback?: OAuthAuthDetails): Promise<TAccountManager> => {
+		const inFlight = deps.getReloadInFlight();
+		if (inFlight) {
+			return inFlight;
+		}
+		return deps.reloadRuntimeAccountManager({
+			currentReloadInFlight: inFlight,
 			loadFromDisk: deps.loadFromDisk,
 			setCachedAccountManager: deps.setCachedAccountManager,
 			setAccountManagerPromise: deps.setAccountManagerPromise,
 			setReloadInFlight: deps.setReloadInFlight,
 			authFallback,
 		});
+	};
 }
