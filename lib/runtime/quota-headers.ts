@@ -1,16 +1,8 @@
-export type CodexQuotaWindow = {
-	usedPercent?: number;
-	windowMinutes?: number;
-	resetAtMs?: number;
-};
+import type { CodexQuotaSnapshot, CodexQuotaWindow } from "../quota-probe.js";
 
-export type CodexQuotaSnapshot = {
-	status: number;
-	planType?: string;
-	activeLimit?: number;
-	primary: CodexQuotaWindow;
-	secondary: CodexQuotaWindow;
-};
+export type { CodexQuotaSnapshot, CodexQuotaWindow } from "../quota-probe.js";
+
+export type ParsedCodexQuotaSnapshot = Omit<CodexQuotaSnapshot, "model">;
 
 export function parseFiniteNumberHeader(
 	headers: Headers,
@@ -80,7 +72,7 @@ export function hasCodexQuotaHeaders(headers: Headers): boolean {
 export function parseCodexQuotaSnapshot(
 	headers: Headers,
 	status: number,
-): CodexQuotaSnapshot | null {
+): ParsedCodexQuotaSnapshot | null {
 	if (!hasCodexQuotaHeaders(headers)) return null;
 
 	const primaryPrefix = "x-codex-primary";
@@ -155,8 +147,16 @@ export function formatResetAt(
 	return `${time} on ${day}`;
 }
 
-export function formatCodexQuotaLine(snapshot: CodexQuotaSnapshot): string {
-	const summarizeWindow = (label: string, window: CodexQuotaWindow): string => {
+export function formatCodexQuotaLine(
+	snapshot: Pick<
+		CodexQuotaSnapshot,
+		"status" | "planType" | "activeLimit" | "primary" | "secondary"
+	>,
+): string {
+	const summarizeWindow = (
+		label: string,
+		window: CodexQuotaSnapshot["primary"],
+	): string => {
 		const used = window.usedPercent;
 		const left =
 			typeof used === "number" && Number.isFinite(used)

@@ -1,5 +1,6 @@
 import type { RequestBody } from "../types.js";
-import type { CodexQuotaSnapshot } from "./quota-headers.js";
+import type { CodexQuotaSnapshot } from "../quota-probe.js";
+import type { ParsedCodexQuotaSnapshot } from "./quota-headers.js";
 
 const QUOTA_PROBE_MODELS = [
 	"gpt-5-codex",
@@ -22,7 +23,7 @@ export async function fetchRuntimeCodexQuotaSnapshot(params: {
 	parseCodexQuotaSnapshot: (
 		headers: Headers,
 		status: number,
-	) => CodexQuotaSnapshot | null;
+	) => ParsedCodexQuotaSnapshot | null;
 	getUnsupportedCodexModelInfo: (errorBody: unknown) => {
 		isUnsupported: boolean;
 		message?: string;
@@ -56,7 +57,7 @@ export async function fetchRuntimeCodexQuotaSnapshot(params: {
 				params.accessToken,
 				{ model },
 			);
-			headers.set("content-type", "application/json; charset=utf-8");
+			headers.set("content-type", "application/json");
 
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), 15_000);
@@ -82,7 +83,7 @@ export async function fetchRuntimeCodexQuotaSnapshot(params: {
 				} catch {
 					// Ignore cancellation failures.
 				}
-				return snapshot;
+				return { ...snapshot, model };
 			}
 
 			if (!response.ok) {
