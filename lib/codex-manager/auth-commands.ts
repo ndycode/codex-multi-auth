@@ -21,6 +21,7 @@ import { queuedRefresh } from "../refresh-queue.js";
 import {
 	getNamedBackups,
 	formatStorageErrorHint,
+	getStoragePath,
 	loadAccounts,
 	loadFlaggedAccounts,
 	restoreAccountsFromBackup,
@@ -34,6 +35,7 @@ import {
 import type { AccountIdSource, TokenFailure, TokenResult } from "../types.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
+import { RefreshLeaseCoordinator } from "../refresh-lease.js";
 import { UI_COPY } from "../ui/copy.js";
 import { confirm } from "../ui/confirm.js";
 import {
@@ -58,6 +60,10 @@ type OAuthSignInMode = "browser" | "manual" | "restore-backup" | "cancel";
 type BackupRestoreMode = "latest" | "manual" | "back";
 type LoginMenuResult = Awaited<ReturnType<typeof promptLoginMode>>;
 type HealthCheckOptions = { forceRefresh?: boolean; liveProbe?: boolean };
+type SerializedLiveBestQueueEntry = { tail: Promise<void> };
+
+const liveBestLeaseCoordinator = RefreshLeaseCoordinator.fromEnvironment();
+const serializedLiveBestByStorage = new Map<string, SerializedLiveBestQueueEntry>();
 
 export interface AuthCommandHelpers {
 	resolveActiveIndex: (
@@ -132,6 +138,44 @@ export interface AuthLoginCommandDeps extends AuthCommandHelpers {
 	log: {
 		debug: (message: string, meta?: unknown) => void;
 	};
+}
+
+async function withSerializedBestLiveRun<T>(
+	storagePath: string,
+	action: () => Promise<T>,
+): Promise<T> {
+	const queueEntry =
+		serializedLiveBestByStorage.get(storagePath) ?? { tail: Promise.resolve() };
+	serializedLiveBestByStorage.set(storagePath, queueEntry);
+
+	const waitForPrior = queueEntry.tail.catch(() => undefined);
+	let releaseQueue = (): void => undefined;
+	const currentTail = new Promise<void>((resolve) => {
+		releaseQueue = resolve;
+	});
+	queueEntry.tail = currentTail;
+
+	await waitForPrior;
+
+	let lease: Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>> | null = null;
+	try {
+		lease = await liveBestLeaseCoordinator.acquire(`codex-auth-best-live:${storagePath}`);
+		return await action();
+	} finally {
+		try {
+			if (lease) {
+				await lease.release();
+			}
+		} finally {
+			releaseQueue();
+			if (
+				serializedLiveBestByStorage.get(storagePath) === queueEntry &&
+				queueEntry.tail === currentTail
+			) {
+				serializedLiveBestByStorage.delete(storagePath);
+			}
+		}
+	}
 }
 
 function clampPreservedActiveIndexByFamily(
@@ -287,13 +331,6 @@ export async function runSwitch(
 	return 0;
 }
 
-/**
- * `codex auth best` still follows the monolith's single-writer storage pattern.
- * `saveAccounts` already serializes in-process writes and `queuedRefresh`
- * deduplicates refresh work, but separate CLI processes can still overlap while
- * the live probe path mutates refreshed tokens before persisting them back to
- * disk. Callers should keep concurrent CLI dispatches serialized.
- */
 export async function runBest(
 	args: string[],
 	helpers: AuthCommandHelpers,
@@ -316,217 +353,228 @@ export async function runBest(
 	}
 
 	setStoragePath(null);
-	const storage = await loadAccounts();
-	if (!storage || storage.accounts.length === 0) {
-		if (options.json) {
-			console.log(JSON.stringify({ error: "No accounts configured." }, null, 2));
-		} else {
-			console.log("No accounts configured.");
+	const execute = async (): Promise<number> => {
+		const storage = await loadAccounts();
+		if (!storage || storage.accounts.length === 0) {
+			if (options.json) {
+				console.log(JSON.stringify({ error: "No accounts configured." }, null, 2));
+			} else {
+				console.log("No accounts configured.");
+			}
+			return 1;
 		}
-		return 1;
-	}
 
-	const now = Date.now();
-	const refreshFailures = new Map<number, TokenFailure>();
-	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
-	const probeIdTokenByIndex = new Map<number, string>();
-	const probeRefreshedIndices = new Set<number>();
-	const probeErrors: string[] = [];
-	let changed = false;
+		const now = Date.now();
+		const refreshFailures = new Map<number, TokenFailure>();
+		const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
+		const probeIdTokenByIndex = new Map<number, string>();
+		const probeRefreshedIndices = new Set<number>();
+		const probeErrors: string[] = [];
+		let changed = false;
 
-	const printProbeNotes = (): void => {
-		if (probeErrors.length === 0) return;
-		console.log(`Live check notes (${probeErrors.length}):`);
-		for (const error of probeErrors) {
-			console.log(`  - ${error}`);
-		}
-	};
+		const printProbeNotes = (): void => {
+			if (probeErrors.length === 0) return;
+			console.log(`Live check notes (${probeErrors.length}):`);
+			for (const error of probeErrors) {
+				console.log(`  - ${error}`);
+			}
+		};
 
-	const persistProbeChangesIfNeeded = async (): Promise<void> => {
-		if (!changed) return;
-		await saveAccounts(storage);
-		changed = false;
-	};
+		const persistProbeChangesIfNeeded = async (): Promise<void> => {
+			if (!changed) return;
+			await saveAccounts(storage);
+			changed = false;
+		};
 
-	for (let i = 0; i < storage.accounts.length; i += 1) {
-		const account = storage.accounts[i];
-		if (!account || !options.live) continue;
-		if (account.enabled === false) continue;
+		for (let i = 0; i < storage.accounts.length; i += 1) {
+			const account = storage.accounts[i];
+			if (!account || !options.live) continue;
+			if (account.enabled === false) continue;
 
-		let probeAccessToken = account.accessToken;
-		let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
-		if (!helpers.hasUsableAccessToken(account, now)) {
-			const refreshResult = await queuedRefresh(account.refreshToken);
-			if (refreshResult.type !== "success") {
-				refreshFailures.set(i, {
-					...refreshResult,
-					message: helpers.normalizeFailureDetail(refreshResult.message, refreshResult.reason),
-				});
+			let probeAccessToken = account.accessToken;
+			let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
+			if (!helpers.hasUsableAccessToken(account, now)) {
+				const refreshResult = await queuedRefresh(account.refreshToken);
+				if (refreshResult.type !== "success") {
+					refreshFailures.set(i, {
+						...refreshResult,
+						message: helpers.normalizeFailureDetail(
+							refreshResult.message,
+							refreshResult.reason,
+						),
+					});
+					continue;
+				}
+
+				const refreshedEmail = sanitizeEmail(
+					extractAccountEmail(refreshResult.access, refreshResult.idToken),
+				);
+				const refreshedAccountId = extractAccountId(refreshResult.access);
+
+				if (account.refreshToken !== refreshResult.refresh) {
+					account.refreshToken = refreshResult.refresh;
+					changed = true;
+				}
+				if (account.accessToken !== refreshResult.access) {
+					account.accessToken = refreshResult.access;
+					changed = true;
+				}
+				if (account.expiresAt !== refreshResult.expires) {
+					account.expiresAt = refreshResult.expires;
+					changed = true;
+				}
+				if (refreshedEmail && refreshedEmail !== account.email) {
+					account.email = refreshedEmail;
+					changed = true;
+				}
+				if (refreshedAccountId && refreshedAccountId !== account.accountId) {
+					account.accountId = refreshedAccountId;
+					account.accountIdSource = "token";
+					changed = true;
+				}
+				if (refreshResult.idToken) {
+					probeIdTokenByIndex.set(i, refreshResult.idToken);
+				}
+				probeRefreshedIndices.add(i);
+
+				probeAccessToken = account.accessToken;
+				probeAccountId = account.accountId ?? refreshedAccountId;
+			}
+
+			if (!probeAccessToken || !probeAccountId) {
+				probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
 				continue;
 			}
 
-			const refreshedEmail = sanitizeEmail(
-				extractAccountEmail(refreshResult.access, refreshResult.idToken),
-			);
-			const refreshedAccountId = extractAccountId(refreshResult.access);
-
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-				changed = true;
+			try {
+				const liveQuota = await fetchCodexQuotaSnapshot({
+					accountId: probeAccountId,
+					accessToken: probeAccessToken,
+					model: options.model,
+				});
+				liveQuotaByIndex.set(i, liveQuota);
+			} catch (error) {
+				const message = helpers.normalizeFailureDetail(
+					error instanceof Error ? error.message : String(error),
+					undefined,
+				);
+				probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-				changed = true;
-			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-				changed = true;
-			}
-			if (refreshedEmail && refreshedEmail !== account.email) {
-				account.email = refreshedEmail;
-				changed = true;
-			}
-			if (refreshedAccountId && refreshedAccountId !== account.accountId) {
-				account.accountId = refreshedAccountId;
-				account.accountIdSource = "token";
-				changed = true;
-			}
-			if (refreshResult.idToken) {
-				probeIdTokenByIndex.set(i, refreshResult.idToken);
-			}
-			probeRefreshedIndices.add(i);
-
-			probeAccessToken = account.accessToken;
-			probeAccountId = account.accountId ?? refreshedAccountId;
 		}
 
-		if (!probeAccessToken || !probeAccountId) {
-			probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
-			continue;
+		const forecastInputs = storage.accounts.map((account, index) => ({
+			index,
+			account,
+			isCurrent: index === helpers.resolveActiveIndex(storage, "codex"),
+			now,
+			refreshFailure: refreshFailures.get(index),
+			liveQuota: liveQuotaByIndex.get(index),
+		}));
+
+		const forecastResults = evaluateForecastAccounts(forecastInputs);
+		const recommendation = recommendForecastAccount(forecastResults);
+
+		if (recommendation.recommendedIndex === null) {
+			await persistProbeChangesIfNeeded();
+			if (options.json) {
+				console.log(JSON.stringify({
+					error: recommendation.reason,
+					...(probeErrors.length > 0 ? { probeErrors } : {}),
+				}, null, 2));
+			} else {
+				console.log(`No best account available: ${recommendation.reason}`);
+				printProbeNotes();
+			}
+			return 1;
 		}
 
-		try {
-			const liveQuota = await fetchCodexQuotaSnapshot({
-				accountId: probeAccountId,
-				accessToken: probeAccessToken,
-				model: options.model,
-			});
-			liveQuotaByIndex.set(i, liveQuota);
-		} catch (error) {
-			const message = helpers.normalizeFailureDetail(
-				error instanceof Error ? error.message : String(error),
-				undefined,
-			);
-			probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
+		const bestIndex = recommendation.recommendedIndex;
+		const bestAccount = storage.accounts[bestIndex];
+		if (!bestAccount) {
+			await persistProbeChangesIfNeeded();
+			if (options.json) {
+				console.log(JSON.stringify({ error: "Best account not found." }, null, 2));
+			} else {
+				console.log("Best account not found.");
+			}
+			return 1;
 		}
-	}
 
-	const forecastInputs = storage.accounts.map((account, index) => ({
-		index,
-		account,
-		isCurrent: index === helpers.resolveActiveIndex(storage, "codex"),
-		now,
-		refreshFailure: refreshFailures.get(index),
-		liveQuota: liveQuotaByIndex.get(index),
-	}));
+		const currentIndex = helpers.resolveActiveIndex(storage, "codex");
+		if (currentIndex === bestIndex) {
+			const shouldSyncCurrentBest =
+				probeRefreshedIndices.has(bestIndex) || probeIdTokenByIndex.has(bestIndex);
+			let alreadyBestSynced: boolean | undefined;
+			if (changed) {
+				bestAccount.lastUsed = now;
+				await persistProbeChangesIfNeeded();
+			}
+			if (shouldSyncCurrentBest) {
+				alreadyBestSynced = await setCodexCliActiveSelection({
+					accountId: bestAccount.accountId,
+					email: bestAccount.email,
+					accessToken: bestAccount.accessToken,
+					refreshToken: bestAccount.refreshToken,
+					expiresAt: bestAccount.expiresAt,
+					...(probeIdTokenByIndex.has(bestIndex)
+						? { idToken: probeIdTokenByIndex.get(bestIndex) }
+						: {}),
+				});
+				if (!alreadyBestSynced && !options.json) {
+					console.warn("Codex auth sync did not complete. Multi-auth routing will still use this account.");
+				}
+			}
+			if (options.json) {
+				console.log(JSON.stringify({
+					message: `Already on best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
+					accountIndex: bestIndex + 1,
+					reason: recommendation.reason,
+					...(alreadyBestSynced !== undefined ? { synced: alreadyBestSynced } : {}),
+					...(probeErrors.length > 0 ? { probeErrors } : {}),
+				}, null, 2));
+			} else {
+				console.log(`Already on best account ${bestIndex + 1}: ${formatAccountLabel(bestAccount, bestIndex)}`);
+				console.log(`Reason: ${recommendation.reason}`);
+				printProbeNotes();
+			}
+			return 0;
+		}
 
-	const forecastResults = evaluateForecastAccounts(forecastInputs);
-	const recommendation = recommendForecastAccount(forecastResults);
+		const parsed = bestIndex + 1;
+		const { synced, wasDisabled } = await persistAndSyncSelectedAccount({
+			storage,
+			targetIndex: bestIndex,
+			parsed,
+			switchReason: "best",
+			initialSyncIdToken: probeIdTokenByIndex.get(bestIndex),
+			helpers,
+		});
 
-	if (recommendation.recommendedIndex === null) {
-		await persistProbeChangesIfNeeded();
 		if (options.json) {
 			console.log(JSON.stringify({
-				error: recommendation.reason,
+				message: `Switched to best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
+				accountIndex: parsed,
+				reason: recommendation.reason,
+				synced,
+				wasDisabled,
 				...(probeErrors.length > 0 ? { probeErrors } : {}),
 			}, null, 2));
 		} else {
-			console.log(`No best account available: ${recommendation.reason}`);
+			console.log(`Switched to best account ${parsed}: ${formatAccountLabel(bestAccount, bestIndex)}${wasDisabled ? " (re-enabled)" : ""}`);
+			console.log(`Reason: ${recommendation.reason}`);
 			printProbeNotes();
-		}
-		return 1;
-	}
-
-	const bestIndex = recommendation.recommendedIndex;
-	const bestAccount = storage.accounts[bestIndex];
-	if (!bestAccount) {
-		await persistProbeChangesIfNeeded();
-		if (options.json) {
-			console.log(JSON.stringify({ error: "Best account not found." }, null, 2));
-		} else {
-			console.log("Best account not found.");
-		}
-		return 1;
-	}
-
-	const currentIndex = helpers.resolveActiveIndex(storage, "codex");
-	if (currentIndex === bestIndex) {
-		const shouldSyncCurrentBest =
-			probeRefreshedIndices.has(bestIndex) || probeIdTokenByIndex.has(bestIndex);
-		let alreadyBestSynced: boolean | undefined;
-		if (changed) {
-			bestAccount.lastUsed = now;
-			await persistProbeChangesIfNeeded();
-		}
-		if (shouldSyncCurrentBest) {
-			alreadyBestSynced = await setCodexCliActiveSelection({
-				accountId: bestAccount.accountId,
-				email: bestAccount.email,
-				accessToken: bestAccount.accessToken,
-				refreshToken: bestAccount.refreshToken,
-				expiresAt: bestAccount.expiresAt,
-				...(probeIdTokenByIndex.has(bestIndex)
-					? { idToken: probeIdTokenByIndex.get(bestIndex) }
-					: {}),
-			});
-			if (!alreadyBestSynced && !options.json) {
+			if (!synced) {
 				console.warn("Codex auth sync did not complete. Multi-auth routing will still use this account.");
 			}
 		}
-		if (options.json) {
-			console.log(JSON.stringify({
-				message: `Already on best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
-				accountIndex: bestIndex + 1,
-				reason: recommendation.reason,
-				...(alreadyBestSynced !== undefined ? { synced: alreadyBestSynced } : {}),
-				...(probeErrors.length > 0 ? { probeErrors } : {}),
-			}, null, 2));
-		} else {
-			console.log(`Already on best account ${bestIndex + 1}: ${formatAccountLabel(bestAccount, bestIndex)}`);
-			console.log(`Reason: ${recommendation.reason}`);
-			printProbeNotes();
-		}
 		return 0;
+	};
+
+	if (options.live) {
+		return withSerializedBestLiveRun(getStoragePath(), execute);
 	}
 
-	const parsed = bestIndex + 1;
-	const { synced, wasDisabled } = await persistAndSyncSelectedAccount({
-		storage,
-		targetIndex: bestIndex,
-		parsed,
-		switchReason: "best",
-		initialSyncIdToken: probeIdTokenByIndex.get(bestIndex),
-		helpers,
-	});
-
-	if (options.json) {
-		console.log(JSON.stringify({
-			message: `Switched to best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
-			accountIndex: parsed,
-			reason: recommendation.reason,
-			synced,
-			wasDisabled,
-			...(probeErrors.length > 0 ? { probeErrors } : {}),
-		}, null, 2));
-	} else {
-		console.log(`Switched to best account ${parsed}: ${formatAccountLabel(bestAccount, bestIndex)}${wasDisabled ? " (re-enabled)" : ""}`);
-		console.log(`Reason: ${recommendation.reason}`);
-		printProbeNotes();
-		if (!synced) {
-			console.warn("Codex auth sync did not complete. Multi-auth routing will still use this account.");
-		}
-	}
-	return 0;
+	return execute();
 }
 
 export async function runAuthLogin(

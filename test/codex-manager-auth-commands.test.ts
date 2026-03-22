@@ -539,69 +539,70 @@ describe("codex-manager auth command helpers", () => {
 		);
 	});
 
-	it("keeps concurrent runBest live refresh writes consistent per snapshot", async () => {
+	it("serializes concurrent runBest live refresh writes per storage file", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-		extractAccountEmailMock.mockReturnValue("fresh@example.com");
-		const baselineStorage = createStorage([
-			{
-				email: "stale@example.com",
-				refreshToken: "stale-refresh-token",
-				accessToken: "stale-access-token",
-				accountId: "acct-stale",
-				expiresAt: Date.now() - 1,
-				addedAt: 1,
-				lastUsed: 1,
-				enabled: true,
-			},
-		]);
-		loadAccountsMock.mockImplementation(
-			async () => structuredClone(baselineStorage),
-		);
-
-		let releaseFirstSave: (() => void) | undefined;
-		const firstSaveReleased = new Promise<void>((resolve) => {
-			releaseFirstSave = resolve;
-		});
-		const persistedSnapshots: AccountStorageV3[] = [];
-		let saveCallCount = 0;
-		saveAccountsMock.mockImplementation(async (storage: AccountStorageV3) => {
-			persistedSnapshots.push(structuredClone(storage));
-			saveCallCount += 1;
-			if (saveCallCount === 1) {
-				await Promise.resolve();
-				await firstSaveReleased;
-				return;
-			}
-			if (saveCallCount === 2) {
-				releaseFirstSave?.();
-			}
-		});
-
 		const helpers = createHelpers({
 			hasUsableAccessToken: vi.fn(() => false),
 		});
+		const makeExpiredStorage = (): AccountStorageV3 =>
+			createStorage([
+				{
+					email: "live@example.com",
+					refreshToken: "refresh-token-live",
+					accessToken: "stale-access-token",
+					accountId: "acct-live",
+					expiresAt: Date.now() - 1,
+					addedAt: 1,
+					lastUsed: 1,
+					enabled: true,
+				},
+			]);
+		loadAccountsMock.mockImplementation(async () => makeExpiredStorage());
 
-		const [firstResult, secondResult] = await Promise.all([
-			runBest(["--live", "--json"], helpers),
-			runBest(["--live", "--json"], helpers),
-		]);
+		let resolveFirstSaveStarted = (): void => undefined;
+		const firstSaveStarted = new Promise<void>((resolve) => {
+			resolveFirstSaveStarted = resolve;
+		});
+		let resolveFirstSave = (): void => undefined;
+		const firstSaveBlocked = new Promise<void>((resolve) => {
+			resolveFirstSave = resolve;
+		});
+		let activeSaves = 0;
+		let maxActiveSaves = 0;
+		let startedSaves = 0;
+		saveAccountsMock.mockImplementation(async () => {
+			startedSaves += 1;
+			activeSaves += 1;
+			maxActiveSaves = Math.max(maxActiveSaves, activeSaves);
+			if (startedSaves === 1) {
+				resolveFirstSaveStarted();
+				await firstSaveBlocked;
+			}
+			activeSaves -= 1;
+		});
 
-		expect(firstResult).toBe(0);
-		expect(secondResult).toBe(0);
+		const firstRun = runBest(["--live"], helpers);
+		await firstSaveStarted;
+
+		const secondRun = runBest(["--live"], helpers);
+		await Promise.resolve();
+
+		expect(loadAccountsMock).toHaveBeenCalledTimes(1);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+
+		resolveFirstSave();
+
+		await expect(Promise.all([firstRun, secondRun])).resolves.toEqual([0, 0]);
+
+		expect(loadAccountsMock).toHaveBeenCalledTimes(2);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(2);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
-		expect(persistedSnapshots).toHaveLength(2);
-		for (const snapshot of persistedSnapshots) {
-			expect(snapshot.activeIndex).toBe(0);
-			expect(snapshot.accounts[0]).toMatchObject({
-				email: "fresh@example.com",
-				refreshToken: "fresh-refresh-token",
-				accessToken: "fresh-access-token",
-				accountId: "acct-refreshed",
-				accountIdSource: "token",
-			});
-		}
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(2);
-		expect(logSpy).toHaveBeenCalledTimes(2);
+		expect(maxActiveSaves).toBe(1);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Already on best account 1"),
+		);
 	});
 
 	it("restores a backup through the extracted login flow and clamps family indices", async () => {
