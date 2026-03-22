@@ -66,7 +66,10 @@ export function clampRetryHintMs(value: number): number | null {
 	return Math.min(normalized, MAX_RETRY_HINT_MS);
 }
 
-export function parseRetryAfterHintMs(headers: Headers): number | null {
+export function parseRetryAfterHintMs(
+	headers: Headers,
+	now = Date.now(),
+): number | null {
 	const retryAfterMsHeader = headers.get("retry-after-ms")?.trim();
 	if (retryAfterMsHeader && /^\d+$/.test(retryAfterMsHeader)) {
 		return clampRetryHintMs(Number.parseInt(retryAfterMsHeader, 10));
@@ -79,7 +82,7 @@ export function parseRetryAfterHintMs(headers: Headers): number | null {
 	if (retryAfterHeader) {
 		const retryAtMs = Date.parse(retryAfterHeader);
 		if (Number.isFinite(retryAtMs)) {
-			return clampRetryHintMs(retryAtMs - Date.now());
+			return clampRetryHintMs(retryAtMs - now);
 		}
 	}
 
@@ -87,7 +90,7 @@ export function parseRetryAfterHintMs(headers: Headers): number | null {
 	if (resetAtHeader && /^\d+$/.test(resetAtHeader)) {
 		const resetRaw = Number.parseInt(resetAtHeader, 10);
 		const resetAtMs = resetRaw < 10_000_000_000 ? resetRaw * 1000 : resetRaw;
-		return clampRetryHintMs(resetAtMs - Date.now());
+		return clampRetryHintMs(resetAtMs - now);
 	}
 
 	return null;

@@ -13,6 +13,7 @@ import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 import {
 	type BackupMetadataSection,
+	type BackupSnapshotKind,
 	type BackupSnapshotMetadata,
 	buildMetadataSection,
 } from "./storage/backup-metadata.js";
@@ -101,17 +102,6 @@ type AccountStorageWithMetadata = AccountStorageV3 & {
 	restoreEligible?: boolean;
 	restoreReason?: RestoreReason;
 };
-
-type BackupSnapshotKind =
-	| "accounts-primary"
-	| "accounts-wal"
-	| "accounts-backup"
-	| "accounts-backup-history"
-	| "accounts-discovered-backup"
-	| "flagged-primary"
-	| "flagged-backup"
-	| "flagged-backup-history"
-	| "flagged-discovered-backup";
 
 export type BackupMetadata = {
 	accounts: BackupMetadataSection;

@@ -1,14 +1,16 @@
+export type BackupSnapshotKind =
+	| "accounts-primary"
+	| "accounts-wal"
+	| "accounts-backup"
+	| "accounts-backup-history"
+	| "accounts-discovered-backup"
+	| "flagged-primary"
+	| "flagged-backup"
+	| "flagged-backup-history"
+	| "flagged-discovered-backup";
+
 export type BackupSnapshotMetadata = {
-	kind:
-		| "accounts-primary"
-		| "accounts-wal"
-		| "accounts-backup"
-		| "accounts-backup-history"
-		| "accounts-discovered-backup"
-		| "flagged-primary"
-		| "flagged-backup"
-		| "flagged-backup-history"
-		| "flagged-discovered-backup";
+	kind: BackupSnapshotKind;
 	path: string;
 	index?: number;
 	exists: boolean;
