@@ -86,9 +86,15 @@ describe("Codex Prompts Module", () => {
 				expect(getModelFamily("gpt-5.1-codex-mini-low")).toBe("gpt-5-codex");
 			});
 
+			it("should route GPT-5.4 era general models through the latest available general prompt family", () => {
+				expect(getModelFamily("gpt-5.4")).toBe("gpt-5.2");
+				expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.2");
+				expect(getModelFamily("gpt-5-mini")).toBe("gpt-5.2");
+			});
+
 		it("should detect models starting with codex-", () => {
-			expect(getModelFamily("codex-mini")).toBe("codex");
-			expect(getModelFamily("codex-latest")).toBe("codex");
+			expect(getModelFamily("codex-mini")).toBe("gpt-5-codex");
+			expect(getModelFamily("codex-latest")).toBe("gpt-5-codex");
 		});
 	});
 
@@ -456,6 +462,27 @@ describe("Codex Prompts Module", () => {
 							call[0].includes("raw.githubusercontent.com"),
 					);
 					expect(rawGitHubCall?.[0]).toContain("gpt_5_codex_prompt.md");
+				});
+
+				it("should map gpt-5.4 prompts to the latest available general prompt file", async () => {
+					mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+					mockFetch.mockResolvedValue({
+						ok: true,
+						json: () => Promise.resolve({ tag_name: "rust-v0.116.0" }),
+						text: () => Promise.resolve("content"),
+						headers: { get: () => "etag" },
+					});
+					mockedMkdir.mockResolvedValue(undefined);
+					mockedWriteFile.mockResolvedValue(undefined);
+
+					await getCodexInstructions("gpt-5.4");
+					const fetchCalls = mockFetch.mock.calls;
+					const rawGitHubCall = fetchCalls.find(
+						(call) =>
+							typeof call[0] === "string" &&
+							call[0].includes("raw.githubusercontent.com"),
+					);
+					expect(rawGitHubCall?.[0]).toContain("gpt_5_2_prompt.md");
 				});
 			});
 		});

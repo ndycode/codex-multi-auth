@@ -2,7 +2,11 @@ import { logDebug, logWarn } from "../logger.js";
 import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
 import { CODEX_HOST_BRIDGE } from "../prompts/codex-host-bridge.js";
 import { getHostCodexPrompt } from "../prompts/host-codex-prompt.js";
-import { getNormalizedModel } from "./helpers/model-map.js";
+import {
+	getModelProfile,
+	resolveNormalizedModel,
+	type ModelReasoningEffort,
+} from "./helpers/model-map.js";
 import {
 	filterHostSystemPromptsWithCachedPrompt,
 	normalizeOrphanedToolOutputs,
@@ -41,117 +45,14 @@ export {
 /**
  * Normalize model name to Codex-supported variants
  *
- * Uses explicit model map for known models, with fallback pattern matching
- * for unknown/custom model names.
+ * Uses the shared model catalog so request routing, prompt selection, and CLI
+ * diagnostics all agree on the same effective model.
  *
  * @param model - Original model name (e.g., "gpt-5-codex-low", "openai/gpt-5-codex")
- * @returns Normalized model name (e.g., "gpt-5-codex", "gpt-5.1-codex-max")
+ * @returns Normalized model name (e.g., "gpt-5-codex", "gpt-5.4", "gpt-5.1-codex-max")
  */
 export function normalizeModel(model: string | undefined): string {
-	if (!model) return "gpt-5.1";
-
-	// Strip provider prefix if present (e.g., "openai/gpt-5-codex" → "gpt-5-codex")
-	const modelId = model.includes("/") ? model.split("/").pop() ?? model : model;
-
-	// Try explicit model map first (handles all known model variants)
-	const mappedModel = getNormalizedModel(modelId);
-	if (mappedModel) {
-		return mappedModel;
-	}
-
-	// Fallback: Pattern-based matching for unknown/custom model names
-	// This preserves backwards compatibility with old verbose names
-	// like "GPT 5 Codex Low (ChatGPT Subscription)"
-	const normalized = modelId.toLowerCase();
-
-	// Priority order for pattern matching (most specific first):
-	// 1. GPT-5.3 Codex Spark (legacy alias -> canonical gpt-5-codex)
-	if (
-		normalized.includes("gpt-5.3-codex-spark") ||
-		normalized.includes("gpt 5.3 codex spark")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 2. GPT-5.3 Codex (legacy alias -> canonical gpt-5-codex)
-	if (
-		normalized.includes("gpt-5.3-codex") ||
-		normalized.includes("gpt 5.3 codex")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 3. GPT-5.2 Codex (legacy alias -> canonical gpt-5-codex)
-	if (
-		normalized.includes("gpt-5.2-codex") ||
-		normalized.includes("gpt 5.2 codex")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 4. GPT-5.2 (general purpose)
-	if (normalized.includes("gpt-5.2") || normalized.includes("gpt 5.2")) {
-		return "gpt-5.2";
-	}
-
-	// 5. GPT-5.1 Codex Max
-	if (
-		normalized.includes("gpt-5.1-codex-max") ||
-		normalized.includes("gpt 5.1 codex max")
-	) {
-		return "gpt-5.1-codex-max";
-	}
-
-	// 6. GPT-5.1 Codex Mini
-	if (
-		normalized.includes("gpt-5.1-codex-mini") ||
-		normalized.includes("gpt 5.1 codex mini")
-	) {
-		return "gpt-5.1-codex-mini";
-	}
-
-	// 7. Legacy Codex Mini
-	if (
-		normalized.includes("codex-mini-latest") ||
-		normalized.includes("gpt-5-codex-mini") ||
-		normalized.includes("gpt 5 codex mini")
-	) {
-		return "gpt-5.1-codex-mini";
-	}
-
-	// 8. GPT-5 Codex canonical + GPT-5.1 Codex legacy alias
-	if (
-		normalized.includes("gpt-5-codex") ||
-		normalized.includes("gpt 5 codex")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 9. GPT-5.1 Codex (legacy alias)
-	if (
-		normalized.includes("gpt-5.1-codex") ||
-		normalized.includes("gpt 5.1 codex")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 10. GPT-5.1 (general-purpose)
-	if (normalized.includes("gpt-5.1") || normalized.includes("gpt 5.1")) {
-		return "gpt-5.1";
-	}
-
-	// 11. GPT-5 Codex family (any other variant with "codex")
-	if (normalized.includes("codex")) {
-		return "gpt-5-codex";
-	}
-
-	// 12. GPT-5 family (any variant) - default to 5.1
-	if (normalized.includes("gpt-5") || normalized.includes("gpt 5")) {
-		return "gpt-5.1";
-	}
-
-	// Default fallback
-	return "gpt-5.1";
+	return resolveNormalizedModel(model);
 }
 
 /**
@@ -399,114 +300,14 @@ export function getReasoningConfig(
 	modelName: string | undefined,
 	userConfig: ConfigOptions = {},
 ): ReasoningConfig {
-	const normalizedName = modelName?.toLowerCase() ?? "";
-
-	// Canonical GPT-5 Codex (stable) defaults to high and does not support "none".
-	const isGpt5Codex =
-		normalizedName.includes("gpt-5-codex") ||
-		normalizedName.includes("gpt 5 codex");
-
-	// Legacy GPT-5.3 Codex alias behavior (supports xhigh, but not "none")
-	const isGpt53Codex =
-		normalizedName.includes("gpt-5.3-codex") ||
-		normalizedName.includes("gpt 5.3 codex");
-
-	// Legacy GPT-5.2 Codex alias behavior (supports xhigh, but not "none")
-	const isGpt52Codex =
-		normalizedName.includes("gpt-5.2-codex") ||
-		normalizedName.includes("gpt 5.2 codex");
-
-	// GPT-5.2 general purpose (not codex variant)
-	const isGpt52General =
-		(normalizedName.includes("gpt-5.2") || normalizedName.includes("gpt 5.2")) &&
-		!isGpt52Codex;
-	const isCodexMax =
-		normalizedName.includes("codex-max") ||
-		normalizedName.includes("codex max");
-	const isCodexMini =
-		normalizedName.includes("codex-mini") ||
-		normalizedName.includes("codex mini") ||
-		normalizedName.includes("codex_mini") ||
-		normalizedName.includes("codex-mini-latest");
-	const isCodex = normalizedName.includes("codex") && !isCodexMini;
-	const isLightweight =
-		!isCodexMini &&
-		(normalizedName.includes("nano") ||
-			normalizedName.includes("mini"));
-
-	// GPT-5.1 general purpose (not codex variants) - supports "none" per OpenAI API docs
-	const isGpt51General =
-		(
-			normalizedName.includes("gpt-5.1") ||
-			normalizedName.includes("gpt 5.1") ||
-			normalizedName === "gpt-5" ||
-			normalizedName.startsWith("gpt-5-")
-		) &&
-		!isCodex &&
-		!isGpt52General &&
-		!isCodexMax &&
-		!isCodexMini;
-
-	// GPT-5.2 general, legacy GPT-5.2/5.3 Codex aliases, and Codex Max support xhigh reasoning
-	const supportsXhigh =
-		isGpt52General || isGpt53Codex || isGpt52Codex || isCodexMax;
-
-	// GPT 5.1 general and GPT 5.2 general support "none" reasoning per:
-	// - OpenAI API docs: "gpt-5.1 defaults to none, supports: none, low, medium, high"
-	// - Codex CLI: ReasoningEffort enum includes None variant (codex-rs/protocol/src/openai_models.rs)
-	// - Codex CLI: docs/config.md lists "none" as valid for model_reasoning_effort
-	// - gpt-5.2 (being newer) also supports: none, low, medium, high, xhigh
-	// - Codex models (including GPT-5 Codex and legacy GPT-5.3/5.2 Codex aliases) do NOT support "none"
-	const supportsNone = isGpt52General || isGpt51General;
-
-	// Default based on model type (Codex CLI defaults + plugin opinionated tuning)
-	// Note: OpenAI docs say gpt-5.1 defaults to "none", but we default to "medium"
-	// for better coding assistance unless user explicitly requests "none".
-	// - Canonical GPT-5 Codex defaults to high in stable Codex.
-	// - Legacy GPT-5.3/5.2 Codex aliases default to xhigh for backward compatibility.
-	const defaultEffort: ReasoningConfig["effort"] = isCodexMini
-		? "medium"
-		: isGpt5Codex
-			? "high"
-			: isGpt53Codex || isGpt52Codex
-				? "xhigh"
-			: supportsXhigh
-			? "high"
-			: isLightweight
-				? "minimal"
-				: "medium";
-
-	// Get user-requested effort
-	let effort = userConfig.reasoningEffort || defaultEffort;
-
-	if (isCodexMini) {
-		if (effort === "minimal" || effort === "low" || effort === "none") {
-			effort = "medium";
-		}
-		if (effort === "xhigh") {
-			effort = "high";
-		}
-		if (effort !== "high" && effort !== "medium") {
-			effort = "medium";
-		}
-	}
-
-	// For models that don't support xhigh, downgrade to high
-	if (!supportsXhigh && effort === "xhigh") {
-		effort = "high";
-	}
-
-	// For models that don't support "none", upgrade to "low"
-	// (Codex models don't support "none" - only GPT-5.1 and GPT-5.2 general purpose do)
-	if (!supportsNone && effort === "none") {
-		effort = "low";
-	}
-
-	// Normalize "minimal" to "low" for Codex families
-		// Codex CLI presets are low/medium/high (or xhigh for Codex Max / GPT-5.3/5.2 Codex)
-	if (isCodex && effort === "minimal") {
-		effort = "low";
-	}
+	const profile = getModelProfile(modelName);
+	const defaultEffort = profile.defaultReasoningEffort;
+	const requestedEffort = userConfig.reasoningEffort ?? defaultEffort;
+	const effort = coerceReasoningEffort(
+		requestedEffort,
+		profile.supportedReasoningEfforts,
+		defaultEffort,
+	);
 
 	const summary = sanitizeReasoningSummary(userConfig.reasoningSummary);
 
@@ -514,6 +315,37 @@ export function getReasoningConfig(
 		effort,
 		summary,
 	};
+}
+
+const REASONING_FALLBACKS: Record<
+	ModelReasoningEffort,
+	readonly ModelReasoningEffort[]
+> = {
+	none: ["none", "low", "minimal", "medium", "high", "xhigh"],
+	minimal: ["minimal", "low", "none", "medium", "high", "xhigh"],
+	low: ["low", "minimal", "none", "medium", "high", "xhigh"],
+	medium: ["medium", "low", "high", "minimal", "none", "xhigh"],
+	high: ["high", "medium", "xhigh", "low", "minimal", "none"],
+	xhigh: ["xhigh", "high", "medium", "low", "minimal", "none"],
+} as const;
+
+function coerceReasoningEffort(
+	effort: ModelReasoningEffort,
+	supportedEfforts: readonly ModelReasoningEffort[],
+	defaultEffort: ModelReasoningEffort,
+): ReasoningConfig["effort"] {
+	if (supportedEfforts.includes(effort)) {
+		return effort;
+	}
+
+	const fallbackOrder = REASONING_FALLBACKS[effort] ?? [defaultEffort];
+	for (const candidate of fallbackOrder) {
+		if (supportedEfforts.includes(candidate)) {
+			return candidate;
+		}
+	}
+
+	return defaultEffort;
 }
 
 function sanitizeReasoningSummary(

@@ -1,172 +1,112 @@
-import { describe, it, expect } from "vitest";
-import { MODEL_MAP, getNormalizedModel, isKnownModel } from "../lib/request/helpers/model-map.js";
+import { describe, expect, it } from "vitest";
+import {
+	DEFAULT_MODEL,
+	MODEL_MAP,
+	getModelCapabilities,
+	getModelProfile,
+	getNormalizedModel,
+	isKnownModel,
+	resolveNormalizedModel,
+} from "../lib/request/helpers/model-map.js";
 
-describe("Model Map Module", () => {
-  describe("MODEL_MAP", () => {
-    it("contains canonical GPT-5 codex mappings", () => {
-      expect(MODEL_MAP["gpt-5-codex"]).toBe("gpt-5-codex");
-      expect(MODEL_MAP["gpt-5-codex-low"]).toBe("gpt-5-codex");
-      expect(MODEL_MAP["gpt-5-codex-medium"]).toBe("gpt-5-codex");
-      expect(MODEL_MAP["gpt-5-codex-high"]).toBe("gpt-5-codex");
-    });
+describe("model map", () => {
+	describe("MODEL_MAP", () => {
+		it("keeps codex families canonical", () => {
+			expect(MODEL_MAP["gpt-5-codex"]).toBe("gpt-5-codex");
+			expect(MODEL_MAP["gpt-5.3-codex-spark-high"]).toBe("gpt-5-codex");
+			expect(MODEL_MAP["gpt-5.1-codex-max-xhigh"]).toBe("gpt-5.1-codex-max");
+			expect(MODEL_MAP["codex-mini-latest"]).toBe("gpt-5.1-codex-mini");
+		});
 
-    it("contains GPT-5.1 codex-max models", () => {
-      expect(MODEL_MAP["gpt-5.1-codex-max"]).toBe("gpt-5.1-codex-max");
-      expect(MODEL_MAP["gpt-5.1-codex-max-low"]).toBe("gpt-5.1-codex-max");
-      expect(MODEL_MAP["gpt-5.1-codex-max-medium"]).toBe("gpt-5.1-codex-max");
-      expect(MODEL_MAP["gpt-5.1-codex-max-high"]).toBe("gpt-5.1-codex-max");
-      expect(MODEL_MAP["gpt-5.1-codex-max-xhigh"]).toBe("gpt-5.1-codex-max");
-    });
+		it("adds first-class GPT-5.4 era general models", () => {
+			expect(MODEL_MAP["gpt-5.4"]).toBe("gpt-5.4");
+			expect(MODEL_MAP["gpt-5.4-pro-high"]).toBe("gpt-5.4-pro");
+			expect(MODEL_MAP["gpt-5"]).toBe("gpt-5");
+			expect(MODEL_MAP["gpt-5-pro-high"]).toBe("gpt-5-pro");
+		});
 
-    it("contains GPT-5.2 models", () => {
-      expect(MODEL_MAP["gpt-5.2"]).toBe("gpt-5.2");
-      expect(MODEL_MAP["gpt-5.2-none"]).toBe("gpt-5.2");
-      expect(MODEL_MAP["gpt-5.2-low"]).toBe("gpt-5.2");
-      expect(MODEL_MAP["gpt-5.2-medium"]).toBe("gpt-5.2");
-      expect(MODEL_MAP["gpt-5.2-high"]).toBe("gpt-5.2");
-      expect(MODEL_MAP["gpt-5.2-xhigh"]).toBe("gpt-5.2");
-    });
+		it("keeps mini and nano on current non-5.1 model IDs", () => {
+			expect(MODEL_MAP["gpt-5-mini"]).toBe("gpt-5-mini");
+			expect(MODEL_MAP["gpt-5-nano"]).toBe("gpt-5-nano");
+			expect(MODEL_MAP["gpt-5.4-mini"]).toBe("gpt-5-mini");
+			expect(MODEL_MAP["gpt-5.4-nano"]).toBe("gpt-5-nano");
+		});
+	});
 
-	    it("contains GPT-5.2 codex models", () => {
-	      expect(MODEL_MAP["gpt-5.2-codex"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.2-codex-low"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.2-codex-medium"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.2-codex-high"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.2-codex-xhigh"]).toBe("gpt-5-codex");
-	    });
+	describe("getNormalizedModel", () => {
+		it("returns exact aliases case-insensitively", () => {
+			expect(getNormalizedModel("GPT-5.4")).toBe("gpt-5.4");
+			expect(getNormalizedModel("GPT-5.4-PRO-HIGH")).toBe("gpt-5.4-pro");
+			expect(getNormalizedModel("gpt-5.4-mini")).toBe("gpt-5-mini");
+			expect(getNormalizedModel("gpt-5.3-codex-high")).toBe("gpt-5-codex");
+		});
 
-	    it("contains GPT-5.3 codex models", () => {
-	      expect(MODEL_MAP["gpt-5.3-codex"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-low"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-medium"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-high"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-xhigh"]).toBe("gpt-5-codex");
-	    });
+		it("returns undefined for unknown exact identifiers", () => {
+			expect(getNormalizedModel("unknown-model")).toBeUndefined();
+			expect(getNormalizedModel("gpt-6")).toBeUndefined();
+			expect(getNormalizedModel("")).toBeUndefined();
+		});
+	});
 
-	    it("contains GPT-5.3 codex spark models", () => {
-	      expect(MODEL_MAP["gpt-5.3-codex-spark"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-spark-low"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-spark-medium"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-spark-high"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-spark-xhigh"]).toBe("gpt-5-codex");
-	    });
+	describe("resolveNormalizedModel", () => {
+		it("resolves provider-prefixed and verbose GPT-5 variants", () => {
+			expect(resolveNormalizedModel("openai/gpt-5.4")).toBe("gpt-5.4");
+			expect(resolveNormalizedModel("openai/gpt-5.4-mini-high")).toBe("gpt-5-mini");
+			expect(resolveNormalizedModel("GPT 5.4 Pro High")).toBe("gpt-5.4-pro");
+			expect(resolveNormalizedModel("GPT 5 Codex Low (ChatGPT Subscription)")).toBe("gpt-5-codex");
+		});
 
-    it("contains GPT-5.1 codex-mini models", () => {
-      expect(MODEL_MAP["gpt-5.1-codex-mini"]).toBe("gpt-5.1-codex-mini");
-      expect(MODEL_MAP["gpt-5.1-codex-mini-medium"]).toBe("gpt-5.1-codex-mini");
-      expect(MODEL_MAP["gpt-5.1-codex-mini-high"]).toBe("gpt-5.1-codex-mini");
-    });
+		it("defaults unknown GPT-5-ish requests to GPT-5.4 instead of GPT-5.1", () => {
+			expect(resolveNormalizedModel("gpt-5-unknown-preview")).toBe("gpt-5.4");
+			expect(resolveNormalizedModel("gpt 5 experimental build")).toBe("gpt-5.4");
+		});
 
-    it("contains GPT-5.1 general purpose models", () => {
-      expect(MODEL_MAP["gpt-5.1"]).toBe("gpt-5.1");
-      expect(MODEL_MAP["gpt-5.1-none"]).toBe("gpt-5.1");
-      expect(MODEL_MAP["gpt-5.1-low"]).toBe("gpt-5.1");
-      expect(MODEL_MAP["gpt-5.1-medium"]).toBe("gpt-5.1");
-      expect(MODEL_MAP["gpt-5.1-high"]).toBe("gpt-5.1");
-      expect(MODEL_MAP["gpt-5.1-chat-latest"]).toBe("gpt-5.1");
-    });
+		it("uses the current default model when the request is missing or unrelated", () => {
+			expect(resolveNormalizedModel(undefined)).toBe(DEFAULT_MODEL);
+			expect(resolveNormalizedModel("")).toBe(DEFAULT_MODEL);
+			expect(resolveNormalizedModel("gpt-4")).toBe(DEFAULT_MODEL);
+			expect(resolveNormalizedModel("unknown-model")).toBe(DEFAULT_MODEL);
+		});
+	});
 
-    it("keeps canonical GPT-5 codex mapping stable", () => {
-      expect(MODEL_MAP["gpt-5-codex"]).toBe("gpt-5-codex");
-    });
+	describe("model profiles", () => {
+		it("routes GPT-5.4-era general models through the latest available general prompt family", () => {
+			expect(getModelProfile("gpt-5.4").promptFamily).toBe("gpt-5.2");
+			expect(getModelProfile("gpt-5.4-pro").promptFamily).toBe("gpt-5.2");
+			expect(getModelProfile("gpt-5-mini").promptFamily).toBe("gpt-5.2");
+		});
 
-    it("maps legacy codex-mini models to GPT-5.1 codex-mini", () => {
-      expect(MODEL_MAP["codex-mini-latest"]).toBe("gpt-5.1-codex-mini");
-      expect(MODEL_MAP["gpt-5-codex-mini"]).toBe("gpt-5.1-codex-mini");
-      expect(MODEL_MAP["gpt-5-codex-mini-medium"]).toBe("gpt-5.1-codex-mini");
-      expect(MODEL_MAP["gpt-5-codex-mini-high"]).toBe("gpt-5.1-codex-mini");
-    });
+		it("keeps GPT-5.1 on its own prompt family", () => {
+			expect(getModelProfile("gpt-5.1").promptFamily).toBe("gpt-5.1");
+		});
 
-    it("maps legacy GPT-5 general purpose models to GPT-5.1", () => {
-      expect(MODEL_MAP["gpt-5"]).toBe("gpt-5.1");
-      expect(MODEL_MAP["gpt-5-mini"]).toBe("gpt-5.1");
-      expect(MODEL_MAP["gpt-5-nano"]).toBe("gpt-5.1");
-    });
-  });
+		it("exposes tool-search and computer-use capabilities", () => {
+			expect(getModelCapabilities("gpt-5.4")).toEqual({
+				toolSearch: true,
+				computerUse: true,
+			});
+			expect(getModelCapabilities("gpt-5.4-pro")).toEqual({
+				toolSearch: false,
+				computerUse: true,
+			});
+			expect(getModelCapabilities("gpt-5-mini")).toEqual({
+				toolSearch: false,
+				computerUse: false,
+			});
+		});
+	});
 
-  describe("getNormalizedModel", () => {
-	    it("returns normalized model for exact match", () => {
-	      expect(getNormalizedModel("gpt-5.1-codex")).toBe("gpt-5-codex");
-	      expect(getNormalizedModel("gpt-5.1-codex-low")).toBe("gpt-5-codex");
-	      expect(getNormalizedModel("gpt-5.2-codex-high")).toBe("gpt-5-codex");
-	      expect(getNormalizedModel("gpt-5.3-codex-high")).toBe("gpt-5-codex");
-	      expect(getNormalizedModel("gpt-5.3-codex-spark-high")).toBe("gpt-5-codex");
-	    });
+	describe("isKnownModel", () => {
+		it("returns true for explicit aliases only", () => {
+			expect(isKnownModel("gpt-5.4")).toBe(true);
+			expect(isKnownModel("gpt-5.4-mini")).toBe(true);
+			expect(isKnownModel("GPT-5.3-CODEX-HIGH")).toBe(true);
+		});
 
-	    it("handles case-insensitive lookup", () => {
-	      expect(getNormalizedModel("GPT-5.1-CODEX")).toBe("gpt-5-codex");
-	      expect(getNormalizedModel("Gpt-5.2-Codex-High")).toBe("gpt-5-codex");
-	      expect(getNormalizedModel("Gpt-5.3-Codex-High")).toBe("gpt-5-codex");
-	      expect(getNormalizedModel("Gpt-5.3-Codex-Spark-High")).toBe("gpt-5-codex");
-	    });
-
-    it("returns undefined for unknown models", () => {
-      expect(getNormalizedModel("unknown-model")).toBeUndefined();
-      expect(getNormalizedModel("gpt-6")).toBeUndefined();
-      expect(getNormalizedModel("")).toBeUndefined();
-    });
-
-    it("handles legacy model mapping", () => {
-      expect(getNormalizedModel("gpt-5-codex")).toBe("gpt-5-codex");
-      expect(getNormalizedModel("gpt-5")).toBe("gpt-5.1");
-      expect(getNormalizedModel("codex-mini-latest")).toBe("gpt-5.1-codex-mini");
-    });
-
-    it("strips reasoning effort suffix and normalizes", () => {
-      expect(getNormalizedModel("gpt-5.1-codex-max-xhigh")).toBe("gpt-5.1-codex-max");
-      expect(getNormalizedModel("gpt-5.2-medium")).toBe("gpt-5.2");
-    });
-  });
-
-  describe("isKnownModel", () => {
-	    it("returns true for known models", () => {
-	      expect(isKnownModel("gpt-5.1-codex")).toBe(true);
-	      expect(isKnownModel("gpt-5.2")).toBe(true);
-	      expect(isKnownModel("gpt-5.3-codex")).toBe(true);
-	      expect(isKnownModel("gpt-5.3-codex-spark")).toBe(true);
-	      expect(isKnownModel("gpt-5.1-codex-max")).toBe(true);
-	      expect(isKnownModel("gpt-5-codex")).toBe(true);
-	    });
-
-	    it("returns true for case-insensitive matches", () => {
-	      expect(isKnownModel("GPT-5.1-CODEX")).toBe(true);
-	      expect(isKnownModel("GPT-5.2-CODEX-HIGH")).toBe(true);
-	      expect(isKnownModel("GPT-5.3-CODEX-HIGH")).toBe(true);
-	      expect(isKnownModel("GPT-5.3-CODEX-SPARK-HIGH")).toBe(true);
-	    });
-
-    it("returns false for unknown models", () => {
-      expect(isKnownModel("gpt-6")).toBe(false);
-      expect(isKnownModel("claude-3")).toBe(false);
-      expect(isKnownModel("unknown")).toBe(false);
-      expect(isKnownModel("")).toBe(false);
-    });
-  });
-
-  describe("Model count and completeness", () => {
-    it("has expected number of model mappings", () => {
-      const modelCount = Object.keys(MODEL_MAP).length;
-      expect(modelCount).toBeGreaterThanOrEqual(30);
-    });
-
-    it("all values are valid normalized model names", () => {
-      const validNormalizedModels = new Set([
-        "gpt-5-codex",
-        "gpt-5.1-codex-max",
-	        "gpt-5.1-codex-mini",
-	        "gpt-5.1",
-	        "gpt-5.2",
-	      ]);
-
-      for (const [key, value] of Object.entries(MODEL_MAP)) {
-        expect(validNormalizedModels.has(value)).toBe(true);
-      }
-    });
-
-    it("no duplicate keys exist", () => {
-      const keys = Object.keys(MODEL_MAP);
-      const uniqueKeys = new Set(keys);
-      expect(keys.length).toBe(uniqueKeys.size);
-    });
-  });
+		it("returns false for unknown names even though fallback routing exists", () => {
+			expect(isKnownModel("gpt-5-unknown-preview")).toBe(false);
+			expect(isKnownModel("claude-3")).toBe(false);
+			expect(isKnownModel("")).toBe(false);
+		});
+	});
 });

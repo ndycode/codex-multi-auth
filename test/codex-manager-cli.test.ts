@@ -5702,11 +5702,77 @@ describe("codex manager cli commands", () => {
 		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
 			command: string;
 			accounts: { total: number; enabled: number; disabled: number };
+			modelSelection: {
+				requested: string;
+				normalized: string;
+				remapped: boolean;
+				promptFamily: string;
+				capabilities: { toolSearch: boolean; computerUse: boolean };
+			};
 		};
 		expect(payload.command).toBe("report");
 		expect(payload.accounts.total).toBe(2);
 		expect(payload.accounts.enabled).toBe(1);
 		expect(payload.accounts.disabled).toBe(1);
+		expect(payload.modelSelection).toEqual({
+			requested: "gpt-5-codex",
+			normalized: "gpt-5-codex",
+			remapped: false,
+			promptFamily: "gpt-5-codex",
+			capabilities: {
+				toolSearch: false,
+				computerUse: false,
+			},
+		});
+	});
+
+	it("reports normalized model routing and capabilities for remapped report probes", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "real@example.net",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"report",
+			"--json",
+			"--model",
+			"gpt-5.4-mini",
+		]);
+
+		expect(exitCode).toBe(0);
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			modelSelection: {
+				requested: string;
+				normalized: string;
+				remapped: boolean;
+				promptFamily: string;
+				capabilities: { toolSearch: boolean; computerUse: boolean };
+			};
+		};
+		expect(payload.modelSelection).toEqual({
+			requested: "gpt-5.4-mini",
+			normalized: "gpt-5-mini",
+			remapped: true,
+			promptFamily: "gpt-5.2",
+			capabilities: {
+				toolSearch: false,
+				computerUse: false,
+			},
+		});
 	});
 
 	it("drives interactive settings hub across sections and persists dashboard/backend changes", async () => {

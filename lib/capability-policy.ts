@@ -1,4 +1,4 @@
-import { getNormalizedModel } from "./request/helpers/model-map.js";
+import { resolveNormalizedModel } from "./request/helpers/model-map.js";
 
 export interface CapabilityPolicySnapshot {
 	successes: number;
@@ -33,7 +33,7 @@ function normalizeModel(model: string | undefined): string | null {
 	const withoutProvider = trimmedInput.includes("/")
 		? (trimmedInput.split("/").pop() ?? trimmedInput)
 		: trimmedInput;
-	const mapped = getNormalizedModel(withoutProvider) ?? withoutProvider;
+	const mapped = resolveNormalizedModel(withoutProvider);
 	const trimmed = mapped.trim().toLowerCase();
 	if (!trimmed) return null;
 	return trimmed.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");

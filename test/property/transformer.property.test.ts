@@ -47,12 +47,12 @@ describe("normalizeModel property tests", () => {
 
   it("handles undefined gracefully", () => {
     const result = normalizeModel(undefined);
-    expect(result).toBe("gpt-5.1");
+    expect(result).toBe("gpt-5.4");
   });
 
   it("handles empty string gracefully", () => {
     const result = normalizeModel("");
-    expect(result).toBe("gpt-5.1");
+    expect(result).toBe("gpt-5.4");
   });
 });
 
@@ -203,10 +203,10 @@ describe("getReasoningConfig property tests", () => {
     );
   });
 
-  it("non-xhigh models downgrade xhigh to high", () => {
+  it("models without xhigh support downgrade xhigh to high", () => {
     fc.assert(
       fc.property(
-        fc.constantFrom("gpt-5.1", "gpt-5.1-codex"),
+        fc.constantFrom("gpt-5", "gpt-5.1"),
         (model) => {
           const result = getReasoningConfig(model, { reasoningEffort: "xhigh" });
           expect(result.effort).toBe("high");

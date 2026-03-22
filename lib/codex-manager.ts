@@ -40,6 +40,11 @@ import {
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
+	getModelCapabilities,
+	getModelProfile,
+	resolveNormalizedModel,
+} from "./request/helpers/model-map.js";
+import {
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
 	type CodexQuotaSnapshot,
@@ -95,6 +100,14 @@ type TokenSuccessWithAccount = TokenSuccess & {
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
 
+interface ModelInspection {
+	requested: string;
+	normalized: string;
+	remapped: boolean;
+	promptFamily: ModelFamily;
+	capabilities: ReturnType<typeof getModelCapabilities>;
+}
+
 function stylePromptText(text: string, tone: PromptTone): string {
 	if (!output.isTTY) return text;
 	const ui = getUiRuntimeOptions();
@@ -115,6 +128,30 @@ function stylePromptText(text: string, tone: PromptTone): string {
 					? ANSI.red
 					: ANSI.dim;
 	return `${legacyCode}${text}${ANSI.reset}`;
+}
+
+function inspectRequestedModel(requestedModel: string): ModelInspection {
+	const normalized = resolveNormalizedModel(requestedModel);
+	const profile = getModelProfile(normalized);
+	return {
+		requested: requestedModel,
+		normalized,
+		remapped: requestedModel !== normalized,
+		promptFamily: profile.promptFamily,
+		capabilities: getModelCapabilities(normalized),
+	};
+}
+
+function formatModelInspection(model: ModelInspection): string {
+	const route = model.remapped
+		? `${model.requested} -> ${model.normalized}`
+		: model.normalized;
+	return [
+		route,
+		`prompt family ${model.promptFamily}`,
+		`tool search ${model.capabilities.toolSearch ? "yes" : "no"}`,
+		`computer use ${model.capabilities.computerUse ? "yes" : "no"}`,
+	].join(" | ");
 }
 
 function collapseWhitespace(value: string): string {
@@ -1898,6 +1935,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	const forceRefresh = options.forceRefresh === true;
 	const liveProbe = options.liveProbe === true;
 	const probeModel = options.model?.trim() || "gpt-5-codex";
+	const modelInspection = inspectRequestedModel(probeModel);
 	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = liveProbe ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
@@ -1926,6 +1964,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 			: `Checking ${storage.accounts.length} account(s) with quick check${liveProbe ? " + live check" : ""}...`,
 		"accent",
 	));
+	console.log(stylePromptText(`Model probe: ${formatModelInspection(modelInspection)}`, "muted"));
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 		const account = storage.accounts[i];
 		if (!account) continue;
@@ -1954,7 +1993,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						const snapshot = await fetchCodexQuotaSnapshot({
 							accountId: probeAccountId,
 							accessToken: currentAccessToken,
-							model: probeModel,
+							model: modelInspection.normalized,
 						});
 						if (workingQuotaCache) {
 							quotaCacheChanged =
@@ -2045,7 +2084,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 						const snapshot = await fetchCodexQuotaSnapshot({
 							accountId: probeAccountId,
 							accessToken: result.access,
-							model: probeModel,
+							model: modelInspection.normalized,
 						});
 						if (workingQuotaCache) {
 							quotaCacheChanged =
@@ -2767,6 +2806,8 @@ async function runReport(args: string[]): Promise<number> {
 		return 1;
 	}
 	const options = parsedArgs.options;
+	const requestedModel = options.model?.trim() || "gpt-5-codex";
+	const modelInspection = inspectRequestedModel(requestedModel);
 
 	setStoragePath(null);
 	const storagePath = getStoragePath();
@@ -2802,7 +2843,7 @@ async function runReport(args: string[]): Promise<number> {
 				const liveQuota = await fetchCodexQuotaSnapshot({
 					accountId,
 					accessToken: refreshResult.access,
-					model: options.model,
+					model: modelInspection.normalized,
 				});
 				liveQuotaByIndex.set(i, liveQuota);
 			} catch (error) {
@@ -2848,6 +2889,13 @@ async function runReport(args: string[]): Promise<number> {
 		generatedAt: new Date(now).toISOString(),
 		storagePath,
 		model: options.model,
+		modelSelection: {
+			requested: modelInspection.requested,
+			normalized: modelInspection.normalized,
+			remapped: modelInspection.remapped,
+			promptFamily: modelInspection.promptFamily,
+			capabilities: modelInspection.capabilities,
+		},
 		liveProbe: options.live,
 		accounts: {
 			total: accountCount,
@@ -2878,6 +2926,7 @@ async function runReport(args: string[]): Promise<number> {
 
 	console.log(`Report generated at ${report.generatedAt}`);
 	console.log(`Storage: ${report.storagePath}`);
+	console.log(`Model: ${formatModelInspection(modelInspection)}`);
 	console.log(
 		`Accounts: ${report.accounts.total} total (${report.accounts.enabled} enabled, ${report.accounts.disabled} disabled, ${report.accounts.coolingDown} cooling, ${report.accounts.rateLimited} rate-limited)`,
 	);
