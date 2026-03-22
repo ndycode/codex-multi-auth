@@ -37,19 +37,13 @@ export async function saveAccountsToDisk(
 		await params.ensureGitignore();
 
 		if (params.looksLikeSyntheticFixtureStorage(storage)) {
-			try {
-				const existing = await params.loadExistingStorage();
-				if (
-					existing &&
-					existing.accounts.length > 0 &&
-					!params.looksLikeSyntheticFixtureStorage(existing)
-				) {
-					throw params.createSyntheticFixtureError();
-				}
-			} catch (error) {
-				if (error instanceof Error && error.message.includes("synthetic")) {
-					throw error;
-				}
+			const existing = await params.loadExistingStorage();
+			if (
+				existing &&
+				existing.accounts.length > 0 &&
+				!params.looksLikeSyntheticFixtureStorage(existing)
+			) {
+				throw params.createSyntheticFixtureError();
 			}
 		}
 
