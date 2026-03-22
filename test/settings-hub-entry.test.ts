@@ -34,4 +34,23 @@ describe("settings hub entry", () => {
 		);
 		expect(result).toEqual({ type: "back" });
 	});
+
+	it("passes through null when the settings hub prompt is cancelled", async () => {
+		const promptSettingsHubMenu = vi.fn(async () => null);
+		const select = vi.fn();
+
+		const result = await promptSettingsHubEntry({
+			initialFocus: "account-list",
+			promptSettingsHubMenu,
+			isInteractive: () => true,
+			getUiRuntimeOptions: vi.fn(() => ({ theme: {} }) as never),
+			buildItems: vi.fn(() => []),
+			findInitialCursor: vi.fn(() => 0),
+			select,
+			copy: { title: "Settings", subtitle: "Subtitle", help: "Help" },
+		});
+
+		expect(promptSettingsHubMenu).toHaveBeenCalledOnce();
+		expect(result).toBeNull();
+	});
 });
