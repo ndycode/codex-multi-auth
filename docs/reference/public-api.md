@@ -16,6 +16,12 @@ Stable APIs are covered by semver compatibility guarantees and must remain backw
   - `OpenAIOAuthPlugin`
   - `OpenAIAuthPlugin`
   - default export (alias of `OpenAIOAuthPlugin`)
+- Supported package subpath entrypoints:
+  - `codex-multi-auth/auth`
+  - `codex-multi-auth/storage`
+  - `codex-multi-auth/config`
+  - `codex-multi-auth/request`
+  - `codex-multi-auth/cli`
 - CLI surface:
   - `codex auth ...` command family
   - documented flags and aliases in `reference/commands.md`
