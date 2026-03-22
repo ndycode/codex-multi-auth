@@ -154,6 +154,7 @@ import {
 	isWorkspaceDisabledError,
 } from "./lib/request/fetch-helpers.js";
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
+import { applyResponseCompaction } from "./lib/request/response-compaction.js";
 import {
 	getRateLimitBackoff,
 	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
@@ -1351,10 +1352,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										fastSession: fastSessionEnabled,
 										fastSessionStrategy,
 										fastSessionMaxInputItems,
+										deferFastSessionInputTrimming: fastSessionEnabled,
 									},
 								);
 										let requestInit = transformation?.updatedInit ?? baseInit;
 										let transformedBody: RequestBody | undefined = transformation?.body;
+										const deferredFastSessionInputTrim =
+											transformation?.deferredFastSessionInputTrim;
 										const promptCacheKey = transformedBody?.prompt_cache_key;
 										let model = transformedBody?.model;
 										let modelFamily = model ? getModelFamily(model) : "gpt-5.1";
@@ -1672,6 +1676,36 @@ accountAttemptLoop: while (attempted.size < Math.max(1, accountCount)) {
 										promptCacheKey: effectivePromptCacheKey,
 									},
 								);
+								if (transformedBody && deferredFastSessionInputTrim) {
+									const compactionResult = await applyResponseCompaction({
+										body: transformedBody,
+										requestUrl: url,
+										headers,
+										trim: deferredFastSessionInputTrim,
+										fetchImpl: async (requestUrl, requestInit) => {
+											const normalizedCompactionUrl =
+												typeof requestUrl === "string"
+													? requestUrl
+													: String(requestUrl);
+											return fetch(
+												normalizedCompactionUrl,
+												applyProxyCompatibleInit(
+													normalizedCompactionUrl,
+													requestInit,
+												),
+											);
+										},
+										signal: abortSignal,
+										timeoutMs: Math.min(fetchTimeoutMs, 4_000),
+									});
+									if (compactionResult.mode !== "unchanged") {
+										transformedBody = compactionResult.body;
+										requestInit = {
+											...(requestInit ?? {}),
+											body: JSON.stringify(transformedBody),
+										};
+									}
+								}
 								const quotaScheduleKey = `${entitlementAccountKey}:${model ?? modelFamily}`;
 								const capabilityModelKey = model ?? modelFamily;
 								const quotaDeferral = preemptiveQuotaScheduler.getDeferral(quotaScheduleKey);

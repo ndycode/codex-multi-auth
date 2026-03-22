@@ -84,14 +84,22 @@ describe("model map", () => {
 			expect(getModelCapabilities("gpt-5.4")).toEqual({
 				toolSearch: true,
 				computerUse: true,
+				compaction: true,
 			});
 			expect(getModelCapabilities("gpt-5.4-pro")).toEqual({
 				toolSearch: false,
 				computerUse: true,
+				compaction: true,
 			});
 			expect(getModelCapabilities("gpt-5-mini")).toEqual({
+				toolSearch: true,
+				computerUse: true,
+				compaction: true,
+			});
+			expect(getModelCapabilities("gpt-5-nano")).toEqual({
 				toolSearch: false,
 				computerUse: false,
+				compaction: true,
 			});
 		});
 	});

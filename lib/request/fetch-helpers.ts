@@ -8,7 +8,12 @@ import { ProxyAgent } from "undici";
 import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
-import { transformRequestBody, normalizeModel } from "./request-transformer.js";
+import {
+	transformRequestBody,
+	normalizeModel,
+	resolveFastSessionInputTrimPlan,
+	type FastSessionInputTrimPlan,
+} from "./request-transformer.js";
 import {
 	attachResponseIdCapture,
 	convertSseToJson,
@@ -97,6 +102,12 @@ export interface ResolveUnsupportedCodexFallbackOptions {
 	fallbackOnUnsupportedCodexModel: boolean;
 	fallbackToGpt52OnUnsupportedGpt53: boolean;
 	customChain?: Record<string, string[]>;
+}
+
+export interface TransformRequestForCodexResult {
+	body: RequestBody;
+	updatedInit: RequestInit;
+	deferredFastSessionInputTrim?: FastSessionInputTrimPlan["trim"];
 }
 
 function canonicalizeModelName(model: string | undefined): string | undefined {
@@ -651,8 +662,9 @@ export async function transformRequestForCodex(
 		fastSession?: boolean;
 		fastSessionStrategy?: "hybrid" | "always";
 		fastSessionMaxInputItems?: number;
+		deferFastSessionInputTrimming?: boolean;
 	},
-): Promise<{ body: RequestBody; updatedInit: RequestInit } | undefined> {
+): Promise<TransformRequestForCodexResult | undefined> {
 	const hasParsedBody =
 		parsedBody !== undefined &&
 		parsedBody !== null &&
@@ -670,6 +682,12 @@ export async function transformRequestForCodex(
 			body = JSON.parse(init.body) as RequestBody;
 		}
 		const originalModel = body.model;
+		const fastSessionInputTrimPlan = resolveFastSessionInputTrimPlan(
+			body,
+			options?.fastSession ?? false,
+			options?.fastSessionStrategy ?? "hybrid",
+			options?.fastSessionMaxInputItems ?? 30,
+		);
 
 		// Normalize model first to determine which instructions to fetch
 		// This ensures we get the correct model-specific prompt
@@ -700,6 +718,7 @@ export async function transformRequestForCodex(
 			options?.fastSession ?? false,
 			options?.fastSessionStrategy ?? "hybrid",
 			options?.fastSessionMaxInputItems ?? 30,
+			options?.deferFastSessionInputTrimming ?? false,
 		);
 
 		// Log transformed request
@@ -720,6 +739,10 @@ export async function transformRequestForCodex(
 			return {
 				body: transformedBody,
 				updatedInit: { ...(init ?? {}), body: JSON.stringify(transformedBody) },
+				deferredFastSessionInputTrim:
+					options?.deferFastSessionInputTrimming === true
+						? fastSessionInputTrimPlan.trim
+						: undefined,
 			};
 	} catch (e) {
 		logError(`${ERROR_MESSAGES.REQUEST_PARSE_ERROR}`, e);

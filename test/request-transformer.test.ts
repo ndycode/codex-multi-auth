@@ -653,9 +653,31 @@ describe('Request Transformer Module', () => {
 						},
 					},
 				};
-				const result = await transformRequestBody(body, codexInstructions);
-				expect(result.text?.verbosity).toBe('medium');
-				expect(result.text?.format).toEqual(body.text?.format);
+			const result = await transformRequestBody(body, codexInstructions);
+			expect(result.text?.verbosity).toBe('medium');
+			expect(result.text?.format).toEqual(body.text?.format);
+		});
+
+			it('defers fast-session input trimming when requested for downstream compaction', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5.4',
+					input: Array.from({ length: 12 }, (_value, index) => ({
+						type: 'message',
+						role: index === 0 ? 'developer' : 'user',
+						content: index === 0 ? 'system prompt' : `message-${index}`,
+					})),
+				};
+				const result = await transformRequestBody(
+					body,
+					codexInstructions,
+					{ global: {}, models: {} },
+					true,
+					true,
+					'always',
+					8,
+					true,
+				);
+				expect(result.input).toHaveLength(12);
 			});
 
 		it('should set required Codex fields', async () => {

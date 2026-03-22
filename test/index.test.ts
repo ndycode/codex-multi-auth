@@ -136,9 +136,13 @@ vi.mock("../lib/live-account-sync.js", () => ({
 	LiveAccountSync: liveAccountSyncCtorMock,
 }));
 
-vi.mock("../lib/request/request-transformer.js", () => ({
-	applyFastSessionDefaults: <T>(config: T) => config,
-}));
+vi.mock("../lib/request/request-transformer.js", async () => {
+	const actual = await vi.importActual("../lib/request/request-transformer.js");
+	return {
+		...(actual as Record<string, unknown>),
+		applyFastSessionDefaults: <T>(config: T) => config,
+	};
+});
 
 vi.mock("../lib/logger.js", () => ({
 	initLogger: vi.fn(),
@@ -1634,6 +1638,59 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(thirdBody.previous_response_id).toBe("resp_first_123");
 		expect(thirdHeaders.get("x-test-account-id")).toBe("acc-1");
 		expect(thirdHeaders.get("x-test-access-token")).toBe("access-alpha");
+	});
+
+	it("compacts fast-session input before sending the upstream request when compaction succeeds", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const longInput = Array.from({ length: 12 }, (_value, index) => ({
+			type: "message",
+			role: index === 0 ? "developer" : "user",
+			content: index === 0 ? "system prompt" : `message-${index}`,
+		}));
+		const compactedInput = [
+			{
+				type: "message",
+				role: "assistant",
+				content: "compacted summary",
+			},
+		];
+
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
+			updatedInit: {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5-mini", input: longInput }),
+			},
+			body: { model: "gpt-5-mini", input: longInput },
+			deferredFastSessionInputTrim: { maxItems: 8, preferLatestUserOnly: false },
+		});
+
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ output: compactedInput }), { status: 200 }),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5-mini", input: longInput }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(globalThis.fetch).mock.calls[0]?.[0]).toBe(
+			"https://api.openai.com/v1/chat/compact",
+		);
+
+		const upstreamInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const upstreamBody =
+			typeof upstreamInit.body === "string"
+				? (JSON.parse(upstreamInit.body) as { input?: unknown[] })
+				: {};
+		expect(upstreamBody.input).toEqual(compactedInput);
 	});
 
 	it("uses the refreshed token email when checking entitlement blocks", async () => {

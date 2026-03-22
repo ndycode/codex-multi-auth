@@ -33,6 +33,7 @@ export interface TransformRequestBodyParams {
 	fastSession?: boolean;
 	fastSessionStrategy?: FastSessionStrategy;
 	fastSessionMaxInputItems?: number;
+	deferFastSessionInputTrimming?: boolean;
 }
 
 const PLAN_MODE_ONLY_TOOLS = new Set(["request_user_input"]);
@@ -482,6 +483,15 @@ export function trimInputForFastSession(
 	return trimmed.slice(trimmed.length - safeMax);
 }
 
+export interface FastSessionInputTrimPlan {
+	shouldApply: boolean;
+	isTrivialTurn: boolean;
+	trim?: {
+		maxItems: number;
+		preferLatestUserOnly: boolean;
+	};
+}
+
 function isTrivialLatestPrompt(text: string): boolean {
 	const normalized = text.trim();
 	if (!normalized) return false;
@@ -538,6 +548,33 @@ function isComplexFastSessionRequest(
 	const recentUserTexts = userTexts.slice(-3);
 	if (recentUserTexts.some(isStructurallyComplexPrompt)) return true;
 	return false;
+}
+
+export function resolveFastSessionInputTrimPlan(
+	body: RequestBody,
+	fastSession: boolean,
+	fastSessionStrategy: FastSessionStrategy,
+	fastSessionMaxInputItems: number,
+): FastSessionInputTrimPlan {
+	const shouldApplyFastSessionTuning =
+		fastSession &&
+		(fastSessionStrategy === "always" ||
+			!isComplexFastSessionRequest(body, fastSessionMaxInputItems));
+	const latestUserText = getLatestUserText(body.input);
+	const isTrivialTurn = isTrivialLatestPrompt(latestUserText ?? "");
+	const shouldPreferLatestUserOnly =
+		shouldApplyFastSessionTuning && isTrivialTurn;
+
+	return {
+		shouldApply: shouldApplyFastSessionTuning,
+		isTrivialTurn,
+		trim: shouldApplyFastSessionTuning
+			? {
+					maxItems: fastSessionMaxInputItems,
+					preferLatestUserOnly: shouldPreferLatestUserOnly,
+				}
+			: undefined,
+	};
 }
 
 function getLatestUserText(input: InputItem[] | undefined): string | undefined {
@@ -672,6 +709,7 @@ export async function transformRequestBody(
 	fastSession?: boolean,
 	fastSessionStrategy?: FastSessionStrategy,
 	fastSessionMaxInputItems?: number,
+	deferFastSessionInputTrimming?: boolean,
 ): Promise<RequestBody>;
 export async function transformRequestBody(
 	bodyOrParams: RequestBody | TransformRequestBodyParams,
@@ -681,6 +719,7 @@ export async function transformRequestBody(
 	fastSession = false,
 	fastSessionStrategy: FastSessionStrategy = "hybrid",
 	fastSessionMaxInputItems = 30,
+	deferFastSessionInputTrimming = false,
 ): Promise<RequestBody> {
 	const useNamedParams =
 		typeof codexInstructions === "undefined" &&
@@ -695,6 +734,7 @@ export async function transformRequestBody(
 	let resolvedFastSession: boolean;
 	let resolvedFastSessionStrategy: FastSessionStrategy;
 	let resolvedFastSessionMaxInputItems: number;
+	let resolvedDeferFastSessionInputTrimming: boolean;
 
 	if (useNamedParams) {
 		const namedParams = bodyOrParams as TransformRequestBodyParams;
@@ -705,6 +745,8 @@ export async function transformRequestBody(
 		resolvedFastSession = namedParams.fastSession ?? false;
 		resolvedFastSessionStrategy = namedParams.fastSessionStrategy ?? "hybrid";
 		resolvedFastSessionMaxInputItems = namedParams.fastSessionMaxInputItems ?? 30;
+		resolvedDeferFastSessionInputTrimming =
+			namedParams.deferFastSessionInputTrimming ?? false;
 	} else {
 		body = bodyOrParams as RequestBody;
 		resolvedCodexInstructions = codexInstructions;
@@ -713,6 +755,7 @@ export async function transformRequestBody(
 		resolvedFastSession = fastSession;
 		resolvedFastSessionStrategy = fastSessionStrategy;
 		resolvedFastSessionMaxInputItems = fastSessionMaxInputItems;
+		resolvedDeferFastSessionInputTrimming = deferFastSessionInputTrimming;
 	}
 
 	if (!body || typeof body !== "object") {
@@ -747,17 +790,17 @@ export async function transformRequestBody(
 	const reasoningModel = shouldUseNormalizedReasoningModel
 		? normalizedModel
 		: lookupModel;
-	const shouldApplyFastSessionTuning =
-		resolvedFastSession &&
-		(resolvedFastSessionStrategy === "always" ||
-			!isComplexFastSessionRequest(body, resolvedFastSessionMaxInputItems));
-	const latestUserText = getLatestUserText(body.input);
-	const isTrivialTurn = isTrivialLatestPrompt(latestUserText ?? "");
+	const fastSessionInputTrimPlan = resolveFastSessionInputTrimPlan(
+		body,
+		resolvedFastSession,
+		resolvedFastSessionStrategy,
+		resolvedFastSessionMaxInputItems,
+	);
+	const shouldApplyFastSessionTuning = fastSessionInputTrimPlan.shouldApply;
+	const isTrivialTurn = fastSessionInputTrimPlan.isTrivialTurn;
 	const shouldDisableToolsForTrivialTurn =
 		shouldApplyFastSessionTuning &&
 		isTrivialTurn;
-	const shouldPreferLatestUserOnly =
-		shouldApplyFastSessionTuning && isTrivialTurn;
 
 	// Codex required fields
 	// ChatGPT backend REQUIRES store=false (confirmed via testing)
@@ -789,10 +832,11 @@ export async function transformRequestBody(
 	if (body.input && Array.isArray(body.input)) {
 		let inputItems: InputItem[] = body.input;
 
-			if (shouldApplyFastSessionTuning) {
+			if (shouldApplyFastSessionTuning && !resolvedDeferFastSessionInputTrimming) {
 				inputItems =
 						trimInputForFastSession(inputItems, resolvedFastSessionMaxInputItems, {
-							preferLatestUserOnly: shouldPreferLatestUserOnly,
+							preferLatestUserOnly:
+								fastSessionInputTrimPlan.trim?.preferLatestUserOnly ?? false,
 						}) ?? inputItems;
 			}
 
