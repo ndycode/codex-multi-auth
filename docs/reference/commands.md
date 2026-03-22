@@ -16,28 +16,43 @@ Compatibility aliases are supported:
 
 ---
 
-## Primary Commands
+## Start Here
 
 | Command | Description |
 | --- | --- |
 | `codex auth login` | Open interactive auth dashboard |
-| `codex auth list` | List saved accounts and active account |
 | `codex auth status` | Print short runtime/account summary |
-| `codex auth switch <index>` | Set active account by index |
 | `codex auth check` | Run quick account health check |
-| `codex auth features` | Print implemented feature summary |
 
 ---
 
-## Advanced Commands
+## Daily Use
+
+| Command | Description |
+| --- | --- |
+| `codex auth list` | List saved accounts and active account |
+| `codex auth switch <index>` | Set active account by index |
+| `codex auth forecast` | Forecast best account by readiness/risk |
+| `codex auth best` | Pick and optionally sync the best account |
+
+---
+
+## Repair
 
 | Command | Description |
 | --- | --- |
 | `codex auth verify-flagged` | Verify flagged accounts and optionally restore healthy accounts |
-| `codex auth forecast` | Forecast best account by readiness/risk |
-| `codex auth report` | Generate full health report |
 | `codex auth fix` | Apply safe account storage fixes |
 | `codex auth doctor` | Run diagnostics and optional repairs |
+
+---
+
+## Advanced
+
+| Command | Description |
+| --- | --- |
+| `codex auth features` | Print implemented feature summary |
+| `codex auth report` | Generate full health report |
 
 ---
 
@@ -46,10 +61,10 @@ Compatibility aliases are supported:
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
-| `--json` | verify-flagged, forecast, report, fix, doctor | Print machine-readable output |
-| `--live` | forecast, report, fix | Use live probe before decisions/output |
+| `--json` | verify-flagged, best, forecast, report, fix, doctor | Print machine-readable output |
+| `--live` | best, forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
-| `--model <model>` | forecast, report, fix | Specify model for live probe paths |
+| `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
 | `--out <path>` | report | Write report output to file |
 | `--fix` | doctor | Apply safe repairs |
 | `--no-restore` | verify-flagged | Verify only; do not restore healthy flagged accounts |

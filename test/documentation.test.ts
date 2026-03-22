@@ -30,6 +30,9 @@ const userDocs = [
 	"docs/reference/error-contracts.md",
 	"docs/reference/settings.md",
 	"docs/reference/storage-paths.md",
+	"docs/releases/v1.1.10.md",
+	"docs/releases/v0.1.9.md",
+	"docs/releases/v0.1.8.md",
 	"docs/releases/v0.1.7.md",
 	"docs/releases/v0.1.6.md",
 	"docs/releases/v0.1.5.md",
@@ -129,7 +132,7 @@ describe("Documentation Integrity", () => {
 		expect(portal).toContain("releases/v0.1.0-beta.0.md");
 		expect(portal).toContain("releases/legacy-pre-0.1-history.md");
 		expect(portal).toContain(
-			"| [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |",
+			"| [Daily Use release notes](#daily-use) | Stable, previous, and archived release notes |",
 		);
 
 		const beta = read("docs/releases/v0.1.0-beta.0.md");
@@ -255,9 +258,12 @@ describe("Documentation Integrity", () => {
 		const manager = read(managerPath);
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
-		expect(commandRef).toContain("| `--live` | forecast, report, fix |");
 		expect(commandRef).toContain(
-			"| `--model <model>` | forecast, report, fix |",
+			"| `--json` | verify-flagged, best, forecast, report, fix, doctor |",
+		);
+		expect(commandRef).toContain("| `--live` | best, forecast, report, fix |");
+		expect(commandRef).toContain(
+			"| `--model <model>` | best, forecast, report, fix |",
 		);
 		expect(manager).toContain("codex auth login");
 		expect(manager).toContain(

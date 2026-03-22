@@ -349,23 +349,30 @@ function printUsage(): void {
 		[
 			"Codex Multi-Auth CLI",
 			"",
-			"Usage:",
+			"Start here:",
 			"  codex auth login [--manual|--no-browser]",
-			"  codex auth list",
 			"  codex auth status",
+			"  codex auth check",
+			"",
+			"Daily use:",
+			"  codex auth list",
 			"  codex auth switch <index>",
 			"  codex auth best [--live] [--json] [--model <model>]",
-			"  codex auth check",
-			"  codex auth features",
-			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
 			"  codex auth forecast [--live] [--json] [--model <model>]",
-			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
+			"",
+			"Repair:",
+			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
 			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
+			"",
+			"Advanced:",
+			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
+			"  codex auth features",
 			"",
 			"Notes:",
 			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
 			"  - Syncs active account into Codex CLI auth state",
+			"  - See docs/reference/commands.md for the full command and flag matrix",
 		].join("\n"),
 	);
 }
@@ -3265,6 +3272,10 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			namedBackups = [];
 			onboardingBackupDiscoveryWarning = null;
 			console.log(`Added account. Total: ${count}`);
+			console.log("Next steps:");
+			console.log("  codex auth status  Check that the wrapper is active.");
+			console.log("  codex auth check   Confirm your saved accounts look healthy.");
+			console.log("  codex auth list    Review saved accounts before switching.");
 			if (count >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				console.log(
 					`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`,
