@@ -1305,6 +1305,22 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		};
 	};
 
+	const buildStableRoutingManager = (
+		account: {
+			index: number;
+			accountId?: string;
+			accountIdSource?: string;
+			email?: string;
+			refreshToken: string;
+			accessToken?: string;
+			idToken?: string;
+		},
+	) => ({
+		...buildRoutingManager([account]),
+		getCurrentOrNextForFamilyHybrid: () => account,
+		getCurrentOrNextForFamily: () => account,
+	});
+
 	it("returns success response for successful fetch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
@@ -1324,27 +1340,42 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const stableAccount = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user@example.com",
+			refreshToken: "refresh-1",
+		};
 
 		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
-			buildRoutingManager([
-				{
-					index: 0,
-					accountId: "acc-1",
-					email: "user@example.com",
-					refreshToken: "refresh-1",
-				},
-			]) as never,
+			buildStableRoutingManager(stableAccount) as never,
 		);
 		vi.mocked(configModule.getSessionAffinity).mockReturnValue(true);
 		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
 		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementation(
-			async (init, _url, _userConfig, _codexMode, body) => ({
+			async (init, _url, _userConfig, _codexMode, body) => {
+				const normalizedPromptCacheKey =
+					typeof body?.prompt_cache_key === "string"
+						? `${body.prompt_cache_key.trim()}:normalized`
+						: undefined;
+				return {
 				updatedInit: {
 					...(init as RequestInit),
-					body: JSON.stringify(body ?? {}),
+					body: JSON.stringify({
+						...(body ?? {}),
+						...(normalizedPromptCacheKey
+							? { prompt_cache_key: normalizedPromptCacheKey }
+							: {}),
+					}),
 				},
-				body: (body ?? { model: "gpt-5.4" }) as { model: string },
-			}),
+				body: {
+					...(body ?? { model: "gpt-5.4" }),
+					...(normalizedPromptCacheKey
+						? { prompt_cache_key: normalizedPromptCacheKey }
+						: {}),
+				} as { model: string; prompt_cache_key?: string; previous_response_id?: string },
+			};
+			},
 		);
 		vi.mocked(fetchHelpers.handleSuccessResponse)
 			.mockImplementationOnce(async (response, _isStreaming, options) => {
@@ -1355,7 +1386,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		globalThis.fetch = vi
 			.fn()
-			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockImplementation(
+				async () => new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -1367,31 +1400,35 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
 		});
 
-		const firstBody = vi.mocked(fetchHelpers.transformRequestForCodex).mock.calls[0]?.[4] as
-			| { previous_response_id?: string }
-			| undefined;
-		const secondBody = vi.mocked(fetchHelpers.transformRequestForCodex).mock.calls[1]?.[4] as
-			| { previous_response_id?: string }
-			| undefined;
+		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const firstBody = JSON.parse(String(firstInit.body)) as {
+			previous_response_id?: string;
+			prompt_cache_key?: string;
+		};
+		const secondBody = JSON.parse(String(secondInit.body)) as {
+			previous_response_id?: string;
+			prompt_cache_key?: string;
+		};
 
 		expect(firstBody?.previous_response_id).toBeUndefined();
 		expect(secondBody?.previous_response_id).toBe("resp_prev_123");
+		expect(secondBody?.prompt_cache_key).toBe("ses_contract:normalized");
 	});
 
 	it("preserves explicit previous_response_id over stored continuation state", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const stableAccount = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user@example.com",
+			refreshToken: "refresh-1",
+		};
 
 		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
-			buildRoutingManager([
-				{
-					index: 0,
-					accountId: "acc-1",
-					email: "user@example.com",
-					refreshToken: "refresh-1",
-				},
-			]) as never,
+			buildStableRoutingManager(stableAccount) as never,
 		);
 		vi.mocked(configModule.getSessionAffinity).mockReturnValue(true);
 		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
@@ -1429,12 +1466,179 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			}),
 		});
 
-		const secondBody = vi.mocked(fetchHelpers.transformRequestForCodex).mock.calls[1]?.[4] as
-			| { previous_response_id?: string }
-			| undefined;
+		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const secondBody = JSON.parse(String(secondInit.body)) as {
+			previous_response_id?: string;
+		};
 		expect(secondBody?.previous_response_id).toBe("resp_explicit_456");
 	});
 
+	it("injects stored previous_response_id when continuation is enabled without session affinity", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const stableAccount = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user@example.com",
+			refreshToken: "refresh-1",
+		};
+
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			buildStableRoutingManager(stableAccount) as never,
+		);
+		vi.mocked(configModule.getSessionAffinity).mockReturnValue(false);
+		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementation(
+			async (init, _url, _userConfig, _codexMode, body) => ({
+				updatedInit: {
+					...(init as RequestInit),
+					body: JSON.stringify(body ?? {}),
+				},
+				body: (body ?? { model: "gpt-5.4" }) as {
+					model: string;
+					previous_response_id?: string;
+				},
+			}),
+		);
+		vi.mocked(fetchHelpers.handleSuccessResponse)
+			.mockImplementationOnce(async (response, _isStreaming, options) => {
+				options?.onResponseId?.("resp_standalone_789");
+				return response;
+			})
+			.mockImplementationOnce(async (response) => response);
+
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+
+		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const secondBody = JSON.parse(String(secondInit.body)) as {
+			previous_response_id?: string;
+		};
+		expect(secondBody?.previous_response_id).toBe("resp_standalone_789");
+	});
+
+	it("keeps account and previous_response_id aligned across overlapping same-session streams", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const streamFailoverModule = await import("../lib/request/stream-failover.js");
+		const accounts = [
+			{
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "acc-2",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		];
+		let selection = 0;
+		const manager = {
+			...buildRoutingManager(accounts),
+			getCurrentOrNextForFamilyHybrid: () => accounts[selection++] ?? accounts[1] ?? null,
+			getCurrentOrNextForFamily: () => accounts[selection++] ?? accounts[1] ?? null,
+		};
+		const responseIdCallbacks: Array<(responseId: string) => void> = [];
+
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.mocked(configModule.getSessionAffinity).mockReturnValue(true);
+		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
+		extractAccountIdMock.mockImplementation((accessToken: unknown) => {
+			if (accessToken === "access-alpha") return "acc-1";
+			if (accessToken === "access-beta") return "acc-2";
+			return "account-1";
+		});
+		vi.spyOn(streamFailoverModule, "withStreamingFailover").mockImplementation(
+			(initialResponse) => initialResponse,
+		);
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementation(
+			async (init, _url, _userConfig, _codexMode, body) => ({
+				updatedInit: {
+					...(init as RequestInit),
+					body: JSON.stringify(body ?? {}),
+				},
+				body: (body ?? { model: "gpt-5.4" }) as {
+					model: string;
+					prompt_cache_key?: string;
+					previous_response_id?: string;
+				},
+			}),
+		);
+		vi.mocked(fetchHelpers.handleSuccessResponse).mockImplementation(
+			async (response, _isStreaming, options) => {
+				if (options?.onResponseId) {
+					responseIdCallbacks.push(options.onResponseId);
+				}
+				return response;
+			},
+		);
+
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const firstRequest = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+				stream: true,
+			}),
+		});
+		const secondRequest = sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+				stream: true,
+			}),
+		});
+
+		await Promise.all([firstRequest, secondRequest]);
+		expect(responseIdCallbacks).toHaveLength(2);
+		responseIdCallbacks[1]?.("resp_second_456");
+		responseIdCallbacks[0]?.("resp_first_123");
+
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+
+		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
+		const thirdBody = JSON.parse(String(thirdInit.body)) as {
+			previous_response_id?: string;
+		};
+		const thirdHeaders = new Headers(thirdInit.headers);
+		expect(thirdBody.previous_response_id).toBe("resp_first_123");
+		expect(thirdHeaders.get("x-test-account-id")).toBe("acc-1");
+		expect(thirdHeaders.get("x-test-access-token")).toBe("access-alpha");
+	});
 	it("compacts fast-session input before sending the upstream request when compaction succeeds", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		const longInput = Array.from({ length: 12 }, (_value, index) => ({
@@ -1488,6 +1692,95 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(upstreamBody.input).toEqual(compactedInput);
 	});
 
+	it("does not rerun fast-session compaction after rotating to another account", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const longInput = Array.from({ length: 12 }, (_value, index) => ({
+			type: "message",
+			role: index === 0 ? "developer" : "user",
+			content: index === 0 ? "system prompt" : `message-${index}`,
+		}));
+		const partiallyCompactedInput = Array.from({ length: 10 }, (_value, index) => ({
+			type: "message",
+			role: index === 0 ? "developer" : "user",
+			content: index === 0 ? "compacted system prompt" : `compacted-${index}`,
+		}));
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: "token-primary",
+				accountIdSource: "token",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "workspace-fallback",
+				accountIdSource: "org",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
+			updatedInit: {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5-mini", input: longInput }),
+			},
+			body: { model: "gpt-5-mini", input: longInput },
+			deferredFastSessionInputTrim: { maxItems: 8, preferLatestUserOnly: false },
+		});
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi.fn(async (requestUrl, init) => {
+			const normalizedUrl =
+				typeof requestUrl === "string" ? requestUrl : String(requestUrl);
+			if (normalizedUrl.endsWith("/compact")) {
+				return new Response(JSON.stringify({ output: partiallyCompactedInput }), {
+					status: 200,
+				});
+			}
+
+			const headers = new Headers(init?.headers);
+			if (headers.get("x-test-access-token") === "access-alpha") {
+				throw new Error("Network timeout");
+			}
+
+			return new Response(JSON.stringify({ content: "ok" }), { status: 200 });
+		});
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5-mini", input: longInput }),
+		});
+
+		expect(response.status).toBe(200);
+		const fetchCalls = vi.mocked(globalThis.fetch).mock.calls;
+		const compactionCalls = fetchCalls.filter(([requestUrl]) =>
+			String(requestUrl).endsWith("/compact"),
+		);
+		expect(compactionCalls).toHaveLength(1);
+
+		const finalCall = fetchCalls[fetchCalls.length - 1];
+		const finalHeaders = new Headers(finalCall?.[1]?.headers);
+		expect(finalHeaders.get("x-test-account-id")).toBe("workspace-fallback");
+		expect(finalHeaders.get("x-test-access-token")).toBe("access-beta");
+
+		const finalUpstreamInit = finalCall?.[1] as RequestInit;
+		const finalUpstreamBody =
+			typeof finalUpstreamInit.body === "string"
+				? (JSON.parse(finalUpstreamInit.body) as { input?: unknown[] })
+				: {};
+		expect(finalUpstreamBody.input).toEqual(partiallyCompactedInput);
+	});
 	it("uses the refreshed token email when checking entitlement blocks", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const manager = buildRoutingManager([

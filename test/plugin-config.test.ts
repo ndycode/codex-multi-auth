@@ -204,6 +204,15 @@ describe('Plugin Configuration', () => {
 			});
 		});
 
+		it('loads responseContinuation from disk config', () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockReturnValue(
+				JSON.stringify({ responseContinuation: true }),
+			);
+
+			expect(loadPluginConfig().responseContinuation).toBe(true);
+		});
+
 		it('should detect CODEX_HOME legacy auth config path before global legacy path', async () => {
 			const runWithCodexHome = async (codexHomePath: string) => {
 				vi.resetModules();

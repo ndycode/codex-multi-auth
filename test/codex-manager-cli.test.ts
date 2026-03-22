@@ -5770,8 +5770,8 @@ describe("codex manager cli commands", () => {
 			remapped: true,
 			promptFamily: "gpt-5.2",
 			capabilities: {
-				toolSearch: true,
-				computerUse: true,
+				toolSearch: false,
+				computerUse: false,
 				compaction: true,
 			},
 		});

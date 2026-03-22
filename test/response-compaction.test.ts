@@ -91,6 +91,28 @@ describe("response compaction", () => {
 		expect(headers.get("content-type")).toBe("application/json");
 	});
 
+	it("inserts /compact before query params in the compaction request URL", async () => {
+		const body: RequestBody = {
+			model: "gpt-5-mini",
+			input: buildInput(12),
+		};
+		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+			new Response(JSON.stringify({ output: buildInput(8) }), { status: 200 }),
+		);
+
+		await applyResponseCompaction({
+			body,
+			requestUrl: "https://chatgpt.com/backend-api/codex/responses?stream=true",
+			headers: new Headers(),
+			trim: { maxItems: 8, preferLatestUserOnly: false },
+			fetchImpl,
+		});
+
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"https://chatgpt.com/backend-api/codex/responses/compact?stream=true",
+			expect.any(Object),
+		);
+	});
 	it("falls back to local trimming when the compaction request fails", async () => {
 		const body: RequestBody = {
 			model: "gpt-5.4",

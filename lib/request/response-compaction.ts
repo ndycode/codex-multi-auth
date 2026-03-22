@@ -41,7 +41,12 @@ function extractCompactedInput(payload: unknown): InputItem[] | undefined {
 }
 
 function buildCompactionUrl(requestUrl: string): string {
-	return requestUrl.endsWith("/compact") ? requestUrl : `${requestUrl}/compact`;
+	const queryIndex = requestUrl.indexOf("?");
+	const baseUrl = queryIndex === -1 ? requestUrl : requestUrl.slice(0, queryIndex);
+	if (baseUrl.endsWith("/compact")) return requestUrl;
+	return queryIndex === -1
+		? `${requestUrl}/compact`
+		: `${baseUrl}/compact${requestUrl.slice(queryIndex)}`;
 }
 
 function createFallbackBody(

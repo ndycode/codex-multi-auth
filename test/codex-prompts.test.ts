@@ -160,6 +160,15 @@ describe("Codex Prompts Module", () => {
 				const result = await getCodexInstructions("codex-max");
 				expect(result).toBe("new instructions from github");
 				expect(mockFetch).toHaveBeenCalledTimes(2);
+				const rawGitHubUrls = mockFetch.mock.calls
+					.map((call) => call[0])
+					.filter(
+						(url): url is string =>
+							typeof url === "string" && url.includes("raw.githubusercontent.com"),
+					);
+				expect(
+					rawGitHubUrls.some((url) => url.includes("gpt-5.1-codex-max_prompt.md")),
+				).toBe(true);
 			});
 
 			it("should handle 304 Not Modified response", async () => {
@@ -243,6 +252,15 @@ describe("Codex Prompts Module", () => {
 
 				const result = await getCodexInstructions("gpt-5.2-codex");
 				expect(result).toBe("fallback instructions");
+				const rawGitHubUrls = mockFetch.mock.calls
+					.map((call) => call[0])
+					.filter(
+						(url): url is string =>
+							typeof url === "string" && url.includes("raw.githubusercontent.com"),
+					);
+				expect(rawGitHubUrls.some((url) => url.includes("gpt_5_codex_prompt.md"))).toBe(
+					true,
+				);
 			});
 
 			it("should parse tag from HTML content if URL parsing fails", async () => {

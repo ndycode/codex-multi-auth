@@ -159,7 +159,7 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		promptFamily: "gpt-5.2",
 		defaultReasoningEffort: "medium",
 		supportedReasoningEfforts: ["medium"],
-		capabilities: TOOL_CAPABILITIES.full,
+		capabilities: TOOL_CAPABILITIES.compactOnly,
 	},
 	"gpt-5-nano": {
 		normalizedModel: "gpt-5-nano",
@@ -208,6 +208,7 @@ function addCodexAliases(): void {
 	addReasoningAliases("gpt-5.1-codex", "gpt-5-codex");
 	addAlias("gpt_5_codex", "gpt-5-codex");
 
+	addReasoningAliases("codex-max", "gpt-5.1-codex-max");
 	addReasoningAliases("gpt-5.1-codex-max", "gpt-5.1-codex-max");
 
 	addAlias("codex-mini-latest", "gpt-5.1-codex-mini");

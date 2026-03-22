@@ -8,6 +8,7 @@ const log = createLogger("response-handler");
 
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
 const DEFAULT_STREAM_STALL_TIMEOUT_MS = 45_000;
+const MAX_SYNTHESIZED_EVENT_INDEX = 255;
 
 type MutableRecord = Record<string, unknown>;
 
@@ -16,8 +17,13 @@ interface ParsedResponseState {
 	lastPhase: string | null;
 	outputItems: Map<number, MutableRecord>;
 	outputText: Map<string, string>;
+	outputTextPhases: Map<string, string>;
+	phaseTextSegments: Map<string, string>;
+	phaseSegmentOrder: Map<string, string[]>;
 	phaseText: Map<string, string>;
 	reasoningSummaryText: Map<string, string>;
+	seenResponseIds: Set<string>;
+	encounteredError: boolean;
 }
 
 function createParsedResponseState(): ParsedResponseState {
@@ -26,8 +32,13 @@ function createParsedResponseState(): ParsedResponseState {
 		lastPhase: null,
 		outputItems: new Map<number, MutableRecord>(),
 		outputText: new Map<string, string>(),
+		outputTextPhases: new Map<string, string>(),
+		phaseTextSegments: new Map<string, string>(),
+		phaseSegmentOrder: new Map<string, string[]>(),
 		phaseText: new Map<string, string>(),
 		reasoningSummaryText: new Map<string, string>(),
+		seenResponseIds: new Set<string>(),
+		encounteredError: false,
 	};
 }
 
@@ -40,9 +51,29 @@ function getNumberField(record: MutableRecord, key: string): number | null {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Read a trimmed, non-empty string field for identifier-like values.
+ *
+ * For textual payloads where whitespace is meaningful, use a field-specific
+ * accessor such as `getDeltaField` instead of reusing this helper.
+ */
 function getStringField(record: MutableRecord, key: string): string | null {
 	const value = record[key];
 	return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function getDeltaField(record: MutableRecord, key: string): string | null {
+	const value = record[key];
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function isValidSynthesizedIndex(index: number | null): index is number {
+	return (
+		index !== null &&
+		Number.isInteger(index) &&
+		index >= 0 &&
+		index <= MAX_SYNTHESIZED_EVENT_INDEX
+	);
 }
 
 function cloneContentArray(content: unknown): MutableRecord[] {
@@ -54,18 +85,36 @@ function mergeRecord(base: MutableRecord | null, update: MutableRecord): Mutable
 	if (!base) return { ...update };
 	const merged: MutableRecord = { ...base, ...update };
 	if ("content" in update || "content" in base) {
-		merged.content = cloneContentArray(update.content ?? base.content);
+		const updateContent = cloneContentArray(update.content);
+		merged.content =
+			updateContent.length > 0 || !("content" in base)
+				? updateContent
+				: cloneContentArray(base.content);
 	}
 	return merged;
 }
 
 function makeOutputTextKey(outputIndex: number | null, contentIndex: number | null): string | null {
-	if (outputIndex === null || contentIndex === null) return null;
+	if (
+		!isValidSynthesizedIndex(outputIndex) ||
+		!isValidSynthesizedIndex(contentIndex)
+	) {
+		return null;
+	}
 	return `${outputIndex}:${contentIndex}`;
 }
 
+function makePhaseTextSegmentKey(phase: string, outputTextKey: string): string {
+	return `${phase}\u0000${outputTextKey}`;
+}
+
 function makeSummaryKey(outputIndex: number | null, summaryIndex: number | null): string | null {
-	if (outputIndex === null || summaryIndex === null) return null;
+	if (
+		!isValidSynthesizedIndex(outputIndex) ||
+		!isValidSynthesizedIndex(summaryIndex)
+	) {
+		return null;
+	}
 	return `${outputIndex}:${summaryIndex}`;
 }
 
@@ -79,19 +128,108 @@ function getPartText(part: unknown): string | null {
 function capturePhase(
 	state: ParsedResponseState,
 	phase: unknown,
-	text: string | null = null,
 ): void {
 	if (typeof phase !== "string" || phase.trim().length === 0) return;
-	const normalizedPhase = phase.trim();
-	state.lastPhase = normalizedPhase;
-	if (text && text.length > 0) {
-		const existing = state.phaseText.get(normalizedPhase) ?? "";
-		state.phaseText.set(normalizedPhase, `${existing}${text}`);
+	state.lastPhase = phase.trim();
+}
+
+function rememberPhaseSegmentOrder(
+	state: ParsedResponseState,
+	phase: string,
+	segmentKey: string,
+): string[] {
+	const existingOrder = state.phaseSegmentOrder.get(phase);
+	if (existingOrder?.includes(segmentKey)) {
+		return existingOrder;
 	}
+	const nextOrder = [...(existingOrder ?? []), segmentKey];
+	state.phaseSegmentOrder.set(phase, nextOrder);
+	return nextOrder;
+}
+
+function removePhaseSegmentOrder(
+	state: ParsedResponseState,
+	phase: string,
+	segmentKey: string,
+): void {
+	const existingOrder = state.phaseSegmentOrder.get(phase);
+	if (!existingOrder) return;
+	const nextOrder = existingOrder.filter((key) => key !== segmentKey);
+	if (nextOrder.length === 0) {
+		state.phaseSegmentOrder.delete(phase);
+		return;
+	}
+	state.phaseSegmentOrder.set(phase, nextOrder);
+}
+
+function rebuildPhaseText(state: ParsedResponseState, phase: string): void {
+	const orderedKeys = state.phaseSegmentOrder.get(phase) ?? [];
+	const text = orderedKeys
+		.map((key) => state.phaseTextSegments.get(key) ?? "")
+		.filter((value) => value.length > 0)
+		.join("");
+	if (text.length === 0) {
+		state.phaseText.delete(phase);
+		return;
+	}
+	state.phaseText.set(phase, text);
+}
+
+function setPhaseTextSegment(
+	state: ParsedResponseState,
+	phase: unknown,
+	outputTextKey: string,
+	text: string | null,
+): void {
+	const normalizedPhase =
+		typeof phase === "string" && phase.trim().length > 0
+			? phase.trim()
+			: state.outputTextPhases.get(outputTextKey) ?? null;
+	if (!normalizedPhase) return;
+	state.outputTextPhases.set(outputTextKey, normalizedPhase);
+	state.lastPhase = normalizedPhase;
+	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
+	if (!text || text.length === 0) {
+		state.phaseTextSegments.delete(segmentKey);
+		removePhaseSegmentOrder(state, normalizedPhase, segmentKey);
+		rebuildPhaseText(state, normalizedPhase);
+		return;
+	}
+	rememberPhaseSegmentOrder(state, normalizedPhase, segmentKey);
+	state.phaseTextSegments.set(segmentKey, text);
+	rebuildPhaseText(state, normalizedPhase);
+}
+
+function appendPhaseTextSegment(
+	state: ParsedResponseState,
+	phase: unknown,
+	outputTextKey: string,
+	delta: string | null,
+): void {
+	if (!delta || delta.length === 0) {
+		return;
+	}
+	const normalizedPhase =
+		typeof phase === "string" && phase.trim().length > 0
+			? phase.trim()
+			: state.outputTextPhases.get(outputTextKey) ?? null;
+	if (!normalizedPhase) return;
+	state.outputTextPhases.set(outputTextKey, normalizedPhase);
+	state.lastPhase = normalizedPhase;
+	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
+	const phaseOrder = rememberPhaseSegmentOrder(state, normalizedPhase, segmentKey);
+	const existing = state.phaseTextSegments.get(segmentKey) ?? "";
+	state.phaseTextSegments.set(segmentKey, `${existing}${delta}`);
+	if (phaseOrder[phaseOrder.length - 1] === segmentKey) {
+		const existingPhaseText = state.phaseText.get(normalizedPhase) ?? "";
+		state.phaseText.set(normalizedPhase, `${existingPhaseText}${delta}`);
+		return;
+	}
+	rebuildPhaseText(state, normalizedPhase);
 }
 
 function upsertOutputItem(state: ParsedResponseState, outputIndex: number | null, item: unknown): void {
-	if (outputIndex === null || !isRecord(item)) return;
+	if (!isValidSynthesizedIndex(outputIndex) || !isRecord(item)) return;
 	const current = state.outputItems.get(outputIndex) ?? null;
 	const merged = mergeRecord(current, item);
 	state.outputItems.set(outputIndex, merged);
@@ -105,17 +243,15 @@ function setOutputTextValue(
 	text: string | null,
 	phase: unknown = undefined,
 ): void {
-	if (!text) return;
 	const key = makeOutputTextKey(outputIndex, contentIndex);
 	if (!key) return;
-	const existing = state.outputText.get(key) ?? "";
+	if (!text) {
+		state.outputText.delete(key);
+		setPhaseTextSegment(state, phase, key, null);
+		return;
+	}
 	state.outputText.set(key, text);
-	const phaseDelta = existing.length > 0 && text.startsWith(existing)
-		? text.slice(existing.length)
-		: existing === text
-			? ""
-			: text;
-	capturePhase(state, phase, phaseDelta);
+	setPhaseTextSegment(state, phase, key, text);
 }
 
 function appendOutputTextValue(
@@ -130,7 +266,7 @@ function appendOutputTextValue(
 	if (!key) return;
 	const existing = state.outputText.get(key) ?? "";
 	state.outputText.set(key, `${existing}${delta}`);
-	capturePhase(state, phase, delta);
+	appendPhaseTextSegment(state, phase, key, delta);
 }
 
 function setReasoningSummaryValue(
@@ -139,9 +275,12 @@ function setReasoningSummaryValue(
 	summaryIndex: number | null,
 	text: string | null,
 ): void {
-	if (!text) return;
 	const key = makeSummaryKey(outputIndex, summaryIndex);
 	if (!key) return;
+	if (!text) {
+		state.reasoningSummaryText.delete(key);
+		return;
+	}
 	state.reasoningSummaryText.set(key, text);
 }
 
@@ -159,6 +298,7 @@ function appendReasoningSummaryValue(
 }
 
 function ensureOutputItemAtIndex(output: unknown[], index: number): MutableRecord | null {
+	if (!isValidSynthesizedIndex(index)) return null;
 	while (output.length <= index) {
 		output.push({});
 	}
@@ -170,6 +310,7 @@ function ensureOutputItemAtIndex(output: unknown[], index: number): MutableRecor
 }
 
 function ensureContentPartAtIndex(item: MutableRecord, index: number): MutableRecord | null {
+	if (!isValidSynthesizedIndex(index)) return null;
 	const content = Array.isArray(item.content) ? [...item.content] : [];
 	while (content.length <= index) {
 		content.push({});
@@ -190,13 +331,22 @@ function applyAccumulatedOutputText(response: MutableRecord, state: ParsedRespon
 		const [outputIndexText, contentIndexText] = key.split(":");
 		const outputIndex = Number.parseInt(outputIndexText ?? "", 10);
 		const contentIndex = Number.parseInt(contentIndexText ?? "", 10);
-		if (!Number.isFinite(outputIndex) || !Number.isFinite(contentIndex)) continue;
+		if (
+			!isValidSynthesizedIndex(outputIndex) ||
+			!isValidSynthesizedIndex(contentIndex)
+		) {
+			continue;
+		}
 		const item = ensureOutputItemAtIndex(output, outputIndex);
 		if (!item) continue;
 		const part = ensureContentPartAtIndex(item, contentIndex);
 		if (!part) continue;
 		if (!getStringField(part, "type")) {
 			part.type = "output_text";
+		}
+		if (typeof part.text === "string") {
+			setPhaseTextSegment(state, part.phase, key, part.text);
+			continue;
 		}
 		part.text = text;
 	}
@@ -211,6 +361,7 @@ function mergeOutputItemsIntoResponse(response: MutableRecord, state: ParsedResp
 	const output = Array.isArray(response.output) ? [...response.output] : [];
 
 	for (const [outputIndex, item] of state.outputItems.entries()) {
+		if (!isValidSynthesizedIndex(outputIndex)) continue;
 		while (output.length <= outputIndex) {
 			output.push({});
 		}
@@ -262,7 +413,12 @@ function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseS
 		const [outputIndexText, summaryIndexText] = key.split(":");
 		const outputIndex = Number.parseInt(outputIndexText ?? "", 10);
 		const summaryIndex = Number.parseInt(summaryIndexText ?? "", 10);
-		if (!Number.isFinite(outputIndex) || !Number.isFinite(summaryIndex)) continue;
+		if (
+			!isValidSynthesizedIndex(outputIndex) ||
+			!isValidSynthesizedIndex(summaryIndex)
+		) {
+			continue;
+		}
 		const item = ensureOutputItemAtIndex(output, outputIndex);
 		if (!item) continue;
 		const summary = Array.isArray(item.summary) ? [...item.summary] : [];
@@ -273,6 +429,9 @@ function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseS
 		const nextPart = isRecord(current) ? { ...current } : {};
 		if (!getStringField(nextPart, "type")) {
 			nextPart.type = "summary_text";
+		}
+		if (typeof nextPart.text === "string") {
+			continue;
 		}
 		nextPart.text = text;
 		summary[summaryIndex] = nextPart;
@@ -290,6 +449,7 @@ function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseS
 function finalizeParsedResponse(state: ParsedResponseState): MutableRecord | null {
 	const response = state.finalResponse ? { ...state.finalResponse } : null;
 	if (!response) return null;
+	if (state.encounteredError) return null;
 
 	mergeOutputItemsIntoResponse(response, state);
 	applyAccumulatedOutputText(response, state);
@@ -304,7 +464,10 @@ function finalizeParsedResponse(state: ParsedResponseState): MutableRecord | nul
 	}
 
 	const reasoningSummaryText = collectReasoningSummaryText(output);
-	if (reasoningSummaryText.length > 0) {
+	if (
+		reasoningSummaryText.length > 0 &&
+		typeof response.reasoning_summary_text !== "string"
+	) {
 		response.reasoning_summary_text = reasoningSummaryText;
 	}
 
@@ -324,7 +487,6 @@ function finalizeParsedResponse(state: ParsedResponseState): MutableRecord | nul
 
 	return response;
 }
-
 function extractResponseId(response: unknown): string | null {
 	if (!response || typeof response !== "object") return null;
 	const candidate = (response as { id?: unknown }).id;
@@ -334,11 +496,13 @@ function extractResponseId(response: unknown): string | null {
 }
 
 function notifyResponseId(
+	state: ParsedResponseState,
 	onResponseId: ((responseId: string) => void) | undefined,
 	response: unknown,
 ): void {
 	const responseId = extractResponseId(response);
-	if (!responseId || !onResponseId) return;
+	if (!responseId || !onResponseId || state.seenResponseIds.has(responseId)) return;
+	state.seenResponseIds.add(responseId);
 	try {
 		onResponseId(responseId);
 	} catch (error) {
@@ -356,15 +520,15 @@ function maybeCaptureResponseEvent(
 ): void {
 	if (data.type === "error") {
 		log.error("SSE error event received", { error: data });
+		state.encounteredError = true;
 		return;
 	}
 
-	if (isRecord(data.response)) {
-		state.finalResponse = { ...data.response };
-		notifyResponseId(onResponseId, data.response);
-	}
-
 	if (data.type === "response.done" || data.type === "response.completed") {
+		if (isRecord(data.response)) {
+			state.finalResponse = { ...data.response };
+		}
+		notifyResponseId(state, onResponseId, data.response);
 		return;
 	}
 
@@ -382,7 +546,7 @@ function maybeCaptureResponseEvent(
 			state,
 			outputIndex,
 			getNumberField(eventRecord, "content_index"),
-			getStringField(eventRecord, "delta"),
+			getDeltaField(eventRecord, "delta"),
 			eventRecord.phase,
 		);
 		return;
@@ -420,7 +584,7 @@ function maybeCaptureResponseEvent(
 			state,
 			outputIndex,
 			getNumberField(eventRecord, "summary_index"),
-			getStringField(eventRecord, "delta"),
+			getDeltaField(eventRecord, "delta"),
 		);
 		return;
 	}
@@ -472,6 +636,7 @@ function parseSseStream(
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
 				maybeCaptureResponseEvent(state, data, onResponseId);
+				if (state.encounteredError) return null;
 			} catch {
 				// Skip malformed JSON
 			}
@@ -569,8 +734,10 @@ function createResponseIdCapturingStream(
 ): ReadableStream<Uint8Array> {
 	const decoder = new TextDecoder();
 	let bufferedText = "";
+	const state = createParsedResponseState();
 
 	const processBufferedLines = (flush = false): void => {
+		if (state.encounteredError) return;
 		const lines = bufferedText.split(/\r?\n/);
 		if (!flush) {
 			bufferedText = lines.pop() ?? "";
@@ -585,7 +752,8 @@ function createResponseIdCapturingStream(
 			if (!payload || payload === "[DONE]") continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
-				maybeCaptureResponseEvent(createParsedResponseState(), data, onResponseId);
+				maybeCaptureResponseEvent(state, data, onResponseId);
+				if (state.encounteredError) break;
 			} catch {
 				// Ignore malformed SSE lines and keep forwarding the raw stream.
 			}
