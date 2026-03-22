@@ -666,14 +666,14 @@ async function promptExperimentalSettings(
 ): Promise<PluginConfig | null> {
 	return promptExperimentalSettingsEntry({
 		initialConfig,
-		promptExperimentalSettingsMenu: promptExperimentalSettingsMenu as never,
+		promptExperimentalSettingsMenu,
 		isInteractive: () => input.isTTY && output.isTTY,
 		ui: getUiRuntimeOptions(),
 		cloneBackendPluginConfig,
-		select: select as never,
-		getExperimentalSelectOptions: getExperimentalSelectOptions as never,
-		mapExperimentalMenuHotkey: mapExperimentalMenuHotkey as never,
-		mapExperimentalStatusHotkey: mapExperimentalStatusHotkey as never,
+		select,
+		getExperimentalSelectOptions,
+		mapExperimentalMenuHotkey,
+		mapExperimentalStatusHotkey,
 		formatDashboardSettingState,
 		copy: UI_COPY.settings,
 		input,
@@ -681,13 +681,22 @@ async function promptExperimentalSettings(
 		runNamedBackupExport,
 		loadAccounts,
 		loadExperimentalSyncTarget,
-		planOcChatgptSync: planOcChatgptSync as never,
-		applyOcChatgptSync: applyOcChatgptSync as never,
+		planOcChatgptSync,
+		applyOcChatgptSync,
 		getTargetKind: (targetState) => (targetState as { kind: string }).kind,
-		getTargetDestination: (targetState) =>
-			(targetState as { kind: string; destination?: unknown }).destination,
-		getTargetDetection: (targetState) =>
-			(targetState as { detection?: unknown }).detection,
+		getTargetDestination: (
+			targetState,
+		): import("../storage.js").AccountStorageV3 | null =>
+			(targetState as {
+				kind: string;
+				destination?: import("../storage.js").AccountStorageV3 | null;
+			}).destination ?? null,
+		getTargetDetection: (
+			targetState,
+		): ReturnType<typeof detectOcChatgptMultiAuthTarget> =>
+			(targetState as {
+				detection: ReturnType<typeof detectOcChatgptMultiAuthTarget>;
+			}).detection,
 		getTargetErrorMessage: (targetState) =>
 			(targetState as { kind: string; message?: string }).kind === "error"
 				? ((targetState as { message?: string }).message ?? "Unknown error")

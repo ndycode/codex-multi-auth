@@ -1,75 +1,95 @@
 import { createInterface } from "node:readline/promises";
+import type {
+	ApplyOcChatgptSyncOptions,
+	OcChatgptSyncApplyResult,
+	OcChatgptSyncPlanResult,
+	PlanOcChatgptSyncOptions,
+} from "../oc-chatgpt-orchestrator.js";
+import type { AccountStorageV3 } from "../storage.js";
 import type { PluginConfig } from "../types.js";
+import type { MenuItem, select } from "../ui/select.js";
 import type { UiRuntimeOptions } from "../ui/runtime.js";
+import type {
+	ExperimentalSettingsAction,
+	getExperimentalSelectOptions,
+	mapExperimentalMenuHotkey,
+	mapExperimentalStatusHotkey,
+} from "./experimental-settings-schema.js";
 
-export async function promptExperimentalSettingsMenu<
-	TAction,
+export type ExperimentalSettingsCopy = {
+	experimentalSync: string;
+	experimentalBackup: string;
+	experimentalRefreshGuard: string;
+	experimentalRefreshInterval: string;
+	experimentalDecreaseInterval: string;
+	experimentalIncreaseInterval: string;
+	saveAndBack: string;
+	backNoSave: string;
+	experimentalHelpMenu: string;
+	experimentalBackupPrompt: string;
+	back: string;
+	experimentalHelpStatus: string;
+	experimentalApplySync: string;
+	experimentalHelpPreview: string;
+};
+
+export type ExperimentalSettingsPromptDeps<
 	TTargetState,
-	TPlan,
-	TApplied,
->(params: {
+> = {
 	initialConfig: PluginConfig;
 	isInteractive: () => boolean;
 	ui: UiRuntimeOptions;
 	cloneBackendPluginConfig: (config: PluginConfig) => PluginConfig;
-	select: <T>(
-		items: Array<Record<string, unknown>>,
-		options: Record<string, unknown>,
-	) => Promise<T | null>;
-	getExperimentalSelectOptions: (
-		ui: UiRuntimeOptions,
-		help: string,
-		hotkeyMapper: (raw: string) => TAction | undefined,
-	) => Record<string, unknown>;
-	mapExperimentalMenuHotkey: (raw: string) => TAction | undefined;
-	mapExperimentalStatusHotkey: (raw: string) => TAction | undefined;
+	select: typeof select;
+	getExperimentalSelectOptions: typeof getExperimentalSelectOptions;
+	mapExperimentalMenuHotkey: typeof mapExperimentalMenuHotkey;
+	mapExperimentalStatusHotkey: typeof mapExperimentalStatusHotkey;
 	formatDashboardSettingState: (enabled: boolean) => string;
-	copy: {
-		experimentalSync: string;
-		experimentalBackup: string;
-		experimentalRefreshGuard: string;
-		experimentalRefreshInterval: string;
-		experimentalDecreaseInterval: string;
-		experimentalIncreaseInterval: string;
-		saveAndBack: string;
-		backNoSave: string;
-		experimentalHelpMenu: string;
-		experimentalBackupPrompt: string;
-		back: string;
-		experimentalHelpStatus: string;
-		experimentalApplySync: string;
-		experimentalHelpPreview: string;
-	};
+	copy: ExperimentalSettingsCopy;
 	input: NodeJS.ReadStream;
 	output: NodeJS.WriteStream;
 	runNamedBackupExport: (args: {
 		name: string;
 	}) => Promise<{ kind: string; path?: string; error?: unknown }>;
-	loadAccounts: () => Promise<unknown>;
+	loadAccounts: () => Promise<AccountStorageV3 | null>;
 	loadExperimentalSyncTarget: () => Promise<TTargetState>;
-	planOcChatgptSync: (args: Record<string, unknown>) => Promise<TPlan>;
-	applyOcChatgptSync: (args: Record<string, unknown>) => Promise<TApplied>;
+	planOcChatgptSync: (
+		args: PlanOcChatgptSyncOptions,
+	) => Promise<OcChatgptSyncPlanResult>;
+	applyOcChatgptSync: (
+		args: ApplyOcChatgptSyncOptions,
+	) => Promise<OcChatgptSyncApplyResult>;
 	getTargetKind: (targetState: TTargetState) => string;
-	getTargetDestination: (targetState: TTargetState) => unknown;
-	getTargetDetection: (targetState: TTargetState) => unknown;
+	getTargetDestination: (targetState: TTargetState) => AccountStorageV3 | null;
+	getTargetDetection: (
+		targetState: TTargetState,
+	) => ReturnType<
+		typeof import("../oc-chatgpt-target-detection.js").detectOcChatgptMultiAuthTarget
+	>;
 	getTargetErrorMessage: (targetState: TTargetState) => string | null;
-	getPlanKind: (plan: TPlan) => string;
-	getPlanBlockedReason: (plan: TPlan) => string;
-	getPlanPreview: (plan: TPlan) => {
+	getPlanKind: (plan: OcChatgptSyncPlanResult) => string;
+	getPlanBlockedReason: (plan: OcChatgptSyncPlanResult) => string;
+	getPlanPreview: (plan: OcChatgptSyncPlanResult) => {
 		toAdd: unknown[];
 		toUpdate: unknown[];
 		toSkip: unknown[];
 		unchangedDestinationOnly: unknown[];
 		activeSelectionBehavior: string;
 	};
-	getAppliedLabel: (applied: TApplied) => { label: string; color: string };
-}): Promise<PluginConfig | null> {
+	getAppliedLabel: (
+		applied: OcChatgptSyncApplyResult,
+	) => { label: string; color: MenuItem["color"] };
+};
+
+export async function promptExperimentalSettingsMenu<TTargetState>(
+	params: ExperimentalSettingsPromptDeps<TTargetState>,
+): Promise<PluginConfig | null> {
 	if (!params.isInteractive()) return null;
 	let draft = params.cloneBackendPluginConfig(params.initialConfig);
 	const copy = params.copy;
 
 	while (true) {
-		const action = await params.select<TAction>(
+		const action = await params.select<ExperimentalSettingsAction>(
 			[
 				{
 					label: copy.experimentalSync,
@@ -164,7 +184,7 @@ export async function promptExperimentalSettingsMenu<
 								: backupResult.error instanceof Error
 									? backupResult.error.message
 									: String(backupResult.error);
-					await params.select<TAction>(
+					await params.select<ExperimentalSettingsAction>(
 						[
 							{
 								label: backupLabel,
@@ -184,7 +204,7 @@ export async function promptExperimentalSettingsMenu<
 				} catch (error) {
 					const message =
 						error instanceof Error ? error.message : String(error);
-					await params.select<TAction>(
+					await params.select<ExperimentalSettingsAction>(
 						[
 							{
 								label: message,
@@ -212,7 +232,7 @@ export async function promptExperimentalSettingsMenu<
 		const targetState = await params.loadExperimentalSyncTarget();
 		const targetError = params.getTargetErrorMessage(targetState);
 		if (targetError) {
-			await params.select<TAction>(
+			await params.select<ExperimentalSettingsAction>(
 				[
 					{
 						label: targetError,
@@ -246,7 +266,7 @@ export async function promptExperimentalSettingsMenu<
 					: undefined,
 		});
 		if (params.getPlanKind(plan) !== "ready") {
-			await params.select<TAction>(
+			await params.select<ExperimentalSettingsAction>(
 				[
 					{
 						label: params.getPlanBlockedReason(plan),
@@ -267,7 +287,7 @@ export async function promptExperimentalSettingsMenu<
 		}
 
 		const preview = params.getPlanPreview(plan);
-		const review = await params.select<TAction>(
+		const review = await params.select<ExperimentalSettingsAction>(
 			[
 				{
 					label: `Preview: add ${preview.toAdd.length} | update ${preview.toUpdate.length} | skip ${preview.toSkip.length}`,
@@ -299,15 +319,15 @@ export async function promptExperimentalSettingsMenu<
 			],
 			params.getExperimentalSelectOptions(
 				params.ui,
-				copy.experimentalHelpPreview,
-				(raw) => {
-					const lower = raw.toLowerCase();
-					if (lower === "q") return { type: "back" } as TAction;
-					if (lower === "a") return { type: "apply" } as TAction;
-					return undefined;
-				},
-			),
-		);
+					copy.experimentalHelpPreview,
+					(raw) => {
+						const lower = raw.toLowerCase();
+						if (lower === "q") return { type: "back" };
+						if (lower === "a") return { type: "apply" };
+						return undefined;
+					},
+				),
+			);
 		if (!review || (review as { type?: string }).type === "back") continue;
 
 		const applied = await params.applyOcChatgptSync({
@@ -322,7 +342,7 @@ export async function promptExperimentalSettingsMenu<
 					: undefined,
 		});
 		const appliedLabel = params.getAppliedLabel(applied);
-		await params.select<TAction>(
+		await params.select<ExperimentalSettingsAction>(
 			[
 				{
 					label: appliedLabel.label,

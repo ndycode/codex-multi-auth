@@ -6,10 +6,7 @@ describe("experimental settings entry", () => {
 		const promptExperimentalSettingsMenu = vi.fn(async () => ({
 			fetchTimeoutMs: 1000,
 		}));
-
-		const result = await promptExperimentalSettingsEntry({
-			initialConfig: { fetchTimeoutMs: 2000 },
-			promptExperimentalSettingsMenu,
+		const menuDeps = {
 			isInteractive: () => true,
 			ui: { theme: {} } as never,
 			cloneBackendPluginConfig: vi.fn((config) => config),
@@ -18,7 +15,22 @@ describe("experimental settings entry", () => {
 			mapExperimentalMenuHotkey: vi.fn(),
 			mapExperimentalStatusHotkey: vi.fn(),
 			formatDashboardSettingState: vi.fn((enabled) => (enabled ? "on" : "off")),
-			copy: {},
+			copy: {
+				experimentalSync: "Sync",
+				experimentalBackup: "Backup",
+				experimentalRefreshGuard: "Refresh guard",
+				experimentalRefreshInterval: "Refresh interval",
+				experimentalDecreaseInterval: "Decrease interval",
+				experimentalIncreaseInterval: "Increase interval",
+				saveAndBack: "Save",
+				backNoSave: "Back",
+				experimentalHelpMenu: "Help menu",
+				experimentalBackupPrompt: "Backup prompt",
+				back: "Back",
+				experimentalHelpStatus: "Help status",
+				experimentalApplySync: "Apply sync",
+				experimentalHelpPreview: "Help preview",
+			},
 			input: process.stdin,
 			output: process.stdout,
 			runNamedBackupExport: vi.fn(),
@@ -34,9 +46,19 @@ describe("experimental settings entry", () => {
 			getPlanBlockedReason: vi.fn(),
 			getPlanPreview: vi.fn(),
 			getAppliedLabel: vi.fn(),
+		};
+		const initialConfig = { fetchTimeoutMs: 2000 };
+
+		const result = await promptExperimentalSettingsEntry({
+			initialConfig,
+			promptExperimentalSettingsMenu,
+			...menuDeps,
 		});
 
-		expect(promptExperimentalSettingsMenu).toHaveBeenCalled();
+		expect(promptExperimentalSettingsMenu).toHaveBeenCalledWith({
+			initialConfig,
+			...menuDeps,
+		});
 		expect(result).toEqual({ fetchTimeoutMs: 1000 });
 	});
 });
