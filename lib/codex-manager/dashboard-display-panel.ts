@@ -47,7 +47,7 @@ export interface DashboardDisplayPanelDeps {
 	formatDashboardSettingState: (enabled: boolean) => string;
 	formatMenuSortMode: (mode: DashboardAccountSortMode) => string;
 	resolveMenuLayoutMode: (
-		settings?: DashboardDisplaySettings,
+		settings: DashboardDisplaySettings,
 	) => "compact-details" | "expanded-rows";
 	formatMenuLayoutMode: (mode: "compact-details" | "expanded-rows") => string;
 	applyDashboardDefaultsForKeys: (
