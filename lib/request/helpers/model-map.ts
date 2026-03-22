@@ -25,6 +25,7 @@ export type PromptModelFamily =
 export interface ModelCapabilities {
 	toolSearch: boolean;
 	computerUse: boolean;
+	compaction: boolean;
 }
 
 export interface ModelProfile {
@@ -48,14 +49,27 @@ const TOOL_CAPABILITIES = {
 	full: {
 		toolSearch: true,
 		computerUse: true,
+		compaction: true,
 	},
 	computerOnly: {
 		toolSearch: false,
 		computerUse: true,
+		compaction: false,
+	},
+	computerAndCompact: {
+		toolSearch: false,
+		computerUse: true,
+		compaction: true,
+	},
+	compactOnly: {
+		toolSearch: false,
+		computerUse: false,
+		compaction: true,
 	},
 	basic: {
 		toolSearch: false,
 		computerUse: false,
+		compaction: false,
 	},
 } as const satisfies Record<string, ModelCapabilities>;
 
@@ -103,7 +117,7 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		promptFamily: "gpt-5.2",
 		defaultReasoningEffort: "high",
 		supportedReasoningEfforts: ["medium", "high", "xhigh"],
-		capabilities: TOOL_CAPABILITIES.computerOnly,
+		capabilities: TOOL_CAPABILITIES.computerAndCompact,
 	},
 	"gpt-5.2-pro": {
 		normalizedModel: "gpt-5.2-pro",
@@ -145,14 +159,14 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		promptFamily: "gpt-5.2",
 		defaultReasoningEffort: "medium",
 		supportedReasoningEfforts: ["medium"],
-		capabilities: TOOL_CAPABILITIES.basic,
+		capabilities: TOOL_CAPABILITIES.compactOnly,
 	},
 	"gpt-5-nano": {
 		normalizedModel: "gpt-5-nano",
 		promptFamily: "gpt-5.2",
 		defaultReasoningEffort: "medium",
 		supportedReasoningEfforts: ["medium"],
-		capabilities: TOOL_CAPABILITIES.basic,
+		capabilities: TOOL_CAPABILITIES.compactOnly,
 	},
 } as const;
 

@@ -7009,7 +7009,7 @@ describe("codex manager cli commands", () => {
 				normalized: string;
 				remapped: boolean;
 				promptFamily: string;
-				capabilities: { toolSearch: boolean; computerUse: boolean };
+				capabilities: { toolSearch: boolean; computerUse: boolean; compaction: boolean };
 			};
 		};
 		expect(payload.command).toBe("report");
@@ -7024,6 +7024,7 @@ describe("codex manager cli commands", () => {
 			capabilities: {
 				toolSearch: false,
 				computerUse: false,
+				compaction: false,
 			},
 		});
 	});
@@ -7062,7 +7063,7 @@ describe("codex manager cli commands", () => {
 				normalized: string;
 				remapped: boolean;
 				promptFamily: string;
-				capabilities: { toolSearch: boolean; computerUse: boolean };
+				capabilities: { toolSearch: boolean; computerUse: boolean; compaction: boolean };
 			};
 		};
 		expect(payload.modelSelection).toEqual({
@@ -7073,6 +7074,7 @@ describe("codex manager cli commands", () => {
 			capabilities: {
 				toolSearch: false,
 				computerUse: false,
+				compaction: true,
 			},
 		});
 	});

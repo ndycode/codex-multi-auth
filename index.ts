@@ -175,6 +175,7 @@ import {
 	parseRequestBodyFromInit,
 } from "./lib/request/request-init.js";
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
+import { applyResponseCompaction } from "./lib/request/response-compaction.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
 import {
 	parseRetryAfterHintMs,
@@ -921,6 +922,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								let requestInit = transformation?.updatedInit ?? baseInit;
 								let transformedBody: RequestBody | undefined =
 									transformation?.body;
+								let pendingFastSessionInputTrim =
+									transformation?.deferredFastSessionInputTrim;
 								const promptCacheKey = transformedBody?.prompt_cache_key;
 								let model = transformedBody?.model;
 								let modelFamily = model ? getModelFamily(model) : "gpt-5.1";
@@ -1230,6 +1233,40 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												promptCacheKey: effectivePromptCacheKey,
 											},
 										);
+										if (transformedBody && pendingFastSessionInputTrim) {
+											const activeFastSessionInputTrim =
+												pendingFastSessionInputTrim;
+											pendingFastSessionInputTrim = undefined;
+											const compactionResult =
+												await applyResponseCompaction({
+													body: transformedBody,
+													requestUrl: url,
+													headers,
+													trim: activeFastSessionInputTrim,
+													fetchImpl: async (requestUrl, requestInit) => {
+														const normalizedCompactionUrl =
+															typeof requestUrl === "string"
+																? requestUrl
+																: String(requestUrl);
+														return fetch(
+															normalizedCompactionUrl,
+															applyProxyCompatibleInit(
+																normalizedCompactionUrl,
+																requestInit,
+															),
+														);
+													},
+													signal: abortSignal,
+													timeoutMs: Math.min(fetchTimeoutMs, 4_000),
+												});
+											if (compactionResult.mode !== "unchanged") {
+												transformedBody = compactionResult.body;
+												requestInit = {
+													...(requestInit ?? {}),
+													body: JSON.stringify(transformedBody),
+												};
+											}
+										}
 										const quotaScheduleKey = `${entitlementAccountKey}:${model ?? modelFamily}`;
 										const capabilityModelKey = model ?? modelFamily;
 										const quotaDeferral =
