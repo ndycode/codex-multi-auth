@@ -691,6 +691,52 @@ describe("codex manager cli commands", () => {
 		expect(payload.explanation.considered[0]?.selected).toBe(true);
 	});
 
+	it("prints explain details in text forecast mode", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+				{
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+			],
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"forecast",
+			"--explain",
+		]);
+		expect(exitCode).toBe(0);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(
+			logSpy.mock.calls.some((call) => String(call[0]).includes("Explain:")),
+		).toBe(true);
+		expect(
+			logSpy.mock.calls.some(
+				(call) =>
+					String(call[0]).includes("ready, low risk (0)") ||
+					String(call[0]).includes("Lowest risk ready account"),
+			),
+		).toBe(true);
+	});
+
 	it("does not mutate loaded quota cache when live forecast save fails", async () => {
 		const now = Date.now();
 		const originalQuotaCache = {
