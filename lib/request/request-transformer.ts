@@ -318,7 +318,6 @@ function sanitizePlanOnlyToolEntry(
 			nestedTools.length !== namespaceTools.length ||
 			nestedTools.some((nestedTool, index) => nestedTool !== namespaceTools[index]);
 		if (nestedTools.length === 0) {
-			onRemoved();
 			return null;
 		}
 		if (!changed) {
