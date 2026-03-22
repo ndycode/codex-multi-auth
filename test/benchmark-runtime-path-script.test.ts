@@ -4,20 +4,22 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 const tempRoots: string[] = [];
 const scriptPath = "scripts/benchmark-runtime-path.mjs";
 
-afterEach(() => {
+afterEach(async () => {
 	while (tempRoots.length > 0) {
 		const root = tempRoots.pop();
-		if (root) rmSync(root, { recursive: true, force: true });
+		if (root) {
+			await removeWithRetry(root, { recursive: true, force: true });
+		}
 	}
 });
 
