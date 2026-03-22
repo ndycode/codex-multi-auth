@@ -43,12 +43,14 @@ export {
 	getAccountIdentityKey,
 	normalizeEmailKey,
 } from "./storage/identity.js";
-
 import {
 	type AccountIdentityRef,
 	toAccountIdentityRef,
 } from "./storage/identity.js";
-import { getFlaggedAccountsPath as buildFlaggedAccountsPath } from "./storage/file-paths.js";
+import {
+	getFlaggedAccountsPath as buildFlaggedAccountsPath,
+	getLegacyFlaggedAccountsPath as buildLegacyFlaggedAccountsPath,
+} from "./storage/file-paths.js";
 import {
 	type AccountMetadataV1,
 	type AccountMetadataV3,
@@ -795,7 +797,7 @@ export function getFlaggedAccountsPath(): string {
 }
 
 function getLegacyFlaggedAccountsPath(): string {
-	return buildFlaggedAccountsPath(
+	return buildLegacyFlaggedAccountsPath(
 		getStoragePath(),
 		LEGACY_FLAGGED_ACCOUNTS_FILE_NAME,
 	);
