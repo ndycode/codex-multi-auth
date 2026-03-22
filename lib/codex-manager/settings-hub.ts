@@ -62,6 +62,7 @@ import {
 	cloneDashboardSettingsData,
 	dashboardSettingsDataEqual,
 } from "./dashboard-settings-data.js";
+import { configureDashboardSettingsEntry } from "./dashboard-settings-entry.js";
 import { promptExperimentalSettingsMenu } from "./experimental-settings-prompt.js";
 import {
 	getExperimentalSelectOptions,
@@ -477,7 +478,8 @@ async function promptDashboardDisplaySettings(
 async function configureDashboardDisplaySettings(
 	currentSettings?: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings> {
-	return configureDashboardSettingsController(currentSettings, {
+	return configureDashboardSettingsEntry(currentSettings, {
+		configureDashboardSettingsController,
 		loadDashboardDisplaySettings,
 		promptSettings: promptDashboardDisplaySettings,
 		settingsEqual: dashboardSettingsEqual,
@@ -533,7 +535,8 @@ async function promptStatuslineSettings(
 async function configureStatuslineSettings(
 	currentSettings?: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings> {
-	return configureDashboardSettingsController(currentSettings, {
+	return configureDashboardSettingsEntry(currentSettings, {
+		configureDashboardSettingsController,
 		loadDashboardDisplaySettings,
 		promptSettings: promptStatuslineSettings,
 		settingsEqual: dashboardSettingsEqual,
