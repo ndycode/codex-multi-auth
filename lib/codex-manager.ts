@@ -28,11 +28,6 @@ import {
 	promptAddAnotherAccount,
 	promptLoginMode,
 } from "./cli.js";
-import {
-	getCodexCliAuthPath,
-	getCodexCliConfigPath,
-	loadCodexCliState,
-} from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import {
 	type BestCliOptions,
@@ -40,13 +35,11 @@ import {
 } from "./codex-manager/commands/best.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import {
-	type DoctorCliOptions,
-	runDoctorCommand,
-} from "./codex-manager/commands/doctor.js";
-import {
-	type FixCliOptions,
-	runFixCommand,
-} from "./codex-manager/commands/fix.js";
+	runDoctor as runRepairDoctor,
+	type RepairCommandDeps,
+	runFix as runRepairFix,
+	runVerifyFlagged as runRepairVerifyFlagged,
+} from "./codex-manager/repair-commands.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
 import {
@@ -54,10 +47,7 @@ import {
 	runStatusCommand,
 } from "./codex-manager/commands/status.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
-import {
-	runVerifyFlaggedCommand,
-	type VerifyFlaggedCliOptions,
-} from "./codex-manager/commands/verify-flagged.js";
+import { parseAuthLoginArgs, printUsage } from "./codex-manager/help.js";
 import {
 	applyUiThemeFromDashboardSettings,
 	configureUnifiedSettings,
@@ -73,7 +63,6 @@ import {
 import {
 	evaluateForecastAccounts,
 	type ForecastAccountResult,
-	isHardRefreshFailure,
 	recommendForecastAccount,
 	summarizeForecast,
 } from "./forecast.js";
@@ -100,7 +89,6 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	clearAccounts,
-	type FlaggedAccountMetadataV1,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
 	getNamedBackups,
@@ -111,9 +99,7 @@ import {
 	restoreAccountsFromBackup,
 	StorageError,
 	saveAccounts,
-	saveFlaggedAccounts,
 	setStoragePath,
-	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "./storage.js";
 import type { AccountIdSource, TokenResult } from "./types.js";
@@ -275,6 +261,30 @@ function formatResultSummary(
 	return `${stylePromptText("Result:", "accent")} ${joinStyledSegments(rendered)}`;
 }
 
+function createRepairCommandDeps(): RepairCommandDeps {
+	return {
+		stylePromptText,
+		styleAccountDetailText,
+		formatResultSummary,
+		resolveActiveIndex,
+		hasUsableAccessToken,
+		hasLikelyInvalidRefreshToken,
+		normalizeFailureDetail,
+		buildQuotaEmailFallbackState,
+		updateQuotaCacheForAccount,
+		cloneQuotaCacheData,
+		pruneUnsafeQuotaEmailCacheEntry,
+		formatCompactQuotaSnapshot,
+		resolveStoredAccountIdentity,
+		applyTokenAccountIdentity,
+	};
+}
+
+function isOAuthCancellation(result: Exclude<TokenResult, { type: "success" }>): boolean {
+	const message = (result.message ?? result.reason ?? "").trim().toLowerCase();
+	return message.includes("cancelled") || message.includes("canceled");
+}
+
 function styleQuotaSummary(summary: string): string {
 	const normalized = collapseWhitespace(summary);
 	if (!normalized) return stylePromptText(summary, "muted");
@@ -360,7 +370,6 @@ function availabilityTone(
 	if (availability === "delayed") return "warning";
 	return "danger";
 }
-
 function formatQuotaSnapshotForDashboard(
 	snapshot: Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>,
 	settings: DashboardDisplaySettings,
@@ -2262,44 +2271,6 @@ function printBestUsage(): void {
 		].join("\n"),
 	);
 }
-function printFixUsage(): void {
-	console.log(
-		[
-			"Usage:",
-			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
-			"",
-			"Options:",
-			"  --dry-run, -n      Preview changes without writing storage",
-			"  --json, -j         Print machine-readable JSON output",
-			"  --live, -l         Run live session probe before deciding health",
-			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
-			"",
-			"Behavior:",
-			"  - Refreshes tokens for enabled accounts",
-			"  - Disables hard-failed accounts (never deletes)",
-			"  - Recommends a better current account when needed",
-		].join("\n"),
-	);
-}
-
-function printVerifyFlaggedUsage(): void {
-	console.log(
-		[
-			"Usage:",
-			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
-			"",
-			"Options:",
-			"  --dry-run, -n      Preview changes without writing storage",
-			"  --json, -j         Print machine-readable JSON output",
-			"  --no-restore       Check flagged accounts without restoring healthy ones",
-			"",
-			"Behavior:",
-			"  - Refresh-checks accounts from flagged storage",
-			"  - Restores healthy accounts back to active storage by default",
-		].join("\n"),
-	);
-}
-
 function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 	const options: BestCliOptions = {
 		live: false,
@@ -2344,122 +2315,6 @@ function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 	return { ok: true, options };
 }
 
-function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
-	const options: FixCliOptions = {
-		dryRun: false,
-		json: false,
-		live: false,
-		model: "gpt-5-codex",
-	};
-
-	for (let i = 0; i < args.length; i += 1) {
-		const argValue = args[i];
-		if (typeof argValue !== "string") continue;
-		if (argValue === "--dry-run" || argValue === "-n") {
-			options.dryRun = true;
-			continue;
-		}
-		if (argValue === "--json" || argValue === "-j") {
-			options.json = true;
-			continue;
-		}
-		if (argValue === "--live" || argValue === "-l") {
-			options.live = true;
-			continue;
-		}
-		if (argValue === "--model" || argValue === "-m") {
-			const value = args[i + 1];
-			if (!value) {
-				return { ok: false, message: "Missing value for --model" };
-			}
-			options.model = value;
-			i += 1;
-			continue;
-		}
-		if (argValue.startsWith("--model=")) {
-			const value = argValue.slice("--model=".length).trim();
-			if (!value) {
-				return { ok: false, message: "Missing value for --model" };
-			}
-			options.model = value;
-			continue;
-		}
-		return { ok: false, message: `Unknown option: ${argValue}` };
-	}
-
-	return { ok: true, options };
-}
-
-function parseVerifyFlaggedArgs(
-	args: string[],
-): ParsedArgsResult<VerifyFlaggedCliOptions> {
-	const options: VerifyFlaggedCliOptions = {
-		dryRun: false,
-		json: false,
-		restore: true,
-	};
-
-	for (const arg of args) {
-		if (arg === "--dry-run" || arg === "-n") {
-			options.dryRun = true;
-			continue;
-		}
-		if (arg === "--json" || arg === "-j") {
-			options.json = true;
-			continue;
-		}
-		if (arg === "--no-restore") {
-			options.restore = false;
-			continue;
-		}
-		return { ok: false, message: `Unknown option: ${arg}` };
-	}
-
-	return { ok: true, options };
-}
-
-function printDoctorUsage(): void {
-	console.log(
-		[
-			"Usage:",
-			"  codex auth doctor [--json] [--fix] [--dry-run]",
-			"",
-			"Options:",
-			"  --json, -j         Print machine-readable JSON diagnostics",
-			"  --fix              Apply safe auto-fixes to storage",
-			"  --dry-run, -n      Preview --fix changes without writing storage",
-			"",
-			"Behavior:",
-			"  - Validates account storage readability",
-			"  - Checks active index consistency and account duplication",
-			"  - Flags placeholder/demo accounts and disabled-all scenarios",
-		].join("\n"),
-	);
-}
-
-function parseDoctorArgs(args: string[]): ParsedArgsResult<DoctorCliOptions> {
-	const options: DoctorCliOptions = { json: false, fix: false, dryRun: false };
-	for (const arg of args) {
-		if (arg === "--json" || arg === "-j") {
-			options.json = true;
-			continue;
-		}
-		if (arg === "--fix") {
-			options.fix = true;
-			continue;
-		}
-		if (arg === "--dry-run" || arg === "-n") {
-			options.dryRun = true;
-			continue;
-		}
-		return { ok: false, message: `Unknown option: ${arg}` };
-	}
-	if (options.dryRun && !options.fix) {
-		return { ok: false, message: "--dry-run requires --fix" };
-	}
-	return { ok: true, options };
-}
-
 async function runForecast(args: string[]): Promise<number> {
 	return runForecastCommand(args, {
 		setStoragePath,
@@ -2492,298 +2347,114 @@ async function runForecast(args: string[]): Promise<number> {
 	});
 }
 
-function createEmptyAccountStorage(): AccountStorageV3 {
-	const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-	for (const family of MODEL_FAMILIES) {
-		activeIndexByFamily[family] = 0;
-	}
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily,
-	};
-}
-
-function findExistingAccountIndexForFlagged(
-	storage: AccountStorageV3,
-	flagged: FlaggedAccountMetadataV1,
-	nextRefreshToken: string,
-	nextAccountId: string | undefined,
-	nextEmail: string | undefined,
-): number {
-	const flaggedEmail = sanitizeEmail(flagged.email);
-	const candidateAccountId = nextAccountId ?? flagged.accountId;
-	const candidateEmail = sanitizeEmail(nextEmail) ?? flaggedEmail;
-	const nextMatchIndex = findMatchingAccountIndex(
-		storage.accounts,
-		{
-			accountId: candidateAccountId,
-			email: candidateEmail,
-			refreshToken: nextRefreshToken,
-		},
-		{
-			allowUniqueAccountIdFallbackWithoutEmail: true,
-		},
-	);
-	if (nextMatchIndex !== undefined) {
-		return nextMatchIndex;
-	}
-
-	const flaggedMatchIndex = findMatchingAccountIndex(
-		storage.accounts,
-		{
-			accountId: candidateAccountId,
-			email: candidateEmail,
-			refreshToken: flagged.refreshToken,
-		},
-		{
-			allowUniqueAccountIdFallbackWithoutEmail: true,
-		},
-	);
-	return flaggedMatchIndex ?? -1;
-}
-
-function upsertRecoveredFlaggedAccount(
-	storage: AccountStorageV3,
-	flagged: FlaggedAccountMetadataV1,
-	refreshResult: TokenSuccess,
-	now: number,
-): { restored: boolean; changed: boolean; message: string } {
-	const nextEmail =
-		sanitizeEmail(
-			extractAccountEmail(refreshResult.access, refreshResult.idToken),
-		) ?? flagged.email;
-	const tokenAccountId = extractAccountId(refreshResult.access);
-	const { accountId: nextAccountId, accountIdSource: nextAccountIdSource } =
-		resolveStoredAccountIdentity(
-			flagged.accountId,
-			flagged.accountIdSource,
-			tokenAccountId,
-		);
-	const existingIndex = findExistingAccountIndexForFlagged(
-		storage,
-		flagged,
-		refreshResult.refresh,
-		nextAccountId,
-		nextEmail,
-	);
-
-	if (existingIndex >= 0) {
-		const existing = storage.accounts[existingIndex];
-		if (!existing) {
-			return {
-				restored: false,
-				changed: false,
-				message: "existing account entry is missing",
-			};
-		}
-		let changed = false;
-		if (existing.refreshToken !== refreshResult.refresh) {
-			existing.refreshToken = refreshResult.refresh;
-			changed = true;
-		}
-		if (existing.accessToken !== refreshResult.access) {
-			existing.accessToken = refreshResult.access;
-			changed = true;
-		}
-		if (existing.expiresAt !== refreshResult.expires) {
-			existing.expiresAt = refreshResult.expires;
-			changed = true;
-		}
-		if (nextEmail && nextEmail !== existing.email) {
-			existing.email = nextEmail;
-			changed = true;
-		}
-		if (
-			nextAccountId !== undefined &&
-			(nextAccountId !== existing.accountId ||
-				nextAccountIdSource !== existing.accountIdSource)
-		) {
-			existing.accountId = nextAccountId;
-			existing.accountIdSource = nextAccountIdSource;
-			changed = true;
-		}
-		if (existing.enabled === false) {
-			existing.enabled = true;
-			changed = true;
-		}
-		if (
-			existing.accountLabel !== flagged.accountLabel &&
-			flagged.accountLabel
-		) {
-			existing.accountLabel = flagged.accountLabel;
-			changed = true;
-		}
-		existing.lastUsed = now;
-		return {
-			restored: true,
-			changed,
-			message: `restored into existing account ${existingIndex + 1}`,
-		};
-	}
-
-	if (storage.accounts.length >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-		return {
-			restored: false,
-			changed: false,
-			message: `cannot restore (max ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts reached)`,
-		};
-	}
-
-	storage.accounts.push({
-		refreshToken: refreshResult.refresh,
-		accessToken: refreshResult.access,
-		expiresAt: refreshResult.expires,
-		accountId: nextAccountId,
-		accountIdSource: nextAccountIdSource,
-		accountLabel: flagged.accountLabel,
-		email: nextEmail,
-		addedAt: flagged.addedAt ?? now,
-		lastUsed: now,
-		enabled: true,
-	});
-	return {
-		restored: true,
-		changed: true,
-		message: `restored as account ${storage.accounts.length}`,
-	};
-}
-
-interface DoctorFixAction {
-	key: string;
-	message: string;
-}
-
-function hasPlaceholderEmail(value: string | undefined): boolean {
-	if (!value) return false;
-	const email = value.trim().toLowerCase();
-	if (!email) return false;
-	return (
-		email.endsWith("@example.com") ||
-		email.includes("account1@example.com") ||
-		email.includes("account2@example.com") ||
-		email.includes("account3@example.com")
-	);
-}
-
-function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
-	const total = storage.accounts.length;
-	const nextActive =
-		total === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, total - 1));
-	let changed = false;
-	if (storage.activeIndex !== nextActive) {
-		storage.activeIndex = nextActive;
-		changed = true;
-	}
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	for (const family of MODEL_FAMILIES) {
-		const raw = storage.activeIndexByFamily[family];
-		const fallback = storage.activeIndex;
-		const candidate =
-			typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
-		const clamped =
-			total === 0 ? 0 : Math.max(0, Math.min(candidate, total - 1));
-		if (storage.activeIndexByFamily[family] !== clamped) {
-			storage.activeIndexByFamily[family] = clamped;
-			changed = true;
-		}
-	}
-	return changed;
-}
-
-function getDoctorRefreshTokenKey(refreshToken: unknown): string | undefined {
-	if (typeof refreshToken !== "string") return undefined;
-	const trimmed = refreshToken.trim();
-	return trimmed || undefined;
-}
-
-function applyDoctorFixes(storage: AccountStorageV3): {
-	changed: boolean;
-	actions: DoctorFixAction[];
-} {
-	let changed = false;
-	const actions: DoctorFixAction[] = [];
-
-	if (normalizeDoctorIndexes(storage)) {
-		changed = true;
-		actions.push({
-			key: "active-index",
-			message: "Normalized active account indexes",
-		});
-	}
-
-	const seenRefreshTokens = new Map<string, number>();
-	for (let i = 0; i < storage.accounts.length; i += 1) {
-		const account = storage.accounts[i];
-		if (!account) continue;
-
-		const refreshToken = getDoctorRefreshTokenKey(account.refreshToken);
-		if (!refreshToken) continue;
-		const existingTokenIndex = seenRefreshTokens.get(refreshToken);
-		if (typeof existingTokenIndex === "number") {
-			if (account.enabled !== false) {
-				account.enabled = false;
-				changed = true;
-				actions.push({
-					key: "duplicate-refresh-token",
-					message: `Disabled duplicate token entry on account ${i + 1} (kept account ${existingTokenIndex + 1})`,
-				});
-			}
-		} else {
-			seenRefreshTokens.set(refreshToken, i);
-		}
-
-		const tokenEmail = sanitizeEmail(extractAccountEmail(account.accessToken));
-		if (
-			tokenEmail &&
-			(!sanitizeEmail(account.email) || hasPlaceholderEmail(account.email))
-		) {
-			account.email = tokenEmail;
-			changed = true;
-			actions.push({
-				key: "email-from-token",
-				message: `Updated account ${i + 1} email from token claims`,
-			});
-		}
-
-		const tokenAccountId = extractAccountId(account.accessToken);
-		if (!account.accountId && tokenAccountId) {
-			account.accountId = tokenAccountId;
-			account.accountIdSource = "token";
-			changed = true;
-			actions.push({
-				key: "account-id-from-token",
-				message: `Filled missing accountId for account ${i + 1}`,
-			});
-		}
-	}
-
-	const enabledCount = storage.accounts.filter(
-		(account) => account.enabled !== false,
-	).length;
-	if (storage.accounts.length > 0 && enabledCount === 0) {
-		const index = resolveActiveIndex(storage, "codex");
-		const candidate = storage.accounts[index] ?? storage.accounts[0];
-		if (candidate) {
-			candidate.enabled = true;
-			changed = true;
-			actions.push({
-				key: "enabled-accounts",
-				message: `Re-enabled account ${index + 1} to avoid an all-disabled pool`,
-			});
-		}
-	}
-
-	if (normalizeDoctorIndexes(storage)) {
-		changed = true;
-	}
-
-	return { changed, actions };
-}
-
 async function clearAccountsAndReset(): Promise<void> {
 	await clearAccounts();
+}
+
+function adjustManageActionSelectionIndex(
+	currentIndex: number | undefined,
+	removedIndex: number,
+	remainingCount: number,
+): number {
+	if (remainingCount <= 0) {
+		return 0;
+	}
+	if (typeof currentIndex !== "number" || currentIndex < 0) {
+		return 0;
+	}
+	if (currentIndex < removedIndex) {
+		return Math.min(currentIndex, remainingCount - 1);
+	}
+	if (currentIndex > removedIndex) {
+		return currentIndex - 1;
+	}
+	return Math.min(removedIndex, remainingCount - 1);
+}
+
+function resetManageActionSelection(
+	storage: AccountStorageV3,
+	removedIndex: number,
+): void {
+	const remainingCount = storage.accounts.length;
+	if (remainingCount <= 0) {
+		storage.activeIndex = 0;
+		storage.activeIndexByFamily = {};
+		for (const family of MODEL_FAMILIES) {
+			storage.activeIndexByFamily[family] = 0;
+		}
+		return;
+	}
+
+	const previousActiveIndex = storage.activeIndex;
+	const previousByFamily = { ...storage.activeIndexByFamily };
+	storage.activeIndex = adjustManageActionSelectionIndex(
+		previousActiveIndex,
+		removedIndex,
+		remainingCount,
+	);
+	storage.activeIndexByFamily = {};
+	for (const family of MODEL_FAMILIES) {
+		storage.activeIndexByFamily[family] = adjustManageActionSelectionIndex(
+			previousByFamily[family] ?? previousActiveIndex,
+			removedIndex,
+			remainingCount,
+		);
+	}
+}
+
+function replaceManageActionStorage(
+	target: AccountStorageV3,
+	source: AccountStorageV3,
+): void {
+	target.version = source.version;
+	target.accounts = structuredClone(source.accounts);
+	target.activeIndex = source.activeIndex;
+	target.activeIndexByFamily = {
+		...source.activeIndexByFamily,
+	};
+}
+
+function resolveManageActionAccountIndex(
+	storage: AccountStorageV3,
+	fallbackIndex: number,
+	account: AccountMetadataV3 | undefined,
+): number | null {
+	if (account) {
+		const matchedIndex = findMatchingAccountIndex(
+			storage.accounts,
+			{
+				accountId: account.accountId,
+				email: account.email,
+				refreshToken: account.refreshToken,
+			},
+			{
+				allowUniqueAccountIdFallbackWithoutEmail: true,
+			},
+		);
+		if (typeof matchedIndex === "number" && matchedIndex >= 0) {
+			return matchedIndex;
+		}
+		return null;
+	}
+	return fallbackIndex >= 0 && fallbackIndex < storage.accounts.length
+		? fallbackIndex
+		: null;
+}
+
+function matchesManageActionAccount(
+	account: AccountMetadataV3 | undefined,
+	candidate: AccountMetadataV3 | undefined,
+): boolean {
+	if (!account || !candidate) {
+		return false;
+	}
+	if (account.accountId || candidate.accountId) {
+		return account.accountId === candidate.accountId;
+	}
+	return (
+		account.refreshToken === candidate.refreshToken
+		&& sanitizeEmail(account.email) === sanitizeEmail(candidate.email)
+	);
 }
 
 async function handleManageAction(
@@ -2802,14 +2473,33 @@ async function handleManageAction(
 
 	if (typeof menuResult.deleteAccountIndex === "number") {
 		const idx = menuResult.deleteAccountIndex;
-		if (idx >= 0 && idx < storage.accounts.length) {
-			storage.accounts.splice(idx, 1);
-			storage.activeIndex = 0;
-			storage.activeIndexByFamily = {};
-			for (const family of MODEL_FAMILIES) {
-				storage.activeIndexByFamily[family] = 0;
-			}
-			await saveAccounts(storage);
+		const selectedAccount = storage.accounts[idx];
+		let deleted = false;
+		if (selectedAccount) {
+			await withAccountStorageTransaction(async (loadedStorage, persist) => {
+				const nextStorage = loadedStorage
+					? structuredClone(loadedStorage)
+					: structuredClone(storage);
+				const nextIndex = resolveManageActionAccountIndex(
+					nextStorage,
+					idx,
+					selectedAccount,
+				);
+				if (nextIndex === null) {
+					return;
+				}
+				const nextAccount = nextStorage.accounts[nextIndex];
+				if (!matchesManageActionAccount(selectedAccount, nextAccount)) {
+					return;
+				}
+				nextStorage.accounts.splice(nextIndex, 1);
+				resetManageActionSelection(nextStorage, nextIndex);
+				await persist(nextStorage);
+				replaceManageActionStorage(storage, nextStorage);
+				deleted = true;
+			});
+		}
+		if (deleted) {
 			console.log(`Deleted account ${idx + 1}.`);
 		}
 		return;
@@ -2817,12 +2507,34 @@ async function handleManageAction(
 
 	if (typeof menuResult.toggleAccountIndex === "number") {
 		const idx = menuResult.toggleAccountIndex;
-		const account = storage.accounts[idx];
-		if (account) {
-			account.enabled = account.enabled === false;
-			await saveAccounts(storage);
+		const selectedAccount = storage.accounts[idx];
+		let nextEnabledState: boolean | null = null;
+		if (selectedAccount) {
+			await withAccountStorageTransaction(async (loadedStorage, persist) => {
+				const nextStorage = loadedStorage
+					? structuredClone(loadedStorage)
+					: structuredClone(storage);
+				const nextIndex = resolveManageActionAccountIndex(
+					nextStorage,
+					idx,
+					selectedAccount,
+				);
+				if (nextIndex === null) {
+					return;
+				}
+				const nextAccount = nextStorage.accounts[nextIndex];
+				if (!nextAccount || !matchesManageActionAccount(selectedAccount, nextAccount)) {
+					return;
+				}
+				nextAccount.enabled = nextAccount.enabled === false;
+				await persist(nextStorage);
+				replaceManageActionStorage(storage, nextStorage);
+				nextEnabledState = nextAccount.enabled !== false;
+			});
+		}
+		if (nextEnabledState !== null) {
 			console.log(
-				`${account.enabled === false ? "Disabled" : "Enabled"} account ${idx + 1}.`,
+				`${nextEnabledState ? "Enabled" : "Disabled"} account ${idx + 1}.`,
 			);
 		}
 		return;
@@ -2860,7 +2572,7 @@ async function handleManageAction(
 async function runAuthLogin(args: string[]): Promise<number> {
 	const parsedArgs = parseAuthLoginArgs(args);
 	if (!parsedArgs.ok) {
-		if (parsedArgs.message) {
+		if (parsedArgs.reason === "error") {
 			console.error(parsedArgs.message);
 			printUsage();
 			return 1;
@@ -2970,38 +2682,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 						"Auto-Fix",
 						"Checking and fixing common issues",
 						async () => {
-							await runFixCommand(["--live"], {
-								setStoragePath,
-								loadAccounts,
-								parseFixArgs,
-								printFixUsage,
-								loadQuotaCache,
-								saveQuotaCache,
-								cloneQuotaCacheData,
-								buildQuotaEmailFallbackState,
-								updateQuotaCacheForAccount,
-								pruneUnsafeQuotaEmailCacheEntry,
-								resolveActiveIndex,
-								hasUsableAccessToken,
-								fetchCodexQuotaSnapshot,
-								formatCompactQuotaSnapshot,
-								normalizeFailureDetail,
-								hasLikelyInvalidRefreshToken,
-								queuedRefresh,
-								sanitizeEmail,
-								extractAccountEmail,
-								extractAccountId,
-								applyTokenAccountIdentity,
-								isHardRefreshFailure,
-								evaluateForecastAccounts,
-								recommendForecastAccount,
-								saveAccounts,
-								formatAccountLabel,
-								stylePromptText,
-								formatResultSummary,
-								styleAccountDetailText,
-								defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-							});
+							await runRepairFix(["--live"], createRepairCommandDeps());
 						},
 						displaySettings,
 					);
@@ -3016,28 +2697,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 						"Problem Account Check",
 						"Checking problem accounts",
 						async () => {
-							await runVerifyFlaggedCommand([], {
-								setStoragePath,
-								loadFlaggedAccounts,
-								loadAccounts,
-								queuedRefresh,
-								parseVerifyFlaggedArgs,
-								printVerifyFlaggedUsage,
-								createEmptyAccountStorage,
-								upsertRecoveredFlaggedAccount,
-								resolveStoredAccountIdentity,
-								extractAccountId,
-								extractAccountEmail,
-								sanitizeEmail,
-								normalizeFailureDetail,
-								withAccountAndFlaggedStorageTransaction,
-								normalizeDoctorIndexes,
-								saveFlaggedAccounts,
-								formatAccountLabel,
-								stylePromptText,
-								styleAccountDetailText,
-								formatResultSummary,
-							});
+							await runRepairVerifyFlagged([], createRepairCommandDeps());
 						},
 						displaySettings,
 					);
@@ -3222,7 +2882,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 
 			const tokenResult = await runOAuthFlow(forceNewLogin, signInMode);
 			if (tokenResult.type !== "success") {
-				if (isUserCancelledOAuth(tokenResult)) {
+				if (isOAuthCancellation(tokenResult)) {
 					if (existingCount > 0) {
 						console.log(
 							stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"),
@@ -3404,61 +3064,94 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 	if (!account) {
 		return false;
 	}
+	const accountMatch = {
+		accountId: account.accountId,
+		email: account.email,
+		refreshToken: account.refreshToken,
+	};
 
 	const now = Date.now();
 	let syncAccessToken = account.accessToken;
 	let syncRefreshToken = account.refreshToken;
 	let syncExpiresAt = account.expiresAt;
 	let syncIdToken: string | undefined;
+	let syncAccountId = account.accountId;
+	let syncEmail = account.email;
 	let changed = false;
+	let nextStoredAccount: AccountMetadataV3 | null = null;
 
 	if (!hasUsableAccessToken(account, now)) {
 		const refreshResult = await queuedRefresh(account.refreshToken);
-		if (refreshResult.type === "success") {
-			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(
-				extractAccountEmail(refreshResult.access, refreshResult.idToken),
-			);
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-				changed = true;
+		if (refreshResult.type !== "success") {
+			return false;
+		}
+		nextStoredAccount = structuredClone(account);
+		const tokenAccountId = extractAccountId(refreshResult.access);
+		const nextEmail = sanitizeEmail(
+			extractAccountEmail(refreshResult.access, refreshResult.idToken),
+		);
+		if (nextStoredAccount.refreshToken !== refreshResult.refresh) {
+			nextStoredAccount.refreshToken = refreshResult.refresh;
+			changed = true;
+		}
+		if (nextStoredAccount.accessToken !== refreshResult.access) {
+			nextStoredAccount.accessToken = refreshResult.access;
+			changed = true;
+		}
+		if (nextStoredAccount.expiresAt !== refreshResult.expires) {
+			nextStoredAccount.expiresAt = refreshResult.expires;
+			changed = true;
+		}
+		if (nextEmail && nextEmail !== nextStoredAccount.email) {
+			nextStoredAccount.email = nextEmail;
+			changed = true;
+		}
+		if (applyTokenAccountIdentity(nextStoredAccount, tokenAccountId)) {
+			changed = true;
+		}
+		syncAccessToken = refreshResult.access;
+		syncRefreshToken = refreshResult.refresh;
+		syncExpiresAt = refreshResult.expires;
+		syncIdToken = refreshResult.idToken;
+		syncAccountId = nextStoredAccount.accountId;
+		syncEmail = nextStoredAccount.email;
+	}
+
+	if (changed && nextStoredAccount) {
+		let persisted = false;
+		await withAccountStorageTransaction(async (loadedStorage, persist) => {
+			if (!loadedStorage) {
+				return;
 			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-				changed = true;
+			const nextStorage = structuredClone(loadedStorage);
+			const targetIndex =
+				findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
+					allowUniqueAccountIdFallbackWithoutEmail: true,
+				})
+				?? findMatchingAccountIndex(nextStorage.accounts, nextStoredAccount, {
+					allowUniqueAccountIdFallbackWithoutEmail: true,
+				});
+			if (targetIndex === undefined) {
+				return;
 			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-				changed = true;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-				changed = true;
-			}
-			if (applyTokenAccountIdentity(account, tokenAccountId)) {
-				changed = true;
-			}
-			syncAccessToken = refreshResult.access;
-			syncRefreshToken = refreshResult.refresh;
-			syncExpiresAt = refreshResult.expires;
-			syncIdToken = refreshResult.idToken;
+			nextStorage.accounts[targetIndex] = structuredClone(nextStoredAccount);
+			await persist(nextStorage);
+			persisted = true;
+		});
+		if (!persisted) {
+			return false;
 		}
 	}
 
-	if (changed) {
-		await saveAccounts(storage);
-	}
-
 	return setCodexCliActiveSelection({
-		accountId: account.accountId,
-		email: account.email,
+		accountId: syncAccountId,
+		email: syncEmail,
 		accessToken: syncAccessToken,
 		refreshToken: syncRefreshToken,
 		expiresAt: syncExpiresAt,
 		...(syncIdToken ? { idToken: syncIdToken } : {}),
 	});
 }
-
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
@@ -3509,28 +3202,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES });
 	}
 	if (command === "verify-flagged") {
-		return runVerifyFlaggedCommand(rest, {
-			setStoragePath,
-			loadFlaggedAccounts,
-			loadAccounts,
-			queuedRefresh,
-			parseVerifyFlaggedArgs,
-			printVerifyFlaggedUsage,
-			createEmptyAccountStorage,
-			upsertRecoveredFlaggedAccount,
-			resolveStoredAccountIdentity,
-			extractAccountId,
-			extractAccountEmail,
-			sanitizeEmail,
-			normalizeFailureDetail,
-			withAccountAndFlaggedStorageTransaction,
-			normalizeDoctorIndexes,
-			saveFlaggedAccounts,
-			formatAccountLabel,
-			stylePromptText,
-			styleAccountDetailText,
-			formatResultSummary,
-		});
+		return runRepairVerifyFlagged(rest, createRepairCommandDeps());
 	}
 	if (command === "forecast") {
 		return runForecast(rest);
@@ -3551,66 +3223,10 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		});
 	}
 	if (command === "fix") {
-		return runFixCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-			parseFixArgs,
-			printFixUsage,
-			loadQuotaCache,
-			saveQuotaCache,
-			cloneQuotaCacheData,
-			buildQuotaEmailFallbackState,
-			updateQuotaCacheForAccount,
-			pruneUnsafeQuotaEmailCacheEntry,
-			resolveActiveIndex,
-			hasUsableAccessToken,
-			fetchCodexQuotaSnapshot,
-			formatCompactQuotaSnapshot,
-			normalizeFailureDetail,
-			hasLikelyInvalidRefreshToken,
-			queuedRefresh,
-			sanitizeEmail,
-			extractAccountEmail,
-			extractAccountId,
-			applyTokenAccountIdentity,
-			isHardRefreshFailure,
-			evaluateForecastAccounts,
-			recommendForecastAccount,
-			saveAccounts,
-			formatAccountLabel,
-			stylePromptText,
-			formatResultSummary,
-			styleAccountDetailText,
-			defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-		});
+		return runRepairFix(rest, createRepairCommandDeps());
 	}
 	if (command === "doctor") {
-		return runDoctorCommand(rest, {
-			setStoragePath,
-			getStoragePath,
-			getCodexCliAuthPath,
-			getCodexCliConfigPath,
-			loadCodexCliState,
-			parseDoctorArgs,
-			printDoctorUsage,
-			loadAccounts,
-			applyDoctorFixes,
-			saveAccounts,
-			resolveActiveIndex,
-			evaluateForecastAccounts,
-			recommendForecastAccount,
-			sanitizeEmail,
-			extractAccountEmail,
-			extractAccountId,
-			hasPlaceholderEmail,
-			hasLikelyInvalidRefreshToken,
-			getDoctorRefreshTokenKey,
-			hasUsableAccessToken,
-			queuedRefresh,
-			normalizeFailureDetail,
-			applyTokenAccountIdentity,
-			setCodexCliActiveSelection,
-		});
+		return runRepairDoctor(rest, createRepairCommandDeps());
 	}
 
 	console.error(`Unknown command: ${command}`);

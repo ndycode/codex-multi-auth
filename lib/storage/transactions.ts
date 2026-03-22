@@ -17,6 +17,13 @@ export function getTransactionSnapshotState():
 	return transactionSnapshotContext.getStore();
 }
 
+export function runInTransactionSnapshotContext<T>(
+	state: TransactionSnapshotState,
+	fn: () => Promise<T>,
+): Promise<T> {
+	return transactionSnapshotContext.run(state, fn);
+}
+
 export function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previousMutex = storageMutex;
 	let releaseLock: () => void;

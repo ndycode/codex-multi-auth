@@ -24,8 +24,10 @@ import {
 	saveAccounts,
 	setStoragePath,
 	setStoragePathDirect,
+	clearFlaggedAccounts,
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
+	withFlaggedStorageTransaction,
 } from "../lib/storage.js";
 import { formatStorageErrorHint } from "../lib/storage/error-hints.js";
 
@@ -893,6 +895,188 @@ describe("storage", () => {
 			}
 		});
 
+		it("rolls back flagged storage when flagged-only transaction persistence fails", async () => {
+			const now = Date.now();
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
+						if (flaggedRenameAttempts <= 5) {
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await expect(
+					withFlaggedStorageTransaction(async (current, persist) => {
+						await persist({
+							...current,
+							accounts: [
+								...current.accounts,
+								{
+									accountId: "acct-restored",
+									email: "restored@example.com",
+									refreshToken: "refresh-restored",
+									addedAt: now,
+									lastUsed: now,
+									flaggedAt: now,
+								},
+							],
+						});
+					}),
+				).rejects.toThrow("flagged storage busy");
+				expect(flaggedRenameAttempts).toBe(6);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-flagged",
+					refreshToken: "refresh-flagged",
+				}),
+			);
+		});
+
+		it("passes the live flagged snapshot into account+flagged transactions", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-pre-scan",
+						email: "pre-scan@example.com",
+						refreshToken: "refresh-pre-scan",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const preScanFlagged = await loadFlaggedAccounts();
+			expect(preScanFlagged.accounts[0]?.refreshToken).toBe("refresh-pre-scan");
+
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-live",
+						email: "live@example.com",
+						refreshToken: "refresh-live",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						flaggedAt: now - 1_000,
+					},
+				],
+			});
+
+			await withAccountAndFlaggedStorageTransaction(
+				async (current, persist, currentFlagged) => {
+					expect(current?.accounts).toHaveLength(1);
+					expect(currentFlagged.accounts).toHaveLength(1);
+					expect(currentFlagged.accounts[0]?.refreshToken).toBe("refresh-live");
+
+					currentFlagged.accounts[0]!.refreshToken = "mutated-only";
+
+					await persist(current!, {
+						version: 1,
+						accounts: [
+							{
+								accountId: "acct-persisted",
+								email: "persisted@example.com",
+								refreshToken: "refresh-persisted",
+								addedAt: now,
+								lastUsed: now,
+								flaggedAt: now,
+							},
+						],
+					});
+				},
+			);
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-persisted",
+					refreshToken: "refresh-persisted",
+				}),
+			);
+		});
+
+		it("treats missing flagged storage as empty inside flagged transactions", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await clearFlaggedAccounts();
+
+			await expect(
+				withFlaggedStorageTransaction(async (current) => {
+					expect(current).toEqual({ version: 1, accounts: [] });
+				}),
+			).resolves.toBeUndefined();
+
+			await expect(
+				withAccountAndFlaggedStorageTransaction(
+					async (_current, _persist, currentFlagged) => {
+						expect(currentFlagged).toEqual({ version: 1, accounts: [] });
+					},
+				),
+			).resolves.toBeUndefined();
+		});
+
 		it("retries transient flagged storage rename and succeeds", async () => {
 			const now = Date.now();
 			await saveFlaggedAccounts({
@@ -982,6 +1166,7 @@ describe("storage", () => {
 		it("should fail export when no accounts exist", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
+			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);

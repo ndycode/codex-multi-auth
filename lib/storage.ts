@@ -68,7 +68,7 @@ import {
 } from "./storage/storage-parser.js";
 import {
 	getTransactionSnapshotState,
-	withAccountAndFlaggedStorageTransaction as runWithAccountAndFlaggedStorageTransaction,
+	runInTransactionSnapshotContext,
 	withAccountStorageTransaction as runWithAccountStorageTransaction,
 	withStorageLock,
 } from "./storage/transactions.js";
@@ -1823,6 +1823,14 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	}
 }
 
+function cloneFlaggedStorageForPersistence(
+	storage: FlaggedAccountStorageV1 | null | undefined,
+): FlaggedAccountStorageV1 {
+	return {
+		version: 1,
+		accounts: structuredClone(storage?.accounts ?? []),
+	};
+}
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -1843,23 +1851,93 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		) => Promise<void>,
+		currentFlagged: FlaggedAccountStorageV1,
 	) => Promise<T>,
 ): Promise<T> {
-	return runWithAccountAndFlaggedStorageTransaction(handler, {
-		getStoragePath,
-		loadCurrent: () => loadAccountsInternal(saveAccountsUnlocked),
-		saveAccounts: saveAccountsUnlocked,
-		saveFlaggedAccounts: saveFlaggedAccountsUnlocked,
-		cloneAccountStorageForPersistence,
-		logRollbackError: (error, rollbackError) => {
-			log.error(
-				"Failed to rollback account storage after flagged save failure",
-				{
-					error: String(error),
-					rollbackError: String(rollbackError),
-				},
-			);
-		},
+	return withStorageLock(async () => {
+		const storagePath = getStoragePath();
+		const state = {
+			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			storagePath,
+			active: true,
+		};
+		const current = state.snapshot;
+		const currentFlagged = await loadFlaggedAccounts();
+		const persist = async (
+			accountStorage: AccountStorageV3,
+			flaggedStorage: FlaggedAccountStorageV1,
+		): Promise<void> => {
+			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
+			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
+			const nextFlagged = cloneFlaggedStorageForPersistence(flaggedStorage);
+			await saveAccountsUnlocked(nextAccounts);
+			try {
+				await saveFlaggedAccountsUnlocked(nextFlagged);
+				state.snapshot = nextAccounts;
+			} catch (error) {
+				try {
+					await saveAccountsUnlocked(previousAccounts);
+					state.snapshot = previousAccounts;
+				} catch (rollbackError) {
+					const combinedError = new AggregateError(
+						[error, rollbackError],
+						"Flagged save failed and account storage rollback also failed",
+					);
+					log.error(
+						"Failed to rollback account storage after flagged save failure",
+						{
+							error: String(error),
+							rollbackError: String(rollbackError),
+						},
+					);
+					throw combinedError;
+				}
+				throw error;
+			}
+		};
+		return runInTransactionSnapshotContext(state, () =>
+			handler(current, persist, currentFlagged),
+		);
+	});
+}
+
+export async function withFlaggedStorageTransaction<T>(
+	handler: (
+		current: FlaggedAccountStorageV1,
+		persist: (storage: FlaggedAccountStorageV1) => Promise<void>,
+	) => Promise<T>,
+): Promise<T> {
+	return withStorageLock(async () => {
+		const current = await loadFlaggedAccounts();
+		let snapshot = cloneFlaggedStorageForPersistence(current);
+		const persist = async (storage: FlaggedAccountStorageV1): Promise<void> => {
+			const previousStorage = cloneFlaggedStorageForPersistence(snapshot);
+			const nextStorage = cloneFlaggedStorageForPersistence(storage);
+			try {
+				await saveFlaggedAccountsUnlocked(nextStorage);
+				snapshot = nextStorage;
+			} catch (error) {
+				try {
+					await saveFlaggedAccountsUnlocked(previousStorage);
+					snapshot = previousStorage;
+				} catch (rollbackError) {
+					const combinedError = new AggregateError(
+						[error, rollbackError],
+						"Flagged save failed and flagged storage rollback also failed",
+					);
+					log.error(
+						"Failed to rollback flagged storage after flagged save failure",
+						{
+							error: String(error),
+							rollbackError: String(rollbackError),
+						},
+					);
+					throw combinedError;
+				}
+				throw error;
+			}
+		};
+		return handler(structuredClone(snapshot), persist);
 	});
 }
 

@@ -30,10 +30,15 @@ const detectOcChatgptMultiAuthTargetMock = vi.fn();
 const normalizeAccountStorageMock = vi.fn((value) => value);
 const withAccountStorageTransactionMock = vi.fn();
 const withAccountAndFlaggedStorageTransactionMock = vi.fn();
+const withFlaggedStorageTransactionMock = vi.fn();
 const loggerDebugMock = vi.fn();
 const loggerInfoMock = vi.fn();
 const loggerWarnMock = vi.fn();
 const loggerErrorMock = vi.fn();
+let lastAccountStorageSnapshot: unknown = null;
+let lastFlaggedStorageSnapshot: unknown = null;
+let accountStorageState: unknown = null;
+let flaggedStorageState: unknown = null;
 
 vi.mock("../lib/logger.js", () => ({
 	createLogger: vi.fn(() => ({
@@ -128,12 +133,25 @@ vi.mock("../lib/storage.js", async () => {
 	const actual = await vi.importActual("../lib/storage.js");
 	return {
 		...(actual as Record<string, unknown>),
-		loadAccounts: loadAccountsMock,
-		loadFlaggedAccounts: loadFlaggedAccountsMock,
+		loadAccounts: async (...args: unknown[]) => {
+			const value = await loadAccountsMock(...args);
+			if (value != null) {
+				updateLastAccountStorageSnapshot(value);
+			}
+			return value;
+		},
+		loadFlaggedAccounts: async (...args: unknown[]) => {
+			const value = await loadFlaggedAccountsMock(...args);
+			if (value != null) {
+				updateLastFlaggedStorageSnapshot(value);
+			}
+			return value;
+		},
 		saveAccounts: saveAccountsMock,
 		saveFlaggedAccounts: saveFlaggedAccountsMock,
 		withAccountAndFlaggedStorageTransaction:
 			withAccountAndFlaggedStorageTransactionMock,
+		withFlaggedStorageTransaction: withFlaggedStorageTransactionMock,
 		withAccountStorageTransaction: withAccountStorageTransactionMock,
 		setStoragePath: setStoragePathMock,
 		getStoragePath: getStoragePathMock,
@@ -259,6 +277,65 @@ function createDeferred<T>(): {
 		reject = rej;
 	});
 	return { promise, resolve, reject };
+}
+
+function cloneValue<T>(value: T): T {
+	return structuredClone(value);
+}
+
+function updateLastAccountStorageSnapshot(snapshot: unknown): void {
+	if (snapshot == null) {
+		return;
+	}
+	const cloned = cloneValue(snapshot);
+	lastAccountStorageSnapshot = cloned;
+	accountStorageState = cloneValue(cloned);
+}
+
+function updateLastFlaggedStorageSnapshot(snapshot: unknown): void {
+	if (snapshot == null) {
+		return;
+	}
+	const cloned = cloneValue(snapshot);
+	lastFlaggedStorageSnapshot = cloned;
+	flaggedStorageState = cloneValue(cloned);
+}
+
+function getLastLoadedAccountSnapshot(): unknown {
+	return lastAccountStorageSnapshot == null
+		? null
+		: cloneValue(lastAccountStorageSnapshot);
+}
+
+function getLastLoadedFlaggedSnapshot(): unknown {
+	return lastFlaggedStorageSnapshot == null
+		? {
+			version: 1,
+			accounts: [],
+		}
+		: cloneValue(lastFlaggedStorageSnapshot);
+}
+
+async function getCurrentAccountSnapshot(): Promise<unknown> {
+	const current = await loadAccountsMock();
+	if (current != null) {
+		updateLastAccountStorageSnapshot(current);
+		return current;
+	}
+	return accountStorageState == null
+		? getLastLoadedAccountSnapshot()
+		: cloneValue(accountStorageState);
+}
+
+async function getCurrentFlaggedSnapshot(): Promise<unknown> {
+	const current = await loadFlaggedAccountsMock();
+	if (current != null) {
+		updateLastFlaggedStorageSnapshot(current);
+		return current;
+	}
+	return flaggedStorageState == null
+		? getLastLoadedFlaggedSnapshot()
+		: cloneValue(flaggedStorageState);
 }
 
 function makeErrnoError(message: string, code: string): NodeJS.ErrnoException {
@@ -480,6 +557,7 @@ describe("codex manager cli commands", () => {
 		restoreAccountsFromBackupMock.mockReset();
 		withAccountAndFlaggedStorageTransactionMock.mockReset();
 		withAccountStorageTransactionMock.mockReset();
+		withFlaggedStorageTransactionMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
 		promptAddAnotherAccountMock.mockReset();
@@ -508,23 +586,39 @@ describe("codex manager cli commands", () => {
 			version: 1,
 			accounts: [],
 		});
-		withAccountStorageTransactionMock.mockImplementation(async (handler) => {
-			const current = await loadAccountsMock();
-			return handler(
-				current == null
-					? {
+		lastAccountStorageSnapshot = null;
+		accountStorageState = null;
+		lastFlaggedStorageSnapshot = {
+			version: 1,
+			accounts: [],
+		};
+		flaggedStorageState = {
+			version: 1,
+			accounts: [],
+		};
+		withAccountStorageTransactionMock.mockImplementation(
+			async (handler) => {
+				const current = await getCurrentAccountSnapshot();
+				return handler(
+					current == null
+						? {
 							version: 3,
 							accounts: [],
 							activeIndex: 0,
 							activeIndexByFamily: {},
 						}
-					: structuredClone(current),
-				async (storage: unknown) => saveAccountsMock(storage),
-			);
-		});
+						: structuredClone(current),
+					async (storage: unknown) => {
+						await saveAccountsMock(storage);
+						updateLastAccountStorageSnapshot(storage);
+					},
+				);
+			},
+		);
 		withAccountAndFlaggedStorageTransactionMock.mockImplementation(
 			async (handler) => {
-				const current = await loadAccountsMock();
+				const current = await getCurrentAccountSnapshot();
+				const flaggedCurrent = await getCurrentFlaggedSnapshot();
 				let snapshot =
 					current == null
 						? {
@@ -534,22 +628,62 @@ describe("codex manager cli commands", () => {
 								activeIndexByFamily: {},
 							}
 						: structuredClone(current);
+				let flaggedSnapshot =
+					flaggedCurrent == null
+						? {
+							version: 1,
+							accounts: [],
+						}
+						: structuredClone(flaggedCurrent);
 				return handler(
 					structuredClone(snapshot),
 					async (storage: unknown, flaggedStorage: unknown) => {
 						const previousSnapshot = structuredClone(snapshot);
+						const previousFlaggedSnapshot = structuredClone(flaggedSnapshot);
+						accountStorageState = structuredClone(storage);
 						await saveAccountsMock(storage);
 						try {
+							flaggedStorageState = structuredClone(flaggedStorage);
 							await saveFlaggedAccountsMock(flaggedStorage);
 							snapshot = structuredClone(storage);
+							flaggedSnapshot = structuredClone(flaggedStorage);
+							updateLastAccountStorageSnapshot(snapshot);
+							updateLastFlaggedStorageSnapshot(flaggedSnapshot);
 						} catch (error) {
+							accountStorageState = structuredClone(previousSnapshot);
+							flaggedStorageState = structuredClone(previousFlaggedSnapshot);
 							await saveAccountsMock(previousSnapshot);
+							updateLastAccountStorageSnapshot(previousSnapshot);
+							updateLastFlaggedStorageSnapshot(previousFlaggedSnapshot);
 							throw error;
 						}
 					},
+					structuredClone(flaggedSnapshot),
 				);
 			},
 		);
+		withFlaggedStorageTransactionMock.mockImplementation(async (handler) => {
+			const current = await getCurrentFlaggedSnapshot();
+			const snapshot =
+				current == null
+					? {
+						version: 1,
+						accounts: [],
+					}
+					: structuredClone(current);
+			return handler(structuredClone(snapshot), async (storage: unknown) => {
+				const previousSnapshot = structuredClone(snapshot);
+				flaggedStorageState = structuredClone(storage);
+				try {
+					await saveFlaggedAccountsMock(storage);
+					updateLastFlaggedStorageSnapshot(storage);
+				} catch (error) {
+					flaggedStorageState = structuredClone(previousSnapshot);
+					updateLastFlaggedStorageSnapshot(previousSnapshot);
+					throw error;
+				}
+			});
+		});
 		loadDashboardDisplaySettingsMock.mockResolvedValue({
 			showPerAccountRows: true,
 			showQuotaDetails: true,
@@ -1309,6 +1443,63 @@ describe("codex manager cli commands", () => {
 		});
 	});
 
+	it("preserves concurrently added flagged accounts during flagged recovery", async () => {
+		const now = Date.now();
+		const originalFlagged = {
+			refreshToken: "flagged-refresh",
+			accountId: "acc_flagged",
+			email: "flagged@example.com",
+			addedAt: now - 1_000,
+			lastUsed: now - 1_000,
+			flaggedAt: now - 5_000,
+		};
+		loadFlaggedAccountsMock
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: [originalFlagged],
+			})
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: [
+					originalFlagged,
+					{
+						refreshToken: "refresh-concurrent",
+						accountId: "acc_concurrent",
+						email: "concurrent@example.com",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						flaggedAt: now - 2_000,
+					},
+				],
+			});
+		loadAccountsMock.mockResolvedValueOnce(null);
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveFlaggedAccountsMock).toHaveBeenCalledWith({
+			version: 1,
+			accounts: [
+				expect.objectContaining({
+					refreshToken: "refresh-concurrent",
+					accountId: "acc_concurrent",
+				}),
+			],
+		});
+	});
+
 	it("preserves distinct shared-accountId accounts when flagged recovery has no email", async () => {
 		const now = Date.now();
 		loadFlaggedAccountsMock.mockResolvedValueOnce({
@@ -1640,8 +1831,26 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
-	it("keeps flagged account when verification still fails", async () => {
+	it("restores prior storage snapshot when flagged save fails during verify-flagged --no-restore", async () => {
 		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					refreshToken: "refresh-existing",
+					accountId: "acc_existing",
+					email: "existing@example.com",
+					addedAt: now - 10_000,
+					lastUsed: now - 10_000,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
 		loadFlaggedAccountsMock.mockResolvedValueOnce({
 			version: 1,
 			accounts: [
@@ -1649,12 +1858,114 @@ describe("codex manager cli commands", () => {
 					refreshToken: "flagged-refresh",
 					accountId: "acc_flagged",
 					email: "flagged@example.com",
-					addedAt: now - 1_000,
-					lastUsed: now - 1_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
 					flaggedAt: now - 5_000,
 				},
 			],
 		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		saveFlaggedAccountsMock.mockRejectedValueOnce(
+			new Error("flagged write failed"),
+		);
+
+		const originalStorage = structuredClone(storageState);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(
+			runCodexMultiAuthCli(["auth", "verify-flagged", "--no-restore", "--json"]),
+		).rejects.toThrow("flagged write failed");
+		expect(withFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(storageState).toEqual(originalStorage);
+	});
+
+	it("merges concurrently added flagged accounts during verify-flagged --no-restore", async () => {
+		const now = Date.now();
+		const originalFlagged = {
+			refreshToken: "flagged-refresh",
+			accountId: "acc_flagged",
+			email: "flagged@example.com",
+			addedAt: now - 5_000,
+			lastUsed: now - 5_000,
+			flaggedAt: now - 5_000,
+		};
+		loadFlaggedAccountsMock
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: [originalFlagged],
+			})
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: [
+					originalFlagged,
+					{
+						refreshToken: "refresh-concurrent",
+						accountId: "acc_concurrent",
+						email: "concurrent@example.com",
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						flaggedAt: now - 2_000,
+					},
+				],
+			});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-restored",
+			refresh: "refresh-restored",
+			expires: now + 3_600_000,
+		});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify-flagged",
+			"--no-restore",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(withFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(saveFlaggedAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({
+						refreshToken: "refresh-restored",
+					}),
+					expect.objectContaining({
+						refreshToken: "refresh-concurrent",
+						accountId: "acc_concurrent",
+					}),
+				]),
+			}),
+		);
+	});
+
+	it("keeps flagged account when verification still fails", async () => {
+		const now = Date.now();
+		const flaggedAccount = {
+			refreshToken: "flagged-refresh",
+			accountId: "acc_flagged",
+			email: "flagged@example.com",
+			addedAt: now - 1_000,
+			lastUsed: now - 1_000,
+			flaggedAt: now - 5_000,
+		};
+		loadFlaggedAccountsMock
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: [flaggedAccount],
+			})
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: [flaggedAccount],
+			});
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
 			activeIndex: 0,
@@ -1675,7 +1986,13 @@ describe("codex manager cli commands", () => {
 			"--json",
 		]);
 		expect(exitCode).toBe(0);
-		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [],
+			}),
+		);
 		expect(saveFlaggedAccountsMock).toHaveBeenCalledTimes(1);
 		expect(saveFlaggedAccountsMock).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -1732,6 +2049,136 @@ describe("codex manager cli commands", () => {
 		expect(payload.dryRun).toBe(true);
 		expect(payload.changed).toBe(true);
 		expect(payload.reports[0]?.outcome).toBe("warning-soft-failure");
+	});
+
+	it("preserves concurrently added accounts during auth fix persistence", async () => {
+		const now = Date.now();
+		const originalAccount = {
+			email: "alpha@example.com",
+			accountId: "acc_alpha",
+			refreshToken: "refresh-alpha",
+			accessToken: "access-alpha-stale",
+			expiresAt: now - 5_000,
+			addedAt: now - 2_000,
+			lastUsed: now - 2_000,
+			enabled: true,
+		};
+		const concurrentAccount = {
+			email: "beta@example.com",
+			accountId: "acc_beta",
+			refreshToken: "refresh-beta",
+			accessToken: "access-beta",
+			expiresAt: now + 3_600_000,
+			addedAt: now - 1_000,
+			lastUsed: now - 1_000,
+			enabled: true,
+		};
+		loadAccountsMock
+			.mockResolvedValueOnce({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [originalAccount],
+			})
+			.mockResolvedValueOnce({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [originalAccount, concurrentAccount],
+			});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-alpha-refreshed",
+			refresh: "refresh-alpha-next",
+			expires: now + 7_200_000,
+			idToken: "id-token-alpha",
+		});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--json"]);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({
+						refreshToken: "refresh-alpha-next",
+						accessToken: "access-alpha-refreshed",
+					}),
+					expect.objectContaining({
+						accountId: "acc_beta",
+						refreshToken: "refresh-beta",
+						accessToken: "access-beta",
+					}),
+				]),
+			}),
+		);
+	});
+
+	it("does not persist quota cache during auth fix --dry-run --live", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "live-dry-run@example.com",
+					accountId: "acc_live_dry_run",
+					refreshToken: "refresh-live-dry-run",
+					accessToken: "access-live-dry-run",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+			status: 200,
+			model: "gpt-5-codex",
+			primary: {
+				usedPercent: 20,
+				windowMinutes: 300,
+				resetAtMs: now + 1_000,
+			},
+			secondary: {
+				usedPercent: 10,
+				windowMinutes: 10080,
+				resetAtMs: now + 2_000,
+			},
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"fix",
+			"--dry-run",
+			"--live",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			dryRun: boolean;
+			liveProbe: boolean;
+			reports: Array<{ outcome: string; message: string }>;
+		};
+		expect(payload.dryRun).toBe(true);
+		expect(payload.liveProbe).toBe(true);
+		expect(payload.reports).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					outcome: "healthy",
+					message: expect.stringContaining("live session OK"),
+				}),
+			]),
+		);
 	});
 
 	it("persists rotated tokens during auth check and preserves org-selected workspace binding", async () => {
@@ -2217,6 +2664,7 @@ describe("codex manager cli commands", () => {
 
 		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--json"]);
 		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 
@@ -3203,6 +3651,130 @@ describe("codex manager cli commands", () => {
 			}),
 		);
 		extractAccountIdMock.mockImplementation(() => "acc_test");
+	});
+
+	it("autoSyncActiveAccountToCodex preserves concurrent storage updates during refresh sync", async () => {
+		const now = Date.now();
+		loadAccountsMock
+			.mockResolvedValueOnce({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "a@example.com",
+						accountId: "workspace-alpha",
+						accountIdSource: "org",
+						refreshToken: "refresh-a",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "a@example.com",
+						accountId: "workspace-alpha",
+						accountIdSource: "org",
+						refreshToken: "refresh-a",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						enabled: true,
+					},
+					{
+						email: "b@example.com",
+						accountId: "workspace-beta",
+						accountIdSource: "org",
+						refreshToken: "refresh-b",
+						accessToken: "access-b",
+						expiresAt: now + 7_200_000,
+						addedAt: now - 2_000,
+						lastUsed: now - 2_000,
+						enabled: true,
+					},
+				],
+			});
+		const accountsModule = await import("../lib/accounts.js");
+		const extractAccountIdMock = vi.mocked(accountsModule.extractAccountId);
+		extractAccountIdMock.mockImplementation((accessToken?: string) =>
+			accessToken === "access-a-next" ? "token-personal" : "workspace-alpha",
+		);
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-a-next",
+			refresh: "refresh-a-next",
+			expires: now + 3_600_000,
+			idToken: "id-a-next",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const { autoSyncActiveAccountToCodex } = await import(
+			"../lib/codex-manager.js"
+		);
+		const synced = await autoSyncActiveAccountToCodex();
+
+		expect(synced).toBe(true);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		const savedStorage = saveAccountsMock.mock.calls.at(-1)?.[0] as {
+			accounts: Array<{ refreshToken?: string; accountId?: string }>;
+		};
+		expect(savedStorage.accounts).toHaveLength(2);
+		expect(savedStorage.accounts[0]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-alpha",
+				refreshToken: "refresh-a-next",
+			}),
+		);
+		expect(savedStorage.accounts[1]).toEqual(
+			expect.objectContaining({
+				accountId: "workspace-beta",
+				refreshToken: "refresh-b",
+			}),
+		);
+		extractAccountIdMock.mockImplementation(() => "acc_test");
+	});
+
+	it("autoSyncActiveAccountToCodex skips stale Codex sync when refresh fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "stale@example.com",
+					accountId: "workspace-stale",
+					accountIdSource: "org",
+					refreshToken: "refresh-stale",
+					accessToken: "access-stale",
+					expiresAt: now - 60_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 401,
+			message: "refresh expired",
+		});
+
+		const { autoSyncActiveAccountToCodex } = await import(
+			"../lib/codex-manager.js"
+		);
+		const synced = await autoSyncActiveAccountToCodex();
+
+		expect(synced).toBe(false);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 	});
 
 	it("keeps auth login menu open after switch until user cancels", async () => {
@@ -6076,6 +6648,273 @@ describe("codex manager cli commands", () => {
 		expect(payload.fix.actions.length).toBeGreaterThan(0);
 	});
 
+	it("runs doctor --fix apply mode in a single storage transaction", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 4,
+			activeIndexByFamily: { codex: 4 },
+			accounts: [
+				{
+					email: "account1@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+				{
+					email: "account2@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-doctor-next",
+			refresh: "refresh-doctor-next",
+			expires: now + 3_600_000,
+			idToken: "id-doctor-next",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"doctor",
+			"--fix",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		expect(storageState.activeIndex).toBe(1);
+		expect(storageState.activeIndexByFamily.codex).toBe(1);
+		expect(storageState.accounts[1]?.enabled).toBe(true);
+		expect(storageState.accounts[1]?.refreshToken).toBe("refresh-doctor-next");
+
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			fix: {
+				changed: boolean;
+				actions: Array<{ key: string }>;
+			};
+		};
+		expect(payload.fix.changed).toBe(true);
+		expect(payload.fix.actions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ key: "doctor-refresh" }),
+				expect.objectContaining({ key: "codex-active-sync" }),
+			]),
+		);
+	});
+
+	it("preserves concurrently added accounts during doctor --fix persistence", async () => {
+		const now = Date.now();
+		const initialStorage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "doctor@example.com",
+					accountId: "doctor-account",
+					accountIdSource: "manual",
+					refreshToken: "doctor-refresh",
+					accessToken: "doctor-access",
+					expiresAt: now - 60_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+			],
+		};
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "doctor@example.com",
+					accountId: "doctor-account",
+					accountIdSource: "manual",
+					refreshToken: "doctor-refresh",
+					accessToken: "doctor-access",
+					expiresAt: now - 60_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "concurrent@example.com",
+					accountId: "concurrent-account",
+					accountIdSource: "manual",
+					refreshToken: "concurrent-refresh",
+					accessToken: "concurrent-access",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock
+			.mockResolvedValueOnce(structuredClone(initialStorage))
+			.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "doctor-access-next",
+			refresh: "doctor-refresh-next",
+			expires: now + 3_600_000,
+			idToken: "doctor-id-next",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"doctor",
+			"--fix",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "doctor-account",
+						refreshToken: "doctor-refresh-next",
+						accessToken: "doctor-access-next",
+					}),
+					expect.objectContaining({
+						accountId: "concurrent-account",
+						refreshToken: "concurrent-refresh",
+						accessToken: "concurrent-access",
+					}),
+				]),
+			}),
+		);
+	});
+
+	it("skips doctor --fix Codex sync when active refresh fails", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "doctor@example.com",
+					accountId: "workspace-doctor",
+					accountIdSource: "org",
+					refreshToken: "refresh-doctor",
+					accessToken: "access-doctor",
+					expiresAt: now - 60_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 401,
+			message: "refresh expired",
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"doctor",
+			"--fix",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(withAccountStorageTransactionMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			checks: Array<{ key: string; severity: string; message: string }>;
+			fix: {
+				changed: boolean;
+				actions: Array<{ key: string }>;
+			};
+		};
+		expect(payload.fix.changed).toBe(false);
+		expect(payload.fix.actions).not.toContainEqual(
+			expect.objectContaining({ key: "codex-active-sync" }),
+		);
+		expect(payload.checks).toContainEqual(
+			expect.objectContaining({
+				key: "doctor-refresh",
+				severity: "warn",
+				message: "Unable to refresh active account before Codex sync",
+			}),
+		);
+	});
+
+	it("preserves pre-fix storage when doctor --fix transaction save fails", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 4,
+			activeIndexByFamily: { codex: 4 },
+			accounts: [
+				{
+					email: "account1@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+				{
+					email: "account2@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockRejectedValueOnce(new Error("transaction save failed"));
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "success",
+			access: "access-doctor-next",
+			refresh: "refresh-doctor-next",
+			expires: now + 3_600_000,
+			idToken: "id-doctor-next",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const originalStorage = structuredClone(storageState);
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(
+			runCodexMultiAuthCli(["auth", "doctor", "--fix", "--json"]),
+		).rejects.toThrow("transaction save failed");
+		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(storageState).toEqual(originalStorage);
+	});
+
 	it("runs report command in json mode", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
@@ -7444,6 +8283,9 @@ describe("codex manager cli commands", () => {
 			reports: Array<{ outcome: string; message: string }>;
 		};
 		expect(
+			payload.reports.filter((report) => report.outcome === "healthy"),
+		).toHaveLength(1);
+		expect(
 			payload.reports.some(
 				(report) =>
 					report.outcome === "healthy" &&
@@ -8129,19 +8971,26 @@ describe("codex manager cli commands", () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
 			accounts: [
 				{
 					email: "first@example.com",
 					refreshToken: "refresh-first",
-					addedAt: now - 2_000,
-					lastUsed: now - 2_000,
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
 					enabled: true,
 				},
 				{
 					email: "second@example.com",
 					refreshToken: "refresh-second",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "third@example.com",
+					refreshToken: "refresh-third",
 					addedAt: now - 1_000,
 					lastUsed: now - 1_000,
 					enabled: true,
@@ -8157,9 +9006,62 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
-		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(2);
 		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[0]?.email).toBe(
 			"first@example.com",
+		);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts?.[1]?.email).toBe(
+			"third@example.com",
+		);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndex).toBe(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndexByFamily?.codex).toBe(
+			1,
+		);
+	});
+
+	it("preserves the active selection when deleting a different account", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 2,
+			activeIndexByFamily: { codex: 2 },
+			accounts: [
+				{
+					email: "first@example.com",
+					refreshToken: "refresh-first",
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+					enabled: true,
+				},
+				{
+					email: "second@example.com",
+					refreshToken: "refresh-second",
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "third@example.com",
+					refreshToken: "refresh-third",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 1 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.accounts).toHaveLength(2);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndex).toBe(1);
+		expect(saveAccountsMock.mock.calls[0]?.[0]?.activeIndexByFamily?.codex).toBe(
+			1,
 		);
 	});
 
