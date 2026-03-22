@@ -73,7 +73,7 @@ describe("benchmark runtime path script", () => {
 		const result = spawnSync(
 			process.execPath,
 			[scriptCopy, "--iterations=1", `--output=${outputPath}`],
-			{ cwd: root, encoding: "utf8" },
+			{ cwd: root, encoding: "utf8", timeout: 15_000 },
 		);
 
 		expect(result.status).toBe(0);
