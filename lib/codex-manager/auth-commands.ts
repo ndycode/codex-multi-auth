@@ -289,8 +289,10 @@ export async function runSwitch(
 
 /**
  * `codex auth best` still follows the monolith's single-writer storage pattern.
- * Callers should keep concurrent CLI dispatches serialized while the live probe
- * path mutates refreshed tokens before persisting them back to disk.
+ * `saveAccounts` already serializes in-process writes and `queuedRefresh`
+ * deduplicates refresh work, but separate CLI processes can still overlap while
+ * the live probe path mutates refreshed tokens before persisting them back to
+ * disk. Callers should keep concurrent CLI dispatches serialized.
  */
 export async function runBest(
 	args: string[],
