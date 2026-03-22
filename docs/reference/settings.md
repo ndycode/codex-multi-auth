@@ -75,7 +75,6 @@ Controls result-screen return behavior and menu quota refresh behavior.
 | `actionAutoReturnMs` | `2000` | Delay before returning from action/result screens |
 | `actionPauseOnKey` | `true` | Pause on keypress before auto-return completes |
 | `menuAutoFetchLimits` | `true` | Refresh quota snapshots automatically in the menu |
-| `menuShowFetchStatus` | `true` | Show fetch status text while quota refresh is running |
 | `menuQuotaTtlMs` | `300000` | Reuse cached quota data before refetching |
 
 ## Color Theme
