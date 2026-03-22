@@ -255,17 +255,23 @@ describe("Documentation Integrity", () => {
 	it("keeps fix command flag docs aligned across README, reference, and CLI usage text", () => {
 		const readme = read("README.md");
 		const commandRef = read("docs/reference/commands.md");
-		const managerPath = "lib/codex-manager.ts";
+		const helpPath = "lib/codex-manager/help.ts";
+		const authCommandsPath = "lib/codex-manager/auth-commands.ts";
 		const switchPath = "lib/codex-manager/commands/switch.ts";
 		expect(
-			existsSync(join(projectRoot, managerPath)),
-			`${managerPath} should exist`,
+			existsSync(join(projectRoot, helpPath)),
+			`${helpPath} should exist`,
+		).toBe(true);
+		expect(
+			existsSync(join(projectRoot, authCommandsPath)),
+			`${authCommandsPath} should exist`,
 		).toBe(true);
 		expect(
 			existsSync(join(projectRoot, switchPath)),
 			`${switchPath} should exist`,
 		).toBe(true);
-		const manager = read(managerPath);
+		const help = read(helpPath);
+		const authCommands = read(authCommandsPath);
 		const switchCommand = read(switchPath);
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
@@ -276,10 +282,14 @@ describe("Documentation Integrity", () => {
 		expect(commandRef).toContain(
 			"| `--model <model>` | best, forecast, report, fix |",
 		);
-		expect(manager).toContain("codex auth login");
-		expect(manager).toContain(
+		expect(help).toContain("codex auth login");
+		expect(help).toContain(
 			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 		);
+		expect(authCommands).toContain(
+			"Missing index. Usage: codex auth switch <index>",
+		);
+		expect(authCommands).not.toContain("codex-multi-auth auth switch <index>");
 		expect(switchCommand).toContain(
 			"Missing index. Usage: codex auth switch <index>",
 		);

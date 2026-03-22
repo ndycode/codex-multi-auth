@@ -375,76 +375,6 @@ function isAbortError(error: unknown): boolean {
 	return maybe.name === "AbortError" || maybe.code === "ABORT_ERR";
 }
 
-function isUserCancelledOAuth(result: TokenResult): boolean {
-	if (result.type !== "failed") return false;
-	const message = (result.message ?? "").toLowerCase();
-	return message.includes("cancelled");
-}
-
-function printUsage(): void {
-	console.log(
-		[
-			"Codex Multi-Auth CLI",
-			"",
-			"Start here:",
-			"  codex auth login [--manual|--no-browser]",
-			"  codex auth status",
-			"  codex auth check",
-			"",
-			"Daily use:",
-			"  codex auth list",
-			"  codex auth switch <index>",
-			"  codex auth best [--live] [--json] [--model <model>]",
-			"  codex auth forecast [--live] [--json] [--model <model>]",
-			"",
-			"Repair:",
-			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
-			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
-			"  codex auth doctor [--json] [--fix] [--dry-run]",
-			"",
-			"Advanced:",
-			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
-			"  codex auth features",
-			"",
-			"Notes:",
-			"  - Uses ~/.codex/multi-auth/openai-codex-accounts.json",
-			"  - Syncs active account into Codex CLI auth state",
-			"  - See docs/reference/commands.md for the full command and flag matrix",
-		].join("\n"),
-	);
-}
-
-type AuthLoginOptions = {
-	manual: boolean;
-};
-
-type ParsedAuthLoginArgs =
-	| { ok: true; options: AuthLoginOptions }
-	| { ok: false; message: string };
-
-function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
-	const options: AuthLoginOptions = {
-		manual: false,
-	};
-
-	for (const arg of args) {
-		if (arg === "--manual" || arg === "--no-browser") {
-			options.manual = true;
-			continue;
-		}
-		if (arg === "--help" || arg === "-h") {
-			printUsage();
-			return { ok: false, message: "" };
-		}
-		return {
-			ok: false,
-			message: `Unknown login option: ${arg}`,
-		};
-	}
-
-	return { ok: true, options };
-}
-
 interface ImplementedFeature {
 	id: number;
 	name: string;
@@ -2332,7 +2262,6 @@ function printBestUsage(): void {
 		].join("\n"),
 	);
 }
-
 function printFixUsage(): void {
 	console.log(
 		[
