@@ -22,6 +22,7 @@ import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
 import { select } from "../ui/select.js";
 import { sleep } from "../utils.js";
+import { promptBackendCategorySettingsEntry } from "./backend-category-entry.js";
 import {
 	applyBackendCategoryDefaults,
 	getBackendCategory,
@@ -587,10 +588,11 @@ async function promptBackendCategorySettings(
 	category: BackendCategoryOption,
 	initialFocus: BackendSettingFocusKey,
 ): Promise<{ draft: PluginConfig; focusKey: BackendSettingFocusKey }> {
-	return promptBackendCategorySettingsMenu({
+	return promptBackendCategorySettingsEntry({
 		initial,
 		category,
 		initialFocus,
+		promptBackendCategorySettingsMenu,
 		ui: getUiRuntimeOptions(),
 		cloneBackendPluginConfig,
 		buildBackendSettingsPreview,
