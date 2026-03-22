@@ -63,6 +63,30 @@ Positional signatures are preserved for backward compatibility.
 
 ---
 
+## Responses Contract Notes
+
+The request-transform layer intentionally preserves and/or normalizes modern Responses API fields that callers may already send through the host SDK.
+
+- `previous_response_id` is preserved when explicitly provided and may be auto-filled from plugin continuation state when `pluginConfig.responseContinuation` is enabled.
+- `text.format` is preserved when verbosity defaults are applied, so structured-output contracts continue to flow through untouched.
+- `prompt_cache_retention` is preserved from the request body and can fall back to `providerOptions.openai.promptCacheRetention` or user config defaults.
+- Hosted built-in tool definitions are typed and supported for:
+  - `tool_search`
+  - remote `mcp`
+  - `computer` / `computer_use_preview`
+  - `namespace` bundles containing nested tools
+- Unsupported hosted search/computer tools are filtered before the upstream request when the selected model profile does not advertise that capability.
+- Semantic SSE parsing synthesizes compatibility fields such as:
+  - `output_text`
+  - `reasoning_summary_text`
+  - `commentary_text`
+  - `final_answer_text`
+  - `phase_text`
+
+These behaviors are compatibility guarantees for the current release line because they protect caller intent while keeping the plugin stateless against the ChatGPT Codex backend.
+
+---
+
 ## Semver Guidance
 
 - Breaking Tier A change: `MAJOR`
