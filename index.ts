@@ -212,6 +212,7 @@ import {
 	applyUiRuntimeFromConfig,
 	getStatusMarker,
 } from "./lib/runtime/ui-runtime.js";
+import { verifyRuntimeFlaggedAccounts } from "./lib/runtime/verify-flagged.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
 import {
@@ -2731,111 +2732,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						};
 
 						const verifyFlaggedAccounts = async (): Promise<void> => {
-							const flaggedStorage = await loadFlaggedAccounts();
-							if (flaggedStorage.accounts.length === 0) {
-								console.log("\nNo flagged accounts to verify.\n");
-								return;
-							}
-
-							console.log("\nVerifying flagged accounts...\n");
-							const remaining: FlaggedAccountMetadataV1[] = [];
-							const restored: TokenSuccessWithAccount[] = [];
-
-							for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
-								const flagged = flaggedStorage.accounts[i];
-								if (!flagged) continue;
-								const label =
-									flagged.email ?? flagged.accountLabel ?? `Flagged ${i + 1}`;
-								try {
-									const cached = await lookupCodexCliTokensByEmail(
-										flagged.email,
-									);
-									const now = Date.now();
-									if (
-										cached &&
-										typeof cached.expiresAt === "number" &&
-										Number.isFinite(cached.expiresAt) &&
-										cached.expiresAt > now
-									) {
-										const refreshToken =
-											typeof cached.refreshToken === "string" &&
-											cached.refreshToken.trim()
-												? cached.refreshToken.trim()
-												: flagged.refreshToken;
-										const resolved = resolveTokenSuccessAccount({
-											type: "success",
-											access: cached.accessToken,
-											refresh: refreshToken,
-											expires: cached.expiresAt,
-											multiAccount: true,
-										});
-										if (!resolved.accountIdOverride && flagged.accountId) {
-											resolved.accountIdOverride = flagged.accountId;
-											resolved.accountIdSource =
-												flagged.accountIdSource ?? "manual";
-										}
-										if (!resolved.accountLabel && flagged.accountLabel) {
-											resolved.accountLabel = flagged.accountLabel;
-										}
-										restored.push(resolved);
-										console.log(
-											`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED (Codex CLI cache)`,
-										);
-										continue;
-									}
-
-									const refreshResult = await queuedRefresh(
-										flagged.refreshToken,
-									);
-									if (refreshResult.type !== "success") {
-										console.log(
-											`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: STILL FLAGGED (${refreshResult.message ?? refreshResult.reason ?? "refresh failed"})`,
-										);
-										remaining.push(flagged);
-										continue;
-									}
-
-									const resolved = resolveTokenSuccessAccount(refreshResult);
-									if (!resolved.accountIdOverride && flagged.accountId) {
-										resolved.accountIdOverride = flagged.accountId;
-										resolved.accountIdSource =
-											flagged.accountIdSource ?? "manual";
-									}
-									if (!resolved.accountLabel && flagged.accountLabel) {
-										resolved.accountLabel = flagged.accountLabel;
-									}
-									restored.push(resolved);
-									console.log(
-										`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED`,
-									);
-								} catch (error) {
-									const message =
-										error instanceof Error ? error.message : String(error);
-									console.log(
-										`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: ERROR (${message.slice(0, 120)})`,
-									);
-									remaining.push({
-										...flagged,
-										lastError: message,
-									});
-								}
-							}
-
-							if (restored.length > 0) {
-								await persistAccountPool(restored, false);
-								invalidateAccountManagerCache();
-							}
-
-							await saveFlaggedAccounts({
-								version: 1,
-								accounts: remaining,
+							await verifyRuntimeFlaggedAccounts({
+								loadFlaggedAccounts,
+								lookupCodexCliTokensByEmail,
+								queuedRefresh,
+								resolveTokenSuccessAccount,
+								persistAccounts: persistAccountPool,
+								invalidateAccountManagerCache,
+								saveFlaggedAccounts,
+								showLine: (message) => console.log(message),
 							});
-
-							console.log("");
-							console.log(
-								`Results: ${restored.length} restored, ${remaining.length} still flagged`,
-							);
-							console.log("");
 						};
 
 						if (!explicitLoginMode) {
