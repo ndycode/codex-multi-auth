@@ -4733,6 +4733,57 @@ describe("codex manager cli commands", () => {
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 	});
 
+	it("runs verify-flagged from the login menu", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadFlaggedAccountsMock.mockResolvedValue({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "flagged-refresh",
+					accountId: "acc_flagged",
+					email: "flagged@example.com",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					flaggedAt: now - 5_000,
+				},
+			],
+		});
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "verify-flagged" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "invalid_grant",
+			message: "token expired",
+		});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		expect(queuedRefreshMock).toHaveBeenCalledTimes(1);
+		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(
+			1,
+		);
+		expect(saveFlaggedAccountsMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("auto-refreshes cached limits on menu open", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({

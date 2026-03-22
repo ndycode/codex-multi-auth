@@ -46,6 +46,7 @@ import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import {
 	runVerifyFlaggedCommand,
 	type VerifyFlaggedCliOptions,
+	type VerifyFlaggedCommandDeps,
 } from "./codex-manager/commands/verify-flagged.js";
 import {
 	applyUiThemeFromDashboardSettings,
@@ -3808,6 +3809,31 @@ async function handleManageAction(
 	}
 }
 
+function buildVerifyFlaggedCommandDeps(): VerifyFlaggedCommandDeps {
+	return {
+		setStoragePath,
+		loadFlaggedAccounts,
+		loadAccounts,
+		queuedRefresh,
+		parseVerifyFlaggedArgs,
+		printVerifyFlaggedUsage,
+		createEmptyAccountStorage,
+		upsertRecoveredFlaggedAccount,
+		resolveStoredAccountIdentity,
+		extractAccountId,
+		extractAccountEmail,
+		sanitizeEmail,
+		normalizeFailureDetail,
+		withAccountAndFlaggedStorageTransaction,
+		normalizeDoctorIndexes,
+		saveFlaggedAccounts,
+		formatAccountLabel,
+		stylePromptText,
+		styleAccountDetailText,
+		formatResultSummary,
+	};
+}
+
 async function runAuthLogin(args: string[]): Promise<number> {
 	const parsedArgs = parseAuthLoginArgs(args);
 	if (!parsedArgs.ok) {
@@ -3936,28 +3962,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 						"Problem Account Check",
 						"Checking problem accounts",
 						async () => {
-							await runVerifyFlaggedCommand([], {
-								setStoragePath,
-								loadFlaggedAccounts,
-								loadAccounts,
-								queuedRefresh,
-								parseVerifyFlaggedArgs,
-								printVerifyFlaggedUsage,
-								createEmptyAccountStorage,
-								upsertRecoveredFlaggedAccount,
-								resolveStoredAccountIdentity,
-								extractAccountId,
-								extractAccountEmail,
-								sanitizeEmail,
-								normalizeFailureDetail,
-								withAccountAndFlaggedStorageTransaction,
-								normalizeDoctorIndexes,
-								saveFlaggedAccounts,
-								formatAccountLabel,
-								stylePromptText,
-								styleAccountDetailText,
-								formatResultSummary,
-							});
+							await runVerifyFlaggedCommand([], buildVerifyFlaggedCommandDeps());
 						},
 						displaySettings,
 					);
@@ -4678,28 +4683,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES });
 	}
 	if (command === "verify-flagged") {
-		return runVerifyFlaggedCommand(rest, {
-			setStoragePath,
-			loadFlaggedAccounts,
-			loadAccounts,
-			queuedRefresh,
-			parseVerifyFlaggedArgs,
-			printVerifyFlaggedUsage,
-			createEmptyAccountStorage,
-			upsertRecoveredFlaggedAccount,
-			resolveStoredAccountIdentity,
-			extractAccountId,
-			extractAccountEmail,
-			sanitizeEmail,
-			normalizeFailureDetail,
-			withAccountAndFlaggedStorageTransaction,
-			normalizeDoctorIndexes,
-			saveFlaggedAccounts,
-			formatAccountLabel,
-			stylePromptText,
-			styleAccountDetailText,
-			formatResultSummary,
-		});
+		return runVerifyFlaggedCommand(rest, buildVerifyFlaggedCommandDeps());
 	}
 	if (command === "forecast") {
 		return runForecast(rest);
