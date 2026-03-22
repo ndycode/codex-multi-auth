@@ -19,6 +19,7 @@ import type {
 	InputItem,
 	ReasoningConfig,
 	RequestBody,
+	RequestToolDefinition,
 	UserConfig,
 } from "../types.js";
 
@@ -279,20 +280,16 @@ function detectCollaborationMode(body: RequestBody): CollaborationMode {
 	return "unknown";
 }
 
-function sanitizePlanOnlyTools(tools: unknown, mode: CollaborationMode): unknown {
+function sanitizePlanOnlyTools(
+	tools: RequestToolDefinition[] | undefined,
+	mode: CollaborationMode,
+): RequestToolDefinition[] | undefined {
 	if (!Array.isArray(tools) || mode === "plan") return tools;
 
 	let removed = 0;
-	const filtered = tools.filter((entry) => {
-		if (!entry || typeof entry !== "object") return true;
-		const functionDef = (entry as { function?: unknown }).function;
-		if (!functionDef || typeof functionDef !== "object") return true;
-		const name = (functionDef as { name?: unknown }).name;
-		if (typeof name !== "string") return true;
-		if (!PLAN_MODE_ONLY_TOOLS.has(name)) return true;
-		removed++;
-		return false;
-	});
+	const filtered = tools
+		.map((entry) => sanitizePlanOnlyToolEntry(entry, mode, () => removed++))
+		.filter((entry) => entry !== null);
 
 	if (removed > 0) {
 		logWarn(
@@ -302,9 +299,54 @@ function sanitizePlanOnlyTools(tools: unknown, mode: CollaborationMode): unknown
 	return filtered;
 }
 
+function sanitizePlanOnlyToolEntry(
+	entry: RequestToolDefinition,
+	mode: CollaborationMode,
+	onRemoved: () => void,
+): RequestToolDefinition | null {
+	if (!entry || typeof entry !== "object" || mode === "plan") {
+		return entry;
+	}
+
+	const record = entry as Record<string, unknown>;
+	if (record.type === "namespace" && Array.isArray(record.tools)) {
+		const namespaceTools = record.tools as RequestToolDefinition[];
+		const nestedTools = namespaceTools
+			.map((nestedTool) => sanitizePlanOnlyToolEntry(nestedTool, mode, onRemoved))
+			.filter((nestedTool) => nestedTool !== null);
+		const changed =
+			nestedTools.length !== namespaceTools.length ||
+			nestedTools.some((nestedTool, index) => nestedTool !== namespaceTools[index]);
+		if (nestedTools.length === 0) {
+			return null;
+		}
+		if (!changed) {
+			return entry;
+		}
+		return {
+			...record,
+			tools: nestedTools,
+		};
+	}
+
+	const functionDef = (entry as { function?: unknown }).function;
+	if (!functionDef || typeof functionDef !== "object") {
+		return entry;
+	}
+	const name = (functionDef as { name?: unknown }).name;
+	if (typeof name !== "string" || !PLAN_MODE_ONLY_TOOLS.has(name)) {
+		return entry;
+	}
+	onRemoved();
+	return null;
+}
+
 const COMPUTER_TOOL_TYPES = new Set(["computer", "computer_use_preview"]);
 
-function sanitizeModelIncompatibleTools(tools: unknown, model: string | undefined): unknown {
+function sanitizeModelIncompatibleTools(
+	tools: RequestToolDefinition[] | undefined,
+	model: string | undefined,
+): RequestToolDefinition[] | undefined {
 	if (!Array.isArray(tools)) return tools;
 
 	const capabilities = getModelCapabilities(model);
@@ -331,10 +373,10 @@ function sanitizeModelIncompatibleTools(tools: unknown, model: string | undefine
 }
 
 function sanitizeModelIncompatibleToolEntry(
-	tool: unknown,
+	tool: RequestToolDefinition,
 	capabilities: ReturnType<typeof getModelCapabilities>,
 	removed: ToolCapabilityRemovalCounts,
-): unknown | null {
+): RequestToolDefinition | null {
 	if (!tool || typeof tool !== "object") {
 		return tool;
 	}
@@ -350,13 +392,17 @@ function sanitizeModelIncompatibleToolEntry(
 		return null;
 	}
 	if (type === "namespace" && Array.isArray(record.tools)) {
-		const nestedTools = record.tools
+		const namespaceTools = record.tools as RequestToolDefinition[];
+		const nestedTools = namespaceTools
 			.map((nestedTool) => sanitizeModelIncompatibleToolEntry(nestedTool, capabilities, removed))
 			.filter((nestedTool) => nestedTool !== null);
+		const changed =
+			nestedTools.length !== namespaceTools.length ||
+			nestedTools.some((nestedTool, index) => nestedTool !== namespaceTools[index]);
 		if (nestedTools.length === 0) {
 			return null;
 		}
-		if (nestedTools.length === record.tools.length) {
+		if (!changed) {
 			return tool;
 		}
 		return {
@@ -902,6 +948,9 @@ export async function transformRequestBody(
 		body.tools = cleanupToolDefinitions(body.tools);
 		body.tools = sanitizePlanOnlyTools(body.tools, collaborationMode);
 		body.tools = sanitizeModelIncompatibleTools(body.tools, body.model);
+		if (Array.isArray(body.tools) && body.tools.length === 0) {
+			body.tools = undefined;
+		}
 	}
 
 	body.instructions = shouldApplyFastSessionTuning

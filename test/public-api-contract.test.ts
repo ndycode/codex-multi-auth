@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
 	HealthScoreTracker,
 	TokenBucketTracker,
@@ -45,6 +45,8 @@ describe("public api contract", () => {
 	});
 
 	it("keeps positional and options-object overload behavior aligned", async () => {
+		expectTypeOf<RequestBody["tools"]>().toEqualTypeOf<RequestToolDefinition[] | undefined>();
+
 		const healthTracker = new HealthScoreTracker();
 		const tokenTracker = new TokenBucketTracker();
 		const accounts = [{ index: 0, isAvailable: true, lastUsed: 1_709_280_000_000 }];
@@ -150,6 +152,10 @@ describe("public api contract", () => {
 			codexInstructions: "codex",
 		});
 		expect(transformedNamed).toEqual(transformedPositional);
+		expect(transformedPositional.prompt_cache_retention).toBe(baseBody.prompt_cache_retention);
+		expect(transformedNamed.prompt_cache_retention).toBe(baseBody.prompt_cache_retention);
+		expect(transformedPositional.text?.format).toEqual(baseBody.text?.format);
+		expect(transformedNamed.text?.format).toEqual(baseBody.text?.format);
 		expect(transformedNamed.tools).toEqual(baseBody.tools);
 	});
 });

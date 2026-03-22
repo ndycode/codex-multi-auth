@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
     normalizeModel,
     getModelConfig,
@@ -10,11 +10,16 @@ import {
     addCodexBridgeMessage,
     transformRequestBody,
 } from '../lib/request/request-transformer.js';
+import * as loggerModule from '../lib/logger.js';
 import { TOOL_REMAP_MESSAGE } from '../lib/prompts/codex.js';
 import { CODEX_HOST_BRIDGE } from '../lib/prompts/codex-host-bridge.js';
 import type { RequestBody, UserConfig, InputItem } from '../lib/types.js';
 
 describe('Request Transformer Module', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	describe('normalizeModel', () => {
 		it('keeps codex families canonical', async () => {
 			expect(normalizeModel('gpt-5-codex')).toBe('gpt-5-codex');
@@ -1314,6 +1319,43 @@ describe('Request Transformer Module', () => {
 			expect(result.prompt_cache_retention).toBe('7d');
 		});
 
+		it('should inherit prompt_cache_retention from model-specific user config', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.4',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { promptCacheRetention: '7d' },
+				models: {
+					'gpt-5.4': {
+						options: { promptCacheRetention: '24h' },
+					},
+				},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.prompt_cache_retention).toBe('24h');
+		});
+
+		it('should inherit model-specific prompt_cache_retention in named params overload', async () => {
+			const userConfig: UserConfig = {
+				global: { promptCacheRetention: '7d' },
+				models: {
+					'gpt-5.4': {
+						options: { promptCacheRetention: '24h' },
+					},
+				},
+			};
+			const result = await transformRequestBody({
+				body: {
+					model: 'gpt-5.4',
+					input: [],
+				},
+				codexInstructions,
+				userConfig,
+			});
+			expect(result.prompt_cache_retention).toBe('24h');
+		});
+
 		it('should prefer body text verbosity over providerOptions', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5',
@@ -1963,6 +2005,68 @@ describe('Request Transformer Module', () => {
 				expect(toolNames).toEqual(['request_user_input']);
 			});
 
+			it('removes nested request_user_input tools outside plan collaboration mode', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5',
+					input: [],
+					tools: [
+						{
+							type: 'namespace',
+							name: 'planner',
+							tools: [
+								{ type: 'function', function: { name: 'request_user_input', parameters: { type: 'object', properties: {} } } },
+								{ type: 'function', function: { name: 'exec_command', parameters: { type: 'object', properties: {} } } },
+							],
+						},
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.tools).toEqual([
+					{
+						type: 'namespace',
+						name: 'planner',
+						tools: [
+							expect.objectContaining({
+								type: 'function',
+								function: expect.objectContaining({
+									name: 'exec_command',
+								}),
+							}),
+						],
+					},
+				]);
+			});
+
+			it('counts only removed plan-only tools when a namespace becomes empty', async () => {
+				const warnSpy = vi.spyOn(loggerModule, 'logWarn').mockImplementation(() => {});
+				const body: RequestBody = {
+					model: 'gpt-5',
+					input: [
+						{
+							type: 'message',
+							role: 'developer',
+							content: [{ type: 'input_text', text: '# Collaboration Mode: Default' }],
+						},
+					],
+					tools: [
+						{
+							type: 'namespace',
+							name: 'planner',
+							tools: [
+								{ type: 'function', function: { name: 'request_user_input', parameters: { type: 'object', properties: {} } } },
+							],
+						},
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+
+				expect(result.tools).toBeUndefined();
+				expect(warnSpy).toHaveBeenCalledWith(
+					'Removed 1 plan-mode-only tool definition(s) because collaboration mode is default',
+				);
+			});
 			it('removes tool_search tools when the selected model lacks search capability', async () => {
 				const body: RequestBody = {
 					model: 'gpt-5-nano',
@@ -2005,7 +2109,8 @@ describe('Request Transformer Module', () => {
 				};
 
 				const result = await transformRequestBody(body, codexInstructions);
-				expect(result.tools).toEqual([]);
+				expect(result.tools).toBeUndefined();
+				expect(result.input).toEqual([]);
 			});
 
 			it('filters unsupported namespace tool entries while keeping supported remote MCP tools', async () => {
@@ -2040,6 +2145,55 @@ describe('Request Transformer Module', () => {
 								server_label: 'remote-docs',
 								server_url: 'https://mcp.example.com',
 								defer_loading: true,
+							},
+						],
+					},
+				]);
+			});
+			it('filters unsupported tools from nested namespaces without dropping supported descendants', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5-nano',
+					input: [],
+					tools: [
+						{
+							type: 'namespace',
+							name: 'outer_suite',
+							tools: [
+								{
+									type: 'namespace',
+									name: 'inner_suite',
+									tools: [
+										{ type: 'tool_search', max_num_results: 2 },
+										{
+											type: 'mcp',
+											server_label: 'remote-docs',
+											server_url: 'https://mcp.example.com',
+											defer_loading: true,
+										},
+									],
+								},
+							],
+						},
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.tools).toEqual([
+					{
+						type: 'namespace',
+						name: 'outer_suite',
+						tools: [
+							{
+								type: 'namespace',
+								name: 'inner_suite',
+								tools: [
+									{
+										type: 'mcp',
+										server_label: 'remote-docs',
+										server_url: 'https://mcp.example.com',
+										defer_loading: true,
+									},
+								],
 							},
 						],
 					},

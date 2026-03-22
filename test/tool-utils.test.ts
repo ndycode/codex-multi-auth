@@ -3,10 +3,10 @@ import { cleanupToolDefinitions } from "../lib/request/helpers/tool-utils.js";
 import type { RequestToolDefinition } from "../lib/types.js";
 
 describe("cleanupToolDefinitions", () => {
-  it("returns non-array input unchanged", () => {
-    expect(cleanupToolDefinitions(null)).toBeNull();
-    expect(cleanupToolDefinitions("string")).toBe("string");
-    expect(cleanupToolDefinitions({})).toEqual({});
+  it("returns undefined for non-array input", () => {
+    expect(cleanupToolDefinitions(null)).toBeUndefined();
+    expect(cleanupToolDefinitions("string" as unknown as RequestToolDefinition[])).toBeUndefined();
+    expect(cleanupToolDefinitions({} as unknown as RequestToolDefinition[])).toBeUndefined();
   });
 
   it("returns non-function tools unchanged", () => {
