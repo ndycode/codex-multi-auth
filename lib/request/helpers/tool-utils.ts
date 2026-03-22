@@ -1,20 +1,9 @@
 import { isRecord } from "../../utils.js";
-
-export interface ToolFunction {
-	name: string;
-	description?: string;
-	parameters?: {
-		type: "object";
-		properties?: Record<string, unknown>;
-		required?: string[];
-		[key: string]: unknown;
-	};
-}
-
-export interface Tool {
-	type: "function";
-	function: ToolFunction;
-}
+import type {
+	FunctionToolDefinition,
+	RequestToolDefinition,
+	ToolParametersSchema,
+} from "../../types.js";
 
 function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
 	return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
@@ -36,36 +25,54 @@ function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
 export function cleanupToolDefinitions(tools: unknown): unknown {
 	if (!Array.isArray(tools)) return tools;
 
-	return tools.map((tool) => {
-		if (!isRecord(tool) || tool.type !== "function") {
-			return tool;
-		}
-		const functionDef = tool.function;
-		if (!isRecord(functionDef)) {
-			return tool;
-		}
-		const parameters = functionDef.parameters;
-		if (!isRecord(parameters)) {
-			return tool;
-		}
+	return tools.map((tool) => cleanupToolDefinition(tool));
+}
 
-		// Clone only the schema tree we mutate to avoid heavy deep cloning of entire tools.
-		let cleanedParameters: Record<string, unknown>;
-		try {
-			cleanedParameters = cloneRecord(parameters);
-		} catch {
-			return tool;
-		}
-		cleanupSchema(cleanedParameters);
+function cleanupToolDefinition(tool: unknown): unknown {
+	if (!isRecord(tool)) {
+		return tool;
+	}
 
+	if (tool.type === "function") {
+		return cleanupFunctionTool(tool as FunctionToolDefinition);
+	}
+
+	if (tool.type === "namespace" && Array.isArray(tool.tools)) {
 		return {
 			...tool,
-			function: {
-				...functionDef,
-				parameters: cleanedParameters,
-			},
+			tools: tool.tools.map((nestedTool) => cleanupToolDefinition(nestedTool)) as RequestToolDefinition[],
 		};
-	});
+	}
+
+	return tool;
+}
+
+function cleanupFunctionTool(tool: FunctionToolDefinition): FunctionToolDefinition {
+	const functionDef = tool.function;
+	if (!isRecord(functionDef)) {
+		return tool;
+	}
+	const parameters = functionDef.parameters;
+	if (!isRecord(parameters)) {
+		return tool;
+	}
+
+	// Clone only the schema tree we mutate to avoid heavy deep cloning of entire tools.
+	let cleanedParameters: Record<string, unknown>;
+	try {
+		cleanedParameters = cloneRecord(parameters);
+	} catch {
+		return tool;
+	}
+	cleanupSchema(cleanedParameters);
+
+	return {
+		...tool,
+		function: {
+			...functionDef,
+			parameters: cleanedParameters as ToolParametersSchema,
+		},
+	};
 }
 
 /**

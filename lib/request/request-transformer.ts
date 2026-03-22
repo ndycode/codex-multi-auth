@@ -3,6 +3,7 @@ import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
 import { CODEX_HOST_BRIDGE } from "../prompts/codex-host-bridge.js";
 import { getHostCodexPrompt } from "../prompts/host-codex-prompt.js";
 import {
+	getModelCapabilities,
 	getModelProfile,
 	resolveNormalizedModel,
 	type ModelReasoningEffort,
@@ -24,6 +25,10 @@ import type {
 type CollaborationMode = "plan" | "default" | "unknown";
 type FastSessionStrategy = "hybrid" | "always";
 type SupportedReasoningSummary = "auto" | "concise" | "detailed";
+type ToolCapabilityRemovalCounts = {
+	toolSearch: number;
+	computerUse: number;
+};
 
 export interface TransformRequestBodyParams {
 	body: RequestBody;
@@ -295,6 +300,71 @@ function sanitizePlanOnlyTools(tools: unknown, mode: CollaborationMode): unknown
 		);
 	}
 	return filtered;
+}
+
+const COMPUTER_TOOL_TYPES = new Set(["computer", "computer_use_preview"]);
+
+function sanitizeModelIncompatibleTools(tools: unknown, model: string | undefined): unknown {
+	if (!Array.isArray(tools)) return tools;
+
+	const capabilities = getModelCapabilities(model);
+	const removed: ToolCapabilityRemovalCounts = {
+		toolSearch: 0,
+		computerUse: 0,
+	};
+	const filtered = tools
+		.map((tool) => sanitizeModelIncompatibleToolEntry(tool, capabilities, removed))
+		.filter((tool) => tool !== null);
+
+	if (removed.toolSearch > 0) {
+		logWarn(
+			`Removed ${removed.toolSearch} tool_search definition(s) because ${model ?? "the selected model"} does not support tool search`,
+		);
+	}
+	if (removed.computerUse > 0) {
+		logWarn(
+			`Removed ${removed.computerUse} computer tool definition(s) because ${model ?? "the selected model"} does not support computer use`,
+		);
+	}
+
+	return filtered;
+}
+
+function sanitizeModelIncompatibleToolEntry(
+	tool: unknown,
+	capabilities: ReturnType<typeof getModelCapabilities>,
+	removed: ToolCapabilityRemovalCounts,
+): unknown | null {
+	if (!tool || typeof tool !== "object") {
+		return tool;
+	}
+
+	const record = tool as Record<string, unknown>;
+	const type = typeof record.type === "string" ? record.type : "";
+	if (type === "tool_search" && !capabilities.toolSearch) {
+		removed.toolSearch += 1;
+		return null;
+	}
+	if (COMPUTER_TOOL_TYPES.has(type) && !capabilities.computerUse) {
+		removed.computerUse += 1;
+		return null;
+	}
+	if (type === "namespace" && Array.isArray(record.tools)) {
+		const nestedTools = record.tools
+			.map((nestedTool) => sanitizeModelIncompatibleToolEntry(nestedTool, capabilities, removed))
+			.filter((nestedTool) => nestedTool !== null);
+		if (nestedTools.length === 0) {
+			return null;
+		}
+		if (nestedTools.length === record.tools.length) {
+			return tool;
+		}
+		return {
+			...record,
+			tools: nestedTools,
+		};
+	}
+	return tool;
 }
 
 /**
@@ -831,6 +901,7 @@ export async function transformRequestBody(
 	if (body.tools) {
 		body.tools = cleanupToolDefinitions(body.tools);
 		body.tools = sanitizePlanOnlyTools(body.tools, collaborationMode);
+		body.tools = sanitizeModelIncompatibleTools(body.tools, body.model);
 	}
 
 	body.instructions = shouldApplyFastSessionTuning
