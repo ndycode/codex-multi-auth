@@ -27,7 +27,6 @@ import {
 	ACCOUNTS_BACKUP_SUFFIX,
 	ACCOUNTS_WAL_SUFFIX,
 	getFlaggedAccountsPath as buildFlaggedAccountsPath,
-	getLegacyFlaggedAccountsPath as buildLegacyFlaggedAccountsPath,
 	getAccountsBackupPath,
 	getAccountsBackupRecoveryCandidates,
 	getAccountsWalPath,
@@ -980,7 +979,7 @@ export function getFlaggedAccountsPath(): string {
 }
 
 function getLegacyFlaggedAccountsPath(): string {
-	return buildLegacyFlaggedAccountsPath(
+	return buildFlaggedAccountsPath(
 		getStoragePath(),
 		LEGACY_FLAGGED_ACCOUNTS_FILE_NAME,
 	);

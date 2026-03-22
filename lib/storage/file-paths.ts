@@ -9,10 +9,7 @@ export function getAccountsBackupPath(path: string): string {
 	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
 }
 
-export function getAccountsBackupPathAtIndex(
-	path: string,
-	index: number,
-): string {
+function getAccountsBackupPathAtIndex(path: string, index: number): string {
 	if (index <= 0) return getAccountsBackupPath(path);
 	return `${path}${ACCOUNTS_BACKUP_SUFFIX}.${index}`;
 }
@@ -37,12 +34,9 @@ export function getFlaggedAccountsPath(
 	storagePath: string,
 	fileName: string,
 ): string {
-	return join(dirname(storagePath), fileName);
+	return buildSiblingStoragePath(storagePath, fileName);
 }
 
-export function getLegacyFlaggedAccountsPath(
-	storagePath: string,
-	legacyFileName: string,
-): string {
-	return join(dirname(storagePath), legacyFileName);
+function buildSiblingStoragePath(storagePath: string, fileName: string): string {
+	return join(dirname(storagePath), fileName);
 }
