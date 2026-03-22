@@ -29,7 +29,7 @@ type QuotaEmailFallbackState = ReadonlyMap<
 export interface ForecastCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
-	loadDashboardDisplaySettings: () => Promise<DashboardDisplaySettings>;
+	loadDashboardDisplaySettings?: () => Promise<DashboardDisplaySettings>;
 	resolveActiveIndex: (storage: AccountStorageV3, family?: "codex") => number;
 	loadQuotaCache: () => Promise<QuotaCacheData | null>;
 	saveQuotaCache: (cache: QuotaCacheData) => Promise<void>;
@@ -232,9 +232,10 @@ export async function runForecastCommand(
 	const options = parsedArgs.options;
 	const requestedModel = options.model?.trim() || "gpt-5-codex";
 	const probeModel = resolveNormalizedModel(requestedModel);
-	const display =
-		(await deps.loadDashboardDisplaySettings().catch(() => null)) ??
-		deps.defaultDisplay;
+	const display = deps.loadDashboardDisplaySettings
+		? (await deps.loadDashboardDisplaySettings().catch(() => null)) ??
+			deps.defaultDisplay
+		: deps.defaultDisplay;
 	const quotaCache = options.live ? await deps.loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache
 		? deps.cloneQuotaCacheData(quotaCache)

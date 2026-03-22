@@ -6,6 +6,7 @@ export const RETRYABLE_SETTINGS_WRITE_CODES = new Set([
 	"EPERM",
 	"EAGAIN",
 	"ENOTEMPTY",
+	"EACCES",
 ]);
 
 const settingsWriteQueues = new Map<string, Promise<void>>();

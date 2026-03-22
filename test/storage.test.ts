@@ -987,6 +987,62 @@ describe("storage", () => {
 			);
 		});
 
+		it("ignores stale transaction snapshots from a different storage path during export", async () => {
+			const populatedStoragePath = join(
+				testWorkDir,
+				"accounts-populated.json",
+			);
+			setStoragePathDirect(populatedStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "populated",
+						refreshToken: "ref-populated",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const actualTransactions = await vi.importActual<
+				typeof import("../lib/storage/transactions.js")
+			>("../lib/storage/transactions.js");
+			vi.resetModules();
+			vi.doMock("../lib/storage/transactions.js", () => ({
+				...actualTransactions,
+				getTransactionSnapshotState: () => ({
+					active: true,
+					storagePath: populatedStoragePath,
+					snapshot: {
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "stale",
+								refreshToken: "stale-refresh",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+					},
+				}),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(testStoragePath);
+				await expect(
+					isolatedStorageModule.exportAccounts(exportPath),
+				).rejects.toThrow(/No accounts to export/);
+			} finally {
+				vi.doUnmock("../lib/storage/transactions.js");
+				vi.resetModules();
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
 		it("should fail import when file does not exist", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			const nonexistentPath = join(testWorkDir, "nonexistent-file.json");

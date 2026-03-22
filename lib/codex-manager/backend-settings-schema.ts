@@ -170,7 +170,7 @@ export const BACKEND_NUMBER_OPTIONS: BackendNumberSettingOption[] = [
 		label: "Session Affinity Max Entries",
 		description: "Upper bound for tracked affinity sessions.",
 		min: 8,
-		max: 10_000,
+		max: 4_096,
 		step: 8,
 		unit: "count",
 	},

@@ -256,11 +256,17 @@ describe("Documentation Integrity", () => {
 		const readme = read("README.md");
 		const commandRef = read("docs/reference/commands.md");
 		const managerPath = "lib/codex-manager.ts";
+		const switchPath = "lib/codex-manager/commands/switch.ts";
 		expect(
 			existsSync(join(projectRoot, managerPath)),
 			`${managerPath} should exist`,
 		).toBe(true);
+		expect(
+			existsSync(join(projectRoot, switchPath)),
+			`${switchPath} should exist`,
+		).toBe(true);
 		const manager = read(managerPath);
+		const switchCommand = read(switchPath);
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
 		expect(commandRef).toContain(
@@ -274,10 +280,10 @@ describe("Documentation Integrity", () => {
 		expect(manager).toContain(
 			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 		);
-		expect(manager).toContain(
+		expect(switchCommand).toContain(
 			"Missing index. Usage: codex auth switch <index>",
 		);
-		expect(manager).not.toContain("codex-multi-auth auth switch <index>");
+		expect(switchCommand).not.toContain("codex-multi-auth auth switch <index>");
 	});
 
 	it("keeps maintainer runbooks present", () => {
