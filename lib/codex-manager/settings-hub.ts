@@ -51,7 +51,11 @@ import {
 	type BackendSettingsHubAction,
 } from "./backend-settings-schema.js";
 import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
-import { promptDashboardDisplayPanel } from "./dashboard-display-panel.js";
+import {
+	promptDashboardDisplayPanel,
+	type DashboardDisplaySettingKey,
+	type DashboardDisplaySettingOption,
+} from "./dashboard-display-panel.js";
 import {
 	formatDashboardSettingState,
 	formatMenuLayoutMode,
@@ -93,25 +97,6 @@ import {
 	configureUnifiedSettingsController,
 	type SettingsHubActionType,
 } from "./unified-settings-controller.js";
-
-type DashboardDisplaySettingKey =
-	| "menuShowStatusBadge"
-	| "menuShowCurrentBadge"
-	| "menuShowLastUsed"
-	| "menuShowQuotaSummary"
-	| "menuShowQuotaCooldown"
-	| "menuShowDetailsForUnselectedRows"
-	| "menuShowFetchStatus"
-	| "menuHighlightCurrentRow"
-	| "menuSortEnabled"
-	| "menuSortPinCurrent"
-	| "menuSortQuickSwitchVisibleRow";
-
-interface DashboardDisplaySettingOption {
-	key: DashboardDisplaySettingKey;
-	label: string;
-	description: string;
-}
 
 const DASHBOARD_DISPLAY_OPTIONS: DashboardDisplaySettingOption[] = [
 	{
@@ -465,8 +450,7 @@ async function promptDashboardDisplaySettings(
 		buildAccountListPreview,
 		formatDashboardSettingState,
 		formatMenuSortMode,
-		resolveMenuLayoutMode: (settings) =>
-			resolveMenuLayoutMode(settings ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS),
+		resolveMenuLayoutMode,
 		formatMenuLayoutMode,
 		applyDashboardDefaultsForKeys,
 		DASHBOARD_DISPLAY_OPTIONS,
