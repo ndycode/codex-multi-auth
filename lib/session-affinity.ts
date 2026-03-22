@@ -98,6 +98,14 @@ export class SessionAffinityStore {
 	 * This method does not create a new affinity entry; callers that need to
 	 * upsert continuation state should use `rememberWithResponseId`.
 	 */
+	rememberLastResponseId(
+		sessionKey: string | null | undefined,
+		responseId: string | null | undefined,
+		now = Date.now(),
+	): void {
+		this.updateLastResponseId(sessionKey, responseId, now);
+	}
+
 	updateLastResponseId(
 		sessionKey: string | null | undefined,
 		responseId: string | null | undefined,
