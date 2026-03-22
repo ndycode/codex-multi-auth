@@ -134,7 +134,6 @@ import {
 	formatQuotaSnapshotLine,
 } from "./lib/quota-probe.js";
 import {
-	createSessionRecoveryHook,
 	detectErrorType,
 	getRecoveryToastContent,
 	isRecoverableError,
@@ -214,6 +213,7 @@ import {
 	ensureSessionAffinityState,
 } from "./lib/runtime/runtime-services.js";
 import { applyAccountStorageScopeFromConfig } from "./lib/runtime/storage-scope.js";
+import { createRuntimeSessionRecoveryHook } from "./lib/runtime/session-recovery.js";
 import {
 	applyUiRuntimeFromConfig,
 	getStatusMarker,
@@ -825,12 +825,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						}
 					}
 
-					const recoveryHook = sessionRecoveryEnabled
-						? createSessionRecoveryHook(
-								{ client, directory: process.cwd() },
-								{ sessionRecovery: true, autoResume: autoResumeEnabled },
-							)
-						: null;
+					const recoveryHook = createRuntimeSessionRecoveryHook({
+						enabled: sessionRecoveryEnabled,
+						client,
+						directory: process.cwd(),
+						autoResume: autoResumeEnabled,
+					});
 
 					checkAndNotify(async (message, variant) => {
 						await showToast(message, variant);

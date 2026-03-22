@@ -24,7 +24,7 @@ for (const component of manifest.components) {
 		if (!file?.path || !file?.sha256) {
 			throw new Error(`Invalid file provenance entry in ${component.name}`);
 		}
-		const content = await readFile(file.path);
+		const content = await readFile(new URL(`../${file.path}`, import.meta.url));
 		const actual = createHash("sha256").update(content).digest("hex");
 		if (actual !== file.sha256) {
 			throw new Error(
