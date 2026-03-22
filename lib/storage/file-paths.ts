@@ -1,9 +1,9 @@
 import { dirname, join } from "node:path";
 
-const ACCOUNTS_BACKUP_SUFFIX = ".bak";
-const ACCOUNTS_WAL_SUFFIX = ".wal";
+export const ACCOUNTS_BACKUP_SUFFIX = ".bak";
+export const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
-const RESET_MARKER_SUFFIX = ".reset-intent";
+export const RESET_MARKER_SUFFIX = ".reset-intent";
 
 export function getAccountsBackupPath(path: string): string {
 	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;

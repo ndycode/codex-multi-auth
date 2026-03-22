@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
+import { StorageError } from "./errors.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
@@ -17,6 +18,7 @@ import {
 	type NamedBackupSummary,
 } from "./storage/named-backups.js";
 
+export { StorageError } from "./errors.js";
 export { formatStorageErrorHint } from "./storage/error-hints.js";
 export {
 	getAccountIdentityKey,
@@ -25,12 +27,15 @@ export {
 export type { NamedBackupSummary } from "./storage/named-backups.js";
 
 import {
+	ACCOUNTS_BACKUP_SUFFIX,
+	ACCOUNTS_WAL_SUFFIX,
 	getFlaggedAccountsPath as buildFlaggedAccountsPath,
 	getLegacyFlaggedAccountsPath as buildLegacyFlaggedAccountsPath,
 	getAccountsBackupPath,
 	getAccountsBackupRecoveryCandidates,
 	getAccountsWalPath,
 	getIntentionalResetMarkerPath,
+	RESET_MARKER_SUFFIX,
 } from "./storage/file-paths.js";
 import {
 	type AccountIdentityRef,
@@ -71,11 +76,8 @@ const log = createLogger("storage");
 const ACCOUNTS_FILE_NAME = "openai-codex-accounts.json";
 const FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-flagged-accounts.json";
 const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
-const ACCOUNTS_BACKUP_SUFFIX = ".bak";
-const ACCOUNTS_WAL_SUFFIX = ".wal";
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
-const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
 
@@ -142,29 +144,6 @@ export type RestoreAssessment = {
 	latestSnapshot?: BackupSnapshotMetadata;
 	backupMetadata: BackupMetadata;
 };
-
-/**
- * Custom error class for storage operations with platform-aware hints.
- */
-export class StorageError extends Error {
-	readonly code: string;
-	readonly path: string;
-	readonly hint: string;
-
-	constructor(
-		message: string,
-		code: string,
-		path: string,
-		hint: string,
-		cause?: Error,
-	) {
-		super(message, { cause });
-		this.name = "StorageError";
-		this.code = code;
-		this.path = path;
-		this.hint = hint;
-	}
-}
 
 let storageMutex: Promise<void> = Promise.resolve();
 const transactionSnapshotContext = new AsyncLocalStorage<{

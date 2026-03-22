@@ -1,4 +1,4 @@
-import { StorageError } from "../storage.js";
+import { StorageError } from "../errors.js";
 
 export function formatStorageErrorHint(error: unknown, path: string): string {
 	const err = error as NodeJS.ErrnoException;
