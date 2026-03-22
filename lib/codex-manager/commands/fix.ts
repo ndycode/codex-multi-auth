@@ -228,7 +228,6 @@ export async function runFixCommand(
 		}
 
 		if (deps.hasUsableAccessToken(account, now)) {
-			let needsRefresh = false;
 			if (options.live) {
 				const currentAccessToken = account.accessToken;
 				const probeAccountId = currentAccessToken
@@ -259,26 +258,33 @@ export async function runFixCommand(
 								: "live session OK",
 						});
 						continue;
-					} catch {
-						needsRefresh = true;
+					} catch (error) {
+						const message = deps.normalizeFailureDetail(
+							error instanceof Error ? error.message : String(error),
+							undefined,
+						);
+						reports.push({
+							index: i,
+							label,
+							outcome: "warning-soft-failure",
+							message: `live probe failed (${message}), trying refresh fallback`,
+						});
 					}
 				}
 			}
 
-			if (!needsRefresh) {
-				const refreshWarning = deps.hasLikelyInvalidRefreshToken(
-					account.refreshToken,
-				)
-					? " (refresh token looks stale; re-login recommended)"
-					: "";
-				reports.push({
-					index: i,
-					label,
-					outcome: "healthy",
-					message: `access token still valid${refreshWarning}`,
-				});
-				continue;
-			}
+			const refreshWarning = deps.hasLikelyInvalidRefreshToken(
+				account.refreshToken,
+			)
+				? " (refresh token looks stale; re-login recommended)"
+				: "";
+			reports.push({
+				index: i,
+				label,
+				outcome: "healthy",
+				message: `access token still valid${refreshWarning}`,
+			});
+			continue;
 		}
 
 		const refreshResult = await deps.queuedRefresh(account.refreshToken);
