@@ -42,7 +42,6 @@ import {
 	sanitizeEmail,
 	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
-	type Workspace,
 } from "./lib/accounts.js";
 import {
 	createAuthorizationFlow,
@@ -256,7 +255,6 @@ import {
 	createHashlineReadTool,
 } from "./lib/tools/hashline-tools.js";
 import type {
-	AccountIdSource,
 	OAuthAuthDetails,
 	RequestBody,
 	TokenResult,
@@ -369,12 +367,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	type TokenSuccess = Extract<TokenResult, { type: "success" }>;
-	type TokenSuccessWithAccount = AccountPoolTokenSuccessWithAccount & {
-		accountIdOverride?: string;
-		accountIdSource?: AccountIdSource;
-		accountLabel?: string;
-		workspaces?: Workspace[];
-	};
+	type TokenSuccessWithAccount = AccountPoolTokenSuccessWithAccount;
 
 	const resolveTokenSuccessAccount = (
 		tokens: TokenSuccess,

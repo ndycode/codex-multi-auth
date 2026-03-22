@@ -1,9 +1,13 @@
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	exportAccountsToFile,
 	mergeImportedAccounts,
 	readImportFile,
 } from "../lib/storage/import-export.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("import export helpers", () => {
 	it("merges imported accounts with dedupe guardrails", () => {
@@ -44,5 +48,41 @@ describe("import export helpers", () => {
 				logInfo: vi.fn(),
 			}),
 		).rejects.toThrow("No accounts to export");
+	});
+
+	it("writes exports through a staged temp file and removes temp artifacts", async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), "codex-import-export-"));
+		const resolvedPath = join(root, "accounts.json");
+		const logInfo = vi.fn();
+
+		try {
+			await exportAccountsToFile({
+				resolvedPath,
+				force: true,
+				storage: {
+					version: 3,
+					accounts: [{ refreshToken: "token-a" }],
+					activeIndex: 0,
+					activeIndexByFamily: {},
+				},
+				logInfo,
+			});
+
+			const written = JSON.parse(await fs.readFile(resolvedPath, "utf-8")) as {
+				accounts: Array<{ refreshToken: string }>;
+			};
+			const tempArtifacts = (await fs.readdir(root)).filter((entry) =>
+				entry.endsWith(".tmp"),
+			);
+
+			expect(written.accounts).toEqual([{ refreshToken: "token-a" }]);
+			expect(tempArtifacts).toEqual([]);
+			expect(logInfo).toHaveBeenCalledWith("Exported accounts", {
+				path: resolvedPath,
+				count: 1,
+			});
+		} finally {
+			await removeWithRetry(root, { recursive: true, force: true });
+		}
 	});
 });

@@ -45,6 +45,44 @@ describe("runtime services helpers", () => {
 		expect(result.liveAccountSyncPath).toBe("/tmp/a");
 	});
 
+	it("warns and keeps the previous path when busy retries are exhausted", async () => {
+		vi.useFakeTimers();
+		const error = new Error("busy") as NodeJS.ErrnoException;
+		error.code = "EBUSY";
+		const syncToPath = vi.fn(async () => {
+			throw error;
+		});
+		const currentSync = { stop: vi.fn(), syncToPath };
+		const logWarn = vi.fn();
+
+		try {
+			const resultPromise = ensureLiveAccountSyncState({
+				enabled: true,
+				targetPath: "/tmp/new",
+				currentSync,
+				currentPath: "/tmp/old",
+				createSync: vi.fn(),
+				registerCleanup: vi.fn(),
+				logWarn,
+				pluginName: "plugin",
+			});
+
+			await vi.runAllTimersAsync();
+			const result = await resultPromise;
+
+			expect(syncToPath).toHaveBeenCalledTimes(3);
+			expect(logWarn).toHaveBeenCalledWith(
+				"[plugin] Live account sync path switch failed due to transient filesystem locks; keeping previous watcher.",
+			);
+			expect(result).toEqual({
+				liveAccountSync: currentSync,
+				liveAccountSyncPath: "/tmp/old",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("recreates refresh guardian when config changes and clears when disabled", () => {
 		const oldGuardian = { stop: vi.fn(), start: vi.fn() };
 		const createGuardian = vi.fn(() => ({ stop: vi.fn(), start: vi.fn() }));

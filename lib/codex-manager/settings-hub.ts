@@ -605,9 +605,14 @@ async function promptBackendCategorySettings(
 async function promptBackendSettings(
 	initial: PluginConfig,
 ): Promise<PluginConfig | null> {
+	const interactive = input.isTTY && output.isTTY;
+	if (!interactive) {
+		return null;
+	}
+
 	return promptBackendSettingsMenu({
 		initial,
-		isInteractive: () => input.isTTY && output.isTTY,
+		isInteractive: () => interactive,
 		ui: getUiRuntimeOptions(),
 		cloneBackendPluginConfig,
 		backendCategoryOptions: BACKEND_CATEGORY_OPTIONS,

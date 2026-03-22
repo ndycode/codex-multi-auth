@@ -2,6 +2,32 @@ import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import type { AccountStorageV3 } from "../storage.js";
 
+const EXPORT_RENAME_MAX_ATTEMPTS = 4;
+const EXPORT_RENAME_BASE_DELAY_MS = 25;
+
+async function renameExportFileWithRetry(
+	sourcePath: string,
+	destinationPath: string,
+): Promise<void> {
+	for (let attempt = 0; attempt < EXPORT_RENAME_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			await fs.rename(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			const canRetry =
+				(code === "EPERM" || code === "EBUSY" || code === "EAGAIN") &&
+				attempt + 1 < EXPORT_RENAME_MAX_ATTEMPTS;
+			if (!canRetry) {
+				throw error;
+			}
+			await new Promise((resolve) =>
+				setTimeout(resolve, EXPORT_RENAME_BASE_DELAY_MS * 2 ** attempt),
+			);
+		}
+	}
+}
+
 export async function exportAccountsToFile(params: {
 	resolvedPath: string;
 	force: boolean;
@@ -32,10 +58,22 @@ export async function exportAccountsToFile(params: {
 		null,
 		2,
 	);
-	await fs.writeFile(params.resolvedPath, content, {
-		encoding: "utf-8",
-		mode: 0o600,
-	});
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${params.resolvedPath}.${uniqueSuffix}.tmp`;
+	try {
+		await fs.writeFile(tempPath, content, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		await renameExportFileWithRetry(tempPath, params.resolvedPath);
+	} catch (error) {
+		try {
+			await fs.unlink(tempPath);
+		} catch {
+			// Ignore cleanup failures for staged export files.
+		}
+		throw error;
+	}
 	params.logInfo("Exported accounts", {
 		path: params.resolvedPath,
 		count: params.storage.accounts.length,
