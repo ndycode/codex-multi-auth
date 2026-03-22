@@ -743,6 +743,25 @@ describe('createEntitlementErrorResponse', () => {
 			const text = await result.text();
 			expect(text).toBe('stream body');
 		});
+
+		it('captures response ids from streaming semantic SSE without rewriting the stream', async () => {
+			const onResponseId = vi.fn();
+			const response = new Response(
+				[
+					'data: {"type":"response.created","response":{"id":"resp_stream_123"}}',
+					'',
+					'data: {"type":"response.done","response":{"id":"resp_stream_123"}}',
+					'',
+				].join('\n'),
+				{ status: 200, headers: new Headers({ 'content-type': 'text/event-stream' }) },
+			);
+
+			const result = await handleSuccessResponse(response, true, { onResponseId });
+			const text = await result.text();
+
+			expect(text).toContain('"resp_stream_123"');
+			expect(onResponseId).toHaveBeenCalledWith('resp_stream_123');
+		});
 	});
 
 	describe('handleErrorResponse error normalization', () => {
