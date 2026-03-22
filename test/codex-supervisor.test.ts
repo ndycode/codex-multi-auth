@@ -256,9 +256,14 @@ function createFakeRuntime(
 
 afterEach(async () => {
 	vi.useRealTimers();
+	supervisorTestApi?.resetSupervisorCaches?.();
 	supervisorTestApi?.clearAllProbeSnapshotCache?.();
 	supervisorTestApi?.clearSessionBindingPathCache?.();
-	Object.defineProperty(process, "platform", { value: originalPlatform });
+	Object.defineProperty(process, "platform", {
+		value: originalPlatform,
+		configurable: true,
+		writable: true,
+	});
 	for (const key of envKeys) {
 		const value = originalEnv[key];
 		if (value === undefined) {
