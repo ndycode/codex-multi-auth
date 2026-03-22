@@ -2742,7 +2742,7 @@ async function runForecast(args: string[]): Promise<number> {
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
+	const display = await loadDashboardDisplaySettings();
 	const quotaCache = options.live ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
@@ -2939,8 +2939,11 @@ async function runForecast(args: string[]): Promise<number> {
 		);
 	}
 
-	if (display.showRecommendations) {
+	if (display.showRecommendations || options.explain) {
 		console.log("");
+	}
+
+	if (display.showRecommendations) {
 		if (recommendation.recommendedIndex !== null) {
 			const index = recommendation.recommendedIndex;
 			const account = forecastResults.find((result) => result.index === index);
@@ -2962,16 +2965,15 @@ async function runForecast(args: string[]): Promise<number> {
 				`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`,
 			);
 		}
-		if (options.explain) {
-			console.log("");
-			console.log(stylePromptText("Explain:", "accent"));
-			for (const item of explanation.considered) {
-				const prefix = item.selected ? "*" : "-";
-				const reasons = item.reasons.slice(0, 3).join("; ");
-				console.log(
-					`${stylePromptText(prefix, item.selected ? "success" : "muted")} ${stylePromptText(`${item.index + 1}. ${item.label}`, item.selected ? "success" : "accent")} ${stylePromptText("|", "muted")} ${stylePromptText(`${item.availability}, ${item.riskLevel} risk (${item.riskScore})`, item.selected ? "success" : "muted")}${reasons ? ` ${stylePromptText("|", "muted")} ${stylePromptText(reasons, "muted")}` : ""}`,
-				);
-			}
+	}
+	if (options.explain) {
+		console.log(stylePromptText("Explain:", "accent"));
+		for (const item of explanation.considered) {
+			const prefix = item.selected ? "*" : "-";
+			const reasons = item.reasons.slice(0, 3).join("; ");
+			console.log(
+				`${stylePromptText(prefix, item.selected ? "success" : "muted")} ${stylePromptText(`${item.index + 1}. ${item.label}`, item.selected ? "success" : "accent")} ${stylePromptText("|", "muted")} ${stylePromptText(`${item.availability}, ${item.riskLevel} risk (${item.riskScore})`, item.selected ? "success" : "muted")}${reasons ? ` ${stylePromptText("|", "muted")} ${stylePromptText(reasons, "muted")}` : ""}`,
+			);
 		}
 	}
 

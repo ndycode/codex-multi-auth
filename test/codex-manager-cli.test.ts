@@ -634,10 +634,12 @@ describe("codex manager cli commands", () => {
 			command: string;
 			summary: { total: number };
 			recommendation: { recommendedIndex: number | null };
+			explanation?: unknown;
 		};
 		expect(payload.command).toBe("forecast");
 		expect(payload.summary.total).toBe(2);
 		expect(payload.recommendation.recommendedIndex).toBe(0);
+		expect(payload.explanation).toBeUndefined();
 	});
 
 	it("runs forecast in json explain mode", async () => {
@@ -688,7 +690,13 @@ describe("codex manager cli commands", () => {
 		};
 		expect(payload.explanation.recommendedIndex).toBe(0);
 		expect(payload.explanation.considered).toHaveLength(2);
-		expect(payload.explanation.considered[0]?.selected).toBe(true);
+		expect(payload.explanation.considered.map((item) => item.selected)).toEqual([
+			true,
+			false,
+		]);
+		expect(
+			payload.explanation.considered.find((item) => item.selected)?.index,
+		).toBe(payload.explanation.recommendedIndex);
 	});
 
 	it("prints explain details in text forecast mode", async () => {
@@ -734,6 +742,119 @@ describe("codex manager cli commands", () => {
 					String(call[0]).includes("ready, low risk (0)") ||
 					String(call[0]).includes("Lowest risk ready account"),
 			),
+		).toBe(true);
+	});
+
+	it("prints explain details even when recommendation summaries are hidden", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+				{
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: false,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: true,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: true,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"forecast",
+			"--explain",
+		]);
+		expect(exitCode).toBe(0);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(
+			logSpy.mock.calls.some((call) => String(call[0]).includes("Explain:")),
+		).toBe(true);
+		expect(
+			logSpy.mock.calls.some((call) => String(call[0]).includes("Best next account:")),
+		).toBe(false);
+	});
+
+	it("keeps forecast json explain output isolated across concurrent runs", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+				{
+					email: "b@example.com",
+					refreshToken: "refresh-b",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: false,
+				},
+			],
+		});
+
+		const outputs: string[] = [];
+		const logSpy = vi
+			.spyOn(console, "log")
+			.mockImplementation((value?: unknown) => outputs.push(String(value)));
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const [plainExitCode, explainExitCode] = await Promise.all([
+			runCodexMultiAuthCli(["auth", "forecast", "--json"]),
+			runCodexMultiAuthCli(["auth", "forecast", "--json", "--explain"]),
+		]);
+		expect(plainExitCode).toBe(0);
+		expect(explainExitCode).toBe(0);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledTimes(2);
+
+		const payloads = outputs.map((entry) =>
+			JSON.parse(entry),
+		) as Array<{
+			explanation?: {
+				recommendedIndex: number | null;
+				considered: Array<{ selected: boolean }>;
+			};
+			recommendation?: { recommendedIndex: number | null };
+		}>;
+		expect(payloads.filter((payload) => payload.explanation)).toHaveLength(1);
+		const explainPayload = payloads.find((payload) => payload.explanation);
+		const plainPayload = payloads.find((payload) => !payload.explanation);
+		expect(plainPayload?.recommendation?.recommendedIndex).toBe(0);
+		expect(plainPayload?.explanation).toBeUndefined();
+		expect(explainPayload?.explanation?.recommendedIndex).toBe(0);
+		expect(
+			explainPayload?.explanation?.considered.some((item) => item.selected),
 		).toBe(true);
 	});
 
