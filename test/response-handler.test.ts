@@ -187,6 +187,28 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			});
 		});
 
+		it('preserves canonical terminal reasoning summary text over synthesized summary deltas', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_semantic_nested","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"rs_nested","type":"reasoning"}}',
+				'data: {"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"Draft nested summary"}',
+				'data: {"type":"response.reasoning_summary_text.done","output_index":1,"summary_index":0,"text":"Draft nested summary"}',
+				'data: {"type":"response.completed","response":{"id":"resp_semantic_nested","object":"response","output":[{},{"id":"rs_nested","type":"reasoning","summary":[{"type":"summary_text","text":"Canonical nested summary"}]}]}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				reasoning_summary_text?: string;
+				output?: Array<{ summary?: Array<{ text?: string }> }>;
+			};
+
+			expect(body.output?.[1]?.summary?.[0]?.text).toBe('Canonical nested summary');
+			expect(body.reasoning_summary_text).toBe('Canonical nested summary');
+		});
+
 		it('synthesizes output text from content_part events', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_content_part","object":"response"}}',
@@ -432,6 +454,87 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body.output_text).toBe('Hello');
 			expect(body.final_answer_text).toBe('Hello');
 			expect(body.phase_text).toEqual({ final_answer: 'Hello' });
+		});
+
+		it('handles response.content_part.added for output_text parts', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_content_part_added","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_part_added","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.content_part.added","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello from added part","phase":"final_answer"}}',
+				'data: {"type":"response.done","response":{"id":"resp_content_part_added","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				output_text?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+				output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+			};
+
+			expect(body.output?.[0]?.content?.[0]).toEqual({
+				type: 'output_text',
+				text: 'Hello from added part',
+			});
+			expect(body.output_text).toBe('Hello from added part');
+			expect(body.final_answer_text).toBe('Hello from added part');
+			expect(body.phase_text).toEqual({ final_answer: 'Hello from added part' });
+		});
+
+		it('handles response.content_part.done for output_text parts', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_content_part_done","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_part_done","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello from done part","phase":"final_answer"}}',
+				'data: {"type":"response.done","response":{"id":"resp_content_part_done","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				output_text?: string;
+				final_answer_text?: string;
+				phase_text?: Record<string, string>;
+				output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+			};
+
+			expect(body.output?.[0]?.content?.[0]).toEqual({
+				type: 'output_text',
+				text: 'Hello from done part',
+			});
+			expect(body.output_text).toBe('Hello from done part');
+			expect(body.final_answer_text).toBe('Hello from done part');
+			expect(body.phase_text).toEqual({ final_answer: 'Hello from done part' });
+		});
+
+		it('captures phase from non-output_text content parts without mutating output text', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_content_part_annotation","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_part_annotation","type":"message","role":"assistant"}}',
+				'data: {"type":"response.content_part.added","output_index":0,"content_index":0,"part":{"type":"annotation","text":"ignored","phase":"commentary"}}',
+				'data: {"type":"response.done","response":{"id":"resp_content_part_annotation","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				phase?: string;
+				output_text?: string;
+				phase_text?: Record<string, string>;
+				output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+			};
+
+			expect(body.phase).toBe('commentary');
+			expect(body.output?.[0]?.content).toBeUndefined();
+			expect(body.output_text).toBeUndefined();
+			expect(body.phase_text).toBeUndefined();
 		});
 
 		it('should return original text if no final response found', async () => {

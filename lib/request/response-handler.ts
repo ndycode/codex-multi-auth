@@ -19,6 +19,7 @@ interface ParsedResponseState {
 	outputText: Map<string, string>;
 	outputTextPhases: Map<string, string>;
 	phaseTextSegments: Map<string, string>;
+	phaseSegmentOrder: Map<string, string[]>;
 	phaseText: Map<string, string>;
 	reasoningSummaryText: Map<string, string>;
 	seenResponseIds: Set<string>;
@@ -33,6 +34,7 @@ function createParsedResponseState(): ParsedResponseState {
 		outputText: new Map<string, string>(),
 		outputTextPhases: new Map<string, string>(),
 		phaseTextSegments: new Map<string, string>(),
+		phaseSegmentOrder: new Map<string, string[]>(),
 		phaseText: new Map<string, string>(),
 		reasoningSummaryText: new Map<string, string>(),
 		seenResponseIds: new Set<string>(),
@@ -125,11 +127,40 @@ function capturePhase(
 	state.lastPhase = phase.trim();
 }
 
-function syncPhaseText(state: ParsedResponseState, phase: string): void {
-	const prefix = `${phase}\u0000`;
-	const text = [...state.phaseTextSegments.entries()]
-		.filter(([key]) => key.startsWith(prefix))
-		.map(([, value]) => value)
+function rememberPhaseSegmentOrder(
+	state: ParsedResponseState,
+	phase: string,
+	segmentKey: string,
+): string[] {
+	const existingOrder = state.phaseSegmentOrder.get(phase);
+	if (existingOrder?.includes(segmentKey)) {
+		return existingOrder;
+	}
+	const nextOrder = [...(existingOrder ?? []), segmentKey];
+	state.phaseSegmentOrder.set(phase, nextOrder);
+	return nextOrder;
+}
+
+function removePhaseSegmentOrder(
+	state: ParsedResponseState,
+	phase: string,
+	segmentKey: string,
+): void {
+	const existingOrder = state.phaseSegmentOrder.get(phase);
+	if (!existingOrder) return;
+	const nextOrder = existingOrder.filter((key) => key !== segmentKey);
+	if (nextOrder.length === 0) {
+		state.phaseSegmentOrder.delete(phase);
+		return;
+	}
+	state.phaseSegmentOrder.set(phase, nextOrder);
+}
+
+function rebuildPhaseText(state: ParsedResponseState, phase: string): void {
+	const orderedKeys = state.phaseSegmentOrder.get(phase) ?? [];
+	const text = orderedKeys
+		.map((key) => state.phaseTextSegments.get(key) ?? "")
+		.filter((value) => value.length > 0)
 		.join("");
 	if (text.length === 0) {
 		state.phaseText.delete(phase);
@@ -154,11 +185,13 @@ function setPhaseTextSegment(
 	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
 	if (!text || text.length === 0) {
 		state.phaseTextSegments.delete(segmentKey);
-		syncPhaseText(state, normalizedPhase);
+		removePhaseSegmentOrder(state, normalizedPhase, segmentKey);
+		rebuildPhaseText(state, normalizedPhase);
 		return;
 	}
+	rememberPhaseSegmentOrder(state, normalizedPhase, segmentKey);
 	state.phaseTextSegments.set(segmentKey, text);
-	syncPhaseText(state, normalizedPhase);
+	rebuildPhaseText(state, normalizedPhase);
 }
 
 function appendPhaseTextSegment(
@@ -178,9 +211,15 @@ function appendPhaseTextSegment(
 	state.outputTextPhases.set(outputTextKey, normalizedPhase);
 	state.lastPhase = normalizedPhase;
 	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
+	const phaseOrder = rememberPhaseSegmentOrder(state, normalizedPhase, segmentKey);
 	const existing = state.phaseTextSegments.get(segmentKey) ?? "";
 	state.phaseTextSegments.set(segmentKey, `${existing}${delta}`);
-	syncPhaseText(state, normalizedPhase);
+	if (phaseOrder[phaseOrder.length - 1] === segmentKey) {
+		const existingPhaseText = state.phaseText.get(normalizedPhase) ?? "";
+		state.phaseText.set(normalizedPhase, `${existingPhaseText}${delta}`);
+		return;
+	}
+	rebuildPhaseText(state, normalizedPhase);
 }
 
 function upsertOutputItem(state: ParsedResponseState, outputIndex: number | null, item: unknown): void {
