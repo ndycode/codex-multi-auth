@@ -51,6 +51,12 @@ function getNumberField(record: MutableRecord, key: string): number | null {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Read a trimmed, non-empty string field for identifier-like values.
+ *
+ * For textual payloads where whitespace is meaningful, use a field-specific
+ * accessor such as `getDeltaField` instead of reusing this helper.
+ */
 function getStringField(record: MutableRecord, key: string): string | null {
 	const value = record[key];
 	return typeof value === "string" && value.trim().length > 0 ? value : null;

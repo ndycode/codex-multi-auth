@@ -673,6 +673,29 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			expect(body.reasoning_summary_text).toBeUndefined();
 		});
 
+		it('ignores delta events with missing output_index', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_no_index","object":"response"}}',
+				'data: {"type":"response.output_text.delta","content_index":0,"delta":"orphan"}',
+				'data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":"orphan"}',
+				'data: {"type":"response.done","response":{"id":"resp_no_index","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				id: string;
+				output_text?: string;
+				reasoning_summary_text?: string;
+			};
+
+			expect(body.id).toBe('resp_no_index');
+			expect(body.output_text).toBeUndefined();
+			expect(body.reasoning_summary_text).toBeUndefined();
+		});
+
 		it('should throw error if SSE stream exceeds size limit', async () => {
 			const largeContent = 'a'.repeat(20 * 1024 * 1024 + 1);
 			const response = new Response(largeContent);
