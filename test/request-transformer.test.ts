@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
     normalizeModel,
     getModelConfig,
@@ -10,11 +10,16 @@ import {
     addCodexBridgeMessage,
     transformRequestBody,
 } from '../lib/request/request-transformer.js';
+import * as loggerModule from '../lib/logger.js';
 import { TOOL_REMAP_MESSAGE } from '../lib/prompts/codex.js';
 import { CODEX_HOST_BRIDGE } from '../lib/prompts/codex-host-bridge.js';
 import type { RequestBody, UserConfig, InputItem } from '../lib/types.js';
 
 describe('Request Transformer Module', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	describe('normalizeModel', () => {
 		it('keeps codex families canonical', async () => {
 			expect(normalizeModel('gpt-5-codex')).toBe('gpt-5-codex');
@@ -2031,6 +2036,36 @@ describe('Request Transformer Module', () => {
 						],
 					},
 				]);
+			});
+
+			it('counts only removed plan-only tools when a namespace becomes empty', async () => {
+				const warnSpy = vi.spyOn(loggerModule, 'logWarn').mockImplementation(() => {});
+				const body: RequestBody = {
+					model: 'gpt-5',
+					input: [
+						{
+							type: 'message',
+							role: 'developer',
+							content: [{ type: 'input_text', text: '# Collaboration Mode: Default' }],
+						},
+					],
+					tools: [
+						{
+							type: 'namespace',
+							name: 'planner',
+							tools: [
+								{ type: 'function', function: { name: 'request_user_input', parameters: { type: 'object', properties: {} } } },
+							],
+						},
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+
+				expect(result.tools).toBeUndefined();
+				expect(warnSpy).toHaveBeenCalledWith(
+					'Removed 1 plan-mode-only tool definition(s) because collaboration mode is default',
+				);
 			});
 
 			it('removes tool_search tools when the selected model lacks search capability', async () => {
