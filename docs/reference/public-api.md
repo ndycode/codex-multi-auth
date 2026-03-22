@@ -67,11 +67,10 @@ Positional signatures are preserved for backward compatibility.
 
 The request-transform layer intentionally preserves and/or normalizes modern Responses API fields that callers may already send through the host SDK.
 
-- `previous_response_id` is preserved when explicitly provided and may be auto-filled from plugin continuation state when `pluginConfig.responseContinuation` is enabled.
+- The plugin preserves `previous_response_id` when explicitly provided and may auto-fill it from plugin continuation state when `pluginConfig.responseContinuation` is enabled, maintains `text.format` when verbosity defaults are applied, and honors `prompt_cache_retention` from the request body before falling back to `providerOptions.openai.promptCacheRetention` or user config defaults.
 - `background` is typed as a first-class request field. It remains disabled by default and only passes through when `pluginConfig.backgroundResponses` or `CODEX_AUTH_BACKGROUND_RESPONSES=1` explicitly enables the stateful compatibility path.
-- `text.format` is preserved when verbosity defaults are applied, so structured-output contracts continue to flow through untouched.
-- `prompt_cache_retention` is preserved from the request body and can fall back to `providerOptions.openai.promptCacheRetention` or user config defaults.
 - Background-mode requests force `store=true`, keep caller-supplied input item IDs, and skip stateless-only defaults such as `reasoning.encrypted_content` injection and fast-session trimming.
+- Upgrade note: leave background mode disabled for existing stateless pipelines. Enable it only for callers that intentionally send `background: true` and are ready for stateful `store=true` routing. For rollout steps, see [../upgrade.md](../upgrade.md).
 - Hosted built-in tool definitions are typed and supported for:
   - `tool_search`
   - remote `mcp`

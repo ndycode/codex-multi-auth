@@ -1179,6 +1179,30 @@ describe('createEntitlementErrorResponse', () => {
 				expect(result?.deferredFastSessionInputTrim).toBeUndefined();
 			});
 
+			it('rethrows store=false background guardrail errors at the fetch layer', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+
+				await expect(
+					transformRequestForCodex(
+						{
+							body: JSON.stringify({
+								model: 'gpt-5.4',
+								background: true,
+								store: false,
+								input: [{ type: 'message', role: 'user', content: 'hello' }],
+							}),
+						},
+						'https://example.com',
+						{ global: {}, models: {} },
+						true,
+						undefined,
+						{ allowBackgroundResponses: true },
+					),
+				).rejects.toThrow(
+					'Responses background mode requires store=true and cannot be combined with stateless store=false routing.',
+				);
+			});
+
 			it('returns undefined when parsedBody is empty object and init body is unavailable', async () => {
 				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
 				const result = await transformRequestForCodex(

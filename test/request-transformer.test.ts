@@ -2537,6 +2537,29 @@ describe('Request Transformer Module', () => {
 					);
 				});
 
+				it('rejects background mode when providerOptions still forces store=false', async () => {
+					await expect(
+						transformRequestBody(
+							{
+								model: 'gpt-5.4',
+								background: true,
+								providerOptions: { openai: { store: false } },
+								input: [{ type: 'message', role: 'user', content: 'hello' }],
+							},
+							codexInstructions,
+							{ global: {}, models: {} },
+							true,
+							false,
+							'hybrid',
+							30,
+							false,
+							true,
+						),
+					).rejects.toThrowError(
+						'Responses background mode requires store=true and cannot be combined with stateless store=false routing.',
+					);
+				});
+
 				it('throws clear TypeError when named-parameter body is invalid', async () => {
 					await expect(
 						transformRequestBody({
