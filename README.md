@@ -62,8 +62,11 @@ npm i -g codex-multi-auth
 
 ### Option C: Verify wiring
 
+`codex --version` confirms the official Codex CLI is reachable. `codex-multi-auth --version` confirms the installed wrapper package version.
+
 ```bash
 codex --version
+codex-multi-auth --version
 codex auth status
 ```
 

@@ -32,10 +32,11 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-1. Verify routing and status:
+1. Verify routing and wrapper status:
 
 ```bash
 codex --version
+codex-multi-auth --version
 codex auth status
 ```
 
