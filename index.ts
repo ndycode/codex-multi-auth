@@ -229,6 +229,7 @@ import {
 	applyUiRuntimeFromConfig,
 	getStatusMarker,
 } from "./lib/runtime/ui-runtime.js";
+import { resolveUiRuntimeEntry } from "./lib/runtime/ui-runtime-entry.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
 import {
@@ -514,9 +515,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	const resolveUiRuntime = (): UiRuntimeOptions => {
-		return resolveUiRuntimeFromConfig(loadPluginConfig, (pluginConfig) =>
-			applyUiRuntimeFromConfig(pluginConfig, setUiRuntimeOptions),
-		);
+		return resolveUiRuntimeEntry({
+			loadPluginConfig,
+			resolveUiRuntimeFromConfig,
+			applyUiRuntimeFromConfig: (pluginConfig) =>
+				applyUiRuntimeFromConfig(pluginConfig, setUiRuntimeOptions),
+		});
 	};
 
 	const invalidateAccountManagerCache = (): void => {
