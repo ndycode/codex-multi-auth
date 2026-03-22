@@ -137,6 +137,31 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body.output?.[1]?.summary?.[0]?.text).toBe('Draft summary');
 		});
 
+		it('synthesizes reasoning summaries from part events', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_summary_part","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"rs_part","type":"reasoning"}}',
+				'data: {"type":"response.reasoning_summary_part.added","output_index":1,"summary_index":0,"part":{"text":"Draft summary"}}',
+				'data: {"type":"response.reasoning_summary_part.done","output_index":1,"summary_index":0,"part":{"text":"Need more context."}}',
+				'data: {"type":"response.done","response":{"id":"resp_summary_part","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				reasoning_summary_text?: string;
+				output?: Array<{ summary?: Array<{ type?: string; text?: string }> }>;
+			};
+
+			expect(body.reasoning_summary_text).toBe('Need more context.');
+			expect(body.output?.[1]?.summary?.[0]).toEqual({
+				type: 'summary_text',
+				text: 'Need more context.',
+			});
+		});
+
 		it('preserves whitespace-only semantic deltas when no done events override them', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_whitespace_delta","object":"response"}}',
@@ -386,6 +411,36 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 
 			expect(text).toBe(sseContent);
 			expect(onResponseId).not.toHaveBeenCalled();
+		});
+
+		it('ignores oversized semantic indices instead of building sparse output arrays', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_guarded_indices","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":1000000,"item":{"id":"msg_big","type":"message","role":"assistant"}}',
+				'data: {"type":"response.output_text.done","output_index":1000000,"content_index":1000000,"text":"ignored"}',
+				'data: {"type":"response.reasoning_summary_part.done","output_index":1000000,"summary_index":1000000,"part":{"text":"ignored"}}',
+				'data: {"type":"response.done","response":{"id":"resp_guarded_indices","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				id: string;
+				object: string;
+				output?: unknown[];
+				output_text?: string;
+				reasoning_summary_text?: string;
+			};
+
+			expect(body).toEqual({
+				id: 'resp_guarded_indices',
+				object: 'response',
+			});
+			expect(body.output).toBeUndefined();
+			expect(body.output_text).toBeUndefined();
+			expect(body.reasoning_summary_text).toBeUndefined();
 		});
 
 		it('should throw error if SSE stream exceeds size limit', async () => {

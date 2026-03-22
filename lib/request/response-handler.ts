@@ -8,6 +8,7 @@ const log = createLogger("response-handler");
 
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
 const DEFAULT_STREAM_STALL_TIMEOUT_MS = 45_000;
+const MAX_SYNTHESIZED_EVENT_INDEX = 255;
 
 type MutableRecord = Record<string, unknown>;
 
@@ -58,6 +59,15 @@ function getDeltaField(record: MutableRecord, key: string): string | null {
 	return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function isValidSynthesizedIndex(index: number | null): index is number {
+	return (
+		index !== null &&
+		Number.isInteger(index) &&
+		index >= 0 &&
+		index <= MAX_SYNTHESIZED_EVENT_INDEX
+	);
+}
+
 function cloneContentArray(content: unknown): MutableRecord[] {
 	if (!Array.isArray(content)) return [];
 	return content.filter(isRecord).map((part) => ({ ...part }));
@@ -77,7 +87,12 @@ function mergeRecord(base: MutableRecord | null, update: MutableRecord): Mutable
 }
 
 function makeOutputTextKey(outputIndex: number | null, contentIndex: number | null): string | null {
-	if (outputIndex === null || contentIndex === null) return null;
+	if (
+		!isValidSynthesizedIndex(outputIndex) ||
+		!isValidSynthesizedIndex(contentIndex)
+	) {
+		return null;
+	}
 	return `${outputIndex}:${contentIndex}`;
 }
 
@@ -86,7 +101,12 @@ function makePhaseTextSegmentKey(phase: string, outputTextKey: string): string {
 }
 
 function makeSummaryKey(outputIndex: number | null, summaryIndex: number | null): string | null {
-	if (outputIndex === null || summaryIndex === null) return null;
+	if (
+		!isValidSynthesizedIndex(outputIndex) ||
+		!isValidSynthesizedIndex(summaryIndex)
+	) {
+		return null;
+	}
 	return `${outputIndex}:${summaryIndex}`;
 }
 
@@ -164,7 +184,7 @@ function appendPhaseTextSegment(
 }
 
 function upsertOutputItem(state: ParsedResponseState, outputIndex: number | null, item: unknown): void {
-	if (outputIndex === null || !isRecord(item)) return;
+	if (!isValidSynthesizedIndex(outputIndex) || !isRecord(item)) return;
 	const current = state.outputItems.get(outputIndex) ?? null;
 	const merged = mergeRecord(current, item);
 	state.outputItems.set(outputIndex, merged);
@@ -226,6 +246,7 @@ function appendReasoningSummaryValue(
 }
 
 function ensureOutputItemAtIndex(output: unknown[], index: number): MutableRecord | null {
+	if (!isValidSynthesizedIndex(index)) return null;
 	while (output.length <= index) {
 		output.push({});
 	}
@@ -237,6 +258,7 @@ function ensureOutputItemAtIndex(output: unknown[], index: number): MutableRecor
 }
 
 function ensureContentPartAtIndex(item: MutableRecord, index: number): MutableRecord | null {
+	if (!isValidSynthesizedIndex(index)) return null;
 	const content = Array.isArray(item.content) ? [...item.content] : [];
 	while (content.length <= index) {
 		content.push({});
@@ -257,7 +279,12 @@ function applyAccumulatedOutputText(response: MutableRecord, state: ParsedRespon
 		const [outputIndexText, contentIndexText] = key.split(":");
 		const outputIndex = Number.parseInt(outputIndexText ?? "", 10);
 		const contentIndex = Number.parseInt(contentIndexText ?? "", 10);
-		if (!Number.isFinite(outputIndex) || !Number.isFinite(contentIndex)) continue;
+		if (
+			!isValidSynthesizedIndex(outputIndex) ||
+			!isValidSynthesizedIndex(contentIndex)
+		) {
+			continue;
+		}
 		const item = ensureOutputItemAtIndex(output, outputIndex);
 		if (!item) continue;
 		const part = ensureContentPartAtIndex(item, contentIndex);
@@ -278,6 +305,7 @@ function mergeOutputItemsIntoResponse(response: MutableRecord, state: ParsedResp
 	const output = Array.isArray(response.output) ? [...response.output] : [];
 
 	for (const [outputIndex, item] of state.outputItems.entries()) {
+		if (!isValidSynthesizedIndex(outputIndex)) continue;
 		while (output.length <= outputIndex) {
 			output.push({});
 		}
@@ -329,7 +357,12 @@ function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseS
 		const [outputIndexText, summaryIndexText] = key.split(":");
 		const outputIndex = Number.parseInt(outputIndexText ?? "", 10);
 		const summaryIndex = Number.parseInt(summaryIndexText ?? "", 10);
-		if (!Number.isFinite(outputIndex) || !Number.isFinite(summaryIndex)) continue;
+		if (
+			!isValidSynthesizedIndex(outputIndex) ||
+			!isValidSynthesizedIndex(summaryIndex)
+		) {
+			continue;
+		}
 		const item = ensureOutputItemAtIndex(output, outputIndex);
 		if (!item) continue;
 		const summary = Array.isArray(item.summary) ? [...item.summary] : [];
