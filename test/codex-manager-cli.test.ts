@@ -87,7 +87,9 @@ vi.mock("../lib/accounts.js", () => ({
 	extractAccountEmail: vi.fn(() => undefined),
 	extractAccountId: vi.fn(() => "acc_test"),
 	formatAccountLabel: vi.fn((account: { email?: string }, index: number) =>
-		account.email ? `${index + 1}. ${account.email}` : `Account ${index + 1}`,
+		account.email
+			? `Account ${index + 1} (${account.email})`
+			: `Account ${index + 1}`,
 	),
 	formatCooldown: vi.fn(() => null),
 	formatWaitTime: vi.fn(
@@ -767,9 +769,7 @@ describe("codex manager cli commands", () => {
 					addedAt: now - 2_000,
 					lastUsed: now - 500,
 					enabled: false,
-					rateLimits: {
-						codex_rpm: { remaining: 0, resetAt: now + 60_000 },
-					},
+					rateLimitResetTimes: { codex: now + 60_000 },
 				},
 			],
 		});
@@ -779,12 +779,18 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "status"]);
 
 		expect(exitCode).toBe(0);
+		expect(setStoragePathMock).toHaveBeenCalledWith(null);
 		expect(logSpy).toHaveBeenCalledWith("Accounts (2)");
 		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining("1. 1. active@example.com [current]"),
+			"Storage: /mock/openai-codex-accounts.json",
 		);
 		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining("2. 2. disabled@example.com [disabled]"),
+			expect.stringContaining("1. Account 1 (active@example.com) [current]"),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"2. Account 2 (disabled@example.com) [disabled, rate-limited]",
+			),
 		);
 	});
 
