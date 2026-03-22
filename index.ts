@@ -192,6 +192,7 @@ import {
 	type TokenSuccessWithAccount as AccountPoolTokenSuccessWithAccount,
 	persistAccountPoolResults,
 } from "./lib/runtime/account-pool.js";
+import { handleAccountSelectEvent } from "./lib/runtime/account-select-event.js";
 import { resolveAccountSelection } from "./lib/runtime/account-selection.js";
 import {
 	formatRateLimitEntry,
@@ -620,62 +621,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		event: { type: string; properties?: unknown };
 	}) => {
 		try {
-			const { event } = input;
-			// Handle TUI account selection events
-			// Accepts generic selection events with an index property
-			if (
-				event.type === "account.select" ||
-				event.type === "openai.account.select"
-			) {
-				const props = event.properties as {
-					index?: number;
-					accountIndex?: number;
-					provider?: string;
-				};
-				// Filter by provider if specified
-				if (
-					props.provider &&
-					props.provider !== "openai" &&
-					props.provider !== PROVIDER_ID
-				) {
-					return;
-				}
-
-				const index = props.index ?? props.accountIndex;
-				if (typeof index === "number") {
-					const storage = await loadAccounts();
-					if (!storage || index < 0 || index >= storage.accounts.length) {
-						return;
-					}
-
-					const now = Date.now();
-					const account = storage.accounts[index];
-					if (account) {
-						account.lastUsed = now;
-						account.lastSwitchReason = "rotation";
-					}
-					storage.activeIndex = index;
-					storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-					for (const family of MODEL_FAMILIES) {
-						storage.activeIndexByFamily[family] = index;
-					}
-
-					await saveAccounts(storage);
-					if (cachedAccountManager) {
-						await cachedAccountManager.syncCodexCliActiveSelectionForIndex(
-							index,
-						);
-					}
+			const handled = await handleAccountSelectEvent({
+				event: input.event,
+				providerId: PROVIDER_ID,
+				loadAccounts,
+				saveAccounts,
+				modelFamilies: MODEL_FAMILIES,
+				getCachedAccountManager: () => cachedAccountManager,
+				reloadAccountManagerFromDisk: async () => {
+					await reloadAccountManagerFromDisk();
+				},
+				setLastCodexCliActiveSyncIndex: (index) => {
 					lastCodexCliActiveSyncIndex = index;
-
-					// Reload manager from disk so we don't overwrite newer rotated
-					// refresh tokens with stale in-memory state.
-					if (cachedAccountManager) {
-						await reloadAccountManagerFromDisk();
-					}
-
-					await showToast(`Switched to account ${index + 1}`, "info");
-				}
+				},
+				showToast,
+			});
+			if (handled) {
+				return;
 			}
 		} catch (error) {
 			logDebug(
