@@ -9,12 +9,13 @@ Change policy without breaking request flow, account safety, or diagnostics.
 ## Where to Change
 
 - `index.ts` — runtime orchestration
+- `lib/accounts.ts` — account selection inputs, health state, and cooldown readiness data
 - `lib/rotation.ts` — account selection
 - `lib/forecast.ts` — readiness/risk forecasting
 - `lib/request/failure-policy.ts` — retry/failover decisions
 - `lib/request/rate-limit-backoff.ts` — cooldown/backoff behavior
 - `lib/quota-probe.ts` / `lib/quota-cache.ts` — quota-derived decision inputs
-- `test/rotation.test.ts`, `test/forecast.test.ts`, `test/failure-policy.test.ts`, `test/rate-limit-backoff.test.ts`, `test/codex-manager-cli.test.ts` — policy coverage
+- `test/accounts.test.ts`, `test/rotation.test.ts`, `test/forecast.test.ts`, `test/failure-policy.test.ts`, `test/rate-limit-backoff.test.ts`, `test/codex-manager-cli.test.ts` — policy coverage
 
 ## Safe Workflow
 

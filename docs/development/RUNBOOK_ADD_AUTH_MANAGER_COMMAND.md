@@ -10,6 +10,7 @@ Add a command without breaking the existing CLI surface, help text, JSON mode, o
 
 - `lib/codex-manager.ts` — command parsing and dispatch
 - `lib/codex-manager/` — extracted command/controller helpers when the command grows beyond trivial size
+- `lib/cli.ts` — prompt-heavy shared CLI helpers when the command needs reusable interactive flows
 - `docs/reference/commands.md` — command reference
 - `test/codex-manager-cli.test.ts` — CLI behavior coverage
 - `test/documentation.test.ts` — docs parity when command text/help changes

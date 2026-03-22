@@ -9,6 +9,7 @@ Add a field without breaking defaults, migration behavior, settings persistence,
 ## Where to Change
 
 - `lib/config.ts` — runtime config resolution/defaults
+- `lib/schemas.ts` — env/config schema validation and typed field contracts
 - `lib/dashboard-settings.ts` or `lib/unified-settings.ts` — persisted settings shape
 - `lib/codex-manager/settings-hub.ts` and extracted settings helpers — interactive editing if user-facing
 - `docs/configuration.md` — user-facing config docs
@@ -30,6 +31,7 @@ Add a field without breaking defaults, migration behavior, settings persistence,
 - New fields must have deterministic defaults.
 - Do not change existing default values in the same PR unless that is the actual feature.
 - Keep docs and code aligned in the same change.
+- Recheck the Windows persistence notes when the field is written to disk; `EBUSY` and `EPERM` retry behavior must stay documented and covered.
 
 ## QA
 
