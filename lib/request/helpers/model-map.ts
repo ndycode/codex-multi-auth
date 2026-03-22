@@ -159,7 +159,7 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		promptFamily: "gpt-5.2",
 		defaultReasoningEffort: "medium",
 		supportedReasoningEfforts: ["medium"],
-		capabilities: TOOL_CAPABILITIES.full,
+		capabilities: TOOL_CAPABILITIES.compactOnly,
 	},
 	"gpt-5-nano": {
 		normalizedModel: "gpt-5-nano",
