@@ -304,6 +304,7 @@ export function getReasoningConfig(
 	const defaultEffort = profile.defaultReasoningEffort;
 	const requestedEffort = userConfig.reasoningEffort ?? defaultEffort;
 	const effort = coerceReasoningEffort(
+		profile.normalizedModel,
 		requestedEffort,
 		profile.supportedReasoningEfforts,
 		defaultEffort,
@@ -330,6 +331,7 @@ const REASONING_FALLBACKS: Record<
 } as const;
 
 function coerceReasoningEffort(
+	modelName: string,
 	effort: ModelReasoningEffort,
 	supportedEfforts: readonly ModelReasoningEffort[],
 	defaultEffort: ModelReasoningEffort,
@@ -341,10 +343,20 @@ function coerceReasoningEffort(
 	const fallbackOrder = REASONING_FALLBACKS[effort] ?? [defaultEffort];
 	for (const candidate of fallbackOrder) {
 		if (supportedEfforts.includes(candidate)) {
+			logWarn("Coercing unsupported reasoning effort for model", {
+				model: modelName,
+				requestedEffort: effort,
+				effectiveEffort: candidate,
+			});
 			return candidate;
 		}
 	}
 
+	logWarn("Falling back to default reasoning effort for model", {
+		model: modelName,
+		requestedEffort: effort,
+		effectiveEffort: defaultEffort,
+	});
 	return defaultEffort;
 }
 

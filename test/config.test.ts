@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
 	applyFastSessionDefaults,
 	getModelConfig,
 	getReasoningConfig,
 } from '../lib/request/request-transformer.js';
+import * as logger from '../lib/logger.js';
 import type { UserConfig } from '../lib/types.js';
 
 describe('Configuration Parsing', () => {
@@ -95,6 +96,28 @@ describe('Configuration Parsing', () => {
 
 			expect(nanoReasoning.effort).toBe('medium');
 			expect(nanoReasoning.summary).toBe('auto');
+		});
+
+		it('should warn when a lightweight model reasoning request is coerced', () => {
+			const warnSpy = vi.spyOn(logger, 'logWarn').mockImplementation(() => {});
+
+			try {
+				const miniReasoning = getReasoningConfig('gpt-5-mini', {
+					reasoningEffort: 'high',
+				});
+
+				expect(miniReasoning.effort).toBe('medium');
+				expect(warnSpy).toHaveBeenCalledWith(
+					'Coercing unsupported reasoning effort for model',
+					expect.objectContaining({
+						model: 'gpt-5-mini',
+						requestedEffort: 'high',
+						effectiveEffort: 'medium',
+					}),
+				);
+			} finally {
+				warnSpy.mockRestore();
+			}
 		});
 
 		it('should normalize "minimal" to "low" for gpt-5-codex', () => {
