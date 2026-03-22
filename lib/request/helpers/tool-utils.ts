@@ -22,13 +22,15 @@ function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
  * @param tools - Array of tool definitions
  * @returns Cleaned array of tool definitions
  */
-export function cleanupToolDefinitions(tools: unknown): unknown {
-	if (!Array.isArray(tools)) return tools;
+export function cleanupToolDefinitions(
+	tools: RequestToolDefinition[] | undefined,
+): RequestToolDefinition[] | undefined {
+	if (!Array.isArray(tools)) return undefined;
 
 	return tools.map((tool) => cleanupToolDefinition(tool));
 }
 
-function cleanupToolDefinition(tool: unknown): unknown {
+function cleanupToolDefinition(tool: RequestToolDefinition): RequestToolDefinition {
 	if (!isRecord(tool)) {
 		return tool;
 	}

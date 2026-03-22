@@ -2000,6 +2000,39 @@ describe('Request Transformer Module', () => {
 				expect(toolNames).toEqual(['request_user_input']);
 			});
 
+			it('removes nested request_user_input tools outside plan collaboration mode', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5',
+					input: [],
+					tools: [
+						{
+							type: 'namespace',
+							name: 'planner',
+							tools: [
+								{ type: 'function', function: { name: 'request_user_input', parameters: { type: 'object', properties: {} } } },
+								{ type: 'function', function: { name: 'exec_command', parameters: { type: 'object', properties: {} } } },
+							],
+						},
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.tools).toEqual([
+					{
+						type: 'namespace',
+						name: 'planner',
+						tools: [
+							expect.objectContaining({
+								type: 'function',
+								function: expect.objectContaining({
+									name: 'exec_command',
+								}),
+							}),
+						],
+					},
+				]);
+			});
+
 			it('removes tool_search tools when the selected model lacks search capability', async () => {
 				const body: RequestBody = {
 					model: 'gpt-5-nano',
@@ -2042,7 +2075,8 @@ describe('Request Transformer Module', () => {
 				};
 
 				const result = await transformRequestBody(body, codexInstructions);
-				expect(result.tools).toEqual([]);
+				expect(result.tools).toBeUndefined();
+				expect(result.input).toEqual([]);
 			});
 
 			it('filters unsupported namespace tool entries while keeping supported remote MCP tools', async () => {
@@ -2077,6 +2111,56 @@ describe('Request Transformer Module', () => {
 								server_label: 'remote-docs',
 								server_url: 'https://mcp.example.com',
 								defer_loading: true,
+							},
+						],
+					},
+				]);
+			});
+
+			it('filters unsupported tools from nested namespaces without dropping supported descendants', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5-nano',
+					input: [],
+					tools: [
+						{
+							type: 'namespace',
+							name: 'outer_suite',
+							tools: [
+								{
+									type: 'namespace',
+									name: 'inner_suite',
+									tools: [
+										{ type: 'tool_search', max_num_results: 2 },
+										{
+											type: 'mcp',
+											server_label: 'remote-docs',
+											server_url: 'https://mcp.example.com',
+											defer_loading: true,
+										},
+									],
+								},
+							],
+						},
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.tools).toEqual([
+					{
+						type: 'namespace',
+						name: 'outer_suite',
+						tools: [
+							{
+								type: 'namespace',
+								name: 'inner_suite',
+								tools: [
+									{
+										type: 'mcp',
+										server_label: 'remote-docs',
+										server_url: 'https://mcp.example.com',
+										defer_loading: true,
+									},
+								],
 							},
 						],
 					},

@@ -193,7 +193,7 @@ export interface RequestBody {
 	stream?: boolean;
 	instructions?: string;
 	input?: InputItem[];
-	tools?: RequestToolDefinition[] | unknown;
+	tools?: RequestToolDefinition[];
 	reasoning?: Partial<ReasoningConfig>;
 	text?: {
 		verbosity?: "low" | "medium" | "high";
