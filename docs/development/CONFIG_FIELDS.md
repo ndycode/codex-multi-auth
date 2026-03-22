@@ -31,6 +31,7 @@ Used only for host plugin mode through the host runtime config file.
 | `reasoningEffort` | string | `none\|minimal\|low\|medium\|high\|xhigh` | Reasoning effort hint |
 | `reasoningSummary` | string | `auto\|concise\|detailed` | Summary detail hint |
 | `textVerbosity` | string | `low\|medium\|high` | Text verbosity target |
+| `promptCacheRetention` | string | `5m\|1h\|24h\|7d` | Default server-side prompt cache retention when the request body omits `prompt_cache_retention` |
 | `include` | string[] | `reasoning.encrypted_content` | Extra payload include |
 | `store` | boolean | `false` | Required for stateless backend mode |
 
@@ -74,6 +75,7 @@ Used only for host plugin mode through the host runtime config file.
 | `tokenRefreshSkewMs` | `60000` |
 | `sessionRecovery` | `true` |
 | `autoResume` | `true` |
+| `responseContinuation` | `false` |
 | `proactiveRefreshGuardian` | `true` |
 | `proactiveRefreshIntervalMs` | `60000` |
 | `proactiveRefreshBufferMs` | `300000` |
