@@ -16,6 +16,8 @@ export async function reloadRuntimeAccountManager<TAccountManager>(deps: {
 	setReloadInFlight: (value: Promise<TAccountManager> | null) => void;
 	authFallback?: OAuthAuthDetails;
 }): Promise<TAccountManager> {
+	// The caller must pass a fresh snapshot of the shared in-flight promise.
+	// Dedup only holds if setReloadInFlight runs before any awaited work below.
 	if (deps.currentReloadInFlight) {
 		return deps.currentReloadInFlight;
 	}
