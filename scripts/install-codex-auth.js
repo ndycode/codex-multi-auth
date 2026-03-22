@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
+// @ts-check
+
 import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir, copyFile, rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	normalizePluginList,
 	renameWithRetry,
@@ -16,17 +18,18 @@ const PLUGIN_NAME = "codex-multi-auth";
 const args = new Set(process.argv.slice(2));
 
 if (args.has("--help") || args.has("-h")) {
-	console.log(`Usage: ${PLUGIN_NAME} [--modern|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
-		"Default behavior:\n" +
-		"  - Installs/updates global config at ~/.config/Codex/Codex.json\n" +
-		"  - Uses modern config (variants) by default\n" +
-		"  - Ensures plugin is unpinned (latest)\n" +
-		"  - Clears Codex plugin cache\n\n" +
-		"Options:\n" +
-		"  --modern           Force modern config (default)\n" +
-		"  --legacy           Use legacy config (older Codex versions)\n" +
-		"  --dry-run          Show actions without writing\n" +
-		"  --no-cache-clear   Skip clearing Codex cache\n"
+	console.log(
+		`Usage: ${PLUGIN_NAME} [--modern|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
+			"Default behavior:\n" +
+			"  - Installs/updates global config at ~/.config/Codex/Codex.json\n" +
+			"  - Uses modern config (variants) by default\n" +
+			"  - Ensures plugin is unpinned (latest)\n" +
+			"  - Clears Codex plugin cache\n\n" +
+			"Options:\n" +
+			"  --modern           Force modern config (default)\n" +
+			"  --legacy           Use legacy config (older Codex versions)\n" +
+			"  --dry-run          Show actions without writing\n" +
+			"  --no-cache-clear   Skip clearing Codex cache\n",
 	);
 	process.exit(0);
 }
@@ -41,25 +44,35 @@ const repoRoot = resolve(scriptDir, "..");
 const templatePath = join(
 	repoRoot,
 	"config",
-	useLegacy ? "codex-legacy.json" : "codex-modern.json"
+	useLegacy ? "codex-legacy.json" : "codex-modern.json",
 );
 
 const installPaths = resolveInstallPaths();
-const { configDir, configPath, cacheNodeModules, cacheBunLock, cachePackageJson } = installPaths;
+const {
+	configDir,
+	configPath,
+	cacheNodeModules,
+	cacheBunLock,
+	cachePackageJson,
+} = installPaths;
 
+/** @param {string} message */
 function log(message) {
 	console.log(message);
 }
 
+/** @param {unknown} obj */
 function formatJson(obj) {
 	return `${JSON.stringify(obj, null, 2)}\n`;
 }
 
+/** @param {string} filePath */
 async function readJson(filePath) {
 	const content = await readFile(filePath, "utf-8");
-	return JSON.parse(content);
+	return /** @type {any} */ (JSON.parse(content));
 }
 
+/** @param {string} filePath @param {unknown} value */
 async function writeJsonAtomic(filePath, value) {
 	const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random()
 		.toString(36)
@@ -79,6 +92,7 @@ async function writeJsonAtomic(filePath, value) {
 	}
 }
 
+/** @param {string} sourcePath */
 async function backupConfig(sourcePath) {
 	const timestamp = new Date()
 		.toISOString()
@@ -98,6 +112,7 @@ async function removePluginFromCachePackage() {
 		return;
 	}
 
+	/** @type {any} */
 	let cacheData;
 	try {
 		cacheData = await readJson(cachePackageJson);
@@ -145,7 +160,9 @@ async function clearCache() {
 		log(`[dry-run] Would remove ${cacheBunLock}`);
 	} else {
 		try {
-			await withFileOperationRetry(() => rm(cacheNodeModules, { recursive: true, force: true }));
+			await withFileOperationRetry(() =>
+				rm(cacheNodeModules, { recursive: true, force: true }),
+			);
 			await withFileOperationRetry(() => rm(cacheBunLock, { force: true }));
 		} catch (error) {
 			log(
@@ -168,27 +185,36 @@ async function main() {
 	let nextConfig = template;
 	if (existsSync(configPath)) {
 		const backupPath = await backupConfig(configPath);
-		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
+		log(
+			`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`,
+		);
 
 		try {
 			const existing = await readJson(configPath);
 			const merged = { ...existing };
 			merged.plugin = normalizePluginList(existing.plugin);
-			const provider = (existing.provider && typeof existing.provider === "object")
-				? { ...existing.provider }
-				: {};
-			const existingOpenAi = provider.openai && typeof provider.openai === "object"
-				? provider.openai
-				: {};
-			const templateOpenAi = template.provider && typeof template.provider === "object" &&
-				template.provider.openai && typeof template.provider.openai === "object"
-				? template.provider.openai
-				: {};
+			const provider =
+				existing.provider && typeof existing.provider === "object"
+					? { ...existing.provider }
+					: {};
+			const existingOpenAi =
+				provider.openai && typeof provider.openai === "object"
+					? provider.openai
+					: {};
+			const templateOpenAi =
+				template.provider &&
+				typeof template.provider === "object" &&
+				template.provider.openai &&
+				typeof template.provider.openai === "object"
+					? template.provider.openai
+					: {};
 			provider.openai = { ...templateOpenAi, ...existingOpenAi };
 			merged.provider = provider;
 			nextConfig = merged;
 		} catch (error) {
-			log(`Warning: Could not parse existing config (${error}). Replacing with template.`);
+			log(
+				`Warning: Could not parse existing config (${error}). Replacing with template.`,
+			);
 			nextConfig = template;
 		}
 	} else {
@@ -196,7 +222,9 @@ async function main() {
 	}
 
 	if (dryRun) {
-		log(`[dry-run] Would write ${configPath} using ${useLegacy ? "legacy" : "modern"} config`);
+		log(
+			`[dry-run] Would write ${configPath} using ${useLegacy ? "legacy" : "modern"} config`,
+		);
 	} else {
 		await mkdir(configDir, { recursive: true });
 		await writeJsonAtomic(configPath, nextConfig);
@@ -222,8 +250,9 @@ const isDirectRun = (() => {
 
 if (isDirectRun) {
 	main().catch((error) => {
-		console.error(`Installer failed: ${error instanceof Error ? error.message : error}`);
+		console.error(
+			`Installer failed: ${error instanceof Error ? error.message : error}`,
+		);
 		process.exit(1);
 	});
 }
-

@@ -72,6 +72,7 @@
 	"scripts": {
 		"build": "tsc && node scripts/copy-oauth-success.js",
 		"typecheck": "tsc --noEmit",
+		"typecheck:scripts": "tsc -p tsconfig.scripts.json",
 		"lint": "npm run lint:ts && npm run lint:scripts",
 		"lint:ts": "eslint . --ext .ts",
 		"lint:scripts": "eslint scripts --ext .js,.mjs",

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// @ts-check
+
 import { createRequire } from "node:module";
 
 const versionFlags = new Set(["--version", "-v"]);

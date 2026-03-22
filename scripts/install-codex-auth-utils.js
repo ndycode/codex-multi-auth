@@ -1,13 +1,26 @@
-import { join } from "node:path";
-import { homedir } from "node:os";
+// @ts-check
+
 import { rename as fsRename } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const PLUGIN_NAME = "codex-multi-auth";
-export const FILE_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
+export const FILE_RETRY_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EAGAIN",
+	"ENOTEMPTY",
+	"EACCES",
+]);
 export const FILE_RETRY_MAX_ATTEMPTS = 6;
 export const FILE_RETRY_BASE_DELAY_MS = 25;
 export const FILE_RETRY_JITTER_MS = 20;
 
+/**
+ * @param {NodeJS.Platform} [platform]
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string} [home]
+ */
 export function resolveInstallPaths(
 	platform = process.platform,
 	env = process.env,
@@ -35,6 +48,7 @@ export function resolveInstallPaths(
 	};
 }
 
+/** @param {unknown} list */
 export function normalizePluginList(list) {
 	const entries = Array.isArray(list) ? list.filter(Boolean) : [];
 	const filtered = entries.filter((entry) => {
@@ -44,7 +58,8 @@ export function normalizePluginList(list) {
 	const deduped = [];
 	const seen = new Set();
 	for (const entry of filtered) {
-		const key = typeof entry === "string" ? `s:${entry}` : `j:${JSON.stringify(entry)}`;
+		const key =
+			typeof entry === "string" ? `s:${entry}` : `j:${JSON.stringify(entry)}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
 		deduped.push(entry);
@@ -52,6 +67,7 @@ export function normalizePluginList(list) {
 	return [...deduped, PLUGIN_NAME];
 }
 
+/** @param {number} ms */
 function sleep(ms) {
 	// Keep this helper local so installer scripts remain standalone and do not depend on lib/.
 	return new Promise((resolve) => {
@@ -59,28 +75,49 @@ function sleep(ms) {
 	});
 }
 
+/** @param {unknown} error */
 function shouldRetryFileOperation(error) {
-	return error instanceof Error &&
-		typeof error.code === "string" &&
-		FILE_RETRY_CODES.has(error.code);
+	const fileError = /** @type {NodeJS.ErrnoException | undefined} */ (error);
+	return (
+		fileError instanceof Error &&
+		typeof fileError.code === "string" &&
+		FILE_RETRY_CODES.has(fileError.code)
+	);
 }
 
+/** @template T @param {() => Promise<T>} operation */
 export async function withFileOperationRetry(operation) {
 	for (let attempt = 1; ; attempt += 1) {
 		try {
 			return await operation();
 		} catch (error) {
-			if (!shouldRetryFileOperation(error) || attempt >= FILE_RETRY_MAX_ATTEMPTS) {
+			if (
+				!shouldRetryFileOperation(error) ||
+				attempt >= FILE_RETRY_MAX_ATTEMPTS
+			) {
 				throw error;
 			}
 
 			const jitter = Math.floor(Math.random() * FILE_RETRY_JITTER_MS);
-			const delayMs = (FILE_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1))) + jitter;
+			const delayMs = FILE_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1) + jitter;
 			await sleep(delayMs);
 		}
 	}
 }
 
+/**
+ * @param {string} sourcePath
+ * @param {string} targetPath
+ * @param {{
+ *   rename?: (sourcePath: string, targetPath: string) => Promise<void>,
+ *   log?: (message: string) => void,
+ *   maxRetries?: number,
+ *   baseDelayMs?: number,
+ *   jitterMs?: number,
+ *   random?: () => number,
+ *   sleep?: (ms: number) => Promise<void>,
+ * }} [options]
+ */
 export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 	const {
 		rename = fsRename,
@@ -101,14 +138,17 @@ export async function renameWithRetry(sourcePath, targetPath, options = {}) {
 			await rename(sourcePath, targetPath);
 			return;
 		} catch (error) {
-			const code = error && typeof error === "object" && "code" in error
-				? error.code
-				: undefined;
-			const isRetryable = typeof code === "string" && FILE_RETRY_CODES.has(code);
+			const code =
+				error && typeof error === "object" && "code" in error
+					? error.code
+					: undefined;
+			const isRetryable =
+				typeof code === "string" && FILE_RETRY_CODES.has(code);
 			if (!isRetryable || attempt === maxRetries - 1) {
 				throw error;
 			}
-			const delayMs = baseDelayMs * 2 ** attempt + Math.floor(random() * jitterMs);
+			const delayMs =
+				baseDelayMs * 2 ** attempt + Math.floor(random() * jitterMs);
 			log(
 				`Retrying atomic rename (${attempt + 1}/${maxRetries}) code=${code ?? "unknown"} source=${sourcePath} target=${targetPath} delayMs=${delayMs}`,
 			);
