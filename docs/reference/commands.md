@@ -47,6 +47,7 @@ Compatibility aliases are supported:
 | --- | --- | --- |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
 | `--json` | verify-flagged, forecast, report, fix, doctor | Print machine-readable output |
+| `--explain` | forecast | Include recommendation reasoning details |
 | `--live` | forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
 | `--model <model>` | forecast, report, fix | Specify model for live probe paths |
@@ -117,7 +118,7 @@ Health and planning:
 
 ```bash
 codex auth check
-codex auth forecast --live --model gpt-5-codex
+codex auth forecast --live --explain --model gpt-5-codex
 codex auth report --live --json
 ```
 
