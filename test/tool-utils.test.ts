@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { cleanupToolDefinitions } from "../lib/request/helpers/tool-utils.js";
+import type { RequestToolDefinition } from "../lib/types.js";
 
 describe("cleanupToolDefinitions", () => {
   it("returns non-array input unchanged", () => {
@@ -10,6 +11,27 @@ describe("cleanupToolDefinitions", () => {
 
   it("returns non-function tools unchanged", () => {
     const tools = [{ type: "other", data: "value" }];
+    expect(cleanupToolDefinitions(tools)).toEqual(tools);
+  });
+
+  it("preserves typed GPT-5.4 hosted tools unchanged", () => {
+    const tools: RequestToolDefinition[] = [
+      { type: "tool_search", max_num_results: 3, search_context_size: "medium" },
+      {
+        type: "mcp",
+        server_label: "docs",
+        server_url: "https://mcp.example.com",
+        defer_loading: true,
+        require_approval: "never",
+      },
+      {
+        type: "computer_use_preview",
+        display_width: 1024,
+        display_height: 768,
+        environment: "browser",
+      },
+    ];
+
     expect(cleanupToolDefinitions(tools)).toEqual(tools);
   });
 
@@ -618,5 +640,40 @@ describe("cleanupToolDefinitions", () => {
     const result = cleanupToolDefinitions(tools) as typeof tools;
     const props = result[0].function.parameters.properties as Record<string, unknown>;
     expect(props.valid).toEqual({ type: "string" });
+  });
+
+  it("recursively cleans nested function tools inside namespace bundles", () => {
+    const tools: RequestToolDefinition[] = [
+      {
+        type: "namespace",
+        name: "search_bundle",
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "lookup",
+              parameters: {
+                type: "object",
+                properties: {},
+                additionalProperties: false,
+              },
+            },
+          },
+          { type: "tool_search", max_num_results: 2 },
+        ],
+      },
+    ];
+
+    const result = cleanupToolDefinitions(tools) as typeof tools;
+    const namespaceTools = result[0].tools ?? [];
+    const nestedFunction = namespaceTools[0] as Extract<RequestToolDefinition, { type: "function" }>;
+    expect(nestedFunction.function.parameters?.additionalProperties).toBeUndefined();
+    expect(nestedFunction.function.parameters?.properties).toEqual({
+      _placeholder: {
+        type: "boolean",
+        description: "This property is a placeholder and should be ignored.",
+      },
+    });
+    expect(namespaceTools[1]).toEqual({ type: "tool_search", max_num_results: 2 });
   });
 });

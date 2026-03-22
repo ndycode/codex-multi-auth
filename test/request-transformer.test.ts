@@ -1999,6 +1999,89 @@ describe('Request Transformer Module', () => {
 
 				expect(toolNames).toEqual(['request_user_input']);
 			});
+
+			it('removes tool_search tools when the selected model lacks search capability', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5-nano',
+					input: [],
+					tools: [
+						{ type: 'tool_search', max_num_results: 3 },
+						{
+							type: 'mcp',
+							server_label: 'docs',
+							server_url: 'https://mcp.example.com',
+							defer_loading: true,
+						},
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.tools).toEqual([
+					{
+						type: 'mcp',
+						server_label: 'docs',
+						server_url: 'https://mcp.example.com',
+						defer_loading: true,
+					},
+				]);
+			});
+
+			it('removes computer tools when the selected model lacks computer-use capability', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5-nano',
+					input: [],
+					tools: [
+						{
+							type: 'computer_use_preview',
+							display_width: 1024,
+							display_height: 768,
+							environment: 'browser',
+						},
+						{ type: 'tool_search', max_num_results: 1 },
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.tools).toEqual([]);
+			});
+
+			it('filters unsupported namespace tool entries while keeping supported remote MCP tools', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5-nano',
+					input: [],
+					tools: [
+						{
+							type: 'namespace',
+							name: 'search_suite',
+							tools: [
+								{ type: 'tool_search', max_num_results: 2 },
+								{
+									type: 'mcp',
+									server_label: 'remote-docs',
+									server_url: 'https://mcp.example.com',
+									defer_loading: true,
+								},
+							],
+						},
+					] as any,
+				};
+
+				const result = await transformRequestBody(body, codexInstructions);
+				expect(result.tools).toEqual([
+					{
+						type: 'namespace',
+						name: 'search_suite',
+						tools: [
+							{
+								type: 'mcp',
+								server_label: 'remote-docs',
+								server_url: 'https://mcp.example.com',
+								defer_loading: true,
+							},
+						],
+					},
+				]);
+			});
 		});
 
 		// NEW: Integration tests for all config scenarios

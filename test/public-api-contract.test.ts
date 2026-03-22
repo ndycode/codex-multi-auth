@@ -12,7 +12,7 @@ import {
 	getRateLimitBackoffWithReason,
 } from "../lib/request/rate-limit-backoff.js";
 import { transformRequestBody } from "../lib/request/request-transformer.js";
-import type { RequestBody } from "../lib/types.js";
+import type { RequestBody, RequestToolDefinition } from "../lib/types.js";
 
 describe("public api contract", () => {
 	it("keeps root plugin exports aligned", async () => {
@@ -114,9 +114,18 @@ describe("public api contract", () => {
 		expect(rateNamed).toEqual(ratePositional);
 
 		const baseBody: RequestBody = {
-			model: "gpt-5-codex",
+			model: "gpt-5.4",
 			input: [{ type: "message", role: "user", content: "hi" }],
 			prompt_cache_retention: "24h",
+			tools: [
+				{ type: "tool_search", max_num_results: 2 },
+				{
+					type: "mcp",
+					server_label: "docs",
+					server_url: "https://mcp.example.com",
+					defer_loading: true,
+				},
+			] satisfies RequestToolDefinition[],
 			text: {
 				format: {
 					type: "json_schema",
@@ -145,5 +154,6 @@ describe("public api contract", () => {
 		expect(transformedNamed.prompt_cache_retention).toBe(baseBody.prompt_cache_retention);
 		expect(transformedPositional.text?.format).toEqual(baseBody.text?.format);
 		expect(transformedNamed.text?.format).toEqual(baseBody.text?.format);
+		expect(transformedNamed.tools).toEqual(baseBody.tools);
 	});
 });

@@ -40,6 +40,74 @@ export interface ReasoningConfig {
 	summary: "auto" | "concise" | "detailed";
 }
 
+export interface ToolParametersSchema {
+	type: "object";
+	properties?: Record<string, unknown>;
+	required?: string[];
+	[key: string]: unknown;
+}
+
+export interface ToolFunction {
+	name: string;
+	description?: string;
+	parameters?: ToolParametersSchema;
+	[key: string]: unknown;
+}
+
+export interface FunctionToolDefinition {
+	type: "function";
+	function: ToolFunction;
+	defer_loading?: boolean;
+	[key: string]: unknown;
+}
+
+export interface ToolSearchToolDefinition {
+	type: "tool_search";
+	max_num_results?: number;
+	search_context_size?: "low" | "medium" | "high";
+	filters?: Record<string, unknown>;
+	[key: string]: unknown;
+}
+
+export interface RemoteMcpToolDefinition {
+	type: "mcp";
+	server_label?: string;
+	server_url?: string;
+	connector_id?: string;
+	headers?: Record<string, string>;
+	allowed_tools?: string[];
+	require_approval?: "never" | "always" | "auto" | Record<string, unknown>;
+	defer_loading?: boolean;
+	[key: string]: unknown;
+}
+
+export interface ComputerUseToolDefinition {
+	type: "computer" | "computer_use_preview";
+	display_width?: number;
+	display_height?: number;
+	environment?: string;
+	[key: string]: unknown;
+}
+
+export interface ToolNamespaceDefinition {
+	type: "namespace";
+	name?: string;
+	description?: string;
+	tools?: RequestToolDefinition[];
+	[key: string]: unknown;
+}
+
+export type RequestToolDefinition =
+	| FunctionToolDefinition
+	| ToolSearchToolDefinition
+	| RemoteMcpToolDefinition
+	| ComputerUseToolDefinition
+	| ToolNamespaceDefinition
+	| {
+			type?: string;
+			[key: string]: unknown;
+	  };
+
 export type TextFormatConfig =
 	| {
 			type: "text";
@@ -125,7 +193,7 @@ export interface RequestBody {
 	stream?: boolean;
 	instructions?: string;
 	input?: InputItem[];
-	tools?: unknown;
+	tools?: RequestToolDefinition[] | unknown;
 	reasoning?: Partial<ReasoningConfig>;
 	text?: {
 		verbosity?: "low" | "medium" | "high";
