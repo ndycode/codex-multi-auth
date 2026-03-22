@@ -1,42 +1,39 @@
 import { dirname, join } from "node:path";
+import {
+	ACCOUNTS_BACKUP_SUFFIX,
+	ACCOUNTS_WAL_SUFFIX,
+	getAccountsBackupPath,
+	getAccountsBackupPathAtIndex,
+	getAccountsBackupRecoveryCandidates as getBackupRecoveryCandidates,
+	getAccountsWalPath,
+	getIntentionalResetMarkerPath,
+	RESET_MARKER_SUFFIX,
+} from "./backup-paths.js";
 
-const ACCOUNTS_BACKUP_SUFFIX = ".bak";
-const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
-const RESET_MARKER_SUFFIX = ".reset-intent";
 
-export function getAccountsBackupPath(path: string): string {
-	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
-}
-
-export function getAccountsBackupPathAtIndex(
-	path: string,
-	index: number,
-): string {
-	if (index <= 0) return getAccountsBackupPath(path);
-	return `${path}${ACCOUNTS_BACKUP_SUFFIX}.${index}`;
-}
+export {
+	ACCOUNTS_BACKUP_SUFFIX,
+	ACCOUNTS_WAL_SUFFIX,
+	getAccountsBackupPath,
+	getAccountsBackupPathAtIndex,
+	getAccountsWalPath,
+	getIntentionalResetMarkerPath,
+	RESET_MARKER_SUFFIX,
+};
 
 export function getAccountsBackupRecoveryCandidates(path: string): string[] {
-	const candidates: string[] = [];
-	for (let i = 0; i < ACCOUNTS_BACKUP_HISTORY_DEPTH; i += 1) {
-		candidates.push(getAccountsBackupPathAtIndex(path, i));
-	}
-	return candidates;
-}
-
-export function getAccountsWalPath(path: string): string {
-	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
-}
-
-export function getIntentionalResetMarkerPath(path: string): string {
-	return `${path}${RESET_MARKER_SUFFIX}`;
+	return getBackupRecoveryCandidates(path, ACCOUNTS_BACKUP_HISTORY_DEPTH);
 }
 
 export function getFlaggedAccountsPath(
 	storagePath: string,
 	fileName: string,
 ): string {
+	return buildSiblingStoragePath(storagePath, fileName);
+}
+
+function buildSiblingStoragePath(storagePath: string, fileName: string): string {
 	return join(dirname(storagePath), fileName);
 }
 
@@ -44,5 +41,5 @@ export function getLegacyFlaggedAccountsPath(
 	storagePath: string,
 	legacyFileName: string,
 ): string {
-	return join(dirname(storagePath), legacyFileName);
+	return buildSiblingStoragePath(storagePath, legacyFileName);
 }

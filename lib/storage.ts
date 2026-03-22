@@ -49,6 +49,7 @@ import {
 	type AccountIdentityRef,
 	toAccountIdentityRef,
 } from "./storage/identity.js";
+import { getFlaggedAccountsPath as buildFlaggedAccountsPath } from "./storage/file-paths.js";
 import {
 	type AccountMetadataV1,
 	type AccountMetadataV3,
@@ -812,11 +813,14 @@ export async function exportNamedBackup(
 }
 
 export function getFlaggedAccountsPath(): string {
-	return join(dirname(getStoragePath()), FLAGGED_ACCOUNTS_FILE_NAME);
+	return buildFlaggedAccountsPath(getStoragePath(), FLAGGED_ACCOUNTS_FILE_NAME);
 }
 
 function getLegacyFlaggedAccountsPath(): string {
-	return join(dirname(getStoragePath()), LEGACY_FLAGGED_ACCOUNTS_FILE_NAME);
+	return buildFlaggedAccountsPath(
+		getStoragePath(),
+		LEGACY_FLAGGED_ACCOUNTS_FILE_NAME,
+	);
 }
 
 async function migrateLegacyProjectStorageIfNeeded(
