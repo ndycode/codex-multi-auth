@@ -4,6 +4,39 @@
 	"description": "Multi-account OAuth manager and codex auth wrapper for the official @openai/codex CLI, with switching, health checks, and recovery tools",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./auth": {
+			"types": "./dist/lib/auth/index.d.ts",
+			"import": "./dist/lib/auth/index.js",
+			"default": "./dist/lib/auth/index.js"
+		},
+		"./storage": {
+			"types": "./dist/lib/storage.d.ts",
+			"import": "./dist/lib/storage.js",
+			"default": "./dist/lib/storage.js"
+		},
+		"./config": {
+			"types": "./dist/lib/config.d.ts",
+			"import": "./dist/lib/config.js",
+			"default": "./dist/lib/config.js"
+		},
+		"./request": {
+			"types": "./dist/lib/request/index.d.ts",
+			"import": "./dist/lib/request/index.js",
+			"default": "./dist/lib/request/index.js"
+		},
+		"./cli": {
+			"types": "./dist/lib/codex-cli/index.d.ts",
+			"import": "./dist/lib/codex-cli/index.js",
+			"default": "./dist/lib/codex-cli/index.js"
+		},
+		"./package.json": "./package.json"
+	},
 	"type": "module",
 	"license": "MIT",
 	"author": "ndycode",

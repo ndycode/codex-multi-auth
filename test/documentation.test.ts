@@ -233,6 +233,11 @@ describe("Documentation Integrity", () => {
 		expect(publicApi).toContain("tier c");
 		expect(publicApi).toContain("options-object");
 		expect(publicApi).toContain("semver");
+		expect(publicApi).toContain("codex-multi-auth/auth");
+		expect(publicApi).toContain("codex-multi-auth/storage");
+		expect(publicApi).toContain("codex-multi-auth/config");
+		expect(publicApi).toContain("codex-multi-auth/request");
+		expect(publicApi).toContain("codex-multi-auth/cli");
 
 		expect(errorContracts).toContain("exit codes");
 		expect(errorContracts).toContain("json mode contract");
