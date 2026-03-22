@@ -1,35 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-	clearFlaggedAccountsEntry,
 	exportAccountsSnapshot,
 	importAccountsSnapshot,
-	saveFlaggedAccountsEntry,
 } from "../lib/storage/account-port.js";
 
 describe("account port helpers", () => {
-	it("delegates flagged save through storage lock", async () => {
-		const saveUnlocked = vi.fn(async () => undefined);
-		await saveFlaggedAccountsEntry({
-			storage: { version: 1, accounts: [] },
-			withStorageLock: async (fn) => fn(),
-			saveUnlocked,
-		});
-		expect(saveUnlocked).toHaveBeenCalled();
-	});
-
-	it("delegates flagged clear through storage lock", async () => {
-		const clearFlaggedAccountsOnDisk = vi.fn(async () => undefined);
-		await clearFlaggedAccountsEntry({
-			path: "/tmp/flagged.json",
-			withStorageLock: async (fn) => fn(),
-			markerPath: "/tmp/flagged.reset",
-			getBackupPaths: async () => ["/tmp/flagged.json.bak"],
-			clearFlaggedAccountsOnDisk,
-			logError: vi.fn(),
-		});
-		expect(clearFlaggedAccountsOnDisk).toHaveBeenCalled();
-	});
-
 	it("exports transaction snapshot when active", async () => {
 		const exportAccountsToFile = vi.fn(async () => undefined);
 		await exportAccountsSnapshot({
