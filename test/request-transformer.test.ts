@@ -648,6 +648,24 @@ describe('Request Transformer Module', () => {
 				expect(result.prompt_cache_retention).toBe('1h');
 			});
 
+			it('prefers providerOptions prompt_cache_retention over user config defaults', async () => {
+				const body: RequestBody = {
+					model: 'gpt-5.4',
+					input: [],
+					providerOptions: {
+						openai: {
+							promptCacheRetention: '1h',
+						},
+					},
+				};
+				const userConfig: UserConfig = {
+					global: { promptCacheRetention: '7d' },
+					models: {},
+				};
+				const result = await transformRequestBody(body, codexInstructions, userConfig);
+				expect(result.prompt_cache_retention).toBe('1h');
+			});
+
 			it('prefers body prompt_cache_retention over providerOptions', async () => {
 				const body: RequestBody = {
 					model: 'gpt-5.4',
