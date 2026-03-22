@@ -20,7 +20,7 @@ import { loadAccounts, normalizeAccountStorage } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
-import { type MenuItem, select } from "../ui/select.js";
+import { select } from "../ui/select.js";
 import { sleep } from "../utils.js";
 import {
 	applyBackendCategoryDefaults,
@@ -39,16 +39,15 @@ import {
 	cloneBackendPluginConfig,
 	formatBackendNumberValue,
 } from "./backend-settings-helpers.js";
+import { promptBackendSettingsMenu } from "./backend-settings-prompt.js";
 import {
 	BACKEND_CATEGORY_OPTIONS,
 	BACKEND_DEFAULTS,
 	BACKEND_NUMBER_OPTION_BY_KEY,
 	BACKEND_TOGGLE_OPTION_BY_KEY,
-	type BackendCategoryKey,
 	type BackendCategoryOption,
 	type BackendNumberSettingOption,
 	type BackendSettingFocusKey,
-	type BackendSettingsHubAction,
 } from "./backend-settings-schema.js";
 import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
 import {
@@ -606,135 +605,21 @@ async function promptBackendCategorySettings(
 async function promptBackendSettings(
 	initial: PluginConfig,
 ): Promise<PluginConfig | null> {
-	if (!input.isTTY || !output.isTTY) return null;
-
-	const ui = getUiRuntimeOptions();
-	let draft = cloneBackendPluginConfig(initial);
-	let activeCategory = BACKEND_CATEGORY_OPTIONS[0]?.key ?? "session-sync";
-	const focusByCategory: Partial<
-		Record<BackendCategoryKey, BackendSettingFocusKey>
-	> = {};
-	for (const category of BACKEND_CATEGORY_OPTIONS) {
-		focusByCategory[category.key] = getBackendCategoryInitialFocus(category);
-	}
-
-	while (true) {
-		const previewFocus = focusByCategory[activeCategory] ?? null;
-		const preview = buildBackendSettingsPreview(draft, ui, previewFocus, {
-			highlightPreviewToken,
-		});
-		const categoryItems: MenuItem<BackendSettingsHubAction>[] =
-			BACKEND_CATEGORY_OPTIONS.map((category, index) => {
-				return {
-					label: `${index + 1}. ${category.label}`,
-					hint: category.description,
-					value: { type: "open-category", key: category.key },
-					color: "green",
-				};
-			});
-
-		const items: MenuItem<BackendSettingsHubAction>[] = [
-			{
-				label: UI_COPY.settings.previewHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			{
-				label: preview.label,
-				hint: preview.hint,
-				value: { type: "cancel" },
-				disabled: true,
-				color: "green",
-				hideUnavailableSuffix: true,
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.backendCategoriesHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...categoryItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-
-		const initialCursor = items.findIndex((item) => {
-			if (item.separator || item.disabled || item.kind === "heading")
-				return false;
-			return (
-				item.value.type === "open-category" && item.value.key === activeCategory
-			);
-		});
-
-		const result = await select<BackendSettingsHubAction>(items, {
-			message: UI_COPY.settings.backendTitle,
-			subtitle: UI_COPY.settings.backendSubtitle,
-			help: UI_COPY.settings.backendHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const focusedItem = items[cursor];
-				if (focusedItem?.value.type === "open-category") {
-					activeCategory = focusedItem.value.key;
-				}
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= BACKEND_CATEGORY_OPTIONS.length
-				) {
-					const target = BACKEND_CATEGORY_OPTIONS[parsed - 1];
-					if (target) return { type: "open-category", key: target.key };
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "cancel") return null;
-		if (result.type === "save") return draft;
-		if (result.type === "reset") {
-			draft = cloneBackendPluginConfig(BACKEND_DEFAULTS);
-			for (const category of BACKEND_CATEGORY_OPTIONS) {
-				focusByCategory[category.key] =
-					getBackendCategoryInitialFocus(category);
-			}
-			activeCategory = BACKEND_CATEGORY_OPTIONS[0]?.key ?? activeCategory;
-			continue;
-		}
-
-		const category = getBackendCategory(result.key, BACKEND_CATEGORY_OPTIONS);
-		if (!category) continue;
-		activeCategory = category.key;
-		const categoryResult = await promptBackendCategorySettings(
-			draft,
-			category,
-			focusByCategory[category.key] ?? getBackendCategoryInitialFocus(category),
-		);
-		draft = categoryResult.draft;
-		focusByCategory[category.key] = categoryResult.focusKey;
-	}
+	return promptBackendSettingsMenu({
+		initial,
+		isInteractive: () => input.isTTY && output.isTTY,
+		ui: getUiRuntimeOptions(),
+		cloneBackendPluginConfig,
+		backendCategoryOptions: BACKEND_CATEGORY_OPTIONS,
+		getBackendCategoryInitialFocus,
+		buildBackendSettingsPreview,
+		highlightPreviewToken,
+		select,
+		getBackendCategory,
+		promptBackendCategorySettings,
+		backendDefaults: BACKEND_DEFAULTS,
+		copy: UI_COPY.settings,
+	});
 }
 
 async function loadExperimentalSyncTarget(): Promise<
