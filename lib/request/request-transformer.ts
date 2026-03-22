@@ -40,6 +40,7 @@ export interface TransformRequestBodyParams {
 	fastSessionStrategy?: FastSessionStrategy;
 	fastSessionMaxInputItems?: number;
 	deferFastSessionInputTrimming?: boolean;
+	allowBackgroundResponses?: boolean;
 }
 
 const PLAN_MODE_ONLY_TOOLS = new Set(["request_user_input"]);
@@ -228,6 +229,30 @@ function resolveInclude(modelConfig: ConfigOptions, body: RequestBody): string[]
 		include.push("reasoning.encrypted_content");
 	}
 	return include;
+}
+
+function isBackgroundModeRequested(body: RequestBody): boolean {
+	return body.background === true;
+}
+
+function assertBackgroundModeCompatibility(
+	body: RequestBody,
+	allowBackgroundResponses: boolean,
+): boolean {
+	if (!isBackgroundModeRequested(body)) {
+		return false;
+	}
+	if (!allowBackgroundResponses) {
+		throw new Error(
+			"Responses background mode is disabled. Enable pluginConfig.backgroundResponses or CODEX_AUTH_BACKGROUND_RESPONSES=1 to opt in.",
+		);
+	}
+	if (body.store === false || body.providerOptions?.openai?.store === false) {
+		throw new Error(
+			"Responses background mode requires store=true and cannot be combined with stateless store=false routing.",
+		);
+	}
+	return true;
 }
 
 function parseCollaborationMode(value: string | undefined): CollaborationMode | undefined {
@@ -524,8 +549,10 @@ function sanitizeReasoningSummary(
  */
 export function filterInput(
 	input: InputItem[] | undefined,
+	options?: { stripIds?: boolean },
 ): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
+	const stripIds = options?.stripIds ?? true;
 	const filtered: InputItem[] = [];
 	for (const item of input) {
 		if (!item || typeof item !== "object") {
@@ -536,7 +563,7 @@ export function filterInput(
 			continue;
 		}
 		// Strip IDs from all items (Codex API stateless mode).
-		if ("id" in item) {
+		if (stripIds && "id" in item) {
 			const { id: _omit, ...itemWithoutId } = item;
 			void _omit;
 			filtered.push(itemWithoutId as InputItem);
@@ -829,7 +856,7 @@ export function addToolRemapMessage(
  * NOTE: Configuration follows Codex CLI patterns instead of host defaults:
  * - host may set textVerbosity="low" for gpt-5, but Codex CLI uses "medium"
  * - host may exclude gpt-5-codex from reasoning configuration
- * - This plugin uses store=false (stateless), requiring encrypted reasoning content
+ * - This plugin defaults to store=false (stateless), with an explicit opt-in for background mode
  *
  * @param body - Original request body
  * @param codexInstructions - Codex system instructions
@@ -850,6 +877,7 @@ export async function transformRequestBody(
 	fastSessionStrategy?: FastSessionStrategy,
 	fastSessionMaxInputItems?: number,
 	deferFastSessionInputTrimming?: boolean,
+	allowBackgroundResponses?: boolean,
 ): Promise<RequestBody>;
 export async function transformRequestBody(
 	bodyOrParams: RequestBody | TransformRequestBodyParams,
@@ -860,6 +888,7 @@ export async function transformRequestBody(
 	fastSessionStrategy: FastSessionStrategy = "hybrid",
 	fastSessionMaxInputItems = 30,
 	deferFastSessionInputTrimming = false,
+	allowBackgroundResponses = false,
 ): Promise<RequestBody> {
 	const useNamedParams =
 		typeof codexInstructions === "undefined" &&
@@ -875,6 +904,7 @@ export async function transformRequestBody(
 	let resolvedFastSessionStrategy: FastSessionStrategy;
 	let resolvedFastSessionMaxInputItems: number;
 	let resolvedDeferFastSessionInputTrimming: boolean;
+	let resolvedAllowBackgroundResponses: boolean;
 
 	if (useNamedParams) {
 		const namedParams = bodyOrParams as TransformRequestBodyParams;
@@ -887,6 +917,8 @@ export async function transformRequestBody(
 		resolvedFastSessionMaxInputItems = namedParams.fastSessionMaxInputItems ?? 30;
 		resolvedDeferFastSessionInputTrimming =
 			namedParams.deferFastSessionInputTrimming ?? false;
+		resolvedAllowBackgroundResponses =
+			namedParams.allowBackgroundResponses ?? false;
 	} else {
 		body = bodyOrParams as RequestBody;
 		resolvedCodexInstructions = codexInstructions;
@@ -896,6 +928,7 @@ export async function transformRequestBody(
 		resolvedFastSessionStrategy = fastSessionStrategy;
 		resolvedFastSessionMaxInputItems = fastSessionMaxInputItems;
 		resolvedDeferFastSessionInputTrimming = deferFastSessionInputTrimming;
+		resolvedAllowBackgroundResponses = allowBackgroundResponses;
 	}
 
 	if (!body || typeof body !== "object") {
@@ -930,21 +963,27 @@ export async function transformRequestBody(
 	const reasoningModel = shouldUseNormalizedReasoningModel
 		? normalizedModel
 		: lookupModel;
+	const backgroundModeRequested = assertBackgroundModeCompatibility(
+		body,
+		resolvedAllowBackgroundResponses,
+	);
 	const fastSessionInputTrimPlan = resolveFastSessionInputTrimPlan(
 		body,
 		resolvedFastSession,
 		resolvedFastSessionStrategy,
 		resolvedFastSessionMaxInputItems,
 	);
-	const shouldApplyFastSessionTuning = fastSessionInputTrimPlan.shouldApply;
+	const shouldApplyFastSessionTuning =
+		!backgroundModeRequested && fastSessionInputTrimPlan.shouldApply;
 	const isTrivialTurn = fastSessionInputTrimPlan.isTrivialTurn;
 	const shouldDisableToolsForTrivialTurn =
 		shouldApplyFastSessionTuning &&
 		isTrivialTurn;
 
 	// Codex required fields
-	// ChatGPT backend REQUIRES store=false (confirmed via testing)
-	body.store = false;
+	// ChatGPT backend normally requires store=false (confirmed via testing).
+	// Background mode is an explicit opt-in compatibility path that preserves stateful storage.
+	body.store = backgroundModeRequested ? true : false;
 	// Always set stream=true for API - response handling detects original intent
 	body.stream = true;
 
@@ -995,15 +1034,17 @@ export async function transformRequestBody(
 			);
 		}
 
-		inputItems = filterInput(inputItems) ?? inputItems;
+		inputItems = filterInput(inputItems, {
+			stripIds: !backgroundModeRequested,
+		}) ?? inputItems;
 		body.input = inputItems;
 
-		// istanbul ignore next -- filterInput always removes IDs; this is defensive debug code
+		// istanbul ignore next -- filterInput always removes IDs in stateless mode; this is defensive debug code
 		const remainingIds = (body.input || [])
 			.filter((item) => item.id)
 			.map((item) => item.id);
-		// istanbul ignore if -- filterInput always removes IDs; defensive debug warning
-		if (remainingIds.length > 0) {
+		// istanbul ignore if -- filterInput always removes IDs in stateless mode; background mode intentionally preserves them
+		if (remainingIds.length > 0 && !backgroundModeRequested) {
 			logWarn(
 				`WARNING: ${remainingIds.length} IDs still present after filtering:`,
 				remainingIds,
@@ -1074,7 +1115,11 @@ export async function transformRequestBody(
 	// Add include for encrypted reasoning content
 	// Default: ["reasoning.encrypted_content"] (required for stateless operation with store=false)
 	// This allows reasoning context to persist across turns without server-side storage
-	body.include = resolveInclude(modelConfig, body);
+	body.include = backgroundModeRequested
+		? body.include ??
+			body.providerOptions?.openai?.include ??
+			modelConfig.include
+		: resolveInclude(modelConfig, body);
 
 	// Remove unsupported parameters
 	body.max_output_tokens = undefined;

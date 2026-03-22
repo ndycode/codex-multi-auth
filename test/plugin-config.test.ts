@@ -22,6 +22,7 @@ import {
 	getPreemptiveQuotaRemainingPercent7d,
 	getPreemptiveQuotaMaxDeferralMs,
 	getResponseContinuation,
+	getBackgroundResponses,
 } from '../lib/config.js';
 import type { PluginConfig } from '../lib/types.js';
 import * as fs from 'node:fs';
@@ -65,6 +66,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL',
 		'CODEX_AUTH_FALLBACK_GPT53_TO_GPT52',
 		'CODEX_AUTH_RESPONSE_CONTINUATION',
+		'CODEX_AUTH_BACKGROUND_RESPONSES',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT',
 		'CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT',
@@ -132,6 +134,7 @@ describe('Plugin Configuration', () => {
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
 				responseContinuation: false,
+				backgroundResponses: false,
 				proactiveRefreshGuardian: true,
 				proactiveRefreshIntervalMs: 60_000,
 				proactiveRefreshBufferMs: 5 * 60_000,
@@ -191,6 +194,7 @@ describe('Plugin Configuration', () => {
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
 				responseContinuation: false,
+				backgroundResponses: false,
 				proactiveRefreshGuardian: true,
 				proactiveRefreshIntervalMs: 60_000,
 				proactiveRefreshBufferMs: 5 * 60_000,
@@ -456,6 +460,7 @@ describe('Plugin Configuration', () => {
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
 				responseContinuation: false,
+				backgroundResponses: false,
 				proactiveRefreshGuardian: true,
 				proactiveRefreshIntervalMs: 60_000,
 				proactiveRefreshBufferMs: 5 * 60_000,
@@ -521,6 +526,7 @@ describe('Plugin Configuration', () => {
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
 				responseContinuation: false,
+				backgroundResponses: false,
 				proactiveRefreshGuardian: true,
 				proactiveRefreshIntervalMs: 60_000,
 				proactiveRefreshBufferMs: 5 * 60_000,
@@ -580,6 +586,7 @@ describe('Plugin Configuration', () => {
 				sessionAffinityTtlMs: 20 * 60_000,
 				sessionAffinityMaxEntries: 512,
 				responseContinuation: false,
+				backgroundResponses: false,
 				proactiveRefreshGuardian: true,
 				proactiveRefreshIntervalMs: 60_000,
 				proactiveRefreshBufferMs: 5 * 60_000,
@@ -689,6 +696,25 @@ describe('Plugin Configuration', () => {
 			expect(getResponseContinuation({ responseContinuation: false })).toBe(true);
 			process.env.CODEX_AUTH_RESPONSE_CONTINUATION = '0';
 			expect(getResponseContinuation({ responseContinuation: true })).toBe(false);
+		});
+	});
+
+	describe('getBackgroundResponses', () => {
+		it('should default to false', () => {
+			delete process.env.CODEX_AUTH_BACKGROUND_RESPONSES;
+			expect(getBackgroundResponses({})).toBe(false);
+		});
+
+		it('should use config value when env var not set', () => {
+			delete process.env.CODEX_AUTH_BACKGROUND_RESPONSES;
+			expect(getBackgroundResponses({ backgroundResponses: true })).toBe(true);
+		});
+
+		it('should prioritize env override', () => {
+			process.env.CODEX_AUTH_BACKGROUND_RESPONSES = '1';
+			expect(getBackgroundResponses({ backgroundResponses: false })).toBe(true);
+			process.env.CODEX_AUTH_BACKGROUND_RESPONSES = '0';
+			expect(getBackgroundResponses({ backgroundResponses: true })).toBe(false);
 		});
 	});
 

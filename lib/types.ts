@@ -189,6 +189,7 @@ export interface InputItem {
  */
 export interface RequestBody {
 	model: string;
+	background?: boolean;
 	store?: boolean;
 	stream?: boolean;
 	instructions?: string;

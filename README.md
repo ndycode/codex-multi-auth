@@ -213,6 +213,7 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |
+| `CODEX_AUTH_BACKGROUND_RESPONSES=0/1` | Opt in/out of stateful Responses `background: true` compatibility |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
 
@@ -223,6 +224,8 @@ codex auth status
 codex auth check
 codex auth forecast --live
 ```
+
+Responses background mode stays opt-in. Enable `backgroundResponses` in settings or `CODEX_AUTH_BACKGROUND_RESPONSES=1` only for callers that intentionally send `background: true`, because those requests switch from stateless `store=false` routing to stateful `store=true`. See [docs/upgrade.md](docs/upgrade.md) for rollout guidance.
 
 ---
 

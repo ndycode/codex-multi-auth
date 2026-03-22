@@ -100,6 +100,7 @@ vi.mock("../lib/config.js", () => ({
 	getSessionAffinityTtlMs: vi.fn(() => 1_200_000),
 	getSessionAffinityMaxEntries: vi.fn(() => 512),
 	getResponseContinuation: vi.fn(() => false),
+	getBackgroundResponses: vi.fn(() => false),
 	getProactiveRefreshGuardian: () => false,
 	getProactiveRefreshIntervalMs: () => 60000,
 	getProactiveRefreshBufferMs: () => 300000,

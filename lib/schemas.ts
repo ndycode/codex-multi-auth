@@ -48,6 +48,7 @@ export const PluginConfigSchema = z.object({
 	sessionAffinityTtlMs: z.number().min(1_000).optional(),
 	sessionAffinityMaxEntries: z.number().min(8).optional(),
 	responseContinuation: z.boolean().optional(),
+	backgroundResponses: z.boolean().optional(),
 	proactiveRefreshGuardian: z.boolean().optional(),
 	proactiveRefreshIntervalMs: z.number().min(5_000).optional(),
 	proactiveRefreshBufferMs: z.number().min(30_000).optional(),

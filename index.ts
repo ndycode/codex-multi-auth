@@ -83,6 +83,7 @@ import {
 	getRetryAllAccountsMaxRetries,
 	getRetryAllAccountsMaxWaitMs,
 	getRetryAllAccountsRateLimited,
+	getBackgroundResponses,
 	getResponseContinuation,
 	getServerErrorCooldownMs,
 	getSessionAffinity,
@@ -917,6 +918,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										fastSession: fastSessionEnabled,
 										fastSessionStrategy,
 										fastSessionMaxInputItems,
+										deferFastSessionInputTrimming: fastSessionEnabled,
+										allowBackgroundResponses: getBackgroundResponses(pluginConfig),
 									},
 								);
 								let requestInit = transformation?.updatedInit ?? baseInit;

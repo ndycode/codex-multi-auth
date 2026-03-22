@@ -76,9 +76,17 @@ Used only for host plugin mode through the host runtime config file.
 | `sessionRecovery` | `true` |
 | `autoResume` | `true` |
 | `responseContinuation` | `false` |
+| `backgroundResponses` | `false` |
 | `proactiveRefreshGuardian` | `true` |
 | `proactiveRefreshIntervalMs` | `60000` |
 | `proactiveRefreshBufferMs` | `300000` |
+
+`backgroundResponses` is an opt-in compatibility switch for Responses API `background: true` requests. When enabled, those requests become stateful (`store=true`) instead of following the default stateless Codex routing.
+
+Upgrade note:
+- Leave this disabled for existing stateless pipelines that do not intentionally send `background: true`.
+- Enable it only for callers that need stateful background responses and can accept forced `store=true`, preserved input item IDs, and the loss of stateless-only defaults such as fast-session trimming.
+- After enabling it, test one known `background: true` request end to end before rolling it across shared automation.
 
 ### Storage / Sync
 

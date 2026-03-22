@@ -149,6 +149,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	sessionAffinityTtlMs: 20 * 60_000,
 	sessionAffinityMaxEntries: 512,
 	responseContinuation: false,
+	backgroundResponses: false,
 	proactiveRefreshGuardian: true,
 	proactiveRefreshIntervalMs: 60_000,
 	proactiveRefreshBufferMs: 5 * 60_000,
@@ -932,6 +933,23 @@ export function getResponseContinuation(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_RESPONSE_CONTINUATION",
 		pluginConfig.responseContinuation,
+		false,
+	);
+}
+
+/**
+ * Controls whether the plugin may preserve explicit Responses API background requests.
+ *
+ * Background mode is disabled by default because the normal Codex request path is stateless (`store=false`).
+ * When enabled, callers may opt into `background: true`, which switches the request to `store=true`.
+ *
+ * @param pluginConfig - The plugin configuration to consult for the setting
+ * @returns `true` if stateful background responses are allowed, `false` otherwise
+ */
+export function getBackgroundResponses(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_BACKGROUND_RESPONSES",
+		pluginConfig.backgroundResponses,
 		false,
 	);
 }

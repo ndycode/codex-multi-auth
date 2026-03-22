@@ -77,6 +77,16 @@ For maintainer/debug flows, see advanced/internal controls in [development/CONFI
 
 ---
 
+## Responses Background Mode Upgrade Note
+
+`backgroundResponses` and `CODEX_AUTH_BACKGROUND_RESPONSES=1` are opt-in compatibility controls for callers that intentionally send Responses API `background: true`.
+
+- Leave them disabled for existing stateless pipelines. The default routing remains `store=false`.
+- Enabling them switches background requests onto the stateful path, forces `store=true`, preserves caller-supplied input item IDs, and skips stateless-only defaults such as fast-session trimming and `reasoning.encrypted_content` injection.
+- No new npm scripts or storage migrations are required, but you should validate one known `background: true` request end to end before enabling the flag across shared automation.
+
+---
+
 ## Onboarding Restore Note
 
 `codex auth login` now opens directly into the sign-in menu when the active pool is empty, instead of opening the account dashboard first.
