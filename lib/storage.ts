@@ -21,7 +21,8 @@ import {
 	describeAccountSnapshot as describeAccountSnapshotWithDeps,
 	statSnapshot as statSnapshotWithDeps,
 } from "./storage/account-snapshot.js";
-exportAccountsSnapshot,
+import {
+	exportAccountsSnapshot,
 	importAccountsSnapshot,
 } from "./storage/account-port.js";
 import { saveAccountsToDisk } from "./storage/account-save.js";
